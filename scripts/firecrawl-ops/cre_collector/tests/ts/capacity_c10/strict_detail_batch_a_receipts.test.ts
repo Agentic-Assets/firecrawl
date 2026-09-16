@@ -24,6 +24,7 @@ import {
 } from "../../../capacity_c10/receipts/strict_detail/colliers_main.js";
 import {
   createColliersReceiptProducer,
+  colliersListEnumerationCard,
   colliersMapEnumerationCard,
   type ColliersReceiptPlan,
 } from "../../../capacity_c10/receipts/strict_detail/colliers.js";
@@ -39,7 +40,8 @@ import {
 } from "../../../capacity_c10/receipts/strict_detail/jll.js";
 import {
   createMarcusReceiptProducer,
-  marcusEnumerationCard,
+  marcusCountEnumerationCard,
+  marcusMapEnumerationCard,
   type MarcusReceiptPlan,
 } from "../../../capacity_c10/receipts/strict_detail/marcus_millichap.js";
 
@@ -207,7 +209,7 @@ test("strict-detail producer isolates nested routes and source settings from cal
 
 test("JLL Investor binds a native search build id to the one-shot structured detail route", async () => {
   const plan: JllInvestorReceiptPlan = {
-    page: 1,
+    pages: [1],
     members: [{ key: "investor-2", providerId: "006000000000000001", canonicalUrl: "https://invest.jll.com/us/en/listings/office/two" }],
     enumerationCards: [],
   };
@@ -216,10 +218,10 @@ test("JLL Investor binds a native search build id to the one-shot structured det
     count: 1, searchPage: 1, listings: [{ id: "006000000000000001", alias: "office/two" }],
   } } } } };
   const fake = new FixtureTransport({
-    "jll-investor-enumeration": `<script id="__NEXT_DATA__">${JSON.stringify(search)}</script>`,
+    "jll-investor-enumeration-0": `<script id="__NEXT_DATA__">${JSON.stringify(search)}</script>`,
     "jll-investor-member-0": JSON.stringify({ pageProps: { initialState: { pdp: { listing: { id: "006000000000000001", alias: "office/two", images: [] } } } } }),
   });
-  const receiptContext = await context("jll-investor", [jllInvestorEnumerationCard(plan)], fake);
+  const receiptContext = await context("jll-investor", [jllInvestorEnumerationCard(1, 0)], fake);
   const producer = createJllInvestorReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
   await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
@@ -227,35 +229,91 @@ test("JLL Investor binds a native search build id to the one-shot structured det
   assert.equal(fake.cards[1]?.method, "GET");
 });
 
+test("JLL Investor reconciles immutable members across exact search pages", async () => {
+  const listing = (index: number) => ({
+    id: `006${String(index).padStart(15, "0")}`,
+    alias: `office/item-${index}`,
+  });
+  const firstPage = Array.from({ length: 50 }, (_, index) => listing(index + 1));
+  const selected = listing(51);
+  const plan: JllInvestorReceiptPlan = {
+    pages: [1, 2],
+    members: [{
+      key: "investor-page-2",
+      providerId: selected.id,
+      canonicalUrl: "https://invest.jll.com/us/en/listings/office/item-51",
+    }],
+    enumerationCards: [],
+  };
+  const search = (page: number, listings: unknown[]) => ({
+    buildId: "build_pages",
+    props: { pageProps: { initialState: { advancedSearch: {
+      filters: [{ key: "location", value: "United States", label: "United States", type: "collection" }],
+      count: 51,
+      searchPage: page,
+      listings,
+    } } } },
+  });
+  const fake = new FixtureTransport({
+    "jll-investor-enumeration-0": `<script id="__NEXT_DATA__">${JSON.stringify(search(1, firstPage))}</script>`,
+    "jll-investor-enumeration-1": `<script id="__NEXT_DATA__">${JSON.stringify(search(2, [selected]))}</script>`,
+    "jll-investor-member-0": JSON.stringify({ pageProps: { initialState: { pdp: { listing: {
+      id: selected.id,
+      alias: selected.alias,
+      images: [],
+    } } } } }),
+  });
+  const receiptContext = await context("jll-investor", [
+    jllInvestorEnumerationCard(1, 0),
+    jllInvestorEnumerationCard(2, 1),
+  ], fake);
+  const producer = createJllInvestorReceiptProducer(plan);
+  await producer.produceEnumerationReceipt(receiptContext);
+  await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
+  assert.deepEqual(
+    fake.cards.map((card) => card.id),
+    ["jll-investor-enumeration-0", "jll-investor-enumeration-1", "jll-investor-member-0"],
+  );
+  assert.match(fake.cards[2]?.url ?? "", /item-51\.json/);
+});
+
 test("Colliers requires sealed map/list parity before its exact SLP member request", async () => {
   const plan: ColliersReceiptPlan = {
-    engineKey: "engine", start: 1, pageSize: 1,
+    engineKey: "engine", slices: [{ start: 1, pageSize: 1 }],
     members: [{ key: "colliers-3", providerId: "3", detailPv: "detail-3", canonicalUrl: "https://my.rcm1.com/slp/?pv=detail-3" }],
     enumerationCards: [],
   };
   const fake = new FixtureTransport({
-    "colliers-map-enumeration": JSON.stringify({ projectLocations: [{ ProjectId: "3", Latitude: 1, Longitude: 2 }] }),
-    "colliers-list-enumeration": JSON.stringify({ numProjects: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span class="city">A, NY</span></li>' }),
+    "colliers-map-enumeration-0": JSON.stringify({ projectLocations: [{ ProjectId: "3", Latitude: 1, Longitude: 2 }] }),
+    "colliers-list-enumeration-0": JSON.stringify({ numProjects: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span class="city">A, NY</span></li>' }),
     "colliers-member-0": JSON.stringify({ ProjectSummary: { AttributeVisibility: { ProjectId: "3" }, CanonicalUrl: "https://my.rcm1.com/slp/?pv=detail-3" }, GalleryImages: [] }),
   });
-  const receiptContext = await context("colliers", [colliersMapEnumerationCard(plan)], fake);
+  const slice = plan.slices[0]!;
+  const receiptContext = await context("colliers", [
+    colliersMapEnumerationCard(plan, slice, 0),
+    colliersListEnumerationCard(plan, slice, 0),
+  ], fake);
   const producer = createColliersReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
   await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
-  assert.deepEqual(fake.cards.map((card) => card.id), ["colliers-map-enumeration", "colliers-list-enumeration", "colliers-member-0"]);
+  assert.deepEqual(fake.cards.map((card) => card.id), ["colliers-map-enumeration-0", "colliers-list-enumeration-0", "colliers-member-0"]);
 });
 
 test("Colliers rejects a fabricated total field without native numProjects", async () => {
   const plan: ColliersReceiptPlan = {
-    engineKey: "engine", start: 1, pageSize: 1,
+    engineKey: "engine", slices: [{ start: 1, pageSize: 1 }],
     members: [{ key: "colliers-3", providerId: "3", detailPv: "detail-3", canonicalUrl: "https://my.rcm1.com/slp/?pv=detail-3" }],
     enumerationCards: [],
   };
   const fake = new FixtureTransport({
-    "colliers-map-enumeration": JSON.stringify({ projectLocations: [{ ProjectId: "3", Latitude: 1, Longitude: 2 }] }),
-    "colliers-list-enumeration": JSON.stringify({ total: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span class="city">A, NY</span></li>' }),
+    "colliers-map-enumeration-0": JSON.stringify({ projectLocations: [{ ProjectId: "3", Latitude: 1, Longitude: 2 }] }),
+    "colliers-list-enumeration-0": JSON.stringify({ total: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span class="city">A, NY</span></li>' }),
   });
-  const receiptContext = await context("colliers", [colliersMapEnumerationCard(plan)], fake);
+  const slice = plan.slices[0]!;
+  const receiptContext = await context("colliers", [
+    colliersMapEnumerationCard(plan, slice, 0),
+    colliersListEnumerationCard(plan, slice, 0),
+  ], fake);
   await assert.rejects(
     createColliersReceiptProducer(plan).produceEnumerationReceipt(receiptContext),
     /source response projection failed without retry/,
@@ -263,37 +321,78 @@ test("Colliers rejects a fabricated total field without native numProjects", asy
   assert.equal(receiptContext.transport.requestAccounting().events.at(-1)?.outcome, "rejected");
 });
 
+test("Colliers reconciles immutable members across exact map/list slices", async () => {
+  const plan: ColliersReceiptPlan = {
+    engineKey: "engine",
+    slices: [{ start: 1, pageSize: 1 }, { start: 2, pageSize: 1 }],
+    members: [
+      { key: "colliers-3", providerId: "3", detailPv: "detail-3", canonicalUrl: "https://my.rcm1.com/slp/?pv=detail-3" },
+      { key: "colliers-4", providerId: "4", detailPv: "detail-4", canonicalUrl: "https://my.rcm1.com/slp/?pv=detail-4" },
+    ],
+    enumerationCards: [],
+  };
+  const fake = new FixtureTransport({
+    "colliers-map-enumeration-0": JSON.stringify({ projectLocations: [{ ProjectId: "3" }] }),
+    "colliers-list-enumeration-0": JSON.stringify({ numProjects: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span>A</span></li>' }),
+    "colliers-map-enumeration-1": JSON.stringify({ projectLocations: [{ ProjectId: "4" }] }),
+    "colliers-list-enumeration-1": JSON.stringify({ numProjects: 1, html: '<li class="item"><a href="/slp/?pv=detail-4"></a><span>B</span></li>' }),
+    "colliers-member-0": JSON.stringify({ ProjectSummary: { AttributeVisibility: { ProjectId: "3" }, CanonicalUrl: "https://my.rcm1.com/slp/?pv=detail-3" } }),
+    "colliers-member-1": JSON.stringify({ ProjectSummary: { AttributeVisibility: { ProjectId: "4" }, CanonicalUrl: "https://my.rcm1.com/slp/?pv=detail-4" } }),
+  });
+  const cards = plan.slices.flatMap((slice, index) => [
+    colliersMapEnumerationCard(plan, slice, index),
+    colliersListEnumerationCard(plan, slice, index),
+  ]);
+  const receiptContext = await context("colliers", cards, fake);
+  const producer = createColliersReceiptProducer(plan);
+  await producer.produceEnumerationReceipt(receiptContext);
+  await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
+  await producer.produceMemberReceipt(receiptContext, plan.members[1]!);
+  assert.deepEqual(
+    fake.cards.map((card) => card.id),
+    [
+      "colliers-map-enumeration-0",
+      "colliers-list-enumeration-0",
+      "colliers-map-enumeration-1",
+      "colliers-list-enumeration-1",
+      "colliers-member-0",
+      "colliers-member-1",
+    ],
+  );
+});
+
 test("Marcus seals canonical search and map POST bodies without retry or fallback", async () => {
   const plan: MarcusReceiptPlan = {
-    pageSize: 1,
     members: [{ key: "marcus-4", providerId: "4", activityId: "activity-4", canonicalUrl: "https://www.marcusmillichap.com/properties/four" }],
     enumerationCards: [],
   };
   const fake = new FixtureTransport({
-    "marcus-enumeration": JSON.stringify({ Results: { TotalCount: 1, Properties: [{ DealId: "4", ActivityId: "activity-4", PropertyUrl: "/properties/four" }] } }),
+    "marcus-count-enumeration": JSON.stringify({ Results: { TotalCount: 2, Properties: [{ DealId: "newest-visible-only" }] } }),
+    "marcus-map-enumeration": JSON.stringify({ Results: { Properties: [{ ActivityId: "activity-new" }, { ActivityId: "activity-4" }] } }),
     "marcus-member-0": JSON.stringify({ Results: { PropertyDetail: '<article data-property="four"></article>', PropertyUrl: "/properties/four" } }),
   });
-  const receiptContext = await context("marcus-millichap", [marcusEnumerationCard(plan)], fake);
+  const receiptContext = await context("marcus-millichap", [marcusCountEnumerationCard(), marcusMapEnumerationCard()], fake);
   const producer = createMarcusReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
   await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
   assert.match(fake.cards[0]?.body ?? "", /"pageSize":1/);
-  assert.equal(fake.cards[1]?.body, '{"activityId":"activity-4"}');
-  assert.equal(fake.cards[1]?.url, "https://www.marcusmillichap.com/api/contentsearch/mappropertydetail");
+  assert.equal(fake.cards[1]?.url, "https://www.marcusmillichap.com/api/contentsearch/mapproperties");
+  assert.equal(fake.cards[2]?.body, '{"activityId":"activity-4"}');
+  assert.equal(fake.cards[2]?.url, "https://www.marcusmillichap.com/api/contentsearch/mappropertydetail");
   assert.equal(receiptContext.transport.requestAccounting().retries, 0);
 });
 
 test("Marcus rejects the old mapproperties envelope at the detail endpoint", async () => {
   const plan: MarcusReceiptPlan = {
-    pageSize: 1,
     members: [{ key: "marcus-4", providerId: "4", activityId: "activity-4", canonicalUrl: "https://www.marcusmillichap.com/properties/four" }],
     enumerationCards: [],
   };
   const fake = new FixtureTransport({
-    "marcus-enumeration": JSON.stringify({ Results: { TotalCount: 1, Properties: [{ DealId: "4", ActivityId: "activity-4", PropertyUrl: "/properties/four" }] } }),
+    "marcus-count-enumeration": JSON.stringify({ Results: { TotalCount: 1, Properties: [{ DealId: "4" }] } }),
+    "marcus-map-enumeration": JSON.stringify({ Results: { Properties: [{ ActivityId: "activity-4" }] } }),
     "marcus-member-0": JSON.stringify({ Results: { Properties: [{ ActivityId: "activity-4", PropertyUrl: "/properties/four" }] } }),
   });
-  const receiptContext = await context("marcus-millichap", [marcusEnumerationCard(plan)], fake);
+  const receiptContext = await context("marcus-millichap", [marcusCountEnumerationCard(), marcusMapEnumerationCard()], fake);
   const producer = createMarcusReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
   await assert.rejects(

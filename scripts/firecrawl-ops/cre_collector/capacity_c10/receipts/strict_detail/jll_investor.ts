@@ -27,18 +27,30 @@ export interface JllInvestorReceiptMember extends C10Member {
 }
 
 export interface JllInvestorReceiptPlan extends StrictDetailPlan<JllInvestorReceiptMember> {
-  readonly page: number;
+  /** Exact provider search pages needed to recover every immutable member. */
+  readonly pages: readonly number[];
 }
 
 const JLL_INVESTOR_HOSTNAME = new URL(JLL_INVESTOR_HOST).host;
 
-export function jllInvestorEnumerationCard(plan: Pick<JllInvestorReceiptPlan, "page">): RequestCardInput {
+function validatePages(pages: readonly number[]): void {
+  if (
+    !pages.length
+    || pages.some((page) => !Number.isInteger(page) || page < 1)
+    || new Set(pages).size !== pages.length
+  ) {
+    throw new C10ReceiptError("JLL Investor pages must be nonempty, positive, and unique");
+  }
+}
+
+export function jllInvestorEnumerationCard(page: number, index = 0): RequestCardInput {
+  validatePages([page]);
   return {
-    id: "jll-investor-enumeration",
+    id: `jll-investor-enumeration-${index}`,
     sourceKey: "jll-investor",
     stage: "enumeration",
     method: "GET",
-    url: jllInvestorSearchPageUrl(plan.page),
+    url: jllInvestorSearchPageUrl(page),
     allowedHost: JLL_INVESTOR_HOSTNAME,
     headers: Object.freeze({ accept: "text/html,application/xhtml+xml" }),
     contentType: null,
@@ -95,28 +107,60 @@ function spec(plan: JllInvestorReceiptPlan): StrictDetailSourceSpec<JllInvestorR
   return {
     sourceKey: "jll-investor",
     async enumerate(context, sourcePlan) {
-      const event = await context.transport.oneShot("jll-investor-enumeration", (response) => {
-        const raw = utf8Text(response.body, "JLL Investor search");
-        const search = parseJllInvestorSearchPage(raw, plan.page);
-        const buildId = jllInvestorBuildId(raw);
-        if (!buildId) throw new C10ReceiptError("JLL Investor search lacks a safe Next.js build id");
-        const routes = search.rows.map((row) => {
-          const providerId = String(row?.id ?? "").trim();
-          const canonicalUrl = jllInvestorUrlFromAlias(String(row?.alias ?? ""));
-          if (!providerId || !canonicalUrl) throw new C10ReceiptError("JLL Investor search has an incomplete identity");
-          return { canonicalUrl, detailRoute: jllInvestorDetailRoute(buildId, canonicalUrl).url, providerId };
+      validatePages(plan.pages);
+      const events = [];
+      const projections: SourceProjection[] = [];
+      const routes = new Map<string, { readonly canonicalUrl: string; readonly detailRoute: string; readonly providerId: string }>();
+      const providersByUrl = new Map<string, string>();
+      let expectedBuildId: string | null = null;
+      let expectedCount: number | null = null;
+      for (const [index, page] of plan.pages.entries()) {
+        const event = await context.transport.oneShot(`jll-investor-enumeration-${index}`, (response) => {
+          const raw = utf8Text(response.body, "JLL Investor search");
+          const search = parseJllInvestorSearchPage(raw, page);
+          const buildId = jllInvestorBuildId(raw);
+          if (!buildId) throw new C10ReceiptError("JLL Investor search lacks a safe Next.js build id");
+          const pageRoutes = search.rows.map((row) => {
+            const providerId = String(row?.id ?? "").trim();
+            const canonicalUrl = jllInvestorUrlFromAlias(String(row?.alias ?? ""));
+            if (!providerId || !canonicalUrl) throw new C10ReceiptError("JLL Investor search has an incomplete identity");
+            return { canonicalUrl, detailRoute: jllInvestorDetailRoute(buildId, canonicalUrl).url, providerId };
+          });
+          return {
+            buildId,
+            count: search.count,
+            page: search.page,
+            routes: pageRoutes,
+          } satisfies SourceProjection;
         });
-        return {
-          buildId,
-          count: search.count,
-          page: search.page,
-          routes,
-        } satisfies SourceProjection;
-      });
-      const projection = event.projection as {
-        readonly routes: readonly { readonly canonicalUrl: string; readonly detailRoute: string; readonly providerId: string }[];
-      };
-      const routes = new Map(projection.routes.map((row) => [row.providerId, row]));
+        const projection = event.projection as {
+          readonly buildId: string;
+          readonly count: number;
+          readonly routes: readonly { readonly canonicalUrl: string; readonly detailRoute: string; readonly providerId: string }[];
+        };
+        if (
+          expectedBuildId !== null && projection.buildId !== expectedBuildId
+          || expectedCount !== null && projection.count !== expectedCount
+        ) {
+          throw new C10ReceiptError("JLL Investor pages disagree on build or inventory count");
+        }
+        expectedBuildId = projection.buildId;
+        expectedCount = projection.count;
+        for (const row of projection.routes) {
+          const priorRoute = routes.get(row.providerId);
+          const priorProvider = providersByUrl.get(row.canonicalUrl);
+          if (
+            priorRoute !== undefined
+            || priorProvider !== undefined
+          ) {
+            throw new C10ReceiptError("JLL Investor pages repeat or conflict on native identity");
+          }
+          routes.set(row.providerId, row);
+          providersByUrl.set(row.canonicalUrl, row.providerId);
+        }
+        events.push(event);
+        projections.push(event.projection);
+      }
       const memberRoutes = new Map<string, string>();
       for (const member of sourcePlan.members) {
         const observed = routes.get(member.providerId);
@@ -126,8 +170,8 @@ function spec(plan: JllInvestorReceiptPlan): StrictDetailSourceSpec<JllInvestorR
         memberRoutes.set(member.key, observed.detailRoute);
       }
       return {
-        parent: event,
-        evidence: event.projection,
+        parent: events[0]!,
+        evidence: { count: expectedCount, pages: projections },
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };
@@ -147,8 +191,10 @@ export function createJllInvestorReceiptProducer(
   plan: JllInvestorReceiptPlan,
 ): StrictDetailReceiptProducer<JllInvestorReceiptMember> {
   const immutablePlan = immutableStrictDetailPlan(plan);
+  validatePages(immutablePlan.pages);
+  const cards = immutablePlan.pages.map((page, index) => jllInvestorEnumerationCard(page, index));
   return new StrictDetailReceiptProducer(
-    { enumerationCards: [jllInvestorEnumerationCard(immutablePlan)], members: immutablePlan.members },
+    { enumerationCards: cards, members: immutablePlan.members },
     spec(immutablePlan),
   );
 }

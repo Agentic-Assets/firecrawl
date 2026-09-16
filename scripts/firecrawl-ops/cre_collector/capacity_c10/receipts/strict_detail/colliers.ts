@@ -28,28 +28,57 @@ export interface ColliersReceiptMember extends C10Member {
   readonly detailPv: string;
 }
 
-export interface ColliersReceiptPlan extends StrictDetailPlan<ColliersReceiptMember> {
-  readonly engineKey: string;
+export interface ColliersEnumerationSlice {
   readonly start: number;
   readonly pageSize: number;
 }
 
+export interface ColliersReceiptPlan extends StrictDetailPlan<ColliersReceiptMember> {
+  readonly engineKey: string;
+  /** Exact provider slices needed to recover every immutable member. */
+  readonly slices: readonly ColliersEnumerationSlice[];
+}
+
 const COLLIERS_HOST = new URL(COLLIERS_RCM_BASE).host;
 
-function assertPlan(plan: ColliersReceiptPlan): void {
-  if (!Number.isInteger(plan.start) || plan.start < 1 || !Number.isInteger(plan.pageSize) || plan.pageSize < 1 || plan.pageSize > COLLIERS_PAGE_SIZE) {
+function assertSlice(slice: ColliersEnumerationSlice): void {
+  if (
+    !Number.isInteger(slice.start)
+    || slice.start < 1
+    || !Number.isInteger(slice.pageSize)
+    || slice.pageSize < 1
+    || slice.pageSize > COLLIERS_PAGE_SIZE
+  ) {
     throw new C10ReceiptError("Colliers request plan has an invalid page range");
   }
 }
 
-export function colliersMapEnumerationCard(plan: ColliersReceiptPlan): RequestCardInput {
-  assertPlan(plan);
+function assertPlan(plan: ColliersReceiptPlan): void {
+  if (!plan.engineKey.trim() || !plan.slices.length) {
+    throw new C10ReceiptError("Colliers request plan has an invalid page range");
+  }
+  const keys = plan.slices.map((slice) => {
+    assertSlice(slice);
+    return `${slice.start}:${slice.pageSize}`;
+  });
+  if (new Set(keys).size !== keys.length) {
+    throw new C10ReceiptError("Colliers request slices must be unique");
+  }
+}
+
+export function colliersMapEnumerationCard(
+  plan: Pick<ColliersReceiptPlan, "engineKey">,
+  slice: ColliersEnumerationSlice,
+  index = 0,
+): RequestCardInput {
+  if (!plan.engineKey.trim()) throw new C10ReceiptError("Colliers engine key is empty");
+  assertSlice(slice);
   return {
-    id: "colliers-map-enumeration",
+    id: `colliers-map-enumeration-${index}`,
     sourceKey: "colliers",
     stage: "enumeration",
     method: "GET",
-    url: colliersMapUrl(plan.engineKey, plan.start, plan.pageSize),
+    url: colliersMapUrl(plan.engineKey, slice.start, slice.pageSize),
     allowedHost: COLLIERS_HOST,
     headers: Object.freeze(colliersHeaders()),
     contentType: null,
@@ -60,13 +89,19 @@ export function colliersMapEnumerationCard(plan: ColliersReceiptPlan): RequestCa
   };
 }
 
-function colliersListEnumerationCard(plan: ColliersReceiptPlan): RequestCardInput {
+export function colliersListEnumerationCard(
+  plan: Pick<ColliersReceiptPlan, "engineKey">,
+  slice: ColliersEnumerationSlice,
+  index: number,
+): RequestCardInput {
+  if (!plan.engineKey.trim()) throw new C10ReceiptError("Colliers engine key is empty");
+  assertSlice(slice);
   return {
-    id: "colliers-list-enumeration",
+    id: `colliers-list-enumeration-${index}`,
     sourceKey: "colliers",
     stage: "enumeration",
     method: "GET",
-    url: colliersListUrl(plan.engineKey, plan.start, plan.pageSize),
+    url: colliersListUrl(plan.engineKey, slice.start, slice.pageSize),
     allowedHost: COLLIERS_HOST,
     headers: Object.freeze(colliersHeaders()),
     contentType: null,
@@ -104,54 +139,67 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
   return {
     sourceKey: "colliers",
     async enumerate(context, sourcePlan) {
-      const mapEvent = await context.transport.oneShot("colliers-map-enumeration", (response) => {
-        const payload = utf8Json(response.body, "Colliers map");
-        const rows = Array.isArray((payload as { projectLocations?: unknown }).projectLocations)
-          ? (payload as { projectLocations: any[] }).projectLocations
-          : [];
-        const groups = groupColliersMapLocations(rows);
-        return { projectIds: groups.map((group) => group.projectId), groups } satisfies SourceProjection;
-      });
-      const mapProjection = mapEvent.projection as { readonly groups: readonly { readonly projectId: string; readonly pins: readonly unknown[] }[] };
-      await context.transport.appendFrom(
-        mapEvent,
-        {
-          sourceKey: "colliers",
-          stage: "enumeration",
-          maximumCards: 2,
-          create: () => colliersListEnumerationCard(plan),
-        },
-        null,
-      );
-      const listEvent = await context.transport.oneShot("colliers-list-enumeration", (response) => {
-        const payload = utf8Json(response.body, "Colliers listing");
-        const html = String((payload as { html?: unknown }).html ?? "");
-        if (!html) throw new C10ReceiptError("Colliers list response has no HTML cards");
-        const cards = parseColliersReceiptCards(html, mapProjection.groups as any[], plan.start);
-        const rawPageCount = (payload as { numProjects?: unknown }).numProjects;
-        if (
-          rawPageCount === null
-          || rawPageCount === undefined
-          || (typeof rawPageCount === "string" && rawPageCount.trim() === "")
-          || (typeof rawPageCount !== "string" && typeof rawPageCount !== "number")
-        ) {
-          throw new C10ReceiptError("Colliers list response has invalid numProjects");
+      assertPlan(plan);
+      const events = [];
+      const projections: SourceProjection[] = [];
+      const routes = new Map<string, { readonly canonicalUrl: string | null; readonly detailPv: string | null; readonly projectId: string }>();
+      const providersByUrl = new Map<string, string>();
+      const providersByPv = new Map<string, string>();
+      for (const [index, slice] of plan.slices.entries()) {
+        const mapEvent = await context.transport.oneShot(`colliers-map-enumeration-${index}`, (response) => {
+          const payload = utf8Json(response.body, "Colliers map");
+          const rows = Array.isArray((payload as { projectLocations?: unknown }).projectLocations)
+            ? (payload as { projectLocations: any[] }).projectLocations
+            : [];
+          const groups = groupColliersMapLocations(rows);
+          return { projectIds: groups.map((group) => group.projectId), groups } satisfies SourceProjection;
+        });
+        const mapProjection = mapEvent.projection as { readonly groups: readonly { readonly projectId: string; readonly pins: readonly unknown[] }[] };
+        const listEvent = await context.transport.oneShot(`colliers-list-enumeration-${index}`, (response) => {
+          const payload = utf8Json(response.body, "Colliers listing");
+          const html = String((payload as { html?: unknown }).html ?? "");
+          if (!html) throw new C10ReceiptError("Colliers list response has no HTML cards");
+          const cards = parseColliersReceiptCards(html, mapProjection.groups as any[], slice.start);
+          const rawPageCount = (payload as { numProjects?: unknown }).numProjects;
+          if (
+            rawPageCount === null
+            || rawPageCount === undefined
+            || (typeof rawPageCount === "string" && rawPageCount.trim() === "")
+            || (typeof rawPageCount !== "string" && typeof rawPageCount !== "number")
+          ) {
+            throw new C10ReceiptError("Colliers list response has invalid numProjects");
+          }
+          const reportedPageCount = Number(rawPageCount);
+          if (!Number.isInteger(reportedPageCount) || reportedPageCount < 0 || reportedPageCount !== cards.length) {
+            throw new C10ReceiptError("Colliers numProjects/card parity failed");
+          }
+          return {
+            cards: cards.map((card) => ({
+              canonicalUrl: card.detailUrl,
+              detailPv: card.detailPv,
+              projectId: card.mapProjectId,
+            })),
+            reportedPageCount,
+          } satisfies SourceProjection;
+        });
+        const listing = listEvent.projection as { readonly cards: readonly { readonly canonicalUrl: string | null; readonly detailPv: string | null; readonly projectId: string }[] };
+        for (const card of listing.cards) {
+          if (
+            !card.canonicalUrl
+            || !card.detailPv
+            || routes.has(card.projectId)
+            || providersByUrl.has(card.canonicalUrl)
+            || providersByPv.has(card.detailPv)
+          ) {
+            throw new C10ReceiptError("Colliers slices repeat or omit native identity");
+          }
+          routes.set(card.projectId, card);
+          providersByUrl.set(card.canonicalUrl, card.projectId);
+          providersByPv.set(card.detailPv, card.projectId);
         }
-        const reportedPageCount = Number(rawPageCount);
-        if (!Number.isInteger(reportedPageCount) || reportedPageCount < 0 || reportedPageCount !== cards.length) {
-          throw new C10ReceiptError("Colliers numProjects/card parity failed");
-        }
-        return {
-          cards: cards.map((card) => ({
-            canonicalUrl: card.detailUrl,
-            detailPv: card.detailPv,
-            projectId: card.mapProjectId,
-          })),
-          reportedPageCount,
-        } satisfies SourceProjection;
-      });
-      const listing = listEvent.projection as { readonly cards: readonly { readonly canonicalUrl: string | null; readonly detailPv: string | null; readonly projectId: string }[] };
-      const routes = new Map(listing.cards.map((card) => [card.projectId, card]));
+        events.push(listEvent);
+        projections.push({ list: listEvent.projection, map: mapEvent.projection });
+      }
       const memberRoutes = new Map<string, string>();
       for (const member of sourcePlan.members) {
         const observed = routes.get(member.providerId);
@@ -161,8 +209,8 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
         memberRoutes.set(member.key, colliersSlpInitUrl(member.detailPv));
       }
       return {
-        parent: listEvent,
-        evidence: { list: listEvent.projection, map: mapEvent.projection },
+        parent: events[0]!,
+        evidence: { slices: projections },
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };
@@ -193,8 +241,12 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
 export function createColliersReceiptProducer(plan: ColliersReceiptPlan): StrictDetailReceiptProducer<ColliersReceiptMember> {
   const immutablePlan = immutableStrictDetailPlan(plan);
   assertPlan(immutablePlan);
+  const cards = immutablePlan.slices.flatMap((slice, index) => [
+    colliersMapEnumerationCard(immutablePlan, slice, index),
+    colliersListEnumerationCard(immutablePlan, slice, index),
+  ]);
   return new StrictDetailReceiptProducer(
-    { enumerationCards: [colliersMapEnumerationCard(immutablePlan)], members: immutablePlan.members },
+    { enumerationCards: cards, members: immutablePlan.members },
     spec(immutablePlan),
   );
 }

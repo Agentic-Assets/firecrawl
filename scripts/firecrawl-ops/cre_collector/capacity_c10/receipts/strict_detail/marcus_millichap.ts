@@ -11,6 +11,7 @@ import {
   marcusMapDetailBody,
   marcusSearchBody,
   marcusUrl,
+  parseMarcusMapRowsResponse,
   parseMarcusPropertiesResponse,
 } from "../../../sources/pure/marcus-receipt.js";
 import {
@@ -26,22 +27,13 @@ export interface MarcusReceiptMember extends C10Member {
   readonly canonicalUrl: string;
 }
 
-export interface MarcusReceiptPlan extends StrictDetailPlan<MarcusReceiptMember> {
-  readonly pageSize: number;
-}
+export type MarcusReceiptPlan = StrictDetailPlan<MarcusReceiptMember>;
 
 const MARCUS_HOST = new URL(MARCUS_BASE).host;
 
-function assertPlan(plan: MarcusReceiptPlan): void {
-  if (!Number.isInteger(plan.pageSize) || plan.pageSize < 1 || plan.pageSize > 500) {
-    throw new C10ReceiptError("Marcus request plan has an invalid page size");
-  }
-}
-
-export function marcusEnumerationCard(plan: MarcusReceiptPlan): RequestCardInput {
-  assertPlan(plan);
+export function marcusCountEnumerationCard(): RequestCardInput {
   return {
-    id: "marcus-enumeration",
+    id: "marcus-count-enumeration",
     sourceKey: "marcus-millichap",
     stage: "enumeration",
     method: "POST",
@@ -49,10 +41,18 @@ export function marcusEnumerationCard(plan: MarcusReceiptPlan): RequestCardInput
     allowedHost: MARCUS_HOST,
     headers: Object.freeze(marcusHeaders()),
     contentType: "application/json",
-    body: canonicalJson(marcusSearchBody(plan.pageSize)),
+    body: canonicalJson(marcusSearchBody(1)),
     cacheMode: "no-store",
     timeoutMs: 30_000,
     maxBytes: 2 * 1024 * 1024,
+  };
+}
+
+export function marcusMapEnumerationCard(): RequestCardInput {
+  return {
+    ...marcusCountEnumerationCard(),
+    id: "marcus-map-enumeration",
+    url: `${MARCUS_BASE}/api/contentsearch/mapproperties`,
   };
 }
 
@@ -83,32 +83,39 @@ function spec(plan: MarcusReceiptPlan): StrictDetailSourceSpec<MarcusReceiptMemb
   return {
     sourceKey: "marcus-millichap",
     async enumerate(context, sourcePlan) {
-      const event = await context.transport.oneShot("marcus-enumeration", (response) => {
+      const countEvent = await context.transport.oneShot("marcus-count-enumeration", (response) => {
         const parsed = parseMarcusPropertiesResponse(utf8Json(response.body, "Marcus properties"), true);
-        const rows = parsed.rows.map((row: any) => {
-          const providerId = String(row?.DealId ?? "").trim();
-          const activityId = String(row?.ActivityId ?? "").trim();
-          const canonicalUrl = marcusUrl(row?.PropertyUrl);
-          if (!providerId || !activityId || !canonicalUrl) {
-            throw new C10ReceiptError("Marcus native enumeration has an incomplete member identity");
-          }
-          return { activityId, canonicalUrl, providerId };
-        });
-        return { rows, total: parsed.total } satisfies SourceProjection;
+        if (parsed.total === null) throw new C10ReceiptError("Marcus properties response lacks a native count");
+        return { total: parsed.total } satisfies SourceProjection;
       });
-      const rows = (event.projection as { readonly rows: readonly { readonly activityId: string; readonly canonicalUrl: string; readonly providerId: string }[] }).rows;
-      const byProvider = new Map(rows.map((row) => [row.providerId, row]));
+      const total = (countEvent.projection as { readonly total: number }).total;
+      const mapEvent = await context.transport.oneShot("marcus-map-enumeration", (response) => {
+        const payload = utf8Json(response.body, "Marcus map properties") as any;
+        const rawRows = payload?.Results?.Properties ?? payload?.Properties;
+        if (!Array.isArray(rawRows)) {
+          throw new C10ReceiptError("Marcus map enumeration has no Properties array");
+        }
+        const rows = parseMarcusMapRowsResponse(payload, true);
+        if (rows.length !== rawRows.length || rows.length !== total) {
+          throw new C10ReceiptError("Marcus map enumeration does not reconcile to native inventory count");
+        }
+        return {
+          activityIds: rows.map((row: any) => String(row.ActivityId).trim()),
+          total,
+        } satisfies SourceProjection;
+      });
+      const activityIds = (mapEvent.projection as { readonly activityIds: readonly string[] }).activityIds;
+      const available = new Set(activityIds);
       const memberRoutes = new Map<string, string>();
       for (const member of sourcePlan.members) {
-        const observed = byProvider.get(member.providerId);
-        if (!observed || observed.activityId !== member.activityId || observed.canonicalUrl !== member.canonicalUrl) {
+        if (!available.has(member.activityId)) {
           throw new C10ReceiptError("Marcus selected member is absent from exact native enumeration");
         }
-        memberRoutes.set(member.key, observed.activityId);
+        memberRoutes.set(member.key, member.activityId);
       }
       return {
-        parent: event,
-        evidence: event.projection,
+        parent: mapEvent,
+        evidence: { count: countEvent.projection, map: mapEvent.projection },
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };
@@ -142,9 +149,11 @@ function spec(plan: MarcusReceiptPlan): StrictDetailSourceSpec<MarcusReceiptMemb
 
 export function createMarcusReceiptProducer(plan: MarcusReceiptPlan): StrictDetailReceiptProducer<MarcusReceiptMember> {
   const immutablePlan = immutableStrictDetailPlan(plan);
-  assertPlan(immutablePlan);
   return new StrictDetailReceiptProducer(
-    { enumerationCards: [marcusEnumerationCard(immutablePlan)], members: immutablePlan.members },
+    {
+      enumerationCards: [marcusCountEnumerationCard(), marcusMapEnumerationCard()],
+      members: immutablePlan.members,
+    },
     spec(immutablePlan),
   );
 }
