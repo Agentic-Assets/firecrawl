@@ -52,6 +52,12 @@ arbitrary card. The host accepts a terminal success only after it has verified
 signed cleanup-complete evidence and derived the exact 4/10 active-lease peak
 from sidecar lease intervals.
 
+The only production arm entrypoint is `python -m capacity_c10.production
+--execute` with explicit sealed plan, cohort, session, durable session store,
+private receipt root, and repository paths. It constructs the host session
+itself and accepts no browser callback, arbitrary card, or caller scheduler
+evidence. Without `--execute` it refuses to run.
+
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
 and transition fingerprints, immutable per-source cohort count/hash bindings,

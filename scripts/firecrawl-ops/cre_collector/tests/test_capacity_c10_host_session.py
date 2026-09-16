@@ -21,6 +21,7 @@ from capacity_c10.host_session import (
     DockerComposeSidecar,
     _OpenSsl,
 )
+from capacity_c10.production import execute_production_arm
 
 
 def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
@@ -557,3 +558,38 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
     with pytest.raises(contracts.C10Error, match="remove failed"):
         host.execute(plan, contracts.new_session(plan))
     assert (tmp_path / "session.json.quarantine").exists()
+
+
+def test_production_entrypoint_constructs_host_without_browser_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    observed: dict[str, object] = {}
+
+    class Host:
+        def __init__(self, **kwargs: object) -> None:
+            observed.update(kwargs)
+
+        def execute(
+            self, plan: object, session: object, *, timeout_seconds: float
+        ) -> dict[str, object]:
+            observed.update(
+                {"plan": plan, "session": session, "timeout": timeout_seconds}
+            )
+            return {"host": "authenticated"}
+
+    monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    result = execute_production_arm(
+        repo_root=tmp_path,
+        plan=plan,
+        cohort=cohort,
+        session=contracts.new_session(plan),
+        session_store_path=tmp_path / "session.json",
+        private_root=tmp_path / "private",
+    )
+    assert result == {"host": "authenticated"}
+    assert (
+        "cards" in observed
+        and "child" not in observed
+        and "run_browser_arm" not in observed
+    )
