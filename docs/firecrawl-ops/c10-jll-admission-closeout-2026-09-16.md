@@ -30,6 +30,9 @@ executes the loopback request, verifies evidence, and seals descriptor-relative
 artifacts. The child can only request the fixed enumeration followed by the
 sealed sixteen routes. It cannot select a root, call a provider, or create a
 receipt outside the active production-controller authority.
+The source, not the controller, deterministically selects the 16 members from
+the signed enumeration using the versioned canonical-URL ordering rule; Python
+recomputes and verifies the emitted selection digest before it can build a bundle.
 
 No provider request, authority pin, P0/P1 arm, database/cache/listing write,
 or live C10 result exists. After this bridge is reviewed and merged, the

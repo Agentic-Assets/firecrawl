@@ -86,7 +86,7 @@ export function jllEnumerationCard(plan: JllEnumerationSlice, index = 0): Reques
   };
 }
 
-function memberCard(
+export function jllMemberCard(
   _parent: unknown,
   member: JllReceiptMember,
   index: number,
@@ -112,7 +112,7 @@ function memberCard(
   };
 }
 
-function detailProjection(member: JllReceiptMember, route: string) {
+export function jllDetailProjection(member: JllReceiptMember, route: string) {
   return (response: { readonly body: Uint8Array; readonly status: number; readonly finalUrl: string }) => {
     if (response.status !== 200 || response.finalUrl !== route) {
       throw new C10ReceiptError("JLL browser detail is not a qualified canonical response");
@@ -219,8 +219,8 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
         memberRoutes,
       };
     },
-    memberCard: (_parent, member, index, route) => memberCard(_parent, member, index, route),
-    memberProjector: (member, route) => detailProjection(member, route),
+    memberCard: (_parent, member, index, route) => jllMemberCard(_parent, member, index, route),
+    memberProjector: (member, route) => jllDetailProjection(member, route),
     memberEvidence: (member, route, event) => ({
       canonicalUrl: route,
       providerId: member.providerId,

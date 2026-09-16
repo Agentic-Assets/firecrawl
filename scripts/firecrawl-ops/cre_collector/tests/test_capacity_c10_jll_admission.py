@@ -107,6 +107,7 @@ def _manifest(root: Path, *, count: int = 16) -> Path:
         "adapter_implementation_sha256": "d" * 64,
         "no_write": admission.NO_WRITE,
         "collection_intent_sha256": jll_admission._collection_intent_sha256(members),
+        "selection_digest": jll_admission._selection_digest(members),
     }
     manifest = {**unsigned, "manifest_sha256": contracts.sha256(unsigned)}
     path = root / "jll-manifest.json"

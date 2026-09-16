@@ -23,7 +23,7 @@ import cre_capacity_runtime as runtime
 from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 
 from . import admission, compare
-from .admission_controller import _JllAdmissionController, _members
+from .admission_controller import _JllAdmissionController
 from .contracts import C10Error, require_sha256, sha256, validate_plan
 from .host_orchestration import _C10HostTransport, _key_id
 from .host_session import (
@@ -100,7 +100,6 @@ def execute_jll_admission_collection(
         raise C10Error("JLL admission timeout is outside its reviewed bound")
     # Refuse invalid intent before a sidecar, provider attempt, or private file
     # is created.  The child repeats the checks at the trust boundary.
-    _members(members)
     require_sha256(adapter_implementation_sha256, "JLL adapter implementation")
     expected_binding = {
         "planSha256",

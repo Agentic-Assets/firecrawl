@@ -20,8 +20,11 @@ authorize the panel.
    admission action. It starts a fresh loopback-only sidecar at capacity one,
    which is deliberately not a P0/P1 calibration, then starts a dedicated
    typed child bridge bounded to the existing source-owned JLL receipt producer:
-   one reviewed sale/office/page-1 GraphQL card, then the selected sixteen
-   canonical JLL member routes.  It exposes no URL, host, method, request body,
+   one reviewed sale/office/page-1 GraphQL card, then exactly sixteen canonical
+   JLL member routes selected by `jll-canonical-url-lexicographic-v1`: reject
+   malformed, duplicate, or insufficient native candidates; canonicalize; sort
+   URLs lexicographically; take the first sixteen. The rule and selected digest
+   are sealed into the receipt set and manifest. It exposes no URL, host, method, request body,
    adapter, or arbitrary transport option.  Its execute seam accepts only a
    controller-issued one-shot transport; it is deliberately unavailable to a
    caller without that controller. The child has neither a browser endpoint,

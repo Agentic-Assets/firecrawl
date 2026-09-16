@@ -44,6 +44,7 @@ JLL_BUNDLE_KIND = "cre_capacity_c10_jll_v1_admission_bundle"
 JLL_PLAN_KIND = "cre_capacity_c10_jll_v1_plan"
 JLL_RECEIPT_MANIFEST_KIND = "cre_capacity_c10_jll_v1_receipt_manifest"
 JLL_MEMBER_COUNT = 16
+JLL_SELECTION_RULE = "jll-canonical-url-lexicographic-v1"
 JLL_ENUMERATION_BODY_SHA256 = (
     "2f04bb146d4dcf85efb95a6e4d88f319029690fec804b7cc5379ff4d5930ad38"
 )
@@ -62,8 +63,19 @@ def _jll_intent() -> dict[str, Any]:
         "source_key": "jll",
         "enumeration": {"transaction": "sale", "property_type": "office", "page": 1},
         "member_count": JLL_MEMBER_COUNT,
+        "selection_rule": JLL_SELECTION_RULE,
         "no_write": admission.NO_WRITE,
     }
+
+
+def _selection_digest(members: list[dict[str, str]]) -> str:
+    return sha256(
+        {
+            "rule": JLL_SELECTION_RULE,
+            "memberRoutes": [member["canonical_url"] for member in members],
+            "providerIds": [member["provider_id"] for member in members],
+        }
+    )
 
 
 def _collection_intent_sha256(members: list[dict[str, str]]) -> str:
@@ -71,6 +83,8 @@ def _collection_intent_sha256(members: list[dict[str, str]]) -> str:
         {
             "sourceKey": "jll",
             "enumerationBodySha256": JLL_ENUMERATION_BODY_SHA256,
+            "selectionRule": JLL_SELECTION_RULE,
+            "selectionDigest": _selection_digest(members),
             "memberRoutes": [member["canonical_url"] for member in members],
         }
     )
@@ -261,6 +275,7 @@ def _validate_manifest(
         "adapter_implementation_sha256",
         "no_write",
         "collection_intent_sha256",
+        "selection_digest",
         "manifest_sha256",
     }
     if (
@@ -302,6 +317,8 @@ def _validate_manifest(
         raise C10Error(
             "JLL receipt manifest collection intent is not source-card-bound"
         )
+    if manifest.get("selection_digest") != _selection_digest(normalized):
+        raise C10Error("JLL receipt manifest selection digest is invalid")
     enum_digest = _validate_public_receipt(
         manifest.get("enumeration"), stage="enumeration", member_key=None
     )

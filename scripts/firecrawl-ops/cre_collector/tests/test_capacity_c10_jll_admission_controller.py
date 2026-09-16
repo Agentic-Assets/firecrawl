@@ -76,7 +76,9 @@ def _evidence(
     issued: dict[str, Any], keys: C10EphemeralKeys, *, malformed: bool = False
 ) -> dict[str, Any]:
     card = issued["card"]
-    index = int(str(card["id"]).split("-")[-1])
+    index = (
+        int(str(card["url"]).split("member-")[-1]) if card["stage"] == "member" else 0
+    )
     if card["stage"] == "enumeration":
         payload: object = (
             {"errors": [{"message": "no"}]}
@@ -95,7 +97,7 @@ def _evidence(
         )
         body, content_type = json.dumps(payload).encode(), "application/json"
     else:
-        property_id = index + 1
+        property_id = index
         body = (
             '<script id="__NEXT_DATA__">'
             + json.dumps(
@@ -232,43 +234,6 @@ def test_production_gate_rejects_imported_controller_without_active_authority(
             deadline=time.monotonic() + 10,
             authority=object(),
             keys=_keys(),
-        )
-
-
-def test_controller_rejects_partial_input_without_executing(tmp_path: Path) -> None:
-    calls = 0
-
-    def executor(_issued: dict[str, Any], _deadline: float) -> dict[str, Any]:
-        nonlocal calls
-        calls += 1
-        return {}
-
-    controller = _JllAdmissionController(
-        tmp_path, tmp_path / "receipts", "http://127.0.0.1:38111", executor
-    )
-    with pytest.raises(contracts.C10Error, match="exactly sixteen"):
-        controller._run(
-            members=_members()[:-1],
-            binding=_binding(),
-            adapter_implementation_sha256="d" * 64,
-        )
-    assert calls == 0
-
-
-def test_public_admission_action_rejects_partial_input_before_sidecar(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(
-        "capacity_c10.production.DockerComposeSidecar",
-        lambda _root: pytest.fail("partial input must not start a sidecar"),
-    )
-    with pytest.raises(contracts.C10Error, match="exactly sixteen"):
-        production.execute_jll_admission_collection(
-            repo_root=tmp_path,
-            receipt_root=tmp_path / "receipts",
-            members=_members()[:-1],
-            binding=_binding(),
-            adapter_implementation_sha256="d" * 64,
         )
 
 

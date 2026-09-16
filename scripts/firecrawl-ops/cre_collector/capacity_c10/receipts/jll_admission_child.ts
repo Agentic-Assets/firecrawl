@@ -13,7 +13,7 @@ import type { ReceiptArtifactStore, SealedArtifact } from "./private_store.js";
 import type { DirectProviderTransport, RequestCard, TransportResponse } from "./transport.js";
 import { allowlistedCards, SourceBoundOneShotTransport } from "./transport.js";
 import { collectJllAdmissionReceipts, RecordingReceiptStore, sealJllAdmissionManifest } from "./strict_detail/jll_admission.js";
-import { jllEnumerationCard, type JllReceiptMember } from "./strict_detail/jll.js";
+import { jllEnumerationCard } from "./strict_detail/jll.js";
 
 type Frame = Readonly<Record<string, unknown>>;
 const PROTOCOL = "c10-jll-admission-rpc-v1";
@@ -68,15 +68,6 @@ class ControllerTransport implements DirectProviderTransport {
     };
   }
 }
-function members(value: unknown): readonly JllReceiptMember[] {
-  if (!Array.isArray(value) || value.length !== 16) fail("controller admission members are invalid");
-  return Object.freeze(value.map((entry, index) => {
-    if (!entry || typeof entry !== "object") fail("controller admission member is invalid");
-    const item = entry as Record<string, unknown>;
-    if (item.key !== `jll-${index + 1}` || typeof item.providerId !== "string" || typeof item.canonicalUrl !== "string") fail("controller admission member is invalid");
-    return Object.freeze({ key: item.key, providerId: item.providerId, canonicalUrl: item.canonicalUrl });
-  }));
-}
 function binding(value: unknown): ReceiptBinding {
   if (!value || typeof value !== "object") fail("controller receipt binding is invalid");
   const item = value as Record<string, unknown>;
@@ -88,7 +79,7 @@ async function run(init: Frame): Promise<void> {
   if (init.protocol !== PROTOCOL || init.type !== "init" || typeof init.receiptRoot !== "string" || typeof init.adapterImplementationSha256 !== "string") fail("controller init is invalid");
   const store = new RecordingReceiptStore(new ControllerStore());
   const transport = new SourceBoundOneShotTransport("jll", binding(init.binding), allowlistedCards("jll", [jllEnumerationCard({ transaction: "sale", propertyType: "office", page: 1 })]), store, new ControllerTransport());
-  const set = await collectJllAdmissionReceipts({ transport }, members(init.members));
+  const set = await collectJllAdmissionReceipts({ transport });
   const manifest = await sealJllAdmissionManifest({ transport }, init.receiptRoot, init.adapterImplementationSha256, set);
   send({ protocol: PROTOCOL, type: "result", ok: true, manifest, receiptSetSha256: set.receiptSetSha256, artifacts: store.artifacts() });
 }

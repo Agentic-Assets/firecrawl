@@ -49,23 +49,23 @@ def _frame(value: Mapping[str, Any]) -> bytes:
     return raw
 
 
-def _members(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list) or len(value) != _MEMBER_COUNT:
-        raise C10Error("JLL admission controller requires exactly sixteen members")
+def _source_members(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise C10Error("JLL admission enumeration candidates are invalid")
     result: list[dict[str, str]] = []
     routes: set[str] = set()
     ids: set[str] = set()
-    for index, item in enumerate(value):
+    for item in value:
         if not isinstance(item, Mapping):
             raise C10Error("JLL admission controller member is invalid")
-        key, provider_id, route = (
-            item.get("key"),
-            item.get("providerId"),
-            item.get("canonicalUrl"),
+        provider_id, page_url = item.get("id"), item.get("pageUrl")
+        route = (
+            f"https://{_JLL_HOST}{page_url}"
+            if isinstance(page_url, str) and page_url.startswith("/")
+            else page_url
         )
         if (
-            key != f"jll-{index + 1}"
-            or not isinstance(provider_id, str)
+            not isinstance(provider_id, str)
             or not provider_id.isdigit()
             or not isinstance(route, str)
             or not route.startswith(_JLL_PREFIX)
@@ -77,8 +77,16 @@ def _members(value: Any) -> list[dict[str, str]]:
             raise C10Error("JLL admission controller member is invalid")
         routes.add(route)
         ids.add(provider_id)
-        result.append({"key": key, "providerId": provider_id, "canonicalUrl": route})
-    return result
+        result.append({"providerId": provider_id, "canonicalUrl": route})
+    if len(result) < _MEMBER_COUNT:
+        raise C10Error(
+            "JLL admission enumeration has insufficient canonical candidates"
+        )
+    result.sort(key=lambda member: member["canonicalUrl"])
+    return [
+        {"key": f"jll-{index + 1}", **member}
+        for index, member in enumerate(result[:_MEMBER_COUNT])
+    ]
 
 
 class _JllAdmissionController:
@@ -218,7 +226,9 @@ class _JllAdmissionController:
         sidecar lifecycle.  This method never creates a provider client,
         writes database/cache/listing/scheduler state, or accepts caller paths.
         """
-        fixed_members = _members(members)
+        # Caller-supplied membership is intentionally ignored. The only cohort
+        # is emitted by the source-owned TS selector after signed enumeration.
+        fixed_members: list[dict[str, str]] = []
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("JLL admission controller timeout is outside its bound")
         require_sha256(adapter_implementation_sha256, "JLL adapter implementation")
@@ -262,7 +272,6 @@ class _JllAdmissionController:
                             "type": "init",
                             "receiptRoot": str(self.receipt_root),
                             "binding": dict(binding),
-                            "members": fixed_members,
                             "adapterImplementationSha256": adapter_implementation_sha256,
                         }
                     )
@@ -371,13 +380,7 @@ class _JllAdmissionController:
                                 raise C10Error(
                                     "JLL admission enumeration is not usable JSON"
                                 ) from exc
-                            if any(
-                                member["canonicalUrl"].rstrip("/") not in observed
-                                for member in fixed_members
-                            ):
-                                raise C10Error(
-                                    "JLL admission enumeration does not bind its sealed cohort"
-                                )
+                            fixed_members = _source_members(items)
                         raw_body = evidence["bodyBase64"]
                         reply = {
                             "protocol": _PROTOCOL,
