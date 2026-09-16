@@ -267,17 +267,15 @@ def run_one_coordinated_arm(
                 )
                 if (
                     not isinstance(rollback, Mapping)
+                    or rollback.get("profile") != profile["name"]
+                    or rollback.get("state") != "baseline"
                     or rollback.get("verified") is not True
                 ):
                     raise C10Error("C10 P1 rollback is not verified")
                 baseline = receipt["baseline"]
-                if (
-                    not isinstance(baseline, Mapping)
-                    or rollback.get("container_snapshot_sha256")
-                    != baseline.get("snapshot_sha256")
-                    or rollback.get("transition_sha256")
-                    != baseline.get("transition_sha256")
-                ):
+                if not isinstance(baseline, Mapping) or rollback.get(
+                    "transition_sha256"
+                ) != baseline.get("transition_sha256"):
                     raise C10Error(
                         "C10 P1 rollback fingerprint does not restore baseline"
                     )

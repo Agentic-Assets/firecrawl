@@ -81,11 +81,11 @@ async function context(sourceKey: string, cards: readonly any[], fake: FixtureTr
 
 test("strict-detail rejects a same-source transport with a substituted initial host before request", async () => {
   const plan: JllReceiptPlan = {
-    transaction: "sale", propertyType: "office", page: 1,
+    enumerations: [{ transaction: "sale", propertyType: "office", page: 1 }],
     members: [{ key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" }],
     enumerationCards: [],
   };
-  const expected = jllEnumerationCard(plan);
+  const expected = jllEnumerationCard(plan.enumerations[0]!, 0);
   const fake = new FixtureTransport({});
   const receiptContext = await context("jll", [{ ...expected, url: "https://alternate.example/graphql", allowedHost: "alternate.example" }], fake);
   await assert.rejects(createJllReceiptProducer(plan).produceEnumerationReceipt(receiptContext), /initial request-card set does not match source plan/);
@@ -119,18 +119,18 @@ test("strict receipt producer transitive graph excludes filesystem, cache, and s
 
 test("JLL seals native GraphQL enumeration and exact canonical POST detail graph", async () => {
   const plan: JllReceiptPlan = {
-    transaction: "sale", propertyType: "office", page: 1,
+    enumerations: [{ transaction: "sale", propertyType: "office", page: 1 }],
     members: [{ key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" }],
     enumerationCards: [],
   };
   const fake = new FixtureTransport({
-    "jll-enumeration": JSON.stringify({ data: { properties: { count: 1, items: [{
+    "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 1, items: [{
       id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
     "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":["https://asset.test/a.jpg"]}}}}</script>',
   });
-  const receiptContext = await context("jll", [jllEnumerationCard(plan)], fake);
+  const receiptContext = await context("jll", [jllEnumerationCard(plan.enumerations[0]!, 0)], fake);
   const producer = createJllReceiptProducer(plan);
   const enumeration = await producer.produceEnumerationReceipt(receiptContext);
   const member = await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
@@ -141,15 +141,53 @@ test("JLL seals native GraphQL enumeration and exact canonical POST detail graph
   assert.equal(fake.cards[0]?.body?.includes("office"), true);
 });
 
+test("JLL reconciles cohort members across exact filter and page strata", async () => {
+  const plan: JllReceiptPlan = {
+    enumerations: [
+      { transaction: "sale", propertyType: "office", page: 1 },
+      { transaction: "sale", propertyType: "industrial", page: 2 },
+    ],
+    members: [
+      { key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" },
+      { key: "jll-2", providerId: "2", canonicalUrl: "https://property.jll.com/listings/industrial-2" },
+    ],
+    enumerationCards: [],
+  };
+  const fake = new FixtureTransport({
+    "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 2, items: [{
+      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      pageUrl: "/listings/office-1", surfaceAreas: [],
+    }] } } }),
+    "jll-enumeration-1": JSON.stringify({ data: { properties: { count: 2, items: [{
+      id: "2", title: "Two", images: [], address: "2 Main", propertyTypes: ["industrial"], tenureTypes: ["sale"],
+      pageUrl: "/listings/industrial-2", surfaceAreas: [],
+    }] } } }),
+    "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":[]}}}}</script>',
+    "jll-member-1": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"2","pageUrl":"https://property.jll.com/listings/industrial-2","images":[]}}}}</script>',
+  });
+  const cards = plan.enumerations.map((slice, index) => jllEnumerationCard(slice, index));
+  const receiptContext = await context("jll", cards, fake);
+  const producer = createJllReceiptProducer(plan);
+  await producer.produceEnumerationReceipt(receiptContext);
+  await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
+  await producer.produceMemberReceipt(receiptContext, plan.members[1]!);
+  assert.deepEqual(
+    fake.cards.map((card) => card.id),
+    ["jll-enumeration-0", "jll-enumeration-1", "jll-member-0", "jll-member-1"],
+  );
+  assert.equal(fake.cards[1]?.body?.includes("industrial"), true);
+  assert.equal(fake.cards[1]?.body?.includes('"skip":50'), true);
+});
+
 test("strict-detail producer isolates nested routes and source settings from caller mutation", async () => {
   const plan: JllReceiptPlan = {
-    transaction: "sale", propertyType: "office", page: 1,
+    enumerations: [{ transaction: "sale", propertyType: "office", page: 1 }],
     members: [{ key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" }],
     enumerationCards: [],
   };
-  const initialCard = jllEnumerationCard(plan);
+  const initialCard = jllEnumerationCard(plan.enumerations[0]!, 0);
   const fake = new FixtureTransport({
-    "jll-enumeration": JSON.stringify({ data: { properties: { count: 1, items: [{
+    "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 1, items: [{
       id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
@@ -157,7 +195,7 @@ test("strict-detail producer isolates nested routes and source settings from cal
   });
   const receiptContext = await context("jll", [initialCard], fake);
   const producer = createJllReceiptProducer(plan);
-  (plan as { page: number }).page = 99;
+  (plan.enumerations[0] as { page: number }).page = 99;
   (plan.members[0] as { providerId: string }).providerId = "mutated";
   (plan.members[0] as { canonicalUrl: string }).canonicalUrl = "https://property.jll.com/listings/mutated";
 
@@ -278,9 +316,7 @@ test("browser-dependent source modules fail closed before any transport is invok
 
 test("strict-detail common wrapper rejects a mismatched transport before enumeration", async () => {
   const producer = createJllReceiptProducer({
-    transaction: "sale",
-    propertyType: "office",
-    page: 1,
+    enumerations: [{ transaction: "sale", propertyType: "office", page: 1 }],
     members: [{ key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" }],
     enumerationCards: [],
   });

@@ -26,17 +26,41 @@ export interface JllReceiptMember extends C10Member {
   readonly canonicalUrl: string;
 }
 
-export interface JllReceiptPlan extends StrictDetailPlan<JllReceiptMember> {
+export interface JllEnumerationSlice {
   readonly transaction: "sale" | "lease";
   readonly propertyType: string;
   readonly page: number;
 }
 
+export interface JllReceiptPlan extends StrictDetailPlan<JllReceiptMember> {
+  /** Exact filter/page strata needed to recover every immutable cohort member. */
+  readonly enumerations: readonly JllEnumerationSlice[];
+}
+
 const JLL_HOST = "property.jll.com";
 
-export function jllEnumerationCard(plan: Pick<JllReceiptPlan, "transaction" | "propertyType" | "page">): RequestCardInput {
+function validateEnumerationSlices(slices: readonly JllEnumerationSlice[]): void {
+  const keys = slices.map((slice) => {
+    if (
+      (slice.transaction !== "sale" && slice.transaction !== "lease")
+      || typeof slice.propertyType !== "string"
+      || !slice.propertyType.trim()
+      || !Number.isInteger(slice.page)
+      || slice.page < 1
+    ) {
+      throw new C10ReceiptError("JLL enumeration slice is invalid");
+    }
+    return `${slice.transaction}\u0000${slice.propertyType}\u0000${slice.page}`;
+  });
+  if (!keys.length || new Set(keys).size !== keys.length) {
+    throw new C10ReceiptError("JLL enumeration slices must be nonempty and unique");
+  }
+}
+
+export function jllEnumerationCard(plan: JllEnumerationSlice, index = 0): RequestCardInput {
+  validateEnumerationSlices([plan]);
   return {
-    id: "jll-enumeration",
+    id: `jll-enumeration-${index}`,
     sourceKey: "jll",
     stage: "enumeration",
     method: "POST",
@@ -112,25 +136,59 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
   return {
     sourceKey: "jll",
     async enumerate(context, sourcePlan) {
-      const event = await context.transport.oneShot("jll-enumeration", (response) => {
-        const parsed = parseJllGraphqlSearchEnvelope(utf8Json(response.body, "JLL GraphQL"));
-        const routes = parsed.items.map((item) => ({
-          providerId: String(item.id ?? "").trim(),
-          canonicalUrl: normalizedJllListingUrl(String(item.pageUrl ?? "")),
-        }));
-        if (routes.some((route) => !route.providerId || !route.canonicalUrl) || new Set(routes.map((route) => route.providerId)).size !== routes.length || new Set(routes.map((route) => route.canonicalUrl)).size !== routes.length) {
-          throw new C10ReceiptError("JLL GraphQL enumeration contains duplicate or missing identities");
+      validateEnumerationSlices(plan.enumerations);
+      const events = [];
+      const projections: SourceProjection[] = [];
+      const byProvider = new Map<string, string>();
+      const byUrl = new Map<string, string>();
+      for (const [index, slice] of plan.enumerations.entries()) {
+        const event = await context.transport.oneShot(`jll-enumeration-${index}`, (response) => {
+          const parsed = parseJllGraphqlSearchEnvelope(utf8Json(response.body, "JLL GraphQL"));
+          const routes = parsed.items.map((item) => {
+            const providerId = String(item.id ?? "").trim();
+            const canonicalUrl = normalizedJllListingUrl(String(item.pageUrl ?? ""));
+            if (!providerId || !canonicalUrl) {
+              throw new C10ReceiptError("JLL GraphQL enumeration contains a missing identity");
+            }
+            return { providerId, canonicalUrl };
+          });
+          if (
+            new Set(routes.map((route) => route.providerId)).size !== routes.length
+            || new Set(routes.map((route) => route.canonicalUrl)).size !== routes.length
+          ) {
+            throw new C10ReceiptError("JLL GraphQL page contains duplicate identities");
+          }
+          return {
+            index,
+            page: slice.page,
+            propertyType: slice.propertyType,
+            providerIds: routes.map((route) => route.providerId),
+            total: parsed.total,
+            transaction: slice.transaction,
+            urls: routes.map((route) => route.canonicalUrl),
+          } satisfies SourceProjection;
+        });
+        const projection = event.projection as {
+          readonly providerIds: readonly string[];
+          readonly urls: readonly string[];
+        };
+        for (const [routeIndex, providerId] of projection.providerIds.entries()) {
+          const canonicalUrl = projection.urls[routeIndex];
+          if (!canonicalUrl) throw new C10ReceiptError("JLL GraphQL route is missing");
+          const priorUrl = byProvider.get(providerId);
+          const priorProvider = byUrl.get(canonicalUrl);
+          if (
+            (priorUrl !== undefined && priorUrl !== canonicalUrl)
+            || (priorProvider !== undefined && priorProvider !== providerId)
+          ) {
+            throw new C10ReceiptError("JLL GraphQL strata disagree on native identity");
+          }
+          byProvider.set(providerId, canonicalUrl);
+          byUrl.set(canonicalUrl, providerId);
         }
-        return {
-          page: plan.page,
-          propertyType: plan.propertyType,
-          providerIds: routes.map((route) => route.providerId),
-          total: parsed.total,
-          urls: routes.map((route) => route.canonicalUrl),
-        } satisfies SourceProjection;
-      });
-      const routes = event.projection as { readonly providerIds: readonly string[]; readonly urls: readonly string[] };
-      const byProvider = new Map(routes.providerIds.map((providerId, index) => [providerId, routes.urls[index]]));
+        events.push(event);
+        projections.push(event.projection);
+      }
       const memberRoutes = new Map<string, string>();
       for (const member of sourcePlan.members) {
         const observed = byProvider.get(member.providerId);
@@ -140,8 +198,12 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
         memberRoutes.set(member.key, observed);
       }
       return {
-        parent: event,
-        evidence: event.projection,
+        parent: events[0]!,
+        evidence: {
+          enumerations: projections,
+          providerIds: [...byProvider.keys()],
+          urls: [...byProvider.values()],
+        },
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };
@@ -162,9 +224,10 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
  */
 export function createJllReceiptProducer(plan: JllReceiptPlan): StrictDetailReceiptProducer<JllReceiptMember> {
   const immutablePlan = immutableStrictDetailPlan(plan);
-  const card = jllEnumerationCard(immutablePlan);
+  validateEnumerationSlices(immutablePlan.enumerations);
+  const cards = immutablePlan.enumerations.map((slice, index) => jllEnumerationCard(slice, index));
   const configured: StrictDetailPlan<JllReceiptMember> = {
-    enumerationCards: [card],
+    enumerationCards: cards,
     members: immutablePlan.members,
   };
   return new StrictDetailReceiptProducer(configured, spec(immutablePlan));

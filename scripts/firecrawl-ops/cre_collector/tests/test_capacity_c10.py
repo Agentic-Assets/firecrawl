@@ -481,7 +481,9 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
             "profile": "c10-p1",
             "state": "baseline",
             "verified": True,
-            "container_snapshot_sha256": receipt["baseline"]["snapshot_sha256"],  # type: ignore[index]
+            # Runtime usage/settlement fields are intentionally volatile after
+            # a browser arm; only transition_sha256 is the stable state proof.
+            "container_snapshot_sha256": _digest("post-workload-snapshot"),
             "transition_sha256": receipt["baseline"]["transition_sha256"],  # type: ignore[index]
         }
 
