@@ -127,7 +127,10 @@ def _arm(
             "observed_max_active": plan["profiles"][variant]["requested"][  # type: ignore[index]
                 "jll_detail_concurrency"
             ],
-            "scheduled_member_count": 16,
+            "scheduled_member_count": sum(
+                source["cohort_member_count"]
+                for source in plan["sources"]  # type: ignore[index]
+            ),
         },
         "sources": [
             {
@@ -135,8 +138,10 @@ def _arm(
                 "plane": source["plane"],
                 "cohort_member_count": source["cohort_member_count"],
                 "cohort_member_sha256": source["cohort_member_sha256"],
+                "scheduled_member_count": source["cohort_member_count"],
+                "scheduled_member_sha256": source["cohort_member_sha256"],
                 "execution_mode": "browser_rendered",
-                "engine": "c10-browser-only",
+                "engine": "playwright",
                 "client_attempts": 1,
                 "engine_attempts": 1,
                 "cache_read": False,
@@ -218,6 +223,9 @@ def test_repository_implementation_digest_hashes_actual_verifier_dependencies() 
     assert "capacity_c10/inventory/_evidence.py" in manifest
     assert "capacity_c10/adapters.py" in manifest
     assert "sources/pure/marcus-receipt.ts" in manifest
+    assert "cre_capacity_multisource_v1.py" in manifest
+    assert "cre_capacity_runtime.py" in manifest
+    assert "cre_checkpoint_refresh.py" in manifest
     assert len(authority.repository_implementation_sha256("cbre")) == 64
 
 
@@ -468,7 +476,10 @@ def _raw_browser_arm(
         "scheduler": {
             "configured_concurrency": concurrency,
             "observed_max_active": concurrency,
-            "scheduled_member_count": 16,
+            "scheduled_member_count": sum(
+                source["cohort_member_count"]
+                for source in plan["sources"]  # type: ignore[index]
+            ),
         },
         "sources": [
             {
@@ -476,8 +487,10 @@ def _raw_browser_arm(
                 "plane": source["plane"],
                 "cohort_member_count": source["cohort_member_count"],
                 "cohort_member_sha256": source["cohort_member_sha256"],
+                "scheduled_member_count": source["cohort_member_count"],
+                "scheduled_member_sha256": source["cohort_member_sha256"],
                 "execution_mode": "browser_rendered",
-                "engine": "c10-browser-only",
+                "engine": "playwright",
                 "client_attempts": 1,
                 "engine_attempts": 1,
                 "cache_read": False,
@@ -591,12 +604,12 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
     assert first["result"]["sealed_browser_evidence"]["scheduler"] == {
         "configured_concurrency": 4,
         "observed_max_active": 4,
-        "scheduled_member_count": 16,
+        "scheduled_member_count": 320,
     }
     assert second["result"]["sealed_browser_evidence"]["scheduler"] == {
         "configured_concurrency": 10,
         "observed_max_active": 10,
-        "scheduled_member_count": 16,
+        "scheduled_member_count": 320,
     }
     ledger_path = runner._canonical_ledger_path(
         tmp_path / ".cre.lock", plan, second["session"]
@@ -772,7 +785,7 @@ def test_coordinator_quarantines_before_releasing_lock(
             "scheduler": {
                 "configured_concurrency": concurrency,
                 "observed_max_active": concurrency - 1,
-                "scheduled_member_count": 16,
+                "scheduled_member_count": 320,
             },
         },
         settle=lambda arm: pytest.fail("invalid evidence must not settle"),
@@ -961,11 +974,40 @@ def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
         compare.compare(plan, arms)
     arms = [_arm(plan, index) for index in range(8)]
     evidence = arms[0]["sealed_browser_evidence"]
+    evidence["sources"][0]["engine"] = "fetch"
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="browser-rendered"):
+        compare.compare(plan, arms)
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
     evidence["scheduler"]["observed_max_active"] = 3
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
     with pytest.raises(contracts.C10Error, match="planned saturation"):
+        compare.compare(plan, arms)
+
+
+def test_comparator_requires_every_immutable_member_to_be_scheduled() -> None:
+    plan = _plan()
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
+    evidence["scheduler"]["scheduled_member_count"] -= 1
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="planned saturation"):
+        compare.compare(plan, arms)
+
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
+    evidence["sources"][0]["scheduled_member_sha256"] = _digest("substituted-schedule")
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="browser-rendered"):
         compare.compare(plan, arms)
 
 

@@ -8,8 +8,8 @@ transport is an injected interface: no shipped C10 component opens a provider
 connection or can execute a request by itself.
 
 `policy.py` seals the fixed 20-source, 12/8-plane matrix. `authority.py` loads
-the one non-substitutable repository authority and fingerprints the actual C10
-verifier source tree and shared dependencies. That authority currently approves
+the one non-substitutable repository authority and fingerprints the complete
+collector Python/TypeScript source tree plus package/config dependencies. That authority currently approves
 no cohort and no adapter, so `admission.py` cannot issue a plan. A future
 reviewed commit must pin one exact cohort digest and all twenty current
 implementation digests before `admission.py` can bind the registry, cohort, and
@@ -46,7 +46,9 @@ ordinary controller retains its historic default profile behavior.
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
 and transition fingerprints, immutable per-source cohort count/hash bindings,
-serial per-source monotonic timing, and saturation evidence. P0
+exact per-source scheduled count/hash bindings for every cohort member, serial
+per-source monotonic timing, and saturation evidence from the reviewed
+`playwright` engine. P0
 must demonstrate four active scheduled members and P1 ten, with at least that
 many scheduled members. The comparator derives each source's qualified rows
 per minute from that source's sealed interval and a row count constrained to

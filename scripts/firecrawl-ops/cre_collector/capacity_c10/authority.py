@@ -63,20 +63,21 @@ def load_authority() -> dict[str, Any]:
 
 def _implementation_files() -> tuple[Path, ...]:
     """Return every source file that can affect C10 verification semantics."""
+    excluded_parts = {"__pycache__", "node_modules", "out", "tests"}
     files = {
         path.resolve()
-        for path in PACKAGE_ROOT.rglob("*")
+        for path in COLLECTOR_ROOT.rglob("*")
         if path.is_file()
         and path.suffix in {".py", ".ts"}
-        and "__pycache__" not in path.parts
-        and "tests" not in path.parts
+        and excluded_parts.isdisjoint(path.parts)
     }
-    pure_root = COLLECTOR_ROOT / "sources" / "pure"
-    files.update(path.resolve() for path in pure_root.glob("*.ts") if path.is_file())
     files.update(
         {
             (COLLECTOR_ROOT / "cre_capacity_c10_v1.json").resolve(),
             (COLLECTOR_ROOT / "cre_capacity_c10_profiles_v1.json").resolve(),
+            (COLLECTOR_ROOT / "package.json").resolve(),
+            (COLLECTOR_ROOT / "package-lock.json").resolve(),
+            (COLLECTOR_ROOT / "tsconfig.json").resolve(),
         }
     )
     if any(path.is_symlink() or not path.is_file() for path in files):

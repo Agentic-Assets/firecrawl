@@ -18,6 +18,7 @@ from .contracts import (
 
 MIN_GAIN_PERCENT = 15.0
 EVIDENCE_KIND = "cre_capacity_c10_browser_arm_evidence_v1"
+REVIEWED_BROWSER_ENGINE = "playwright"
 
 
 def _positive_int(value: Any, label: str) -> int:
@@ -94,11 +95,14 @@ def _browser_evidence_rates(
         != {"configured_concurrency", "observed_max_active", "scheduled_member_count"}
     ):
         raise C10Error("C10 scheduler evidence is invalid")
+    expected_scheduled_member_count = sum(
+        source["cohort_member_count"] for source in plan["sources"]
+    )
     if (
         scheduler.get("configured_concurrency") != configured
         or scheduler.get("observed_max_active") != configured
         or type(scheduler.get("scheduled_member_count")) is not int
-        or scheduler["scheduled_member_count"] < configured
+        or scheduler["scheduled_member_count"] != expected_scheduled_member_count
     ):
         raise C10Error("C10 scheduler did not demonstrate the planned saturation")
     expected_sources = plan["sources"]
@@ -123,6 +127,8 @@ def _browser_evidence_rates(
             "plane",
             "cohort_member_count",
             "cohort_member_sha256",
+            "scheduled_member_count",
+            "scheduled_member_sha256",
             "execution_mode",
             "engine",
             "client_attempts",
@@ -149,9 +155,12 @@ def _browser_evidence_rates(
             != expected_source["cohort_member_count"]
             or source.get("cohort_member_sha256")
             != expected_source["cohort_member_sha256"]
+            or source.get("scheduled_member_count")
+            != expected_source["cohort_member_count"]
+            or source.get("scheduled_member_sha256")
+            != expected_source["cohort_member_sha256"]
             or source.get("execution_mode") != "browser_rendered"
-            or not isinstance(source.get("engine"), str)
-            or not source["engine"]
+            or source.get("engine") != REVIEWED_BROWSER_ENGINE
             or source.get("client_attempts") != 1
             or source.get("engine_attempts") != 1
             or source.get("cache_read") is not False
@@ -167,11 +176,10 @@ def _browser_evidence_rates(
             raise C10Error("C10 source timing is outside the serial browser arm")
         previous_finished = source_finished
         qualified_rows = source.get("qualified_rows")
-        cohort_member_count = expected_source["cohort_member_count"]
         if (
             type(qualified_rows) is not int
             or qualified_rows < 0
-            or qualified_rows > cohort_member_count
+            or qualified_rows > source["scheduled_member_count"]
         ):
             raise C10Error("qualified rows must be within the immutable cohort")
         rates[key] = qualified_rows / (
