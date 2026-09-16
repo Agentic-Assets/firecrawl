@@ -285,6 +285,8 @@ class C10SessionStore:
     def _next(self, plan: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
         """Derive progress solely from immutable protocol/plan-owned arm records."""
         validate_plan(plan)
+        if self.path.with_suffix(".quarantine").exists():
+            raise C10Error("C10 protocol ledger requires terminal recovery")
         expected = {
             self._arm_path(index).name for index in range(len(plan["arm_sequence"]))
         }
@@ -432,6 +434,7 @@ class C10SessionStore:
             if type(index) is int
             else self.path.with_suffix(".quarantine")
         )
+        target.parent.mkdir(mode=_ROOT_MODE, parents=True, exist_ok=True)
         try:
             descriptor = os.open(
                 target,
