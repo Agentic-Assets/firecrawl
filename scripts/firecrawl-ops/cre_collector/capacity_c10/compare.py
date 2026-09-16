@@ -18,6 +18,7 @@ from .contracts import (
 
 MIN_GAIN_PERCENT = 15.0
 EVIDENCE_KIND = "cre_capacity_c10_browser_arm_evidence_v1"
+HOST_EVIDENCE_KIND = "cre_capacity_c10_authenticated_host_arm_v1"
 
 
 def _positive_int(value: Any, label: str) -> int:
@@ -162,6 +163,93 @@ def validate_browser_arm(plan: Mapping[str, Any], arm: Mapping[str, Any]) -> Non
     if type(index) is not int or index < 0 or index >= len(ARM_SEQUENCE):
         raise C10Error("C10 browser arm index is invalid")
     _validated_arm(plan, arm, index)
+
+
+def validate_authenticated_host_arm(
+    plan: Mapping[str, Any], arm: Mapping[str, Any]
+) -> None:
+    """Accept only a sealed host result for durable terminalization.
+
+    The present host implements the JLL browser lane only. Its authenticated
+    result is intentionally *not* coerced into the 20-source rate comparator:
+    doing so would turn missing source evidence into invented qualified rows.
+    This validator is the narrow handoff from the host to the durable arm
+    ledger, and ``compare`` remains unavailable until all twenty sources have
+    authenticated comparable evidence.
+    """
+    validate_plan(plan)
+    required = {
+        "kind",
+        "plan_sha256",
+        "index",
+        "variant",
+        "no_write",
+        "runtime",
+        "host_result",
+    }
+    if set(arm) != required or arm.get("kind") != HOST_EVIDENCE_KIND:
+        raise C10Error("C10 authenticated host arm schema is invalid")
+    index = arm.get("index")
+    if (
+        type(index) is not int
+        or index < 0
+        or index >= len(ARM_SEQUENCE)
+        or arm.get("plan_sha256") != plan["plan_sha256"]
+        or arm.get("variant") != ARM_SEQUENCE[index]
+    ):
+        raise C10Error("C10 authenticated host arm is not plan-bound")
+    require_no_write(arm)
+    runtime = arm.get("runtime")
+    if not isinstance(runtime, Mapping) or set(runtime) != {
+        "profile_config_sha256",
+        "profile_requested_sha256",
+        "runtime_receipt_sha256",
+        "container_snapshot_sha256",
+        "transition_sha256",
+    }:
+        raise C10Error("C10 authenticated host arm runtime is invalid")
+    profile = plan["profiles"][ARM_SEQUENCE[index]]
+    if runtime.get("profile_config_sha256") != plan["profiles"][
+        "config_sha256"
+    ] or runtime.get("profile_requested_sha256") != sha256(profile["requested"]):
+        raise C10Error("C10 authenticated host arm runtime differs from the plan")
+    for key, value in runtime.items():
+        require_sha256(value, f"C10 host runtime {key}")
+    host = arm.get("host_result")
+    if not isinstance(host, Mapping) or set(host) != {
+        "claim",
+        "private_artifacts",
+        "evidence_manifest_sha256",
+        "binding",
+    }:
+        raise C10Error("C10 authenticated host result is invalid")
+    claim = host.get("claim")
+    artifacts = host.get("private_artifacts")
+    binding = host.get("binding")
+    if (
+        not isinstance(claim, Mapping)
+        or not isinstance(artifacts, list)
+        or len(artifacts) != 17
+        or not isinstance(binding, Mapping)
+        or claim.get("plan_sha256") != plan["plan_sha256"]
+        or not isinstance(claim.get("arm"), Mapping)
+        or claim["arm"].get("index") != index
+        or claim["arm"].get("variant") != ARM_SEQUENCE[index]
+        or binding.get("planSha256") != plan["plan_sha256"]
+        or binding.get("cohortSha256") != plan["cohort_sha256"]
+    ):
+        raise C10Error("C10 authenticated host result is not bound to the arm")
+    require_sha256(host.get("evidence_manifest_sha256"), "C10 host manifest")
+    for artifact in artifacts:
+        if (
+            not isinstance(artifact, Mapping)
+            or set(artifact) != {"name", "sha256", "bytes"}
+            or not isinstance(artifact.get("name"), str)
+            or type(artifact.get("bytes")) is not int
+            or artifact["bytes"] <= 0
+        ):
+            raise C10Error("C10 authenticated host artifact is invalid")
+        require_sha256(artifact.get("sha256"), "C10 host artifact")
 
 
 def compare(

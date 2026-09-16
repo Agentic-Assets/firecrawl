@@ -5,14 +5,13 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import inspect
 import json
 import time
 from pathlib import Path
 from typing import Self
 
 import pytest
-from test_capacity_c10 import _cohort, _plan, _registry, _seal_cohort
-
 from capacity_c10 import admission, contracts
 from capacity_c10.host_session import (
     C10HostExecutionSession,
@@ -21,7 +20,8 @@ from capacity_c10.host_session import (
     DockerComposeSidecar,
     _OpenSsl,
 )
-from capacity_c10.production import execute_production_arm
+from capacity_c10.production import execute_production_arm, main
+from test_capacity_c10 import _cohort, _plan, _registry, _seal_cohort
 
 
 def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
@@ -491,7 +491,10 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
 
     session = contracts.new_session(plan)
     session["consumed_arm_indexes"] = consumed
-    result = host.execute(plan, session, child=signed_child)
+    # Test substitution reaches the host's private child seam only. The public
+    # host API has no callback parameter that a production caller could inject.
+    monkeypatch.setattr(host, "_run_child", signed_child)
+    result = host.execute(plan, session)
     assert len(issued) == 17
     assert issued[0]["card"]["id"] == "jll-enumeration"  # type: ignore[index]
     assert {item["capability"]["cardSequence"] for item in issued} == set(range(17))  # type: ignore[index]
@@ -563,22 +566,129 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
 def test_production_entrypoint_constructs_host_without_browser_callback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    production_parameters = set(inspect.signature(execute_production_arm).parameters)
+    host_parameters = set(inspect.signature(C10HostExecutionSession.execute).parameters)
+    assert {"child", "cards", "evidence", "run_browser_arm"}.isdisjoint(
+        production_parameters
+    )
+    assert "child" not in host_parameters
+
+
+def test_production_cli_is_dry_run_by_default_and_never_calls_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     plan, cohort = _sealed_jll_plan()
-    observed: dict[str, object] = {}
+    session = contracts.new_session(plan)
+    paths = {
+        "plan": tmp_path / "plan.json",
+        "cohort": tmp_path / "cohort.json",
+        "session": tmp_path / "session.json",
+    }
+    for key, value in (("plan", plan), ("cohort", cohort), ("session", session)):
+        paths[key].write_text(json.dumps(value), encoding="utf-8")
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.preflight",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not call runtime"),
+    )
+    assert (
+        main(
+            [
+                "--plan",
+                str(paths["plan"]),
+                "--cohort",
+                str(paths["cohort"]),
+                "--session",
+                str(paths["session"]),
+                "--session-store",
+                str(tmp_path / "store.json"),
+                "--private-root",
+                str(tmp_path / "private"),
+                "--runtime-receipt",
+                str(tmp_path / "receipt.json"),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "arm_sequence": None,
+        "external_calls": False,
+        "mode": "smoke",
+        "state": "dry_run",
+    }
+
+
+def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    events: list[str] = []
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            events.append("lock")
+
+        def release(self) -> None:
+            events.append("release")
+
+    receipt = {
+        "profile": "c10-p0",
+        "config_sha256": plan["profiles"]["config_sha256"],
+        "receipt_sha256": "a" * 64,
+        "baseline": {"snapshot_sha256": "b" * 64, "transition_sha256": "c" * 64},
+    }
 
     class Host:
-        def __init__(self, **kwargs: object) -> None:
-            observed.update(kwargs)
+        def __init__(self, **_: object) -> None:
+            self.lock_path = tmp_path / ".cre.lock"
 
         def execute(
-            self, plan: object, session: object, *, timeout_seconds: float
+            self, plan: object, session: object, **kwargs: object
         ) -> dict[str, object]:
-            observed.update(
-                {"plan": plan, "session": session, "timeout": timeout_seconds}
-            )
-            return {"host": "authenticated"}
+            assert (tmp_path / "session.json").exists()
+            events.append("host")
+            claim = kwargs["_claim"]
+            assert isinstance(claim, dict)
+            return {
+                "claim": claim,
+                "private_artifacts": [
+                    {"name": f"evidence-{index}", "sha256": "d" * 64, "bytes": 1}
+                    for index in range(17)
+                ],
+                "evidence_manifest_sha256": "e" * 64,
+                "binding": {
+                    "planSha256": plan["plan_sha256"],  # type: ignore[index]
+                    "cohortSha256": plan["cohort_sha256"],  # type: ignore[index]
+                },
+            }
 
+    monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
     monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.experiment.load_profile",
+        lambda _path, name: (
+            {"requested": plan["profiles"]["p0"]["requested"]},
+            plan["profiles"]["config_sha256"],
+        ),
+    )
+
+    def preflight(*_: object, **__: object) -> dict[str, object]:
+        assert (tmp_path / "session.json").exists()
+        events.append("preflight")
+        return receipt
+
+    monkeypatch.setattr("capacity_c10.production.runtime.preflight", preflight)
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.capture_runtime",
+        lambda: type("Capture", (), {"public": {"settlement": {"state": "idle"}}})(),
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.evaluate_state", lambda *_: {"idle": True}
+    )
     result = execute_production_arm(
         repo_root=tmp_path,
         plan=plan,
@@ -586,10 +696,82 @@ def test_production_entrypoint_constructs_host_without_browser_callback(
         session=contracts.new_session(plan),
         session_store_path=tmp_path / "session.json",
         private_root=tmp_path / "private",
+        runtime_receipt_path=tmp_path / "receipt.json",
     )
-    assert result == {"host": "authenticated"}
-    assert (
-        "cards" in observed
-        and "child" not in observed
-        and "run_browser_arm" not in observed
+    assert events == ["lock", "preflight", "host", "release"]
+    assert result["comparison_state"].startswith("not_comparable")
+    assert (tmp_path / "session.json.terminal").exists()
+
+
+def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    session = contracts.new_session(plan)
+    session["consumed_arm_indexes"] = [0]
+    events: list[str] = []
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            events.append("lock")
+
+        def release(self) -> None:
+            events.append("release")
+
+    receipt = {
+        "profile": "c10-p1",
+        "config_sha256": plan["profiles"]["config_sha256"],
+        "receipt_sha256": "a" * 64,
+        "baseline": {"snapshot_sha256": "b" * 64, "transition_sha256": "c" * 64},
+    }
+
+    class Host:
+        def __init__(self, **_: object) -> None:
+            self.lock_path = tmp_path / ".cre.lock"
+
+        def execute(self, *_: object, **__: object) -> dict[str, object]:
+            events.append("host")
+            raise contracts.C10Error("host failure")
+
+    monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.experiment.load_profile",
+        lambda _path, name: (
+            {"requested": plan["profiles"]["p1"]["requested"]},
+            plan["profiles"]["config_sha256"],
+        ),
     )
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.preflight", lambda *_args, **_kwargs: receipt
+    )
+
+    def transition(*args: object, **_: object) -> dict[str, object]:
+        state = args[2]
+        events.append(str(state))
+        return {
+            "profile": "c10-p1",
+            "state": state,
+            "verified": True,
+            "container_snapshot_sha256": "b" * 64,
+            "transition_sha256": "c" * 64,
+        }
+
+    monkeypatch.setattr("capacity_c10.production.runtime.transition", transition)
+    with pytest.raises(contracts.C10Error, match="host failure"):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            session=session,
+            session_store_path=tmp_path / "session.json",
+            private_root=tmp_path / "private",
+            runtime_receipt_path=tmp_path / "receipt.json",
+            approval_path=tmp_path / "approval.json",
+            admission_out=tmp_path / "admission.json",
+        )
+    assert events == ["lock", "candidate", "host", "baseline", "release"]
+    assert (tmp_path / "session.json.quarantine").exists()
