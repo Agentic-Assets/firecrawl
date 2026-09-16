@@ -16,12 +16,19 @@ authorize the panel.
    provisioner.  Receipt and admission roots are fresh, distinct, private
    leaves.  The command performs no database, cache, listing, scheduler, or
    status mutation.
-2. The controller-owned `collect-jll` bridge is bounded to the existing source-owned JLL receipt producer:
+2. `production.execute_jll_admission_collection` is the only provider-facing
+   admission action. It starts a fresh loopback-only sidecar at capacity one,
+   which is deliberately not a P0/P1 calibration, then starts a dedicated
+   typed child bridge bounded to the existing source-owned JLL receipt producer:
    one reviewed sale/office/page-1 GraphQL card, then the selected sixteen
    canonical JLL member routes.  It exposes no URL, host, method, request body,
    adapter, or arbitrary transport option.  Its execute seam accepts only a
    controller-issued one-shot transport; it is deliberately unavailable to a
-   caller without that controller. Its recording store captures the complete
+   caller without that controller. The child has neither a browser endpoint,
+   private-root descriptor, signing key, nor generic fetch surface. It can
+   frame only the pre-bound 1+16 source cards and private-seal requests; the
+   controller verifies the card sequence, issues each C10 v3 capability,
+   verifies the signed loopback evidence, and owns every write. Its recording store captures the complete
    sealed artifact index and seals the manifest through that same private root.
    Dry-run validates the fixed graph and roots but makes no provider request.
 3. The source producer seals its private response/event/graph artifacts and
@@ -54,10 +61,13 @@ contract.
 
 ## Current state and forward queue
 
-No provider request has been made by this branch. After code review and merge,
+No provider request has been made by this branch. `collect-jll --execute`
+continues to refuse: it is intentionally not a bypass around the controller.
+After code review and merge,
 the only permitted live next step is one controller-issued receipt collection
 against the fixed sale/office/page-1 JLL graph and its selected 16 members.
-It must preserve C10 preflight, arm transition, settlement, rollback, deadline
-and quarantine controls; render rather than silently install the separate JLL
-authority; and receive a reviewed pin before P0/P1 execution. No direct-fetch
-fallback is permitted. The 20-source compatibility report stays non-admitting.
+It must use the production admission action, render rather than silently
+install the separate JLL authority, and receive a reviewed pin before P0/P1
+execution. Its own deadline and sidecar cleanup gates apply; it does not claim
+an arm transition, settlement, or calibration result. No direct-fetch fallback
+is permitted. The 20-source compatibility report stays non-admitting.

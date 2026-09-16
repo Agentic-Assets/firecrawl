@@ -23,12 +23,14 @@ import cre_capacity_runtime as runtime
 from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 
 from . import admission, compare
+from .admission_controller import _JllAdmissionController, _members
 from .contracts import C10Error, require_sha256, sha256, validate_plan
 from .host_orchestration import _C10HostTransport, _key_id
 from .host_session import (
     C10SealedCardRegistry,
     C10SessionStore,
 )
+from .host_sidecar import C10EphemeralKeys, DockerComposeSidecar
 from .host_store import PrivateReceiptStore, _controller_ledger_authorization
 
 # This context is populated only by the lexical production-controller scope
@@ -37,6 +39,129 @@ from .host_store import PrivateReceiptStore, _controller_ledger_authorization
 _ACTIVE_PRODUCTION_ACTION: contextvars.ContextVar[object | None] = (
     contextvars.ContextVar("c10_active_production_action", default=None)
 )
+
+
+def _execute_authorized_jll_admission_action(
+    *,
+    repo_root: Path,
+    receipt_root: Path,
+    endpoint: str,
+    members: list[dict[str, str]],
+    binding: Mapping[str, str],
+    adapter_implementation_sha256: str,
+    deadline: float,
+    authority: object,
+    keys: C10EphemeralKeys,
+) -> Mapping[str, Any]:
+    """The only supported route from production authority into JLL collection.
+
+    This is intentionally private until an operator-facing admission command
+    can construct the admitted intent and sidecar lifecycle in one scope.  It
+    prevents an importable receipt helper from becoming a browser-work bypass.
+    """
+    if _ACTIVE_PRODUCTION_ACTION.get() is not authority:
+        raise C10Error(
+            "JLL admission action requires active production-controller authority"
+        )
+    # The bridge transport deliberately reuses the same one-capability child
+    # used by the admitted P0/P1 host.  It has no session store, cards, or
+    # executable lifecycle method, so it cannot become an alternate host API.
+    bridge_host = object.__new__(_C10HostTransport)
+    bridge_host.repo_root = repo_root.resolve()
+    controller = _JllAdmissionController(
+        repo_root.resolve(), receipt_root, endpoint, bridge_host._run_child
+    )
+    return controller._run(
+        members=members,
+        binding=binding,
+        adapter_implementation_sha256=adapter_implementation_sha256,
+        timeout_seconds=min(120.0, _remaining(deadline)),
+        keys=keys,
+    )
+
+
+def execute_jll_admission_collection(
+    *,
+    repo_root: Path,
+    receipt_root: Path,
+    members: list[dict[str, str]],
+    binding: Mapping[str, str],
+    adapter_implementation_sha256: str,
+    timeout_seconds: float = 120.0,
+) -> Mapping[str, Any]:
+    """Run the bounded JLL admission bridge without entering P0/P1 calibration.
+
+    This is the sole supported provider-facing admission action.  It starts a
+    fresh loopback-only C10 sidecar at a deliberately non-calibration capacity
+    of one, then delegates only to the private active-controller action.  It
+    does not create a session claim, alter authority, or touch collector state.
+    """
+    if timeout_seconds <= 0 or timeout_seconds > 120:
+        raise C10Error("JLL admission timeout is outside its reviewed bound")
+    # Refuse invalid intent before a sidecar, provider attempt, or private file
+    # is created.  The child repeats the checks at the trust boundary.
+    _members(members)
+    require_sha256(adapter_implementation_sha256, "JLL adapter implementation")
+    expected_binding = {
+        "planSha256",
+        "cohortSha256",
+        "policySha256",
+        "sourceSha256",
+        "armSha256",
+        "implementationSha256",
+    }
+    if set(binding) != expected_binding:
+        raise C10Error("JLL admission binding is incomplete")
+    for label, digest in binding.items():
+        require_sha256(digest, f"JLL admission {label}")
+    deadline = time.monotonic() + timeout_seconds
+    bridge_host = object.__new__(_C10HostTransport)
+    bridge_host.repo_root = repo_root.resolve()
+    sidecar = DockerComposeSidecar(repo_root)
+    keys = bridge_host._keys(deadline)
+    requested = {"global_pages": 1, "browser_cpus": 2, "browser_pids": 384}
+    port = bridge_host._free_loopback_port()
+    endpoint = f"http://127.0.0.1:{port}"
+    attempted = False
+    try:
+        attempted = True
+        sidecar.start(
+            {
+                "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
+                    keys.coordinator_public_pem.encode("utf-8")
+                ).decode("ascii"),
+                "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
+                    keys.sidecar_private_pem.encode("utf-8")
+                ).decode("ascii"),
+                "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
+                "MAX_CONCURRENT_PAGES": "1",
+                "C10_PROFILE_SHA256": sha256(requested),
+                "C10_BROWSER_CPUS": "2",
+                "C10_BROWSER_PIDS": "384",
+            },
+            port,
+            deadline,
+        )
+        bridge_host._verify_health(endpoint, keys, {"requested": requested}, deadline)
+        authority = object()
+        action_context = _ACTIVE_PRODUCTION_ACTION.set(authority)
+        try:
+            return _execute_authorized_jll_admission_action(
+                repo_root=repo_root,
+                receipt_root=receipt_root,
+                endpoint=endpoint,
+                members=members,
+                binding=binding,
+                adapter_implementation_sha256=adapter_implementation_sha256,
+                deadline=deadline,
+                authority=authority,
+                keys=keys,
+            )
+        finally:
+            _ACTIVE_PRODUCTION_ACTION.reset(action_context)
+    finally:
+        if attempted:
+            sidecar.stop(deadline)
 
 
 def _canonical_session_store(

@@ -617,13 +617,15 @@ class _C10HostTransport:
         if card.get("stage") == "enumeration":
             expected = card.get("expectedMemberRoutes")
             allowed_host = card.get("allowedHost")
-            if (
-                not isinstance(expected, list)
-                or len(expected) != 16
-                or not all(isinstance(route, str) for route in expected)
-                or not isinstance(allowed_host, str)
+            if not isinstance(allowed_host, str) or (
+                expected is not None
+                and (
+                    not isinstance(expected, list)
+                    or len(expected) != 16
+                    or not all(isinstance(route, str) for route in expected)
+                )
             ):
-                raise C10Error("C10 enumeration card lacks sealed membership")
+                raise C10Error("C10 enumeration card has an invalid sealed membership")
             try:
                 payload = json.loads(base64.b64decode(body, validate=True))
                 items = payload["data"]["properties"]["items"]
@@ -649,5 +651,5 @@ class _C10HostTransport:
                 ):
                     continue
                 observed.add(f"https://{parsed.netloc}{parsed.path}".rstrip("/"))
-            if not set(expected).issubset(observed):
+            if expected is not None and not set(expected).issubset(observed):
                 raise C10Error("C10 enumeration evidence does not bind sealed cohort")
