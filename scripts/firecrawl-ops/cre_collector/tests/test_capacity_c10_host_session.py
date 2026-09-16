@@ -14,7 +14,7 @@ from typing import Self
 
 import cre_capacity_runtime as runtime
 import pytest
-from capacity_c10 import admission, contracts, host_store
+from capacity_c10 import admission, contracts, host_store, production
 from capacity_c10.host_session import (
     C10HostExecutionSession,
     C10SealedCardRegistry,
@@ -738,6 +738,19 @@ def test_production_entrypoint_constructs_host_without_browser_callback(
     )
     assert "session" not in production_parameters
     assert "child" not in host_parameters
+
+
+def test_production_approval_gate_uses_only_runtime_public_validator() -> None:
+    source = inspect.getsource(production._validate_claim_inputs)
+    assert "runtime.validate_review_approval(" in source
+    for forbidden in (
+        "runtime._validate_review_authority",
+        "runtime.REVIEW_APPROVAL_MAX_BYTES",
+        "runtime.NONCE_PATTERN",
+        "runtime.SHA_PATTERN",
+        "runtime._parse_time",
+    ):
+        assert forbidden not in source
 
 
 def test_production_cli_is_dry_run_by_default_and_never_calls_runtime(
