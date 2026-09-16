@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`a1970d66aa50aad77152ddcf32df57cc9e3b8829`
+`660b3bc9c05e8e9f6eb0378377a505b21abea444`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -72,9 +72,10 @@ not change the Wave 1 execution boundary.
   A caller cannot make an arbitrary direct plan admissible merely by rehashing it.
 - `admit_plan()` succeeds only after the canonical repository authority approves
   one exact cohort digest and all twenty actual source-tree implementation
-  digests. Every plan consumer revalidates that authority and the current
-  source-byte fingerprints. The checked-in authority approves none, so this
-  wave cannot issue or consume a plan.
+  digests, plus the exact complete derived plan digest. Every plan consumer
+  revalidates that authority and the current source-byte fingerprints. The
+  checked-in authority approves none, so this wave cannot issue or consume a
+  plan or substitute per-source cohort bindings under an approved cohort hash.
 - Buildout inventory cards use the provider-supported `q[s][]` array-form stable
   sort, matching the production adapter's cross-page ordering contract.
 - Adapter admission now requires the exact concrete repository implementation
@@ -95,21 +96,24 @@ not change the Wave 1 execution boundary.
 - Comparison accepts no caller-supplied arm sequence. It reopens the canonical
   owner-only durable ledger while locked and compares only its hash-validated
   terminal results; arbitrary or subsequently mutated mappings are not inputs.
+- Because this offline wave has no non-forgeable host attestation, comparison
+  reports `offline_measurement_only` and `meets_gain_threshold` for engineering
+  analysis but can never emit an adoption-review candidate.
 
 ## Verification
 
-The final code candidate `a1970d66aa50aad77152ddcf32df57cc9e3b8829`
+The final code candidate `660b3bc9c05e8e9f6eb0378377a505b21abea444`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest -q`: 3216 passed, 18 skipped.
+- `python3 -m pytest -q`: 3217 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 908 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Eighteen exact-head Codex review passes produced thirty-six material findings. All
-thirty-six were confirmed and fixed: immutable cohort binding, per-source timing,
+Nineteen exact-head Codex review passes produced thirty-eight material findings. All
+thirty-eight were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -127,8 +131,9 @@ from `PropertyDetail`, and a non-substitutable repository authority that pins a
 real cohort and source-byte-derived verifier implementations before admission,
 plus JLL's distinct search-card and numeric detail identities, complete imported
 dependency coverage, complete per-source scheduled cohort parity, and an exact
-reviewed browser engine, plus consumption-time repository authority validation
-and durable-ledger-only comparison inputs.
+reviewed browser engine, plus consumption-time repository authority validation,
+durable-ledger-only comparison inputs, exact complete-plan authority pinning,
+and measurement-only offline comparison with no positive candidate state.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
