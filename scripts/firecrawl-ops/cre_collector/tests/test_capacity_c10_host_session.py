@@ -21,6 +21,7 @@ from capacity_c10.host_session import (
     _OpenSsl,
 )
 from capacity_c10.production import (
+    execute_counterbalanced_sequence,
     execute_production_arm,
     main,
 )
@@ -1016,6 +1017,84 @@ def test_prior_terminal_receipts_block_later_arm_before_lock_or_runtime(
             admission_out=tmp_path / "admission.json",
         )
     assert lock_events == []
+
+
+def test_terminal_revalidation_uses_one_expiring_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, _cohort = _sealed_jll_plan()
+    store = C10SessionStore(tmp_path / "private" / f"{plan['plan_sha256']}.json")
+    claim = dict(store.claim(plan))
+    _seed_valid_terminal(monkeypatch, tmp_path, plan, store, claim)
+    seen_deadlines: list[float] = []
+    monkeypatch.setattr(
+        host_store._OpenSsl,
+        "verify",
+        lambda _key, _body, _signature, deadline: (
+            seen_deadlines.append(deadline) or True
+        ),
+    )
+    deadline = time.monotonic() + 10
+    store.load_terminal(plan, 0, deadline=deadline)
+    assert seen_deadlines == [deadline] * 17
+    with pytest.raises(contracts.C10Error, match="revalidation deadline expired"):
+        store.load_terminal(plan, 0, deadline=time.monotonic())
+
+
+def test_counterbalance_resumes_at_durable_arm_and_aligns_every_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda root: root / ".cre.lock",
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.execute_production_arm",
+        lambda **kwargs: calls.append(kwargs) or {"index": len(calls) - 1},
+    )
+
+    fresh = tmp_path / "fresh"
+    execute_counterbalanced_sequence(
+        repo_root=fresh,
+        plan=plan,
+        cohort=cohort,
+        private_root=fresh / "private",
+        runtime_receipt_root=fresh / "receipts",
+        approval_root=fresh / "approvals",
+        admission_root=fresh / "admissions",
+    )
+    resumed = tmp_path / "resumed"
+    resumed_store = C10SessionStore(
+        resumed / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
+    )
+    resumed_claim = resumed_store.claim(plan)
+    resumed_store.record_terminal(resumed_claim, {})
+    execute_counterbalanced_sequence(
+        repo_root=resumed,
+        plan=plan,
+        cohort=cohort,
+        private_root=resumed / "private",
+        runtime_receipt_root=resumed / "receipts",
+        approval_root=resumed / "approvals",
+        admission_root=resumed / "admissions",
+    )
+
+    assert [call["private_root"].name for call in calls] == [
+        *(f"arm-{index}" for index in range(8)),
+        *(f"arm-{index}" for index in range(1, 8)),
+    ]
+    for call in calls:
+        index = int(call["private_root"].name.removeprefix("arm-"))
+        root = call["repo_root"]
+        assert call["runtime_receipt_path"] == root / "receipts" / f"arm-{index}.json"
+        if plan["arm_sequence"][index] == "p1":
+            assert call["approval_path"] == root / "approvals" / f"arm-{index}.json"
+            assert call["admission_out"] == root / "admissions" / f"arm-{index}.json"
+        else:
+            assert call["approval_path"] is None
+            assert call["admission_out"] is None
 
 
 @pytest.mark.parametrize("timeout_seconds", [0, -1, 121, float("inf")])
