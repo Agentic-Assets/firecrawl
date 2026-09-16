@@ -29,6 +29,7 @@ SCHEMA_VERSION = 1
 STATE_KIND = "cre_capacity_c10_v1_durable_session"
 ROOT_MODE = 0o700
 FILE_MODE = 0o600
+MAX_STATE_BYTES = 1024 * 1024
 
 
 def _identity(value: os.stat_result) -> tuple[int, int]:
@@ -168,13 +169,13 @@ class DurableArmSessionStore:
                 or stat.S_IMODE(opened.st_mode) != FILE_MODE
                 or opened.st_nlink != 1
                 or opened.st_size < 1
-                or opened.st_size > 64 * 1024
+                or opened.st_size > MAX_STATE_BYTES
             ):
                 raise C10Error("C10 durable session file is unsafe")
             chunks: list[bytes] = []
-            while chunk := os.read(descriptor, 64 * 1024):
+            while chunk := os.read(descriptor, MAX_STATE_BYTES):
                 chunks.append(chunk)
-                if sum(map(len, chunks)) > 64 * 1024:
+                if sum(map(len, chunks)) > MAX_STATE_BYTES:
                     raise C10Error("C10 durable session file is too large")
             value = json.loads(b"".join(chunks))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -187,6 +188,8 @@ class DurableArmSessionStore:
 
     def _write_state(self, state: Mapping[str, Any]) -> None:
         encoded = _canonical(state) + b"\n"
+        if len(encoded) > MAX_STATE_BYTES:
+            raise C10Error("C10 durable session file would exceed its size limit")
         temporary = f".{self.path.name}.tmp-{uuid.uuid4().hex}"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         descriptor = -1
@@ -256,9 +259,15 @@ class DurableArmSessionStore:
             if state_name == "terminal" and set(arm) == {
                 "index",
                 "state",
+                "result",
                 "result_sha256",
             }:
-                require_sha256(arm.get("result_sha256"), "C10 terminal result")
+                result = arm.get("result")
+                result_sha256 = require_sha256(
+                    arm.get("result_sha256"), "C10 terminal result"
+                )
+                if not isinstance(result, Mapping) or sha256(result) != result_sha256:
+                    raise C10Error("C10 terminal result evidence is invalid")
                 continue
             raise C10Error("C10 durable session arm record is malformed")
 
@@ -320,10 +329,12 @@ class DurableArmSessionStore:
                 raise C10Error(
                     "C10 durable session cannot terminalize an unclaimed arm"
                 )
+            canonical_result = json.loads(_canonical(result))
             state["arms"][-1] = {
                 "index": index,
                 "state": "terminal",
-                "result_sha256": sha256(result),
+                "result": canonical_result,
+                "result_sha256": sha256(canonical_result),
             }
             self._write_state(state)
         finally:
@@ -338,5 +349,21 @@ class DurableArmSessionStore:
                 raise C10Error("C10 durable session claim is missing")
             self._validate_state(plan, state)
             return dict(state["session"])
+        finally:
+            self._unlock(descriptor)
+
+    def terminal_results(self, plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Return recoverable, hash-validated terminal evidence in arm order."""
+        descriptor = self._lock()
+        try:
+            state = self._read_state()
+            if state is None:
+                raise C10Error("C10 durable session claim is missing")
+            self._validate_state(plan, state)
+            return [
+                json.loads(_canonical(arm["result"]))
+                for arm in state["arms"]
+                if arm["state"] == "terminal"
+            ]
         finally:
             self._unlock(descriptor)

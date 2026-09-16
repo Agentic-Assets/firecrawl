@@ -17,7 +17,9 @@ quarantine hooks. Before preflight, it atomically persists each arm claim in an
 owner-only, FD-identity-checked session root derived solely from the canonical
 shared-lock location and immutable plan/session identity. Callers cannot select
 another ledger. An interrupted claim remains unresolved after quarantine
-recovery and cannot be replayed. `compare.py`
+recovery and cannot be replayed. Terminalization atomically retains the sealed
+result and digest in that ledger, so a caller crash cannot consume the only
+recoverable copy. `compare.py`
 is pure and can only produce an operator-review candidate, never an executable
 adoption decision.
 
@@ -44,7 +46,9 @@ and transition fingerprints, immutable per-source cohort count/hash bindings,
 serial per-source monotonic timing, and saturation evidence. P0
 must demonstrate four active scheduled members and P1 ten, with at least that
 many scheduled members. The comparator derives each source's qualified rows
-per minute from that source's sealed interval and row count. It rejects
+per minute from that source's sealed interval and a row count constrained to
+the inclusive `0..cohort_member_count` range. A zero-rate arm remains valid
+evidence but cannot pass the operator-review threshold. It rejects
 direct/native transport,
 cache reads/writes, fallback/multiple attempts, caller-supplied throughput
 scalars, and unsaturated cohorts.

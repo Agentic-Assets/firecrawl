@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+
 from capacity_c10 import (
     adapters,
     admission,
@@ -94,7 +95,7 @@ def _no_write() -> dict[str, object]:
 
 
 def _arm(
-    plan: Mapping[str, object], index: int, p0_rate: float = 100.0
+    plan: Mapping[str, object], index: int, p0_rate: float = 10.0
 ) -> dict[str, object]:
     variant = contracts.ARM_SEQUENCE[index]
     rate = p0_rate if variant == "p0" else p0_rate * 1.2
@@ -284,9 +285,11 @@ def test_durable_claim_is_atomic_terminal_and_never_replays_after_recovery(
             {
                 "index": 0,
                 "state": "terminal",
+                "result": result,
                 "result_sha256": contracts.sha256(result),
             }
         ]
+        assert store.terminal_results(plan) == [result]
         next_claim = store.claim(plan, claimed["session"])
         assert next_claim["arm"]["index"] == 1
 
@@ -297,6 +300,36 @@ def test_durable_claim_is_atomic_terminal_and_never_replays_after_recovery(
             recovered.claim(plan, durable_session)
         with pytest.raises(contracts.C10Error, match="disagrees"):
             recovered.claim(plan, initial)
+
+
+def test_durable_terminal_result_rejects_tamper_and_oversize(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    initial = runner.initial_session(plan)
+    path = tmp_path / "private" / "session.json"
+    path.parent.mkdir(mode=0o700)
+    with session_store.DurableArmSessionStore(path) as store:
+        claimed = store.claim(plan, initial)
+        with pytest.raises(contracts.C10Error, match="size limit"):
+            store.mark_terminal(
+                plan,
+                claimed["arm"],
+                {"terminal": True, "evidence": "x" * (1024 * 1024)},
+            )
+
+    persisted = json.loads(path.read_text())
+    assert persisted["arms"] == [{"index": 0, "state": "claimed"}]
+    persisted["arms"][0] = {
+        "index": 0,
+        "state": "terminal",
+        "result": {"terminal": True},
+        "result_sha256": _digest("not-the-result"),
+    }
+    path.write_text(json.dumps(persisted))
+    with session_store.DurableArmSessionStore(path) as recovered:
+        with pytest.raises(contracts.C10Error, match="result evidence"):
+            recovered.terminal_results(plan)
 
 
 def test_durable_claim_serializes_concurrent_stale_sessions(tmp_path: Path) -> None:
@@ -365,7 +398,7 @@ def _raw_browser_arm(
                 "cache_write": False,
                 "started_monotonic_ns": 1_000_000_000 + index * 2_000_000_000,
                 "finished_monotonic_ns": 2_000_000_000 + index * 2_000_000_000,
-                "qualified_rows": 100,
+                "qualified_rows": source["cohort_member_count"],
             }
             for index, source in enumerate(plan["sources"])  # type: ignore[index]
         ],
@@ -473,6 +506,11 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
         "observed_max_active": 10,
         "scheduled_member_count": 16,
     }
+    ledger_path = runner._canonical_ledger_path(
+        tmp_path / ".cre.lock", plan, second["session"]
+    )
+    with session_store.DurableArmSessionStore(ledger_path) as recovered:
+        assert recovered.terminal_results(plan) == [first["result"], second["result"]]
     assert events == [
         "acquire",
         "preflight-p0",
@@ -706,6 +744,30 @@ def test_comparator_binds_source_cohort_and_serial_source_timing() -> None:
     )
     with pytest.raises(contracts.C10Error, match="serial browser arm"):
         compare.compare(plan, arms)
+
+
+def test_comparator_bounds_qualified_rows_and_treats_zero_as_not_adoptable() -> None:
+    plan = _plan()
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
+    evidence["sources"][0]["qualified_rows"] = (
+        evidence["sources"][0]["cohort_member_count"] + 1
+    )
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="within the immutable cohort"):
+        compare.compare(plan, arms)
+
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[1]["sealed_browser_evidence"]
+    evidence["sources"][0]["qualified_rows"] = 0
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    result = compare.compare(plan, arms)
+    assert result["state"] == "measured_not_adoptable"
+    assert result["adoptable"] is False
 
 
 def test_comparator_derives_each_source_rate_from_its_own_interval() -> None:

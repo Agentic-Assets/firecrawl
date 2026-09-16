@@ -166,7 +166,15 @@ def _browser_evidence_rates(
         ):
             raise C10Error("C10 source timing is outside the serial browser arm")
         previous_finished = source_finished
-        rates[key] = _positive_int(source.get("qualified_rows"), "qualified rows") / (
+        qualified_rows = source.get("qualified_rows")
+        cohort_member_count = expected_source["cohort_member_count"]
+        if (
+            type(qualified_rows) is not int
+            or qualified_rows < 0
+            or qualified_rows > cohort_member_count
+        ):
+            raise C10Error("qualified rows must be within the immutable cohort")
+        rates[key] = qualified_rows / (
             (source_finished - source_started) / 60_000_000_000
         )
     return rates
@@ -204,7 +212,8 @@ def compare(
         raise C10Error("C10 comparison requires all eight counterbalanced arms")
     rates = [_validated_arm(plan, arm, index) for index, arm in enumerate(arms)]
     plane_by_key = {source["key"]: source["plane"] for source in plan["sources"]}
-    gains: dict[str, list[float]] = defaultdict(list)
+    gains: dict[str, list[float | None]] = defaultdict(list)
+    zero_rate_counts: dict[str, int] = defaultdict(int)
     for left, right in zip(
         range(0, len(rates), 2), range(1, len(rates), 2), strict=True
     ):
@@ -212,18 +221,26 @@ def compare(
             (left, right) if ARM_SEQUENCE[left] == "p0" else (right, left)
         )
         for key, plane in plane_by_key.items():
+            p0_rate = rates[p0_index][key]
+            p1_rate = rates[p1_index][key]
+            if p0_rate == 0 or p1_rate == 0:
+                zero_rate_counts[plane] += 1
             gains[plane].append(
-                (rates[p1_index][key] / rates[p0_index][key] - 1.0) * 100
+                None if p0_rate == 0 else (p1_rate / p0_rate - 1.0) * 100
             )
-    planes = {
-        plane: {
-            "median_equal_source_gain_percent": round(float(median(values)), 3),
+    planes = {}
+    for plane, values in sorted(gains.items()):
+        measurable = [value for value in values if value is not None]
+        planes[plane] = {
+            "median_equal_source_gain_percent": round(float(median(measurable)), 3)
+            if measurable
+            else None,
             "pair_source_gains": values,
+            "zero_rate_count": zero_rate_counts[plane],
         }
-        for plane, values in sorted(gains.items())
-    }
     qualified = all(
-        result["median_equal_source_gain_percent"] >= MIN_GAIN_PERCENT
+        result["zero_rate_count"] == 0
+        and result["median_equal_source_gain_percent"] >= MIN_GAIN_PERCENT
         for result in planes.values()
     )
     return {
