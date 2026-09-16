@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`2a0995553ae87377b6173af3874f7aa99b4109a7`
+`5888230ea220440dce643255e3c4a0d6daa97aeb`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -73,21 +73,23 @@ not change the Wave 1 execution boundary.
 - `admit_plan()` issues a process-local admission capability only after cohort and
   adapter verification. Execution, session, and comparison reject plain JSON
   copies or self-rehashed mappings even when their structural fields look valid.
+- Buildout inventory cards use the provider-supported `q[s][]` array-form stable
+  sort, matching the production adapter's cross-page ordering contract.
 
 ## Verification
 
-The final code candidate `2a0995553ae87377b6173af3874f7aa99b4109a7`
+The final code candidate `5888230ea220440dce643255e3c4a0d6daa97aeb`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
 - `python3 -m pytest -q`: 3211 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 906 passed, 1 expected
+- `npm test`: TypeScript typecheck passed; 907 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Eleven exact-head Codex review passes produced twenty-three material findings. All
-twenty-three were confirmed and fixed: immutable cohort binding, per-source timing,
+Twelve exact-head Codex review passes produced twenty-four material findings. All
+twenty-four were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -99,7 +101,8 @@ JLL enumeration across exact cohort strata, plus complete JLL Investor pages,
 Colliers slices, and Marcus map inventory, with each member graph expansion
 bound to the enumeration event that exposed it, plus canonical fixed-policy
 revalidation and an admission-issued cohort/adapter capability at the execution
-and comparison boundary.
+and comparison boundary, plus Buildout's provider-supported array-form stable
+sort for cross-page inventory enumeration.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
