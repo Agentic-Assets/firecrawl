@@ -6,6 +6,7 @@ import { clean, pmap, prune } from "../lib/util.js";
 import type { SourceResult, Tx } from "../types.js";
 import {
   foundryPropertySitemaps,
+  foundryPropertyNotes,
   foundryPropertyUrls,
   foundryProviderIdentity,
   foundryUrl,
@@ -13,7 +14,7 @@ import {
   FOUNDRY_SITEMAP_URL,
   samePage,
 } from "./pure/foundry-identity.js";
-import { classifyFoundryStatus, normalizedFoundryStatus, type FoundryStatusDecision } from "./pure/foundry-status.js";
+import { classifyFoundryStatus, explicitFoundryTenures, type FoundryStatusDecision } from "./pure/foundry-status.js";
 
 export const FOUNDRY_SOURCE_URL = `${FOUNDRY_HOST}/properties/`;
 export const FOUNDRY_FETCH_TIMEOUT_MS = 60_000;
@@ -163,21 +164,6 @@ function foundryStatusFromNotes(notes: string[]): FoundryStatusDecision {
   return classifyFoundryStatus(notes[0] ?? null);
 }
 
-function explicitFoundryTenures(notes: string[]): Tx[] {
-  const tenures = new Set<Tx>();
-  for (const note of notes) {
-    const normalized = normalizedFoundryStatus(note);
-    if (!normalized) continue;
-    if (/\bfor sale\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
-      tenures.add("sale");
-    }
-    if (/\bfor lease\b|\bsublease\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
-      tenures.add("lease");
-    }
-  }
-  return [...tenures];
-}
-
 export function parseFoundryCommercialDetail(
   html: string,
   requestedUrl: string,
@@ -205,10 +191,7 @@ export function parseFoundryCommercialDetail(
   if (strict && (!listingUrl || !samePage(listingUrl, requestedUrl))) {
     return { kind: "rejected", reason: "RealEstateListing identity mismatch" };
   }
-  const notes = $(".property-notes li")
-    .map((_, element) => clean($(element).text()))
-    .get()
-    .filter((value): value is string => Boolean(value));
+  const notes = foundryPropertyNotes(html);
   const status = foundryStatusFromNotes(notes);
   if (status.disposition === "terminal") {
     return {

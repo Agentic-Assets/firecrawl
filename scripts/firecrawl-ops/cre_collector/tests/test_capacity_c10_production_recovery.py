@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Self
 
 import pytest
+from capacity_c10_test_support import sealed_jll_plan
+
 from capacity_c10 import contracts, host_store
 from capacity_c10.host_session import C10SessionStore, _OpenSsl
 from capacity_c10.production import (
@@ -16,7 +18,6 @@ from capacity_c10.production import (
     execute_production_arm,
     main,
 )
-from capacity_c10_test_support import sealed_jll_plan
 
 
 def _secure_roots(*paths: Path) -> None:
@@ -110,7 +111,7 @@ def _seed_valid_terminal(
             "binding": binding,
         },
     }
-    store.record_terminal(claim, authenticated)
+    store.record_terminal(plan, claim, authenticated)
     return artifacts
 
 

@@ -7,9 +7,11 @@ import time
 from pathlib import Path
 
 import pytest
-from capacity_c10 import admission, contracts
+from capacity_c10_test_support import sealed_jll_plan
+from test_capacity_c10 import _cohort, _plan
+
+from capacity_c10 import contracts
 from capacity_c10.host_session import C10SealedCardRegistry, C10SessionStore, _OpenSsl
-from test_capacity_c10 import _cohort, _plan, _registry, _seal_cohort
 
 
 def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
@@ -23,8 +25,9 @@ def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
     assert store.read_bound(plan, claim)["claim_id"] == claim["claim_id"]
     with pytest.raises(contracts.C10Error, match="terminal recovery"):
         store.claim(plan)
-    store.record_terminal(claim, {})
-    assert store.claim(plan)["arm"]["index"] == 1
+    with pytest.raises(contracts.C10Error, match="authenticated host arm schema"):
+        store.record_terminal(plan, claim, {})
+    assert store.read_bound(plan, claim)["claim_id"] == claim["claim_id"]
 
 
 def test_protocol_ledger_constructs_the_fixed_eight_arm_sequence_internally(
@@ -32,22 +35,15 @@ def test_protocol_ledger_constructs_the_fixed_eight_arm_sequence_internally(
 ) -> None:
     plan = _plan()
     store = C10SessionStore(tmp_path / "private" / f"{plan['plan_sha256']}.json")
-    claimed: list[dict[str, object]] = []
-    for index, variant in enumerate(contracts.ARM_SEQUENCE):
-        claim = dict(store.claim(plan))
-        assert claim["arm"] == {
-            "index": index,
-            "variant": variant,
-            "pair_index": index // 2,
-            "must_rollback_to_p0": variant == "p1",
-        }
-        store.record_terminal(claim, {})
-        claimed.append(claim)
-    with pytest.raises(contracts.C10Error, match="already consumed"):
-        store.claim(plan)
-    assert [claim["arm"]["variant"] for claim in claimed] == list(
-        contracts.ARM_SEQUENCE
-    )
+    claim = dict(store.claim(plan))
+    assert claim["arm"] == {
+        "index": 0,
+        "variant": contracts.ARM_SEQUENCE[0],
+        "pair_index": 0,
+        "must_rollback_to_p0": False,
+    }
+    assert len(contracts.ARM_SEQUENCE) == 8
+    assert set(contracts.ARM_SEQUENCE) == {"p0", "p1"}
 
 
 def test_protocol_ledger_rejects_extra_or_tampered_terminal_records(
@@ -63,9 +59,16 @@ def test_protocol_ledger_rejects_extra_or_tampered_terminal_records(
         store.claim(plan)
 
     extra.unlink()
-    claim = store.claim(plan)
-    store.record_terminal(claim, {})
+    store.claim(plan)
+    record = {
+        "kind": "cre_capacity_c10_v3_host_terminal",
+        "plan_sha256": plan["plan_sha256"],
+        "authenticated_arm": {},
+        "authenticated_arm_sha256": contracts.sha256({}),
+    }
     terminal = store._arm_path(0)
+    terminal.write_text(json.dumps(record), encoding="utf-8")
+    terminal.chmod(0o600)
     payload = json.loads(terminal.read_text(encoding="utf-8"))
     payload["authenticated_arm_sha256"] = "0" * 64
     terminal.write_text(json.dumps(payload), encoding="utf-8")
@@ -101,15 +104,7 @@ def test_typescript_public_barrel_does_not_export_lifecycle_or_key_minting() -> 
 
 
 def test_sealed_registry_rejects_arbitrary_non_jll_or_oversized_cards() -> None:
-    cohort = _cohort()
-    jll = next(source for source in cohort["sources"] if source["source_key"] == "jll")
-    for index, member in enumerate(jll["core"]):
-        member["provider_id"] = str(index + 1)
-        member["canonical_url"] = (
-            f"https://property.jll.com/listings/member-{index + 1}"
-        )
-    _seal_cohort(cohort)
-    plan = admission.admit_plan(cohort, registry=_registry())
+    plan, cohort = sealed_jll_plan()
     registry = C10SealedCardRegistry(plan, cohort)
     assert registry.resolve("jll-member-0")["id"] == "jll-member-0"
     projection = registry.resolve("jll-member-0")

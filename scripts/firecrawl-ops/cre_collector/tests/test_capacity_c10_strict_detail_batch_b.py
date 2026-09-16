@@ -162,7 +162,7 @@ def test_batch_b_registry_is_explicit_and_cannot_admit() -> None:
     }
     assert expected <= set(registry)
     assert all(registry[key].fully_verified is False for key in expected)
-    with pytest.raises(contracts.C10Error, match="not fully verified"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         adapters.verified_registry(
             {"sources": [{"key": key} for key in registry]}, registry
         )

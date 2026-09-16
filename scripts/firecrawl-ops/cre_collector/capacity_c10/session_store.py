@@ -319,6 +319,10 @@ class DurableArmSessionStore:
         self, plan: Mapping[str, Any], arm: Mapping[str, Any], result: Mapping[str, Any]
     ) -> None:
         """Atomically commit a completed arm after all settlement and rollback checks."""
+        # Import lazily to keep the comparator/store dependency one-way.
+        from .compare import validate_browser_arm
+
+        validate_browser_arm(plan, result)
         descriptor = self._lock()
         try:
             state = self._read_state()

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from capacity_c10 import admission
-from test_capacity_c10 import _cohort, _registry, _seal_cohort
+from test_capacity_c10 import _cohort, _seal_cohort
+
+from capacity_c10 import admission, contracts, policy
 
 
 def sealed_jll_plan() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -18,4 +19,18 @@ def sealed_jll_plan() -> tuple[dict[str, Any], dict[str, Any]]:
             f"https://property.jll.com/listings/member-{index + 1}"
         )
     _seal_cohort(cohort)
-    return admission.admit_plan(cohort, registry=_registry()), cohort
+    loaded_policy = policy.load_policy()
+    sources = admission._verified_cohort_sources(cohort, loaded_policy)
+    profiles = admission._profiles(admission.PROFILE_CONFIG, loaded_policy["profiles"])
+    unsigned = {
+        "schema_version": 1,
+        "kind": contracts.PLAN_KIND,
+        "policy_sha256": loaded_policy["policy_sha256"],
+        "cohort_sha256": cohort["cohort_sha256"],
+        "implementation_sha256": "0" * 64,
+        "profiles": profiles,
+        "sources": sources,
+        "no_write": admission.NO_WRITE,
+        "arm_sequence": list(contracts.ARM_SEQUENCE),
+    }
+    return {**unsigned, "plan_sha256": contracts.sha256(unsigned)}, cohort

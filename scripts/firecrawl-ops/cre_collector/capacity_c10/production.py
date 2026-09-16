@@ -348,7 +348,7 @@ def execute_production_arm(
                 experiment_kind="C10",
                 deadline=deadline,
             )
-        host_result = host.execute(
+        host_result = host._execute_locked_claim(
             plan,
             timeout_seconds=_remaining(deadline),
             _claim=claim,
@@ -394,7 +394,9 @@ def execute_production_arm(
         }
         compare.validate_authenticated_host_arm(plan, authenticated_arm)
         _remaining(deadline)
-        terminal = store.record_terminal(claim, authenticated_arm)
+        terminal = store.record_terminal(
+            plan, claim, authenticated_arm, deadline=deadline
+        )
         # The terminal ledger has committed and every required P1 restoration
         # has settled. Only now may ordinary lock reclamation resume.
         lock.disarm_benchmark()

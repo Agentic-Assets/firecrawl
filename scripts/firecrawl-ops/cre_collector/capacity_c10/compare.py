@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from statistics import median
 from typing import Any
 
@@ -20,6 +20,7 @@ from .contracts import (
 MIN_GAIN_PERCENT = 15.0
 EVIDENCE_KIND = "cre_capacity_c10_browser_arm_evidence_v1"
 HOST_EVIDENCE_KIND = "cre_capacity_c10_authenticated_host_arm_v1"
+REVIEWED_BROWSER_ENGINE = "playwright"
 
 
 def _positive_int(value: Any, label: str) -> int:
@@ -96,11 +97,14 @@ def _browser_evidence_rates(
         != {"configured_concurrency", "observed_max_active", "scheduled_member_count"}
     ):
         raise C10Error("C10 scheduler evidence is invalid")
+    expected_scheduled_member_count = sum(
+        source["cohort_member_count"] for source in plan["sources"]
+    )
     if (
         scheduler.get("configured_concurrency") != configured
         or scheduler.get("observed_max_active") != configured
         or type(scheduler.get("scheduled_member_count")) is not int
-        or scheduler["scheduled_member_count"] < configured
+        or scheduler["scheduled_member_count"] != expected_scheduled_member_count
     ):
         raise C10Error("C10 scheduler did not demonstrate the planned saturation")
     expected_sources = plan["sources"]
@@ -125,6 +129,8 @@ def _browser_evidence_rates(
             "plane",
             "cohort_member_count",
             "cohort_member_sha256",
+            "scheduled_member_count",
+            "scheduled_member_sha256",
             "execution_mode",
             "engine",
             "client_attempts",
@@ -151,9 +157,12 @@ def _browser_evidence_rates(
             != expected_source["cohort_member_count"]
             or source.get("cohort_member_sha256")
             != expected_source["cohort_member_sha256"]
+            or source.get("scheduled_member_count")
+            != expected_source["cohort_member_count"]
+            or source.get("scheduled_member_sha256")
+            != expected_source["cohort_member_sha256"]
             or source.get("execution_mode") != "browser_rendered"
-            or not isinstance(source.get("engine"), str)
-            or not source["engine"]
+            or source.get("engine") != REVIEWED_BROWSER_ENGINE
             or source.get("client_attempts") != 1
             or source.get("engine_attempts") != 1
             or source.get("cache_read") is not False
@@ -169,11 +178,10 @@ def _browser_evidence_rates(
             raise C10Error("C10 source timing is outside the serial browser arm")
         previous_finished = source_finished
         qualified_rows = source.get("qualified_rows")
-        cohort_member_count = expected_source["cohort_member_count"]
         if (
             type(qualified_rows) is not int
             or qualified_rows < 0
-            or qualified_rows > cohort_member_count
+            or qualified_rows > source["scheduled_member_count"]
         ):
             raise C10Error("qualified rows must be within the immutable cohort")
         rates[key] = qualified_rows / (
@@ -199,6 +207,7 @@ def _validated_arm(
 
 def validate_browser_arm(plan: Mapping[str, Any], arm: Mapping[str, Any]) -> None:
     """Reject an unsaturated or non-browser arm before it can become terminal."""
+    validate_plan(plan)
     index = arm.get("index")
     if type(index) is not int or index < 0 or index >= len(ARM_SEQUENCE):
         raise C10Error("C10 browser arm index is invalid")
@@ -211,11 +220,8 @@ def validate_authenticated_host_arm(
     """Accept only a sealed host result for durable terminalization.
 
     The present host implements the JLL browser lane only. Its authenticated
-    result is intentionally *not* coerced into the 20-source rate comparator:
-    doing so would turn missing source evidence into invented qualified rows.
-    This validator is the narrow handoff from the host to the durable arm
-    ledger, and ``compare`` remains unavailable until all twenty sources have
-    authenticated comparable evidence.
+    result is intentionally not coerced into the 20-source comparator: doing
+    so would turn missing source evidence into invented qualified rows.
     """
     validate_plan(plan)
     required = {
@@ -306,11 +312,19 @@ def validate_authenticated_host_arm(
         require_sha256(artifact.get("sha256"), "C10 host artifact")
 
 
-def compare(
-    plan: Mapping[str, Any], arms: Sequence[Mapping[str, Any]]
-) -> dict[str, Any]:
-    """Compare all four matched pairs; never make runtime adoption executable."""
+def compare(plan: Mapping[str, Any], session_store: Any) -> dict[str, Any]:
+    """Compare all four matched pairs from the canonical durable arm ledger.
+
+    Arbitrary mappings are deliberately not a comparison input. The store
+    reopens its owner-only, hash-validated ledger while locked and returns the
+    exact terminal results committed after coordinator settlement.
+    """
+    from .session_store import DurableArmSessionStore
+
     validate_plan(plan)
+    if type(session_store) is not DurableArmSessionStore:
+        raise C10Error("C10 comparison requires the canonical durable arm ledger")
+    arms = session_store.terminal_results(plan)
     if len(arms) != len(ARM_SEQUENCE):
         raise C10Error("C10 comparison requires all eight counterbalanced arms")
     rates = [_validated_arm(plan, arm, index) for index, arm in enumerate(arms)]
@@ -341,16 +355,18 @@ def compare(
             "pair_source_gains": values,
             "zero_rate_count": zero_rate_counts[plane],
         }
-    qualified = all(
+    meets_gain_threshold = all(
         result["zero_rate_count"] == 0
         and result["median_equal_source_gain_percent"] >= MIN_GAIN_PERCENT
         for result in planes.values()
     )
     return {
-        "state": "candidate_for_operator_review"
-        if qualified
-        else "measured_not_adoptable",
+        # This offline/library wave has no non-forgeable host attestation. It
+        # may summarize a ledger for engineering analysis, but it must never
+        # promote caller-controlled hooks or stores into an adoption candidate.
+        "state": "offline_measurement_only",
         "adoptable": False,
+        "meets_gain_threshold": meets_gain_threshold,
         "minimum_gain_percent": MIN_GAIN_PERCENT,
         "cross_plane_aggregation": "not_computed_distinct_plane_estimands",
         "planes": planes,

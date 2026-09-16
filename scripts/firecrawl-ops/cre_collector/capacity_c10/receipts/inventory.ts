@@ -350,7 +350,7 @@ const srsSpec: SourceSpec = {
   memberCard: (coordinate) => memberCardFor(srsSpec, coordinate), parsePage: srsProjection,
 };
 function buildoutSpec(sourceKey: "svn" | "lee-associates" | "bull-realty", pluginKey: string, memberHost: string): SourceSpec {
-  const url = (page: number) => `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}&q%5Bs%5D=created_at%20asc%2C%20id%20asc`;
+  const url = (page: number) => `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}&q%5Bs%5D%5B%5D=created_at%20asc%2C%20id%20asc`;
   const spec: SourceSpec = {
     sourceKey, memberHost, pageSize: 30,
     initialCards: [getCard(sourceKey, "enumeration-0", "enumeration", url(0), "buildout.com")],

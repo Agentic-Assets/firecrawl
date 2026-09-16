@@ -6,11 +6,14 @@ import base64
 import copy
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Self
 
 import pytest
+from capacity_c10_test_support import sealed_jll_plan
+
 from capacity_c10 import contracts
 from capacity_c10.host_session import (
     C10HostExecutionSession,
@@ -18,7 +21,6 @@ from capacity_c10.host_session import (
     C10SessionStore,
     _OpenSsl,
 )
-from capacity_c10_test_support import sealed_jll_plan
 
 
 def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
@@ -53,8 +55,7 @@ def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
         cards=registry,
         sidecar=sidecar,
     )
-    with pytest.raises(contracts.C10Error, match="fixed policy"):
-        host.execute(plan_b)
+    assert not hasattr(host, "execute")
     assert sidecar.started is False
 
 
@@ -76,6 +77,9 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
 
         def release(self) -> None:
             lifecycle_events.append("release")
+
+        def _owned_directory_fd(self) -> int:
+            return os.open(self.path, os.O_RDONLY | os.O_DIRECTORY)
 
     class FakeStore:
         def __enter__(self) -> Self:
@@ -230,7 +234,19 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
         }
 
     monkeypatch.setattr(host, "_run_child", signed_child)
-    result = host.execute(plan)
+    claim = host.session_store.claim(plan)
+    lock_path = tmp_path / ".cre.lock"
+    lock_path.mkdir(mode=0o700)
+    held_lock = FakeLock(lock_path)
+    held_lock.acquire()
+    result = host._execute_locked_claim(
+        plan,
+        timeout_seconds=120,
+        _claim=claim,
+        _held_shared_lock=held_lock,
+        _deadline=time.monotonic() + 120,
+    )
+    held_lock.release()
     assert len(issued) == 17
     assert issued[0]["card"]["id"] == "jll-enumeration"  # type: ignore[index]
     assert {item["capability"]["cardSequence"] for item in issued} == set(range(17))  # type: ignore[index]
@@ -279,6 +295,9 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
         def release(self) -> None:
             return None
 
+        def _owned_directory_fd(self) -> int:
+            return os.open(self.path, os.O_RDONLY | os.O_DIRECTORY)
+
     monkeypatch.setattr("capacity_c10.host_orchestration.SharedLock", Lock)
     monkeypatch.setattr(
         "capacity_c10.host_orchestration.PrivateReceiptStore.create",
@@ -294,6 +313,16 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
     )
     monkeypatch.setattr(host, "_verify_health", lambda *_: None)
     monkeypatch.setattr(host, "_run_cohort", lambda *_: ([{"binding": {}}], []))
+    claim = store.claim(plan)
+    lock_path = tmp_path / ".cre.lock"
+    lock_path.mkdir(mode=0o700)
+    held_lock = Lock(lock_path)
     with pytest.raises(contracts.C10Error, match="remove failed"):
-        host.execute(plan)
+        host._execute_locked_claim(
+            plan,
+            timeout_seconds=120,
+            _claim=claim,
+            _held_shared_lock=held_lock,
+            _deadline=time.monotonic() + 120,
+        )
     assert (tmp_path / "session.arm-0.quarantine").exists()

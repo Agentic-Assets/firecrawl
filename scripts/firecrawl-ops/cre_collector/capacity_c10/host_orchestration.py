@@ -145,50 +145,46 @@ class C10HostExecutionSession:
         self.sidecar = sidecar or DockerComposeSidecar(repo_root)
         self.quarantine = quarantine or (lambda _reason: None)
 
-    def execute(
+    def _execute_locked_claim(
         self,
         plan: Mapping[str, Any],
         *,
-        timeout_seconds: float = 120,
-        _claim: Mapping[str, Any] | None = None,
-        _held_shared_lock: SharedLock | None = None,
-        _deadline: float | None = None,
+        timeout_seconds: float,
+        _claim: Mapping[str, Any],
+        _held_shared_lock: SharedLock,
+        _deadline: float,
     ) -> Mapping[str, Any]:
+        """Execute only a claim already authorized by production.py.
+
+        This private primitive deliberately cannot acquire a lock or create a
+        claim. The canonical production entrypoint owns runtime preflight,
+        P1 approval/transition, settlement, rollback, and authorization of the
+        supplied lock-held claim before this host may start a sidecar.
+        """
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
         validate_plan(plan)
         # Reject an alternate but syntactically valid Plan B before lock
         # acquisition, durable claim, key generation, or Compose activity.
         self.cards.assert_plan_identity(plan)
-        deadline = (
-            _deadline if _deadline is not None else time.monotonic() + timeout_seconds
-        )
+        deadline = _deadline
         _remaining(deadline)
-        lock = _held_shared_lock or SharedLock(self.lock_path)
+        lock = _held_shared_lock
         if lock.path.resolve() != canonical_shared_lock_dir(self.repo_root).resolve():
             raise C10Error("C10 host rejected a noncanonical SharedLock identity")
-        owns_lock = _held_shared_lock is None
-        if owns_lock:
-            lock.acquire()
-        else:
-            try:
-                descriptor = lock._owned_directory_fd()
-            except Exception as exc:
-                raise C10Error(
-                    "C10 host requires the owned canonical SharedLock"
-                ) from exc
-            os.close(descriptor)
+        try:
+            descriptor = lock._owned_directory_fd()
+        except Exception as exc:
+            raise C10Error("C10 host requires the owned canonical SharedLock") from exc
+        os.close(descriptor)
         sidecar_attempted = False
-        claim: Mapping[str, Any] | None = None
+        claim: Mapping[str, Any] = _claim
         result: Mapping[str, Any] | None = None
         try:
-            if _claim is None:
-                claim = self.session_store.claim(plan)
-            else:
-                durable = self.session_store.read_bound(plan, _claim)
-                if dict(durable) != dict(_claim):
-                    raise C10Error("C10 host rejects an unbound durable claim")
-                claim = durable
+            durable = self.session_store.read_bound(plan, _claim)
+            if dict(durable) != dict(_claim):
+                raise C10Error("C10 host rejects an unbound durable claim")
+            claim = durable
             with PrivateReceiptStore.create(self.private_root) as store:
                 keys = self._keys(deadline)
                 port = self._free_loopback_port()
@@ -244,9 +240,6 @@ class C10HostExecutionSession:
                 self.session_store.record_quarantine(claim, str(cleanup_error))
                 self.quarantine(f"C10 sidecar cleanup failed: {cleanup_error}")
                 raise
-            finally:
-                if owns_lock:
-                    lock.release()
         if result is None:
             raise C10Error("C10 host did not produce a terminal cohort result")
         return result
@@ -589,3 +582,26 @@ class C10HostExecutionSession:
             base64.b64decode(body, validate=True)
         ) > int(issued["card"].get("maxBytes", 0)):
             raise C10Error("C10 sidecar evidence body exceeds its issued card bound")
+        status = unsigned.get("status")
+        final_url = unsigned.get("finalUrl")
+        content_type = unsigned.get("contentType")
+        expected_url = issued["card"].get("url")
+        accepted_content_types = {
+            "application/json",
+            "text/html",
+            "application/xhtml+xml",
+        }
+        normalized_content_type = (
+            content_type.split(";", 1)[0].strip().lower()
+            if isinstance(content_type, str)
+            else None
+        )
+        if (
+            type(status) is not int
+            or not 200 <= status < 300
+            or not isinstance(expected_url, str)
+            or final_url != expected_url
+            or normalized_content_type not in accepted_content_types
+            or unsigned.get("challengeDetected") is not False
+        ):
+            raise C10Error("C10 sidecar evidence is not an accepted reviewed response")

@@ -221,6 +221,35 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
     unsigned = {key: value for key, value in plan.items() if key != "plan_sha256"}
     if sha256(unsigned) != plan["plan_sha256"]:
         raise C10Error("C10 plan digest does not match its immutable contents")
+    _require_repository_plan_authority(plan)
+
+
+def _require_repository_plan_authority(plan: Mapping[str, Any]) -> None:
+    """Revalidate canonical cohort and implementation authority when consumed.
+
+    Admission cannot rely on a Python object type or an underscore-prefixed
+    constructor as authority. Every session, coordinator, and comparison call
+    reaches ``validate_plan`` and therefore checks the current checked-in
+    authority and current source-byte implementation fingerprints again.
+    """
+    from .authority import load_authority, repository_implementation_sha256
+
+    authority = load_authority()
+    approved = authority["approved_adapters"]
+    source_keys = exact_source_keys(plan["sources"])
+    if authority["approved_cohort_sha256"] != plan["cohort_sha256"] or set(
+        approved
+    ) != set(source_keys):
+        raise C10Error("C10 plan lacks current repository cohort and adapter authority")
+    if authority["approved_plan_sha256"] != plan["plan_sha256"]:
+        raise C10Error("C10 complete plan is not pinned by repository authority")
+    implementation_by_key = {
+        key: repository_implementation_sha256(key) for key in sorted(source_keys)
+    }
+    if any(approved[key] != digest for key, digest in implementation_by_key.items()):
+        raise C10Error("C10 plan adapter authority does not match current source bytes")
+    if plan["implementation_sha256"] != sha256(implementation_by_key):
+        raise C10Error("C10 plan implementation digest is not currently authorized")
 
 
 def exact_source_keys(values: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:

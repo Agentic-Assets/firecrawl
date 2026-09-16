@@ -35,11 +35,12 @@ function response(card: Readonly<RequestCard>, body: string, overrides: Partial<
 
 class FakeFoundryTransport implements DirectProviderTransport {
   readonly cards: RequestCard[] = [];
+  constructor(readonly propertyNotes: readonly string[] = ["For Sale"]) {}
   async execute(card: Readonly<RequestCard>): Promise<TransportResponse> {
     this.cards.push(card);
     if (card.id === "foundry-sitemap-index") return response(card, `<sitemapindex><sitemap><loc>https://www.foundrycommercial.com/property-sitemap.xml</loc></sitemap></sitemapindex>`);
     if (card.id === "foundry-sitemap-0") return response(card, `<urlset><url><loc>${propertyUrl}</loc></url></urlset>`);
-    return response(card, `<html><head><link rel="canonical" href="${propertyUrl}"><link rel="shortlink" href="https://www.foundrycommercial.com/?p=123"></head><body><h1>Example</h1></body></html>`, { contentType: "text/html" });
+    return response(card, `<html><head><link rel="canonical" href="${propertyUrl}"><link rel="shortlink" href="https://www.foundrycommercial.com/?p=123"></head><body><h1>Example</h1><ul class="property-notes">${this.propertyNotes.map((note) => `<li>${note}</li>`).join("")}</ul></body></html>`, { contentType: "text/html" });
   }
 }
 
@@ -87,6 +88,59 @@ test("Foundry producer rejects an arbitrary member, cohort mismatch, and a fake 
   fake.execute = async (card) => ({ ...(await original(card)), providerAttempts: 2 });
   await assert.rejects(foundryCommercialReceiptProducer.produceMemberReceipt(second, { key: memberKey, providerId: "123" }), /violates/);
   assert.equal(second.transport.requestAccounting().retries, 0);
+});
+
+test("Foundry producer rejects terminal and unknown native statuses", async () => {
+  const memberKey = `foundry-member-${sha256(propertyUrl).slice(0, 24)}`;
+  for (const status of ["Sold", "Mystery Status"]) {
+    const receiptContext = await context(new FakeFoundryTransport([status]));
+    await foundryCommercialReceiptProducer.produceEnumerationReceipt(receiptContext);
+    await assert.rejects(
+      foundryCommercialReceiptProducer.produceMemberReceipt(receiptContext, {
+        key: memberKey,
+        providerId: "123",
+      }),
+      /projection failed without retry/,
+    );
+  }
+});
+
+test("Foundry producer requires an exact explicit sale or lease tenure for generic active status", async () => {
+  const memberKey = `foundry-member-${sha256(propertyUrl).slice(0, 24)}`;
+  for (const notes of [
+    ["Available"],
+    ["Coming Soon", "Office"],
+    ["Available", "Not for Sale / Lease"],
+    ["Available", "Contact us for sale or lease information"],
+  ]) {
+    const receiptContext = await context(new FakeFoundryTransport(notes));
+    await foundryCommercialReceiptProducer.produceEnumerationReceipt(receiptContext);
+    await assert.rejects(
+      foundryCommercialReceiptProducer.produceMemberReceipt(receiptContext, {
+        key: memberKey,
+        providerId: "123",
+      }),
+      /projection failed without retry/,
+    );
+  }
+});
+
+test("Foundry producer accepts generic active status only with explicit provider tenure", async () => {
+  const memberKey = `foundry-member-${sha256(propertyUrl).slice(0, 24)}`;
+  for (const notes of [
+    ["Available", "For Lease"],
+    ["Under Contract", "For Sale / Lease"],
+    ["Available", "Sale / Lease"],
+    ["Proposed", "Lease / Sale"],
+  ]) {
+    const receiptContext = await context(new FakeFoundryTransport(notes));
+    await foundryCommercialReceiptProducer.produceEnumerationReceipt(receiptContext);
+    const member = await foundryCommercialReceiptProducer.produceMemberReceipt(receiptContext, {
+      key: memberKey,
+      providerId: "123",
+    });
+    assert.equal(member.stage, "member");
+  }
 });
 
 test("Foundry uses fixed sitemap, member, card, and aggregate-deadline caps", async () => {
@@ -145,6 +199,8 @@ test("Batch B preserves reexport parity and makes every non-admitted source expl
   assert.equal(canonicalDaumPropertyUrl("/property/example/"), "https://daumcommercial.com/property/example/");
   assert.equal(daumTenure("Lease"), "lease");
   assert.equal(classifyFoundryStatus("For Sale").disposition, "active");
+  assert.equal(classifyFoundryStatus("Sold").disposition, "terminal");
+  assert.equal(classifyFoundryStatus("Mystery Status").disposition, "held");
   assert.deepEqual(parseSavillsNextData('<script id="__NEXT_DATA__" type="application/json">{"ok":true}</script>'), { ok: true });
 });
 

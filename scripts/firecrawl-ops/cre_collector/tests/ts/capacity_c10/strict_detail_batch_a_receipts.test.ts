@@ -146,7 +146,7 @@ test("JLL seals native GraphQL enumeration and exact canonical POST detail graph
   };
   const fake = new FixtureTransport({
     "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 1, items: [{
-      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      id: "search-card-1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
     "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":["https://asset.test/a.jpg"]}}}}</script>',
@@ -176,11 +176,11 @@ test("JLL reconciles cohort members across exact filter and page strata", async 
   };
   const fake = new FixtureTransport({
     "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 2, items: [{
-      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      id: "search-card-1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
     "jll-enumeration-1": JSON.stringify({ data: { properties: { count: 2, items: [{
-      id: "2", title: "Two", images: [], address: "2 Main", propertyTypes: ["industrial"], tenureTypes: ["sale"],
+      id: "search-card-2", title: "Two", images: [], address: "2 Main", propertyTypes: ["industrial"], tenureTypes: ["sale"],
       pageUrl: "/listings/industrial-2", surfaceAreas: [],
     }] } } }),
     "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":[]}}}}</script>',
@@ -210,7 +210,7 @@ test("strict-detail producer isolates nested routes and source settings from cal
   const initialCard = jllEnumerationCard(plan.enumerations[0]!, 0);
   const fake = new FixtureTransport({
     "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 1, items: [{
-      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      id: "search-card-1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
     "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":[]}}}}</script>',
@@ -397,7 +397,7 @@ test("Marcus seals canonical search and map POST bodies without retry or fallbac
   const fake = new FixtureTransport({
     "marcus-count-enumeration": JSON.stringify({ Results: { TotalCount: 2, Properties: [{ DealId: "newest-visible-only" }] } }),
     "marcus-map-enumeration": JSON.stringify({ Results: { Properties: [{ ActivityId: "activity-new" }, { ActivityId: "activity-4" }] } }),
-    "marcus-member-0": JSON.stringify({ Results: { PropertyDetail: '<article data-property="four"></article>', PropertyUrl: "/properties/four" } }),
+    "marcus-member-0": JSON.stringify({ Results: { PropertyDetail: '<article data-dealid="4" data-property="four"></article>', PropertyUrl: "/properties/four" } }),
   });
   const receiptContext = await context("marcus-millichap", [marcusCountEnumerationCard(), marcusMapEnumerationCard()], fake);
   const producer = createMarcusReceiptProducer(plan);
@@ -408,6 +408,26 @@ test("Marcus seals canonical search and map POST bodies without retry or fallbac
   assert.equal(fake.cards[2]?.body, '{"activityId":"activity-4"}');
   assert.equal(fake.cards[2]?.url, "https://www.marcusmillichap.com/api/contentsearch/mappropertydetail");
   assert.equal(receiptContext.transport.requestAccounting().retries, 0);
+});
+
+test("Marcus rejects a map detail whose native DealId does not match the selected member", async () => {
+  const plan: MarcusReceiptPlan = {
+    members: [{ key: "marcus-4", providerId: "4", activityId: "activity-4", canonicalUrl: "https://www.marcusmillichap.com/properties/four" }],
+    enumerationCards: [],
+  };
+  const fake = new FixtureTransport({
+    "marcus-count-enumeration": JSON.stringify({ Results: { TotalCount: 1, Properties: [{ DealId: "4" }] } }),
+    "marcus-map-enumeration": JSON.stringify({ Results: { Properties: [{ ActivityId: "activity-4" }] } }),
+    "marcus-member-0": JSON.stringify({ Results: { PropertyDetail: '<article data-dealid="different-deal"></article>', PropertyUrl: "/properties/four" } }),
+  });
+  const receiptContext = await context("marcus-millichap", [marcusCountEnumerationCard(), marcusMapEnumerationCard()], fake);
+  const producer = createMarcusReceiptProducer(plan);
+  await producer.produceEnumerationReceipt(receiptContext);
+  await assert.rejects(
+    producer.produceMemberReceipt(receiptContext, plan.members[0]!),
+    /source response projection failed without retry/,
+  );
+  assert.equal(receiptContext.transport.requestAccounting().events.at(-1)?.outcome, "rejected");
 });
 
 test("Marcus rejects the old mapproperties envelope at the detail endpoint", async () => {

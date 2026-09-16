@@ -3,7 +3,9 @@
 These eight modules are sealed-evidence validators for the source-native
 inventory parsers already in `sources/`.  They make no request, cache, status,
 database, scheduler, model, or OCR mutation.  Their `fully_verified` flags are
-deliberately `False`, so importing this package cannot admit any source.
+deliberately `False`. More importantly, the canonical repository authority
+approves no cohort or adapter, so neither importing nor mutating a candidate
+object can admit a source.
 
 The matching TypeScript package now has candidate receipt producers for seven
 sources. CBRE Deal Flow is an explicit blocked descriptor until its

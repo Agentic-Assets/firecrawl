@@ -9,13 +9,22 @@ each item before acting.
   (priority: highest; confidence: verified requirement)
   The package now seals private artifacts, native-provider identities,
   canonical targets, coordinator-declared adapter/source identifiers, and
-  ordered request-card graph evidence. The identifier fields are SHA-shaped
-  binding values only: Wave 1 does not define or verify a source- or
-  implementation-byte hash recipe. Before an arm can execute, a separate
-  reviewed integration must define that recipe and bind those seals to an
-  FD/inode-safe execution boundary and a real
-  direct-provider transport. The public cohort intentionally omits private
-  paths and cannot be a live request ledger by itself.
+  ordered request-card graph evidence. Wave 1 now fingerprints the complete
+  collector source/config dependency surface, but it does not supply concrete
+  host/browser transport or private receipt admission. Before an arm can
+  execute, a separate reviewed integration must bind the existing seals to the
+  FD/inode-safe execution boundary and real provider transport. The public
+  cohort intentionally omits private paths and cannot be a live request ledger
+  by itself.
+
+- **Populate the fail-closed repository admission authority** (priority:
+  highest; confidence: verified requirement)
+  The checked-in authority intentionally approves no cohort, complete plan, or
+  adapters.
+  Only after private receipt review should a separate reviewed commit pin one
+  exact cohort digest, the exact derived plan digest, and all twenty source-tree
+  implementation digests. Never derive approval from caller-provided flags,
+  version labels, or a self-hashed public cohort.
 
 - **Implement source-native adapter fixtures in reviewed families** (priority:
   highest; confidence: verified gap)
@@ -25,9 +34,11 @@ each item before acting.
 
 - **Wire the serial protocol to canonical runtime primitives** (priority:
   highest; confidence: verified requirement)
-  Use `SharedLock`, runtime preflight/transition, established settlement
-  telemetry, verified P0 rollback, and quarantine recovery through a narrow
-  integration layer. Do not migrate those controls into `capacity_c10`.
+  The library seam already uses `SharedLock`, runtime preflight/transition,
+  settlement telemetry, verified P0 rollback, and quarantine recovery. A
+  separately reviewed host integration must supply the concrete browser
+  executor and non-forgeable completion attestation before any positive
+  experiment decision. Do not migrate those controls into `capacity_c10`.
 
 - **Freeze the validity strata before any C10 execution** (priority: highest;
   confidence: verified requirement)

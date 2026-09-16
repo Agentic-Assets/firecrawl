@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self
 
-import cre_capacity_runtime as runtime
 import pytest
+from capacity_c10_test_support import sealed_jll_plan
+
+import cre_capacity_runtime as runtime
 from capacity_c10 import contracts, host_store, production
 from capacity_c10.host_session import C10HostExecutionSession, C10SessionStore, _OpenSsl
 from capacity_c10.production import execute_production_arm, main
-from capacity_c10_test_support import sealed_jll_plan
 
 
 def _secure_roots(*paths: Path) -> None:
@@ -127,7 +128,7 @@ def _seed_valid_terminal(
             "binding": binding,
         },
     }
-    store.record_terminal(claim, authenticated)
+    store.record_terminal(plan, claim, authenticated)
     return artifacts
 
 
@@ -135,12 +136,15 @@ def test_production_entrypoint_constructs_host_without_browser_callback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     production_parameters = set(inspect.signature(execute_production_arm).parameters)
-    host_parameters = set(inspect.signature(C10HostExecutionSession.execute).parameters)
+    host_parameters = set(
+        inspect.signature(C10HostExecutionSession._execute_locked_claim).parameters
+    )
     assert {"child", "cards", "evidence", "run_browser_arm"}.isdisjoint(
         production_parameters
     )
     assert "session" not in production_parameters
     assert "child" not in host_parameters
+    assert not hasattr(C10HostExecutionSession, "execute")
 
 
 def test_production_approval_gate_uses_only_runtime_public_validator() -> None:
@@ -251,7 +255,7 @@ def test_smoke_dry_run_and_execute_bind_the_same_durable_p1_arm_file(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
     first = store.claim(plan)
-    store.record_terminal(first, {})
+    _seed_valid_terminal(monkeypatch, tmp_path, plan, store, first)
     roots = {
         "private": tmp_path / "private",
         "receipts": tmp_path / "receipts",
@@ -328,7 +332,9 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
         def __init__(self, **_: object) -> None:
             self.lock_path = tmp_path / ".cre.lock"
 
-        def execute(self, plan: object, **kwargs: object) -> dict[str, object]:
+        def _execute_locked_claim(
+            self, plan: object, **kwargs: object
+        ) -> dict[str, object]:
             assert (tmp_path / ".cre-c10-ledger-v1").exists()
             events.append("host")
             claim = kwargs["_claim"]
@@ -359,6 +365,11 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
         lambda _root: tmp_path / ".cre.lock",
     )
     monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr(
+        C10SessionStore,
+        "_validate_authenticated_terminal",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         "capacity_c10.production.runtime.experiment.load_profile",
         lambda _path, name: (
@@ -434,7 +445,7 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
         def __init__(self, **_: object) -> None:
             self.lock_path = tmp_path / ".cre.lock"
 
-        def execute(self, *_: object, **__: object) -> dict[str, object]:
+        def _execute_locked_claim(self, *_: object, **__: object) -> dict[str, object]:
             events.append("host")
             raise contracts.C10Error("host failure")
 
@@ -444,6 +455,11 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
         lambda _root: tmp_path / ".cre.lock",
     )
     monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr(
+        C10SessionStore,
+        "_validate_authenticated_terminal",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         "capacity_c10.production.runtime.experiment.load_profile",
         lambda _path, name: (
@@ -511,7 +527,7 @@ def test_direct_execute_rejects_unsafe_claim_inputs_without_quarantine(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
     first = store.claim(plan)
-    store.record_terminal(first, {})
+    _seed_valid_terminal(monkeypatch, tmp_path, plan, store, first)
     private, receipts = tmp_path / "private", tmp_path / "receipts"
     approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
     roots = {
@@ -641,7 +657,7 @@ def test_cli_execute_cannot_bypass_lock_held_claim_input_checks(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
     first = store.claim(plan)
-    store.record_terminal(first, {})
+    _seed_valid_terminal(monkeypatch, tmp_path, plan, store, first)
     private, receipts = tmp_path / "private", tmp_path / "receipts"
     approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
     _secure_roots(private, receipts, approvals, admissions)
@@ -716,7 +732,7 @@ def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
             if not advanced:
                 advanced = True
                 rival = ledger.claim(plan)
-                ledger.record_terminal(rival, {})
+                _seed_valid_terminal(monkeypatch, tmp_path, plan, ledger, rival)
                 events.append("rival-p0-terminal")
 
         def arm_benchmark(self, _evidence: object) -> None:
@@ -741,7 +757,9 @@ def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
             self.lock_path = tmp_path / ".cre.lock"
             captured["private_root"] = private_root
 
-        def execute(self, plan: object, **kwargs: object) -> dict[str, object]:
+        def _execute_locked_claim(
+            self, plan: object, **kwargs: object
+        ) -> dict[str, object]:
             events.append("host")
             claim = kwargs["_claim"]
             assert isinstance(claim, dict)
@@ -775,6 +793,16 @@ def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
         C10SessionStore,
         "load_terminal",
         lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        C10SessionStore,
+        "_validate_authenticated_terminal",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        C10SessionStore,
+        "_validate_authenticated_terminal",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         "capacity_c10.production.runtime.experiment.load_profile",

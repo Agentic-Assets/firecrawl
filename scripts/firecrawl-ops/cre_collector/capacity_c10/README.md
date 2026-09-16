@@ -8,14 +8,19 @@ TypeScript component opens a provider connection or can execute a request by
 itself: the Linux-only Python host coordinator owns the lock, sealed card
 manifest, Compose lifecycle, capability signer, and private artifacts.
 
-`policy.py` seals the fixed 20-source, 12/8-plane matrix. `adapters.py`
-requires an exact registry where every source-specific adapter is explicitly
-reviewed and fully verified. `admission.py` binds that registry, a hash-bound
-multisource-v1 cohort, and the isolated `c10-p0`/`c10-p1` configuration into an
-immutable plan. `runner.py` is a pure, data-only session helper: it has no
-runtime hooks, subprocesses, lock access, or callback-driven execution path.
-`compare.py` is pure and can only produce an operator-review candidate, never
-an executable adoption decision.
+`policy.py` seals the fixed 20-source, 12/8-plane matrix. `authority.py` loads
+the one non-substitutable repository authority and fingerprints the complete
+collector Python/TypeScript source tree plus package/config dependencies. That
+authority currently approves no cohort and no adapter, so `admission.py` cannot
+issue a plan. A future reviewed commit must pin one exact cohort digest and all
+twenty current implementation digests before `admission.py` can bind the exact
+registry, cohort, and isolated `c10-p0`/`c10-p1` configuration into an immutable
+plan. `runner.py` is a pure, data-only session helper with no runtime hooks,
+subprocesses, lock access, or callback-driven execution path. The dedicated
+Linux-only production host owns runtime transitions, locking, durable host
+artifacts, and capability handling. `compare.py` accepts only the canonical
+durable arm ledger and can only produce an offline operator-review candidate,
+never an executable adoption decision.
 
 The receipt producers do not change this admission boundary. Inventory
 producers, strict-detail Batch A producers, and the Foundry Batch B producer
@@ -76,7 +81,9 @@ in focused host modules.
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
 and transition fingerprints, immutable per-source cohort count/hash bindings,
-serial per-source monotonic timing, and saturation evidence. P0
+exact per-source scheduled count/hash bindings for every cohort member, serial
+per-source monotonic timing, and saturation evidence from the reviewed
+`playwright` engine. P0
 must demonstrate four active scheduled members and P1 ten, with at least that
 many scheduled members. The comparator derives each source's qualified rows
 per minute from that source's sealed interval and a row count constrained to
@@ -121,10 +128,11 @@ converted into an assumed throughput observation.
 no-write request descriptors only. `candidate_registry()` exposes them for
 review alongside the other C10 candidates, but all retain
 `fully_verified = False`; neither `default_registry()` nor plan admission can
-execute them. A later registry-only admission change must independently prove
-each adapter's private receipt root, actual no-write transport, and
-source-specific attrition behavior; it must not turn these fixtures or
-descriptors into a generic fetcher.
+execute them. Mutable adapter fields are not admission authority. A later
+repository-authority change must pin a reviewed cohort and actual source-tree
+digests only after independently proving each adapter's private receipt root,
+actual no-write transport, and source-specific attrition behavior; it must not
+turn these fixtures or descriptors into a generic fetcher.
 
 The TypeScript receipt package additionally has source-owned inventory
 producers for seven authoritative-inventory sources and one Batch B

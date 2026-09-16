@@ -272,40 +272,172 @@ class PrivateReceiptStore:
 
 
 class C10SessionStore:
-    """A durable, plan-bound one-arm claim ledger owned by the Python host."""
+    """A durable, plan-bound one-arm ledger rooted at one verified directory.
+
+    The ledger root is deliberately opened once and every record operation is
+    relative to that descriptor.  The name is re-checked against the descriptor
+    before and after each operation: replacing the root can therefore only stop
+    the protocol, not redirect a read or durable write into an attacker root.
+    """
 
     def __init__(self, path: Path) -> None:
         if not path.is_absolute():
             raise C10Error("C10 durable session path must be absolute")
         self.path = path
+        self._root = path.parent
+        self._root_fd = -1
+        self._root_identity: tuple[int, int] | None = None
+
+    def close(self) -> None:
+        if self._root_fd >= 0:
+            os.close(self._root_fd)
+            self._root_fd = -1
+
+    def __del__(self) -> None:
+        self.close()
 
     def _arm_path(self, index: int) -> Path:
         return self.path.with_name(f"{self.path.stem}.arm-{index}.json")
 
+    def _arm_name(self, index: int) -> str:
+        return self._arm_path(index).name
+
+    def _root_descriptor(self, *, create: bool) -> int | None:
+        """Return the checked ledger-root descriptor without following its name."""
+        if self._root_fd >= 0:
+            self._assert_root()
+            return self._root_fd
+        try:
+            if create:
+                self._root.mkdir(mode=_ROOT_MODE, parents=True, exist_ok=True)
+            else:
+                try:
+                    os.lstat(self._root)
+                except FileNotFoundError:
+                    return None
+            self._root_fd = os.open(
+                self._root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            self._assert_root()
+            return self._root_fd
+        except FileNotFoundError:
+            if not create:
+                return None
+            raise C10Error("C10 durable session ledger root is unavailable") from None
+        except OSError as exc:
+            self.close()
+            raise C10Error("C10 durable session ledger root is unsafe") from exc
+        except BaseException:
+            self.close()
+            raise
+
+    def _assert_root(self) -> None:
+        if self._root_fd < 0:
+            raise C10Error("C10 durable session ledger root is closed")
+        try:
+            opened, named = os.fstat(self._root_fd), os.lstat(self._root)
+        except OSError as exc:
+            raise C10Error("C10 durable session ledger root identity changed") from exc
+        identity = (opened.st_dev, opened.st_ino)
+        owner = os.geteuid()
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or opened.st_uid != owner
+            or stat.S_IMODE(opened.st_mode) != _ROOT_MODE
+            or stat.S_ISLNK(named.st_mode)
+            or not stat.S_ISDIR(named.st_mode)
+            or named.st_uid != owner
+            or stat.S_IMODE(named.st_mode) != _ROOT_MODE
+            or (named.st_dev, named.st_ino) != identity
+            or (self._root_identity is not None and self._root_identity != identity)
+        ):
+            raise C10Error("C10 durable session ledger root identity changed")
+        self._root_identity = identity
+
+    def _record_exists(self, name: str, descriptor: int) -> bool:
+        self._assert_root()
+        try:
+            metadata = os.lstat(name, dir_fd=descriptor)
+        except FileNotFoundError:
+            self._assert_root()
+            return False
+        except OSError as exc:
+            raise C10Error("C10 durable session ledger cannot be read") from exc
+        self._assert_root()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise C10Error("C10 durable session ledger is unsafe")
+        return True
+
+    def _record_names(self, descriptor: int) -> list[str]:
+        self._assert_root()
+        try:
+            names = os.listdir(descriptor)
+        except OSError as exc:
+            raise C10Error("C10 durable session ledger cannot be read") from exc
+        self._assert_root()
+        return names
+
+    def _write_new_record(
+        self, name: str, record: Mapping[str, Any], *, error: str
+    ) -> None:
+        descriptor = self._root_descriptor(create=True)
+        assert descriptor is not None
+        self._assert_root()
+        file_descriptor = -1
+        try:
+            file_descriptor = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                _FILE_MODE,
+                dir_fd=descriptor,
+            )
+            with os.fdopen(file_descriptor, "wb") as handle:
+                file_descriptor = -1
+                handle.write(canonical_bytes(record))
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._assert_root()
+            os.fsync(descriptor)
+            self._assert_root()
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            raise C10Error(error) from exc
+        finally:
+            if file_descriptor >= 0:
+                os.close(file_descriptor)
+
     def _next(self, plan: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
         """Derive progress solely from immutable protocol/plan-owned arm records."""
         validate_plan(plan)
-        if self.path.with_suffix(".quarantine").exists():
+        descriptor = self._root_descriptor(create=False)
+        if descriptor is None:
+            return 0, {
+                "schema_version": 1,
+                "kind": "cre_capacity_c10_v1_session",
+                "plan_sha256": plan["plan_sha256"],
+                "consumed_arm_indexes": [],
+            }
+        if self._record_exists(self.path.with_suffix(".quarantine").name, descriptor):
             raise C10Error("C10 protocol ledger requires terminal recovery")
-        expected = {
-            self._arm_path(index).name for index in range(len(plan["arm_sequence"]))
-        }
-        if self.path.parent.exists() and any(
+        expected = {self._arm_name(index) for index in range(len(plan["arm_sequence"]))}
+        if any(
             candidate.name not in expected
-            for candidate in self.path.parent.glob(f"{self.path.stem}.arm-*.json")
+            for candidate in map(Path, self._record_names(descriptor))
+            if candidate.match(f"{self.path.stem}.arm-*.json")
         ):
             raise C10Error("C10 immutable protocol ledger has an extra arm record")
         consumed: list[int] = []
         for index in range(len(plan["arm_sequence"])):
-            target = self._arm_path(index)
-            if not target.exists():
+            name = self._arm_name(index)
+            if not self._record_exists(name, descriptor):
                 if any(
-                    self._arm_path(later).exists()
+                    self._record_exists(self._arm_name(later), descriptor)
                     for later in range(index + 1, len(plan["arm_sequence"]))
                 ):
                     raise C10Error("C10 immutable protocol ledger has an arm gap")
                 break
-            record = self._read_record(target)
+            record = self._read_record(name)
             arm = record.get("arm")
             if (
                 record.get("plan_sha256") != plan["plan_sha256"]
@@ -330,12 +462,14 @@ class C10SessionStore:
 
     def claim(self, plan: Mapping[str, Any]) -> Mapping[str, Any]:
         validate_plan(plan)
+        self._root_descriptor(create=True)
         index, internal_session = self._next(plan)
         proposed = claim_next_arm(plan, internal_session)
         source_session_digest = sha256(internal_session)
-        self.path.parent.mkdir(mode=_ROOT_MODE, parents=True, exist_ok=True)
-        target = self._arm_path(index)
-        if target.exists():
+        descriptor = self._root_descriptor(create=True)
+        assert descriptor is not None
+        name = self._arm_name(index)
+        if self._record_exists(name, descriptor):
             raise C10Error("C10 durable protocol arm already has a claim")
         record = {
             "kind": "cre_capacity_c10_v3_host_claim",
@@ -351,28 +485,14 @@ class C10SessionStore:
             "state": "claimed",
         }
         record["session_sha256"] = sha256(record)
-        descriptor = -1
         try:
-            descriptor = os.open(
-                target,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                _FILE_MODE,
+            self._write_new_record(
+                name,
+                record,
+                error="C10 durable session ledger could not be persisted",
             )
-            with os.fdopen(descriptor, "wb") as handle:
-                descriptor = -1
-                handle.write(canonical_bytes(record))
-                handle.flush()
-                os.fsync(handle.fileno())
-            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(parent)
-            finally:
-                os.close(parent)
         except FileExistsError as exc:
             raise C10Error("C10 durable protocol arm already has a claim") from exc
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
         return record
 
     def assert_available(self, plan: Mapping[str, Any]) -> None:
@@ -384,16 +504,26 @@ class C10SessionStore:
         index, _session = self._next(plan)
         return index
 
-    def _read_record(self, target: Path) -> Mapping[str, Any]:
+    def _read_record(self, name: str) -> Mapping[str, Any]:
+        descriptor = self._root_descriptor(create=False)
+        if descriptor is None:
+            raise C10Error("C10 durable session ledger cannot be read")
+        self._assert_root()
         try:
-            metadata = os.lstat(target)
+            file_descriptor = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            with os.fdopen(file_descriptor, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                payload = json.loads(handle.read().decode("utf-8"))
+            self._assert_root()
             if (
                 not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
                 or stat.S_IMODE(metadata.st_mode) != _FILE_MODE
                 or metadata.st_nlink != 1
             ):
                 raise C10Error("C10 durable session ledger is unsafe")
-            payload = json.loads(target.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise C10Error("C10 durable session ledger cannot be read") from exc
         if not isinstance(payload, Mapping):
@@ -406,7 +536,7 @@ class C10SessionStore:
         arm = claim.get("arm")
         if not isinstance(arm, Mapping) or type(arm.get("index")) is not int:
             raise C10Error("C10 durable claim arm is invalid")
-        payload = self._read_record(self._arm_path(arm["index"]))
+        payload = self._read_record(self._arm_name(arm["index"]))
         if (
             not isinstance(payload, Mapping)
             or payload.get("plan_sha256") != plan.get("plan_sha256")
@@ -429,34 +559,27 @@ class C10SessionStore:
         index = (
             claim.get("arm", {}).get("index") if isinstance(claim, Mapping) else None
         )
-        target = (
-            self._arm_path(index).with_suffix(".quarantine")
+        name = (
+            self._arm_path(index).with_suffix(".quarantine").name
             if type(index) is int
-            else self.path.with_suffix(".quarantine")
+            else self.path.with_suffix(".quarantine").name
         )
-        target.parent.mkdir(mode=_ROOT_MODE, parents=True, exist_ok=True)
         try:
-            descriptor = os.open(
-                target,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                _FILE_MODE,
+            self._write_new_record(
+                name,
+                record,
+                error="C10 quarantine evidence could not be persisted",
             )
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(canonical_bytes(record))
-                handle.flush()
-                os.fsync(handle.fileno())
-            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(parent)
-            finally:
-                os.close(parent)
         except FileExistsError:
             return
-        except OSError as exc:
-            raise C10Error("C10 quarantine evidence could not be persisted") from exc
 
     def record_terminal(
-        self, claim: Mapping[str, Any], authenticated_arm: Mapping[str, Any]
+        self,
+        plan: Mapping[str, Any],
+        claim: Mapping[str, Any],
+        authenticated_arm: Mapping[str, Any],
+        *,
+        deadline: float | None = None,
     ) -> Mapping[str, Any]:
         """Durably bind one authenticated host arm before lock release.
 
@@ -464,6 +587,13 @@ class C10SessionStore:
         envelope. Browser bodies remain in the private sealed receipt root.
         ``O_EXCL`` makes a second terminalization of the same claim a stop.
         """
+        descriptor = self._root_descriptor(create=False)
+        if descriptor is None:
+            raise C10Error("C10 terminal evidence could not be persisted")
+        self._assert_root()
+        self._validate_authenticated_terminal(
+            plan, authenticated_arm, deadline=deadline
+        )
         claim_id = claim.get("claim_id")
         if not isinstance(claim_id, str) or not claim_id:
             raise C10Error("C10 terminalization requires a durable claim")
@@ -482,30 +612,39 @@ class C10SessionStore:
         arm = claim.get("arm")
         if not isinstance(arm, Mapping) or type(arm.get("index")) is not int:
             raise C10Error("C10 terminalization requires an exact arm")
-        arm_path = self._arm_path(arm["index"])
-        expected = self._read_record(arm_path)
+        arm_name = self._arm_name(arm["index"])
+        expected = self._read_record(arm_name)
         if dict(expected) != dict(claim):
             raise C10Error("C10 terminalization claim no longer matches the ledger")
-        target = arm_path.with_name(
-            f".{arm_path.name}.terminal-{secrets.token_hex(16)}"
-        )
+        descriptor = self._root_descriptor(create=False)
+        assert descriptor is not None
+        temporary = f".{arm_name}.terminal-{secrets.token_hex(16)}"
+        self._assert_root()
         try:
-            descriptor = os.open(
-                target,
+            file_descriptor = os.open(
+                temporary,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                 _FILE_MODE,
+                dir_fd=descriptor,
             )
-            with os.fdopen(descriptor, "wb") as handle:
+            with os.fdopen(file_descriptor, "wb") as handle:
                 handle.write(canonical_bytes(record))
                 handle.flush()
                 os.fsync(handle.fileno())
-            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.replace(target, arm_path)
-                os.fsync(parent)
-            finally:
-                os.close(parent)
+            self._assert_root()
+            os.replace(
+                temporary,
+                arm_name,
+                src_dir_fd=descriptor,
+                dst_dir_fd=descriptor,
+            )
+            os.fsync(descriptor)
+            self._assert_root()
         except OSError as exc:
+            try:
+                os.unlink(temporary, dir_fd=descriptor)
+            except OSError:
+                pass
             raise C10Error("C10 terminal evidence could not be persisted") from exc
         return record
 
@@ -520,7 +659,7 @@ class C10SessionStore:
             raise C10Error("C10 terminal revalidation deadline expired")
         if type(index) is not int or index < 0 or index >= len(plan["arm_sequence"]):
             raise C10Error("C10 terminal arm index is invalid")
-        record = self._read_record(self._arm_path(index))
+        record = self._read_record(self._arm_name(index))
         envelope = record.get("authenticated_arm")
         if (
             record.get("kind") != "cre_capacity_c10_v3_host_terminal"
@@ -529,6 +668,24 @@ class C10SessionStore:
             or record.get("authenticated_arm_sha256") != sha256(envelope)
         ):
             raise C10Error("C10 terminal ledger cannot be reverified")
+        self._validate_authenticated_terminal(
+            plan, envelope, deadline=verification_deadline
+        )
+        return envelope
+
+    def _validate_authenticated_terminal(
+        self,
+        plan: Mapping[str, Any],
+        envelope: Mapping[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        """Verify an authenticated envelope before it can enter the ledger."""
+        verification_deadline = (
+            deadline if deadline is not None else time.monotonic() + 30
+        )
+        if time.monotonic() >= verification_deadline:
+            raise C10Error("C10 terminal revalidation deadline expired")
         # Import locally to avoid a host-store/comparator import cycle.
         from . import compare
 
@@ -603,4 +760,3 @@ class C10SessionStore:
                 evidence.append(item)
         if host.get("evidence_manifest_sha256") != sha256(evidence):
             raise C10Error("C10 terminal receipt manifest hash is invalid")
-        return envelope
