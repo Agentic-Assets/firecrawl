@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`e2b0f2b27ed41f4c47205ca5dd4516572ef099ba`
+`5448aa0d24f66de45cf124b8e17950f8ce0090f0`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -67,21 +67,24 @@ not change the Wave 1 execution boundary.
 - Every strict-detail member expansion is anchored to the exact sealed
   enumeration event that exposed its native route, including members discovered
   only on later pages or slices.
+- Execution and comparison revalidate the canonical policy digest, exact source
+  set and schema, fixed 12/8 plane allocation, and exact P0/P1 resource tuples.
+  A caller cannot make an arbitrary direct plan admissible merely by rehashing it.
 
 ## Verification
 
-The final code candidate `e2b0f2b27ed41f4c47205ca5dd4516572ef099ba`
+The final code candidate `5448aa0d24f66de45cf124b8e17950f8ce0090f0`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest -q`: 3210 passed, 18 skipped.
+- `python3 -m pytest -q`: 3211 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 906 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Nine exact-head Codex review passes produced twenty-one material findings. All
-twenty-one were confirmed and fixed: immutable cohort binding, per-source timing,
+Ten exact-head Codex review passes produced twenty-two material findings. All
+twenty-two were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -91,7 +94,8 @@ endpoint/envelope, Colliers' native page-count field, and empty-ledger-only
 durable session creation, stable-transition rollback attestation, and aggregate
 JLL enumeration across exact cohort strata, plus complete JLL Investor pages,
 Colliers slices, and Marcus map inventory, with each member graph expansion
-bound to the enumeration event that exposed it.
+bound to the enumeration event that exposed it, plus canonical fixed-policy
+revalidation at the execution and comparison boundary.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
