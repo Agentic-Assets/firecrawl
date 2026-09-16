@@ -185,6 +185,15 @@ test("Buildout refuses URL aliases and invalid native show_link identities", asy
   assert.equal(context.transport.requestAccounting().events[0]?.outcome, "rejected");
 });
 
+test("Buildout request cards use the provider-supported array stable sort", () => {
+  for (const sourceKey of ["svn", "lee-associates", "bull-realty"] as const) {
+    const producer = inventoryReceiptProducers.get(sourceKey)!;
+    const url = new URL(producer.initialCards[0]!.url);
+    assert.deepEqual(url.searchParams.getAll("q[s][]"), ["created_at asc, id asc"]);
+    assert.equal(url.searchParams.has("q[s]"), false);
+  }
+});
+
 test("Buildout refuses a native show_link without its provider propertyId", async () => {
   const producer = inventoryReceiptProducers.get("svn")!;
   const fake = new FakeDirectTransport("svn");
