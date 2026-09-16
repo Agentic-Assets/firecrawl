@@ -2,7 +2,7 @@
 import {
   C10ReceiptError,
 } from "../contracts.js";
-import type { RequestCardInput, SourceProjection } from "../transport.js";
+import type { RequestCardInput, SealedTransportEvent, SourceProjection } from "../transport.js";
 import type { C10Member } from "../producer.js";
 import {
   COLLIERS_PAGE_SIZE,
@@ -140,11 +140,12 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
     sourceKey: "colliers",
     async enumerate(context, sourcePlan) {
       assertPlan(plan);
-      const events = [];
+      const events: Readonly<SealedTransportEvent<SourceProjection>>[] = [];
       const projections: SourceProjection[] = [];
       const routes = new Map<string, { readonly canonicalUrl: string | null; readonly detailPv: string | null; readonly projectId: string }>();
       const providersByUrl = new Map<string, string>();
       const providersByPv = new Map<string, string>();
+      const parentsByProvider = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       for (const [index, slice] of plan.slices.entries()) {
         const mapEvent = await context.transport.oneShot(`colliers-map-enumeration-${index}`, (response) => {
           const payload = utf8Json(response.body, "Colliers map");
@@ -196,21 +197,25 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
           routes.set(card.projectId, card);
           providersByUrl.set(card.canonicalUrl, card.projectId);
           providersByPv.set(card.detailPv, card.projectId);
+          parentsByProvider.set(card.projectId, listEvent);
         }
         events.push(listEvent);
         projections.push({ list: listEvent.projection, map: mapEvent.projection });
       }
       const memberRoutes = new Map<string, string>();
+      const memberParents = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       for (const member of sourcePlan.members) {
         const observed = routes.get(member.providerId);
-        if (!observed || observed.canonicalUrl !== member.canonicalUrl || observed.detailPv !== member.detailPv) {
+        const parent = parentsByProvider.get(member.providerId);
+        if (!observed || !parent || observed.canonicalUrl !== member.canonicalUrl || observed.detailPv !== member.detailPv) {
           throw new C10ReceiptError("Colliers selected member is absent from native list/map enumeration");
         }
         memberRoutes.set(member.key, colliersSlpInitUrl(member.detailPv));
+        memberParents.set(member.key, parent);
       }
       return {
-        parent: events[0]!,
         evidence: { slices: projections },
+        memberParents,
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };

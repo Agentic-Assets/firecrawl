@@ -78,7 +78,20 @@ class FixtureTransport implements DirectProviderTransport {
 
 async function context(sourceKey: string, cards: readonly any[], fake: FixtureTransport) {
   const store = new MemoryReceiptStore();
-  return { transport: new SourceBoundOneShotTransport(sourceKey, binding, allowlistedCards(sourceKey, cards), store, fake) };
+  return {
+    store,
+    transport: new SourceBoundOneShotTransport(sourceKey, binding, allowlistedCards(sourceKey, cards), store, fake),
+  };
+}
+
+function expansionParentCardId(store: MemoryReceiptStore, sourceKey: string, memberCardId: string): string {
+  const expansionBytes = [...store.artifacts.entries()].find(([name]) =>
+    name.startsWith(`graph-${sourceKey}-${memberCardId}-`),
+  )?.[1];
+  assert.ok(expansionBytes);
+  const expansion = JSON.parse(Buffer.from(expansionBytes).toString("utf8"));
+  const parent = store.jsonFor(expansion.parent.privateEventSha256);
+  return (parent.card as { id: string }).id;
 }
 
 test("strict-detail rejects a same-source transport with a substituted initial host before request", async () => {
@@ -171,6 +184,7 @@ test("JLL reconciles cohort members across exact filter and page strata", async 
   const receiptContext = await context("jll", cards, fake);
   const producer = createJllReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
+  assert.equal(expansionParentCardId(receiptContext.store, "jll", "jll-member-1"), "jll-enumeration-1");
   await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
   await producer.produceMemberReceipt(receiptContext, plan.members[1]!);
   assert.deepEqual(
@@ -269,6 +283,10 @@ test("JLL Investor reconciles immutable members across exact search pages", asyn
   ], fake);
   const producer = createJllInvestorReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
+  assert.equal(
+    expansionParentCardId(receiptContext.store, "jll-investor", "jll-investor-member-0"),
+    "jll-investor-enumeration-1",
+  );
   await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
   assert.deepEqual(
     fake.cards.map((card) => card.id),
@@ -346,6 +364,10 @@ test("Colliers reconciles immutable members across exact map/list slices", async
   const receiptContext = await context("colliers", cards, fake);
   const producer = createColliersReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
+  assert.equal(
+    expansionParentCardId(receiptContext.store, "colliers", "colliers-member-1"),
+    "colliers-list-enumeration-1",
+  );
   await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
   await producer.produceMemberReceipt(receiptContext, plan.members[1]!);
   assert.deepEqual(

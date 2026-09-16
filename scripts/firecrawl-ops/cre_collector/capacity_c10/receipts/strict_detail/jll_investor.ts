@@ -2,7 +2,7 @@
 import {
   C10ReceiptError,
 } from "../contracts.js";
-import type { RequestCardInput, SourceProjection } from "../transport.js";
+import type { RequestCardInput, SealedTransportEvent, SourceProjection } from "../transport.js";
 import type { C10Member } from "../producer.js";
 import {
   JLL_INVESTOR_HOST,
@@ -108,10 +108,11 @@ function spec(plan: JllInvestorReceiptPlan): StrictDetailSourceSpec<JllInvestorR
     sourceKey: "jll-investor",
     async enumerate(context, sourcePlan) {
       validatePages(plan.pages);
-      const events = [];
+      const events: Readonly<SealedTransportEvent<SourceProjection>>[] = [];
       const projections: SourceProjection[] = [];
       const routes = new Map<string, { readonly canonicalUrl: string; readonly detailRoute: string; readonly providerId: string }>();
       const providersByUrl = new Map<string, string>();
+      const parentsByProvider = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       let expectedBuildId: string | null = null;
       let expectedCount: number | null = null;
       for (const [index, page] of plan.pages.entries()) {
@@ -157,21 +158,25 @@ function spec(plan: JllInvestorReceiptPlan): StrictDetailSourceSpec<JllInvestorR
           }
           routes.set(row.providerId, row);
           providersByUrl.set(row.canonicalUrl, row.providerId);
+          parentsByProvider.set(row.providerId, event);
         }
         events.push(event);
         projections.push(event.projection);
       }
       const memberRoutes = new Map<string, string>();
+      const memberParents = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       for (const member of sourcePlan.members) {
         const observed = routes.get(member.providerId);
-        if (!observed || observed.canonicalUrl !== member.canonicalUrl) {
+        const parent = parentsByProvider.get(member.providerId);
+        if (!observed || !parent || observed.canonicalUrl !== member.canonicalUrl) {
           throw new C10ReceiptError("JLL Investor selected member is absent from exact native enumeration");
         }
         memberRoutes.set(member.key, observed.detailRoute);
+        memberParents.set(member.key, parent);
       }
       return {
-        parent: events[0]!,
         evidence: { count: expectedCount, pages: projections },
+        memberParents,
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };

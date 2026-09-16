@@ -3,7 +3,7 @@ import {
   C10ReceiptError,
   canonicalJson,
 } from "../contracts.js";
-import type { RequestCardInput, SourceProjection } from "../transport.js";
+import type { RequestCardInput, SealedTransportEvent, SourceProjection } from "../transport.js";
 import type { C10Member } from "../producer.js";
 import {
   JLL_GRAPHQL_URL,
@@ -137,10 +137,11 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
     sourceKey: "jll",
     async enumerate(context, sourcePlan) {
       validateEnumerationSlices(plan.enumerations);
-      const events = [];
+      const events: Readonly<SealedTransportEvent<SourceProjection>>[] = [];
       const projections: SourceProjection[] = [];
       const byProvider = new Map<string, string>();
       const byUrl = new Map<string, string>();
+      const parentsByProvider = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       for (const [index, slice] of plan.enumerations.entries()) {
         const event = await context.transport.oneShot(`jll-enumeration-${index}`, (response) => {
           const parsed = parseJllGraphqlSearchEnvelope(utf8Json(response.body, "JLL GraphQL"));
@@ -185,25 +186,29 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
           }
           byProvider.set(providerId, canonicalUrl);
           byUrl.set(canonicalUrl, providerId);
+          if (!parentsByProvider.has(providerId)) parentsByProvider.set(providerId, event);
         }
         events.push(event);
         projections.push(event.projection);
       }
       const memberRoutes = new Map<string, string>();
+      const memberParents = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       for (const member of sourcePlan.members) {
         const observed = byProvider.get(member.providerId);
-        if (!observed || observed !== normalizedJllListingUrl(member.canonicalUrl)) {
+        const parent = parentsByProvider.get(member.providerId);
+        if (!observed || !parent || observed !== normalizedJllListingUrl(member.canonicalUrl)) {
           throw new C10ReceiptError("JLL selected member is absent from exact native enumeration");
         }
         memberRoutes.set(member.key, observed);
+        memberParents.set(member.key, parent);
       }
       return {
-        parent: events[0]!,
         evidence: {
           enumerations: projections,
           providerIds: [...byProvider.keys()],
           urls: [...byProvider.values()],
         },
+        memberParents,
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };

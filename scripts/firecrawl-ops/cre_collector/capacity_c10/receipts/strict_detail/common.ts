@@ -32,8 +32,8 @@ export interface StrictDetailPlan<Member extends C10Member> {
 }
 
 export interface EnumerationRun<Member extends C10Member> {
-  /** A sealed enumeration event which canonically anchors every member card. */
-  readonly parent: Readonly<SealedTransportEvent<SourceProjection>>;
+  /** The exact sealed enumeration event which exposed each member route. */
+  readonly memberParents: ReadonlyMap<string, Readonly<SealedTransportEvent<SourceProjection>>>;
   /** Source-local, canonical, body-free evidence. */
   readonly evidence: SourceProjection;
   /** Member keys observed in native enumeration, in canonical order. */
@@ -135,14 +135,21 @@ export class StrictDetailReceiptProducer<Member extends C10Member> implements Re
     }
     for (const member of this.plan.members) {
       const route = enumerated.memberRoutes.get(member.key);
-      if (!route) throw new C10ReceiptError("native enumeration omitted a canonical member route");
+      const parent = enumerated.memberParents.get(member.key);
+      if (!route || !parent) {
+        throw new C10ReceiptError("native enumeration omitted a canonical member route or parent event");
+      }
       this.routes.set(member.key, route);
+    }
+    if (enumerated.memberParents.size !== this.plan.members.length) {
+      throw new C10ReceiptError("native enumeration returned unexpected member parent events");
     }
     for (const [index, member] of this.plan.members.entries()) {
       const route = this.routes.get(member.key);
-      if (!route) throw new C10ReceiptError("strict-detail member route is unavailable");
+      const parent = enumerated.memberParents.get(member.key);
+      if (!route || !parent) throw new C10ReceiptError("strict-detail member route or parent is unavailable");
       const expansion = await context.transport.appendFrom(
-        enumerated.parent,
+        parent,
         {
           sourceKey: this.spec.sourceKey,
           stage: "member",

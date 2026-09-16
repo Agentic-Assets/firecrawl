@@ -107,15 +107,17 @@ function spec(plan: MarcusReceiptPlan): StrictDetailSourceSpec<MarcusReceiptMemb
       const activityIds = (mapEvent.projection as { readonly activityIds: readonly string[] }).activityIds;
       const available = new Set(activityIds);
       const memberRoutes = new Map<string, string>();
+      const memberParents = new Map<string, typeof mapEvent>();
       for (const member of sourcePlan.members) {
         if (!available.has(member.activityId)) {
           throw new C10ReceiptError("Marcus selected member is absent from exact native enumeration");
         }
         memberRoutes.set(member.key, member.activityId);
+        memberParents.set(member.key, mapEvent);
       }
       return {
-        parent: mapEvent,
         evidence: { count: countEvent.projection, map: mapEvent.projection },
+        memberParents,
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
         memberRoutes,
       };
