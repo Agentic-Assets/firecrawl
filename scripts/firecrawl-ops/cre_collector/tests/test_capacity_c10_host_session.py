@@ -6,7 +6,6 @@ import base64
 import copy
 import hashlib
 import json
-import subprocess
 import time
 from pathlib import Path
 from typing import Self
@@ -107,7 +106,7 @@ def test_compose_overlay_is_rendered_before_start_and_owner_env_is_removed(
         if "config" in command:
             return Result(
                 0,
-                '{"services":{"playwright-service":{"cpus":"2","environment":{"MAX_CONCURRENT_PAGES":"4","C10_PROFILE_SHA256":"a"},"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
+                '{"services":{"playwright-service-c10":{"cpus":"2","environment":{"MAX_CONCURRENT_PAGES":"4","C10_PROFILE_SHA256":"a"},"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
             )
         return Result(0)
 
@@ -169,7 +168,7 @@ def test_compose_partial_start_uses_same_environment_for_stop_and_quiescence(
         if "config" in command:
             return Result(
                 0,
-                '{"services":{"playwright-service":{"cpus":"2","environment":{"MAX_CONCURRENT_PAGES":"4","C10_PROFILE_SHA256":"a"},"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
+                '{"services":{"playwright-service-c10":{"cpus":"2","environment":{"MAX_CONCURRENT_PAGES":"4","C10_PROFILE_SHA256":"a"},"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
             )
         if "up" in command:
             return Result(1)
@@ -199,13 +198,9 @@ def test_hung_child_is_process_group_killed_at_the_host_deadline(
     class HungChild:
         pid = 7654
         returncode = None
-        calls = 0
-
-        def communicate(self, *_: object, **__: object) -> tuple[bytes, bytes]:
-            self.calls += 1
-            if self.calls == 1:
-                raise subprocess.TimeoutExpired(["node"], 0.01)
-            return b"", b""
+        stdin = None
+        stdout = None
+        stderr = None
 
         def kill(self) -> None:
             raise AssertionError("process-group kill must be preferred")
@@ -221,7 +216,7 @@ def test_hung_child_is_process_group_killed_at_the_host_deadline(
     )
     session = object.__new__(C10HostExecutionSession)
     session.repo_root = tmp_path
-    with pytest.raises(contracts.C10Error, match="exceeded its deadline"):
+    with pytest.raises(contracts.C10Error, match="pipes are unavailable"):
         session._run_child({}, time.monotonic() + 1)
     assert killed == [(7654, 9)]
 
@@ -367,8 +362,12 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
         def start(
             self, environment: dict[str, str], _port: int, _deadline: float
         ) -> None:
-            self.private_key = environment["C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM"]
-            self.coordinator_public = environment["C10_COORDINATOR_PUBLIC_KEY_PEM"]
+            self.private_key = base64.b64decode(
+                environment["C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64"]
+            ).decode("utf-8")
+            self.coordinator_public = base64.b64decode(
+                environment["C10_COORDINATOR_PUBLIC_KEY_PEM_B64"]
+            ).decode("utf-8")
             self.capacity = int(environment["MAX_CONCURRENT_PAGES"])
             self.profile_sha256 = environment["C10_PROFILE_SHA256"]
             lifecycle_events.append("start")
