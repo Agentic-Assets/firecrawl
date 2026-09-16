@@ -19,6 +19,7 @@ from typing import Any, Self
 from .contracts import (
     C10Error,
     claim_next_arm,
+    new_session,
     require_sha256,
     sha256,
     validate_plan,
@@ -278,6 +279,10 @@ class DurableArmSessionStore:
         validate_session(plan, supplied)
         stored = self._read_state()
         if stored is None:
+            if dict(supplied) != new_session(plan):
+                raise C10Error(
+                    "C10 new durable session must start from the empty arm ledger"
+                )
             return {
                 "schema_version": SCHEMA_VERSION,
                 "kind": STATE_KIND,

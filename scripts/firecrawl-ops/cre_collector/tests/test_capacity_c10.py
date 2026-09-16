@@ -302,6 +302,22 @@ def test_durable_claim_is_atomic_terminal_and_never_replays_after_recovery(
             recovered.claim(plan, initial)
 
 
+def test_new_durable_ledger_rejects_advanced_session_before_claim(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    initial = runner.initial_session(plan)
+    advanced = contracts.claim_next_arm(plan, initial)["session"]
+    path = tmp_path / "private" / "session.json"
+    path.parent.mkdir(mode=0o700)
+
+    with session_store.DurableArmSessionStore(path) as store:
+        with pytest.raises(contracts.C10Error, match="must start from the empty"):
+            store.claim(plan, advanced)
+
+    assert not path.exists()
+
+
 def test_durable_terminal_result_rejects_tamper_and_oversize(
     tmp_path: Path,
 ) -> None:
