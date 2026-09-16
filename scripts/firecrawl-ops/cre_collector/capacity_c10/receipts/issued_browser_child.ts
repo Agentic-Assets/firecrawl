@@ -5,6 +5,7 @@
  */
 
 const MAX_FRAME_BYTES = 64 * 1024;
+const MAX_JSON_DEPTH = 24;
 const PATH = "/internal/c10/v3/browser-execute";
 
 type Issued = Readonly<{
@@ -23,6 +24,12 @@ function exact(value: unknown, fields: readonly string[]): value is Record<strin
 function parseIssued(raw: string): Issued {
   if (Buffer.byteLength(raw, "utf8") > MAX_FRAME_BYTES) throw new Error("C10 child frame too large");
   const value: unknown = JSON.parse(raw);
+  const visit = (input: unknown, depth = 0): void => {
+    if (depth > MAX_JSON_DEPTH) throw new Error("C10 child JSON is too deep");
+    if (Array.isArray(input)) input.forEach((item) => visit(item, depth + 1));
+    else if (input && typeof input === "object") Object.values(input).forEach((item) => visit(item, depth + 1));
+  };
+  visit(value);
   if (!exact(value, ["authorization", "capability", "card", "endpoint", "hostTransportKey"]) || typeof value.endpoint !== "string" || typeof value.authorization !== "string" || typeof value.hostTransportKey !== "string" || !exact(value.capability, ["binding", "coordinatorKeyId", "expiresAtMs", "nonce", "protocolVersion", "sourceKey"]) || !value.card || typeof value.card !== "object" || Array.isArray(value.card)) throw new Error("C10 child frame is invalid");
   const endpoint = new URL(value.endpoint);
   if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || endpoint.port === "" || endpoint.pathname !== "/" || endpoint.search || endpoint.hash || endpoint.username || endpoint.password) throw new Error("C10 child endpoint is not issued loopback");
@@ -31,7 +38,13 @@ function parseIssued(raw: string): Issued {
 
 async function main(): Promise<void> {
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    const next = Buffer.from(chunk);
+    bytes += next.byteLength;
+    if (bytes > MAX_FRAME_BYTES) throw new Error("C10 child frame too large");
+    chunks.push(next);
+  }
   const issued = parseIssued(Buffer.concat(chunks).toString("utf8").trim());
   const response = await fetch(`${issued.endpoint}${PATH}`, {
     method: "POST",

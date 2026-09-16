@@ -67,6 +67,7 @@ const C10_COORDINATOR_PUBLIC_KEY = process.env.C10_COORDINATOR_PUBLIC_KEY_PEM;
 const C10_SIDECAR_EVIDENCE_PRIVATE_KEY = process.env.C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM;
 const C10_HOST_TRANSPORT_V3_KEY = process.env.PLAYWRIGHT_HOST_TRANSPORT_V3_KEY;
 const C10_BROWSER_INTERNAL_PORT = process.env.C10_BROWSER_INTERNAL_PORT;
+const C10_PROFILE_SHA256 = process.env.C10_PROFILE_SHA256;
 const C10_BROWSER_TEST_LOCAL_TARGETS = process.env.NODE_ENV === "test" && process.env.C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS === "true";
 const c10Capabilities = new C10SidecarCapabilityRegistry();
 
@@ -78,7 +79,7 @@ function validC10HostTransportKey(value: string | undefined): boolean {
 }
 
 const c10V3Enabled = Boolean(
-  C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_KEY && C10_HOST_TRANSPORT_V3_KEY && C10_BROWSER_INTERNAL_PORT,
+  C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_KEY && C10_HOST_TRANSPORT_V3_KEY && C10_BROWSER_INTERNAL_PORT && C10_PROFILE_SHA256,
 );
 
 class InsecureConnectionError extends Error {
@@ -734,6 +735,7 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
       evidenceKeyId: publicKeyId(createPublicKey(C10_SIDECAR_EVIDENCE_PRIVATE_KEY).export({ type: "spki", format: "pem" }).toString()),
       activePages: MAX_CONCURRENT_PAGES - c10PageLeasePool.availableCount(),
       configuredCapacity: MAX_CONCURRENT_PAGES,
+      profileSha256: C10_PROFILE_SHA256,
       replayEntries: c10Capabilities.size(),
     };
     res.status(200).json({ ...health, healthSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, health) });
@@ -1052,8 +1054,8 @@ app.post("/scrape", async (req: Request, res: Response) => {
 });
 
 const start = async () => {
-  if ((C10_COORDINATOR_PUBLIC_KEY || C10_SIDECAR_EVIDENCE_PRIVATE_KEY || C10_HOST_TRANSPORT_V3_KEY || C10_BROWSER_INTERNAL_PORT) && !c10V3Enabled) {
-    throw new Error("C10 v3 requires coordinator public key, sidecar evidence private key, host transport key, and port");
+  if ((C10_COORDINATOR_PUBLIC_KEY || C10_SIDECAR_EVIDENCE_PRIVATE_KEY || C10_HOST_TRANSPORT_V3_KEY || C10_BROWSER_INTERNAL_PORT || C10_PROFILE_SHA256) && !c10V3Enabled) {
+    throw new Error("C10 v3 requires coordinator public key, sidecar evidence private key, host transport key, profile identity, and port");
   }
   if (c10V3Enabled && (!C10_BROWSER_INTERNAL_PORT || !/^[1-9][0-9]{0,4}$/.test(C10_BROWSER_INTERNAL_PORT))) {
     throw new Error("C10_BROWSER_INTERNAL_PORT is invalid");

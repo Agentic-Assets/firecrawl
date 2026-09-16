@@ -3,11 +3,10 @@
 Wave 1 is intentionally an offline admission and evidence protocol. It now
 also includes sealed receipt substrate and source-owned candidate producers,
 but it does not provide a general collector CLI, generic network transport,
-scraper, public controller integration, or generic source adapter. The sole
-concrete exception is the reviewed JLL browser library described below: it
-uses a private loopback listener, a short-lived one-time signed capability,
-and an injected held coordinator lock. No ordinary C10 component opens a
-provider connection or can execute a request by itself.
+scraper, public controller integration, or generic source adapter. No
+TypeScript component opens a provider connection or can execute a request by
+itself: the Linux-only Python host coordinator owns the lock, sealed card
+manifest, Compose lifecycle, capability signer, and private artifacts.
 
 `policy.py` seals the fixed 20-source, 12/8-plane matrix. `adapters.py`
 requires an exact registry where every source-specific adapter is explicitly
@@ -35,17 +34,11 @@ alternate runtime profile is the canonical
 `cre_capacity_c10_profiles_v1.json`, named with `experiment_kind="C10"`; the
 ordinary controller retains its historic default profile behavior.
 
-The reviewed JLL browser library is the single source-specific exception to
-the former interface-only substrate. `receipts/jll_browser.ts` binds an exact
-ordered 16-member JLL cohort, its digest, all 17 request cards, and a held C10
-coordinator lock to either a one-member fidelity smoke or a 16-member P0/P1
-saturation calibration. It can only use the private loopback Playwright
-executor and fails before execution unless the source cohort, arm binding,
-card hashes, Linux receipt-store support, sidecar health, and coordinator lock
-are all present. `local_operator_preflight.ts` provisions a generated shared
-sidecar/coordinator secret only for a callback and restores the environment on
-every exit. It never writes, logs, or persists that secret. These are library
-entrypoints deliberately, not ordinary collector commands.
+The former TypeScript JLL executor, lifecycle preflight, and local browser
+constructor have been removed. A host creates a sealed, plan-bound JLL card
+registry and asks the narrow issued-capability child to perform only a single
+host-issued card. It cannot receive or create a lock, keypair, receipt store,
+Compose configuration, or arbitrary card.
 
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot

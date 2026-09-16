@@ -9,7 +9,12 @@ import pytest
 from test_capacity_c10 import _plan
 
 from capacity_c10 import contracts
-from capacity_c10.host_session import C10SessionStore, _OpenSsl
+from capacity_c10.host_session import (
+    C10SealedCardRegistry,
+    C10SessionStore,
+    DockerComposeSidecar,
+    _OpenSsl,
+)
 
 
 def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
@@ -50,5 +55,53 @@ def test_typescript_public_barrel_does_not_export_lifecycle_or_key_minting() -> 
 
     assert "local_browser_executor" not in barrel
     assert "local_operator_preflight" not in barrel
+    assert not (root / "local_browser_executor.ts").exists()
+    assert not (root / "local_operator_preflight.ts").exists()
+    assert not (root / "jll_browser.ts").exists()
     assert "generateKeyPair" not in child
     assert "PRIVATE_KEY" not in child
+
+
+def test_sealed_registry_rejects_arbitrary_non_jll_or_oversized_cards() -> None:
+    plan = _plan()
+    valid = {
+        "id": "jll-1",
+        "sourceKey": "jll",
+        "cacheMode": "no-store",
+        "maxBytes": 1024,
+    }
+    registry = C10SealedCardRegistry(plan, {"jll-1": valid})
+    assert registry.resolve("jll-1")["id"] == "jll-1"
+    with pytest.raises(contracts.C10Error, match="sealed registry"):
+        registry.resolve("arbitrary")
+    invalid = {**valid, "sourceKey": "cbre"}
+    with pytest.raises(contracts.C10Error, match="JLL"):
+        C10SealedCardRegistry(plan, {"jll-1": invalid})
+
+
+def test_compose_overlay_is_rendered_before_start_and_owner_env_is_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        def __init__(self, code: int, stdout: str = "") -> None:
+            self.returncode, self.stdout = code, stdout
+
+    def fake_run(command: list[str], **_: object) -> Result:
+        calls.append(command)
+        if "config" in command:
+            return Result(
+                0,
+                '{"services":{"playwright-service":{"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
+            )
+        return Result(0)
+
+    monkeypatch.setattr("capacity_c10.host_session.subprocess.run", fake_run)
+    lifecycle = DockerComposeSidecar(tmp_path)
+    lifecycle.start({"C10_BROWSER_CPUS": "2"}, 4444, time.monotonic() + 10)
+    lifecycle.stop(time.monotonic() + 10)
+
+    assert all("docker-compose.yaml" in call for call in calls)
+    assert any("config" in call for call in calls)
+    assert lifecycle._env_file is None
