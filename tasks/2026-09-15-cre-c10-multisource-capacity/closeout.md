@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`624a4064f8a592e032d0df8da89ee183b3ac6141`
+`e2b0f2b27ed41f4c47205ca5dd4516572ef099ba`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -64,10 +64,13 @@ not change the Wave 1 execution boundary.
   represented by the cohort and reconcile native identities across the combined
   responses. Marcus reconciles the complete map inventory to the provider's
   native count before it admits activity-bound member cards.
+- Every strict-detail member expansion is anchored to the exact sealed
+  enumeration event that exposed its native route, including members discovered
+  only on later pages or slices.
 
 ## Verification
 
-The final code candidate `624a4064f8a592e032d0df8da89ee183b3ac6141`
+The final code candidate `e2b0f2b27ed41f4c47205ca5dd4516572ef099ba`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
@@ -77,8 +80,8 @@ correction:
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Eight exact-head Codex review passes produced twenty material findings. All
-twenty were confirmed and fixed: immutable cohort binding, per-source timing,
+Nine exact-head Codex review passes produced twenty-one material findings. All
+twenty-one were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -87,7 +90,8 @@ ownership, fail-closed inventory HTML member paths, the Marcus native detail
 endpoint/envelope, Colliers' native page-count field, and empty-ledger-only
 durable session creation, stable-transition rollback attestation, and aggregate
 JLL enumeration across exact cohort strata, plus complete JLL Investor pages,
-Colliers slices, and Marcus map inventory.
+Colliers slices, and Marcus map inventory, with each member graph expansion
+bound to the enumeration event that exposed it.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
