@@ -6,6 +6,16 @@ export const C10_PROTOCOL_VERSION = 3 as const;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_LIFETIME_MS = 120_000;
 const MAX_REPLAY_ENTRIES = 4_096;
+/**
+ * The only reviewed admission lane.  A sidecar started with this lane executes
+ * a JLL enumeration whose membership is not yet known (the coordinator
+ * recomputes membership from the signed body); a sidecar without a lane keeps
+ * the strict P0/P1 contract where every enumeration carries sixteen routes.
+ */
+export const C10_JLL_ADMISSION_LANE = "jll-canonical-url-lexicographic-v1" as const;
+export type C10AdmissionLane = typeof C10_JLL_ADMISSION_LANE | null;
+export type C10SidecarParseOptions = Readonly<{ admissionLane: C10AdmissionLane }>;
+const STRICT_OPTIONS: C10SidecarParseOptions = Object.freeze({ admissionLane: null });
 
 export type C10Binding = Readonly<{ planSha256: string; cohortSha256: string; cardSha256: string; manifestSha256: string; sessionSha256: string; armSha256: string; profileSha256: string }>;
 export type C10SidecarCard = Readonly<{ id: string; sourceKey: string; stage: "enumeration" | "member"; method: "GET" | "POST"; url: string; allowedHost: string; headers: Record<string, string>; contentType: "application/json" | null; body: string | null; browserBootstrapUrl: string; cacheMode: "no-store"; timeoutMs: number; maxBytes: number; bodySha256: string | null; expectedMemberRoutes: readonly string[] | null }>;
@@ -36,7 +46,7 @@ function bindingFrom(value: unknown): C10Binding {
   if (!exactKeys(value, names)) throw new Error("C10 binding schema is invalid");
   return Object.freeze({ planSha256: digest(value.planSha256, "C10 plan"), cohortSha256: digest(value.cohortSha256, "C10 cohort"), cardSha256: digest(value.cardSha256, "C10 card"), manifestSha256: digest(value.manifestSha256, "C10 manifest"), sessionSha256: digest(value.sessionSha256, "C10 session"), armSha256: digest(value.armSha256, "C10 arm"), profileSha256: digest(value.profileSha256, "C10 profile") });
 }
-function cardFrom(value: unknown, sourceKey: string): C10SidecarCard {
+function cardFrom(value: unknown, sourceKey: string, options: C10SidecarParseOptions): C10SidecarCard {
   const names = ["allowedHost", "body", "bodySha256", "browserBootstrapUrl", "cacheMode", "contentType", "expectedMemberRoutes", "headers", "id", "maxBytes", "method", "sourceKey", "stage", "timeoutMs", "url"];
   if (!exactKeys(value, names)) throw new Error("C10 browser card schema is invalid");
   if (value.sourceKey !== sourceKey || (value.stage !== "enumeration" && value.stage !== "member") || (value.method !== "GET" && value.method !== "POST") || value.cacheMode !== "no-store") throw new Error("C10 browser card is not executable");
@@ -50,7 +60,9 @@ function cardFrom(value: unknown, sourceKey: string): C10SidecarCard {
   if (value.method === "GET" && (body !== null || contentType !== null || value.bodySha256 !== null)) throw new Error("C10 GET browser card cannot carry a body");
   if (value.method === "POST" && (body === null || contentType !== "application/json" || sha256(body) !== value.bodySha256)) throw new Error("C10 POST browser card body is invalid");
   const expectedMemberRoutes = value.expectedMemberRoutes;
-  if (value.stage === "enumeration") {
+  if (value.stage === "enumeration" && options.admissionLane !== null) {
+    if (expectedMemberRoutes !== null || sourceKey !== "jll") throw new Error("C10 admission enumeration card is outside its lane");
+  } else if (value.stage === "enumeration") {
     if (!Array.isArray(expectedMemberRoutes) || expectedMemberRoutes.length !== 16) throw new Error("C10 enumeration card lacks its sealed membership");
     const routes = expectedMemberRoutes.map((route) => {
       const parsed = new URL(text(route, "C10 expected member route", 2_048));
@@ -62,25 +74,25 @@ function cardFrom(value: unknown, sourceKey: string): C10SidecarCard {
     throw new Error("C10 member card cannot carry enumeration membership");
   }
   const timeoutMs = positiveInteger(value.timeoutMs, "C10 browser timeout"), maxBytes = positiveInteger(value.maxBytes, "C10 browser byte limit");
-  if (timeoutMs > 30_000 || maxBytes > 2 * 1024 * 1024) throw new Error("C10 browser card exceeds reviewed bounds");
-  return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs, maxBytes, bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body"), expectedMemberRoutes: value.stage === "enumeration" ? (expectedMemberRoutes as readonly string[]).map((route) => new URL(route).toString().replace(/\/$/, "")) : null });
+  if (timeoutMs > 90_000 || maxBytes > 2 * 1024 * 1024) throw new Error("C10 browser card exceeds reviewed bounds");
+  return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs, maxBytes, bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body"), expectedMemberRoutes: value.stage === "enumeration" && options.admissionLane === null ? (expectedMemberRoutes as readonly string[]).map((route) => new URL(route).toString().replace(/\/$/, "")) : null });
 }
-export function parseC10SidecarInput(value: unknown): C10SidecarInput {
+export function parseC10SidecarInput(value: unknown, options: C10SidecarParseOptions = STRICT_OPTIONS): C10SidecarInput {
   if (!exactKeys(value, ["capability", "card"]) || !exactKeys(value.capability, ["binding", "cardSequence", "coordinatorKeyId", "expiresAtMs", "hostDeadlineAtMs", "nonce", "protocolVersion", "sourceKey"])) throw new Error("C10 v3 browser request schema is invalid");
   const capability = value.capability; if (capability.protocolVersion !== C10_PROTOCOL_VERSION) throw new Error("C10 browser protocol version is invalid");
   const sourceKey = text(capability.sourceKey, "C10 source key", 81);
   const parsed = Object.freeze({ protocolVersion: C10_PROTOCOL_VERSION, coordinatorKeyId: digest(capability.coordinatorKeyId, "C10 coordinator key"), nonce: text(capability.nonce, "C10 nonce", 128), expiresAtMs: positiveInteger(capability.expiresAtMs, "C10 expiry"), hostDeadlineAtMs: positiveInteger(capability.hostDeadlineAtMs, "C10 host deadline"), cardSequence: nonnegativeInteger(capability.cardSequence, "C10 card sequence"), sourceKey, binding: bindingFrom(capability.binding) });
-  const card = cardFrom(value.card, sourceKey); if (sha256(canonicalJson(card)) !== parsed.binding.cardSha256) throw new Error("C10 browser card digest is invalid"); return Object.freeze({ capability: parsed, card });
+  const card = cardFrom(value.card, sourceKey, options); if (sha256(canonicalJson(card)) !== parsed.binding.cardSha256) throw new Error("C10 browser card digest is invalid"); return Object.freeze({ capability: parsed, card });
 }
 /** Coordinator-only helper: this private key must never reach the sidecar. */
 export function issueC10SidecarCapability(privateKeyPem: string, capability: C10CapabilityPayload): string { if (capability.protocolVersion !== C10_PROTOCOL_VERSION || !Number.isInteger(capability.expiresAtMs)) throw new Error("C10 v3 capability is invalid"); const payload = Buffer.from(canonicalJson(capability), "utf8").toString("base64url"); return `${payload}.${sign(null, Buffer.from(payload, "utf8"), privateKeyPem).toString("base64url")}`; }
 /** Bounded ephemeral replay state. Persistence is forbidden because v3 keys rotate every lifecycle. */
 export class C10SidecarCapabilityRegistry {
   private readonly consumed = new Map<string, number>();
-  consume(coordinatorPublicKeyPem: string | undefined, input: C10SidecarInput, authorization: string | undefined, now = Date.now()): boolean {
+  consume(coordinatorPublicKeyPem: string | undefined, input: C10SidecarInput, authorization: string | undefined, now = Date.now(), options: C10SidecarParseOptions = STRICT_OPTIONS): boolean {
     this.prune(now); if (!coordinatorPublicKeyPem || !authorization) return false; const [payload, signature, extra] = authorization.split(".");
     if (!payload || !signature || extra || !verify(null, Buffer.from(payload, "utf8"), coordinatorPublicKeyPem, Buffer.from(signature, "base64url"))) return false;
-    try { const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); if (!exactKeys(value, ["binding", "cardSequence", "coordinatorKeyId", "expiresAtMs", "hostDeadlineAtMs", "nonce", "protocolVersion", "sourceKey"])) return false; const parsed = parseC10SidecarInput({ capability: value, card: input.card }).capability; if (parsed.coordinatorKeyId !== publicKeyId(coordinatorPublicKeyPem) || parsed.expiresAtMs <= now || parsed.hostDeadlineAtMs <= now || parsed.expiresAtMs > parsed.hostDeadlineAtMs || parsed.expiresAtMs > now + MAX_LIFETIME_MS || parsed.hostDeadlineAtMs > now + MAX_LIFETIME_MS || canonicalJson(parsed) !== canonicalJson(input.capability) || this.consumed.has(parsed.nonce)) return false; if (this.consumed.size >= MAX_REPLAY_ENTRIES) this.prune(now, true); if (this.consumed.size >= MAX_REPLAY_ENTRIES) return false; this.consumed.set(parsed.nonce, parsed.expiresAtMs); return true; } catch { return false; }
+    try { const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); if (!exactKeys(value, ["binding", "cardSequence", "coordinatorKeyId", "expiresAtMs", "hostDeadlineAtMs", "nonce", "protocolVersion", "sourceKey"])) return false; const parsed = parseC10SidecarInput({ capability: value, card: input.card }, options).capability; if (parsed.coordinatorKeyId !== publicKeyId(coordinatorPublicKeyPem) || parsed.expiresAtMs <= now || parsed.hostDeadlineAtMs <= now || parsed.expiresAtMs > parsed.hostDeadlineAtMs || parsed.expiresAtMs > now + MAX_LIFETIME_MS || parsed.hostDeadlineAtMs > now + MAX_LIFETIME_MS || canonicalJson(parsed) !== canonicalJson(input.capability) || this.consumed.has(parsed.nonce)) return false; if (this.consumed.size >= MAX_REPLAY_ENTRIES) this.prune(now, true); if (this.consumed.size >= MAX_REPLAY_ENTRIES) return false; this.consumed.set(parsed.nonce, parsed.expiresAtMs); return true; } catch { return false; }
   }
   size(now = Date.now()): number { this.prune(now); return this.consumed.size; }
   private prune(now: number, force = false): void { for (const [nonce, expiry] of this.consumed) if (expiry <= now || (force && this.consumed.size >= MAX_REPLAY_ENTRIES)) this.consumed.delete(nonce); }

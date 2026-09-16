@@ -1,0 +1,3548 @@
+[
+  {
+    "name": "success_20_shuffled_mixed_url_forms_locale_sensitive_ordering",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 20,
+          "items": [
+            {
+              "id": "9008",
+              "pageUrl": "/listings/dot.slug"
+            },
+            {
+              "id": "9001",
+              "pageUrl": "/listings/0-digit"
+            },
+            {
+              "id": "9020",
+              "pageUrl": "/listings/zzz-top4"
+            },
+            {
+              "id": "9004",
+              "pageUrl": "https://property.jll.com/listings/a-second/?x=1#y"
+            },
+            {
+              "id": "9012",
+              "pageUrl": "/listings/member-2"
+            },
+            {
+              "id": "9016",
+              "pageUrl": "/listings/tilde~slug#section"
+            },
+            {
+              "id": "9003",
+              "pageUrl": "/listings/a-letter?ref=abc"
+            },
+            {
+              "id": "9019",
+              "pageUrl": "https://property.jll.com/listings/zzz-top3/?x=1#y"
+            },
+            {
+              "id": "9010",
+              "pageUrl": "/listings/m50"
+            },
+            {
+              "id": "9006",
+              "pageUrl": "https://property.jll.com/listings/a_1"
+            },
+            {
+              "id": "9002",
+              "pageUrl": "https://property.jll.com/listings/B-first"
+            },
+            {
+              "id": "9014",
+              "pageUrl": "https://property.jll.com/listings/num2/"
+            },
+            {
+              "id": "9018",
+              "pageUrl": "/listings/zzz-top2"
+            },
+            {
+              "id": "9005",
+              "pageUrl": "/listings/a1/"
+            },
+            {
+              "id": "9007",
+              "pageUrl": "/listings/another-slug"
+            },
+            {
+              "id": "9009",
+              "pageUrl": "https://property.jll.com/listings/m5#anchor"
+            },
+            {
+              "id": "9013",
+              "pageUrl": "/listings/num1?x=1"
+            },
+            {
+              "id": "9017",
+              "pageUrl": "https://property.jll.com/listings/zzz-top1"
+            },
+            {
+              "id": "9011",
+              "pageUrl": "https://property.jll.com/listings/member-10"
+            },
+            {
+              "id": "9015",
+              "pageUrl": "/listings/plain-slug"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "members": [
+        {
+          "key": "jll-1",
+          "provider_id": "9001",
+          "canonical_url": "https://property.jll.com/listings/0-digit"
+        },
+        {
+          "key": "jll-2",
+          "provider_id": "9002",
+          "canonical_url": "https://property.jll.com/listings/B-first"
+        },
+        {
+          "key": "jll-3",
+          "provider_id": "9003",
+          "canonical_url": "https://property.jll.com/listings/a-letter"
+        },
+        {
+          "key": "jll-4",
+          "provider_id": "9004",
+          "canonical_url": "https://property.jll.com/listings/a-second"
+        },
+        {
+          "key": "jll-5",
+          "provider_id": "9005",
+          "canonical_url": "https://property.jll.com/listings/a1"
+        },
+        {
+          "key": "jll-6",
+          "provider_id": "9006",
+          "canonical_url": "https://property.jll.com/listings/a_1"
+        },
+        {
+          "key": "jll-7",
+          "provider_id": "9007",
+          "canonical_url": "https://property.jll.com/listings/another-slug"
+        },
+        {
+          "key": "jll-8",
+          "provider_id": "9008",
+          "canonical_url": "https://property.jll.com/listings/dot.slug"
+        },
+        {
+          "key": "jll-9",
+          "provider_id": "9009",
+          "canonical_url": "https://property.jll.com/listings/m5"
+        },
+        {
+          "key": "jll-10",
+          "provider_id": "9010",
+          "canonical_url": "https://property.jll.com/listings/m50"
+        },
+        {
+          "key": "jll-11",
+          "provider_id": "9011",
+          "canonical_url": "https://property.jll.com/listings/member-10"
+        },
+        {
+          "key": "jll-12",
+          "provider_id": "9012",
+          "canonical_url": "https://property.jll.com/listings/member-2"
+        },
+        {
+          "key": "jll-13",
+          "provider_id": "9013",
+          "canonical_url": "https://property.jll.com/listings/num1"
+        },
+        {
+          "key": "jll-14",
+          "provider_id": "9014",
+          "canonical_url": "https://property.jll.com/listings/num2"
+        },
+        {
+          "key": "jll-15",
+          "provider_id": "9015",
+          "canonical_url": "https://property.jll.com/listings/plain-slug"
+        },
+        {
+          "key": "jll-16",
+          "provider_id": "9016",
+          "canonical_url": "https://property.jll.com/listings/tilde~slug"
+        }
+      ],
+      "candidate_count": 20,
+      "digest": "5fc93cd5b6b18712c65810f98e4231e30915879a9ccdfe127740344dc7377ad2",
+      "rule": "jll-canonical-url-lexicographic-v1"
+    }
+  },
+  {
+    "name": "success_exactly_16_candidates",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 16,
+          "items": [
+            {
+              "id": "300",
+              "pageUrl": "/listings/exact-00"
+            },
+            {
+              "id": "301",
+              "pageUrl": "/listings/exact-01"
+            },
+            {
+              "id": "302",
+              "pageUrl": "/listings/exact-02"
+            },
+            {
+              "id": "303",
+              "pageUrl": "/listings/exact-03"
+            },
+            {
+              "id": "304",
+              "pageUrl": "/listings/exact-04"
+            },
+            {
+              "id": "305",
+              "pageUrl": "/listings/exact-05"
+            },
+            {
+              "id": "306",
+              "pageUrl": "/listings/exact-06"
+            },
+            {
+              "id": "307",
+              "pageUrl": "/listings/exact-07"
+            },
+            {
+              "id": "308",
+              "pageUrl": "/listings/exact-08"
+            },
+            {
+              "id": "309",
+              "pageUrl": "/listings/exact-09"
+            },
+            {
+              "id": "310",
+              "pageUrl": "/listings/exact-10"
+            },
+            {
+              "id": "311",
+              "pageUrl": "/listings/exact-11"
+            },
+            {
+              "id": "312",
+              "pageUrl": "/listings/exact-12"
+            },
+            {
+              "id": "313",
+              "pageUrl": "/listings/exact-13"
+            },
+            {
+              "id": "314",
+              "pageUrl": "/listings/exact-14"
+            },
+            {
+              "id": "315",
+              "pageUrl": "/listings/exact-15"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "members": [
+        {
+          "key": "jll-1",
+          "provider_id": "300",
+          "canonical_url": "https://property.jll.com/listings/exact-00"
+        },
+        {
+          "key": "jll-2",
+          "provider_id": "301",
+          "canonical_url": "https://property.jll.com/listings/exact-01"
+        },
+        {
+          "key": "jll-3",
+          "provider_id": "302",
+          "canonical_url": "https://property.jll.com/listings/exact-02"
+        },
+        {
+          "key": "jll-4",
+          "provider_id": "303",
+          "canonical_url": "https://property.jll.com/listings/exact-03"
+        },
+        {
+          "key": "jll-5",
+          "provider_id": "304",
+          "canonical_url": "https://property.jll.com/listings/exact-04"
+        },
+        {
+          "key": "jll-6",
+          "provider_id": "305",
+          "canonical_url": "https://property.jll.com/listings/exact-05"
+        },
+        {
+          "key": "jll-7",
+          "provider_id": "306",
+          "canonical_url": "https://property.jll.com/listings/exact-06"
+        },
+        {
+          "key": "jll-8",
+          "provider_id": "307",
+          "canonical_url": "https://property.jll.com/listings/exact-07"
+        },
+        {
+          "key": "jll-9",
+          "provider_id": "308",
+          "canonical_url": "https://property.jll.com/listings/exact-08"
+        },
+        {
+          "key": "jll-10",
+          "provider_id": "309",
+          "canonical_url": "https://property.jll.com/listings/exact-09"
+        },
+        {
+          "key": "jll-11",
+          "provider_id": "310",
+          "canonical_url": "https://property.jll.com/listings/exact-10"
+        },
+        {
+          "key": "jll-12",
+          "provider_id": "311",
+          "canonical_url": "https://property.jll.com/listings/exact-11"
+        },
+        {
+          "key": "jll-13",
+          "provider_id": "312",
+          "canonical_url": "https://property.jll.com/listings/exact-12"
+        },
+        {
+          "key": "jll-14",
+          "provider_id": "313",
+          "canonical_url": "https://property.jll.com/listings/exact-13"
+        },
+        {
+          "key": "jll-15",
+          "provider_id": "314",
+          "canonical_url": "https://property.jll.com/listings/exact-14"
+        },
+        {
+          "key": "jll-16",
+          "provider_id": "315",
+          "canonical_url": "https://property.jll.com/listings/exact-15"
+        }
+      ],
+      "candidate_count": 16,
+      "digest": "52cda250b52b3db4953e9ab10b84a02b9d43e9c18802cc0751199d0ad977374a",
+      "rule": "jll-canonical-url-lexicographic-v1"
+    }
+  },
+  {
+    "name": "duplicate_relative_vs_absolute_same_slug",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "400",
+              "pageUrl": "/listings/dupa-00"
+            },
+            {
+              "id": "401",
+              "pageUrl": "/listings/dupa-01"
+            },
+            {
+              "id": "402",
+              "pageUrl": "/listings/dupa-02"
+            },
+            {
+              "id": "403",
+              "pageUrl": "/listings/dupa-03"
+            },
+            {
+              "id": "404",
+              "pageUrl": "/listings/dupa-04"
+            },
+            {
+              "id": "405",
+              "pageUrl": "/listings/dupa-05"
+            },
+            {
+              "id": "406",
+              "pageUrl": "/listings/dupa-06"
+            },
+            {
+              "id": "407",
+              "pageUrl": "/listings/dupa-07"
+            },
+            {
+              "id": "408",
+              "pageUrl": "/listings/dupa-08"
+            },
+            {
+              "id": "409",
+              "pageUrl": "/listings/dupa-09"
+            },
+            {
+              "id": "410",
+              "pageUrl": "/listings/dupa-10"
+            },
+            {
+              "id": "411",
+              "pageUrl": "/listings/dupa-11"
+            },
+            {
+              "id": "412",
+              "pageUrl": "/listings/dupa-12"
+            },
+            {
+              "id": "413",
+              "pageUrl": "/listings/dupa-13"
+            },
+            {
+              "id": "414",
+              "pageUrl": "/listings/dupa-14"
+            },
+            {
+              "id": "415",
+              "pageUrl": "/listings/dupa-15"
+            },
+            {
+              "id": "499",
+              "pageUrl": "https://property.jll.com/listings/dupa-00"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "duplicate"
+    }
+  },
+  {
+    "name": "duplicate_trailing_slash_variant",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "500",
+              "pageUrl": "/listings/dupb-00"
+            },
+            {
+              "id": "501",
+              "pageUrl": "/listings/dupb-01"
+            },
+            {
+              "id": "502",
+              "pageUrl": "/listings/dupb-02"
+            },
+            {
+              "id": "503",
+              "pageUrl": "/listings/dupb-03"
+            },
+            {
+              "id": "504",
+              "pageUrl": "/listings/dupb-04"
+            },
+            {
+              "id": "505",
+              "pageUrl": "/listings/dupb-05"
+            },
+            {
+              "id": "506",
+              "pageUrl": "/listings/dupb-06"
+            },
+            {
+              "id": "507",
+              "pageUrl": "/listings/dupb-07"
+            },
+            {
+              "id": "508",
+              "pageUrl": "/listings/dupb-08"
+            },
+            {
+              "id": "509",
+              "pageUrl": "/listings/dupb-09"
+            },
+            {
+              "id": "510",
+              "pageUrl": "/listings/dupb-10"
+            },
+            {
+              "id": "511",
+              "pageUrl": "/listings/dupb-11"
+            },
+            {
+              "id": "512",
+              "pageUrl": "/listings/dupb-12"
+            },
+            {
+              "id": "513",
+              "pageUrl": "/listings/dupb-13"
+            },
+            {
+              "id": "514",
+              "pageUrl": "/listings/dupb-14"
+            },
+            {
+              "id": "515",
+              "pageUrl": "/listings/dupb-15"
+            },
+            {
+              "id": "599",
+              "pageUrl": "/listings/dupb-00/"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "duplicate"
+    }
+  },
+  {
+    "name": "duplicate_same_slug_different_query",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "600",
+              "pageUrl": "/listings/dupc-00"
+            },
+            {
+              "id": "601",
+              "pageUrl": "/listings/dupc-01"
+            },
+            {
+              "id": "602",
+              "pageUrl": "/listings/dupc-02"
+            },
+            {
+              "id": "603",
+              "pageUrl": "/listings/dupc-03"
+            },
+            {
+              "id": "604",
+              "pageUrl": "/listings/dupc-04"
+            },
+            {
+              "id": "605",
+              "pageUrl": "/listings/dupc-05"
+            },
+            {
+              "id": "606",
+              "pageUrl": "/listings/dupc-06"
+            },
+            {
+              "id": "607",
+              "pageUrl": "/listings/dupc-07"
+            },
+            {
+              "id": "608",
+              "pageUrl": "/listings/dupc-08"
+            },
+            {
+              "id": "609",
+              "pageUrl": "/listings/dupc-09"
+            },
+            {
+              "id": "610",
+              "pageUrl": "/listings/dupc-10"
+            },
+            {
+              "id": "611",
+              "pageUrl": "/listings/dupc-11"
+            },
+            {
+              "id": "612",
+              "pageUrl": "/listings/dupc-12"
+            },
+            {
+              "id": "613",
+              "pageUrl": "/listings/dupc-13"
+            },
+            {
+              "id": "614",
+              "pageUrl": "/listings/dupc-14"
+            },
+            {
+              "id": "615",
+              "pageUrl": "/listings/dupc-15"
+            },
+            {
+              "id": "699",
+              "pageUrl": "/listings/dupc-00?ref=different"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "duplicate"
+    }
+  },
+  {
+    "name": "duplicate_provider_id_different_slug",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "700",
+              "pageUrl": "/listings/dupd-00"
+            },
+            {
+              "id": "701",
+              "pageUrl": "/listings/dupd-01"
+            },
+            {
+              "id": "702",
+              "pageUrl": "/listings/dupd-02"
+            },
+            {
+              "id": "703",
+              "pageUrl": "/listings/dupd-03"
+            },
+            {
+              "id": "704",
+              "pageUrl": "/listings/dupd-04"
+            },
+            {
+              "id": "705",
+              "pageUrl": "/listings/dupd-05"
+            },
+            {
+              "id": "706",
+              "pageUrl": "/listings/dupd-06"
+            },
+            {
+              "id": "707",
+              "pageUrl": "/listings/dupd-07"
+            },
+            {
+              "id": "708",
+              "pageUrl": "/listings/dupd-08"
+            },
+            {
+              "id": "709",
+              "pageUrl": "/listings/dupd-09"
+            },
+            {
+              "id": "710",
+              "pageUrl": "/listings/dupd-10"
+            },
+            {
+              "id": "711",
+              "pageUrl": "/listings/dupd-11"
+            },
+            {
+              "id": "712",
+              "pageUrl": "/listings/dupd-12"
+            },
+            {
+              "id": "713",
+              "pageUrl": "/listings/dupd-13"
+            },
+            {
+              "id": "714",
+              "pageUrl": "/listings/dupd-14"
+            },
+            {
+              "id": "715",
+              "pageUrl": "/listings/dupd-15"
+            },
+            {
+              "id": "700",
+              "pageUrl": "/listings/dupd-99-different-slug"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "duplicate"
+    }
+  },
+  {
+    "name": "insufficient_15_valid_candidates",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 15,
+          "items": [
+            {
+              "id": "800",
+              "pageUrl": "/listings/insuf-00"
+            },
+            {
+              "id": "801",
+              "pageUrl": "/listings/insuf-01"
+            },
+            {
+              "id": "802",
+              "pageUrl": "/listings/insuf-02"
+            },
+            {
+              "id": "803",
+              "pageUrl": "/listings/insuf-03"
+            },
+            {
+              "id": "804",
+              "pageUrl": "/listings/insuf-04"
+            },
+            {
+              "id": "805",
+              "pageUrl": "/listings/insuf-05"
+            },
+            {
+              "id": "806",
+              "pageUrl": "/listings/insuf-06"
+            },
+            {
+              "id": "807",
+              "pageUrl": "/listings/insuf-07"
+            },
+            {
+              "id": "808",
+              "pageUrl": "/listings/insuf-08"
+            },
+            {
+              "id": "809",
+              "pageUrl": "/listings/insuf-09"
+            },
+            {
+              "id": "810",
+              "pageUrl": "/listings/insuf-10"
+            },
+            {
+              "id": "811",
+              "pageUrl": "/listings/insuf-11"
+            },
+            {
+              "id": "812",
+              "pageUrl": "/listings/insuf-12"
+            },
+            {
+              "id": "813",
+              "pageUrl": "/listings/insuf-13"
+            },
+            {
+              "id": "814",
+              "pageUrl": "/listings/insuf-14"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "insufficient"
+    }
+  },
+  {
+    "name": "insufficient_zero_items",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 0,
+          "items": []
+        }
+      }
+    },
+    "expect": {
+      "error": "insufficient"
+    }
+  },
+  {
+    "name": "noncanonical_numeric_json_id",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1000",
+              "pageUrl": "/listings/nc00-00"
+            },
+            {
+              "id": "1001",
+              "pageUrl": "/listings/nc00-01"
+            },
+            {
+              "id": "1002",
+              "pageUrl": "/listings/nc00-02"
+            },
+            {
+              "id": "1003",
+              "pageUrl": "/listings/nc00-03"
+            },
+            {
+              "id": "1004",
+              "pageUrl": "/listings/nc00-04"
+            },
+            {
+              "id": "1005",
+              "pageUrl": "/listings/nc00-05"
+            },
+            {
+              "id": "1006",
+              "pageUrl": "/listings/nc00-06"
+            },
+            {
+              "id": "1007",
+              "pageUrl": "/listings/nc00-07"
+            },
+            {
+              "id": "1008",
+              "pageUrl": "/listings/nc00-08"
+            },
+            {
+              "id": "1009",
+              "pageUrl": "/listings/nc00-09"
+            },
+            {
+              "id": "1010",
+              "pageUrl": "/listings/nc00-10"
+            },
+            {
+              "id": "1011",
+              "pageUrl": "/listings/nc00-11"
+            },
+            {
+              "id": "1012",
+              "pageUrl": "/listings/nc00-12"
+            },
+            {
+              "id": "1013",
+              "pageUrl": "/listings/nc00-13"
+            },
+            {
+              "id": "1014",
+              "pageUrl": "/listings/nc00-14"
+            },
+            {
+              "id": "1015",
+              "pageUrl": "/listings/nc00-15"
+            },
+            {
+              "id": 123,
+              "pageUrl": "/listings/bad-numeric-id"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_id_leading_space",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1100",
+              "pageUrl": "/listings/nc01-00"
+            },
+            {
+              "id": "1101",
+              "pageUrl": "/listings/nc01-01"
+            },
+            {
+              "id": "1102",
+              "pageUrl": "/listings/nc01-02"
+            },
+            {
+              "id": "1103",
+              "pageUrl": "/listings/nc01-03"
+            },
+            {
+              "id": "1104",
+              "pageUrl": "/listings/nc01-04"
+            },
+            {
+              "id": "1105",
+              "pageUrl": "/listings/nc01-05"
+            },
+            {
+              "id": "1106",
+              "pageUrl": "/listings/nc01-06"
+            },
+            {
+              "id": "1107",
+              "pageUrl": "/listings/nc01-07"
+            },
+            {
+              "id": "1108",
+              "pageUrl": "/listings/nc01-08"
+            },
+            {
+              "id": "1109",
+              "pageUrl": "/listings/nc01-09"
+            },
+            {
+              "id": "1110",
+              "pageUrl": "/listings/nc01-10"
+            },
+            {
+              "id": "1111",
+              "pageUrl": "/listings/nc01-11"
+            },
+            {
+              "id": "1112",
+              "pageUrl": "/listings/nc01-12"
+            },
+            {
+              "id": "1113",
+              "pageUrl": "/listings/nc01-13"
+            },
+            {
+              "id": "1114",
+              "pageUrl": "/listings/nc01-14"
+            },
+            {
+              "id": "1115",
+              "pageUrl": "/listings/nc01-15"
+            },
+            {
+              "id": " 12",
+              "pageUrl": "/listings/bad-leading-space-id"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_id_trailing_space",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1200",
+              "pageUrl": "/listings/nc02-00"
+            },
+            {
+              "id": "1201",
+              "pageUrl": "/listings/nc02-01"
+            },
+            {
+              "id": "1202",
+              "pageUrl": "/listings/nc02-02"
+            },
+            {
+              "id": "1203",
+              "pageUrl": "/listings/nc02-03"
+            },
+            {
+              "id": "1204",
+              "pageUrl": "/listings/nc02-04"
+            },
+            {
+              "id": "1205",
+              "pageUrl": "/listings/nc02-05"
+            },
+            {
+              "id": "1206",
+              "pageUrl": "/listings/nc02-06"
+            },
+            {
+              "id": "1207",
+              "pageUrl": "/listings/nc02-07"
+            },
+            {
+              "id": "1208",
+              "pageUrl": "/listings/nc02-08"
+            },
+            {
+              "id": "1209",
+              "pageUrl": "/listings/nc02-09"
+            },
+            {
+              "id": "1210",
+              "pageUrl": "/listings/nc02-10"
+            },
+            {
+              "id": "1211",
+              "pageUrl": "/listings/nc02-11"
+            },
+            {
+              "id": "1212",
+              "pageUrl": "/listings/nc02-12"
+            },
+            {
+              "id": "1213",
+              "pageUrl": "/listings/nc02-13"
+            },
+            {
+              "id": "1214",
+              "pageUrl": "/listings/nc02-14"
+            },
+            {
+              "id": "1215",
+              "pageUrl": "/listings/nc02-15"
+            },
+            {
+              "id": "12 ",
+              "pageUrl": "/listings/bad-trailing-space-id"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_id_empty_string",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1300",
+              "pageUrl": "/listings/nc03-00"
+            },
+            {
+              "id": "1301",
+              "pageUrl": "/listings/nc03-01"
+            },
+            {
+              "id": "1302",
+              "pageUrl": "/listings/nc03-02"
+            },
+            {
+              "id": "1303",
+              "pageUrl": "/listings/nc03-03"
+            },
+            {
+              "id": "1304",
+              "pageUrl": "/listings/nc03-04"
+            },
+            {
+              "id": "1305",
+              "pageUrl": "/listings/nc03-05"
+            },
+            {
+              "id": "1306",
+              "pageUrl": "/listings/nc03-06"
+            },
+            {
+              "id": "1307",
+              "pageUrl": "/listings/nc03-07"
+            },
+            {
+              "id": "1308",
+              "pageUrl": "/listings/nc03-08"
+            },
+            {
+              "id": "1309",
+              "pageUrl": "/listings/nc03-09"
+            },
+            {
+              "id": "1310",
+              "pageUrl": "/listings/nc03-10"
+            },
+            {
+              "id": "1311",
+              "pageUrl": "/listings/nc03-11"
+            },
+            {
+              "id": "1312",
+              "pageUrl": "/listings/nc03-12"
+            },
+            {
+              "id": "1313",
+              "pageUrl": "/listings/nc03-13"
+            },
+            {
+              "id": "1314",
+              "pageUrl": "/listings/nc03-14"
+            },
+            {
+              "id": "1315",
+              "pageUrl": "/listings/nc03-15"
+            },
+            {
+              "id": "",
+              "pageUrl": "/listings/bad-empty-id"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_id_unicode_digit",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1400",
+              "pageUrl": "/listings/nc04-00"
+            },
+            {
+              "id": "1401",
+              "pageUrl": "/listings/nc04-01"
+            },
+            {
+              "id": "1402",
+              "pageUrl": "/listings/nc04-02"
+            },
+            {
+              "id": "1403",
+              "pageUrl": "/listings/nc04-03"
+            },
+            {
+              "id": "1404",
+              "pageUrl": "/listings/nc04-04"
+            },
+            {
+              "id": "1405",
+              "pageUrl": "/listings/nc04-05"
+            },
+            {
+              "id": "1406",
+              "pageUrl": "/listings/nc04-06"
+            },
+            {
+              "id": "1407",
+              "pageUrl": "/listings/nc04-07"
+            },
+            {
+              "id": "1408",
+              "pageUrl": "/listings/nc04-08"
+            },
+            {
+              "id": "1409",
+              "pageUrl": "/listings/nc04-09"
+            },
+            {
+              "id": "1410",
+              "pageUrl": "/listings/nc04-10"
+            },
+            {
+              "id": "1411",
+              "pageUrl": "/listings/nc04-11"
+            },
+            {
+              "id": "1412",
+              "pageUrl": "/listings/nc04-12"
+            },
+            {
+              "id": "1413",
+              "pageUrl": "/listings/nc04-13"
+            },
+            {
+              "id": "1414",
+              "pageUrl": "/listings/nc04-14"
+            },
+            {
+              "id": "1415",
+              "pageUrl": "/listings/nc04-15"
+            },
+            {
+              "id": "\u0661\u0662",
+              "pageUrl": "/listings/bad-unicode-digit-id"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_id_superscript",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1500",
+              "pageUrl": "/listings/nc05-00"
+            },
+            {
+              "id": "1501",
+              "pageUrl": "/listings/nc05-01"
+            },
+            {
+              "id": "1502",
+              "pageUrl": "/listings/nc05-02"
+            },
+            {
+              "id": "1503",
+              "pageUrl": "/listings/nc05-03"
+            },
+            {
+              "id": "1504",
+              "pageUrl": "/listings/nc05-04"
+            },
+            {
+              "id": "1505",
+              "pageUrl": "/listings/nc05-05"
+            },
+            {
+              "id": "1506",
+              "pageUrl": "/listings/nc05-06"
+            },
+            {
+              "id": "1507",
+              "pageUrl": "/listings/nc05-07"
+            },
+            {
+              "id": "1508",
+              "pageUrl": "/listings/nc05-08"
+            },
+            {
+              "id": "1509",
+              "pageUrl": "/listings/nc05-09"
+            },
+            {
+              "id": "1510",
+              "pageUrl": "/listings/nc05-10"
+            },
+            {
+              "id": "1511",
+              "pageUrl": "/listings/nc05-11"
+            },
+            {
+              "id": "1512",
+              "pageUrl": "/listings/nc05-12"
+            },
+            {
+              "id": "1513",
+              "pageUrl": "/listings/nc05-13"
+            },
+            {
+              "id": "1514",
+              "pageUrl": "/listings/nc05-14"
+            },
+            {
+              "id": "1515",
+              "pageUrl": "/listings/nc05-15"
+            },
+            {
+              "id": "\u00b2",
+              "pageUrl": "/listings/bad-superscript-id"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_id_missing",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1600",
+              "pageUrl": "/listings/nc06-00"
+            },
+            {
+              "id": "1601",
+              "pageUrl": "/listings/nc06-01"
+            },
+            {
+              "id": "1602",
+              "pageUrl": "/listings/nc06-02"
+            },
+            {
+              "id": "1603",
+              "pageUrl": "/listings/nc06-03"
+            },
+            {
+              "id": "1604",
+              "pageUrl": "/listings/nc06-04"
+            },
+            {
+              "id": "1605",
+              "pageUrl": "/listings/nc06-05"
+            },
+            {
+              "id": "1606",
+              "pageUrl": "/listings/nc06-06"
+            },
+            {
+              "id": "1607",
+              "pageUrl": "/listings/nc06-07"
+            },
+            {
+              "id": "1608",
+              "pageUrl": "/listings/nc06-08"
+            },
+            {
+              "id": "1609",
+              "pageUrl": "/listings/nc06-09"
+            },
+            {
+              "id": "1610",
+              "pageUrl": "/listings/nc06-10"
+            },
+            {
+              "id": "1611",
+              "pageUrl": "/listings/nc06-11"
+            },
+            {
+              "id": "1612",
+              "pageUrl": "/listings/nc06-12"
+            },
+            {
+              "id": "1613",
+              "pageUrl": "/listings/nc06-13"
+            },
+            {
+              "id": "1614",
+              "pageUrl": "/listings/nc06-14"
+            },
+            {
+              "id": "1615",
+              "pageUrl": "/listings/nc06-15"
+            },
+            {
+              "pageUrl": "/listings/bad-missing-id"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_pageurl_null",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1700",
+              "pageUrl": "/listings/nc07-00"
+            },
+            {
+              "id": "1701",
+              "pageUrl": "/listings/nc07-01"
+            },
+            {
+              "id": "1702",
+              "pageUrl": "/listings/nc07-02"
+            },
+            {
+              "id": "1703",
+              "pageUrl": "/listings/nc07-03"
+            },
+            {
+              "id": "1704",
+              "pageUrl": "/listings/nc07-04"
+            },
+            {
+              "id": "1705",
+              "pageUrl": "/listings/nc07-05"
+            },
+            {
+              "id": "1706",
+              "pageUrl": "/listings/nc07-06"
+            },
+            {
+              "id": "1707",
+              "pageUrl": "/listings/nc07-07"
+            },
+            {
+              "id": "1708",
+              "pageUrl": "/listings/nc07-08"
+            },
+            {
+              "id": "1709",
+              "pageUrl": "/listings/nc07-09"
+            },
+            {
+              "id": "1710",
+              "pageUrl": "/listings/nc07-10"
+            },
+            {
+              "id": "1711",
+              "pageUrl": "/listings/nc07-11"
+            },
+            {
+              "id": "1712",
+              "pageUrl": "/listings/nc07-12"
+            },
+            {
+              "id": "1713",
+              "pageUrl": "/listings/nc07-13"
+            },
+            {
+              "id": "1714",
+              "pageUrl": "/listings/nc07-14"
+            },
+            {
+              "id": "1715",
+              "pageUrl": "/listings/nc07-15"
+            },
+            {
+              "id": "901",
+              "pageUrl": null
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_bare_listings_path",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1800",
+              "pageUrl": "/listings/nc08-00"
+            },
+            {
+              "id": "1801",
+              "pageUrl": "/listings/nc08-01"
+            },
+            {
+              "id": "1802",
+              "pageUrl": "/listings/nc08-02"
+            },
+            {
+              "id": "1803",
+              "pageUrl": "/listings/nc08-03"
+            },
+            {
+              "id": "1804",
+              "pageUrl": "/listings/nc08-04"
+            },
+            {
+              "id": "1805",
+              "pageUrl": "/listings/nc08-05"
+            },
+            {
+              "id": "1806",
+              "pageUrl": "/listings/nc08-06"
+            },
+            {
+              "id": "1807",
+              "pageUrl": "/listings/nc08-07"
+            },
+            {
+              "id": "1808",
+              "pageUrl": "/listings/nc08-08"
+            },
+            {
+              "id": "1809",
+              "pageUrl": "/listings/nc08-09"
+            },
+            {
+              "id": "1810",
+              "pageUrl": "/listings/nc08-10"
+            },
+            {
+              "id": "1811",
+              "pageUrl": "/listings/nc08-11"
+            },
+            {
+              "id": "1812",
+              "pageUrl": "/listings/nc08-12"
+            },
+            {
+              "id": "1813",
+              "pageUrl": "/listings/nc08-13"
+            },
+            {
+              "id": "1814",
+              "pageUrl": "/listings/nc08-14"
+            },
+            {
+              "id": "1815",
+              "pageUrl": "/listings/nc08-15"
+            },
+            {
+              "id": "902",
+              "pageUrl": "/listings/"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_extra_path_segment",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "1900",
+              "pageUrl": "/listings/nc09-00"
+            },
+            {
+              "id": "1901",
+              "pageUrl": "/listings/nc09-01"
+            },
+            {
+              "id": "1902",
+              "pageUrl": "/listings/nc09-02"
+            },
+            {
+              "id": "1903",
+              "pageUrl": "/listings/nc09-03"
+            },
+            {
+              "id": "1904",
+              "pageUrl": "/listings/nc09-04"
+            },
+            {
+              "id": "1905",
+              "pageUrl": "/listings/nc09-05"
+            },
+            {
+              "id": "1906",
+              "pageUrl": "/listings/nc09-06"
+            },
+            {
+              "id": "1907",
+              "pageUrl": "/listings/nc09-07"
+            },
+            {
+              "id": "1908",
+              "pageUrl": "/listings/nc09-08"
+            },
+            {
+              "id": "1909",
+              "pageUrl": "/listings/nc09-09"
+            },
+            {
+              "id": "1910",
+              "pageUrl": "/listings/nc09-10"
+            },
+            {
+              "id": "1911",
+              "pageUrl": "/listings/nc09-11"
+            },
+            {
+              "id": "1912",
+              "pageUrl": "/listings/nc09-12"
+            },
+            {
+              "id": "1913",
+              "pageUrl": "/listings/nc09-13"
+            },
+            {
+              "id": "1914",
+              "pageUrl": "/listings/nc09-14"
+            },
+            {
+              "id": "1915",
+              "pageUrl": "/listings/nc09-15"
+            },
+            {
+              "id": "903",
+              "pageUrl": "/listings/a/b"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_dotdot_traversal",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2000",
+              "pageUrl": "/listings/nc10-00"
+            },
+            {
+              "id": "2001",
+              "pageUrl": "/listings/nc10-01"
+            },
+            {
+              "id": "2002",
+              "pageUrl": "/listings/nc10-02"
+            },
+            {
+              "id": "2003",
+              "pageUrl": "/listings/nc10-03"
+            },
+            {
+              "id": "2004",
+              "pageUrl": "/listings/nc10-04"
+            },
+            {
+              "id": "2005",
+              "pageUrl": "/listings/nc10-05"
+            },
+            {
+              "id": "2006",
+              "pageUrl": "/listings/nc10-06"
+            },
+            {
+              "id": "2007",
+              "pageUrl": "/listings/nc10-07"
+            },
+            {
+              "id": "2008",
+              "pageUrl": "/listings/nc10-08"
+            },
+            {
+              "id": "2009",
+              "pageUrl": "/listings/nc10-09"
+            },
+            {
+              "id": "2010",
+              "pageUrl": "/listings/nc10-10"
+            },
+            {
+              "id": "2011",
+              "pageUrl": "/listings/nc10-11"
+            },
+            {
+              "id": "2012",
+              "pageUrl": "/listings/nc10-12"
+            },
+            {
+              "id": "2013",
+              "pageUrl": "/listings/nc10-13"
+            },
+            {
+              "id": "2014",
+              "pageUrl": "/listings/nc10-14"
+            },
+            {
+              "id": "2015",
+              "pageUrl": "/listings/nc10-15"
+            },
+            {
+              "id": "904",
+              "pageUrl": "/listings/../admin"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_dotslash",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2100",
+              "pageUrl": "/listings/nc11-00"
+            },
+            {
+              "id": "2101",
+              "pageUrl": "/listings/nc11-01"
+            },
+            {
+              "id": "2102",
+              "pageUrl": "/listings/nc11-02"
+            },
+            {
+              "id": "2103",
+              "pageUrl": "/listings/nc11-03"
+            },
+            {
+              "id": "2104",
+              "pageUrl": "/listings/nc11-04"
+            },
+            {
+              "id": "2105",
+              "pageUrl": "/listings/nc11-05"
+            },
+            {
+              "id": "2106",
+              "pageUrl": "/listings/nc11-06"
+            },
+            {
+              "id": "2107",
+              "pageUrl": "/listings/nc11-07"
+            },
+            {
+              "id": "2108",
+              "pageUrl": "/listings/nc11-08"
+            },
+            {
+              "id": "2109",
+              "pageUrl": "/listings/nc11-09"
+            },
+            {
+              "id": "2110",
+              "pageUrl": "/listings/nc11-10"
+            },
+            {
+              "id": "2111",
+              "pageUrl": "/listings/nc11-11"
+            },
+            {
+              "id": "2112",
+              "pageUrl": "/listings/nc11-12"
+            },
+            {
+              "id": "2113",
+              "pageUrl": "/listings/nc11-13"
+            },
+            {
+              "id": "2114",
+              "pageUrl": "/listings/nc11-14"
+            },
+            {
+              "id": "2115",
+              "pageUrl": "/listings/nc11-15"
+            },
+            {
+              "id": "905",
+              "pageUrl": "/listings/./a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_percent_encoded_dotdot",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2200",
+              "pageUrl": "/listings/nc12-00"
+            },
+            {
+              "id": "2201",
+              "pageUrl": "/listings/nc12-01"
+            },
+            {
+              "id": "2202",
+              "pageUrl": "/listings/nc12-02"
+            },
+            {
+              "id": "2203",
+              "pageUrl": "/listings/nc12-03"
+            },
+            {
+              "id": "2204",
+              "pageUrl": "/listings/nc12-04"
+            },
+            {
+              "id": "2205",
+              "pageUrl": "/listings/nc12-05"
+            },
+            {
+              "id": "2206",
+              "pageUrl": "/listings/nc12-06"
+            },
+            {
+              "id": "2207",
+              "pageUrl": "/listings/nc12-07"
+            },
+            {
+              "id": "2208",
+              "pageUrl": "/listings/nc12-08"
+            },
+            {
+              "id": "2209",
+              "pageUrl": "/listings/nc12-09"
+            },
+            {
+              "id": "2210",
+              "pageUrl": "/listings/nc12-10"
+            },
+            {
+              "id": "2211",
+              "pageUrl": "/listings/nc12-11"
+            },
+            {
+              "id": "2212",
+              "pageUrl": "/listings/nc12-12"
+            },
+            {
+              "id": "2213",
+              "pageUrl": "/listings/nc12-13"
+            },
+            {
+              "id": "2214",
+              "pageUrl": "/listings/nc12-14"
+            },
+            {
+              "id": "2215",
+              "pageUrl": "/listings/nc12-15"
+            },
+            {
+              "id": "906",
+              "pageUrl": "/listings/%2e%2e"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_http_not_https",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2300",
+              "pageUrl": "/listings/nc13-00"
+            },
+            {
+              "id": "2301",
+              "pageUrl": "/listings/nc13-01"
+            },
+            {
+              "id": "2302",
+              "pageUrl": "/listings/nc13-02"
+            },
+            {
+              "id": "2303",
+              "pageUrl": "/listings/nc13-03"
+            },
+            {
+              "id": "2304",
+              "pageUrl": "/listings/nc13-04"
+            },
+            {
+              "id": "2305",
+              "pageUrl": "/listings/nc13-05"
+            },
+            {
+              "id": "2306",
+              "pageUrl": "/listings/nc13-06"
+            },
+            {
+              "id": "2307",
+              "pageUrl": "/listings/nc13-07"
+            },
+            {
+              "id": "2308",
+              "pageUrl": "/listings/nc13-08"
+            },
+            {
+              "id": "2309",
+              "pageUrl": "/listings/nc13-09"
+            },
+            {
+              "id": "2310",
+              "pageUrl": "/listings/nc13-10"
+            },
+            {
+              "id": "2311",
+              "pageUrl": "/listings/nc13-11"
+            },
+            {
+              "id": "2312",
+              "pageUrl": "/listings/nc13-12"
+            },
+            {
+              "id": "2313",
+              "pageUrl": "/listings/nc13-13"
+            },
+            {
+              "id": "2314",
+              "pageUrl": "/listings/nc13-14"
+            },
+            {
+              "id": "2315",
+              "pageUrl": "/listings/nc13-15"
+            },
+            {
+              "id": "907",
+              "pageUrl": "http://property.jll.com/listings/a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_uppercase_host",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2400",
+              "pageUrl": "/listings/nc14-00"
+            },
+            {
+              "id": "2401",
+              "pageUrl": "/listings/nc14-01"
+            },
+            {
+              "id": "2402",
+              "pageUrl": "/listings/nc14-02"
+            },
+            {
+              "id": "2403",
+              "pageUrl": "/listings/nc14-03"
+            },
+            {
+              "id": "2404",
+              "pageUrl": "/listings/nc14-04"
+            },
+            {
+              "id": "2405",
+              "pageUrl": "/listings/nc14-05"
+            },
+            {
+              "id": "2406",
+              "pageUrl": "/listings/nc14-06"
+            },
+            {
+              "id": "2407",
+              "pageUrl": "/listings/nc14-07"
+            },
+            {
+              "id": "2408",
+              "pageUrl": "/listings/nc14-08"
+            },
+            {
+              "id": "2409",
+              "pageUrl": "/listings/nc14-09"
+            },
+            {
+              "id": "2410",
+              "pageUrl": "/listings/nc14-10"
+            },
+            {
+              "id": "2411",
+              "pageUrl": "/listings/nc14-11"
+            },
+            {
+              "id": "2412",
+              "pageUrl": "/listings/nc14-12"
+            },
+            {
+              "id": "2413",
+              "pageUrl": "/listings/nc14-13"
+            },
+            {
+              "id": "2414",
+              "pageUrl": "/listings/nc14-14"
+            },
+            {
+              "id": "2415",
+              "pageUrl": "/listings/nc14-15"
+            },
+            {
+              "id": "908",
+              "pageUrl": "https://PROPERTY.jll.com/listings/a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_explicit_port",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2500",
+              "pageUrl": "/listings/nc15-00"
+            },
+            {
+              "id": "2501",
+              "pageUrl": "/listings/nc15-01"
+            },
+            {
+              "id": "2502",
+              "pageUrl": "/listings/nc15-02"
+            },
+            {
+              "id": "2503",
+              "pageUrl": "/listings/nc15-03"
+            },
+            {
+              "id": "2504",
+              "pageUrl": "/listings/nc15-04"
+            },
+            {
+              "id": "2505",
+              "pageUrl": "/listings/nc15-05"
+            },
+            {
+              "id": "2506",
+              "pageUrl": "/listings/nc15-06"
+            },
+            {
+              "id": "2507",
+              "pageUrl": "/listings/nc15-07"
+            },
+            {
+              "id": "2508",
+              "pageUrl": "/listings/nc15-08"
+            },
+            {
+              "id": "2509",
+              "pageUrl": "/listings/nc15-09"
+            },
+            {
+              "id": "2510",
+              "pageUrl": "/listings/nc15-10"
+            },
+            {
+              "id": "2511",
+              "pageUrl": "/listings/nc15-11"
+            },
+            {
+              "id": "2512",
+              "pageUrl": "/listings/nc15-12"
+            },
+            {
+              "id": "2513",
+              "pageUrl": "/listings/nc15-13"
+            },
+            {
+              "id": "2514",
+              "pageUrl": "/listings/nc15-14"
+            },
+            {
+              "id": "2515",
+              "pageUrl": "/listings/nc15-15"
+            },
+            {
+              "id": "909",
+              "pageUrl": "https://property.jll.com:443/listings/a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_evil_host",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2600",
+              "pageUrl": "/listings/nc16-00"
+            },
+            {
+              "id": "2601",
+              "pageUrl": "/listings/nc16-01"
+            },
+            {
+              "id": "2602",
+              "pageUrl": "/listings/nc16-02"
+            },
+            {
+              "id": "2603",
+              "pageUrl": "/listings/nc16-03"
+            },
+            {
+              "id": "2604",
+              "pageUrl": "/listings/nc16-04"
+            },
+            {
+              "id": "2605",
+              "pageUrl": "/listings/nc16-05"
+            },
+            {
+              "id": "2606",
+              "pageUrl": "/listings/nc16-06"
+            },
+            {
+              "id": "2607",
+              "pageUrl": "/listings/nc16-07"
+            },
+            {
+              "id": "2608",
+              "pageUrl": "/listings/nc16-08"
+            },
+            {
+              "id": "2609",
+              "pageUrl": "/listings/nc16-09"
+            },
+            {
+              "id": "2610",
+              "pageUrl": "/listings/nc16-10"
+            },
+            {
+              "id": "2611",
+              "pageUrl": "/listings/nc16-11"
+            },
+            {
+              "id": "2612",
+              "pageUrl": "/listings/nc16-12"
+            },
+            {
+              "id": "2613",
+              "pageUrl": "/listings/nc16-13"
+            },
+            {
+              "id": "2614",
+              "pageUrl": "/listings/nc16-14"
+            },
+            {
+              "id": "2615",
+              "pageUrl": "/listings/nc16-15"
+            },
+            {
+              "id": "910",
+              "pageUrl": "https://evil.com/listings/a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_scheme_relative_evil_host",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2700",
+              "pageUrl": "/listings/nc17-00"
+            },
+            {
+              "id": "2701",
+              "pageUrl": "/listings/nc17-01"
+            },
+            {
+              "id": "2702",
+              "pageUrl": "/listings/nc17-02"
+            },
+            {
+              "id": "2703",
+              "pageUrl": "/listings/nc17-03"
+            },
+            {
+              "id": "2704",
+              "pageUrl": "/listings/nc17-04"
+            },
+            {
+              "id": "2705",
+              "pageUrl": "/listings/nc17-05"
+            },
+            {
+              "id": "2706",
+              "pageUrl": "/listings/nc17-06"
+            },
+            {
+              "id": "2707",
+              "pageUrl": "/listings/nc17-07"
+            },
+            {
+              "id": "2708",
+              "pageUrl": "/listings/nc17-08"
+            },
+            {
+              "id": "2709",
+              "pageUrl": "/listings/nc17-09"
+            },
+            {
+              "id": "2710",
+              "pageUrl": "/listings/nc17-10"
+            },
+            {
+              "id": "2711",
+              "pageUrl": "/listings/nc17-11"
+            },
+            {
+              "id": "2712",
+              "pageUrl": "/listings/nc17-12"
+            },
+            {
+              "id": "2713",
+              "pageUrl": "/listings/nc17-13"
+            },
+            {
+              "id": "2714",
+              "pageUrl": "/listings/nc17-14"
+            },
+            {
+              "id": "2715",
+              "pageUrl": "/listings/nc17-15"
+            },
+            {
+              "id": "911",
+              "pageUrl": "//evil.com/listings/a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_space_in_slug",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2800",
+              "pageUrl": "/listings/nc18-00"
+            },
+            {
+              "id": "2801",
+              "pageUrl": "/listings/nc18-01"
+            },
+            {
+              "id": "2802",
+              "pageUrl": "/listings/nc18-02"
+            },
+            {
+              "id": "2803",
+              "pageUrl": "/listings/nc18-03"
+            },
+            {
+              "id": "2804",
+              "pageUrl": "/listings/nc18-04"
+            },
+            {
+              "id": "2805",
+              "pageUrl": "/listings/nc18-05"
+            },
+            {
+              "id": "2806",
+              "pageUrl": "/listings/nc18-06"
+            },
+            {
+              "id": "2807",
+              "pageUrl": "/listings/nc18-07"
+            },
+            {
+              "id": "2808",
+              "pageUrl": "/listings/nc18-08"
+            },
+            {
+              "id": "2809",
+              "pageUrl": "/listings/nc18-09"
+            },
+            {
+              "id": "2810",
+              "pageUrl": "/listings/nc18-10"
+            },
+            {
+              "id": "2811",
+              "pageUrl": "/listings/nc18-11"
+            },
+            {
+              "id": "2812",
+              "pageUrl": "/listings/nc18-12"
+            },
+            {
+              "id": "2813",
+              "pageUrl": "/listings/nc18-13"
+            },
+            {
+              "id": "2814",
+              "pageUrl": "/listings/nc18-14"
+            },
+            {
+              "id": "2815",
+              "pageUrl": "/listings/nc18-15"
+            },
+            {
+              "id": "912",
+              "pageUrl": "/listings/a b"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_leading_space_in_path",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "2900",
+              "pageUrl": "/listings/nc19-00"
+            },
+            {
+              "id": "2901",
+              "pageUrl": "/listings/nc19-01"
+            },
+            {
+              "id": "2902",
+              "pageUrl": "/listings/nc19-02"
+            },
+            {
+              "id": "2903",
+              "pageUrl": "/listings/nc19-03"
+            },
+            {
+              "id": "2904",
+              "pageUrl": "/listings/nc19-04"
+            },
+            {
+              "id": "2905",
+              "pageUrl": "/listings/nc19-05"
+            },
+            {
+              "id": "2906",
+              "pageUrl": "/listings/nc19-06"
+            },
+            {
+              "id": "2907",
+              "pageUrl": "/listings/nc19-07"
+            },
+            {
+              "id": "2908",
+              "pageUrl": "/listings/nc19-08"
+            },
+            {
+              "id": "2909",
+              "pageUrl": "/listings/nc19-09"
+            },
+            {
+              "id": "2910",
+              "pageUrl": "/listings/nc19-10"
+            },
+            {
+              "id": "2911",
+              "pageUrl": "/listings/nc19-11"
+            },
+            {
+              "id": "2912",
+              "pageUrl": "/listings/nc19-12"
+            },
+            {
+              "id": "2913",
+              "pageUrl": "/listings/nc19-13"
+            },
+            {
+              "id": "2914",
+              "pageUrl": "/listings/nc19-14"
+            },
+            {
+              "id": "2915",
+              "pageUrl": "/listings/nc19-15"
+            },
+            {
+              "id": "913",
+              "pageUrl": " /listings/a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_slug_leading_dash",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "3000",
+              "pageUrl": "/listings/nc20-00"
+            },
+            {
+              "id": "3001",
+              "pageUrl": "/listings/nc20-01"
+            },
+            {
+              "id": "3002",
+              "pageUrl": "/listings/nc20-02"
+            },
+            {
+              "id": "3003",
+              "pageUrl": "/listings/nc20-03"
+            },
+            {
+              "id": "3004",
+              "pageUrl": "/listings/nc20-04"
+            },
+            {
+              "id": "3005",
+              "pageUrl": "/listings/nc20-05"
+            },
+            {
+              "id": "3006",
+              "pageUrl": "/listings/nc20-06"
+            },
+            {
+              "id": "3007",
+              "pageUrl": "/listings/nc20-07"
+            },
+            {
+              "id": "3008",
+              "pageUrl": "/listings/nc20-08"
+            },
+            {
+              "id": "3009",
+              "pageUrl": "/listings/nc20-09"
+            },
+            {
+              "id": "3010",
+              "pageUrl": "/listings/nc20-10"
+            },
+            {
+              "id": "3011",
+              "pageUrl": "/listings/nc20-11"
+            },
+            {
+              "id": "3012",
+              "pageUrl": "/listings/nc20-12"
+            },
+            {
+              "id": "3013",
+              "pageUrl": "/listings/nc20-13"
+            },
+            {
+              "id": "3014",
+              "pageUrl": "/listings/nc20-14"
+            },
+            {
+              "id": "3015",
+              "pageUrl": "/listings/nc20-15"
+            },
+            {
+              "id": "914",
+              "pageUrl": "/listings/-a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_query_contains_newline",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "3100",
+              "pageUrl": "/listings/nc21-00"
+            },
+            {
+              "id": "3101",
+              "pageUrl": "/listings/nc21-01"
+            },
+            {
+              "id": "3102",
+              "pageUrl": "/listings/nc21-02"
+            },
+            {
+              "id": "3103",
+              "pageUrl": "/listings/nc21-03"
+            },
+            {
+              "id": "3104",
+              "pageUrl": "/listings/nc21-04"
+            },
+            {
+              "id": "3105",
+              "pageUrl": "/listings/nc21-05"
+            },
+            {
+              "id": "3106",
+              "pageUrl": "/listings/nc21-06"
+            },
+            {
+              "id": "3107",
+              "pageUrl": "/listings/nc21-07"
+            },
+            {
+              "id": "3108",
+              "pageUrl": "/listings/nc21-08"
+            },
+            {
+              "id": "3109",
+              "pageUrl": "/listings/nc21-09"
+            },
+            {
+              "id": "3110",
+              "pageUrl": "/listings/nc21-10"
+            },
+            {
+              "id": "3111",
+              "pageUrl": "/listings/nc21-11"
+            },
+            {
+              "id": "3112",
+              "pageUrl": "/listings/nc21-12"
+            },
+            {
+              "id": "3113",
+              "pageUrl": "/listings/nc21-13"
+            },
+            {
+              "id": "3114",
+              "pageUrl": "/listings/nc21-14"
+            },
+            {
+              "id": "3115",
+              "pageUrl": "/listings/nc21-15"
+            },
+            {
+              "id": "915",
+              "pageUrl": "/listings/a?x\ny"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_query_contains_cr",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "3200",
+              "pageUrl": "/listings/nc22-00"
+            },
+            {
+              "id": "3201",
+              "pageUrl": "/listings/nc22-01"
+            },
+            {
+              "id": "3202",
+              "pageUrl": "/listings/nc22-02"
+            },
+            {
+              "id": "3203",
+              "pageUrl": "/listings/nc22-03"
+            },
+            {
+              "id": "3204",
+              "pageUrl": "/listings/nc22-04"
+            },
+            {
+              "id": "3205",
+              "pageUrl": "/listings/nc22-05"
+            },
+            {
+              "id": "3206",
+              "pageUrl": "/listings/nc22-06"
+            },
+            {
+              "id": "3207",
+              "pageUrl": "/listings/nc22-07"
+            },
+            {
+              "id": "3208",
+              "pageUrl": "/listings/nc22-08"
+            },
+            {
+              "id": "3209",
+              "pageUrl": "/listings/nc22-09"
+            },
+            {
+              "id": "3210",
+              "pageUrl": "/listings/nc22-10"
+            },
+            {
+              "id": "3211",
+              "pageUrl": "/listings/nc22-11"
+            },
+            {
+              "id": "3212",
+              "pageUrl": "/listings/nc22-12"
+            },
+            {
+              "id": "3213",
+              "pageUrl": "/listings/nc22-13"
+            },
+            {
+              "id": "3214",
+              "pageUrl": "/listings/nc22-14"
+            },
+            {
+              "id": "3215",
+              "pageUrl": "/listings/nc22-15"
+            },
+            {
+              "id": "916",
+              "pageUrl": "/listings/a?x\ry"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "noncanonical_wrong_path_prefix",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "3300",
+              "pageUrl": "/listings/nc23-00"
+            },
+            {
+              "id": "3301",
+              "pageUrl": "/listings/nc23-01"
+            },
+            {
+              "id": "3302",
+              "pageUrl": "/listings/nc23-02"
+            },
+            {
+              "id": "3303",
+              "pageUrl": "/listings/nc23-03"
+            },
+            {
+              "id": "3304",
+              "pageUrl": "/listings/nc23-04"
+            },
+            {
+              "id": "3305",
+              "pageUrl": "/listings/nc23-05"
+            },
+            {
+              "id": "3306",
+              "pageUrl": "/listings/nc23-06"
+            },
+            {
+              "id": "3307",
+              "pageUrl": "/listings/nc23-07"
+            },
+            {
+              "id": "3308",
+              "pageUrl": "/listings/nc23-08"
+            },
+            {
+              "id": "3309",
+              "pageUrl": "/listings/nc23-09"
+            },
+            {
+              "id": "3310",
+              "pageUrl": "/listings/nc23-10"
+            },
+            {
+              "id": "3311",
+              "pageUrl": "/listings/nc23-11"
+            },
+            {
+              "id": "3312",
+              "pageUrl": "/listings/nc23-12"
+            },
+            {
+              "id": "3313",
+              "pageUrl": "/listings/nc23-13"
+            },
+            {
+              "id": "3314",
+              "pageUrl": "/listings/nc23-14"
+            },
+            {
+              "id": "3315",
+              "pageUrl": "/listings/nc23-15"
+            },
+            {
+              "id": "917",
+              "pageUrl": "/other/a"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "noncanonical"
+    }
+  },
+  {
+    "name": "success_query_with_space_is_stripped_not_rejected",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "5000",
+              "pageUrl": "/listings/qsp-00"
+            },
+            {
+              "id": "5001",
+              "pageUrl": "/listings/qsp-01"
+            },
+            {
+              "id": "5002",
+              "pageUrl": "/listings/qsp-02"
+            },
+            {
+              "id": "5003",
+              "pageUrl": "/listings/qsp-03"
+            },
+            {
+              "id": "5004",
+              "pageUrl": "/listings/qsp-04"
+            },
+            {
+              "id": "5005",
+              "pageUrl": "/listings/qsp-05"
+            },
+            {
+              "id": "5006",
+              "pageUrl": "/listings/qsp-06"
+            },
+            {
+              "id": "5007",
+              "pageUrl": "/listings/qsp-07"
+            },
+            {
+              "id": "5008",
+              "pageUrl": "/listings/qsp-08"
+            },
+            {
+              "id": "5009",
+              "pageUrl": "/listings/qsp-09"
+            },
+            {
+              "id": "5010",
+              "pageUrl": "/listings/qsp-10"
+            },
+            {
+              "id": "5011",
+              "pageUrl": "/listings/qsp-11"
+            },
+            {
+              "id": "5012",
+              "pageUrl": "/listings/qsp-12"
+            },
+            {
+              "id": "5013",
+              "pageUrl": "/listings/qsp-13"
+            },
+            {
+              "id": "5014",
+              "pageUrl": "/listings/qsp-14"
+            },
+            {
+              "id": "5015",
+              "pageUrl": "/listings/qsp-15"
+            },
+            {
+              "id": "5099",
+              "pageUrl": "/listings/qsp-new?x y"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "members": [
+        {
+          "key": "jll-1",
+          "provider_id": "5000",
+          "canonical_url": "https://property.jll.com/listings/qsp-00"
+        },
+        {
+          "key": "jll-2",
+          "provider_id": "5001",
+          "canonical_url": "https://property.jll.com/listings/qsp-01"
+        },
+        {
+          "key": "jll-3",
+          "provider_id": "5002",
+          "canonical_url": "https://property.jll.com/listings/qsp-02"
+        },
+        {
+          "key": "jll-4",
+          "provider_id": "5003",
+          "canonical_url": "https://property.jll.com/listings/qsp-03"
+        },
+        {
+          "key": "jll-5",
+          "provider_id": "5004",
+          "canonical_url": "https://property.jll.com/listings/qsp-04"
+        },
+        {
+          "key": "jll-6",
+          "provider_id": "5005",
+          "canonical_url": "https://property.jll.com/listings/qsp-05"
+        },
+        {
+          "key": "jll-7",
+          "provider_id": "5006",
+          "canonical_url": "https://property.jll.com/listings/qsp-06"
+        },
+        {
+          "key": "jll-8",
+          "provider_id": "5007",
+          "canonical_url": "https://property.jll.com/listings/qsp-07"
+        },
+        {
+          "key": "jll-9",
+          "provider_id": "5008",
+          "canonical_url": "https://property.jll.com/listings/qsp-08"
+        },
+        {
+          "key": "jll-10",
+          "provider_id": "5009",
+          "canonical_url": "https://property.jll.com/listings/qsp-09"
+        },
+        {
+          "key": "jll-11",
+          "provider_id": "5010",
+          "canonical_url": "https://property.jll.com/listings/qsp-10"
+        },
+        {
+          "key": "jll-12",
+          "provider_id": "5011",
+          "canonical_url": "https://property.jll.com/listings/qsp-11"
+        },
+        {
+          "key": "jll-13",
+          "provider_id": "5012",
+          "canonical_url": "https://property.jll.com/listings/qsp-12"
+        },
+        {
+          "key": "jll-14",
+          "provider_id": "5013",
+          "canonical_url": "https://property.jll.com/listings/qsp-13"
+        },
+        {
+          "key": "jll-15",
+          "provider_id": "5014",
+          "canonical_url": "https://property.jll.com/listings/qsp-14"
+        },
+        {
+          "key": "jll-16",
+          "provider_id": "5015",
+          "canonical_url": "https://property.jll.com/listings/qsp-15"
+        }
+      ],
+      "candidate_count": 17,
+      "digest": "eff4bbf7115f192cdbe368fde9ef2fe2204d5f3dd8a1e5e4120c8bbc241d4ce4",
+      "rule": "jll-canonical-url-lexicographic-v1"
+    }
+  },
+  {
+    "name": "duplicate_via_query_with_space_strips_to_existing_slug",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 17,
+          "items": [
+            {
+              "id": "5100",
+              "pageUrl": "/listings/qspd-00"
+            },
+            {
+              "id": "5101",
+              "pageUrl": "/listings/qspd-01"
+            },
+            {
+              "id": "5102",
+              "pageUrl": "/listings/qspd-02"
+            },
+            {
+              "id": "5103",
+              "pageUrl": "/listings/qspd-03"
+            },
+            {
+              "id": "5104",
+              "pageUrl": "/listings/qspd-04"
+            },
+            {
+              "id": "5105",
+              "pageUrl": "/listings/qspd-05"
+            },
+            {
+              "id": "5106",
+              "pageUrl": "/listings/qspd-06"
+            },
+            {
+              "id": "5107",
+              "pageUrl": "/listings/qspd-07"
+            },
+            {
+              "id": "5108",
+              "pageUrl": "/listings/qspd-08"
+            },
+            {
+              "id": "5109",
+              "pageUrl": "/listings/qspd-09"
+            },
+            {
+              "id": "5110",
+              "pageUrl": "/listings/qspd-10"
+            },
+            {
+              "id": "5111",
+              "pageUrl": "/listings/qspd-11"
+            },
+            {
+              "id": "5112",
+              "pageUrl": "/listings/qspd-12"
+            },
+            {
+              "id": "5113",
+              "pageUrl": "/listings/qspd-13"
+            },
+            {
+              "id": "5114",
+              "pageUrl": "/listings/qspd-14"
+            },
+            {
+              "id": "5115",
+              "pageUrl": "/listings/qspd-15"
+            },
+            {
+              "id": "5199",
+              "pageUrl": "/listings/qspd-00?x y"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "duplicate"
+    }
+  },
+  {
+    "name": "envelope_errors_nonempty",
+    "payload": {
+      "errors": [
+        {
+          "message": "boom"
+        }
+      ],
+      "data": {
+        "properties": {
+          "count": 16,
+          "items": [
+            {
+              "id": "2000",
+              "pageUrl": "/listings/env-00"
+            },
+            {
+              "id": "2001",
+              "pageUrl": "/listings/env-01"
+            },
+            {
+              "id": "2002",
+              "pageUrl": "/listings/env-02"
+            },
+            {
+              "id": "2003",
+              "pageUrl": "/listings/env-03"
+            },
+            {
+              "id": "2004",
+              "pageUrl": "/listings/env-04"
+            },
+            {
+              "id": "2005",
+              "pageUrl": "/listings/env-05"
+            },
+            {
+              "id": "2006",
+              "pageUrl": "/listings/env-06"
+            },
+            {
+              "id": "2007",
+              "pageUrl": "/listings/env-07"
+            },
+            {
+              "id": "2008",
+              "pageUrl": "/listings/env-08"
+            },
+            {
+              "id": "2009",
+              "pageUrl": "/listings/env-09"
+            },
+            {
+              "id": "2010",
+              "pageUrl": "/listings/env-10"
+            },
+            {
+              "id": "2011",
+              "pageUrl": "/listings/env-11"
+            },
+            {
+              "id": "2012",
+              "pageUrl": "/listings/env-12"
+            },
+            {
+              "id": "2013",
+              "pageUrl": "/listings/env-13"
+            },
+            {
+              "id": "2014",
+              "pageUrl": "/listings/env-14"
+            },
+            {
+              "id": "2015",
+              "pageUrl": "/listings/env-15"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  },
+  {
+    "name": "envelope_errors_null",
+    "payload": {
+      "errors": null,
+      "data": {
+        "properties": {
+          "count": 16,
+          "items": [
+            {
+              "id": "2000",
+              "pageUrl": "/listings/env-00"
+            },
+            {
+              "id": "2001",
+              "pageUrl": "/listings/env-01"
+            },
+            {
+              "id": "2002",
+              "pageUrl": "/listings/env-02"
+            },
+            {
+              "id": "2003",
+              "pageUrl": "/listings/env-03"
+            },
+            {
+              "id": "2004",
+              "pageUrl": "/listings/env-04"
+            },
+            {
+              "id": "2005",
+              "pageUrl": "/listings/env-05"
+            },
+            {
+              "id": "2006",
+              "pageUrl": "/listings/env-06"
+            },
+            {
+              "id": "2007",
+              "pageUrl": "/listings/env-07"
+            },
+            {
+              "id": "2008",
+              "pageUrl": "/listings/env-08"
+            },
+            {
+              "id": "2009",
+              "pageUrl": "/listings/env-09"
+            },
+            {
+              "id": "2010",
+              "pageUrl": "/listings/env-10"
+            },
+            {
+              "id": "2011",
+              "pageUrl": "/listings/env-11"
+            },
+            {
+              "id": "2012",
+              "pageUrl": "/listings/env-12"
+            },
+            {
+              "id": "2013",
+              "pageUrl": "/listings/env-13"
+            },
+            {
+              "id": "2014",
+              "pageUrl": "/listings/env-14"
+            },
+            {
+              "id": "2015",
+              "pageUrl": "/listings/env-15"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  },
+  {
+    "name": "envelope_data_missing",
+    "payload": {
+      "errors": []
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  },
+  {
+    "name": "envelope_properties_items_not_a_list",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 16,
+          "items": "not-a-list"
+        }
+      }
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  },
+  {
+    "name": "envelope_items_contains_non_object",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": 16,
+          "items": [
+            {
+              "id": "2000",
+              "pageUrl": "/listings/env-00"
+            },
+            {
+              "id": "2001",
+              "pageUrl": "/listings/env-01"
+            },
+            {
+              "id": "2002",
+              "pageUrl": "/listings/env-02"
+            },
+            {
+              "id": "2003",
+              "pageUrl": "/listings/env-03"
+            },
+            {
+              "id": "2004",
+              "pageUrl": "/listings/env-04"
+            },
+            {
+              "id": "2005",
+              "pageUrl": "/listings/env-05"
+            },
+            {
+              "id": "2006",
+              "pageUrl": "/listings/env-06"
+            },
+            {
+              "id": "2007",
+              "pageUrl": "/listings/env-07"
+            },
+            {
+              "id": "2008",
+              "pageUrl": "/listings/env-08"
+            },
+            {
+              "id": "2009",
+              "pageUrl": "/listings/env-09"
+            },
+            {
+              "id": "2010",
+              "pageUrl": "/listings/env-10"
+            },
+            {
+              "id": "2011",
+              "pageUrl": "/listings/env-11"
+            },
+            {
+              "id": "2012",
+              "pageUrl": "/listings/env-12"
+            },
+            {
+              "id": "2013",
+              "pageUrl": "/listings/env-13"
+            },
+            {
+              "id": "2014",
+              "pageUrl": "/listings/env-14"
+            },
+            {
+              "id": "2015",
+              "pageUrl": "/listings/env-15"
+            },
+            "not-an-object"
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  },
+  {
+    "name": "envelope_count_missing",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "items": [
+            {
+              "id": "2000",
+              "pageUrl": "/listings/env-00"
+            },
+            {
+              "id": "2001",
+              "pageUrl": "/listings/env-01"
+            },
+            {
+              "id": "2002",
+              "pageUrl": "/listings/env-02"
+            },
+            {
+              "id": "2003",
+              "pageUrl": "/listings/env-03"
+            },
+            {
+              "id": "2004",
+              "pageUrl": "/listings/env-04"
+            },
+            {
+              "id": "2005",
+              "pageUrl": "/listings/env-05"
+            },
+            {
+              "id": "2006",
+              "pageUrl": "/listings/env-06"
+            },
+            {
+              "id": "2007",
+              "pageUrl": "/listings/env-07"
+            },
+            {
+              "id": "2008",
+              "pageUrl": "/listings/env-08"
+            },
+            {
+              "id": "2009",
+              "pageUrl": "/listings/env-09"
+            },
+            {
+              "id": "2010",
+              "pageUrl": "/listings/env-10"
+            },
+            {
+              "id": "2011",
+              "pageUrl": "/listings/env-11"
+            },
+            {
+              "id": "2012",
+              "pageUrl": "/listings/env-12"
+            },
+            {
+              "id": "2013",
+              "pageUrl": "/listings/env-13"
+            },
+            {
+              "id": "2014",
+              "pageUrl": "/listings/env-14"
+            },
+            {
+              "id": "2015",
+              "pageUrl": "/listings/env-15"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  },
+  {
+    "name": "envelope_count_negative",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": -1,
+          "items": [
+            {
+              "id": "2000",
+              "pageUrl": "/listings/env-00"
+            },
+            {
+              "id": "2001",
+              "pageUrl": "/listings/env-01"
+            },
+            {
+              "id": "2002",
+              "pageUrl": "/listings/env-02"
+            },
+            {
+              "id": "2003",
+              "pageUrl": "/listings/env-03"
+            },
+            {
+              "id": "2004",
+              "pageUrl": "/listings/env-04"
+            },
+            {
+              "id": "2005",
+              "pageUrl": "/listings/env-05"
+            },
+            {
+              "id": "2006",
+              "pageUrl": "/listings/env-06"
+            },
+            {
+              "id": "2007",
+              "pageUrl": "/listings/env-07"
+            },
+            {
+              "id": "2008",
+              "pageUrl": "/listings/env-08"
+            },
+            {
+              "id": "2009",
+              "pageUrl": "/listings/env-09"
+            },
+            {
+              "id": "2010",
+              "pageUrl": "/listings/env-10"
+            },
+            {
+              "id": "2011",
+              "pageUrl": "/listings/env-11"
+            },
+            {
+              "id": "2012",
+              "pageUrl": "/listings/env-12"
+            },
+            {
+              "id": "2013",
+              "pageUrl": "/listings/env-13"
+            },
+            {
+              "id": "2014",
+              "pageUrl": "/listings/env-14"
+            },
+            {
+              "id": "2015",
+              "pageUrl": "/listings/env-15"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  },
+  {
+    "name": "envelope_count_boolean_true",
+    "payload": {
+      "errors": [],
+      "data": {
+        "properties": {
+          "count": true,
+          "items": [
+            {
+              "id": "2000",
+              "pageUrl": "/listings/env-00"
+            },
+            {
+              "id": "2001",
+              "pageUrl": "/listings/env-01"
+            },
+            {
+              "id": "2002",
+              "pageUrl": "/listings/env-02"
+            },
+            {
+              "id": "2003",
+              "pageUrl": "/listings/env-03"
+            },
+            {
+              "id": "2004",
+              "pageUrl": "/listings/env-04"
+            },
+            {
+              "id": "2005",
+              "pageUrl": "/listings/env-05"
+            },
+            {
+              "id": "2006",
+              "pageUrl": "/listings/env-06"
+            },
+            {
+              "id": "2007",
+              "pageUrl": "/listings/env-07"
+            },
+            {
+              "id": "2008",
+              "pageUrl": "/listings/env-08"
+            },
+            {
+              "id": "2009",
+              "pageUrl": "/listings/env-09"
+            },
+            {
+              "id": "2010",
+              "pageUrl": "/listings/env-10"
+            },
+            {
+              "id": "2011",
+              "pageUrl": "/listings/env-11"
+            },
+            {
+              "id": "2012",
+              "pageUrl": "/listings/env-12"
+            },
+            {
+              "id": "2013",
+              "pageUrl": "/listings/env-13"
+            },
+            {
+              "id": "2014",
+              "pageUrl": "/listings/env-14"
+            },
+            {
+              "id": "2015",
+              "pageUrl": "/listings/env-15"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "error": "envelope"
+    }
+  }
+]

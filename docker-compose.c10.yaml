@@ -2,6 +2,9 @@
 # playwright-service: each lifecycle gets a unique COMPOSE_PROJECT_NAME.
 services:
   playwright-service-c10:
+    # Prebuilt by the operator from the reviewed checkout; C10 runs pass
+    # --no-build --pull never and verify this exact tag in the rendered config.
+    image: firecrawl-playwright-service-c10:local
     build: apps/playwright-service-ts
     env_file:
       - path: ${C10_BROWSER_PRIVATE_ENV_FILE:?set an owner-only C10 env file}
@@ -11,6 +14,8 @@ services:
       C10_BROWSER_INTERNAL_PORT: 3004
       MAX_CONCURRENT_PAGES: ${MAX_CONCURRENT_PAGES:?set reviewed C10 capacity}
       C10_PROFILE_SHA256: ${C10_PROFILE_SHA256:?set reviewed C10 profile identity}
+      # Empty for P0/P1 calibration. Only the JLL admission action names its lane.
+      C10_ADMISSION_LANE: ${C10_ADMISSION_LANE:-}
     security_opt:
       - no-new-privileges:true
     cap_drop:

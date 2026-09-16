@@ -5,20 +5,31 @@ import {
   sha256,
   type PublicReceipt,
 } from "../contracts.js";
-import type { ReceiptProducerContext } from "../producer.js";
+import { requireReceiptSource, sealStageReceipt, type ReceiptProducerContext } from "../producer.js";
 import type { ReceiptArtifactStore, SealedArtifact } from "../private_store.js";
 import {
-  createJllReceiptProducer,
+  jllDetailProjection,
   jllEnumerationCard,
+  jllMemberCard,
   type JllReceiptMember,
 } from "./jll.js";
+import { normalizedJllListingUrl, parseJllGraphqlSearchEnvelope } from "../../../sources/pure/jll-receipt.js";
 
 export const JLL_ADMISSION_MEMBER_COUNT = 16;
+export const JLL_ADMISSION_SELECTION_RULE = "jll-canonical-url-lexicographic-v1";
+
+export interface JllAdmissionSelection {
+  readonly rule: typeof JLL_ADMISSION_SELECTION_RULE;
+  readonly candidateCount: number;
+  readonly selectedMembers: readonly JllReceiptMember[];
+  readonly digest: string;
+}
 
 export interface JllAdmissionReceiptSet {
   readonly schemaVersion: 1;
   readonly kind: "cre_capacity_c10_jll_v1_receipt_set";
   readonly members: readonly JllReceiptMember[];
+  readonly selection: JllAdmissionSelection;
   readonly enumeration: PublicReceipt;
   readonly memberReceipts: readonly PublicReceipt[];
   /** Pins the exact source-owned enumeration body and ordered member routes. */
@@ -54,11 +65,75 @@ export class RecordingReceiptStore implements ReceiptArtifactStore {
   }
 }
 
-function collectionIntentSha256(members: readonly JllReceiptMember[]): string {
+/**
+ * `jll-canonical-url-lexicographic-v1`, mirrored exactly by the Python
+ * controller and offline manifest validator (shared golden vectors pin both).
+ *
+ * A candidate is admissible only when its provider id is a string of ASCII
+ * digits and its `pageUrl` is one listing slug, optionally absolute on the JLL
+ * origin, optionally with one trailing slash, query, or fragment.  That grammar
+ * makes canonicalization language-independent: drop query/fragment/trailing
+ * slash and prefix the JLL origin.  Any malformed or duplicate candidate
+ * rejects the whole enumeration.  Routes are ordered by UTF-16 code unit (the
+ * canonical routes are ASCII, so this equals Python code-point order), never
+ * by locale collation, and the first sixteen are selected.
+ */
+const JLL_ADMISSION_ROUTE = /^(?:https:\/\/property\.jll\.com)?\/listings\/([A-Za-z0-9][A-Za-z0-9._~-]*)\/?(?:[?#][^\n\r\u2028\u2029]*)?$/;
+const JLL_ADMISSION_PROVIDER_ID = /^[0-9]+$/;
+
+export function selectJllAdmissionMembers(payload: unknown): JllAdmissionSelection {
+  let parsed: ReturnType<typeof parseJllGraphqlSearchEnvelope>;
+  try {
+    parsed = parseJllGraphqlSearchEnvelope(payload);
+  } catch {
+    throw new C10ReceiptError("JLL admission enumeration envelope is invalid");
+  }
+  const ids = new Set<string>();
+  const routes = new Set<string>();
+  const candidates = parsed.items.map((item) => {
+    const providerId = item.id;
+    const pageUrl = item.pageUrl;
+    const match = typeof pageUrl === "string" ? JLL_ADMISSION_ROUTE.exec(pageUrl) : null;
+    if (typeof providerId !== "string" || !JLL_ADMISSION_PROVIDER_ID.test(providerId) || match === null) {
+      throw new C10ReceiptError("JLL admission enumeration contains a noncanonical candidate");
+    }
+    const canonicalUrl = `https://property.jll.com/listings/${match[1]}`;
+    if (normalizedJllListingUrl(pageUrl as string) !== canonicalUrl) {
+      throw new C10ReceiptError("JLL admission enumeration contains a noncanonical candidate");
+    }
+    if (ids.has(providerId) || routes.has(canonicalUrl)) {
+      throw new C10ReceiptError("JLL admission enumeration contains duplicate candidates");
+    }
+    ids.add(providerId); routes.add(canonicalUrl);
+    return { providerId, canonicalUrl };
+  }).sort((left, right) => (left.canonicalUrl < right.canonicalUrl ? -1 : left.canonicalUrl > right.canonicalUrl ? 1 : 0));
+  if (candidates.length < JLL_ADMISSION_MEMBER_COUNT) {
+    throw new C10ReceiptError("JLL admission enumeration has insufficient canonical candidates");
+  }
+  const selectedMembers = Object.freeze(candidates.slice(0, JLL_ADMISSION_MEMBER_COUNT).map((candidate, index) => Object.freeze({
+    key: `jll-${index + 1}`, providerId: candidate.providerId, canonicalUrl: candidate.canonicalUrl,
+  })));
+  const digest = canonicalSha256({ rule: JLL_ADMISSION_SELECTION_RULE, memberRoutes: selectedMembers.map((member) => member.canonicalUrl), providerIds: selectedMembers.map((member) => member.providerId) });
+  return Object.freeze({ rule: JLL_ADMISSION_SELECTION_RULE, candidateCount: candidates.length, selectedMembers, digest });
+}
+
+function selectionFromEnumeration(body: Uint8Array): JllAdmissionSelection {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    throw new C10ReceiptError("JLL admission enumeration envelope is invalid");
+  }
+  return selectJllAdmissionMembers(payload);
+}
+
+function collectionIntentSha256(members: readonly JllReceiptMember[], selection: JllAdmissionSelection): string {
   const enumeration = jllEnumerationCard({ transaction: "sale", propertyType: "office", page: 1 });
   return canonicalSha256({
     sourceKey: "jll",
     enumerationBodySha256: sha256(enumeration.body ?? ""),
+    selectionRule: selection.rule,
+    selectionDigest: selection.digest,
     memberRoutes: members.map((member) => member.canonicalUrl),
   });
 }
@@ -99,23 +174,28 @@ function immutableMembers(members: readonly JllReceiptMember[]): readonly JllRec
  * one-shot transport.  This module has no URL, fetch, browser, or filesystem
  * construction seam: the production controller owns those authorities.
  */
-export async function collectJllAdmissionReceipts(
-  context: ReceiptProducerContext,
-  members: readonly JllReceiptMember[],
-): Promise<JllAdmissionReceiptSet> {
+export async function collectJllAdmissionReceipts(context: ReceiptProducerContext): Promise<JllAdmissionReceiptSet> {
   if (!(context.transport.store instanceof RecordingReceiptStore)) {
     throw new C10ReceiptError("JLL admission requires a controller-owned recording receipt store");
   }
-  const fixedMembers = immutableMembers(members);
-  const producer = createJllReceiptProducer({
-    enumerations: [{ transaction: "sale", propertyType: "office", page: 1 }],
-    members: fixedMembers,
-    enumerationCards: [],
-  });
-  const enumeration = await producer.produceEnumerationReceipt(context);
-  const memberReceipts = await Promise.all(
-    fixedMembers.map((member) => producer.produceMemberReceipt(context, member)),
-  );
+  const transport = requireReceiptSource(context, "jll");
+  transport.assertInitialCards([jllEnumerationCard({ transaction: "sale", propertyType: "office", page: 1 })]);
+  const enumerationEvent = await transport.oneShot("jll-enumeration-0", (response) => ({ selection: selectionFromEnumeration(response.body) }));
+  const selection = enumerationEvent.projection.selection as JllAdmissionSelection;
+  const fixedMembers = immutableMembers(selection.selectedMembers);
+  for (const [index, member] of fixedMembers.entries()) {
+    await transport.appendFrom(enumerationEvent, {
+      sourceKey: "jll", stage: "member", maximumCards: JLL_ADMISSION_MEMBER_COUNT,
+      create: (parent, coordinate: { member: JllReceiptMember; index: number }) => jllMemberCard(parent, coordinate.member, coordinate.index, coordinate.member.canonicalUrl),
+    }, { member, index });
+  }
+  const graph = await transport.freezeMemberGraph();
+  const enumeration = await sealStageReceipt(context, "enumeration", null, { selection, memberGraph: graph });
+  const memberReceipts: PublicReceipt[] = [];
+  for (const [index, member] of fixedMembers.entries()) {
+    const event = await transport.oneShot(`jll-member-${index}`, jllDetailProjection(member, member.canonicalUrl));
+    memberReceipts.push(await sealStageReceipt(context, "member", member.key, { member: { canonicalUrl: member.canonicalUrl, providerId: member.providerId, sourceProjection: event.projection }, memberCardId: `jll-member-${index}`, memberProjectionSha256: event.projectionSha256 }));
+  }
   if (
     enumeration.stage !== "enumeration"
     || enumeration.memberKey !== null
@@ -129,9 +209,10 @@ export async function collectJllAdmissionReceipts(
     schemaVersion: 1 as const,
     kind: "cre_capacity_c10_jll_v1_receipt_set" as const,
     members: fixedMembers,
+    selection,
     enumeration,
     memberReceipts: Object.freeze(memberReceipts),
-    collectionIntentSha256: collectionIntentSha256(fixedMembers),
+    collectionIntentSha256: collectionIntentSha256(fixedMembers, selection),
     artifacts: context.transport.store.artifacts(),
   };
   return Object.freeze({ ...unsigned, receiptSetSha256: canonicalSha256(unsigned) });
@@ -162,9 +243,11 @@ export async function sealJllAdmissionManifest(
       source_key: "jll",
       enumeration: { transaction: "sale", property_type: "office", page: 1 },
       member_count: JLL_ADMISSION_MEMBER_COUNT,
+      selection_rule: JLL_ADMISSION_SELECTION_RULE,
       no_write: set.enumeration.noWrite,
     },
     collection_intent_sha256: set.collectionIntentSha256,
+    selection_digest: set.selection.digest,
     members: set.members.map((member) => ({ key: member.key, provider_id: member.providerId, canonical_url: member.canonicalUrl })),
     enumeration: set.enumeration,
     member_receipts: set.memberReceipts,
