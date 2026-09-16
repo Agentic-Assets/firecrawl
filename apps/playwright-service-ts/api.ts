@@ -64,8 +64,15 @@ const ALLOW_LOCAL_WEBHOOKS =
 const PROXY_SERVER = process.env.PROXY_SERVER || null;
 const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
 const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
-const C10_COORDINATOR_PUBLIC_KEY = process.env.C10_COORDINATOR_PUBLIC_KEY_PEM;
-const C10_SIDECAR_EVIDENCE_PRIVATE_KEY = process.env.C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM;
+function c10PemFromBase64(value: string | undefined): string | undefined {
+  if (!value || !/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length > 32_768) return undefined;
+  try {
+    const decoded = Buffer.from(value, "base64").toString("utf8");
+    return decoded.startsWith("-----BEGIN ") && decoded.endsWith("-----\n") ? decoded : undefined;
+  } catch { return undefined; }
+}
+const C10_COORDINATOR_PUBLIC_KEY = c10PemFromBase64(process.env.C10_COORDINATOR_PUBLIC_KEY_PEM_B64);
+const C10_SIDECAR_EVIDENCE_PRIVATE_KEY = c10PemFromBase64(process.env.C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64);
 const C10_HOST_TRANSPORT_V3_KEY = process.env.PLAYWRIGHT_HOST_TRANSPORT_V3_KEY;
 const C10_BROWSER_INTERNAL_PORT = process.env.C10_BROWSER_INTERNAL_PORT;
 const C10_PROFILE_SHA256 = process.env.C10_PROFILE_SHA256;
@@ -1077,7 +1084,7 @@ app.post("/scrape", async (req: Request, res: Response) => {
 });
 
 const start = async () => {
-  if ((C10_COORDINATOR_PUBLIC_KEY || C10_SIDECAR_EVIDENCE_PRIVATE_KEY || C10_HOST_TRANSPORT_V3_KEY || C10_BROWSER_INTERNAL_PORT || C10_PROFILE_SHA256) && !c10V3Enabled) {
+  if ((process.env.C10_COORDINATOR_PUBLIC_KEY_PEM_B64 || process.env.C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64 || C10_HOST_TRANSPORT_V3_KEY || C10_BROWSER_INTERNAL_PORT || C10_PROFILE_SHA256) && !c10V3Enabled) {
     throw new Error("C10 v3 requires coordinator public key, sidecar evidence private key, host transport key, profile identity, and port");
   }
   if (c10V3Enabled && (!C10_BROWSER_INTERNAL_PORT || !/^[1-9][0-9]{0,4}$/.test(C10_BROWSER_INTERNAL_PORT))) {

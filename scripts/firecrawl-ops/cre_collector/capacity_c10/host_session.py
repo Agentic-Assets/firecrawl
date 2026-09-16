@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import secrets
+import selectors
 import socket
 import stat
 import subprocess
@@ -50,6 +51,7 @@ _MAX_CHILD_FRAME_BYTES = 64 * 1024
 _MAX_CHILD_STDOUT_BYTES = 8 * 1024 * 1024
 _MAX_CHILD_STDERR_BYTES = 64 * 1024
 _MAX_CARD_TIMEOUT_MS = 30_000
+_C10_COMPOSE_SERVICE = "playwright-service-c10"
 _JLL_HOST = "property.jll.com"
 _JLL_BOOTSTRAP_URL = "https://property.jll.com/"
 # This is deliberately a fixed recipe rather than a caller supplied request
@@ -736,65 +738,72 @@ class DockerComposeSidecar:
             "up",
             "-d",
             "--no-deps",
-            "playwright-service",
+            _C10_COMPOSE_SERVICE,
         ]
         env = {
             **os.environ,
             **environment,
             "C10_BROWSER_PRIVATE_ENV_FILE": str(self._env_file),
             "C10_BROWSER_HOST_PORT": str(port),
+            "C10_COMPOSE_PROJECT": f"c10-{secrets.token_hex(12)}",
         }
+        env["COMPOSE_PROJECT_NAME"] = env["C10_COMPOSE_PROJECT"]
         self._compose_env = env
-        rendered = subprocess.run(
-            [
-                "docker",
-                "compose",
-                "-f",
-                "docker-compose.yaml",
-                "-f",
-                "docker-compose.c10.yaml",
-                "config",
-                "--format",
-                "json",
-            ],
-            cwd=self.repo_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=_remaining(deadline),
-            check=False,
-        )
-        if rendered.returncode != 0 or not self._rendered_identity(
-            rendered.stdout, port, environment
-        ):
-            self._remove_env()
-            raise C10Error(
-                "C10 compose overlay did not render the exact loopback sidecar"
+        try:
+            rendered = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    "docker-compose.yaml",
+                    "-f",
+                    "docker-compose.c10.yaml",
+                    "config",
+                    "--format",
+                    "json",
+                ],
+                cwd=self.repo_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=_remaining(deadline),
+                check=False,
             )
-        result = subprocess.run(
-            command,
-            cwd=self.repo_root,
-            env=env,
-            capture_output=True,
-            timeout=_remaining(deadline),
-            check=False,
-        )
-        if result.returncode != 0:
-            # `up` can create a container before reporting a failure. Stop with
-            # the identical retained interpolation identity before propagating
-            # the failure; a stop failure itself is quarantine-worthy.
+            if rendered.returncode != 0 or not self._rendered_identity(
+                rendered.stdout, port, environment
+            ):
+                raise C10Error(
+                    "C10 compose overlay did not render the exact loopback sidecar"
+                )
+            result = subprocess.run(
+                command,
+                cwd=self.repo_root,
+                env=env,
+                capture_output=True,
+                timeout=_remaining(deadline),
+                check=False,
+            )
+            if result.returncode != 0:
+                raise C10Error("C10 sidecar compose startup failed")
+        except BaseException:
+            # A compose validation timeout or `up` failure may have created a
+            # container. Always use this exact env/project identity to remove
+            # it before the exception escapes the lifecycle owner.
             try:
                 self.stop(deadline)
             except BaseException as cleanup_error:
                 raise C10Error(
                     "C10 sidecar partial-start cleanup failed"
                 ) from cleanup_error
-            raise C10Error("C10 sidecar compose startup failed")
+            raise
 
     def stop(self, deadline: float) -> None:
         try:
             if self._compose_env is None:
-                raise C10Error("C10 sidecar has no retained compose identity")
+                # Start owns failed-start cleanup locally. A host finally block
+                # may race only that already-confirmed cleanup, never another
+                # project or ordinary sidecar.
+                return
             result = subprocess.run(
                 [
                     "docker",
@@ -806,7 +815,7 @@ class DockerComposeSidecar:
                     "rm",
                     "--force",
                     "--stop",
-                    "playwright-service",
+                    _C10_COMPOSE_SERVICE,
                 ],
                 cwd=self.repo_root,
                 env=self._compose_env,
@@ -828,7 +837,7 @@ class DockerComposeSidecar:
                     "--all",
                     "--format",
                     "json",
-                    "playwright-service",
+                    _C10_COMPOSE_SERVICE,
                 ],
                 cwd=self.repo_root,
                 env=self._compose_env,
@@ -854,7 +863,7 @@ class DockerComposeSidecar:
         rendered: str, port: int, expected_environment: Mapping[str, str]
     ) -> bool:
         try:
-            service = json.loads(rendered)["services"]["playwright-service"]
+            service = json.loads(rendered)["services"][_C10_COMPOSE_SERVICE]
             ports = service["ports"]
         except (KeyError, TypeError, json.JSONDecodeError):
             return False
@@ -952,21 +961,28 @@ class C10HostExecutionSession:
                 port = self._free_loopback_port()
                 arm = _safe_json(claim["arm"], "C10 arm")
                 profile = _safe_json(plan["profiles"][arm["variant"]], "C10 profile")
+                # Cleanup responsibility begins before Compose is invoked: an
+                # `up` timeout can leave a container even when start raises.
+                sidecar_attempted = True
                 self.sidecar.start(
                     {
-                        "C10_COORDINATOR_PUBLIC_KEY_PEM": keys.coordinator_public_pem,
-                        "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM": keys.sidecar_private_pem,
+                        "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
+                            keys.coordinator_public_pem.encode("utf-8")
+                        ).decode("ascii"),
+                        "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
+                            keys.sidecar_private_pem.encode("utf-8")
+                        ).decode("ascii"),
                         "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
                         "MAX_CONCURRENT_PAGES": str(
                             profile["requested"]["global_pages"]
                         ),
                         "C10_PROFILE_SHA256": sha256(profile["requested"]),
                         "C10_BROWSER_CPUS": str(profile["requested"]["browser_cpus"]),
+                        "C10_BROWSER_PIDS": str(profile["requested"]["browser_pids"]),
                     },
                     port,
                     deadline,
                 )
-                sidecar_attempted = True
                 endpoint = f"http://127.0.0.1:{port}"
                 self._verify_health(endpoint, keys, profile, deadline)
                 evidence, artifacts = self._run_cohort(
@@ -1239,22 +1255,7 @@ class C10HostExecutionSession:
             frame = (_canonical_text(payload) + "\n").encode("utf-8")
             if len(frame) > _MAX_CHILD_FRAME_BYTES:
                 raise C10Error("C10 issued child frame exceeds its bound")
-            try:
-                output, stderr = process.communicate(
-                    frame, timeout=_remaining(deadline)
-                )
-            except subprocess.TimeoutExpired as exc:
-                self._kill_child_group(process)
-                process.communicate()
-                raise C10Error(
-                    "C10 issued browser child exceeded its deadline"
-                ) from exc
-            if (
-                len(output) > _MAX_CHILD_STDOUT_BYTES
-                or len(stderr) > _MAX_CHILD_STDERR_BYTES
-            ):
-                self._kill_child_group(process)
-                raise C10Error("C10 issued child output exceeds its bound")
+            output, _stderr = self._stream_child(process, frame, deadline)
             if process.returncode != 0:
                 raise C10Error("C10 issued browser child failed")
             return _safe_json(
@@ -1262,6 +1263,59 @@ class C10HostExecutionSession:
             )
         except (OSError, json.JSONDecodeError) as exc:
             raise C10Error("C10 issued browser child failed") from exc
+
+    def _stream_child(
+        self, process: subprocess.Popen[bytes], frame: bytes, deadline: float
+    ) -> tuple[bytes, bytes]:
+        """Bound every pipe while the child is still alive, never after it."""
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            self._kill_child_group(process)
+            raise C10Error("C10 issued browser child pipes are unavailable")
+        selector = selectors.DefaultSelector()
+        output, stderr, pending = bytearray(), bytearray(), memoryview(frame)
+        streams = {process.stdout.fileno(): output, process.stderr.fileno(): stderr}
+        try:
+            for descriptor in (*streams, process.stdin.fileno()):
+                os.set_blocking(descriptor, False)
+            selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stderr, selectors.EVENT_READ)
+            selector.register(process.stdin, selectors.EVENT_WRITE)
+            while selector.get_map():
+                if _remaining(deadline) <= 0:
+                    raise C10Error("C10 issued browser child exceeded its deadline")
+                for key, _ in selector.select(min(_remaining(deadline), 0.1)):
+                    if key.fileobj is process.stdin:
+                        if pending:
+                            sent = os.write(process.stdin.fileno(), pending)
+                            pending = pending[sent:]
+                        if not pending:
+                            selector.unregister(process.stdin)
+                            process.stdin.close()
+                        continue
+                    chunk = os.read(key.fileobj.fileno(), 64 * 1024)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    destination = streams[key.fileobj.fileno()]
+                    destination.extend(chunk)
+                    limit = (
+                        _MAX_CHILD_STDOUT_BYTES
+                        if destination is output
+                        else _MAX_CHILD_STDERR_BYTES
+                    )
+                    if len(destination) > limit:
+                        raise C10Error("C10 issued child output exceeds its bound")
+                if process.poll() is not None and not pending:
+                    # Keep reading until both EOFs to avoid accepting a child
+                    # that exits while buffered attacker bytes remain.
+                    continue
+            process.wait(timeout=_remaining(deadline))
+            return bytes(output), bytes(stderr)
+        except (OSError, subprocess.TimeoutExpired, C10Error):
+            self._kill_child_group(process)
+            raise
+        finally:
+            selector.close()
 
     @staticmethod
     def _kill_child_group(process: subprocess.Popen[bytes]) -> None:
