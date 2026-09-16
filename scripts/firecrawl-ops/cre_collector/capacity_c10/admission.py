@@ -17,6 +17,7 @@ from .contracts import (
     P1_REQUESTED,
     PLAN_KIND,
     C10Error,
+    _seal_admitted_plan,
     require_sha256,
     sha256,
 )
@@ -177,4 +178,4 @@ def admit_plan(
         "no_write": NO_WRITE,
         "arm_sequence": list(ARM_SEQUENCE),
     }
-    return {**unsigned, "plan_sha256": sha256(unsigned)}
+    return _seal_admitted_plan({**unsigned, "plan_sha256": sha256(unsigned)})

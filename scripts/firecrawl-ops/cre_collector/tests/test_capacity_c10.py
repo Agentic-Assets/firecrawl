@@ -244,6 +244,23 @@ def test_direct_plan_validation_rejects_self_hashed_policy_bypasses() -> None:
     with pytest.raises(contracts.C10Error, match="fixed P0/P1 policy"):
         contracts.validate_plan(wrong_profile)
 
+    forged_admission = json.loads(json.dumps(_plan()))
+    forged_admission["cohort_sha256"] = _digest("forged-cohort")
+    forged_admission["implementation_sha256"] = _digest("forged-adapters")
+    forged_admission["sources"][0]["cohort_member_count"] = 999
+    forged_admission["sources"][0]["cohort_member_sha256"] = _digest("forged-members")
+    forged_admission["sources"][0]["enumeration_receipt_sha256"] = _digest(
+        "forged-enumeration"
+    )
+    _reseal_plan(forged_admission)
+    with pytest.raises(contracts.C10Error, match="authenticated cohort and adapter"):
+        contracts.validate_plan(forged_admission)
+    with pytest.raises(contracts.C10Error, match="authenticated cohort and adapter"):
+        compare.compare(
+            forged_admission,
+            [_arm(forged_admission, index) for index in range(8)],
+        )
+
 
 def test_admission_rejects_partial_cohort_even_with_verified_adapters() -> None:
     cohort = _cohort()

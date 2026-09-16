@@ -50,6 +50,35 @@ class C10Error(ValueError):
     """A C10 safety or evidence invariant did not hold."""
 
 
+_ADMISSION_TOKEN = object()
+
+
+class _AdmittedPlan(dict[str, Any]):
+    """Process-local capability issued only after cohort and adapter admission."""
+
+    __slots__ = ("_sealed_sha256", "_sealed")
+
+    def __init__(self, value: Mapping[str, Any], token: object) -> None:
+        if token is not _ADMISSION_TOKEN:
+            raise C10Error("C10 admitted plans can only be issued by admission")
+        super().__init__(json.loads(canonical_bytes(value)))
+        object.__setattr__(self, "_sealed_sha256", sha256(dict(self)))
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("C10 admission capability is immutable")
+        object.__setattr__(self, name, value)
+
+    def admission_is_intact(self) -> bool:
+        return self._sealed_sha256 == sha256(dict(self))
+
+
+def _seal_admitted_plan(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Issue the opaque execution capability after ``admit_plan`` verifies inputs."""
+    return _AdmittedPlan(value, _ADMISSION_TOKEN)
+
+
 def canonical_bytes(value: Any) -> bytes:
     """Encode an evidence value with one stable, finite JSON representation."""
     try:
@@ -221,6 +250,8 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
     unsigned = {key: value for key, value in plan.items() if key != "plan_sha256"}
     if sha256(unsigned) != plan["plan_sha256"]:
         raise C10Error("C10 plan digest does not match its immutable contents")
+    if type(plan) is not _AdmittedPlan or not plan.admission_is_intact():
+        raise C10Error("C10 plan lacks an authenticated cohort and adapter admission")
 
 
 def exact_source_keys(values: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
