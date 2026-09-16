@@ -8,14 +8,19 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .contracts import C10Error, canonical_bytes, exact_source_keys, sha256
+from .contracts import (
+    EXPECTED_PLANE_COUNTS,
+    PLANES,
+    C10Error,
+    canonical_bytes,
+    exact_source_keys,
+    sha256,
+)
 
 SCHEMA_VERSION = 1
 POLICY_KIND = "cre_capacity_c10_v1_policy"
 DEFAULT_POLICY = Path(__file__).parent.parent / "cre_capacity_c10_v1.json"
 MAX_POLICY_BYTES = 64 * 1024
-PLANES = frozenset({"strict_detail", "authoritative_inventory"})
-EXPECTED_PLANE_COUNTS = {"strict_detail": 12, "authoritative_inventory": 8}
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:

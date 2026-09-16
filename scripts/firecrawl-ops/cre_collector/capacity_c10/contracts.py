@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -14,6 +15,35 @@ PAIR_SEQUENCE = (("p0", "p1"), ("p1", "p0"), ("p1", "p0"), ("p0", "p1"))
 PLAN_KIND = "cre_capacity_c10_v1_plan"
 SESSION_KIND = "cre_capacity_c10_v1_session"
 SHA256 = re.compile(r"[0-9a-f]{64}")
+PLANES = frozenset({"strict_detail", "authoritative_inventory"})
+EXPECTED_PLANE_COUNTS = {"strict_detail": 12, "authoritative_inventory": 8}
+PROFILE_NAMES = {"p0": "c10-p0", "p1": "c10-p1"}
+P0_REQUESTED = {
+    "browser_cpus": 2,
+    "global_pages": 4,
+    "jll_detail_concurrency": 4,
+    "browser_pids": 384,
+    "api_cpus": 1,
+    "host_cpu_guard_percent": 90,
+    "host_cpu_guard_seconds": 30,
+    "host_cpu_sample_seconds": 2,
+}
+P1_REQUESTED = {
+    **P0_REQUESTED,
+    "browser_cpus": 6,
+    "global_pages": 10,
+    "jll_detail_concurrency": 10,
+    "browser_pids": 768,
+    "api_cpus": 2,
+}
+SOURCE_PLAN_FIELDS = {
+    "key",
+    "plane",
+    "family",
+    "cohort_member_count",
+    "cohort_member_sha256",
+    "enumeration_receipt_sha256",
+}
 
 
 class C10Error(ValueError):
@@ -136,15 +166,57 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
         require_sha256(plan.get(key), key)
     if tuple(plan.get("arm_sequence", ())) != ARM_SEQUENCE:
         raise C10Error("C10 plan counterbalance is invalid")
-    if not isinstance(plan.get("profiles"), Mapping) or set(plan["profiles"]) != {
+    profiles = plan.get("profiles")
+    if not isinstance(profiles, Mapping) or set(profiles) != {
         "p0",
         "p1",
         "config_sha256",
     }:
         raise C10Error("C10 plan profiles are invalid")
-    require_sha256(plan["profiles"]["config_sha256"], "profile config")
-    if not isinstance(plan.get("sources"), list) or len(plan["sources"]) != 20:
+    require_sha256(profiles["config_sha256"], "profile config")
+    for variant, expected in (("p0", P0_REQUESTED), ("p1", P1_REQUESTED)):
+        profile = profiles.get(variant)
+        if (
+            not isinstance(profile, Mapping)
+            or set(profile) != {"name", "requested"}
+            or profile.get("name") != PROFILE_NAMES[variant]
+            or profile.get("requested") != expected
+        ):
+            raise C10Error("C10 plan profiles do not match the fixed P0/P1 policy")
+    sources = plan.get("sources")
+    if (
+        not isinstance(sources, list)
+        or len(sources) != 20
+        or any(not isinstance(source, Mapping) for source in sources)
+    ):
         raise C10Error("C10 plan must retain exactly 20 sources")
+    # Import lazily because policy loading itself uses canonical contract helpers.
+    from .policy import load_policy
+
+    fixed_policy = load_policy()
+    if plan["policy_sha256"] != fixed_policy["policy_sha256"]:
+        raise C10Error("C10 plan is not bound to the canonical fixed policy")
+    policy_by_key = {source["key"]: source for source in fixed_policy["sources"]}
+    source_keys = exact_source_keys(sources)
+    if set(source_keys) != set(policy_by_key):
+        raise C10Error("C10 plan source keys do not match the fixed policy")
+    plane_counts: Counter[str] = Counter()
+    for source in sources:
+        if set(source) != SOURCE_PLAN_FIELDS:
+            raise C10Error("C10 plan source schema is invalid")
+        policy_source = policy_by_key[source["key"]]
+        if (
+            source.get("plane") != policy_source["plane"]
+            or source.get("family") != policy_source["family"]
+            or type(source.get("cohort_member_count")) is not int
+            or source["cohort_member_count"] < 16
+        ):
+            raise C10Error("C10 plan source does not match the fixed policy")
+        require_sha256(source.get("cohort_member_sha256"), "cohort member")
+        require_sha256(source.get("enumeration_receipt_sha256"), "enumeration receipt")
+        plane_counts[source["plane"]] += 1
+    if dict(plane_counts) != EXPECTED_PLANE_COUNTS:
+        raise C10Error("C10 plan no longer satisfies the fixed 12/8 plane allocation")
     require_no_write(plan)
     unsigned = {key: value for key, value in plan.items() if key != "plan_sha256"}
     if sha256(unsigned) != plan["plan_sha256"]:

@@ -90,6 +90,13 @@ def _plan() -> dict[str, object]:
     return admission.admit_plan(_cohort(), registry=_registry())
 
 
+def _reseal_plan(plan: dict[str, object]) -> dict[str, object]:
+    plan["plan_sha256"] = contracts.sha256(
+        {key: value for key, value in plan.items() if key != "plan_sha256"}
+    )
+    return plan
+
+
 def _no_write() -> dict[str, object]:
     return {"no_write": dict(admission.NO_WRITE)}
 
@@ -206,6 +213,36 @@ def test_admission_binds_exact_cohort_profiles_and_implementation_manifest() -> 
     assert plan["arm_sequence"] == list(contracts.ARM_SEQUENCE)
     assert len(plan["sources"]) == 20
     assert plan["no_write"] == admission.NO_WRITE
+
+
+def test_direct_plan_validation_rejects_self_hashed_policy_bypasses() -> None:
+    wrong_policy = json.loads(json.dumps(_plan()))
+    wrong_policy["policy_sha256"] = _digest("substituted-policy")
+    _reseal_plan(wrong_policy)
+    with pytest.raises(contracts.C10Error, match="canonical fixed policy"):
+        contracts.validate_plan(wrong_policy)
+
+    wrong_sources = json.loads(json.dumps(_plan()))
+    for source in wrong_sources["sources"]:
+        source["plane"] = "strict_detail"
+    _reseal_plan(wrong_sources)
+    with pytest.raises(contracts.C10Error, match="fixed policy"):
+        compare.compare(
+            wrong_sources,
+            [_arm(wrong_sources, index) for index in range(8)],
+        )
+
+    wrong_schema = json.loads(json.dumps(_plan()))
+    wrong_schema["sources"][0]["unreviewed"] = True
+    _reseal_plan(wrong_schema)
+    with pytest.raises(contracts.C10Error, match="source schema"):
+        contracts.validate_plan(wrong_schema)
+
+    wrong_profile = json.loads(json.dumps(_plan()))
+    wrong_profile["profiles"]["p1"]["requested"]["browser_cpus"] = 40
+    _reseal_plan(wrong_profile)
+    with pytest.raises(contracts.C10Error, match="fixed P0/P1 policy"):
+        contracts.validate_plan(wrong_profile)
 
 
 def test_admission_rejects_partial_cohort_even_with_verified_adapters() -> None:

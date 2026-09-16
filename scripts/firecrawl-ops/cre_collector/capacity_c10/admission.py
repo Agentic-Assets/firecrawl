@@ -10,8 +10,17 @@ from typing import Any
 import cre_capacity_experiment as experiment
 
 from .adapters import C10SourceAdapter, default_registry, verified_registry
-from .contracts import ARM_SEQUENCE, PLAN_KIND, C10Error, require_sha256, sha256
-from .policy import DEFAULT_POLICY, EXPECTED_PLANE_COUNTS, load_policy
+from .contracts import (
+    ARM_SEQUENCE,
+    EXPECTED_PLANE_COUNTS,
+    P0_REQUESTED,
+    P1_REQUESTED,
+    PLAN_KIND,
+    C10Error,
+    require_sha256,
+    sha256,
+)
+from .policy import DEFAULT_POLICY, load_policy
 
 PROFILE_CONFIG = Path(__file__).parent.parent / "cre_capacity_c10_profiles_v1.json"
 NO_WRITE = {
@@ -20,24 +29,6 @@ NO_WRITE = {
     "status_writes": 0,
     "scheduler_writes": 0,
     "model_or_ocr_changes": 0,
-}
-P0_REQUESTED = {
-    "browser_cpus": 2,
-    "global_pages": 4,
-    "jll_detail_concurrency": 4,
-    "browser_pids": 384,
-    "api_cpus": 1,
-    "host_cpu_guard_percent": 90,
-    "host_cpu_guard_seconds": 30,
-    "host_cpu_sample_seconds": 2,
-}
-P1_REQUESTED = {
-    **P0_REQUESTED,
-    "browser_cpus": 6,
-    "global_pages": 10,
-    "jll_detail_concurrency": 10,
-    "browser_pids": 768,
-    "api_cpus": 2,
 }
 P0_P1_MUTABLE_FIELDS = frozenset(
     {
