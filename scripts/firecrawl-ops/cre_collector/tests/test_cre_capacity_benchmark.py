@@ -12,10 +12,11 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import cre_capacity_benchmark as benchmark
 import cre_capacity_experiment as experiment
 import cre_checkpoint_refresh as refresh
-import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -31,42 +32,11 @@ def _offline_compose_loopback_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _lock_snapshot(path: Path) -> tuple[object, ...] | None:
-    """Read-only contamination sentinel for the primary checkout lock pair."""
-    try:
-        observed = path.lstat()
-    except FileNotFoundError:
-        return None
-    digest = None
-    if stat.S_ISREG(observed.st_mode):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    return (
-        observed.st_dev,
-        observed.st_ino,
-        observed.st_mode,
-        observed.st_size,
-        observed.st_mtime_ns,
-        digest,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _primary_lock_pair_is_never_a_test_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Prevent, then detect, the former rollback-test checkout contamination."""
-    primary = refresh.canonical_shared_lock_dir(Path(__file__).resolve().parents[4])
-    authority = primary.with_name(f"{primary.name}.authority")
-    before = (_lock_snapshot(primary), _lock_snapshot(authority))
-    monkeypatch.setattr(
-        benchmark,
-        "canonical_shared_lock_dir",
-        lambda *_args: pytest.fail(
-            "test must inject a temporary canonical lock path explicitly"
-        ),
-    )
-    yield
-    assert (_lock_snapshot(primary), _lock_snapshot(authority)) == before
+# NOTE: the former per-file `_primary_lock_pair_is_never_a_test_target` /
+# `_lock_snapshot` guard that lived here has been promoted to a session-wide
+# autouse fixture in tests/conftest.py (`_never_touch_real_canonical_cre_lock`)
+# so every test file gets the same real-lock protection, not just this one.
+# See LOCK_AUTHORITY_RECOVERY.md.
 
 
 def _cache_record(index: int) -> dict[str, object]:

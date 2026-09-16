@@ -223,6 +223,7 @@ def test_production_cli_is_dry_run_by_default_and_never_calls_runtime(
 
 
 def test_production_dry_run_rejects_counterbalance_without_all_p1_admissions(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     plan, cohort = sealed_jll_plan()
@@ -234,6 +235,10 @@ def test_production_dry_run_rejects_counterbalance_without_all_p1_admissions(
     admissions.mkdir()
     receipt_root = tmp_path / "receipts"
     receipt_root.mkdir()
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
     with pytest.raises(contracts.C10Error, match="missing a P1 approval"):
         main(
             [
@@ -251,7 +256,7 @@ def test_production_dry_run_rejects_counterbalance_without_all_p1_admissions(
                 "--admission-root",
                 str(admissions),
                 "--repo-root",
-                str(Path(__file__).parents[4]),
+                str(tmp_path),
             ]
         )
 
