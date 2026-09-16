@@ -304,10 +304,15 @@ export function assertCushmanDetailDoc(doc: ScrapedDoc, expected: any): any {
   const combined = `${doc.rawHtml ?? ""}\n${doc.markdown ?? ""}`;
   if (
     !combined.trim()
-    || /just a moment|checking your browser|verify you are human|captcha|access denied|cf-chl-|page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(
+    || /just a moment|checking your browser|verify you are human|access denied|cf-chl-|page not found|404\s*[-:]\s*page not found|internal server error|service unavailable/i.test(
       combined
     )
   ) {
+    // Every live Cushman & Wakefield property page renders a "Request Info"
+    // lead-gen form with a Google reCAPTCHA widget, so bare "captcha" text is
+    // not challenge evidence (confirmed live 2026-09-16: 8/8 sampled detail
+    // fetches tripped a bare-captcha match against a normal 195KB property
+    // page). Same fix shape as sources/hanley.ts's hanleyChallenge.
     throw new Error("Cushman detail returned a challenge or error shell");
   }
 
