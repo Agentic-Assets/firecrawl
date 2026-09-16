@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from capacity_c10_test_support import sealed_jll_plan
+from capacity_c10_test_support import (
+    controller_claim,
+    controller_terminal,
+    sealed_jll_plan,
+)
 
 from capacity_c10 import contracts, host_store
 from capacity_c10.host_session import C10SessionStore, _OpenSsl
@@ -111,7 +115,7 @@ def _seed_valid_terminal(
             "binding": binding,
         },
     }
-    store.record_terminal(plan, claim, authenticated)
+    controller_terminal(store, plan, claim, authenticated)
     return artifacts
 
 
@@ -123,7 +127,7 @@ def test_prior_terminal_receipts_block_later_arm_before_runtime_or_host(
     store = C10SessionStore(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
-    claim = dict(store.claim(plan))
+    claim = dict(controller_claim(store, plan))
     artifacts = _seed_valid_terminal(monkeypatch, tmp_path, plan, store, claim)
     name = next(iter(artifacts))
     if corruption == "missing":
@@ -187,7 +191,7 @@ def test_terminal_revalidation_uses_one_expiring_deadline(
 ) -> None:
     plan, _cohort = sealed_jll_plan()
     store = C10SessionStore(tmp_path / "private" / f"{plan['plan_sha256']}.json")
-    claim = dict(store.claim(plan))
+    claim = dict(controller_claim(store, plan))
     _seed_valid_terminal(monkeypatch, tmp_path, plan, store, claim)
     seen_deadlines: list[float] = []
     monkeypatch.setattr(

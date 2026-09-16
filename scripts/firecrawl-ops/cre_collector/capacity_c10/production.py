@@ -29,7 +29,7 @@ from .host_session import (
     C10SealedCardRegistry,
     C10SessionStore,
 )
-from .host_store import PrivateReceiptStore
+from .host_store import PrivateReceiptStore, _controller_ledger_authorization
 
 # This context is populated only by the lexical production-controller scope
 # after preflight and, for P1, the approved candidate transition. A supplied
@@ -412,7 +412,10 @@ def execute_production_arm(
         )
         # Claim precedes any host, runtime, Compose, or provider activity.
         _remaining(deadline)
-        claim = store.claim(plan)
+        with _controller_ledger_authorization(
+            "claim", plan, pending_arm, attempt=None, deadline=deadline
+        ):
+            claim = store.claim(plan, deadline=deadline)
         arm = claim["arm"]
         if not isinstance(arm, Mapping):
             raise C10Error("C10 durable claim arm is invalid")
@@ -512,9 +515,12 @@ def execute_production_arm(
         }
         compare.validate_authenticated_host_arm(plan, authenticated_arm)
         _remaining(deadline)
-        terminal = store.record_terminal(
-            plan, claim, authenticated_arm, deadline=deadline
-        )
+        with _controller_ledger_authorization(
+            "terminal", plan, arm, attempt=claim["claim_id"], deadline=deadline
+        ):
+            terminal = store.record_terminal(
+                plan, claim, authenticated_arm, deadline=deadline
+            )
         # The terminal ledger has committed and every required P1 restoration
         # has settled. Only now may ordinary lock reclamation resume.
         lock.disarm_benchmark()

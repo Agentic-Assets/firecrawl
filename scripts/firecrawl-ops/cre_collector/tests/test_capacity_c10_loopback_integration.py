@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from capacity_c10_test_support import sealed_jll_plan
+from capacity_c10_test_support import controller_claim, sealed_jll_plan
 
 from capacity_c10 import contracts
 from capacity_c10.host_orchestration import _C10HostTransport
@@ -90,7 +90,7 @@ def test_python_issued_capability_reaches_real_loopback_listener_and_quarantines
 
     deadline = time.monotonic() + 60
     keys = host._keys(deadline)
-    claim = store.claim(plan)
+    claim = controller_claim(store, plan)
     profile = plan["profiles"][claim["arm"]["variant"]]
     port = _free_loopback_port()
     environment = {

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from capacity_c10_test_support import sealed_jll_plan
+from capacity_c10_test_support import controller_claim, sealed_jll_plan
 
 from capacity_c10 import host_store
 from capacity_c10.contracts import C10Error
@@ -42,7 +42,7 @@ def test_session_store_rejects_hostile_root_before_claim(
         root.chmod(0o750)
 
     with pytest.raises(C10Error, match="ledger root"):
-        store.claim(plan)
+        controller_claim(store, plan)
 
 
 def test_session_store_rejects_root_owned_by_another_effective_user(
@@ -55,7 +55,7 @@ def test_session_store_rejects_root_owned_by_another_effective_user(
     monkeypatch.setattr(host_store.os, "geteuid", lambda: actual_uid + 1)
 
     with pytest.raises(C10Error, match="ledger root"):
-        store.claim(plan)
+        controller_claim(store, plan)
 
 
 @pytest.mark.parametrize(
@@ -67,11 +67,11 @@ def test_session_store_rejects_root_swaps_for_every_ledger_operation(
 ) -> None:
     plan, _cohort = sealed_jll_plan()
     store, root = _ledger(tmp_path)
-    claim = dict(store.claim(plan))
+    claim = dict(controller_claim(store, plan))
     _replace_root(root)
 
     actions: dict[str, Callable[[], object]] = {
-        "claim": lambda: store.claim(plan),
+        "claim": lambda: controller_claim(store, plan),
         "read": lambda: store.read_bound(plan, claim),
         "quarantine": lambda: store.record_quarantine(claim, "hostile-root"),
         "terminal": lambda: store.record_terminal(plan, claim, {}),

@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from capacity_c10_test_support import sealed_jll_plan
+from capacity_c10_test_support import (
+    controller_claim,
+    controller_terminal,
+    sealed_jll_plan,
+)
 
 import cre_capacity_runtime as runtime
 from capacity_c10 import contracts, host_session, host_store, production
@@ -128,7 +132,7 @@ def _seed_valid_terminal(
             "binding": binding,
         },
     }
-    store.record_terminal(plan, claim, authenticated)
+    controller_terminal(store, plan, claim, authenticated)
     return artifacts
 
 
@@ -269,7 +273,7 @@ def test_smoke_dry_run_and_execute_bind_the_same_durable_p1_arm_file(
     store = C10SessionStore(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
-    first = store.claim(plan)
+    first = controller_claim(store, plan)
     _seed_valid_terminal(monkeypatch, tmp_path, plan, store, first)
     roots = {
         "private": tmp_path / "private",
@@ -460,7 +464,7 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
     seed = C10SessionStore(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
-    seed_claim = dict(seed.claim(plan))
+    seed_claim = dict(controller_claim(seed, plan))
     _seed_valid_terminal(monkeypatch, tmp_path, plan, seed, seed_claim)
     events: list[str] = []
 
@@ -579,7 +583,7 @@ def test_direct_execute_rejects_unsafe_claim_inputs_without_quarantine(
     store = C10SessionStore(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
-    first = store.claim(plan)
+    first = controller_claim(store, plan)
     _seed_valid_terminal(monkeypatch, tmp_path, plan, store, first)
     private, receipts = tmp_path / "private", tmp_path / "receipts"
     approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
@@ -709,7 +713,7 @@ def test_cli_execute_cannot_bypass_lock_held_claim_input_checks(
     store = C10SessionStore(
         tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
     )
-    first = store.claim(plan)
+    first = controller_claim(store, plan)
     _seed_valid_terminal(monkeypatch, tmp_path, plan, store, first)
     private, receipts = tmp_path / "private", tmp_path / "receipts"
     approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
@@ -784,7 +788,7 @@ def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
             events.append("lock")
             if not advanced:
                 advanced = True
-                rival = ledger.claim(plan)
+                rival = controller_claim(ledger, plan)
                 _seed_valid_terminal(monkeypatch, tmp_path, plan, ledger, rival)
                 events.append("rival-p0-terminal")
 

@@ -9,7 +9,9 @@ It cannot mint a capability, create a receipt store, or acquire a CRE lock.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -17,6 +19,7 @@ import stat
 import sys
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Self
 
@@ -32,6 +35,84 @@ from .host_crypto import _OpenSsl
 _ENV_MODE = 0o600
 _ROOT_MODE = 0o700
 _FILE_MODE = 0o600
+_CONTROLLER_AUTH_SECRET = secrets.token_bytes(32)
+_ACTIVE_CONTROLLER_AUTH: contextvars.ContextVar[Mapping[str, Any] | None] = (
+    contextvars.ContextVar("c10_active_controller_ledger_authorization", default=None)
+)
+
+
+def _controller_authorization_payload(
+    kind: str,
+    plan: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    attempt: str | None,
+    deadline: float,
+) -> dict[str, Any]:
+    if kind not in {"claim", "terminal"} or type(deadline) not in {int, float}:
+        raise C10Error("C10 controller ledger authorization is invalid")
+    index, variant = arm.get("index"), arm.get("variant")
+    if type(index) is not int or variant not in {"p0", "p1"}:
+        raise C10Error("C10 controller ledger arm is invalid")
+    return {
+        "kind": kind,
+        "plan_sha256": plan.get("plan_sha256"),
+        "arm": {"index": index, "variant": variant},
+        "attempt": attempt,
+        "deadline_ns": int(deadline * 1_000_000_000),
+    }
+
+
+@contextmanager
+def _controller_ledger_authorization(
+    kind: str,
+    plan: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    *,
+    attempt: str | None,
+    deadline: float,
+) -> Any:
+    """Install one controller-only, HMAC-bound ledger mutation authorization."""
+    payload = _controller_authorization_payload(kind, plan, arm, attempt, deadline)
+    authorization = {
+        "payload": payload,
+        "mac": hmac.new(
+            _CONTROLLER_AUTH_SECRET, canonical_bytes(payload), hashlib.sha256
+        ).hexdigest(),
+    }
+    token = _ACTIVE_CONTROLLER_AUTH.set(authorization)
+    try:
+        yield
+    finally:
+        _ACTIVE_CONTROLLER_AUTH.reset(token)
+
+
+def _require_controller_ledger_authorization(
+    kind: str,
+    plan: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    *,
+    attempt: str | None,
+    deadline: float | None,
+) -> None:
+    authorization = _ACTIVE_CONTROLLER_AUTH.get()
+    if (
+        deadline is None
+        or time.monotonic() >= deadline
+        or not isinstance(authorization, Mapping)
+    ):
+        raise C10Error("C10 ledger mutation requires active controller provenance")
+    payload = authorization.get("payload")
+    mac = authorization.get("mac")
+    if not isinstance(payload, Mapping) or not isinstance(mac, str):
+        raise C10Error("C10 ledger controller provenance is invalid")
+    expected = _controller_authorization_payload(kind, plan, arm, attempt, deadline)
+    expected_mac = hmac.new(
+        _CONTROLLER_AUTH_SECRET, canonical_bytes(expected), hashlib.sha256
+    ).hexdigest()
+    if dict(payload) != expected or not hmac.compare_digest(mac, expected_mac):
+        raise C10Error("C10 ledger controller provenance does not bind this mutation")
+
+
 _MAX_RAW_BODY_BYTES = 2 * 1024 * 1024
 # Signed JSON contains base64 data. Keep the response cap independent from the
 # envelope cap so a valid two-MiB browser response can still be sealed.
@@ -460,11 +541,16 @@ class C10SessionStore:
             "consumed_arm_indexes": consumed,
         }
 
-    def claim(self, plan: Mapping[str, Any]) -> Mapping[str, Any]:
+    def claim(
+        self, plan: Mapping[str, Any], *, deadline: float | None = None
+    ) -> Mapping[str, Any]:
         validate_plan(plan)
         self._root_descriptor(create=True)
         index, internal_session = self._next(plan)
         proposed = claim_next_arm(plan, internal_session)
+        _require_controller_ledger_authorization(
+            "claim", plan, proposed["arm"], attempt=None, deadline=deadline
+        )
         source_session_digest = sha256(internal_session)
         descriptor = self._root_descriptor(create=True)
         assert descriptor is not None
@@ -597,6 +683,12 @@ class C10SessionStore:
         claim_id = claim.get("claim_id")
         if not isinstance(claim_id, str) or not claim_id:
             raise C10Error("C10 terminalization requires a durable claim")
+        arm = claim.get("arm")
+        if not isinstance(arm, Mapping) or type(arm.get("index")) is not int:
+            raise C10Error("C10 terminalization requires an exact arm")
+        _require_controller_ledger_authorization(
+            "terminal", plan, arm, attempt=claim_id, deadline=deadline
+        )
         record = {
             "kind": "cre_capacity_c10_v3_host_terminal",
             "claim_id": claim_id,
@@ -609,9 +701,6 @@ class C10SessionStore:
             "authenticated_arm_sha256": sha256(authenticated_arm),
             "state": "terminal",
         }
-        arm = claim.get("arm")
-        if not isinstance(arm, Mapping) or type(arm.get("index")) is not int:
-            raise C10Error("C10 terminalization requires an exact arm")
         arm_name = self._arm_name(arm["index"])
         expected = self._read_record(arm_name)
         if dict(expected) != dict(claim):

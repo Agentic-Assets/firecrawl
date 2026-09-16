@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from capacity_c10_test_support import sealed_jll_plan
+from capacity_c10_test_support import controller_claim, sealed_jll_plan
 
 from capacity_c10 import contracts, production
 from capacity_c10.host_orchestration import _C10HostTransport
@@ -333,7 +333,7 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
         }
 
     monkeypatch.setattr(host, "_run_child", signed_child)
-    claim = host.session_store.claim(plan)
+    claim = controller_claim(host.session_store, plan)
     lock_path = tmp_path / ".cre.lock"
     lock_path.mkdir(mode=0o700)
     held_lock = FakeLock(lock_path)
@@ -422,7 +422,7 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
     )
     monkeypatch.setattr(host, "_verify_health", lambda *_: None)
     monkeypatch.setattr(host, "_run_cohort", lambda *_: ([{"binding": {}}], []))
-    claim = store.claim(plan)
+    claim = controller_claim(store, plan)
     lock_path = tmp_path / ".cre.lock"
     lock_path.mkdir(mode=0o700)
     held_lock = Lock(lock_path)
