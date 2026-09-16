@@ -1,9 +1,13 @@
 # C10 private receipt substrate, protocol v3
 
 This TypeScript package is a sealed evidence substrate, not a collector or an
-executable source registry. It includes source-owned candidate receipt
-producers, but has no concrete `DirectProviderTransport` implementation, CLI
-entrypoint, controller integration, or live execution path. It does not import
+executable source registry. The only executable TypeScript surface is
+`issued_browser_child.ts`: it accepts exactly one Python-issued capability over
+stdin and returns the sidecar response unchanged. It has no key generator,
+receipt-store construction, lock interface, Compose control, or generic
+transport constructor. The host coordinator is
+`capacity_c10/host_session.py`; it owns those authority-bearing operations.
+It does not import
 `collect.ts`, ingestion, checkpoints, cache helpers, or normal scrape helpers.
 Python `candidate_registry()` remains unverified and `verified_registry()`
 remains closed.
@@ -48,8 +52,15 @@ The only supported host-to-sidecar transport is the opt-in
 `docker-compose.c10.yaml` overlay. Docker/OrbStack publishes its C10 listener
 on `127.0.0.1` only; no Unix socket is mounted because the coordinator lock and
 private receipt root must remain host-owned. A caller must prove the rendered
-loopback port, hold the canonical `SharedLock`, verify Linux
-`PrivateReceiptStore` support, and verify signed v3 health before execution.
+loopback port, hold the canonical `SharedLock`, durably claim an arm in
+`C10SessionStore`, verify Linux `PrivateReceiptStore` support, and verify
+signed, host-key-authenticated v3 health before execution. The coordinator
+binds the durable claim digest, rather than a caller-controlled mutable ledger,
+as `sessionSha256`; it never permits an alternate plan or ledger to resume a
+claim. A lifecycle has one deadline covering Compose startup, health, browser
+execution, evidence sealing, and cleanup. Any timeout, child failure, bad
+signature, root replacement, or cleanup failure retains the canonical lock for
+quarantine before it can be released.
 The sidecar signs every evidence record with lease monotonic start/end values,
 active/capacity observations, one exact engine attempt, ephemeral context/cache
 semantics, and plan/cohort/card/manifest/session/arm/profile bindings.

@@ -1,7 +1,4 @@
-"""Offline contracts for the governed 20-source CRE C10 capacity study.
-
-Wave 1 deliberately has no live source adapter or runtime entry point.
-"""
+"""Offline contracts plus a Linux-only, host-owned C10 v3 session boundary."""
 
 from .contracts import C10Error
 
