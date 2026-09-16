@@ -8,12 +8,12 @@
  */
 import {
   FOUNDRY_SITEMAP_URL,
-  foundryExplicitStatus,
+  foundryPropertyNotes,
   foundryPropertySitemaps,
   foundryPropertyUrls,
   foundryProviderIdentity,
 } from "../../../sources/pure/foundry-identity.js";
-import { classifyFoundryStatus } from "../../../sources/pure/foundry-status.js";
+import { classifyFoundryStatus, explicitFoundryTenures } from "../../../sources/pure/foundry-status.js";
 import {
   C10ReceiptError,
   sha256,
@@ -168,15 +168,21 @@ export const foundryCommercialReceiptProducer: ReceiptProducer = Object.freeze({
       const html = text(view.body);
       const providerId = foundryProviderIdentity(html, view.finalUrl);
       if (!providerId) throw new C10ReceiptError("Foundry detail lacks canonical WordPress identity");
-      const status = classifyFoundryStatus(foundryExplicitStatus(html));
+      const notes = foundryPropertyNotes(html);
+      const status = classifyFoundryStatus(notes[0] ?? null);
       if (status.disposition !== "active" || !status.status) {
         throw new C10ReceiptError("Foundry detail lacks an admitted active native status");
+      }
+      const tenures = status.tenures.length ? status.tenures : explicitFoundryTenures(notes);
+      if (!tenures.length) {
+        throw new C10ReceiptError("Foundry detail lacks explicit sale or lease tenure");
       }
       return {
         providerId,
         canonicalUrl: view.finalUrl,
         explicitStatus: status.status,
-        requiredFields: ["canonical-url", "wordpress-shortlink-id", "active-native-status"],
+        explicitTenures: tenures,
+        requiredFields: ["canonical-url", "wordpress-shortlink-id", "active-native-status", "explicit-sale-or-lease-tenure"],
       };
     });
     if (event.projection.providerId !== member.providerId || event.projection.canonicalUrl !== url) {
