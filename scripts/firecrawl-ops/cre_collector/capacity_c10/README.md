@@ -7,11 +7,14 @@ scraper, a collector/controller command integration, or a generic source adapter
 transport is an injected interface: no shipped C10 component opens a provider
 connection or can execute a request by itself.
 
-`policy.py` seals the fixed 20-source, 12/8-plane matrix. `adapters.py`
-requires an exact registry where every source-specific adapter is explicitly
-reviewed and fully verified. `admission.py` binds that registry, a hash-bound
-multisource-v1 cohort, and the isolated `c10-p0`/`c10-p1` configuration into an
-immutable plan. `runner.py` owns serial one-use arm ordering and a library-only
+`policy.py` seals the fixed 20-source, 12/8-plane matrix. `authority.py` loads
+the one non-substitutable repository authority and fingerprints the actual C10
+verifier source tree and shared dependencies. That authority currently approves
+no cohort and no adapter, so `admission.py` cannot issue a plan. A future
+reviewed commit must pin one exact cohort digest and all twenty current
+implementation digests before `admission.py` can bind the registry, cohort, and
+isolated `c10-p0`/`c10-p1` configuration into an immutable plan. `runner.py`
+owns serial one-use arm ordering and a library-only
 coordinator that requires injected runtime, browser, settlement, rollback, and
 quarantine hooks. Before preflight, it atomically persists each arm claim in an
 owner-only, FD-identity-checked session root derived solely from the canonical
@@ -85,10 +88,11 @@ Direct-native receipts remain non-comparable compatibility evidence.
 no-write request descriptors only. `candidate_registry()` exposes them for
 review alongside the other C10 candidates, but all retain
 `fully_verified = False`; neither `default_registry()` nor plan admission can
-execute them. A later registry-only admission change must independently prove
-each adapter's private receipt root, actual no-write transport, and
-source-specific attrition behavior; it must not turn these fixtures or
-descriptors into a generic fetcher.
+execute them. Mutable adapter fields are not admission authority. A later
+repository-authority change must pin a reviewed cohort and actual source-tree
+digests only after independently proving each adapter's private receipt root,
+actual no-write transport, and source-specific attrition behavior; it must not
+turn these fixtures or descriptors into a generic fetcher.
 
 The TypeScript receipt package additionally has source-owned inventory
 producers for seven authoritative-inventory sources and one Batch B

@@ -11,6 +11,7 @@ import pytest
 from capacity_c10 import (
     adapters,
     admission,
+    authority,
     compare,
     contracts,
     policy,
@@ -21,33 +22,6 @@ from capacity_c10 import (
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
-
-
-class SelfDeclaredVerifiedAdapter:
-    fully_verified = True
-
-    def __init__(self, key: str) -> None:
-        self.key = key
-        self.implementation_sha256 = _digest(key)
-
-    def verify_enumeration(self, evidence: Mapping[str, object]) -> None:
-        return None
-
-    def verify_member(self, evidence: Mapping[str, object]) -> None:
-        return None
-
-    def classify_not_found(self, evidence: Mapping[str, object]) -> bool:
-        return False
-
-
-def _registry() -> dict[str, adapters.C10SourceAdapter]:
-    registry = adapters.candidate_registry()
-    # Exercise the post-review contract with the exact repository
-    # implementations. Production candidates remain fail-closed until a
-    # reviewed change flips these flags in their owning modules.
-    for adapter in registry.values():
-        object.__setattr__(adapter, "fully_verified", True)
-    return registry
 
 
 def _cohort() -> dict[str, object]:
@@ -89,7 +63,28 @@ def _seal_cohort(cohort: dict[str, object]) -> dict[str, object]:
 
 
 def _plan() -> dict[str, object]:
-    return admission.admit_plan(_cohort(), registry=_registry())
+    # Downstream unit contracts need a structurally canonical capability while
+    # the repository authority deliberately approves no live cohort or adapter.
+    # This internal seal is test-only; admit_plan() remains the sole production
+    # issuer and is separately proven fail-closed below.
+    loaded_policy = policy.load_policy()
+    cohort = _cohort()
+    sources = admission._verified_cohort_sources(cohort, loaded_policy)
+    profiles = admission._profiles(admission.PROFILE_CONFIG, loaded_policy["profiles"])
+    unsigned = {
+        "schema_version": 1,
+        "kind": contracts.PLAN_KIND,
+        "policy_sha256": loaded_policy["policy_sha256"],
+        "cohort_sha256": cohort["cohort_sha256"],
+        "implementation_sha256": _digest("test-only-implementation"),
+        "profiles": profiles,
+        "sources": sources,
+        "no_write": admission.NO_WRITE,
+        "arm_sequence": list(contracts.ARM_SEQUENCE),
+    }
+    return contracts._seal_admitted_plan(
+        {**unsigned, "plan_sha256": contracts.sha256(unsigned)}
+    )  # type: ignore[return-value]
 
 
 def _reseal_plan(plan: dict[str, object]) -> dict[str, object]:
@@ -191,7 +186,7 @@ def test_default_registry_has_no_generic_or_admitting_adapter() -> None:
     registry = adapters.default_registry()
     assert set(registry) == {source["key"] for source in loaded["sources"]}
     assert not any(adapter.fully_verified for adapter in registry.values())
-    with pytest.raises(contracts.C10Error, match="not fully verified"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         adapters.verified_registry(loaded, registry)
 
 
@@ -203,21 +198,30 @@ def test_candidate_registry_exposes_exact_twenty_named_unverified_adapters() -> 
     assert registry["jll"].__class__.__name__ == "JllCapacityC10Adapter"
     assert registry["cbre"].__class__.__name__ == "CbreAdapter"
     assert registry["savills"].__class__.__name__ == "SavillsAdapter"
-    with pytest.raises(contracts.C10Error, match="not fully verified"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         adapters.verified_registry(loaded, registry)
 
 
-def test_admission_rejects_self_declared_verified_adapter_objects() -> None:
-    loaded = policy.load_policy()
-    registry = {
-        source["key"]: SelfDeclaredVerifiedAdapter(source["key"])
-        for source in loaded["sources"]
+def test_repository_authority_approves_no_cohort_or_adapter() -> None:
+    approved = authority.load_authority()
+    assert approved == {
+        "approved_cohort_sha256": None,
+        "approved_adapters": {},
     }
-    with pytest.raises(contracts.C10Error, match="reviewed repository implementation"):
-        adapters.verified_registry(loaded, registry)
+    with pytest.raises(contracts.C10Error, match="not approved"):
+        admission.admit_plan(_cohort(), registry=adapters.candidate_registry())
 
 
-def test_admission_binds_exact_cohort_profiles_and_implementation_manifest() -> None:
+def test_repository_implementation_digest_hashes_actual_verifier_dependencies() -> None:
+    manifest = authority.implementation_manifest()
+    assert "capacity_c10/inventory/cbre.py" in manifest
+    assert "capacity_c10/inventory/_evidence.py" in manifest
+    assert "capacity_c10/adapters.py" in manifest
+    assert "sources/pure/marcus-receipt.ts" in manifest
+    assert len(authority.repository_implementation_sha256("cbre")) == 64
+
+
+def test_downstream_contract_fixture_binds_exact_cohort_and_profiles() -> None:
     plan = _plan()
     contracts.validate_plan(plan)
     assert plan["profiles"]["p0"]["name"] == "c10-p0"
@@ -279,7 +283,7 @@ def test_admission_rejects_partial_cohort_even_with_verified_adapters() -> None:
     cohort["sources"] = cohort["sources"][:-1]
     _seal_cohort(cohort)
     with pytest.raises(contracts.C10Error, match="exactly 20"):
-        admission.admit_plan(cohort, registry=_registry())
+        admission._verified_cohort_sources(cohort, policy.load_policy())
 
 
 def test_admission_rejects_underfilled_or_wrong_plane_cohort() -> None:
@@ -290,7 +294,7 @@ def test_admission_rejects_underfilled_or_wrong_plane_cohort() -> None:
     source["core_target_rows"] = 15
     _seal_cohort(cohort)
     with pytest.raises(contracts.C10Error, match="incomplete immutable membership"):
-        admission.admit_plan(cohort, registry=_registry())
+        admission._verified_cohort_sources(cohort, policy.load_policy())
 
 
 def test_admission_rejects_a_cohort_whose_declared_hash_does_not_bind_membership() -> (
@@ -299,7 +303,7 @@ def test_admission_rejects_a_cohort_whose_declared_hash_does_not_bind_membership
     cohort = _cohort()
     cohort["sources"][0]["core"][0]["provider_id"] = "mutated-after-review"
     with pytest.raises(contracts.C10Error, match="digest"):
-        admission.admit_plan(cohort, registry=_registry())
+        admission._verified_cohort_sources(cohort, policy.load_policy())
 
 
 def test_c10_profiles_have_exact_p0_p1_whitelist() -> None:

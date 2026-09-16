@@ -17,6 +17,14 @@ each item before acting.
   direct-provider transport. The public cohort intentionally omits private
   paths and cannot be a live request ledger by itself.
 
+- **Populate the fail-closed repository admission authority** (priority:
+  highest; confidence: verified requirement)
+  The checked-in authority intentionally approves no cohort and no adapters.
+  Only after private receipt review should a separate reviewed commit pin one
+  exact cohort digest and all twenty source-tree implementation digests. Never
+  derive approval from caller-provided flags, version labels, or a self-hashed
+  public cohort.
+
 - **Implement source-native adapter fixtures in reviewed families** (priority:
   highest; confidence: verified gap)
   Add adapters only after native enumeration and member evidence can reject
