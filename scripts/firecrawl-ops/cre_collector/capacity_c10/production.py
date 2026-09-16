@@ -17,7 +17,7 @@ from typing import Any
 import cre_capacity_runtime as runtime
 from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 
-from . import admission, compare, contracts
+from . import admission, compare
 from .contracts import C10Error, require_sha256, sha256, validate_plan
 from .host_session import (
     C10HostExecutionSession,
@@ -141,6 +141,7 @@ def execute_production_arm(
     """
     if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 120:
         raise C10Error("C10 timeout_seconds must be greater than 0 and at most 120")
+    deadline = time.monotonic() + timeout_seconds
     validate_plan(plan)
     registry = C10SealedCardRegistry(plan, cohort)
     store = _canonical_session_store(repo_root, plan)
@@ -151,14 +152,15 @@ def execute_production_arm(
     # artifact hashes, signatures, and bindings before acquiring the lock or
     # touching runtime state for this arm.
     for prior_index in range(next_arm_index):
-        store.load_terminal(plan, prior_index)
+        _remaining(deadline)
+        store.load_terminal(plan, prior_index, deadline=deadline)
+        _remaining(deadline)
     host = C10HostExecutionSession(
         repo_root=repo_root,
         session_store=store,
         private_root=private_root,
         cards=registry,
     )
-    deadline = time.monotonic() + timeout_seconds
     lock = _canonical_lock(repo_root.resolve())
     if lock.path.resolve() != host.lock_path:
         raise C10Error("C10 host and runtime canonical locks differ")
@@ -315,8 +317,12 @@ def execute_counterbalanced_sequence(
     timeout_seconds: float = 120,
 ) -> Sequence[Mapping[str, Any]]:
     """Run the fixed 8-arm counterbalance with one distinct P1 approval per arm."""
+    validate_plan(plan)
+    store = _canonical_session_store(repo_root, plan)
+    start_index = store.next_arm_index(plan)
     results: list[Mapping[str, Any]] = []
-    for index, variant in enumerate(contracts.ARM_SEQUENCE):
+    for index in range(start_index, len(plan["arm_sequence"])):
+        variant = plan["arm_sequence"][index]
         suffix = f"arm-{index}"
         result = execute_production_arm(
             repo_root=repo_root,

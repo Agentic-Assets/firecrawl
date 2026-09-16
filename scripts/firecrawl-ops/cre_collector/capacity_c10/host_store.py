@@ -509,8 +509,15 @@ class C10SessionStore:
             raise C10Error("C10 terminal evidence could not be persisted") from exc
         return record
 
-    def load_terminal(self, plan: Mapping[str, Any], index: int) -> Mapping[str, Any]:
+    def load_terminal(
+        self, plan: Mapping[str, Any], index: int, *, deadline: float | None = None
+    ) -> Mapping[str, Any]:
         """Reload the safe comparator envelope after process/stdout loss."""
+        verification_deadline = (
+            deadline if deadline is not None else time.monotonic() + 30
+        )
+        if time.monotonic() >= verification_deadline:
+            raise C10Error("C10 terminal revalidation deadline expired")
         if type(index) is not int or index < 0 or index >= len(plan["arm_sequence"]):
             raise C10Error("C10 terminal arm index is invalid")
         record = self._read_record(self._arm_path(index))
@@ -549,6 +556,8 @@ class C10SessionStore:
                 raise C10Error("C10 terminal receipt root changed")
             evidence: list[Mapping[str, Any]] = []
             for position, artifact in enumerate(manifest):
+                if time.monotonic() >= verification_deadline:
+                    raise C10Error("C10 terminal revalidation deadline expired")
                 if not isinstance(artifact, Mapping):
                     raise C10Error("C10 terminal receipt manifest is invalid")
                 if not str(artifact.get("name", "")).startswith(
@@ -569,12 +578,15 @@ class C10SessionStore:
                     for key, value in item.items()
                     if key != "evidenceSignature"
                 }
-                if not isinstance(signature, str) or not _OpenSsl.verify(
+                verified = isinstance(signature, str) and _OpenSsl.verify(
                     public_key,
                     canonical_bytes(unsigned),
                     signature,
-                    time.monotonic() + 30,
-                ):
+                    verification_deadline,
+                )
+                if time.monotonic() >= verification_deadline:
+                    raise C10Error("C10 terminal revalidation deadline expired")
+                if not verified:
                     raise C10Error("C10 terminal evidence signature is invalid")
                 binding = unsigned.get("binding")
                 if not isinstance(binding, Mapping) or any(
