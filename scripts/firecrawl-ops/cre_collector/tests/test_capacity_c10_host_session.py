@@ -655,7 +655,7 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
         def execute(
             self, plan: object, session: object, **kwargs: object
         ) -> dict[str, object]:
-            assert (tmp_path / ".cre.lock" / "c10-ledgers").exists()
+            assert (tmp_path / ".cre-c10-ledger-v1").exists()
             events.append("host")
             claim = kwargs["_claim"]
             assert isinstance(claim, dict)
@@ -687,7 +687,7 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
     )
 
     def preflight(*_: object, **__: object) -> dict[str, object]:
-        assert (tmp_path / ".cre.lock" / "c10-ledgers").exists()
+        assert (tmp_path / ".cre-c10-ledger-v1").exists()
         events.append("preflight")
         return receipt
 
@@ -802,4 +802,4 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
             admission_out=tmp_path / "admission.json",
         )
     assert events == ["lock", "candidate", "host", "baseline", "release"]
-    assert list((tmp_path / ".cre.lock" / "c10-ledgers").glob("*.quarantine"))
+    assert list((tmp_path / ".cre-c10-ledger-v1").glob("*.quarantine"))
