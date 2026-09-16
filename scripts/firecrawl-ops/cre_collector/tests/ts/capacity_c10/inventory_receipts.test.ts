@@ -8,6 +8,7 @@ import {
   SourceBoundOneShotTransport,
   allowlistedCards,
   canonicalJson,
+  sha256,
   type DirectProviderTransport,
   type RequestCard,
   type TransportResponse,
@@ -48,6 +49,64 @@ function enumerationBody(sourceKey: InventorySourceKey): unknown {
   }
 }
 
+function cushmanProviderId(urlValue: string): string {
+  const url = new URL(urlValue);
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+  return `url:v1:${sha256(`https://${url.hostname}${path}`).slice(0, 32)}`;
+}
+
+function expectedProviderId(sourceKey: InventorySourceKey): string {
+  return sourceKey === "cbre" ? "cbre-1"
+    : sourceKey === "cushman-wakefield" ? cushmanProviderId("https://www.cushmanwakefield.com/properties/cw-1")
+    : sourceKey === "newmark" ? "nm-1"
+    : sourceKey === "srs" ? "srs-1"
+    : sourceKey === "svn" ? "svn-1"
+    : sourceKey === "lee-associates" ? "lee-1" : "bull-1";
+}
+
+function memberKey(providerId: string): string {
+  return `member-${providerId.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`;
+}
+
+function memberBody(sourceKey: InventorySourceKey, card: Readonly<RequestCard>): unknown {
+  const providerId = expectedProviderId(sourceKey);
+  switch (sourceKey) {
+    case "cbre":
+      return { "Common.PrimaryKey": providerId, "Common.Name": "One", "Common.LongDescription": "Description", images: [], documents: [] };
+    case "cushman-wakefield":
+      return { id: "cw-1", title: "One", description: "Description", images: [], documents: [] };
+    case "newmark":
+      return { id: providerId, title: "One", description: "Description", images: [], documents: [] };
+    case "srs":
+      return { apto_data: { SRS_Listings_ID__c: providerId }, Name: "One", Description__c: "Description", images: [], documents: [] };
+    case "svn":
+    case "lee-associates":
+    case "bull-realty":
+      return { id: providerId, show_link: card.url, display_name: "One", description: "Description", photo_url: null, pdf_url: null };
+    case "cbre-dealflow":
+      throw new Error("blocked source has no member body");
+  }
+}
+
+function substitutedMemberBody(sourceKey: InventorySourceKey, card: Readonly<RequestCard>): unknown {
+  const valid = memberBody(sourceKey, card) as Record<string, unknown>;
+  switch (sourceKey) {
+    case "cbre":
+      return { ...valid, "Common.PrimaryKey": "substituted-listing" };
+    case "newmark":
+      return { ...valid, id: "substituted-listing" };
+    case "srs":
+      return { ...valid, apto_data: { SRS_Listings_ID__c: "substituted-listing" } };
+    case "svn":
+    case "lee-associates":
+    case "bull-realty":
+      return { ...valid, id: "substituted-listing" };
+    case "cushman-wakefield":
+    case "cbre-dealflow":
+      throw new Error(`${sourceKey} does not use a response-body provider id`);
+  }
+}
+
 class FakeDirectTransport implements DirectProviderTransport {
   readonly calls: RequestCard[] = [];
 
@@ -60,7 +119,7 @@ class FakeDirectTransport implements DirectProviderTransport {
     this.calls.push(card);
     const payload = card.stage === "enumeration"
       ? enumerationBody(this.sourceKey)
-      : { providerId: card.id, source: this.sourceKey };
+      : memberBody(this.sourceKey, card);
     return {
       status: 200,
       finalUrl: card.url,
@@ -98,25 +157,113 @@ test("all executable source producers seal fake native enumeration then member r
     const enumeration = await producer.produceEnumerationReceipt(context);
     const memberCard = fake.calls.find((card) => card.stage === "member");
     assert.equal(memberCard, undefined, `${sourceKey}: member graph must be frozen, not executed, by enumeration`);
-    const expectedProviderId = sourceKey === "cbre" ? "cbre-1"
-      : sourceKey === "cushman-wakefield" ? "cw-1"
-      : sourceKey === "newmark" ? "nm-1"
-      : sourceKey === "srs" ? "srs-1"
-      : sourceKey === "svn" ? "svn-1"
-      : sourceKey === "lee-associates" ? "lee-1" : "bull-1";
+    const providerId = expectedProviderId(sourceKey);
     const member = await producer.produceMemberReceipt(context, {
-      key: `member-${expectedProviderId}`,
-      providerId: expectedProviderId,
+      key: memberKey(providerId),
+      providerId,
     });
     assert.equal(enumeration.requestAccounting.retries, 0);
     assert.equal(member.requestAccounting.retries, 0);
     assert.equal(enumeration.noWrite.cache_writes, 0);
-    assert.equal(member.memberKey, `member-${expectedProviderId}`);
+    assert.equal(member.memberKey, memberKey(providerId));
     assert.equal(fake.calls.length, 2, `${sourceKey}: one enumeration and one member direct attempt`);
     assert.ok(fake.calls.every((card) => card.cacheMode === "no-store"));
     assert.ok(fake.calls.every((card) => card.method === "GET" || card.method === "POST"));
     assert.equal(fake.calls.filter((card) => card.method === "POST").length, sourceKey === "newmark" || sourceKey === "srs" ? 1 : 0);
   }
+});
+
+test("body-identity inventory producers reject substituted native member identities", async () => {
+  for (const [sourceKey, producer] of inventoryReceiptProducers) {
+    if (sourceKey === "cushman-wakefield") continue;
+    const fake = new FakeDirectTransport(sourceKey);
+    const nativeExecute = fake.execute.bind(fake);
+    fake.execute = async (card: Readonly<RequestCard>): Promise<TransportResponse> => {
+      const response = await nativeExecute(card);
+      return card.stage === "member"
+        ? { ...response, body: Buffer.from(JSON.stringify(substitutedMemberBody(sourceKey, card))) }
+        : response;
+    };
+    const { context } = await contextFor(producer, fake);
+    await producer.produceEnumerationReceipt(context);
+    const providerId = expectedProviderId(sourceKey);
+    await assert.rejects(
+      producer.produceMemberReceipt(context, { key: memberKey(providerId), providerId }),
+      /source response projection failed without retry/,
+      sourceKey,
+    );
+    assert.equal(context.transport.requestAccounting().events.at(-1)?.outcome, "rejected");
+  }
+});
+
+test("all executable inventory member projections reject unavailable shells", async () => {
+  for (const [sourceKey, producer] of inventoryReceiptProducers) {
+    const fake = new FakeDirectTransport(sourceKey);
+    const nativeExecute = fake.execute.bind(fake);
+    fake.execute = async (card: Readonly<RequestCard>): Promise<TransportResponse> => {
+      const response = await nativeExecute(card);
+      return card.stage === "member"
+        ? {
+            ...response,
+            body: Buffer.from(JSON.stringify({
+              ...(memberBody(sourceKey, card) as Record<string, unknown>),
+              message: "Listing not found",
+            })),
+          }
+        : response;
+    };
+    const { context } = await contextFor(producer, fake);
+    await producer.produceEnumerationReceipt(context);
+    const providerId = expectedProviderId(sourceKey);
+    await assert.rejects(
+      producer.produceMemberReceipt(context, { key: memberKey(providerId), providerId }),
+      /source response projection failed without retry/,
+      sourceKey,
+    );
+    assert.equal(context.transport.requestAccounting().events.at(-1)?.outcome, "rejected");
+  }
+});
+
+test("all executable inventory member projections reject empty bodies", async () => {
+  for (const [sourceKey, producer] of inventoryReceiptProducers) {
+    const fake = new FakeDirectTransport(sourceKey);
+    const nativeExecute = fake.execute.bind(fake);
+    fake.execute = async (card: Readonly<RequestCard>): Promise<TransportResponse> => {
+      const response = await nativeExecute(card);
+      return card.stage === "member" ? { ...response, body: Buffer.alloc(0) } : response;
+    };
+    const { context } = await contextFor(producer, fake);
+    await producer.produceEnumerationReceipt(context);
+    const providerId = expectedProviderId(sourceKey);
+    await assert.rejects(
+      producer.produceMemberReceipt(context, { key: memberKey(providerId), providerId }),
+      /source response projection failed without retry/,
+      sourceKey,
+    );
+    assert.equal(context.transport.requestAccounting().events.at(-1)?.outcome, "rejected");
+  }
+});
+
+test("inventory HTML shell is blocked until a source-owned native parser is reviewed", async () => {
+  const producer = inventoryReceiptProducers.get("cbre")!;
+  const fake = new FakeDirectTransport("cbre");
+  const nativeExecute = fake.execute.bind(fake);
+  fake.execute = async (card: Readonly<RequestCard>): Promise<TransportResponse> => {
+    const response = await nativeExecute(card);
+    return card.stage === "member"
+      ? {
+          ...response,
+          contentType: "text/html; charset=utf-8",
+          body: Buffer.from('<html><script type="application/ld+json">{"Common.PrimaryKey":"cbre-1"}</script></html>'),
+        }
+      : response;
+  };
+  const { context } = await contextFor(producer, fake);
+  await producer.produceEnumerationReceipt(context);
+  await assert.rejects(
+    producer.produceMemberReceipt(context, { key: "member-cbre-1", providerId: "cbre-1" }),
+    /source response projection failed without retry/,
+  );
 });
 
 test("inventory rejects a same-source substituted initial POST body before transport execution", async () => {

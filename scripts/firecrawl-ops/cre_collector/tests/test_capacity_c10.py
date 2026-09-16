@@ -419,9 +419,13 @@ def _runtime_receipt(plan: Mapping[str, object], variant: str) -> dict[str, obje
 
 def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = _plan()
     events: list[str] = []
+    monkeypatch.setattr(
+        runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
+    )
 
     class FakeLock:
         def __init__(self, path: Path) -> None:
@@ -530,9 +534,13 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
 
 def test_coordinator_derives_one_ledger_and_rejects_stale_replay_preflight(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = _plan()
     events: list[str] = []
+    monkeypatch.setattr(
+        runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
+    )
 
     class FakeLock:
         def __init__(self, path: Path) -> None:
@@ -591,9 +599,71 @@ def test_coordinator_derives_one_ledger_and_rejects_stale_replay_preflight(
     ]
 
 
-def test_coordinator_quarantines_before_releasing_lock(tmp_path: Path) -> None:
+def test_coordinator_rejects_caller_lock_path_before_lock_or_p0_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _plan()
+    canonical = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(runner, "canonical_shared_lock_dir", lambda: canonical)
+    hooks = runner.C10CoordinatorHooks(
+        preflight=lambda *args, **kwargs: pytest.fail("must fail before preflight"),
+        transition=lambda *args, **kwargs: pytest.fail("must fail before transition"),
+        run_browser_arm=lambda *args, **kwargs: pytest.fail("must fail before browser"),
+        settle=lambda *args, **kwargs: pytest.fail("must fail before settlement"),
+        quarantine=lambda *args, **kwargs: pytest.fail("no lock means no quarantine"),
+        lock_factory=lambda path: pytest.fail("must fail before lock construction"),
+        canonical_lock_path=lambda: tmp_path / "split" / ".cre.lock",
+    )
+
+    with pytest.raises(contracts.C10Error, match="canonical shared CRE lock"):
+        runner.run_one_coordinated_arm(
+            plan,
+            runner.initial_session(plan),
+            paths=runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json"),
+            hooks=hooks,
+        )
+
+
+def test_coordinator_rejects_factory_lock_path_before_acquire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _plan()
+    canonical = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(runner, "canonical_shared_lock_dir", lambda: canonical)
+
+    class SplitLock:
+        path = tmp_path / "split" / ".cre.lock"
+
+        def acquire(self) -> None:
+            pytest.fail("mismatched lock must not be acquired")
+
+    hooks = runner.C10CoordinatorHooks(
+        preflight=lambda *args, **kwargs: pytest.fail("must fail before preflight"),
+        transition=lambda *args, **kwargs: pytest.fail("must fail before transition"),
+        run_browser_arm=lambda *args, **kwargs: pytest.fail("must fail before browser"),
+        settle=lambda *args, **kwargs: pytest.fail("must fail before settlement"),
+        quarantine=lambda *args, **kwargs: pytest.fail("must fail before quarantine"),
+        lock_factory=lambda path: SplitLock(),  # type: ignore[arg-type,return-value]
+        canonical_lock_path=lambda: canonical,
+    )
+
+    with pytest.raises(contracts.C10Error, match="canonical SharedLock"):
+        runner.run_one_coordinated_arm(
+            plan,
+            runner.initial_session(plan),
+            paths=runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json"),
+            hooks=hooks,
+        )
+
+
+def test_coordinator_quarantines_before_releasing_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     plan = _plan()
     events: list[str] = []
+    monkeypatch.setattr(
+        runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
+    )
 
     class FakeLock:
         def __init__(self, path: Path) -> None:
@@ -636,9 +706,13 @@ def test_coordinator_quarantines_before_releasing_lock(tmp_path: Path) -> None:
 
 def test_coordinator_failure_persists_claim_and_blocks_recovery_replay(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = _plan()
     events: list[str] = []
+    monkeypatch.setattr(
+        runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
+    )
 
     class FakeLock:
         def __init__(self, path: Path) -> None:

@@ -44,6 +44,7 @@ interface MemberProjection extends SourceProjection {
   readonly kind: "native-member";
   readonly sourceKey: InventorySourceKey;
   readonly providerId: string;
+  readonly nativeIdentityKey: string;
   readonly memberSha256: string;
 }
 
@@ -83,6 +84,14 @@ const MAX_PAGES = 1_200;
 const MAX_MEMBERS = 50_000;
 const JSON_HEADERS = Object.freeze({ accept: "application/json", "cache-control": "no-store" });
 const HTML_HEADERS = Object.freeze({ accept: "text/html,application/json", "cache-control": "no-store" });
+const MEMBER_NOT_FOUND_MARKERS = Object.freeze([
+  "listing not found",
+  "property not found",
+  "page not found",
+  "listing is no longer available",
+  "property is no longer available",
+  "listing unavailable",
+]);
 
 function asRecord(value: unknown, label: string): JsonRecord {
   if (!value || Array.isArray(value) || typeof value !== "object") throw new C10ReceiptError(`${label} must be an object`);
@@ -120,6 +129,58 @@ function safeCardPart(value: string, label: string): string {
   const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   if (!normalized || normalized.length > 60) throw new C10ReceiptError(`${label} cannot form a request-card id`);
   return normalized;
+}
+
+function requireNativeFields(record: JsonRecord, fields: readonly string[], label: string): void {
+  if (Object.keys(record).length === 0 || fields.some((field) => !Object.hasOwn(record, field))) {
+    throw new C10ReceiptError(`${label} lacks its reviewed native member envelope`);
+  }
+}
+
+function nativeMemberJson(response: Readonly<SourceResponseView>, label: string): JsonRecord {
+  const bodyText = decoder.decode(response.body).trim();
+  if (!bodyText) throw new C10ReceiptError(`${label} is empty`);
+  const normalizedBody = bodyText.toLowerCase().replace(/\s+/g, " ");
+  if (MEMBER_NOT_FOUND_MARKERS.some((marker) => normalizedBody.includes(marker))) {
+    throw new C10ReceiptError(`${label} is a known unavailable shell`);
+  }
+  if (!/(?:^|[+\/])json(?:;|$)/i.test(response.contentType ?? "")) {
+    throw new C10ReceiptError(`${label} lacks a reviewed native JSON envelope`);
+  }
+  return decodeJson(response, label);
+}
+
+function sealNativeMemberProjection(
+  sourceKey: InventorySourceKey,
+  member: C10Member,
+  response: Readonly<SourceResponseView>,
+  native: JsonRecord,
+  nativeIdentityKey: string,
+  observedProviderId: string,
+): MemberProjection {
+  if (observedProviderId !== member.providerId) {
+    throw new C10ReceiptError(`${sourceKey} member response does not bind native provider identity`);
+  }
+  return {
+    kind: "native-member",
+    sourceKey,
+    providerId: observedProviderId,
+    nativeIdentityKey,
+    memberSha256: sha256(response.body),
+    native,
+  };
+}
+
+function cushmanCanonicalIdentity(value: string): string {
+  const url = new URL(value);
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+  let query = "";
+  if (url.hostname === "onecap.cushmanwakefield.com") {
+    const recordIds = url.searchParams.getAll("recordId").map((item) => item.trim()).filter(Boolean);
+    if (recordIds.length !== 1) throw new C10ReceiptError("Cushman OneCap canonical URL requires one recordId");
+    query = `?recordId=${encodeURIComponent(recordIds[0])}`;
+  }
+  return `url:v1:${sha256(`https://${url.hostname}${path}${query}`).slice(0, 32)}`;
 }
 
 function getCard(
@@ -208,8 +269,9 @@ function cushmanProjection(response: Readonly<SourceResponseView>, page: number)
   const total = requiredInteger(record.total_item, "Cushman total_item");
   const rows = requireRows(record, "content", "Cushman inventory response");
   const coordinates = rows.map((row) => {
-    const providerId = nonemptyString(row.id, "Cushman provider id");
+    nonemptyString(row.id, "Cushman API row id");
     const url = absoluteUrl(row.url ?? row.relative_url, "https://www.cushmanwakefield.com/", "www.cushmanwakefield.com", "Cushman canonical URL");
+    const providerId = cushmanCanonicalIdentity(url);
     return { key: `member-${safeCardPart(providerId, "Cushman provider id")}`, providerId, url };
   });
   return pageProjection("cushman-wakefield", page, total, rows, coordinates);
@@ -240,9 +302,54 @@ function srsProjection(response: Readonly<SourceResponseView>, page: number): Pa
   return pageProjection("srs", page, total, rows, coordinates);
 }
 
-function memberProjection(sourceKey: InventorySourceKey, member: C10Member, response: Readonly<SourceResponseView>): MemberProjection {
-  const json = /(?:^|[+\/])json(?:;|$)/i.test(response.contentType ?? "") ? decodeJson(response, `${sourceKey} member response`) : null;
-  return { kind: "native-member", sourceKey, providerId: member.providerId, memberSha256: sha256(response.body), ...(json ? { native: json } : { nativeHtmlSha256: sha256(response.body) }) };
+function cbreMemberProjection(response: Readonly<SourceResponseView>, member: C10Member): MemberProjection {
+  const native = nativeMemberJson(response, "CBRE member response");
+  requireNativeFields(native, ["Common.PrimaryKey", "Common.Name", "Common.LongDescription", "images", "documents"], "CBRE member response");
+  const observed = nonemptyString(native["Common.PrimaryKey"], "CBRE Common.PrimaryKey");
+  if (!new URL(response.finalUrl).pathname.includes(`/details/${encodeURIComponent(observed)}/`)) {
+    throw new C10ReceiptError("CBRE member URL does not bind Common.PrimaryKey");
+  }
+  return sealNativeMemberProjection("cbre", member, response, native, "$.Common.PrimaryKey", observed);
+}
+
+function cushmanMemberProjection(response: Readonly<SourceResponseView>, member: C10Member): MemberProjection {
+  const native = nativeMemberJson(response, "Cushman member response");
+  requireNativeFields(native, ["id", "title", "description", "images", "documents"], "Cushman member response");
+  nonemptyString(native.id, "Cushman native id");
+  return sealNativeMemberProjection(
+    "cushman-wakefield", member, response, native, "$response.finalUrl",
+    cushmanCanonicalIdentity(response.finalUrl),
+  );
+}
+
+function newmarkMemberProjection(response: Readonly<SourceResponseView>, member: C10Member): MemberProjection {
+  const native = nativeMemberJson(response, "Newmark member response");
+  requireNativeFields(native, ["id", "title", "description", "images", "documents"], "Newmark member response");
+  const observed = nonemptyString(native.id, "Newmark native id");
+  return sealNativeMemberProjection("newmark", member, response, native, "$.id", observed);
+}
+
+function srsMemberProjection(response: Readonly<SourceResponseView>, member: C10Member): MemberProjection {
+  const native = nativeMemberJson(response, "SRS member response");
+  requireNativeFields(native, ["apto_data", "Name", "Description__c", "images", "documents"], "SRS member response");
+  const apto = asRecord(native.apto_data, "SRS member apto_data");
+  const observed = nonemptyString(apto.SRS_Listings_ID__c, "SRS native listing id");
+  return sealNativeMemberProjection("srs", member, response, native, "$.apto_data.SRS_Listings_ID__c", observed);
+}
+
+function buildoutMemberProjection(
+  sourceKey: "svn" | "lee-associates" | "bull-realty",
+  response: Readonly<SourceResponseView>,
+  member: C10Member,
+): MemberProjection {
+  const native = nativeMemberJson(response, `${sourceKey} Buildout member response`);
+  requireNativeFields(native, ["id", "show_link", "display_name", "description", "photo_url", "pdf_url"], `${sourceKey} Buildout member response`);
+  const observed = nonemptyString(native.id, `${sourceKey} Buildout native id`);
+  const showLink = nonemptyString(native.show_link, `${sourceKey} Buildout show_link`);
+  if (showLink !== response.finalUrl || new URL(showLink).searchParams.getAll("propertyId").filter((item) => item.trim()).length !== 1) {
+    throw new C10ReceiptError(`${sourceKey} member does not bind Buildout show_link and propertyId`);
+  }
+  return sealNativeMemberProjection(sourceKey, member, response, native, "$.id", observed);
 }
 
 function memberCardFor(spec: Pick<SourceSpec, "sourceKey" | "memberHost">, coordinate: MemberCoordinate): RequestCardInput {
@@ -317,13 +424,13 @@ const cbreSpec: SourceSpec = {
   sourceKey: "cbre", memberHost: "www.cbre.com", pageSize: 500,
   initialCards: [getCard("cbre", "enumeration-0", "enumeration", "https://www.cbre.com/listings-api/propertylistings/query?site=us-comm&Common.Aspects=isSale&PageSize=500&Page=1", "www.cbre.com")],
   pageCard: (page) => getCard("cbre", `enumeration-${page}`, "enumeration", `https://www.cbre.com/listings-api/propertylistings/query?site=us-comm&Common.Aspects=isSale&PageSize=500&Page=${page + 1}`, "www.cbre.com"),
-  memberCard: (coordinate) => memberCardFor(cbreSpec, coordinate), parsePage: cbreProjection, parseMember: (response, member) => memberProjection("cbre", member, response),
+  memberCard: (coordinate) => memberCardFor(cbreSpec, coordinate), parsePage: cbreProjection, parseMember: cbreMemberProjection,
 };
 const cushmanSpec: SourceSpec = {
   sourceKey: "cushman-wakefield", memberHost: "www.cushmanwakefield.com", pageSize: 100,
   initialCards: [getCard("cushman-wakefield", "enumeration-0", "enumeration", "https://www.cushmanwakefield.com/api/properties/search?rfkId=property_search&view=pins&site_country=US&listing_type=Buy&language=en&limit=100&offset=0", "www.cushmanwakefield.com")],
   pageCard: (page) => getCard("cushman-wakefield", `enumeration-${page}`, "enumeration", `https://www.cushmanwakefield.com/api/properties/search?rfkId=property_search&view=pins&site_country=US&listing_type=Buy&language=en&limit=100&offset=${page * 100}`, "www.cushmanwakefield.com"),
-  memberCard: (coordinate) => memberCardFor(cushmanSpec, coordinate), parsePage: cushmanProjection, parseMember: (response, member) => memberProjection("cushman-wakefield", member, response),
+  memberCard: (coordinate) => memberCardFor(cushmanSpec, coordinate), parsePage: cushmanProjection, parseMember: cushmanMemberProjection,
 };
 function newmarkBody(page: number): JsonRecord {
   return { brokers: [], excludeUnpriced: false, isAscending: true, leaseTypes: [], listingIds: [], page, propertySubtypes: [], propertyTypes: [], sortBy: "createdOn", statuses: [], take: 100, type: 2 };
@@ -332,7 +439,7 @@ const newmarkSpec: SourceSpec = {
   sourceKey: "newmark", memberHost: "www.nmrk.com", pageSize: 100,
   initialCards: [postCard("newmark", "enumeration-0", "enumeration", "https://api-public.nim.nmrk.com/api/properties/search", "api-public.nim.nmrk.com", newmarkBody(0))],
   pageCard: (page) => postCard("newmark", `enumeration-${page}`, "enumeration", "https://api-public.nim.nmrk.com/api/properties/search", "api-public.nim.nmrk.com", newmarkBody(page)),
-  memberCard: (coordinate) => memberCardFor(newmarkSpec, coordinate), parsePage: newmarkProjection, parseMember: (response, member) => memberProjection("newmark", member, response),
+  memberCard: (coordinate) => memberCardFor(newmarkSpec, coordinate), parsePage: newmarkProjection, parseMember: newmarkMemberProjection,
 };
 function srsBody(page: number): JsonRecord {
   return { client_ip: "", query: { address: null, availabilityType: ["sale", "lease", "investment-sale"], broker: "", capRateRange: { required: true }, latLong: null, lotSizeRange: { required: false }, office: "", offset: page * 12, orderBy: "date", orderDirection: "DESC", ownershipType: ["fee-simple-land-building", "ground-lease-land-only", "leasehold-lease-only", "other"], pageSize: 12, portfolio: [], priceRange: { required: true }, propertyType: ["retail", "industrial", "office", "land", "multifamily", "hospitality", "healthcare", "special_purpose"], searchTerms: "", sizeRange: { required: false }, subType: null, tenancyType: ["single-tenant", "multi-tenant", "land"], tenant: "" } };
@@ -341,7 +448,7 @@ const srsSpec: SourceSpec = {
   sourceKey: "srs", memberHost: "www.srsre.com", pageSize: 12,
   initialCards: [postCard("srs", "enumeration-0", "enumeration", "https://srsre-next-412955565034.us-central1.run.app/api/property-search", "srsre-next-412955565034.us-central1.run.app", srsBody(0))],
   pageCard: (page) => postCard("srs", `enumeration-${page}`, "enumeration", "https://srsre-next-412955565034.us-central1.run.app/api/property-search", "srsre-next-412955565034.us-central1.run.app", srsBody(page)),
-  memberCard: (coordinate) => memberCardFor(srsSpec, coordinate), parsePage: srsProjection, parseMember: (response, member) => memberProjection("srs", member, response),
+  memberCard: (coordinate) => memberCardFor(srsSpec, coordinate), parsePage: srsProjection, parseMember: srsMemberProjection,
 };
 function buildoutSpec(sourceKey: "svn" | "lee-associates" | "bull-realty", pluginKey: string, memberHost: string): SourceSpec {
   const url = (page: number) => `https://buildout.com/plugins/${pluginKey}/inventory.json?page=${page}&q%5Bs%5D=created_at%20asc%2C%20id%20asc`;
@@ -349,7 +456,7 @@ function buildoutSpec(sourceKey: "svn" | "lee-associates" | "bull-realty", plugi
     sourceKey, memberHost, pageSize: 30,
     initialCards: [getCard(sourceKey, "enumeration-0", "enumeration", url(0), "buildout.com")],
     pageCard: (page) => getCard(sourceKey, `enumeration-${page}`, "enumeration", url(page), "buildout.com"),
-    memberCard: (coordinate) => memberCardFor(spec, coordinate), parsePage: (response, page) => buildoutProjection(sourceKey, memberHost, page, response), parseMember: (response, member) => memberProjection(sourceKey, member, response),
+    memberCard: (coordinate) => memberCardFor(spec, coordinate), parsePage: (response, page) => buildoutProjection(sourceKey, memberHost, page, response), parseMember: (response, member) => buildoutMemberProjection(sourceKey, response, member),
   };
   return spec;
 }

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cre_checkpoint_refresh import SharedLock
+from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 
 from . import admission
 from .compare import validate_browser_arm
@@ -186,9 +186,16 @@ def run_one_coordinated_arm(
     second experiment between a partial transition and its forensic handoff.
     """
     validate_plan(plan)
-    lock_path = hooks.canonical_lock_path()
+    # The coordinator, not its caller, owns the shared-lock identity.  The
+    # injected path is retained only as a fail-closed attestation for future
+    # runtime wiring; deriving the path here prevents a P0 arm (which never
+    # calls ``transition``) from escaping the collector's canonical lock.
+    lock_path = canonical_shared_lock_dir().resolve()
+    supplied_lock_path = hooks.canonical_lock_path().expanduser().resolve()
+    if supplied_lock_path != lock_path:
+        raise C10Error("C10 coordinator lock path is not the canonical shared CRE lock")
     lock = hooks.lock_factory(lock_path)
-    if getattr(lock, "path", lock_path) != lock_path:
+    if Path(getattr(lock, "path", lock_path)).expanduser().resolve() != lock_path:
         raise C10Error("C10 coordinator did not receive the canonical SharedLock")
     lock.acquire()
     try:
