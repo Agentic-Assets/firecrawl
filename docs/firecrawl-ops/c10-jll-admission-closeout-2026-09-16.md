@@ -43,3 +43,29 @@ review the rendered separate authority proposal; make a reviewed repository
 pin; then run the existing production-controller dry-run before any bounded P0
 arm. Preserve the receipt manifest and final outcome as operator evidence. Do
 not treat this document or a passing mock test as live provider proof.
+
+## Stop handoff: 2026-09-16
+
+- Draft PR: [#72](https://github.com/Agentic-Assets/firecrawl/pull/72).
+- Current branch SHA: `e963d4f00` (`fix: select JLL admission members in source`),
+  following bridge commit `518b5a895`. Neither change is merged or approved.
+- Merged prerequisites remain PR #67 (host hardening), PR #70 (offline
+  admission support), and PR #71 (JLL-only lane). None is live-provider proof.
+- Verified before this stop: bridge-focused Python tests passed; the prior exact
+  full collector Python rerun was `3248 passed, 18 skipped, 3 warnings`; the
+  prior collector TypeScript suite was `913 passed, 1 skipped`, with typecheck
+  passing. The isolated worktree hydrated the pinned Playwright package lock so
+  the loopback child resolves `express` from its real working directory.
+- The deterministic source-owned selection remediation is committed but
+  unreviewed and not fully re-gated: it proposes
+  `jll-canonical-url-lexicographic-v1` (canonicalize, reject malformed or
+  duplicate candidates, lexicographically sort routes, take 16) and binds a
+  selection digest into the receipt set/manifest. Do not treat it as complete
+  until a fresh cross-language adversarial review and full exact-head gates
+  prove TS source selection, Python manifest verification, controller override
+  refusal, tie/duplicate/insufficient behavior, and recovery.
+- No provider request, C10 calibration, authority pin, database/cache/listing/
+  scheduler mutation, or merge occurred. The next live stage remains blocked
+  on review and merge: provision fresh 0700 roots, run the reviewed bounded JLL
+  admission action once, descriptor-reopen and build the bundle, render (not
+  install) authority, then open a distinct reviewed pin PR.
