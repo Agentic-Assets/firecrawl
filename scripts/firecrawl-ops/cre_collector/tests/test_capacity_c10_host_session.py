@@ -20,7 +20,11 @@ from capacity_c10.host_session import (
     DockerComposeSidecar,
     _OpenSsl,
 )
-from capacity_c10.production import execute_production_arm, main
+from capacity_c10.production import (
+    _canonical_session_store,
+    execute_production_arm,
+    main,
+)
 from test_capacity_c10 import _cohort, _plan, _registry, _seal_cohort
 
 
@@ -111,7 +115,7 @@ def test_compose_overlay_is_rendered_before_start_and_owner_env_is_removed(
             )
         return Result(0)
 
-    monkeypatch.setattr("capacity_c10.host_session.subprocess.run", fake_run)
+    monkeypatch.setattr("capacity_c10.host_sidecar.subprocess.run", fake_run)
     lifecycle = DockerComposeSidecar(tmp_path)
     lifecycle.start(
         {
@@ -175,7 +179,7 @@ def test_compose_partial_start_uses_same_environment_for_stop_and_quiescence(
             return Result(1)
         return Result(0)
 
-    monkeypatch.setattr("capacity_c10.host_session.subprocess.run", fake_run)
+    monkeypatch.setattr("capacity_c10.host_sidecar.subprocess.run", fake_run)
     lifecycle = DockerComposeSidecar(tmp_path)
     with pytest.raises(contracts.C10Error, match="startup failed"):
         lifecycle.start(
@@ -208,11 +212,11 @@ def test_hung_child_is_process_group_killed_at_the_host_deadline(
 
     killed: list[tuple[int, int]] = []
     monkeypatch.setattr(
-        "capacity_c10.host_session.subprocess.Popen",
+        "capacity_c10.host_orchestration.subprocess.Popen",
         lambda *_args, **_kwargs: HungChild(),
     )
     monkeypatch.setattr(
-        "capacity_c10.host_session.os.killpg",
+        "capacity_c10.host_orchestration.os.killpg",
         lambda pid, signal: killed.append((pid, signal)),
     )
     session = object.__new__(C10HostExecutionSession)
@@ -230,7 +234,7 @@ def test_compose_stop_failure_removes_private_environment(
         stdout = ""
 
     monkeypatch.setattr(
-        "capacity_c10.host_session.subprocess.run", lambda *_args, **_kwargs: Result()
+        "capacity_c10.host_sidecar.subprocess.run", lambda *_args, **_kwargs: Result()
     )
     lifecycle = DockerComposeSidecar(tmp_path)
     env_file = tmp_path / "private.env"
@@ -258,7 +262,7 @@ def test_compose_rejects_a_stopped_container_with_secret_config_residue(
             else Result()
         )
 
-    monkeypatch.setattr("capacity_c10.host_session.subprocess.run", fake_run)
+    monkeypatch.setattr("capacity_c10.host_sidecar.subprocess.run", fake_run)
     lifecycle = DockerComposeSidecar(tmp_path)
     env_file = tmp_path / "private.env"
     env_file.write_text("x=y\n", encoding="utf-8")
@@ -303,7 +307,7 @@ def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
             raise AssertionError("Plan B must not reach lifecycle cleanup")
 
     monkeypatch.setattr(
-        "capacity_c10.host_session.canonical_shared_lock_dir",
+        "capacity_c10.host_orchestration.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
     sidecar = Sidecar()
@@ -378,12 +382,12 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
             lifecycle_events.append("removed")
 
     monkeypatch.setattr(
-        "capacity_c10.host_session.canonical_shared_lock_dir",
+        "capacity_c10.host_orchestration.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
-    monkeypatch.setattr("capacity_c10.host_session.SharedLock", FakeLock)
+    monkeypatch.setattr("capacity_c10.host_orchestration.SharedLock", FakeLock)
     monkeypatch.setattr(
-        "capacity_c10.host_session.PrivateReceiptStore.create",
+        "capacity_c10.host_orchestration.PrivateReceiptStore.create",
         lambda _root: FakeStore(),
     )
     sidecar = FakeSidecar()
@@ -437,7 +441,7 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
 
     monkeypatch.setattr(host, "_keys", generated_keys)
     monkeypatch.setattr(
-        "capacity_c10.host_session.urlopen",
+        "capacity_c10.host_orchestration.urlopen",
         lambda *_args, **_kwargs: FakeHealthResponse(),
     )
 
@@ -529,7 +533,7 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
             return None
 
     monkeypatch.setattr(
-        "capacity_c10.host_session.canonical_shared_lock_dir",
+        "capacity_c10.host_orchestration.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
 
@@ -543,9 +547,9 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
         def release(self) -> None:
             return None
 
-    monkeypatch.setattr("capacity_c10.host_session.SharedLock", Lock)
+    monkeypatch.setattr("capacity_c10.host_orchestration.SharedLock", Lock)
     monkeypatch.setattr(
-        "capacity_c10.host_session.PrivateReceiptStore.create",
+        "capacity_c10.host_orchestration.PrivateReceiptStore.create",
         lambda _root: FakeStore(),
     )
     store = C10SessionStore(tmp_path / "session.json")
@@ -590,6 +594,10 @@ def test_production_cli_is_dry_run_by_default_and_never_calls_runtime(
         "capacity_c10.production.runtime.preflight",
         lambda *_args, **_kwargs: pytest.fail("dry-run must not call runtime"),
     )
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
     assert (
         main(
             [
@@ -599,8 +607,6 @@ def test_production_cli_is_dry_run_by_default_and_never_calls_runtime(
                 str(paths["cohort"]),
                 "--session",
                 str(paths["session"]),
-                "--session-store",
-                str(tmp_path / "store.json"),
                 "--private-root",
                 str(tmp_path / "private"),
                 "--runtime-receipt",
@@ -649,7 +655,7 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
         def execute(
             self, plan: object, session: object, **kwargs: object
         ) -> dict[str, object]:
-            assert (tmp_path / "session.json").exists()
+            assert (tmp_path / ".cre.lock" / "c10-ledgers").exists()
             events.append("host")
             claim = kwargs["_claim"]
             assert isinstance(claim, dict)
@@ -667,6 +673,10 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
             }
 
     monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
     monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
     monkeypatch.setattr(
         "capacity_c10.production.runtime.experiment.load_profile",
@@ -677,14 +687,16 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
     )
 
     def preflight(*_: object, **__: object) -> dict[str, object]:
-        assert (tmp_path / "session.json").exists()
+        assert (tmp_path / ".cre.lock" / "c10-ledgers").exists()
         events.append("preflight")
         return receipt
 
     monkeypatch.setattr("capacity_c10.production.runtime.preflight", preflight)
     monkeypatch.setattr(
         "capacity_c10.production.runtime.capture_runtime",
-        lambda: type("Capture", (), {"public": {"settlement": {"state": "idle"}}})(),
+        lambda **_: type(
+            "Capture", (), {"public": {"settlement": {"state": "idle"}}}
+        )(),
     )
     monkeypatch.setattr(
         "capacity_c10.production.runtime.evaluate_state", lambda *_: {"idle": True}
@@ -694,13 +706,26 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
         plan=plan,
         cohort=cohort,
         session=contracts.new_session(plan),
-        session_store_path=tmp_path / "session.json",
         private_root=tmp_path / "private",
         runtime_receipt_path=tmp_path / "receipt.json",
     )
     assert events == ["lock", "preflight", "host", "release"]
     assert result["comparison_state"].startswith("not_comparable")
-    assert (tmp_path / "session.json.terminal").exists()
+    assert result["terminal"]["state"] == "terminal"
+    terminal = _canonical_session_store(tmp_path, plan, contracts.new_session(plan))
+    assert (
+        terminal.load_terminal(plan, contracts.new_session(plan))
+        == result["authenticated_arm"]
+    )
+    with pytest.raises(contracts.C10Error, match="already claimed"):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            session=contracts.new_session(plan),
+            private_root=tmp_path / "private-replay",
+            runtime_receipt_path=tmp_path / "receipt-replay.json",
+        )
 
 
 def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
@@ -737,6 +762,10 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
             raise contracts.C10Error("host failure")
 
     monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
     monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
     monkeypatch.setattr(
         "capacity_c10.production.runtime.experiment.load_profile",
@@ -767,11 +796,10 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
             plan=plan,
             cohort=cohort,
             session=session,
-            session_store_path=tmp_path / "session.json",
             private_root=tmp_path / "private",
             runtime_receipt_path=tmp_path / "receipt.json",
             approval_path=tmp_path / "approval.json",
             admission_out=tmp_path / "admission.json",
         )
     assert events == ["lock", "candidate", "host", "baseline", "release"]
-    assert (tmp_path / "session.json.quarantine").exists()
+    assert list((tmp_path / ".cre.lock" / "c10-ledgers").glob("*.quarantine"))

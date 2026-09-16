@@ -53,6 +53,17 @@ runs the fixed eight-arm sequence and requires one approval and admission file
 per P1 arm. It constructs the host registry itself and accepts no browser
 callback, arbitrary card, or caller scheduler evidence.
 
+The durable ledger path is derived solely from the canonical shared-lock root,
+the immutable plan digest, and the input session identity. It is not a CLI
+argument. Claim and terminal state are one atomically replaced ledger record;
+the terminal record retains the safe authenticated comparator envelope and
+artifact manifest hashes, never browser bodies. Replaying an unadvanced session
+or selecting an alternate ledger fails closed. One monotonic deadline begins
+before preflight and is carried through host execution, settlement, rollback,
+and terminalization. The compatibility facade `host_session.py` exposes the
+minimal public API; crypto, ledger, registry, sidecar, and orchestration live
+in focused host modules.
+
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
 and transition fingerprints, immutable per-source cohort count/hash bindings,

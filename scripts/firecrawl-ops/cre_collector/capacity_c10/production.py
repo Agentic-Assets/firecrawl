@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,16 @@ from .host_session import (
 )
 
 
+def _canonical_session_store(
+    repo_root: Path, plan: Mapping[str, Any], session: Mapping[str, Any]
+) -> C10SessionStore:
+    """Derive the sole durable arm ledger; callers cannot select its path."""
+    validate_plan(plan)
+    root = canonical_shared_lock_dir(repo_root.resolve()).resolve()
+    identity = sha256({"plan_sha256": plan["plan_sha256"], "session": session})
+    return C10SessionStore(root / "c10-ledgers" / f"{identity}.json")
+
+
 def _runtime_profile(plan: Mapping[str, Any], variant: str) -> Mapping[str, Any]:
     profile_name = plan["profiles"][variant]["name"]
     profile, digest = runtime.experiment.load_profile(
@@ -36,6 +47,13 @@ def _runtime_profile(plan: Mapping[str, Any], variant: str) -> Mapping[str, Any]
     ):
         raise C10Error("C10 runtime profile differs from the immutable plan")
     return profile
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise C10Error("C10 production deadline expired")
+    return remaining
 
 
 def _runtime_fingerprints(
@@ -80,15 +98,19 @@ def _runtime_fingerprints(
     }
 
 
-def _settle(profile: Mapping[str, Any], state: str) -> Mapping[str, Any]:
+def _settle(
+    profile: Mapping[str, Any], state: str, deadline: float
+) -> Mapping[str, Any]:
     """Use the canonical runtime capture and full idle checks, never a hook."""
-    capture = runtime.capture_runtime()
+    _remaining(deadline)
+    capture = runtime.capture_runtime(deadline=deadline)
     checks = runtime.evaluate_state(capture.public, profile, state)
     if not checks or not all(checks.values()):
         raise C10Error("C10 runtime settlement is unknown or non-idle")
     settlement = capture.public.get("settlement")
     if not isinstance(settlement, Mapping):
         raise C10Error("C10 runtime settlement evidence is unavailable")
+    _remaining(deadline)
     return dict(settlement)
 
 
@@ -105,7 +127,6 @@ def execute_production_arm(
     plan: Mapping[str, Any],
     cohort: Mapping[str, Any],
     session: Mapping[str, Any],
-    session_store_path: Path,
     private_root: Path,
     runtime_receipt_path: Path,
     approval_path: Path | None = None,
@@ -121,13 +142,15 @@ def execute_production_arm(
     """
     validate_plan(plan)
     registry = C10SealedCardRegistry(plan, cohort)
-    store = C10SessionStore(session_store_path)
+    store = _canonical_session_store(repo_root, plan, session)
+    store.assert_available(plan, session)
     host = C10HostExecutionSession(
         repo_root=repo_root,
         session_store=store,
         private_root=private_root,
         cards=registry,
     )
+    deadline = time.monotonic() + timeout_seconds
     lock = _canonical_lock(repo_root.resolve())
     if lock.path.resolve() != host.lock_path:
         raise C10Error("C10 host and runtime canonical locks differ")
@@ -137,6 +160,7 @@ def execute_production_arm(
     receipt: Mapping[str, Any] | None = None
     try:
         # Claim precedes any host, runtime, Compose, or provider activity.
+        _remaining(deadline)
         claim = store.claim(plan, session)
         arm = claim["arm"]
         if not isinstance(arm, Mapping):
@@ -150,6 +174,7 @@ def execute_production_arm(
             runtime_receipt_path,
             profile_config=admission.PROFILE_CONFIG,
             experiment_kind="C10",
+            deadline=deadline,
         )
         if variant == "p1":
             if approval_path is None or admission_out is None:
@@ -164,15 +189,17 @@ def execute_production_arm(
                 _held_shared_lock=lock,
                 profile_config=admission.PROFILE_CONFIG,
                 experiment_kind="C10",
+                deadline=deadline,
             )
         host_result = host.execute(
             plan,
             session,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_remaining(deadline),
             _claim=claim,
             _held_shared_lock=lock,
+            _deadline=deadline,
         )
-        _settle(profile, "candidate" if variant == "p1" else "baseline")
+        _settle(profile, "candidate" if variant == "p1" else "baseline", deadline)
         rollback: Mapping[str, Any] | None = None
         if variant == "p1":
             rollback = runtime.transition(
@@ -183,6 +210,7 @@ def execute_production_arm(
                 _held_shared_lock=lock,
                 profile_config=admission.PROFILE_CONFIG,
                 experiment_kind="C10",
+                deadline=deadline,
             )
             if (
                 not isinstance(rollback, Mapping)
@@ -198,7 +226,7 @@ def execute_production_arm(
                 != baseline.get("transition_sha256")
             ):
                 raise C10Error("C10 P1 rollback does not restore the receipt baseline")
-            _settle(profile, "baseline")
+            _settle(profile, "baseline", deadline)
         authenticated_arm = {
             "kind": compare.HOST_EVIDENCE_KIND,
             "plan_sha256": plan["plan_sha256"],
@@ -209,9 +237,10 @@ def execute_production_arm(
             "host_result": host_result,
         }
         compare.validate_authenticated_host_arm(plan, authenticated_arm)
+        _remaining(deadline)
         terminal = store.record_terminal(claim, authenticated_arm)
         return {
-            "session": claim["claimed_session"],
+            "session": terminal["claimed_session"],
             "claim": claim,
             "authenticated_arm": authenticated_arm,
             "terminal": terminal,
@@ -232,6 +261,7 @@ def execute_production_arm(
                     _held_shared_lock=lock,
                     profile_config=admission.PROFILE_CONFIG,
                     experiment_kind="C10",
+                    deadline=deadline,
                 )
             except BaseException as rollback_exc:  # noqa: BLE001 - quarantine follows
                 rollback_error = rollback_exc
@@ -254,7 +284,6 @@ def execute_counterbalanced_sequence(
     plan: Mapping[str, Any],
     cohort: Mapping[str, Any],
     session: Mapping[str, Any],
-    session_store_root: Path,
     private_root: Path,
     runtime_receipt_root: Path,
     approval_root: Path,
@@ -271,7 +300,6 @@ def execute_counterbalanced_sequence(
             plan=plan,
             cohort=cohort,
             session=current,
-            session_store_path=session_store_root / f"{suffix}.json",
             private_root=private_root / suffix,
             runtime_receipt_path=runtime_receipt_root / f"{suffix}.json",
             approval_path=approval_root / f"{suffix}.json" if variant == "p1" else None,
@@ -308,7 +336,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--cohort", type=Path, required=True)
     parser.add_argument("--session", type=Path, required=True)
-    parser.add_argument("--session-store", type=Path, required=True)
     parser.add_argument("--private-root", type=Path, required=True)
     parser.add_argument("--runtime-receipt", type=Path, required=True)
     parser.add_argument("--approval", type=Path)
@@ -322,6 +349,10 @@ def main(argv: list[str] | None = None) -> int:
         _read(args.session, "session"),
     )
     validate_plan(plan)
+    C10SealedCardRegistry(plan, cohort)
+    _canonical_session_store(args.repo_root, plan, session).assert_available(
+        plan, session
+    )
     # This dry-run deliberately reads only sealed local inputs. It never calls
     # Docker, the runtime controller, the host sidecar, or a provider.
     selected = "counterbalanced" if args.counterbalanced else "smoke"
@@ -350,7 +381,6 @@ def main(argv: list[str] | None = None) -> int:
             plan=plan,
             cohort=cohort,
             session=session,
-            session_store_root=args.session_store.resolve(),
             private_root=args.private_root.resolve(),
             runtime_receipt_root=args.runtime_receipt.resolve(),
             approval_root=args.approval.resolve(),
@@ -363,7 +393,6 @@ def main(argv: list[str] | None = None) -> int:
             plan=plan,
             cohort=cohort,
             session=session,
-            session_store_path=args.session_store.resolve(),
             private_root=args.private_root.resolve(),
             runtime_receipt_path=args.runtime_receipt.resolve(),
             approval_path=args.approval.resolve() if args.approval else None,
