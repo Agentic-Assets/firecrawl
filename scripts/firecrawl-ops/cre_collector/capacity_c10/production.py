@@ -43,8 +43,9 @@ from .jll_admission import JLL_ADMISSION_QUARANTINE_NAME, JLL_SELECTION_RULE
 # JLL admission budgets are separate so a slow `up`/listener start cannot eat
 # the per-card collection budget.  Explicit upper bound of one admission action:
 # startup (180 s) + collection (17 x 30 s + 60 s = 570 s) + teardown (60 s,
-# host_sidecar._TEARDOWN_BUDGET_SECONDS) = 810 s.  The image is prebuilt; a run
-# never builds or pulls.
+# host_sidecar._TEARDOWN_BUDGET_SECONDS) = 810 s, plus at most 5 s to reap a
+# killed controller child (admission_controller._CHILD_REAP_SECONDS) = 815 s.
+# The image is prebuilt; a run never builds or pulls.
 JLL_ADMISSION_STARTUP_MAX_SECONDS = 180.0
 _JLL_ADMISSION_KIND = "cre_capacity_c10_jll_admission"
 
@@ -98,8 +99,8 @@ def _execute_authorized_jll_admission_action(
     )
 
 
-def _jll_admission_ledger_root(repo_root: Path) -> Path:
-    """The same owner-only sibling ledger root used by P0/P1 quarantine records."""
+def _c10_ledger_root(repo_root: Path) -> Path:
+    """The owner-only sibling ledger root, never inside the lock tree."""
     return (
         canonical_shared_lock_dir(repo_root.resolve())
         .resolve()
@@ -142,7 +143,7 @@ def _quarantine_jll_admission(
     }
     try:
         ledger = C10SessionStore(
-            _jll_admission_ledger_root(repo_root) / f"jll-admission-{run_id}.json"
+            _c10_ledger_root(repo_root) / f"jll-admission-{run_id}.json"
         )
         try:
             ledger._write_new_record(
@@ -341,9 +342,7 @@ def _canonical_session_store(
 ) -> C10SessionStore:
     """Derive a stable owner-only sibling ledger, never inside the lock tree."""
     validate_plan(plan)
-    lock_root = canonical_shared_lock_dir(repo_root.resolve()).resolve()
-    root = lock_root.with_name(".cre-c10-ledger-v1")
-    return C10SessionStore(root / f"{plan['plan_sha256']}.json")
+    return C10SessionStore(_c10_ledger_root(repo_root) / f"{plan['plan_sha256']}.json")
 
 
 def _runtime_profile(plan: Mapping[str, Any], variant: str) -> Mapping[str, Any]:

@@ -133,7 +133,7 @@ def _wire_common(
         production, "repository_implementation_sha256", lambda _key: adapter_digest
     )
     monkeypatch.setattr(
-        production, "_jll_admission_ledger_root", lambda _repo_root: tmp_path / "ledger"
+        production, "_c10_ledger_root", lambda _repo_root: tmp_path / "ledger"
     )
     monkeypatch.setattr(
         production._C10HostTransport, "_keys", lambda self, deadline: _keys()
@@ -449,7 +449,7 @@ def test_p1a_real_sidecar_teardown_runs_after_controller_deadline_expires(
         production, "repository_implementation_sha256", lambda _key: "d" * 64
     )
     monkeypatch.setattr(
-        production, "_jll_admission_ledger_root", lambda _repo_root: tmp_path / "ledger"
+        production, "_c10_ledger_root", lambda _repo_root: tmp_path / "ledger"
     )
     monkeypatch.setattr(
         production._C10HostTransport, "_keys", lambda self, deadline: _keys()
@@ -688,7 +688,7 @@ def test_module_functions_still_present_for_regression_signature_checks() -> Non
     """Guard the private helpers this file relies on so a rename is caught here."""
     for name in (
         "_execute_authorized_jll_admission_action",
-        "_jll_admission_ledger_root",
+        "_c10_ledger_root",
         "_quarantine_jll_admission",
         "_require_timeout",
         "execute_jll_admission_collection",

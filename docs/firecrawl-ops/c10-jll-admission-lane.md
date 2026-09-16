@@ -61,9 +61,13 @@ authorize the panel.
    are separate: sidecar startup and signed health at most 180 s (prebuilt
    image only, `--no-build --pull never`; health is polled only while the
    listener refuses or resets connections); collection at most 570 s (1 + 16
-   sequential cards at the sidecar-enforced 30 s card bound, plus 60 s);
-   teardown at most 60 s with retries, independent of an expired run deadline.
-   The explicit upper bound of one action is 810 s. If teardown cannot be
+   sequential cards at the sidecar-enforced 30 s card bound, plus 60 s), plus
+   at most 5 s to reap a killed controller child; teardown at most 60 s with
+   retries, independent of an expired run deadline. The explicit upper bound of
+   one action is 815 s. Before a run, the operator builds the image
+   `firecrawl-playwright-service-c10:local` from the reviewed checkout with
+   `docker compose -f docker-compose.yaml -f docker-compose.c10.yaml build
+   playwright-service-c10`; a missing image fails startup. If teardown cannot be
    proven, the lock stays retained, a ledger quarantine record names the exact
    compose project, and the receipt root is marked quarantined.
 
