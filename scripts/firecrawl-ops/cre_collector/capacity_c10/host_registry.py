@@ -23,6 +23,12 @@ from .contracts import (
     sha256,
     validate_plan,
 )
+from .jll_admission import (
+    JLL_COHORT_KIND,
+    JLL_MEMBER_COUNT,
+    JLL_PLAN_KIND,
+    _collection_intent_sha256,
+)
 
 _ENV_MODE = 0o600
 _ROOT_MODE = 0o700
@@ -41,7 +47,65 @@ _JLL_BOOTSTRAP_URL = "https://property.jll.com/"
 # This is deliberately a fixed recipe rather than a caller supplied request
 # graph.  The query is the reviewed public property search operation.  The
 # immutable cohort supplies only the sixteen selected canonical member routes.
-_JLL_QUERY = """query SearchResults($market: String! $language: String! $propertyTypes: [String!] $tenureTypes: [String!] $skip: Int $take: IntString = 50 $orderBy: PropertiesOrderInput) { properties(market: $market language: $language propertyTypes: $propertyTypes tenureTypes: $tenureTypes skip: $skip take: $take orderBy: $orderBy) { count items { id title images address propertyTypes tenureTypes rentPrice { amount currency unit } salePrice { amount currency unit } hidePrice pageUrl latitude longitude city state postcode surfaceAreas { value unit label alternativeUnit showEstimateDesks metrics { value unit } } } } }"""
+_JLL_QUERY = """
+  query SearchResults(
+    $market: String!
+    $language: String!
+    $propertyTypes: [String!]
+    $tenureTypes: [String!]
+    $skip: Int
+    $take: IntString = 50
+    $orderBy: PropertiesOrderInput
+  ) {
+    properties(
+      market: $market
+      language: $language
+      propertyTypes: $propertyTypes
+      tenureTypes: $tenureTypes
+      skip: $skip
+      take: $take
+      orderBy: $orderBy
+    ) {
+      count
+      items {
+        id
+        title
+        images
+        address
+        propertyTypes
+        tenureTypes
+        rentPrice {
+          amount
+          currency
+          unit
+        }
+        salePrice {
+          amount
+          currency
+          unit
+        }
+        hidePrice
+        pageUrl
+        latitude
+        longitude
+        city
+        state
+        postcode
+        surfaceAreas {
+          value
+          unit
+          label
+          alternativeUnit
+          showEstimateDesks
+          metrics {
+            value
+            unit
+          }
+        }
+      }
+    }
+  }
+"""
 _JLL_RECIPE = {"transaction": "sale", "property_type": "office", "page": 1}
 _COHORT_HASH_FIELDS = (
     "schema_version",
@@ -121,6 +185,9 @@ class C10SealedCardRegistry:
 
     def __init__(self, plan: Mapping[str, Any], cohort: Mapping[str, Any]) -> None:
         validate_plan(plan)
+        if plan.get("kind") == JLL_PLAN_KIND:
+            self._init_jll_only(plan, cohort)
+            return
         if cohort.get("cohort_sha256") != plan["cohort_sha256"] or sha256(
             {key: cohort.get(key) for key in _COHORT_HASH_FIELDS}
         ) != cohort.get("cohort_sha256"):
@@ -178,6 +245,101 @@ class C10SealedCardRegistry:
             frozen[f"jll-member-{index}"] = self._member_card(index, route)
         # Keep canonical bytes, not caller-reachable mutable dictionaries. A
         # resolve always returns a fresh decoded projection for one capability.
+        self._cards = {
+            card_id: _canonical_text(card) for card_id, card in frozen.items()
+        }
+        self.cohort_sha256 = plan["cohort_sha256"]
+        self.plan_sha256 = plan["plan_sha256"]
+        self.manifest_sha256 = sha256(
+            {card_id: json.loads(card) for card_id, card in self._cards.items()}
+        )
+
+    def _init_jll_only(
+        self, plan: Mapping[str, Any], cohort: Mapping[str, Any]
+    ) -> None:
+        """Build the same fixed card graph from the separately admitted JLL cohort."""
+        fields = {
+            "schema_version",
+            "kind",
+            "collection_intent_sha256",
+            "members",
+            "enumeration_receipt_sha256",
+            "member_receipt_sha256",
+            "receipt_manifest_sha256",
+            "adapter_implementation_sha256",
+            "collection_binding",
+            "artifact_index_sha256",
+            "no_write",
+            "cohort_sha256",
+        }
+        if (
+            set(cohort) != fields
+            or cohort.get("kind") != JLL_COHORT_KIND
+            or cohort.get("cohort_sha256") != plan["cohort_sha256"]
+            or cohort.get("cohort_sha256")
+            != sha256(
+                {key: value for key, value in cohort.items() if key != "cohort_sha256"}
+            )
+        ):
+            raise C10Error("C10 registry JLL cohort is invalid")
+        members = cohort.get("members")
+        source = plan.get("source")
+        if (
+            not isinstance(members, list)
+            or len(members) != JLL_MEMBER_COUNT
+            or not isinstance(source, Mapping)
+            or source.get("cohort_member_sha256") != sha256(members)
+            or source.get("enumeration_receipt_sha256")
+            != cohort.get("enumeration_receipt_sha256")
+            or source.get("receipt_manifest_sha256")
+            != cohort.get("receipt_manifest_sha256")
+            or source.get("collection_intent_sha256")
+            != cohort.get("collection_intent_sha256")
+            or source.get("collection_binding_sha256")
+            != sha256(cohort.get("collection_binding"))
+        ):
+            raise C10Error("C10 registry JLL cohort projection differs from plan")
+        self.source_projection_sha256 = sha256(source)
+        observed_routes: set[str] = set()
+        observed_ids: set[str] = set()
+        member_routes: list[str] = []
+        for index, member in enumerate(members):
+            if (
+                not isinstance(member, Mapping)
+                or member.get("key") != f"jll-{index + 1}"
+            ):
+                raise C10Error("C10 JLL membership is not canonical")
+            provider_id = member.get("provider_id")
+            route = self._member_route(member.get("canonical_url"))
+            if (
+                not isinstance(provider_id, str)
+                or not provider_id.isdigit()
+                or provider_id in observed_ids
+                or route in observed_routes
+            ):
+                raise C10Error(
+                    "C10 JLL membership does not have exact canonical identity"
+                )
+            observed_ids.add(provider_id)
+            observed_routes.add(route)
+            member_routes.append(route)
+        normalized_members = [
+            {
+                "key": f"jll-{index + 1}",
+                "provider_id": str(members[index]["provider_id"]),
+                "canonical_url": member_routes[index],
+            }
+            for index in range(JLL_MEMBER_COUNT)
+        ]
+        if source.get("collection_intent_sha256") != _collection_intent_sha256(
+            normalized_members
+        ):
+            raise C10Error("C10 registry JLL source card intent differs from cohort")
+        frozen: dict[str, Mapping[str, Any]] = {
+            "jll-enumeration": self._enumeration_card(member_routes)
+        }
+        for index, route in enumerate(member_routes):
+            frozen[f"jll-member-{index}"] = self._member_card(index, route)
         self._cards = {
             card_id: _canonical_text(card) for card_id, card in frozen.items()
         }
@@ -345,9 +507,14 @@ class C10SealedCardRegistry:
         return json.loads(self._cards[card_id])
 
     def assert_plan_identity(self, plan: Mapping[str, Any]) -> None:
+        expected_projection = (
+            sha256(plan.get("source"))
+            if plan.get("kind") == JLL_PLAN_KIND
+            else sha256(plan.get("sources"))
+        )
         if (
             self.plan_sha256 != plan.get("plan_sha256")
             or self.cohort_sha256 != plan.get("cohort_sha256")
-            or self.source_projection_sha256 != sha256(plan.get("sources"))
+            or self.source_projection_sha256 != expected_projection
         ):
             raise C10Error("C10 registry rejects an alternate plan/source projection")
