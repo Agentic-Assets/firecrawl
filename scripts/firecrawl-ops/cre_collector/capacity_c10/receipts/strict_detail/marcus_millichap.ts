@@ -11,7 +11,6 @@ import {
   marcusMapDetailBody,
   marcusSearchBody,
   marcusUrl,
-  parseMarcusMapRowsResponse,
   parseMarcusPropertiesResponse,
 } from "../../../sources/pure/marcus-receipt.js";
 import {
@@ -69,7 +68,7 @@ function memberCard(
     sourceKey: "marcus-millichap",
     stage: "member",
     method: "POST",
-    url: `${MARCUS_BASE}/api/contentsearch/mapproperties`,
+    url: `${MARCUS_BASE}/api/contentsearch/mappropertydetail`,
     allowedHost: MARCUS_HOST,
     headers: Object.freeze(marcusHeaders()),
     contentType: "application/json",
@@ -116,17 +115,19 @@ function spec(plan: MarcusReceiptPlan): StrictDetailSourceSpec<MarcusReceiptMemb
     },
     memberCard,
     memberProjector: (member, route) => (response) => {
-      const rows = parseMarcusMapRowsResponse(utf8Json(response.body, "Marcus map detail"), true);
-      const observed = rows.find((row: any) => String(row?.ActivityId ?? "").trim() === route);
-      if (!observed) throw new C10ReceiptError("Marcus map detail omitted the requested activity identity");
-      const observedUrl = marcusUrl(observed?.PropertyUrl) ?? member.canonicalUrl;
+      const payload = utf8Json(response.body, "Marcus map detail") as any;
+      const results = payload?.Results ?? payload;
+      const propertyDetail = typeof results?.PropertyDetail === "string" ? results.PropertyDetail.trim() : "";
+      const observedUrl = marcusUrl(results?.PropertyUrl);
+      if (!propertyDetail || !observedUrl) {
+        throw new C10ReceiptError("Marcus map detail omitted PropertyDetail or PropertyUrl");
+      }
       if (observedUrl !== member.canonicalUrl) throw new C10ReceiptError("Marcus map detail canonical URL does not match enumeration");
       return {
         activityId: route,
         canonicalUrl: observedUrl,
-        nativeAssets: [observed?.ImageUrl, observed?.Image, observed?.PhotoUrl]
-          .map((value) => marcusUrl(value))
-          .filter((value): value is string => Boolean(value)),
+        hasPropertyDetail: true,
+        nativeAssets: [],
         providerId: member.providerId,
       } satisfies SourceProjection;
     },

@@ -128,13 +128,26 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
         const html = String((payload as { html?: unknown }).html ?? "");
         if (!html) throw new C10ReceiptError("Colliers list response has no HTML cards");
         const cards = parseColliersReceiptCards(html, mapProjection.groups as any[], plan.start);
+        const rawPageCount = (payload as { numProjects?: unknown }).numProjects;
+        if (
+          rawPageCount === null
+          || rawPageCount === undefined
+          || (typeof rawPageCount === "string" && rawPageCount.trim() === "")
+          || (typeof rawPageCount !== "string" && typeof rawPageCount !== "number")
+        ) {
+          throw new C10ReceiptError("Colliers list response has invalid numProjects");
+        }
+        const reportedPageCount = Number(rawPageCount);
+        if (!Number.isInteger(reportedPageCount) || reportedPageCount < 0 || reportedPageCount !== cards.length) {
+          throw new C10ReceiptError("Colliers numProjects/card parity failed");
+        }
         return {
           cards: cards.map((card) => ({
             canonicalUrl: card.detailUrl,
             detailPv: card.detailPv,
             projectId: card.mapProjectId,
           })),
-          reportedTotal: Number((payload as { total?: unknown }).total),
+          reportedPageCount,
         } satisfies SourceProjection;
       });
       const listing = listEvent.projection as { readonly cards: readonly { readonly canonicalUrl: string | null; readonly detailPv: string | null; readonly projectId: string }[] };

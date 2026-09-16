@@ -197,7 +197,7 @@ test("Colliers requires sealed map/list parity before its exact SLP member reque
   };
   const fake = new FixtureTransport({
     "colliers-map-enumeration": JSON.stringify({ projectLocations: [{ ProjectId: "3", Latitude: 1, Longitude: 2 }] }),
-    "colliers-list-enumeration": JSON.stringify({ total: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span class="city">A, NY</span></li>' }),
+    "colliers-list-enumeration": JSON.stringify({ numProjects: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span class="city">A, NY</span></li>' }),
     "colliers-member-0": JSON.stringify({ ProjectSummary: { AttributeVisibility: { ProjectId: "3" }, CanonicalUrl: "https://my.rcm1.com/slp/?pv=detail-3" }, GalleryImages: [] }),
   });
   const receiptContext = await context("colliers", [colliersMapEnumerationCard(plan)], fake);
@@ -207,7 +207,45 @@ test("Colliers requires sealed map/list parity before its exact SLP member reque
   assert.deepEqual(fake.cards.map((card) => card.id), ["colliers-map-enumeration", "colliers-list-enumeration", "colliers-member-0"]);
 });
 
+test("Colliers rejects a fabricated total field without native numProjects", async () => {
+  const plan: ColliersReceiptPlan = {
+    engineKey: "engine", start: 1, pageSize: 1,
+    members: [{ key: "colliers-3", providerId: "3", detailPv: "detail-3", canonicalUrl: "https://my.rcm1.com/slp/?pv=detail-3" }],
+    enumerationCards: [],
+  };
+  const fake = new FixtureTransport({
+    "colliers-map-enumeration": JSON.stringify({ projectLocations: [{ ProjectId: "3", Latitude: 1, Longitude: 2 }] }),
+    "colliers-list-enumeration": JSON.stringify({ total: 1, html: '<li class="item"><a href="/slp/?pv=detail-3"></a><span class="city">A, NY</span></li>' }),
+  });
+  const receiptContext = await context("colliers", [colliersMapEnumerationCard(plan)], fake);
+  await assert.rejects(
+    createColliersReceiptProducer(plan).produceEnumerationReceipt(receiptContext),
+    /source response projection failed without retry/,
+  );
+  assert.equal(receiptContext.transport.requestAccounting().events.at(-1)?.outcome, "rejected");
+});
+
 test("Marcus seals canonical search and map POST bodies without retry or fallback", async () => {
+  const plan: MarcusReceiptPlan = {
+    pageSize: 1,
+    members: [{ key: "marcus-4", providerId: "4", activityId: "activity-4", canonicalUrl: "https://www.marcusmillichap.com/properties/four" }],
+    enumerationCards: [],
+  };
+  const fake = new FixtureTransport({
+    "marcus-enumeration": JSON.stringify({ Results: { TotalCount: 1, Properties: [{ DealId: "4", ActivityId: "activity-4", PropertyUrl: "/properties/four" }] } }),
+    "marcus-member-0": JSON.stringify({ Results: { PropertyDetail: '<article data-property="four"></article>', PropertyUrl: "/properties/four" } }),
+  });
+  const receiptContext = await context("marcus-millichap", [marcusEnumerationCard(plan)], fake);
+  const producer = createMarcusReceiptProducer(plan);
+  await producer.produceEnumerationReceipt(receiptContext);
+  await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
+  assert.match(fake.cards[0]?.body ?? "", /"pageSize":1/);
+  assert.equal(fake.cards[1]?.body, '{"activityId":"activity-4"}');
+  assert.equal(fake.cards[1]?.url, "https://www.marcusmillichap.com/api/contentsearch/mappropertydetail");
+  assert.equal(receiptContext.transport.requestAccounting().retries, 0);
+});
+
+test("Marcus rejects the old mapproperties envelope at the detail endpoint", async () => {
   const plan: MarcusReceiptPlan = {
     pageSize: 1,
     members: [{ key: "marcus-4", providerId: "4", activityId: "activity-4", canonicalUrl: "https://www.marcusmillichap.com/properties/four" }],
@@ -220,10 +258,11 @@ test("Marcus seals canonical search and map POST bodies without retry or fallbac
   const receiptContext = await context("marcus-millichap", [marcusEnumerationCard(plan)], fake);
   const producer = createMarcusReceiptProducer(plan);
   await producer.produceEnumerationReceipt(receiptContext);
-  await producer.produceMemberReceipt(receiptContext, plan.members[0]!);
-  assert.match(fake.cards[0]?.body ?? "", /"pageSize":1/);
-  assert.equal(fake.cards[1]?.body, '{"activityId":"activity-4"}');
-  assert.equal(receiptContext.transport.requestAccounting().retries, 0);
+  await assert.rejects(
+    producer.produceMemberReceipt(receiptContext, plan.members[0]!),
+    /source response projection failed without retry/,
+  );
+  assert.equal(receiptContext.transport.requestAccounting().events.at(-1)?.outcome, "rejected");
 });
 
 test("browser-dependent source modules fail closed before any transport is invoked", async () => {
