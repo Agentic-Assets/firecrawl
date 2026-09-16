@@ -68,9 +68,21 @@ def _manifest(root: Path, *, count: int = 16) -> Path:
         }
         for index in range(count)
     ]
-    artifacts = []
-    for index in range(count + 1):
-        body = f"sealed-{index}".encode()
+    receipts: list[dict[str, object]] = []
+    artifacts: list[dict[str, object]] = []
+    for index, (stage, member) in enumerate(
+        [("enumeration", None), *(("member", item["key"]) for item in members)]
+    ):
+        provisional = _receipt(stage, member, "0" * 64)
+        stage_payload = {
+            "binding": provisional["binding"],
+            "sourceKey": "jll",
+            "stage": stage,
+            "memberKey": member,
+            "requestAccounting": provisional["requestAccounting"],
+            "evidence": {"sealed": index},
+        }
+        body = json.dumps(stage_payload, sort_keys=True, separators=(",", ":")).encode()
         name = f"artifact-{index}.sealed"
         target = root / name
         target.write_bytes(body)
@@ -82,17 +94,15 @@ def _manifest(root: Path, *, count: int = 16) -> Path:
                 "bytes": len(body),
             }
         )
+        receipts.append(_receipt(stage, member, artifacts[-1]["sha256"]))
     unsigned: dict[str, object] = {
         "schema_version": 1,
         "kind": jll_admission.JLL_RECEIPT_MANIFEST_KIND,
         "receipt_root": str(root),
         "collection_intent": jll_admission._jll_intent(),
         "members": members,
-        "enumeration": _receipt("enumeration", None, artifacts[0]["sha256"]),
-        "member_receipts": [
-            _receipt("member", member["key"], artifacts[index + 1]["sha256"])
-            for index, member in enumerate(members)
-        ],
+        "enumeration": receipts[0],
+        "member_receipts": receipts[1:],
         "artifacts": artifacts,
         "adapter_implementation_sha256": "d" * 64,
         "no_write": admission.NO_WRITE,
@@ -224,7 +234,7 @@ def test_jll_manifest_rejects_mixed_receipt_binding_before_bundle(
         jll_admission, "repository_implementation_sha256", lambda _key: "d" * 64
     )
 
-    with pytest.raises(contracts.C10Error, match="mixed"):
+    with pytest.raises(contracts.C10Error, match="sealed stage artifact"):
         jll_admission.build_jll_bundle(
             receipt_root=receipt_root,
             receipt_manifest=manifest,
@@ -245,13 +255,44 @@ def test_jll_tampered_or_missing_sealed_artifact_never_publishes_bundle(
     )
     (receipt_root / "artifact-0.sealed").write_text("tampered")
     (receipt_root / "artifact-0.sealed").chmod(0o600)
-    with pytest.raises(contracts.C10Error, match="artifact digest"):
+    with pytest.raises(contracts.C10Error, match="sealed receipt artifact"):
         jll_admission.build_jll_bundle(
             receipt_root=receipt_root,
             receipt_manifest=manifest,
             admission_root=admission_root,
         )
     assert list(admission_root.iterdir()) == []
+
+
+def test_jll_public_receipts_cannot_share_or_mislabel_a_sealed_stage_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    manifest = _manifest(receipt_root)
+    value = json.loads(manifest.read_text())
+    value["member_receipts"][0]["privateArtifactSha256"] = value["enumeration"][
+        "privateArtifactSha256"
+    ]
+    receipt = value["member_receipts"][0]
+    receipt["receiptSha256"] = contracts.sha256(
+        {key: item for key, item in receipt.items() if key != "receiptSha256"}
+    )
+    value["manifest_sha256"] = contracts.sha256(
+        {key: item for key, item in value.items() if key != "manifest_sha256"}
+    )
+    _write(manifest, value)
+    monkeypatch.setattr(
+        jll_admission, "repository_implementation_sha256", lambda _key: "d" * 64
+    )
+    with pytest.raises(contracts.C10Error, match="cannot share"):
+        jll_admission.build_jll_bundle(
+            receipt_root=receipt_root,
+            receipt_manifest=manifest,
+            admission_root=admission_root,
+        )
 
 
 def test_jll_collection_cli_is_dry_run_only_outside_production_controller(

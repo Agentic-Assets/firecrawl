@@ -158,13 +158,14 @@ def _validate_public_receipt(value: Any, *, stage: str, member_key: str | None) 
 
 def _revalidate_artifact_index(
     root: Any, artifacts: Any, private_hashes: set[str]
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
     """Descriptor-relative rehash of every controller-recorded sealed artifact."""
     if not isinstance(artifacts, list) or not artifacts:
         raise C10Error("JLL receipt manifest artifact index is missing")
     normalized: list[dict[str, Any]] = []
     names: set[str] = set()
     indexed_hashes: set[str] = set()
+    contents: dict[str, bytes] = {}
     for item in artifacts:
         if not isinstance(item, Mapping) or set(item) != {"name", "sha256", "bytes"}:
             raise C10Error("JLL receipt artifact index entry is invalid")
@@ -195,11 +196,13 @@ def _revalidate_artifact_index(
                 raise C10Error("JLL sealed receipt artifact metadata is invalid")
             hasher = hashlib.sha256()
             remaining = size
+            raw = b""
             while remaining:
                 chunk = os.read(fd, min(64 * 1024, remaining))
                 if not chunk:
                     raise C10Error("JLL sealed receipt artifact was truncated")
                 hasher.update(chunk)
+                raw += chunk
                 remaining -= len(chunk)
             if os.read(fd, 1) or hasher.hexdigest() != digest:
                 raise C10Error("JLL sealed receipt artifact digest is invalid")
@@ -207,11 +210,40 @@ def _revalidate_artifact_index(
             os.close(fd)
         names.add(name)
         indexed_hashes.add(digest)
+        contents[digest] = raw
         normalized.append({"name": name, "sha256": digest, "bytes": size})
     root.recheck()
     if not private_hashes <= indexed_hashes:
         raise C10Error("JLL public receipt refers to an unindexed sealed artifact")
-    return normalized
+    return normalized, contents
+
+
+def _bind_stage_artifact(
+    receipt: Mapping[str, Any], raw: bytes, *, stage: str, member_key: str | None
+) -> None:
+    """Bind a public receipt to its unique, sealed private stage payload."""
+    try:
+        private = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise C10Error("JLL sealed stage artifact JSON is invalid") from exc
+    if (
+        not isinstance(private, Mapping)
+        or set(private)
+        != {
+            "binding",
+            "sourceKey",
+            "stage",
+            "memberKey",
+            "requestAccounting",
+            "evidence",
+        }
+        or private.get("binding") != receipt.get("binding")
+        or private.get("sourceKey") != "jll"
+        or private.get("stage") != stage
+        or private.get("memberKey") != member_key
+        or private.get("requestAccounting") != receipt.get("requestAccounting")
+    ):
+        raise C10Error("JLL sealed stage artifact does not bind its public receipt")
 
 
 def _validate_manifest(
@@ -277,7 +309,7 @@ def _validate_manifest(
         _validate_public_receipt(receipt, stage="member", member_key=member["key"])
         for member, receipt in zip(normalized, receipts, strict=True)
     ]
-    artifacts = _revalidate_artifact_index(
+    artifacts, artifact_contents = _revalidate_artifact_index(
         root,
         manifest.get("artifacts"),
         {
@@ -285,6 +317,23 @@ def _validate_manifest(
             *(receipt["privateArtifactSha256"] for receipt in receipts),
         },
     )
+    stage_receipts = [manifest["enumeration"], *receipts]
+    private_artifacts = [receipt["privateArtifactSha256"] for receipt in stage_receipts]
+    if len(private_artifacts) != len(set(private_artifacts)):
+        raise C10Error("JLL public receipts cannot share a sealed stage artifact")
+    _bind_stage_artifact(
+        manifest["enumeration"],
+        artifact_contents[manifest["enumeration"]["privateArtifactSha256"]],
+        stage="enumeration",
+        member_key=None,
+    )
+    for member, receipt in zip(normalized, receipts, strict=True):
+        _bind_stage_artifact(
+            receipt,
+            artifact_contents[receipt["privateArtifactSha256"]],
+            stage="member",
+            member_key=member["key"],
+        )
     adapter = manifest.get("adapter_implementation_sha256")
     require_sha256(adapter, "JLL adapter implementation")
     if adapter != repository_implementation_sha256("jll"):
