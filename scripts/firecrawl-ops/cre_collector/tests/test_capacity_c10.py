@@ -335,42 +335,6 @@ def test_durable_claim_rejects_root_replacement(tmp_path: Path) -> None:
         store.close()
 
 
-def test_serial_protocol_requires_settlement_and_p1_rollback_then_quarantines_failure() -> (
-    None
-):
-    plan = _plan()
-    session = runner.initial_session(plan)
-    events: list[str] = []
-    hooks = runner.SerialRunnerHooks(
-        settle=lambda arm: (
-            events.append(f"settle-{arm['variant']}")
-            or {"state": "idle", "complete": True}
-        ),
-        rollback=lambda arm: events.append("rollback") or {"verified": True},
-        quarantine=lambda reason: events.append(f"quarantine:{reason}"),
-    )
-    first = runner.run_one_arm_protocol(
-        plan, session, hooks=hooks, run_arm=lambda arm: _no_write()
-    )
-    second = runner.run_one_arm_protocol(
-        plan, first["session"], hooks=hooks, run_arm=lambda arm: _no_write()
-    )
-    assert first["arm"]["variant"] == "p0"
-    assert second["arm"]["variant"] == "p1"
-    assert events == ["settle-p0", "settle-p1", "rollback", "settle-p1"]
-
-    failed_hooks = runner.SerialRunnerHooks(
-        settle=lambda arm: {"state": "unknown", "complete": False},
-        rollback=lambda arm: {"verified": True},
-        quarantine=lambda reason: events.append("quarantined"),
-    )
-    with pytest.raises(contracts.C10Error, match="settlement"):
-        runner.run_one_arm_protocol(
-            plan, session, hooks=failed_hooks, run_arm=lambda arm: _no_write()
-        )
-    assert events[-1] == "quarantined"
-
-
 def _raw_browser_arm(
     plan: Mapping[str, object], arm: Mapping[str, object], concurrency: int
 ) -> dict[str, object]:
@@ -478,16 +442,13 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
     first = runner.run_one_coordinated_arm(
         plan,
         runner.initial_session(plan),
-        paths=runner.C10CoordinatorPaths(
-            session_path=tmp_path / "session.json", receipt_path=tmp_path / "p0.json"
-        ),
+        paths=runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json"),
         hooks=hooks,
     )
     second = runner.run_one_coordinated_arm(
         plan,
         first["session"],
         paths=runner.C10CoordinatorPaths(
-            session_path=tmp_path / "session.json",
             receipt_path=tmp_path / "p1.json",
             approval_path=tmp_path / "approval.json",
             admission_out=tmp_path / "admission.json",
@@ -517,6 +478,69 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
         "settle-p1",
         "rollback",
         "settle-p1",
+        "release",
+    ]
+
+
+def test_coordinator_derives_one_ledger_and_rejects_stale_replay_preflight(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    events: list[str] = []
+
+    class FakeLock:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            self.retain_on_exit = False
+
+        def acquire(self) -> None:
+            events.append("acquire")
+
+        def release(self) -> None:
+            events.append("release")
+
+    lock_path = tmp_path / ".cre.lock"
+    hooks = runner.C10CoordinatorHooks(
+        preflight=lambda profile, out, **kwargs: (
+            events.append("preflight") or _runtime_receipt(plan, "p0")
+        ),
+        transition=lambda *args, **kwargs: pytest.fail("P0 must not transition"),
+        run_browser_arm=lambda arm, concurrency: (
+            events.append("browser") or _raw_browser_arm(plan, arm, concurrency)
+        ),
+        settle=lambda arm: (
+            events.append("settle") or {"state": "idle", "complete": True}
+        ),
+        quarantine=lambda reason: events.append("quarantine"),
+        lock_factory=FakeLock,
+        canonical_lock_path=lambda: lock_path,
+    )
+    initial = runner.initial_session(plan)
+    paths = runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json")
+    assert "session_path" not in runner.C10CoordinatorPaths.__dataclass_fields__
+    ledger_path = runner._canonical_ledger_path(lock_path, plan, initial)
+    assert ledger_path == runner._canonical_ledger_path(lock_path, plan, initial)
+    first = runner.run_one_coordinated_arm(plan, initial, paths=paths, hooks=hooks)
+    assert ledger_path.is_file()
+    assert (
+        runner._canonical_ledger_path(lock_path, plan, first["session"]) == ledger_path
+    )
+
+    alternate = tmp_path / "alternate" / "session.json"
+    alternate.parent.mkdir(mode=0o700)
+    with session_store.DurableArmSessionStore(alternate) as store:
+        assert store.claim(plan, initial)["arm"]["index"] == 0
+    assert alternate != ledger_path
+    with pytest.raises(contracts.C10Error, match="disagrees"):
+        runner.run_one_coordinated_arm(plan, initial, paths=paths, hooks=hooks)
+    assert events == [
+        "acquire",
+        "preflight",
+        "browser",
+        "settle",
+        "release",
+        "acquire",
+        "quarantine",
         "release",
     ]
 
@@ -557,7 +581,6 @@ def test_coordinator_quarantines_before_releasing_lock(tmp_path: Path) -> None:
             plan,
             runner.initial_session(plan),
             paths=runner.C10CoordinatorPaths(
-                session_path=tmp_path / "session.json",
                 receipt_path=tmp_path / "p0.json",
             ),
             hooks=hooks,
@@ -595,13 +618,12 @@ def test_coordinator_failure_persists_claim_and_blocks_recovery_replay(
         lock_factory=FakeLock,
         canonical_lock_path=lambda: tmp_path / ".cre.lock",
     )
-    paths = runner.C10CoordinatorPaths(
-        session_path=tmp_path / "session.json", receipt_path=tmp_path / "p0.json"
-    )
+    paths = runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json")
     initial = runner.initial_session(plan)
     with pytest.raises(RuntimeError, match="crash"):
         runner.run_one_coordinated_arm(plan, initial, paths=paths, hooks=hooks)
-    with session_store.DurableArmSessionStore(paths.session_path) as recovered:
+    ledger_path = runner._canonical_ledger_path(tmp_path / ".cre.lock", plan, initial)
+    with session_store.DurableArmSessionStore(ledger_path) as recovered:
         durable = recovered.session(plan)
         assert durable["consumed_arm_indexes"] == [0]
     with pytest.raises(contracts.C10Error, match="unresolved claimed"):
