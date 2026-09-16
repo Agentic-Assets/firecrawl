@@ -4,8 +4,13 @@ The public offline admission helpers deliberately cannot collect evidence.  This
 module is their only executable counterpart: it owns the private receipt root,
 the deadline, and C10 v3 capability issuance.  The TypeScript child receives no
 provider URL authority, browser endpoint, key, or filesystem descriptor.  It
-can ask this controller to execute one already-source-bound card or seal one
+can ask this controller to execute one exactly pinned source card or seal one
 private artifact, and nothing else.
+
+Selection authority is shared, not delegated: the child's source selector
+chooses the sixteen members, and this controller independently recomputes
+``jll-canonical-url-lexicographic-v1`` from the verified signed enumeration body
+before issuing any member capability.  Callers cannot supply members.
 """
 
 from __future__ import annotations
@@ -14,7 +19,9 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
+import selectors
 import subprocess
 import time
 from collections.abc import Callable, Mapping
@@ -22,71 +29,164 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .admission_chain import _open_private_root
 from .contracts import C10Error, canonical_bytes, require_sha256, sha256
 from .host_crypto import _OpenSsl
 from .host_orchestration import (
-    _MAX_CHILD_FRAME_BYTES,
-    _MAX_CHILD_STDOUT_BYTES,
     _C10HostTransport,
     _key_id,
     _remaining,
 )
 from .host_sidecar import C10EphemeralKeys
 from .host_store import PrivateReceiptStore
-from .jll_admission import JLL_ENUMERATION_BODY_SHA256
+from .jll_admission import (
+    JLL_ENUMERATION_BODY_SHA256,
+    JLL_ENUMERATION_CARD_ID,
+    JLL_GRAPHQL_URL,
+    JLL_MEMBER_COUNT,
+    JLL_RECEIPT_MANIFEST_KIND,
+    _collection_intent_sha256,
+    _jll_intent,
+    _parse_enumeration_body,
+    select_jll_admission_members,
+)
 
 _PROTOCOL = "c10-jll-admission-rpc-v1"
 _JLL_HOST = "property.jll.com"
-_JLL_PREFIX = "https://property.jll.com/listings/"
-_JLL_GRAPHQL = "https://property.jll.com/api/graphql"
-_MEMBER_COUNT = 16
+_JLL_BOOTSTRAP_URL = "https://property.jll.com/"
+# Mirrors MAX_FRAME_BYTES in receipts/jll_admission_child.ts.  A reply carries a
+# response body (<= 2 MiB) twice in base64 inside its signed evidence.
+_MAX_ADMISSION_FRAME_BYTES = 8 * 1024 * 1024
+# One enumeration plus sixteen members seal at most ~70 artifacts; bounded
+# headroom prevents a misbehaving child from filling the private root.
+_MAX_SEALED_ARTIFACTS = 96
+_MAX_SEALED_BYTES = 160 * 1024 * 1024
+_STEM = re.compile(r"[a-z0-9][a-z0-9-]{0,160}")
+_REQUEST_ID = re.compile(r"[1-9][0-9]{0,8}")
+_CARD_TIMEOUT_MS = 30_000
+_CARD_MAX_BYTES = 2 * 1024 * 1024
+_BINDING_FIELDS = frozenset(
+    {
+        "planSha256",
+        "cohortSha256",
+        "policySha256",
+        "sourceSha256",
+        "armSha256",
+        "implementationSha256",
+    }
+)
 
 
 def _frame(value: Mapping[str, Any]) -> bytes:
-    raw = canonical_bytes(value) + b"\n"
-    if len(raw) > _MAX_CHILD_FRAME_BYTES:
+    raw = canonical_bytes(value)
+    if len(raw) > _MAX_ADMISSION_FRAME_BYTES:
         raise C10Error("JLL admission controller frame exceeds its bound")
-    return raw
+    return raw + b"\n"
 
 
-def _source_members(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        raise C10Error("JLL admission enumeration candidates are invalid")
-    result: list[dict[str, str]] = []
-    routes: set[str] = set()
-    ids: set[str] = set()
-    for item in value:
-        if not isinstance(item, Mapping):
-            raise C10Error("JLL admission controller member is invalid")
-        provider_id, page_url = item.get("id"), item.get("pageUrl")
-        route = (
-            f"https://{_JLL_HOST}{page_url}"
-            if isinstance(page_url, str) and page_url.startswith("/")
-            else page_url
-        )
-        if (
-            not isinstance(provider_id, str)
-            or not provider_id.isdigit()
-            or not isinstance(route, str)
-            or not route.startswith(_JLL_PREFIX)
-            or "?" in route
-            or "#" in route
-            or route in routes
-            or provider_id in ids
-        ):
-            raise C10Error("JLL admission controller member is invalid")
-        routes.add(route)
-        ids.add(provider_id)
-        result.append({"providerId": provider_id, "canonicalUrl": route})
-    if len(result) < _MEMBER_COUNT:
-        raise C10Error(
-            "JLL admission enumeration has insufficient canonical candidates"
-        )
-    result.sort(key=lambda member: member["canonicalUrl"])
-    return [
-        {"key": f"jll-{index + 1}", **member}
-        for index, member in enumerate(result[:_MEMBER_COUNT])
-    ]
+def _expected_enumeration_card(card: Mapping[str, Any]) -> dict[str, Any]:
+    body = card.get("body")
+    if (
+        not isinstance(body, str)
+        or hashlib.sha256(body.encode("utf-8")).hexdigest()
+        != JLL_ENUMERATION_BODY_SHA256
+        or card.get("bodySha256") != JLL_ENUMERATION_BODY_SHA256
+    ):
+        raise C10Error("JLL admission enumeration card is invalid")
+    return {
+        "id": JLL_ENUMERATION_CARD_ID,
+        "sourceKey": "jll",
+        "stage": "enumeration",
+        "method": "POST",
+        "url": JLL_GRAPHQL_URL,
+        "allowedHost": _JLL_HOST,
+        "headers": {
+            "accept": "application/json",
+            "cache-control": "no-cache",
+            "content-type": "application/json",
+            "pragma": "no-cache",
+        },
+        "contentType": "application/json",
+        "body": body,
+        "browserBootstrapUrl": _JLL_BOOTSTRAP_URL,
+        "cacheMode": "no-store",
+        "timeoutMs": _CARD_TIMEOUT_MS,
+        "maxBytes": _CARD_MAX_BYTES,
+        "bodySha256": JLL_ENUMERATION_BODY_SHA256,
+    }
+
+
+def _expected_member_card(index: int, route: str) -> dict[str, Any]:
+    return {
+        "id": f"jll-member-{index}",
+        "sourceKey": "jll",
+        "stage": "member",
+        "method": "GET",
+        "url": route,
+        "allowedHost": _JLL_HOST,
+        "headers": {"accept": "text/html,application/xhtml+xml"},
+        "contentType": None,
+        "body": None,
+        "browserBootstrapUrl": _JLL_BOOTSTRAP_URL,
+        "cacheMode": "no-store",
+        "timeoutMs": _CARD_TIMEOUT_MS,
+        "maxBytes": _CARD_MAX_BYTES,
+        "bodySha256": None,
+    }
+
+
+class _FramedChild:
+    """Deadline-bounded newline framing over a child's stdin/stdout pipes."""
+
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+        if process.stdin is None or process.stdout is None:
+            raise C10Error("JLL admission child pipes are unavailable")
+        self.process = process
+        self._stdin = process.stdin
+        self._stdout = process.stdout
+        self._buffer = bytearray()
+        os.set_blocking(self._stdin.fileno(), False)
+        os.set_blocking(self._stdout.fileno(), False)
+
+    def send(self, frame: bytes, deadline: float) -> None:
+        pending = memoryview(frame)
+        with selectors.DefaultSelector() as selector:
+            selector.register(self._stdin, selectors.EVENT_WRITE)
+            while pending:
+                ready = selector.select(min(_remaining(deadline), 0.1))
+                if not ready:
+                    continue
+                try:
+                    written = os.write(self._stdin.fileno(), pending)
+                except BlockingIOError:
+                    continue
+                except OSError as exc:
+                    raise C10Error("JLL admission child input closed") from exc
+                pending = pending[written:]
+
+    def receive(self, deadline: float) -> bytes:
+        with selectors.DefaultSelector() as selector:
+            selector.register(self._stdout, selectors.EVENT_READ)
+            while True:
+                newline = self._buffer.find(b"\n")
+                if newline >= 0:
+                    line = bytes(self._buffer[:newline])
+                    del self._buffer[: newline + 1]
+                    if len(line) > _MAX_ADMISSION_FRAME_BYTES:
+                        raise C10Error("JLL admission child output is invalid")
+                    return line
+                if len(self._buffer) > _MAX_ADMISSION_FRAME_BYTES:
+                    raise C10Error("JLL admission child output is invalid")
+                ready = selector.select(min(_remaining(deadline), 0.1))
+                if not ready:
+                    continue
+                try:
+                    chunk = os.read(self._stdout.fileno(), 256 * 1024)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    raise C10Error("JLL admission child output is invalid")
+                self._buffer.extend(chunk)
 
 
 class _JllAdmissionController:
@@ -103,8 +203,10 @@ class _JllAdmissionController:
         receipt_root: Path,
         endpoint: str,
         executor: Callable[[Mapping[str, Any], float], Mapping[str, Any]],
+        profile_sha256: str,
     ) -> None:
         self.repo_root = repo_root.resolve()
+        self.profile_sha256 = require_sha256(profile_sha256, "JLL admission profile")
         self.receipt_root = receipt_root.resolve()
         parsed = urlsplit(endpoint)
         if (
@@ -132,18 +234,62 @@ class _JllAdmissionController:
             secrets.token_urlsafe(32),
         )
 
+    def _require_fresh_root(self) -> None:
+        """Refuse a reused receipt root so no prior artifact can be mistaken.
+
+        Recovery after any partial failure is a new provisioned owner-0700
+        root; this controller never resumes into, or appends to, an old one.
+        """
+        with _open_private_root(self.receipt_root, "receipt root") as root:
+            try:
+                entries = os.listdir(root.fd)
+            except OSError as exc:
+                raise C10Error("JLL admission receipt root is unavailable") from exc
+            root.recheck()
+        if entries:
+            raise C10Error("JLL admission receipt root must be fresh and empty")
+
+    def _sidecar_binding(
+        self, binding: Mapping[str, str], session_nonce: str
+    ) -> dict[str, str]:
+        """Project the receipt binding onto the sidecar's seven-digest v3 shape.
+
+        There is no admitted manifest or durable session before admission, so
+        this lane binds the fixed collection intent plus receipt binding as its
+        manifest digest and a fresh per-run nonce as its session digest.
+        """
+        return {
+            "planSha256": binding["planSha256"],
+            "cohortSha256": binding["cohortSha256"],
+            "armSha256": binding["armSha256"],
+            "manifestSha256": sha256(
+                {
+                    "kind": "cre_capacity_c10_jll_v1_admission_intent",
+                    "intent": _jll_intent(),
+                    "receiptBinding": dict(binding),
+                }
+            ),
+            "sessionSha256": sha256(
+                {
+                    "kind": "cre_capacity_c10_jll_v1_admission_session",
+                    "nonce": session_nonce,
+                }
+            ),
+            "profileSha256": self.profile_sha256,
+        }
+
     def _issue(
         self,
         card: Mapping[str, Any],
-        binding: Mapping[str, str],
+        sidecar_binding: Mapping[str, str],
         keys: C10EphemeralKeys,
         deadline: float,
         sequence: int,
     ) -> dict[str, Any]:
         _remaining(deadline)
-        source_key = card.get("sourceKey")
-        if source_key != "jll":
-            raise C10Error("JLL admission controller source binding is invalid")
+        # The sidecar's exact v3 card schema carries prior membership only for
+        # P0/P1 enumeration; an admission lane sidecar requires it to be null.
+        issued_card = {**card, "expectedMemberRoutes": None}
         now = int(time.time() * 1000)
         remaining = max(1, int(_remaining(deadline) * 1000))
         capability = {
@@ -153,8 +299,8 @@ class _JllAdmissionController:
             "expiresAtMs": now + min(remaining, 120_000),
             "hostDeadlineAtMs": now + remaining,
             "cardSequence": sequence,
-            "sourceKey": source_key,
-            "binding": {**binding, "cardSha256": sha256(card)},
+            "sourceKey": "jll",
+            "binding": {**sidecar_binding, "cardSha256": sha256(issued_card)},
         }
         payload = (
             base64.urlsafe_b64encode(canonical_bytes(capability))
@@ -165,56 +311,76 @@ class _JllAdmissionController:
             "endpoint": self.endpoint,
             "capability": capability,
             "authorization": f"{payload}.{_OpenSsl.sign(keys.coordinator_private_pem, payload.encode(), deadline)}",
-            "card": dict(card),
+            "card": issued_card,
             "hostTransportKey": keys.transport_key,
         }
 
     @staticmethod
     def _validate_card(
-        card: Any, members: list[dict[str, str]], sequence: int
-    ) -> Mapping[str, Any]:
-        if (
-            not isinstance(card, Mapping)
-            or card.get("sourceKey") != "jll"
-            or card.get("cacheMode") != "no-store"
-        ):
+        card: Any, selected: list[dict[str, str]], sequence: int
+    ) -> dict[str, Any]:
+        """Accept only the exact source card for this position in the graph."""
+        if not isinstance(card, Mapping):
             raise C10Error("JLL admission child requested an unbound card")
-        stage = card.get("stage")
         if sequence == 0:
-            if (
-                stage != "enumeration"
-                or card.get("id") != "jll-enumeration-0"
-                or card.get("method") != "POST"
-                or card.get("url") != _JLL_GRAPHQL
-                or card.get("allowedHost") != _JLL_HOST
-                or card.get("contentType") != "application/json"
-                or card.get("browserBootstrapUrl") != "https://property.jll.com/"
-                or not isinstance(card.get("body"), str)
-                or hashlib.sha256(card["body"].encode("utf-8")).hexdigest()
-                != JLL_ENUMERATION_BODY_SHA256
-            ):
-                raise C10Error("JLL admission enumeration card is invalid")
+            expected = _expected_enumeration_card(card)
+        elif 1 <= sequence <= JLL_MEMBER_COUNT and len(selected) == JLL_MEMBER_COUNT:
+            expected = _expected_member_card(
+                sequence - 1, selected[sequence - 1]["canonical_url"]
+            )
         else:
-            member = members[sequence - 1]
-            if (
-                stage != "member"
-                or card.get("id") != f"jll-member-{sequence - 1}"
-                or card.get("method") != "GET"
-                or card.get("url") != member["canonicalUrl"]
-                or card.get("allowedHost") != _JLL_HOST
-                or card.get("contentType") is not None
-                or card.get("body") is not None
-                or card.get("browserBootstrapUrl") != "https://property.jll.com/"
-            ):
-                raise C10Error(
-                    "JLL admission member card is not bound to its sealed cohort"
-                )
-        return card
+            raise C10Error("JLL admission child exceeded its fixed card graph")
+        if dict(card) != expected:
+            raise C10Error("JLL admission card is not bound to its sealed cohort")
+        return expected
+
+    def _verify_manifest(
+        self,
+        store: PrivateReceiptStore,
+        descriptor: Any,
+        sealed: list[Mapping[str, Any]],
+        selection: Mapping[str, Any],
+        adapter_implementation_sha256: str,
+    ) -> dict[str, Any]:
+        """Bind the child's terminal manifest to controller-observed state."""
+        if (
+            not isinstance(descriptor, Mapping)
+            or not sealed
+            or dict(descriptor) != dict(sealed[-1])
+            or not str(descriptor.get("name", "")).startswith("jll-admission-manifest-")
+        ):
+            raise C10Error("JLL admission manifest was not the final sealed artifact")
+        try:
+            manifest = json.loads(store.read_sealed(descriptor))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise C10Error("JLL admission manifest JSON is invalid") from exc
+        if not isinstance(manifest, Mapping):
+            raise C10Error("JLL admission manifest JSON is invalid")
+        unsigned = {
+            key: value for key, value in manifest.items() if key != "manifest_sha256"
+        }
+        members = selection["members"]
+        if (
+            manifest.get("kind") != JLL_RECEIPT_MANIFEST_KIND
+            or manifest.get("manifest_sha256") != sha256(unsigned)
+            or manifest.get("receipt_root") != str(self.receipt_root)
+            or manifest.get("adapter_implementation_sha256")
+            != adapter_implementation_sha256
+            or manifest.get("collection_intent") != _jll_intent()
+            or manifest.get("members") != members
+            or manifest.get("selection_digest") != selection["digest"]
+            or manifest.get("collection_intent_sha256")
+            != _collection_intent_sha256(members)
+            or manifest.get("artifacts") != [dict(item) for item in sealed[:-1]]
+        ):
+            raise C10Error(
+                "JLL admission manifest does not match controller-observed state"
+            )
+        return dict(manifest)
 
     def _run(
         self,
         *,
-        members: list[dict[str, str]],
         binding: Mapping[str, str],
         adapter_implementation_sha256: str,
         timeout_seconds: float = 120.0,
@@ -224,48 +390,41 @@ class _JllAdmissionController:
 
         The caller must be a production controller that already owns a
         sidecar lifecycle.  This method never creates a provider client,
-        writes database/cache/listing/scheduler state, or accepts caller paths.
+        writes database/cache/listing/scheduler state, or accepts members,
+        cards, URLs, or artifact paths from its caller.
         """
-        # Caller-supplied membership is intentionally ignored. The only cohort
-        # is emitted by the source-owned TS selector after signed enumeration.
-        fixed_members: list[dict[str, str]] = []
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("JLL admission controller timeout is outside its bound")
         require_sha256(adapter_implementation_sha256, "JLL adapter implementation")
-        for name, digest in binding.items():
-            if name not in {
-                "planSha256",
-                "cohortSha256",
-                "policySha256",
-                "sourceSha256",
-                "armSha256",
-                "implementationSha256",
-            }:
-                raise C10Error("JLL admission binding is invalid")
-            require_sha256(digest, f"JLL admission {name}")
-        if len(binding) != 6:
+        if set(binding) != _BINDING_FIELDS:
             raise C10Error("JLL admission binding is incomplete")
+        for name, digest in binding.items():
+            require_sha256(digest, f"JLL admission {name}")
         deadline = time.monotonic() + timeout_seconds
-        script = (
-            self.repo_root
-            / "scripts/firecrawl-ops/cre_collector/capacity_c10/receipts/jll_admission_child.ts"
-        )
+        self._require_fresh_root()
+        collector_root = self.repo_root / "scripts/firecrawl-ops/cre_collector"
+        script = collector_root / "capacity_c10/receipts/jll_admission_child.ts"
         keys = keys or self._keys(deadline)
+        sidecar_binding = self._sidecar_binding(binding, secrets.token_hex(32))
         sequence = 0
+        selection: dict[str, Any] | None = None
+        sealed: list[Mapping[str, Any]] = []
+        sealed_bytes = 0
+        process: subprocess.Popen[bytes] | None = None
         try:
             with PrivateReceiptStore.create(self.receipt_root) as store:
                 process = subprocess.Popen(
                     ["node", "--import", "tsx", str(script)],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=self.repo_root,
-                    text=False,
+                    stderr=subprocess.DEVNULL,
+                    # `--import tsx` resolves from cwd; the collector package
+                    # owns the pinned tsx dependency, the repository root has none.
+                    cwd=collector_root,
                     start_new_session=True,
                 )
-                if process.stdin is None or process.stdout is None:
-                    raise C10Error("JLL admission child pipes are unavailable")
-                process.stdin.write(
+                child = _FramedChild(process)
+                child.send(
                     _frame(
                         {
                             "protocol": _PROTOCOL,
@@ -274,24 +433,27 @@ class _JllAdmissionController:
                             "binding": dict(binding),
                             "adapterImplementationSha256": adapter_implementation_sha256,
                         }
-                    )
+                    ),
+                    deadline,
                 )
-                process.stdin.flush()
                 while True:
-                    if _remaining(deadline) <= 0:
-                        raise C10Error("JLL admission child exceeded its deadline")
-                    raw = process.stdout.readline(_MAX_CHILD_STDOUT_BYTES + 1)
-                    if not raw or len(raw) > _MAX_CHILD_STDOUT_BYTES:
-                        raise C10Error("JLL admission child output is invalid")
+                    raw = child.receive(deadline)
                     try:
                         message = json.loads(raw)
-                    except json.JSONDecodeError as exc:
+                    except (UnicodeDecodeError, ValueError) as exc:
                         raise C10Error(
                             "JLL admission child protocol is invalid"
                         ) from exc
                     if (
                         not isinstance(message, Mapping)
                         or message.get("protocol") != _PROTOCOL
+                        or (
+                            message.get("type") != "result"
+                            and (
+                                not isinstance(message.get("id"), str)
+                                or _REQUEST_ID.fullmatch(message["id"]) is None
+                            )
+                        )
                     ):
                         raise C10Error(
                             "JLL admission child protocol binding is invalid"
@@ -302,38 +464,57 @@ class _JllAdmissionController:
                             raise C10Error(
                                 f"JLL admission child rejected the receipt set: {detail if isinstance(detail, str) else 'unknown error'}"
                             )
-                        if sequence != _MEMBER_COUNT + 1:
+                        if sequence != JLL_MEMBER_COUNT + 1 or selection is None:
                             raise C10Error(
                                 "JLL admission child did not complete its bounded receipt set"
                             )
-                        manifest = message.get("manifest")
-                        if not isinstance(manifest, Mapping):
-                            raise C10Error("JLL admission child manifest is invalid")
-                        store.read_sealed(manifest)
+                        manifest = self._verify_manifest(
+                            store,
+                            message.get("manifest"),
+                            sealed,
+                            selection,
+                            adapter_implementation_sha256,
+                        )
                         return {
-                            "manifest": dict(manifest),
-                            "receipt_set_sha256": message.get("receiptSetSha256"),
-                            "artifacts": message.get("artifacts"),
+                            "manifest": dict(sealed[-1]),
+                            "manifest_sha256": manifest["manifest_sha256"],
+                            "selection_digest": selection["digest"],
+                            "artifacts": [dict(item) for item in sealed[:-1]],
                         }
                     if message.get("type") == "seal":
                         stem = message.get("stem")
-                        if not isinstance(stem, str):
+                        if not isinstance(stem, str) or _STEM.fullmatch(stem) is None:
                             raise C10Error(
                                 "JLL admission child artifact stem is invalid"
                             )
+                        if len(sealed) >= _MAX_SEALED_ARTIFACTS:
+                            raise C10Error(
+                                "JLL admission child exceeded its sealed artifact bound"
+                            )
                         if message.get("encoding") == "json":
-                            artifact = store.seal_json(stem, message.get("value"))
+                            body = canonical_bytes(message.get("value"))
                         elif message.get("encoding") == "base64" and isinstance(
                             message.get("bodyBase64"), str
                         ):
-                            artifact = store.seal_bytes(
-                                stem,
-                                base64.b64decode(message["bodyBase64"], validate=True),
-                            )
+                            try:
+                                body = base64.b64decode(
+                                    message["bodyBase64"], validate=True
+                                )
+                            except ValueError as exc:
+                                raise C10Error(
+                                    "JLL admission child artifact encoding is invalid"
+                                ) from exc
                         else:
                             raise C10Error(
                                 "JLL admission child artifact encoding is invalid"
                             )
+                        sealed_bytes += len(body)
+                        if sealed_bytes > _MAX_SEALED_BYTES:
+                            raise C10Error(
+                                "JLL admission child exceeded its sealed byte bound"
+                            )
+                        artifact = store.seal_bytes(stem, body)
+                        sealed.append(dict(artifact))
                         reply = {
                             "protocol": _PROTOCOL,
                             "type": "reply",
@@ -343,9 +524,13 @@ class _JllAdmissionController:
                         }
                     elif message.get("type") == "execute":
                         card = self._validate_card(
-                            message.get("card"), fixed_members, sequence
+                            message.get("card"),
+                            [] if selection is None else selection["members"],
+                            sequence,
                         )
-                        issued = self._issue(card, binding, keys, deadline, sequence)
+                        issued = self._issue(
+                            card, sidecar_binding, keys, deadline, sequence
+                        )
                         evidence = self._executor(issued, deadline)
                         # Reuse the C10 v3 signature/response acceptance gate.
                         _C10HostTransport._verify_evidence(
@@ -354,34 +539,15 @@ class _JllAdmissionController:
                             issued,
                             keys,
                             deadline,
+                            admission_enumeration=sequence == 0,
                         )
-                        if sequence == 0:
-                            try:
-                                payload = json.loads(
-                                    base64.b64decode(
-                                        evidence["bodyBase64"], validate=True
-                                    )
-                                )
-                                items = payload["data"]["properties"]["items"]
-                                observed = {
-                                    f"https://{_JLL_HOST}{str(item['pageUrl']).split('?', 1)[0].split('#', 1)[0]}".rstrip(
-                                        "/"
-                                    )
-                                    for item in items
-                                    if isinstance(item, Mapping)
-                                    and isinstance(item.get("pageUrl"), str)
-                                }
-                            except (
-                                KeyError,
-                                TypeError,
-                                ValueError,
-                                json.JSONDecodeError,
-                            ) as exc:
-                                raise C10Error(
-                                    "JLL admission enumeration is not usable JSON"
-                                ) from exc
-                            fixed_members = _source_members(items)
                         raw_body = evidence["bodyBase64"]
+                        if sequence == 0:
+                            selection = select_jll_admission_members(
+                                _parse_enumeration_body(
+                                    base64.b64decode(raw_body, validate=True)
+                                )
+                            )
                         reply = {
                             "protocol": _PROTOCOL,
                             "type": "reply",
@@ -403,13 +569,9 @@ class _JllAdmissionController:
                         sequence += 1
                     else:
                         raise C10Error("JLL admission child frame is unsupported")
-                    process.stdin.write(_frame(reply))
-                    process.stdin.flush()
+                    child.send(_frame(reply), deadline)
         except (OSError, subprocess.SubprocessError) as exc:
             raise C10Error("JLL admission controller child failed") from exc
         finally:
-            try:
-                if "process" in locals() and process.poll() is None:
-                    os.killpg(process.pid, 9)
-            except OSError:
-                pass
+            if process is not None and process.poll() is None:
+                _C10HostTransport._kill_child_group(process)

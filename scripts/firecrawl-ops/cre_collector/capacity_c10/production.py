@@ -32,6 +32,7 @@ from .host_session import (
 )
 from .host_sidecar import C10EphemeralKeys, DockerComposeSidecar
 from .host_store import PrivateReceiptStore, _controller_ledger_authorization
+from .jll_admission import JLL_SELECTION_RULE
 
 # This context is populated only by the lexical production-controller scope
 # after preflight and, for P1, the approved candidate transition. A supplied
@@ -46,12 +47,12 @@ def _execute_authorized_jll_admission_action(
     repo_root: Path,
     receipt_root: Path,
     endpoint: str,
-    members: list[dict[str, str]],
     binding: Mapping[str, str],
     adapter_implementation_sha256: str,
     deadline: float,
     authority: object,
     keys: C10EphemeralKeys,
+    profile_sha256: str,
 ) -> Mapping[str, Any]:
     """The only supported route from production authority into JLL collection.
 
@@ -69,10 +70,13 @@ def _execute_authorized_jll_admission_action(
     bridge_host = object.__new__(_C10HostTransport)
     bridge_host.repo_root = repo_root.resolve()
     controller = _JllAdmissionController(
-        repo_root.resolve(), receipt_root, endpoint, bridge_host._run_child
+        repo_root.resolve(),
+        receipt_root,
+        endpoint,
+        bridge_host._run_child,
+        profile_sha256,
     )
     return controller._run(
-        members=members,
         binding=binding,
         adapter_implementation_sha256=adapter_implementation_sha256,
         timeout_seconds=min(120.0, _remaining(deadline)),
@@ -84,7 +88,6 @@ def execute_jll_admission_collection(
     *,
     repo_root: Path,
     receipt_root: Path,
-    members: list[dict[str, str]],
     binding: Mapping[str, str],
     adapter_implementation_sha256: str,
     timeout_seconds: float = 120.0,
@@ -95,6 +98,9 @@ def execute_jll_admission_collection(
     fresh loopback-only C10 sidecar at a deliberately non-calibration capacity
     of one, then delegates only to the private active-controller action.  It
     does not create a session claim, alter authority, or touch collector state.
+    Members are never a caller input: the source selector chooses them from
+    the signed enumeration and the controller independently recomputes them.
+    The receipt root must be a fresh, empty, provisioned owner-0700 leaf.
     """
     if timeout_seconds <= 0 or timeout_seconds > 120:
         raise C10Error("JLL admission timeout is outside its reviewed bound")
@@ -137,11 +143,18 @@ def execute_jll_admission_collection(
                 "C10_PROFILE_SHA256": sha256(requested),
                 "C10_BROWSER_CPUS": "2",
                 "C10_BROWSER_PIDS": "384",
+                "C10_ADMISSION_LANE": JLL_SELECTION_RULE,
             },
             port,
             deadline,
         )
-        bridge_host._verify_health(endpoint, keys, {"requested": requested}, deadline)
+        bridge_host._verify_health(
+            endpoint,
+            keys,
+            {"requested": requested},
+            deadline,
+            admission_lane=JLL_SELECTION_RULE,
+        )
         authority = object()
         action_context = _ACTIVE_PRODUCTION_ACTION.set(authority)
         try:
@@ -149,12 +162,12 @@ def execute_jll_admission_collection(
                 repo_root=repo_root,
                 receipt_root=receipt_root,
                 endpoint=endpoint,
-                members=members,
                 binding=binding,
                 adapter_implementation_sha256=adapter_implementation_sha256,
                 deadline=deadline,
                 authority=authority,
                 keys=keys,
+                profile_sha256=sha256(requested),
             )
         finally:
             _ACTIVE_PRODUCTION_ACTION.reset(action_context)

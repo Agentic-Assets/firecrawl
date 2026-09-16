@@ -2,9 +2,10 @@
  * Narrow framed child for the controller-owned JLL admission collection.
  *
  * This process has neither a browser endpoint nor a filesystem root.  Every
- * provider attempt and every private-artifact write is an authenticated-ish
- * (nonce-bound by the parent session) request back to its owning controller.
- * Stdout is protocol only.
+ * provider attempt and every private-artifact write is a framed request over
+ * the private stdin/stdout pipes of its owning controller, which pins each card
+ * exactly, recomputes the member selection, bounds seals, and verifies the
+ * terminal manifest against its own record.  Stdout is protocol only.
  */
 import readline from "node:readline";
 
