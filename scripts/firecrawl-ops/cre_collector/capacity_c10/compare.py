@@ -255,16 +255,18 @@ def compare(plan: Mapping[str, Any], session_store: Any) -> dict[str, Any]:
             "pair_source_gains": values,
             "zero_rate_count": zero_rate_counts[plane],
         }
-    qualified = all(
+    meets_gain_threshold = all(
         result["zero_rate_count"] == 0
         and result["median_equal_source_gain_percent"] >= MIN_GAIN_PERCENT
         for result in planes.values()
     )
     return {
-        "state": "candidate_for_operator_review"
-        if qualified
-        else "measured_not_adoptable",
+        # This offline/library wave has no non-forgeable host attestation. It
+        # may summarize a ledger for engineering analysis, but it must never
+        # promote caller-controlled hooks or stores into an adoption candidate.
+        "state": "offline_measurement_only",
         "adoptable": False,
+        "meets_gain_threshold": meets_gain_threshold,
         "minimum_gain_percent": MIN_GAIN_PERCENT,
         "cross_plane_aggregation": "not_computed_distinct_plane_estimands",
         "planes": planes,

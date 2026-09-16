@@ -2,5 +2,6 @@
   "schema_version": 1,
   "kind": "cre_capacity_c10_v1_authority",
   "approved_cohort_sha256": null,
+  "approved_plan_sha256": null,
   "approved_adapters": {}
 }

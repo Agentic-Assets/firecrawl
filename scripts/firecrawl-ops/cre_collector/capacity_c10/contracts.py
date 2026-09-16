@@ -241,6 +241,8 @@ def _require_repository_plan_authority(plan: Mapping[str, Any]) -> None:
         approved
     ) != set(source_keys):
         raise C10Error("C10 plan lacks current repository cohort and adapter authority")
+    if authority["approved_plan_sha256"] != plan["plan_sha256"]:
+        raise C10Error("C10 complete plan is not pinned by repository authority")
     implementation_by_key = {
         key: repository_implementation_sha256(key) for key in sorted(source_keys)
     }

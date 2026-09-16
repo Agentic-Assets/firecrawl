@@ -34,6 +34,7 @@ def load_authority() -> dict[str, Any]:
         "schema_version",
         "kind",
         "approved_cohort_sha256",
+        "approved_plan_sha256",
         "approved_adapters",
     }:
         raise C10Error("canonical C10 authority schema is invalid")
@@ -43,6 +44,7 @@ def load_authority() -> dict[str, Any]:
     ):
         raise C10Error("canonical C10 authority version is unsupported")
     cohort_sha256 = value.get("approved_cohort_sha256")
+    plan_sha256 = value.get("approved_plan_sha256")
     adapters = value.get("approved_adapters")
     if not isinstance(adapters, dict) or any(
         not isinstance(key, str) or not key for key in adapters
@@ -51,12 +53,14 @@ def load_authority() -> dict[str, Any]:
     for key, digest in adapters.items():
         require_sha256(digest, f"canonical C10 adapter authority {key}")
     if cohort_sha256 is None:
-        if adapters:
-            raise C10Error("C10 adapters cannot be approved without a cohort")
+        if plan_sha256 is not None or adapters:
+            raise C10Error("C10 plan/adapters cannot be approved without a cohort")
     else:
         require_sha256(cohort_sha256, "canonical C10 cohort authority")
+        require_sha256(plan_sha256, "canonical C10 plan authority")
     return {
         "approved_cohort_sha256": cohort_sha256,
+        "approved_plan_sha256": plan_sha256,
         "approved_adapters": dict(adapters),
     }
 

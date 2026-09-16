@@ -235,6 +235,7 @@ def test_repository_authority_approves_no_cohort_or_adapter() -> None:
     approved = authority.load_authority()
     assert approved == {
         "approved_cohort_sha256": None,
+        "approved_plan_sha256": None,
         "approved_adapters": {},
     }
     with pytest.raises(contracts.C10Error, match="not approved"):
@@ -244,6 +245,39 @@ def test_repository_authority_approves_no_cohort_or_adapter() -> None:
 def test_plan_consumption_revalidates_repository_authority() -> None:
     with pytest.raises(contracts.C10Error, match="current repository"):
         _REAL_REQUIRE_REPOSITORY_PLAN_AUTHORITY(_plan())
+
+
+def test_plan_authority_pins_complete_derived_source_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    implementation_by_key = {
+        source["key"]: _digest(f"implementation-{source['key']}")
+        for source in plan["sources"]
+    }
+    plan["implementation_sha256"] = contracts.sha256(implementation_by_key)
+    _reseal_plan(plan)
+    approved_plan_sha256 = plan["plan_sha256"]
+    monkeypatch.setattr(
+        authority,
+        "load_authority",
+        lambda: {
+            "approved_cohort_sha256": plan["cohort_sha256"],
+            "approved_plan_sha256": approved_plan_sha256,
+            "approved_adapters": dict(implementation_by_key),
+        },
+    )
+    monkeypatch.setattr(
+        authority,
+        "repository_implementation_sha256",
+        lambda key: implementation_by_key[key],
+    )
+    _REAL_REQUIRE_REPOSITORY_PLAN_AUTHORITY(plan)
+
+    plan["sources"][0]["cohort_member_count"] += 1
+    _reseal_plan(plan)
+    with pytest.raises(contracts.C10Error, match="complete plan"):
+        _REAL_REQUIRE_REPOSITORY_PLAN_AUTHORITY(plan)
 
 
 def test_repository_implementation_digest_hashes_actual_verifier_dependencies() -> None:
@@ -886,8 +920,9 @@ def test_coordinator_failure_persists_claim_and_blocks_recovery_replay(
 def test_comparator_is_plane_separated_no_write_and_never_executable_adoption() -> None:
     plan = _plan()
     result = _compare(plan, [_arm(plan, index) for index in range(8)])
-    assert result["state"] == "candidate_for_operator_review"
+    assert result["state"] == "offline_measurement_only"
     assert result["adoptable"] is False
+    assert result["meets_gain_threshold"] is True
     assert result["cross_plane_aggregation"] == "not_computed_distinct_plane_estimands"
     assert set(result["planes"]) == {"strict_detail", "authoritative_inventory"}
     assert all(
@@ -970,8 +1005,9 @@ def test_comparator_bounds_qualified_rows_and_treats_zero_as_not_adoptable() -> 
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
     result = _compare(plan, arms)
-    assert result["state"] == "measured_not_adoptable"
+    assert result["state"] == "offline_measurement_only"
     assert result["adoptable"] is False
+    assert result["meets_gain_threshold"] is False
 
 
 def test_comparator_derives_each_source_rate_from_its_own_interval() -> None:
