@@ -27,6 +27,7 @@ from .contracts import (
     sha256,
     validate_plan,
 )
+from .host_crypto import _OpenSsl
 
 _ENV_MODE = 0o600
 _ROOT_MODE = 0o700
@@ -200,6 +201,44 @@ class PrivateReceiptStore:
                 raise
             raise C10Error("C10 private receipt could not be sealed") from exc
 
+    def descriptor(self) -> Mapping[str, str]:
+        """Return a non-secret, inode-bound identity for a reopened receipt root."""
+        self._assert_root()
+        metadata = os.fstat(self._fd)
+        path = str(self.root.resolve())
+        return {
+            "path": path,
+            "id": hashlib.sha256(
+                canonical_bytes(
+                    {"path": path, "dev": metadata.st_dev, "ino": metadata.st_ino}
+                )
+            ).hexdigest(),
+        }
+
+    def read_sealed(self, artifact: Mapping[str, Any]) -> bytes:
+        """Re-open and hash one exact manifest artifact without path traversal."""
+        if set(artifact) != {"name", "sha256", "bytes"}:
+            raise C10Error("C10 sealed receipt manifest entry is invalid")
+        name, digest, expected = (
+            artifact.get("name"),
+            artifact.get("sha256"),
+            artifact.get("bytes"),
+        )
+        if (
+            not isinstance(name, str)
+            or not name.endswith(".sealed")
+            or Path(name).name != name
+            or not isinstance(digest, str)
+            or type(expected) is not int
+            or expected <= 0
+        ):
+            raise C10Error("C10 sealed receipt manifest entry is unsafe")
+        self._assert_root()
+        self._assert_artifact(name, digest, expected)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self._fd)
+        with os.fdopen(descriptor, "rb") as handle:
+            return handle.read()
+
     def _assert_root(self) -> None:
         if self._fd < 0:
             raise C10Error("C10 private receipt store is closed")
@@ -240,28 +279,80 @@ class C10SessionStore:
             raise C10Error("C10 durable session path must be absolute")
         self.path = path
 
-    def claim(
-        self, plan: Mapping[str, Any], session: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
+    def _arm_path(self, index: int) -> Path:
+        return self.path.with_name(f"{self.path.stem}.arm-{index}.json")
+
+    def _next(self, plan: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+        """Derive progress solely from immutable protocol/plan-owned arm records."""
         validate_plan(plan)
-        proposed = claim_next_arm(plan, session)
-        source_session_digest = sha256(session)
+        expected = {
+            self._arm_path(index).name for index in range(len(plan["arm_sequence"]))
+        }
+        if self.path.parent.exists() and any(
+            candidate.name not in expected
+            for candidate in self.path.parent.glob(f"{self.path.stem}.arm-*.json")
+        ):
+            raise C10Error("C10 immutable protocol ledger has an extra arm record")
+        consumed: list[int] = []
+        for index in range(len(plan["arm_sequence"])):
+            target = self._arm_path(index)
+            if not target.exists():
+                if any(
+                    self._arm_path(later).exists()
+                    for later in range(index + 1, len(plan["arm_sequence"]))
+                ):
+                    raise C10Error("C10 immutable protocol ledger has an arm gap")
+                break
+            record = self._read_record(target)
+            arm = record.get("arm")
+            if (
+                record.get("plan_sha256") != plan["plan_sha256"]
+                or not isinstance(arm, Mapping)
+                or arm.get("index") != index
+                or arm.get("variant") != plan["arm_sequence"][index]
+                or record.get("state") not in {"claimed", "terminal", "quarantined"}
+            ):
+                raise C10Error("C10 immutable protocol ledger is inconsistent")
+            if record.get("state") != "terminal":
+                raise C10Error("C10 protocol ledger requires terminal recovery")
+            consumed.append(index)
+        if len(consumed) == len(plan["arm_sequence"]):
+            raise C10Error("all C10 protocol arms are already consumed")
+        # The session is reconstructed, never accepted from an execution caller.
+        return len(consumed), {
+            "schema_version": 1,
+            "kind": "cre_capacity_c10_v1_session",
+            "plan_sha256": plan["plan_sha256"],
+            "consumed_arm_indexes": consumed,
+        }
+
+    def claim(self, plan: Mapping[str, Any]) -> Mapping[str, Any]:
+        validate_plan(plan)
+        index, internal_session = self._next(plan)
+        proposed = claim_next_arm(plan, internal_session)
+        source_session_digest = sha256(internal_session)
         self.path.parent.mkdir(mode=_ROOT_MODE, parents=True, exist_ok=True)
-        if self.path.exists():
-            raise C10Error("C10 durable session already has a claimed arm")
+        target = self._arm_path(index)
+        if target.exists():
+            raise C10Error("C10 durable protocol arm already has a claim")
         record = {
             "kind": "cre_capacity_c10_v3_host_claim",
             "plan_sha256": plan["plan_sha256"],
+            "protocol": "cre_capacity_c10_v3",
+            "ledger_identity_sha256": sha256(
+                {"protocol": "cre_capacity_c10_v3", "plan_sha256": plan["plan_sha256"]}
+            ),
             "source_session_sha256": source_session_digest,
             "arm": proposed["arm"],
             "claimed_session": proposed["session"],
             "claim_id": secrets.token_hex(32),
+            "state": "claimed",
         }
         record["session_sha256"] = sha256(record)
         descriptor = -1
         try:
             descriptor = os.open(
-                self.path,
+                target,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                 _FILE_MODE,
             )
@@ -270,41 +361,37 @@ class C10SessionStore:
                 handle.write(canonical_bytes(record))
                 handle.flush()
                 os.fsync(handle.fileno())
-            parent = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 os.fsync(parent)
             finally:
                 os.close(parent)
         except FileExistsError as exc:
-            raise C10Error("C10 durable session already has a claimed arm") from exc
+            raise C10Error("C10 durable protocol arm already has a claim") from exc
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
         return record
 
-    def assert_available(
-        self, plan: Mapping[str, Any], session: Mapping[str, Any]
-    ) -> None:
+    def assert_available(self, plan: Mapping[str, Any]) -> None:
         """Reject an in-progress or terminal replay of this exact arm identity."""
-        if not self.path.exists():
-            return
-        record = self._read_record()
-        if record.get("plan_sha256") != plan.get("plan_sha256") or record.get(
-            "source_session_sha256"
-        ) != sha256(session):
-            raise C10Error("C10 canonical ledger identity is inconsistent")
-        raise C10Error("C10 durable session is already claimed or terminalized")
+        self._next(plan)
 
-    def _read_record(self) -> Mapping[str, Any]:
+    def next_arm_index(self, plan: Mapping[str, Any]) -> int:
+        """Expose the internally derived next arm without accepting a session."""
+        index, _session = self._next(plan)
+        return index
+
+    def _read_record(self, target: Path) -> Mapping[str, Any]:
         try:
-            metadata = os.lstat(self.path)
+            metadata = os.lstat(target)
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or stat.S_IMODE(metadata.st_mode) != _FILE_MODE
                 or metadata.st_nlink != 1
             ):
                 raise C10Error("C10 durable session ledger is unsafe")
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            payload = json.loads(target.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise C10Error("C10 durable session ledger cannot be read") from exc
         if not isinstance(payload, Mapping):
@@ -312,13 +399,16 @@ class C10SessionStore:
         return payload
 
     def read_bound(
-        self, plan: Mapping[str, Any], session: Mapping[str, Any]
+        self, plan: Mapping[str, Any], claim: Mapping[str, Any]
     ) -> Mapping[str, Any]:
-        payload = self._read_record()
+        arm = claim.get("arm")
+        if not isinstance(arm, Mapping) or type(arm.get("index")) is not int:
+            raise C10Error("C10 durable claim arm is invalid")
+        payload = self._read_record(self._arm_path(arm["index"]))
         if (
             not isinstance(payload, Mapping)
             or payload.get("plan_sha256") != plan.get("plan_sha256")
-            or payload.get("source_session_sha256") != sha256(session)
+            or dict(payload) != dict(claim)
         ):
             raise C10Error("C10 durable session rejects an alternate plan or ledger")
         return payload
@@ -334,7 +424,14 @@ class C10SessionStore:
             "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest(),
             "state": "quarantined",
         }
-        target = self.path.with_name(f"{self.path.name}.quarantine")
+        index = (
+            claim.get("arm", {}).get("index") if isinstance(claim, Mapping) else None
+        )
+        target = (
+            self._arm_path(index).with_suffix(".quarantine")
+            if type(index) is int
+            else self.path.with_suffix(".quarantine")
+        )
         try:
             descriptor = os.open(
                 target,
@@ -379,11 +476,15 @@ class C10SessionStore:
             "authenticated_arm_sha256": sha256(authenticated_arm),
             "state": "terminal",
         }
-        expected = self._read_record()
+        arm = claim.get("arm")
+        if not isinstance(arm, Mapping) or type(arm.get("index")) is not int:
+            raise C10Error("C10 terminalization requires an exact arm")
+        arm_path = self._arm_path(arm["index"])
+        expected = self._read_record(arm_path)
         if dict(expected) != dict(claim):
             raise C10Error("C10 terminalization claim no longer matches the ledger")
-        target = self.path.with_name(
-            f".{self.path.name}.terminal-{secrets.token_hex(16)}"
+        target = arm_path.with_name(
+            f".{arm_path.name}.terminal-{secrets.token_hex(16)}"
         )
         try:
             descriptor = os.open(
@@ -397,7 +498,7 @@ class C10SessionStore:
                 os.fsync(handle.fileno())
             parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
             try:
-                os.replace(target, self.path)
+                os.replace(target, arm_path)
                 os.fsync(parent)
             finally:
                 os.close(parent)
@@ -405,18 +506,86 @@ class C10SessionStore:
             raise C10Error("C10 terminal evidence could not be persisted") from exc
         return record
 
-    def load_terminal(
-        self, plan: Mapping[str, Any], session: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
+    def load_terminal(self, plan: Mapping[str, Any], index: int) -> Mapping[str, Any]:
         """Reload the safe comparator envelope after process/stdout loss."""
-        record = self._read_record()
+        if type(index) is not int or index < 0 or index >= len(plan["arm_sequence"]):
+            raise C10Error("C10 terminal arm index is invalid")
+        record = self._read_record(self._arm_path(index))
         envelope = record.get("authenticated_arm")
         if (
             record.get("kind") != "cre_capacity_c10_v3_host_terminal"
             or record.get("plan_sha256") != plan.get("plan_sha256")
-            or record.get("source_session_sha256") != sha256(session)
             or not isinstance(envelope, Mapping)
             or record.get("authenticated_arm_sha256") != sha256(envelope)
         ):
             raise C10Error("C10 terminal ledger cannot be reverified")
+        # Import locally to avoid a host-store/comparator import cycle.
+        from . import compare
+
+        compare.validate_authenticated_host_arm(plan, envelope)
+        host = envelope["host_result"]
+        root = host.get("receipt_root") if isinstance(host, Mapping) else None
+        manifest = host.get("evidence_manifest") if isinstance(host, Mapping) else None
+        public_key = (
+            host.get("evidence_public_key") if isinstance(host, Mapping) else None
+        )
+        key_id = host.get("evidence_key_id") if isinstance(host, Mapping) else None
+        if (
+            not isinstance(root, Mapping)
+            or set(root) != {"path", "id"}
+            or not isinstance(root.get("path"), str)
+            or not Path(root["path"]).is_absolute()
+            or not isinstance(manifest, list)
+            or len(manifest) != 17
+            or not isinstance(public_key, str)
+            or hashlib.sha256(public_key.encode("utf-8")).hexdigest() != key_id
+        ):
+            raise C10Error("C10 terminal receipt authority is invalid")
+        with PrivateReceiptStore.create(Path(root["path"])) as receipts:
+            if dict(receipts.descriptor()) != dict(root):
+                raise C10Error("C10 terminal receipt root changed")
+            evidence: list[Mapping[str, Any]] = []
+            for position, artifact in enumerate(manifest):
+                if not isinstance(artifact, Mapping):
+                    raise C10Error("C10 terminal receipt manifest is invalid")
+                if not str(artifact.get("name", "")).startswith(
+                    f"browser-evidence-{position}-"
+                ):
+                    raise C10Error("C10 terminal receipt manifest is unordered")
+                try:
+                    item = json.loads(receipts.read_sealed(artifact))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise C10Error(
+                        "C10 terminal receipt artifact is unreadable"
+                    ) from exc
+                if not isinstance(item, Mapping):
+                    raise C10Error("C10 terminal evidence is invalid")
+                signature = item.get("evidenceSignature")
+                unsigned = {
+                    key: value
+                    for key, value in item.items()
+                    if key != "evidenceSignature"
+                }
+                if not isinstance(signature, str) or not _OpenSsl.verify(
+                    public_key,
+                    canonical_bytes(unsigned),
+                    signature,
+                    time.monotonic() + 30,
+                ):
+                    raise C10Error("C10 terminal evidence signature is invalid")
+                binding = unsigned.get("binding")
+                if not isinstance(binding, Mapping) or any(
+                    binding.get(key) != host["binding"].get(key)
+                    for key in (
+                        "planSha256",
+                        "cohortSha256",
+                        "sessionSha256",
+                        "armSha256",
+                        "profileSha256",
+                    )
+                ):
+                    raise C10Error("C10 terminal evidence binding is invalid")
+                evidence.append(item)
+        if host.get("evidence_manifest_sha256") != sha256(evidence):
+            raise C10Error("C10 terminal receipt manifest hash is invalid")
         return envelope

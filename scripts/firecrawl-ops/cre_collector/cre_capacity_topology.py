@@ -27,7 +27,11 @@ CommandRunner = Callable[
 
 
 def default_command_runner(
-    argv: Sequence[str], cwd: Path | None = None, env: Mapping[str, str] | None = None
+    argv: Sequence[str],
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    *,
+    timeout_seconds: float = 120,
 ) -> CommandResult:
     """Run a bounded local command for public topology resolution."""
     try:
@@ -38,7 +42,7 @@ def default_command_runner(
             capture_output=True,
             check=False,
             text=True,
-            timeout=120,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeAdmissionError(
