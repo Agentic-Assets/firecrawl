@@ -130,10 +130,18 @@ def candidate_registry() -> dict[str, C10SourceAdapter]:
 def verified_registry(
     policy: Mapping[str, Any], registry: Mapping[str, C10SourceAdapter]
 ) -> dict[str, C10SourceAdapter]:
-    """Require exact policy parity and a reviewed adapter for every source."""
+    """Require exact policy parity and a reviewed adapter for every source.
+
+    The verification flag is necessary but not sufficient: admission is bound
+    to the concrete repository implementations exposed by
+    :func:`candidate_registry`, including their reviewed implementation
+    digests. A caller-supplied object cannot mint admission merely by
+    self-declaring ``fully_verified = True`` and a SHA-shaped string.
+    """
     expected = {source["key"] for source in policy["sources"]}
     if set(registry) != expected:
         raise C10Error("C10 adapter registry must exactly match the fixed policy")
+    trusted = candidate_registry()
     admitted: dict[str, C10SourceAdapter] = {}
     for key in sorted(expected):
         adapter = registry[key]
@@ -144,5 +152,17 @@ def verified_registry(
         require_sha256(
             adapter.implementation_sha256, f"C10 adapter {key} implementation"
         )
+        trusted_adapter = trusted[key]
+        # Batch B binds the review flag into its implementation digest. Build
+        # the comparison manifest in the same reviewed state without changing
+        # the fail-closed objects returned by a separate candidate_registry().
+        object.__setattr__(trusted_adapter, "fully_verified", True)
+        if (
+            type(adapter) is not type(trusted_adapter)
+            or adapter.implementation_sha256 != trusted_adapter.implementation_sha256
+        ):
+            raise C10Error(
+                f"C10 adapter {key} is not the reviewed repository implementation"
+            )
         admitted[key] = adapter
     return admitted

@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-
 from capacity_c10 import (
     adapters,
     admission,
@@ -24,7 +23,7 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-class VerifiedAdapter:
+class SelfDeclaredVerifiedAdapter:
     fully_verified = True
 
     def __init__(self, key: str) -> None:
@@ -41,11 +40,14 @@ class VerifiedAdapter:
         return False
 
 
-def _registry() -> dict[str, VerifiedAdapter]:
-    return {
-        source["key"]: VerifiedAdapter(source["key"])
-        for source in policy.load_policy()["sources"]
-    }
+def _registry() -> dict[str, adapters.C10SourceAdapter]:
+    registry = adapters.candidate_registry()
+    # Exercise the post-review contract with the exact repository
+    # implementations. Production candidates remain fail-closed until a
+    # reviewed change flips these flags in their owning modules.
+    for adapter in registry.values():
+        object.__setattr__(adapter, "fully_verified", True)
+    return registry
 
 
 def _cohort() -> dict[str, object]:
@@ -202,6 +204,16 @@ def test_candidate_registry_exposes_exact_twenty_named_unverified_adapters() -> 
     assert registry["cbre"].__class__.__name__ == "CbreAdapter"
     assert registry["savills"].__class__.__name__ == "SavillsAdapter"
     with pytest.raises(contracts.C10Error, match="not fully verified"):
+        adapters.verified_registry(loaded, registry)
+
+
+def test_admission_rejects_self_declared_verified_adapter_objects() -> None:
+    loaded = policy.load_policy()
+    registry = {
+        source["key"]: SelfDeclaredVerifiedAdapter(source["key"])
+        for source in loaded["sources"]
+    }
+    with pytest.raises(contracts.C10Error, match="reviewed repository implementation"):
         adapters.verified_registry(loaded, registry)
 
 
