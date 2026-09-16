@@ -121,15 +121,45 @@ def _canonical_lock(repo_root: Path) -> SharedLock:
     return SharedLock(lock_path)
 
 
+def _claimed_arm_paths(
+    arm: Mapping[str, Any],
+    *,
+    private_root: Path,
+    runtime_receipt_root: Path,
+    approval_root: Path | None,
+    admission_root: Path | None,
+) -> tuple[Path, Path, Path | None, Path | None]:
+    """Derive every mutable path from the lock-held durable claim, never a caller index."""
+    index, variant = arm.get("index"), arm.get("variant")
+    if type(index) is not int or variant not in {"p0", "p1"}:
+        raise C10Error("C10 durable claim arm is invalid")
+    suffix = f"arm-{index}"
+    if variant == "p0":
+        return (
+            private_root / suffix,
+            runtime_receipt_root / f"{suffix}.json",
+            None,
+            None,
+        )
+    if approval_root is None or admission_root is None:
+        raise C10Error("C10 P1 execution requires approval and admission roots")
+    return (
+        private_root / suffix,
+        runtime_receipt_root / f"{suffix}.json",
+        approval_root / f"{suffix}.json",
+        admission_root / f"{suffix}.json",
+    )
+
+
 def execute_production_arm(
     *,
     repo_root: Path,
     plan: Mapping[str, Any],
     cohort: Mapping[str, Any],
     private_root: Path,
-    runtime_receipt_path: Path,
-    approval_path: Path | None = None,
-    admission_out: Path | None = None,
+    runtime_receipt_root: Path,
+    approval_root: Path | None = None,
+    admission_root: Path | None = None,
     timeout_seconds: float = 120,
 ) -> Mapping[str, Any]:
     """Execute one C10 arm under its one durable claim and canonical lock.
@@ -145,30 +175,16 @@ def execute_production_arm(
     validate_plan(plan)
     registry = C10SealedCardRegistry(plan, cohort)
     store = _canonical_session_store(repo_root, plan)
-    store.assert_available(plan)
-    next_arm_index = store.next_arm_index(plan)
-    # A later arm cannot advance based on ledger metadata alone. Reopen every
-    # completed predecessor's owner-only receipt root and prove its ordered
-    # artifact hashes, signatures, and bindings before acquiring the lock or
-    # touching runtime state for this arm.
-    for prior_index in range(next_arm_index):
-        _remaining(deadline)
-        store.load_terminal(plan, prior_index, deadline=deadline)
-        _remaining(deadline)
-    host = C10HostExecutionSession(
-        repo_root=repo_root,
-        session_store=store,
-        private_root=private_root,
-        cards=registry,
-    )
     lock = _canonical_lock(repo_root.resolve())
-    if lock.path.resolve() != host.lock_path:
-        raise C10Error("C10 host and runtime canonical locks differ")
     lock.acquire()
     claim: Mapping[str, Any] | None = None
     candidate_transition: Mapping[str, Any] | None = None
     receipt: Mapping[str, Any] | None = None
     try:
+        # Resolve availability and make the one atomic claim only after the
+        # canonical lock is held. A concurrent runner can therefore never
+        # cause this runner to reuse arm-specific caller paths.
+        store.assert_available(plan)
         # The canonical lock marker is the crash/reclaim boundary. A durable
         # sibling ledger alone is not enough because it survives outside the
         # lock tree while a dead owner could otherwise be stale-reclaimed.
@@ -193,6 +209,33 @@ def execute_production_arm(
         variant = arm.get("variant")
         if variant not in {"p0", "p1"}:
             raise C10Error("C10 durable claim variant is invalid")
+        (
+            arm_private_root,
+            runtime_receipt_path,
+            approval_path,
+            admission_out,
+        ) = _claimed_arm_paths(
+            arm,
+            private_root=private_root,
+            runtime_receipt_root=runtime_receipt_root,
+            approval_root=approval_root,
+            admission_root=admission_root,
+        )
+        # A later arm cannot advance based on ledger metadata alone. Reopen
+        # every completed predecessor's owner-only receipt root and prove its
+        # ordered artifacts using this one lifecycle deadline.
+        for prior_index in range(arm["index"]):
+            _remaining(deadline)
+            store.load_terminal(plan, prior_index, deadline=deadline)
+            _remaining(deadline)
+        host = C10HostExecutionSession(
+            repo_root=repo_root,
+            session_store=store,
+            private_root=arm_private_root,
+            cards=registry,
+        )
+        if lock.path.resolve() != host.lock_path:
+            raise C10Error("C10 host and runtime canonical locks differ")
         profile = _runtime_profile(plan, variant)
         receipt = runtime.preflight(
             plan["profiles"][variant]["name"],
@@ -202,8 +245,6 @@ def execute_production_arm(
             deadline=deadline,
         )
         if variant == "p1":
-            if approval_path is None or admission_out is None:
-                raise C10Error("C10 P1 execution requires approval and admission paths")
             candidate_transition = runtime.transition(
                 runtime_receipt_path,
                 plan["profiles"][variant]["name"],
@@ -275,6 +316,8 @@ def execute_production_arm(
             "comparison_state": "not_comparable_pending_authenticated_20_source_evidence",
         }
     except BaseException as exc:
+        if claim is None and str(exc) == "all C10 protocol arms are already consumed":
+            raise
         # A candidate may be live even if the host or settlement failed. Restore
         # through the canonical controller while the same authority lock is held.
         rollback_error: BaseException | None = None
@@ -317,26 +360,26 @@ def execute_counterbalanced_sequence(
     timeout_seconds: float = 120,
 ) -> Sequence[Mapping[str, Any]]:
     """Run the fixed 8-arm counterbalance with one distinct P1 approval per arm."""
-    validate_plan(plan)
-    store = _canonical_session_store(repo_root, plan)
-    start_index = store.next_arm_index(plan)
     results: list[Mapping[str, Any]] = []
-    for index in range(start_index, len(plan["arm_sequence"])):
-        variant = plan["arm_sequence"][index]
-        suffix = f"arm-{index}"
-        result = execute_production_arm(
-            repo_root=repo_root,
-            plan=plan,
-            cohort=cohort,
-            private_root=private_root / suffix,
-            runtime_receipt_path=runtime_receipt_root / f"{suffix}.json",
-            approval_path=approval_root / f"{suffix}.json" if variant == "p1" else None,
-            admission_out=admission_root / f"{suffix}.json"
-            if variant == "p1"
-            else None,
-            timeout_seconds=timeout_seconds,
-        )
+    for _ in range(len(plan["arm_sequence"])):
+        try:
+            result = execute_production_arm(
+                repo_root=repo_root,
+                plan=plan,
+                cohort=cohort,
+                private_root=private_root,
+                runtime_receipt_root=runtime_receipt_root,
+                approval_root=approval_root,
+                admission_root=admission_root,
+                timeout_seconds=timeout_seconds,
+            )
+        except C10Error as exc:
+            if str(exc) == "all C10 protocol arms are already consumed":
+                break
+            raise
         results.append(result)
+        if result["next_arm_index"] == len(plan["arm_sequence"]):
+            break
     return results
 
 
@@ -462,9 +505,9 @@ def main(argv: list[str] | None = None) -> int:
             plan=plan,
             cohort=cohort,
             private_root=args.private_root.resolve(),
-            runtime_receipt_path=args.runtime_receipt.resolve(),
-            approval_path=args.approval.resolve() if args.approval else None,
-            admission_out=args.admission_out.resolve() if args.admission_out else None,
+            runtime_receipt_root=args.runtime_receipt.resolve(),
+            approval_root=args.approval.resolve() if args.approval else None,
+            admission_root=args.admission_out.resolve() if args.admission_out else None,
             timeout_seconds=args.timeout_seconds,
         )
     print(json.dumps(result, sort_keys=True))

@@ -882,7 +882,7 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
         plan=plan,
         cohort=cohort,
         private_root=tmp_path / "private",
-        runtime_receipt_path=tmp_path / "receipt.json",
+        runtime_receipt_root=tmp_path / "receipts",
     )
     assert events == ["lock", "arm", "preflight", "host", "disarm", "release"]
     assert result["comparison_state"].startswith("not_comparable")
@@ -967,16 +967,154 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
             plan=plan,
             cohort=cohort,
             private_root=tmp_path / "private",
-            runtime_receipt_path=tmp_path / "receipt.json",
-            approval_path=tmp_path / "approval.json",
-            admission_out=tmp_path / "admission.json",
+            runtime_receipt_root=tmp_path / "receipts",
+            approval_root=tmp_path / "approvals",
+            admission_root=tmp_path / "admissions",
         )
     assert events == ["lock", "arm", "candidate", "host", "baseline", "release"]
     assert list((tmp_path / ".cre-c10-ledger-v1").glob("*.quarantine"))
 
 
+def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    ledger = C10SessionStore(
+        tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
+    )
+    events: list[str] = []
+    advanced = False
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            nonlocal advanced
+            events.append("lock")
+            if not advanced:
+                advanced = True
+                rival = ledger.claim(plan)
+                ledger.record_terminal(rival, {})
+                events.append("rival-p0-terminal")
+
+        def arm_benchmark(self, _evidence: object) -> None:
+            events.append("arm")
+
+        def disarm_benchmark(self) -> None:
+            events.append("disarm")
+
+        def release(self) -> None:
+            events.append("release")
+
+    captured: dict[str, Path] = {}
+    receipt = {
+        "profile": "c10-p1",
+        "config_sha256": plan["profiles"]["config_sha256"],
+        "receipt_sha256": "a" * 64,
+        "baseline": {"snapshot_sha256": "b" * 64, "transition_sha256": "c" * 64},
+    }
+
+    class Host:
+        def __init__(self, *, private_root: Path, **_: object) -> None:
+            self.lock_path = tmp_path / ".cre.lock"
+            captured["private_root"] = private_root
+
+        def execute(self, plan: object, **kwargs: object) -> dict[str, object]:
+            events.append("host")
+            claim = kwargs["_claim"]
+            assert isinstance(claim, dict)
+            return {
+                "claim": claim,
+                "receipt_root": {"path": str(tmp_path / "private"), "id": "f" * 64},
+                "evidence_manifest": [
+                    {
+                        "name": f"browser-evidence-{index}-{'d' * 64}.sealed",
+                        "sha256": "d" * 64,
+                        "bytes": 1,
+                    }
+                    for index in range(17)
+                ],
+                "evidence_manifest_sha256": "e" * 64,
+                "evidence_public_key": "public-test-key",
+                "evidence_key_id": hashlib.sha256(b"public-test-key").hexdigest(),
+                "binding": {
+                    "planSha256": plan["plan_sha256"],  # type: ignore[index]
+                    "cohortSha256": plan["cohort_sha256"],  # type: ignore[index]
+                },
+            }
+
+    monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
+    monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr(
+        C10SessionStore,
+        "load_terminal",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.experiment.load_profile",
+        lambda _path, _name: (
+            {"requested": plan["profiles"]["p1"]["requested"]},
+            plan["profiles"]["config_sha256"],
+        ),
+    )
+
+    def preflight(_profile: str, receipt_path: Path, **_: object) -> dict[str, object]:
+        captured["receipt"] = receipt_path
+        events.append("preflight")
+        return receipt
+
+    def transition(*args: object, **kwargs: object) -> dict[str, object]:
+        state = args[2]
+        if state == "candidate":
+            captured["approval"] = kwargs["approval_path"]  # type: ignore[assignment]
+            captured["admission"] = kwargs["admission_out"]  # type: ignore[assignment]
+        events.append(str(state))
+        return {
+            "profile": "c10-p1",
+            "state": state,
+            "verified": True,
+            "container_snapshot_sha256": "b" * 64,
+            "transition_sha256": "c" * 64,
+        }
+
+    monkeypatch.setattr("capacity_c10.production.runtime.preflight", preflight)
+    monkeypatch.setattr("capacity_c10.production.runtime.transition", transition)
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.capture_runtime",
+        lambda **_: type(
+            "Capture", (), {"public": {"settlement": {"state": "idle"}}}
+        )(),
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.evaluate_state", lambda *_: {"idle": True}
+    )
+    result = execute_production_arm(
+        repo_root=tmp_path,
+        plan=plan,
+        cohort=cohort,
+        private_root=tmp_path / "private-base",
+        runtime_receipt_root=tmp_path / "receipts",
+        approval_root=tmp_path / "approvals",
+        admission_root=tmp_path / "admissions",
+    )
+    assert result["claim"]["arm"]["index"] == 1
+    assert captured == {
+        "private_root": tmp_path / "private-base" / "arm-1",
+        "receipt": tmp_path / "receipts" / "arm-1.json",
+        "approval": tmp_path / "approvals" / "arm-1.json",
+        "admission": tmp_path / "admissions" / "arm-1.json",
+    }
+    assert not list((tmp_path / ".cre-c10-ledger-v1").glob("*.quarantine"))
+    assert events[:4] == ["lock", "rival-p0-terminal", "arm", "preflight"]
+
+
 @pytest.mark.parametrize("corruption", ["missing", "tampered"])
-def test_prior_terminal_receipts_block_later_arm_before_lock_or_runtime(
+def test_prior_terminal_receipts_block_later_arm_before_runtime_or_host(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, corruption: str
 ) -> None:
     plan, cohort = _sealed_jll_plan()
@@ -992,13 +1130,27 @@ def test_prior_terminal_receipts_block_later_arm_before_lock_or_runtime(
         artifacts[name] = b'{"tampered":true}'
 
     lock_events: list[str] = []
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            lock_events.append("lock")
+
+        def arm_benchmark(self, _evidence: object) -> None:
+            lock_events.append("arm")
+
+        def release(self) -> None:
+            lock_events.append("release")
+
     monkeypatch.setattr(
         "capacity_c10.production.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
     monkeypatch.setattr(
         "capacity_c10.production._canonical_lock",
-        lambda _root: pytest.fail("tampered predecessor must fail before lock"),
+        lambda _root: Lock(),
     )
     monkeypatch.setattr(
         "capacity_c10.production.C10HostExecutionSession",
@@ -1012,11 +1164,11 @@ def test_prior_terminal_receipts_block_later_arm_before_lock_or_runtime(
             plan=plan,
             cohort=cohort,
             private_root=tmp_path / "private",
-            runtime_receipt_path=tmp_path / "receipt.json",
-            approval_path=tmp_path / "approval.json",
-            admission_out=tmp_path / "admission.json",
+            runtime_receipt_root=tmp_path / "receipts",
+            approval_root=tmp_path / "approvals",
+            admission_root=tmp_path / "admissions",
         )
-    assert lock_events == []
+    assert lock_events == ["lock", "arm", "release"]
 
 
 def test_terminal_revalidation_uses_one_expiring_deadline(
@@ -1041,7 +1193,7 @@ def test_terminal_revalidation_uses_one_expiring_deadline(
         store.load_terminal(plan, 0, deadline=time.monotonic())
 
 
-def test_counterbalance_resumes_at_durable_arm_and_aligns_every_path(
+def test_counterbalance_passes_only_canonical_roots_until_protocol_terminal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     plan, cohort = _sealed_jll_plan()
@@ -1052,7 +1204,7 @@ def test_counterbalance_resumes_at_durable_arm_and_aligns_every_path(
     )
     monkeypatch.setattr(
         "capacity_c10.production.execute_production_arm",
-        lambda **kwargs: calls.append(kwargs) or {"index": len(calls) - 1},
+        lambda **kwargs: calls.append(kwargs) or {"next_arm_index": len(calls)},
     )
 
     fresh = tmp_path / "fresh"
@@ -1065,36 +1217,12 @@ def test_counterbalance_resumes_at_durable_arm_and_aligns_every_path(
         approval_root=fresh / "approvals",
         admission_root=fresh / "admissions",
     )
-    resumed = tmp_path / "resumed"
-    resumed_store = C10SessionStore(
-        resumed / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
-    )
-    resumed_claim = resumed_store.claim(plan)
-    resumed_store.record_terminal(resumed_claim, {})
-    execute_counterbalanced_sequence(
-        repo_root=resumed,
-        plan=plan,
-        cohort=cohort,
-        private_root=resumed / "private",
-        runtime_receipt_root=resumed / "receipts",
-        approval_root=resumed / "approvals",
-        admission_root=resumed / "admissions",
-    )
-
-    assert [call["private_root"].name for call in calls] == [
-        *(f"arm-{index}" for index in range(8)),
-        *(f"arm-{index}" for index in range(1, 8)),
-    ]
+    assert len(calls) == 8
     for call in calls:
-        index = int(call["private_root"].name.removeprefix("arm-"))
-        root = call["repo_root"]
-        assert call["runtime_receipt_path"] == root / "receipts" / f"arm-{index}.json"
-        if plan["arm_sequence"][index] == "p1":
-            assert call["approval_path"] == root / "approvals" / f"arm-{index}.json"
-            assert call["admission_out"] == root / "admissions" / f"arm-{index}.json"
-        else:
-            assert call["approval_path"] is None
-            assert call["admission_out"] is None
+        assert call["private_root"] == fresh / "private"
+        assert call["runtime_receipt_root"] == fresh / "receipts"
+        assert call["approval_root"] == fresh / "approvals"
+        assert call["admission_root"] == fresh / "admissions"
 
 
 @pytest.mark.parametrize("timeout_seconds", [0, -1, 121, float("inf")])
@@ -1112,7 +1240,7 @@ def test_production_rejects_invalid_timeout_before_lock_or_ledger_mutation(
             plan=plan,
             cohort=cohort,
             private_root=tmp_path / "private",
-            runtime_receipt_path=tmp_path / "receipt.json",
+            runtime_receipt_root=tmp_path / "receipts",
             timeout_seconds=timeout_seconds,
         )
     assert not (tmp_path / ".cre-c10-ledger-v1").exists()
@@ -1153,7 +1281,7 @@ def test_lock_arm_failure_quarantines_and_releases_before_a_replay_attempt(
             plan=plan,
             cohort=cohort,
             private_root=tmp_path / "private",
-            runtime_receipt_path=tmp_path / "receipt.json",
+            runtime_receipt_root=tmp_path / "receipts",
         )
     assert events == ["lock", "arm", "release"]
     assert (
@@ -1165,7 +1293,7 @@ def test_lock_arm_failure_quarantines_and_releases_before_a_replay_attempt(
             plan=plan,
             cohort=cohort,
             private_root=tmp_path / "private",
-            runtime_receipt_path=tmp_path / "receipt.json",
+            runtime_receipt_root=tmp_path / "receipts",
         )
 
 
