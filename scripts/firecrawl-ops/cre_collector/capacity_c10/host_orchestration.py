@@ -232,7 +232,7 @@ class _C10HostTransport:
                 }
         except BaseException as exc:
             lock.retain_on_exit = True
-            self.session_store.record_quarantine(claim, str(exc))
+            self.session_store._controller_record_quarantine(claim, str(exc))
             self.quarantine(str(exc))
             raise
         finally:
@@ -241,7 +241,9 @@ class _C10HostTransport:
                     self.sidecar.stop(deadline)
             except BaseException as cleanup_error:
                 lock.retain_on_exit = True
-                self.session_store.record_quarantine(claim, str(cleanup_error))
+                self.session_store._controller_record_quarantine(
+                    claim, str(cleanup_error)
+                )
                 self.quarantine(f"C10 sidecar cleanup failed: {cleanup_error}")
                 raise
         if result is None:

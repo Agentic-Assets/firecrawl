@@ -631,7 +631,9 @@ class C10SessionStore:
             raise C10Error("C10 durable session rejects an alternate plan or ledger")
         return payload
 
-    def record_quarantine(self, claim: Mapping[str, Any] | None, reason: str) -> None:
+    def _controller_record_quarantine(
+        self, claim: Mapping[str, Any] | None, reason: str
+    ) -> None:
         """Durably preserve the failure before the canonical lock can release."""
         record = {
             "kind": "cre_capacity_c10_v3_host_quarantine",

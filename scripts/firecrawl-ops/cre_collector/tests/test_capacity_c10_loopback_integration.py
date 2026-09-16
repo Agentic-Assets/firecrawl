@@ -126,7 +126,9 @@ def test_python_issued_capability_reaches_real_loopback_listener_and_quarantines
         denied["hostTransportKey"] = "wrong-test-transport-key"
         with pytest.raises(contracts.C10Error, match="issued browser child failed"):
             host._run_child(denied, deadline)
-        store.record_quarantine(claim, "loopback listener rejected tampered transport")
+        store._controller_record_quarantine(
+            claim, "loopback listener rejected tampered transport"
+        )
 
     assert listener.returncode == 0
     assert evidence["binding"] == issued["capability"]["binding"]

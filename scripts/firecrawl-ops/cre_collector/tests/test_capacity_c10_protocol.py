@@ -20,6 +20,7 @@ def test_public_store_calls_cannot_fabricate_a_controller_accepted_terminal(
     store = C10SessionStore(tmp_path / "private" / "session.json")
     assert not hasattr(store, "claim")
     assert not hasattr(store, "record_terminal")
+    assert not hasattr(store, "record_quarantine")
 
     # No public mutator remains for a fabricated claim, key, or receipt root.
 

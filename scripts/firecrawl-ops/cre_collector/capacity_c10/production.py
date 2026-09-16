@@ -322,7 +322,7 @@ def _execute_authorized_host_action(
             }
     except BaseException as exc:
         lock.retain_on_exit = True
-        host.session_store.record_quarantine(durable, str(exc))
+        host.session_store._controller_record_quarantine(durable, str(exc))
         host.quarantine(str(exc))
         raise
     finally:
@@ -331,7 +331,9 @@ def _execute_authorized_host_action(
                 host.sidecar.stop(deadline)
         except BaseException as cleanup_error:
             lock.retain_on_exit = True
-            host.session_store.record_quarantine(durable, str(cleanup_error))
+            host.session_store._controller_record_quarantine(
+                durable, str(cleanup_error)
+            )
             host.quarantine(f"C10 sidecar cleanup failed: {cleanup_error}")
             raise
     if result is None:
@@ -553,7 +555,7 @@ def execute_production_arm(
             except BaseException as rollback_exc:  # noqa: BLE001 - quarantine follows
                 rollback_error = rollback_exc
         lock.retain_on_exit = True
-        store.record_quarantine(
+        store._controller_record_quarantine(
             claim,
             f"{type(exc).__name__}:{exc}"
             + (f"; rollback:{rollback_error}" if rollback_error else ""),
