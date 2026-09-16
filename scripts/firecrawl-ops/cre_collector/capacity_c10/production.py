@@ -12,6 +12,7 @@ import base64
 import contextvars
 import json
 import os
+import secrets
 import stat
 import sys
 import time
@@ -23,7 +24,12 @@ import cre_capacity_runtime as runtime
 from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 
 from . import admission, compare
-from .admission_controller import _JllAdmissionController
+from .admission_chain import _open_private_root, _write_private_json
+from .admission_controller import (
+    JLL_ADMISSION_COLLECTION_MAX_SECONDS,
+    _JllAdmissionController,
+)
+from .authority import repository_implementation_sha256
 from .contracts import C10Error, require_sha256, sha256, validate_plan
 from .host_orchestration import _C10HostTransport, _key_id
 from .host_session import (
@@ -32,7 +38,15 @@ from .host_session import (
 )
 from .host_sidecar import C10EphemeralKeys, DockerComposeSidecar
 from .host_store import PrivateReceiptStore, _controller_ledger_authorization
-from .jll_admission import JLL_SELECTION_RULE
+from .jll_admission import JLL_ADMISSION_QUARANTINE_NAME, JLL_SELECTION_RULE
+
+# JLL admission budgets are separate so a slow `up`/listener start cannot eat
+# the per-card collection budget.  Explicit upper bound of one admission action:
+# startup (180 s) + collection (17 x 30 s + 60 s = 570 s) + teardown (60 s,
+# host_sidecar._TEARDOWN_BUDGET_SECONDS) = 810 s.  The image is prebuilt; a run
+# never builds or pulls.
+JLL_ADMISSION_STARTUP_MAX_SECONDS = 180.0
+_JLL_ADMISSION_KIND = "cre_capacity_c10_jll_admission"
 
 # This context is populated only by the lexical production-controller scope
 # after preflight and, for P1, the approved candidate transition. A supplied
@@ -79,9 +93,82 @@ def _execute_authorized_jll_admission_action(
     return controller._run(
         binding=binding,
         adapter_implementation_sha256=adapter_implementation_sha256,
-        timeout_seconds=min(120.0, _remaining(deadline)),
+        timeout_seconds=min(JLL_ADMISSION_COLLECTION_MAX_SECONDS, _remaining(deadline)),
         keys=keys,
     )
+
+
+def _jll_admission_ledger_root(repo_root: Path) -> Path:
+    """The same owner-only sibling ledger root used by P0/P1 quarantine records."""
+    return (
+        canonical_shared_lock_dir(repo_root.resolve())
+        .resolve()
+        .with_name(".cre-c10-ledger-v1")
+    )
+
+
+def _quarantine_jll_admission(
+    *,
+    repo_root: Path,
+    lock: SharedLock,
+    run_id: str,
+    receipt_root: Path,
+    compose_project: str | None,
+    cleanup_error: BaseException,
+) -> None:
+    """Fail closed when sidecar teardown cannot be proven.
+
+    The canonical lock keeps its armed benchmark marker (non-reclaimable until
+    operator recovery), a durable record names the exact compose project, and
+    the receipt root is marked so the offline builder refuses it.
+    """
+    lock.retain_on_exit = True
+    reason = str(cleanup_error)
+    record = {
+        "schema_version": 1,
+        "kind": f"{_JLL_ADMISSION_KIND}_quarantine",
+        "state": "quarantined",
+        "run_id": run_id,
+        "selection_rule": JLL_SELECTION_RULE,
+        "receipt_root": str(receipt_root.resolve()),
+        "compose_project": compose_project,
+        "compose_service": "playwright-service-c10",
+        "reason_sha256": sha256({"reason": reason}),
+        "recovery": {
+            "automatic_reclaim": "disabled_benchmark_marker_retained",
+            "required_evidence": "docker ps --all --filter label=com.docker.compose.project=<compose_project> is empty",
+            "required_action": "operator removes the exact project containers, discards this receipt root, then follows LOCK_AUTHORITY_RECOVERY.md",
+        },
+    }
+    try:
+        ledger = C10SessionStore(
+            _jll_admission_ledger_root(repo_root) / f"jll-admission-{run_id}.json"
+        )
+        try:
+            ledger._write_new_record(
+                f"jll-admission-{run_id}.quarantine",
+                record,
+                error="C10 JLL admission quarantine evidence could not be persisted",
+            )
+        finally:
+            ledger.close()
+    except BaseException as record_error:  # noqa: BLE001 - lock stays retained
+        cleanup_error.add_note(
+            f"JLL admission ledger quarantine failed: {record_error}"
+        )
+    try:
+        with _open_private_root(receipt_root, "receipt root") as root:
+            _write_private_json(root, JLL_ADMISSION_QUARANTINE_NAME, record)
+    except BaseException as record_error:  # noqa: BLE001 - lock stays retained
+        cleanup_error.add_note(
+            f"JLL admission receipt-root quarantine failed: {record_error}"
+        )
+
+
+def _require_timeout(value: object, maximum: float, label: str) -> float:
+    if type(value) not in {int, float} or not 0 < float(value) <= maximum:  # type: ignore[arg-type]
+        raise C10Error(f"JLL admission {label} timeout is outside its reviewed bound")
+    return float(value)  # type: ignore[arg-type]
 
 
 def execute_jll_admission_collection(
@@ -90,22 +177,32 @@ def execute_jll_admission_collection(
     receipt_root: Path,
     binding: Mapping[str, str],
     adapter_implementation_sha256: str,
-    timeout_seconds: float = 120.0,
+    startup_timeout_seconds: float = JLL_ADMISSION_STARTUP_MAX_SECONDS,
+    collection_timeout_seconds: float = JLL_ADMISSION_COLLECTION_MAX_SECONDS,
 ) -> Mapping[str, Any]:
     """Run the bounded JLL admission bridge without entering P0/P1 calibration.
 
-    This is the sole supported provider-facing admission action.  It starts a
-    fresh loopback-only C10 sidecar at a deliberately non-calibration capacity
-    of one, then delegates only to the private active-controller action.  It
-    does not create a session claim, alter authority, or touch collector state.
-    Members are never a caller input: the source selector chooses them from
-    the signed enumeration and the controller independently recomputes them.
-    The receipt root must be a fresh, empty, provisioned owner-0700 leaf.
+    This is the sole supported provider-facing admission action.  It holds the
+    canonical CRE lock (so it never overlaps a P0/P1 arm or collector run),
+    starts a fresh loopback-only C10 sidecar from the prebuilt image at a
+    deliberately non-calibration capacity of one, then delegates only to the
+    private active-controller action.  Startup, collection, and teardown have
+    separate bounds.  It does not create a session claim, alter authority, or
+    touch collector state.  Members are never a caller input: the source
+    selector chooses them from the signed enumeration and the controller
+    independently recomputes them.  The receipt root must be a fresh, empty,
+    provisioned owner-0700 leaf.  If sidecar teardown cannot be proven the
+    lock is retained and the run is quarantined for operator recovery.
     """
-    if timeout_seconds <= 0 or timeout_seconds > 120:
-        raise C10Error("JLL admission timeout is outside its reviewed bound")
-    # Refuse invalid intent before a sidecar, provider attempt, or private file
-    # is created.  The child repeats the checks at the trust boundary.
+    startup_seconds = _require_timeout(
+        startup_timeout_seconds, JLL_ADMISSION_STARTUP_MAX_SECONDS, "startup"
+    )
+    collection_seconds = _require_timeout(
+        collection_timeout_seconds, JLL_ADMISSION_COLLECTION_MAX_SECONDS, "collection"
+    )
+    # Refuse invalid intent before a lock, sidecar, provider attempt, or
+    # private file is created.  The child repeats the checks at the trust
+    # boundary and the offline builder rechecks the adapter digest.
     require_sha256(adapter_implementation_sha256, "JLL adapter implementation")
     expected_binding = {
         "planSha256",
@@ -119,61 +216,124 @@ def execute_jll_admission_collection(
         raise C10Error("JLL admission binding is incomplete")
     for label, digest in binding.items():
         require_sha256(digest, f"JLL admission {label}")
-    deadline = time.monotonic() + timeout_seconds
-    bridge_host = object.__new__(_C10HostTransport)
-    bridge_host.repo_root = repo_root.resolve()
-    sidecar = DockerComposeSidecar(repo_root)
-    keys = bridge_host._keys(deadline)
-    requested = {"global_pages": 1, "browser_cpus": 2, "browser_pids": 384}
-    port = bridge_host._free_loopback_port()
-    endpoint = f"http://127.0.0.1:{port}"
-    attempted = False
+    if adapter_implementation_sha256 != repository_implementation_sha256("jll"):
+        raise C10Error(
+            "JLL admission adapter digest does not match the repository implementation"
+        )
+    lock = _canonical_lock(repo_root.resolve())
+    lock.acquire()
     try:
-        attempted = True
-        sidecar.start(
-            {
-                "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
-                    keys.coordinator_public_pem.encode("utf-8")
-                ).decode("ascii"),
-                "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
-                    keys.sidecar_private_pem.encode("utf-8")
-                ).decode("ascii"),
-                "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
-                "MAX_CONCURRENT_PAGES": "1",
-                "C10_PROFILE_SHA256": sha256(requested),
-                "C10_BROWSER_CPUS": "2",
-                "C10_BROWSER_PIDS": "384",
-                "C10_ADMISSION_LANE": JLL_SELECTION_RULE,
-            },
-            port,
-            deadline,
-        )
-        bridge_host._verify_health(
-            endpoint,
-            keys,
-            {"requested": requested},
-            deadline,
-            admission_lane=JLL_SELECTION_RULE,
-        )
-        authority = object()
-        action_context = _ACTIVE_PRODUCTION_ACTION.set(authority)
+        run_id = secrets.token_hex(16)
         try:
-            return _execute_authorized_jll_admission_action(
-                repo_root=repo_root,
-                receipt_root=receipt_root,
-                endpoint=endpoint,
-                binding=binding,
-                adapter_implementation_sha256=adapter_implementation_sha256,
-                deadline=deadline,
-                authority=authority,
-                keys=keys,
-                profile_sha256=sha256(requested),
+            # The armed marker is the crash boundary: a dead owner cannot be
+            # stale-reclaimed while a sidecar may still exist.
+            lock.arm_benchmark(
+                {
+                    "kind": _JLL_ADMISSION_KIND,
+                    "selection_rule": JLL_SELECTION_RULE,
+                    "run_id": run_id,
+                    "receipt_root": str(receipt_root.resolve()),
+                }
             )
-        finally:
-            _ACTIVE_PRODUCTION_ACTION.reset(action_context)
-    finally:
+        except BaseException:
+            lock.retain_on_exit = True
+            raise
+        sidecar = DockerComposeSidecar(repo_root)
+        attempted = False
+        result: Mapping[str, Any] | None = None
+        failure: BaseException | None = None
+        try:
+            startup_deadline = time.monotonic() + startup_seconds
+            bridge_host = object.__new__(_C10HostTransport)
+            bridge_host.repo_root = repo_root.resolve()
+            keys = bridge_host._keys(startup_deadline)
+            requested = {"global_pages": 1, "browser_cpus": 2, "browser_pids": 384}
+            port = bridge_host._free_loopback_port()
+            endpoint = f"http://127.0.0.1:{port}"
+            # Cleanup responsibility begins before Compose is invoked.
+            attempted = True
+            sidecar.start(
+                {
+                    "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
+                        keys.coordinator_public_pem.encode("utf-8")
+                    ).decode("ascii"),
+                    "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
+                        keys.sidecar_private_pem.encode("utf-8")
+                    ).decode("ascii"),
+                    "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
+                    "MAX_CONCURRENT_PAGES": "1",
+                    "C10_PROFILE_SHA256": sha256(requested),
+                    "C10_BROWSER_CPUS": "2",
+                    "C10_BROWSER_PIDS": "384",
+                    "C10_ADMISSION_LANE": JLL_SELECTION_RULE,
+                },
+                port,
+                startup_deadline,
+            )
+            bridge_host._verify_health(
+                endpoint,
+                keys,
+                {"requested": requested},
+                startup_deadline,
+                admission_lane=JLL_SELECTION_RULE,
+            )
+            collection_deadline = time.monotonic() + collection_seconds
+            authority = object()
+            action_context = _ACTIVE_PRODUCTION_ACTION.set(authority)
+            try:
+                result = _execute_authorized_jll_admission_action(
+                    repo_root=repo_root,
+                    receipt_root=receipt_root,
+                    endpoint=endpoint,
+                    binding=binding,
+                    adapter_implementation_sha256=adapter_implementation_sha256,
+                    deadline=collection_deadline,
+                    authority=authority,
+                    keys=keys,
+                    profile_sha256=sha256(requested),
+                )
+            finally:
+                _ACTIVE_PRODUCTION_ACTION.reset(action_context)
+        except BaseException as exc:  # noqa: BLE001 - re-raised after teardown
+            failure = exc
         if attempted:
-            sidecar.stop(deadline)
+            try:
+                # Teardown uses its own budget even when the run deadline expired.
+                sidecar.stop()
+            except BaseException as cleanup_error:
+                _quarantine_jll_admission(
+                    repo_root=repo_root,
+                    lock=lock,
+                    run_id=run_id,
+                    receipt_root=receipt_root,
+                    compose_project=sidecar.compose_project,
+                    cleanup_error=cleanup_error,
+                )
+                if failure is not None:
+                    failure.add_note(
+                        f"C10 JLL admission sidecar teardown also failed: {cleanup_error}"
+                    )
+                    # The cleanup error is not chained onto the propagated
+                    # failure, so carry its quarantine-persistence notes too.
+                    for note in getattr(cleanup_error, "__notes__", ()):
+                        failure.add_note(note)
+                    raise failure
+                unproven = C10Error(
+                    "C10 JLL admission sidecar teardown was not proven; the "
+                    "canonical lock is retained for operator recovery"
+                )
+                for note in getattr(cleanup_error, "__notes__", ()):
+                    unproven.add_note(note)
+                raise unproven from cleanup_error
+        # Teardown is proven (or never began): ordinary reclamation may resume.
+        lock.disarm_benchmark()
+        if failure is not None:
+            raise failure
+        if result is None:
+            raise C10Error("JLL admission produced no controller result")
+        return result
+    finally:
+        lock.release()
 
 
 def _canonical_session_store(

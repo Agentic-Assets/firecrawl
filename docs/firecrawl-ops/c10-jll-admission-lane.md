@@ -53,6 +53,29 @@ authorize the panel.
    provisioned owner-0700 leaf; recovery after any partial failure uses a new
    root and never resumes an old one.
    Dry-run validates the fixed graph and roots but makes no provider request.
+
+   Lifecycle bounds and exclusion. Before any lock or sidecar work the action
+   rejects an adapter digest that differs from the repository JLL
+   implementation. It then holds the canonical CRE `SharedLock` with an armed
+   benchmark marker, so it never overlaps a P0/P1 arm or collector run. Budgets
+   are separate: sidecar startup and signed health at most 180 s (prebuilt
+   image only, `--no-build --pull never`; health is polled only while the
+   listener refuses or resets connections); collection at most 570 s (1 + 16
+   sequential cards at the sidecar-enforced 30 s card bound, plus 60 s);
+   teardown at most 60 s with retries, independent of an expired run deadline.
+   The explicit upper bound of one action is 810 s. If teardown cannot be
+   proven, the lock stays retained, a ledger quarantine record names the exact
+   compose project, and the receipt root is marked quarantined.
+
+   Controller completion. The child seals its manifest before the controller
+   verifies it, so a manifest alone is not acceptance. Only after verification
+   does the controller seal `jll-admission-completion-<sha256>.sealed`, binding
+   the manifest artifact bytes, manifest digest, selection digest, adapter,
+   session and run digests. The child cannot seal that stem.
+   `build-jll-cohort` and both renderers require exactly one valid completion
+   and refuse a quarantined root. GraphQL `errors` counts as no errors only
+   when absent or an empty array, identically in the selection rule, the
+   sidecar, and Python evidence verification.
 3. The source producer seals its private response/event/graph artifacts and
    emits public receipts.  The JLL manifest binds the full receipt set, exact
    card-set digest, selected provider IDs/routes, current adapter digest and
