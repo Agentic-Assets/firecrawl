@@ -15,6 +15,7 @@ import {
 } from "../../../sources/pure/jll-receipt.js";
 import {
   StrictDetailReceiptProducer,
+  immutableStrictDetailPlan,
   type StrictDetailPlan,
   type StrictDetailSourceSpec,
   utf8Json,
@@ -160,10 +161,11 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
  * one-shot direct transport and independently binds the exact source plan.
  */
 export function createJllReceiptProducer(plan: JllReceiptPlan): StrictDetailReceiptProducer<JllReceiptMember> {
-  const card = jllEnumerationCard(plan);
+  const immutablePlan = immutableStrictDetailPlan(plan);
+  const card = jllEnumerationCard(immutablePlan);
   const configured: StrictDetailPlan<JllReceiptMember> = {
     enumerationCards: [card],
-    members: plan.members,
+    members: immutablePlan.members,
   };
-  return new StrictDetailReceiptProducer(configured, spec(plan));
+  return new StrictDetailReceiptProducer(configured, spec(immutablePlan));
 }

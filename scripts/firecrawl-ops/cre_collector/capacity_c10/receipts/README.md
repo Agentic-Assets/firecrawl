@@ -26,12 +26,15 @@ cards require exact canonical JSON, a bounded body hash, and JSON content type.
 Large member graphs are sealed as bounded private shards plus a small root
 manifest that commits to ordered shard digests, card count, member count, and a
 graph-root digest; the per-artifact 2 MiB ceiling is never relaxed.
+Stage receipts likewise retain only a bounded count/digest commitment to the
+cumulative request-accounting ledger, whose individual accepted events are
+already privately sealed by the one-shot transport.
 
 Private artifacts contain the request and response evidence under an absolute
 0700 root. They are written through an exclusive no-follow temporary file and
 atomically linked into an immutable 0600 sealed artifact. Public receipt and
-accounting values contain hashes and request metadata only; they contain no URL
-or response body.
+accounting values contain bounded hashes and request metadata only; they contain
+no URL or response body.
 
 Every public receipt binds plan, cohort, policy, source, arm, and implementation
 SHA-256-shaped identifiers supplied by the canonical C10 coordinator. This

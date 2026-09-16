@@ -17,6 +17,7 @@ import {
 } from "../../../sources/pure/colliers-receipt.js";
 import {
   StrictDetailReceiptProducer,
+  immutableStrictDetailPlan,
   type StrictDetailPlan,
   type StrictDetailSourceSpec,
   utf8Json,
@@ -177,9 +178,10 @@ function spec(plan: ColliersReceiptPlan): StrictDetailSourceSpec<ColliersReceipt
 }
 
 export function createColliersReceiptProducer(plan: ColliersReceiptPlan): StrictDetailReceiptProducer<ColliersReceiptMember> {
-  assertPlan(plan);
+  const immutablePlan = immutableStrictDetailPlan(plan);
+  assertPlan(immutablePlan);
   return new StrictDetailReceiptProducer(
-    { enumerationCards: [colliersMapEnumerationCard(plan)], members: plan.members },
-    spec(plan),
+    { enumerationCards: [colliersMapEnumerationCard(immutablePlan)], members: immutablePlan.members },
+    spec(immutablePlan),
   );
 }

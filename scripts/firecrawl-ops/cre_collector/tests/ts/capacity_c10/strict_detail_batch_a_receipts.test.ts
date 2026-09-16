@@ -141,6 +141,32 @@ test("JLL seals native GraphQL enumeration and exact canonical POST detail graph
   assert.equal(fake.cards[0]?.body?.includes("office"), true);
 });
 
+test("strict-detail producer isolates nested routes and source settings from caller mutation", async () => {
+  const plan: JllReceiptPlan = {
+    transaction: "sale", propertyType: "office", page: 1,
+    members: [{ key: "jll-1", providerId: "1", canonicalUrl: "https://property.jll.com/listings/office-1" }],
+    enumerationCards: [],
+  };
+  const initialCard = jllEnumerationCard(plan);
+  const fake = new FixtureTransport({
+    "jll-enumeration": JSON.stringify({ data: { properties: { count: 1, items: [{
+      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      pageUrl: "/listings/office-1", surfaceAreas: [],
+    }] } } }),
+    "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":[]}}}}</script>',
+  });
+  const receiptContext = await context("jll", [initialCard], fake);
+  const producer = createJllReceiptProducer(plan);
+  (plan as { page: number }).page = 99;
+  (plan.members[0] as { providerId: string }).providerId = "mutated";
+  (plan.members[0] as { canonicalUrl: string }).canonicalUrl = "https://property.jll.com/listings/mutated";
+
+  await producer.produceEnumerationReceipt(receiptContext);
+  await producer.produceMemberReceipt(receiptContext, { key: "jll-1", providerId: "1" });
+  assert.equal(fake.cards[0]?.body, initialCard.body);
+  assert.equal(fake.cards[1]?.url, "https://property.jll.com/listings/office-1");
+});
+
 test("JLL Investor binds a native search build id to the one-shot structured detail route", async () => {
   const plan: JllInvestorReceiptPlan = {
     page: 1,

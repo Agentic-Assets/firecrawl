@@ -29,12 +29,19 @@ export async function sealStageReceipt(
   privateEvidence: unknown,
 ): Promise<PublicReceipt> {
   const { transport } = context;
+  const accounting = transport.requestAccounting();
+  const requestAccounting = Object.freeze({
+    logicalRequests: accounting.logicalRequests,
+    attempts: accounting.attempts,
+    retries: accounting.retries,
+    eventsSha256: accounting.eventsSha256,
+  });
   const privateArtifact = await transport.store.sealJson(`${stage}-${transport.sourceKey}`, {
     binding: transport.binding,
     sourceKey: transport.sourceKey,
     stage,
     memberKey,
-    requestAccounting: transport.requestAccounting(),
+    requestAccounting,
     evidence: privateEvidence,
   });
   return sealPublicReceipt({
@@ -45,7 +52,7 @@ export async function sealStageReceipt(
     memberKey,
     binding: transport.binding,
     noWrite: NO_WRITE,
-    requestAccounting: transport.requestAccounting(),
+    requestAccounting,
     privateArtifactSha256: privateArtifact.sha256,
   });
 }

@@ -42,6 +42,9 @@ export interface RequestAccounting {
   readonly events: readonly RequestAccountingEvent[];
 }
 
+/** Bounded public/private-stage commitment to the full in-memory event ledger. */
+export type RequestAccountingSummary = Omit<RequestAccounting, "events">;
+
 export interface PublicReceipt {
   readonly schemaVersion: typeof C10_RECEIPT_SCHEMA_VERSION;
   readonly kind: "cre_capacity_c10_private_source_receipt";
@@ -50,7 +53,7 @@ export interface PublicReceipt {
   readonly memberKey: string | null;
   readonly binding: ReceiptBinding;
   readonly noWrite: typeof NO_WRITE;
-  readonly requestAccounting: RequestAccounting;
+  readonly requestAccounting: RequestAccountingSummary;
   readonly privateArtifactSha256: string;
   readonly receiptSha256: string;
 }

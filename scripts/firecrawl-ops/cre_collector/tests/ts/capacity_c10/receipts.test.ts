@@ -368,6 +368,48 @@ test("producer protocol binds each sealed public receipt to immutable C10 hashes
   assert.equal(JSON.stringify(enumeration).includes("providerCount"), false);
 });
 
+test("stage receipts commit to large cumulative accounting with a bounded digest", async () => {
+  const cardCount = 10_000;
+  const store = new MemoryReceiptStore(2 * 1024 * 1024);
+  const direct: DirectProviderTransport = {
+    async execute(card) {
+      return response(card.url);
+    },
+  };
+  const largeCardSet = allowlistedCards("jll", Array.from({ length: cardCount }, (_, index) => ({
+    id: `enum-${index}`,
+    sourceKey: "jll",
+    stage: "enumeration" as const,
+    method: "GET" as const,
+    url: `https://example.test/search/${index}`,
+    allowedHost: "example.test",
+    headers: { accept: "application/json" },
+    contentType: null,
+    body: null,
+    cacheMode: "no-store" as const,
+    timeoutMs: 1_000,
+    maxBytes: 64,
+  })));
+  const transport = new SourceBoundOneShotTransport("jll", binding, largeCardSet, store, direct);
+  for (let index = 0; index < cardCount; index++) {
+    await transport.oneShot(`enum-${index}`, (view) => projection(view.finalUrl));
+  }
+
+  const receipt = await sealStageReceipt({ transport }, "enumeration", null, { memberCount: cardCount });
+  assert.equal(receipt.requestAccounting.logicalRequests, cardCount);
+  assert.deepEqual(Object.keys(receipt.requestAccounting).sort(), [
+    "attempts",
+    "eventsSha256",
+    "logicalRequests",
+    "retries",
+  ]);
+  assert.ok(Buffer.byteLength(canonicalJson(receipt), "utf8") < 4_096);
+  const privateArtifact = store.jsonFor(receipt.privateArtifactSha256);
+  const privateAccounting = privateArtifact.requestAccounting as Readonly<Record<string, unknown>>;
+  assert.equal(privateAccounting.logicalRequests, cardCount);
+  assert.equal("events" in privateAccounting, false);
+});
+
 test("private receipt store fails closed without FD-relative primitives and production imports stay isolated", async () => {
   const parent = await mkdtemp(join(tmpdir(), "c10-receipts-"));
   const target = join(parent, "target");

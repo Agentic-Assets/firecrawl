@@ -16,6 +16,7 @@ import {
 } from "../../../sources/pure/marcus-receipt.js";
 import {
   StrictDetailReceiptProducer,
+  immutableStrictDetailPlan,
   type StrictDetailPlan,
   type StrictDetailSourceSpec,
   utf8Json,
@@ -139,9 +140,10 @@ function spec(plan: MarcusReceiptPlan): StrictDetailSourceSpec<MarcusReceiptMemb
 }
 
 export function createMarcusReceiptProducer(plan: MarcusReceiptPlan): StrictDetailReceiptProducer<MarcusReceiptMember> {
-  assertPlan(plan);
+  const immutablePlan = immutableStrictDetailPlan(plan);
+  assertPlan(immutablePlan);
   return new StrictDetailReceiptProducer(
-    { enumerationCards: [marcusEnumerationCard(plan)], members: plan.members },
-    spec(plan),
+    { enumerationCards: [marcusEnumerationCard(immutablePlan)], members: immutablePlan.members },
+    spec(immutablePlan),
   );
 }

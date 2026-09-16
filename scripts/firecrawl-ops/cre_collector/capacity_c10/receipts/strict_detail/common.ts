@@ -7,6 +7,7 @@
  */
 import {
   C10ReceiptError,
+  canonicalJson,
   type PublicReceipt,
 } from "../contracts.js";
 import {
@@ -74,6 +75,19 @@ function exactMemberKeys<Member extends C10Member>(members: readonly Member[]): 
   return Object.freeze([...keys]);
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
+}
+
+/** Clone and freeze one complete source plan before cards and specs close over it. */
+export function immutableStrictDetailPlan<Plan extends object>(plan: Plan): Plan {
+  return deepFreeze(JSON.parse(canonicalJson(plan)) as Plan);
+}
+
 function assertContext<Member extends C10Member>(
   context: ReceiptProducerContext,
   spec: StrictDetailSourceSpec<Member>,
@@ -100,11 +114,8 @@ export class StrictDetailReceiptProducer<Member extends C10Member> implements Re
     )) {
       throw new C10ReceiptError("strict-detail plan must start with source-bound enumeration cards");
     }
-    // Keep a frozen copy so a caller cannot mutate a plan after graph sealing.
-    this.plan = Object.freeze({
-      enumerationCards: Object.freeze([...plan.enumerationCards]),
-      members: Object.freeze([...plan.members]),
-    });
+    // Keep a recursively immutable copy even for direct wrapper construction.
+    this.plan = immutableStrictDetailPlan(plan);
     void memberKeys;
   }
 

@@ -15,6 +15,7 @@ import {
 } from "../../../sources/pure/jll-investor-receipt.js";
 import {
   StrictDetailReceiptProducer,
+  immutableStrictDetailPlan,
   type StrictDetailPlan,
   type StrictDetailSourceSpec,
   utf8Json,
@@ -145,8 +146,9 @@ function spec(plan: JllInvestorReceiptPlan): StrictDetailSourceSpec<JllInvestorR
 export function createJllInvestorReceiptProducer(
   plan: JllInvestorReceiptPlan,
 ): StrictDetailReceiptProducer<JllInvestorReceiptMember> {
+  const immutablePlan = immutableStrictDetailPlan(plan);
   return new StrictDetailReceiptProducer(
-    { enumerationCards: [jllInvestorEnumerationCard(plan)], members: plan.members },
-    spec(plan),
+    { enumerationCards: [jllInvestorEnumerationCard(immutablePlan)], members: immutablePlan.members },
+    spec(immutablePlan),
   );
 }
