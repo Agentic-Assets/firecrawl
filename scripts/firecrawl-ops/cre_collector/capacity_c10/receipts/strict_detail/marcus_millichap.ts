@@ -9,6 +9,7 @@ import {
   MARCUS_BASE,
   marcusHeaders,
   marcusMapDetailBody,
+  marcusPropertyDetailDealId,
   marcusSearchBody,
   marcusUrl,
   parseMarcusMapRowsResponse,
@@ -128,16 +129,18 @@ function spec(plan: MarcusReceiptPlan): StrictDetailSourceSpec<MarcusReceiptMemb
       const results = payload?.Results ?? payload;
       const propertyDetail = typeof results?.PropertyDetail === "string" ? results.PropertyDetail.trim() : "";
       const observedUrl = marcusUrl(results?.PropertyUrl);
-      if (!propertyDetail || !observedUrl) {
-        throw new C10ReceiptError("Marcus map detail omitted PropertyDetail or PropertyUrl");
+      const providerId = marcusPropertyDetailDealId(propertyDetail);
+      if (!propertyDetail || !observedUrl || !providerId) {
+        throw new C10ReceiptError("Marcus map detail omitted PropertyDetail DealId or PropertyUrl");
       }
+      if (providerId !== member.providerId) throw new C10ReceiptError("Marcus map detail DealId does not match the selected member");
       if (observedUrl !== member.canonicalUrl) throw new C10ReceiptError("Marcus map detail canonical URL does not match enumeration");
       return {
         activityId: route,
         canonicalUrl: observedUrl,
         hasPropertyDetail: true,
         nativeAssets: [],
-        providerId: member.providerId,
+        providerId,
       } satisfies SourceProjection;
     },
     memberEvidence: (member, route, event) => ({

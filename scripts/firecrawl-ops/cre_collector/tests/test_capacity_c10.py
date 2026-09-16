@@ -2,11 +2,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from capacity_c10 import adapters, admission, compare, contracts, policy, runner
+
+from capacity_c10 import (
+    adapters,
+    admission,
+    authority,
+    compare,
+    contracts,
+    policy,
+    runner,
+    session_store,
+)
+
+
+@pytest.fixture(autouse=True)
+def _allow_structural_unit_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep structural fixtures offline; production consumers recheck authority."""
+    monkeypatch.setattr(
+        contracts, "_require_repository_plan_authority", lambda _plan: None
+    )
 
 
 def _digest(value: str) -> str:
@@ -76,7 +95,22 @@ def _seal_cohort(cohort: dict[str, object]) -> dict[str, object]:
 
 
 def _plan() -> dict[str, object]:
-    return admission.admit_plan(_cohort(), registry=_registry())
+    loaded_policy = policy.load_policy()
+    cohort = _cohort()
+    sources = admission._verified_cohort_sources(cohort, loaded_policy)
+    profiles = admission._profiles(admission.PROFILE_CONFIG, loaded_policy["profiles"])
+    unsigned = {
+        "schema_version": 1,
+        "kind": contracts.PLAN_KIND,
+        "policy_sha256": loaded_policy["policy_sha256"],
+        "cohort_sha256": cohort["cohort_sha256"],
+        "implementation_sha256": _digest("test-only-implementation"),
+        "profiles": profiles,
+        "sources": sources,
+        "no_write": admission.NO_WRITE,
+        "arm_sequence": list(contracts.ARM_SEQUENCE),
+    }
+    return {**unsigned, "plan_sha256": contracts.sha256(unsigned)}
 
 
 def _no_write() -> dict[str, object]:
@@ -112,7 +146,7 @@ def _arm(
             "observed_max_active": plan["profiles"][variant]["requested"][  # type: ignore[index]
                 "jll_detail_concurrency"
             ],
-            "scheduled_member_count": 16,
+            "scheduled_member_count": 320,
         },
         "sources": [
             {
@@ -120,8 +154,10 @@ def _arm(
                 "plane": source["plane"],
                 "cohort_member_count": source["cohort_member_count"],
                 "cohort_member_sha256": source["cohort_member_sha256"],
+                "scheduled_member_count": source["cohort_member_count"],
+                "scheduled_member_sha256": source["cohort_member_sha256"],
                 "execution_mode": "browser_rendered",
-                "engine": "c10-browser-only",
+                "engine": "playwright",
                 "client_attempts": 1,
                 "engine_attempts": 1,
                 "cache_read": False,
@@ -142,6 +178,22 @@ def _arm(
         **_no_write(),
         "sealed_browser_evidence": evidence,
     }
+
+
+def _compare(
+    plan: Mapping[str, object], arms: list[dict[str, object]]
+) -> dict[str, object]:
+    """Commit fixtures through a real durable ledger, then compare."""
+    with tempfile.TemporaryDirectory(prefix="c10-compare-") as temporary:
+        path = Path(temporary) / "private" / "session.json"
+        with session_store.DurableArmSessionStore(path) as store:
+            session = contracts.new_session(plan)
+            for index, result in enumerate(arms):
+                claimed = store.claim(plan, session)
+                assert claimed["arm"]["index"] == index
+                store.mark_terminal(plan, claimed["arm"], result)
+                session = claimed["session"]
+            return compare.compare(plan, store)
 
 
 def test_policy_is_hashed_fixed_and_preserves_twenty_source_twelve_eight_floor() -> (
@@ -171,7 +223,7 @@ def test_default_registry_has_no_generic_or_admitting_adapter() -> None:
     registry = adapters.default_registry()
     assert set(registry) == {source["key"] for source in loaded["sources"]}
     assert not any(adapter.fully_verified for adapter in registry.values())
-    with pytest.raises(contracts.C10Error, match="not fully verified"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         adapters.verified_registry(loaded, registry)
 
 
@@ -183,7 +235,7 @@ def test_candidate_registry_exposes_exact_twenty_named_unverified_adapters() -> 
     assert registry["jll"].__class__.__name__ == "JllCapacityC10Adapter"
     assert registry["cbre"].__class__.__name__ == "CbreAdapter"
     assert registry["savills"].__class__.__name__ == "SavillsAdapter"
-    with pytest.raises(contracts.C10Error, match="not fully verified"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         adapters.verified_registry(loaded, registry)
 
 
@@ -197,11 +249,17 @@ def test_admission_binds_exact_cohort_profiles_and_implementation_manifest() -> 
     assert plan["no_write"] == admission.NO_WRITE
 
 
+def test_repository_authority_approves_no_cohort_or_adapter() -> None:
+    approved = authority.load_authority()
+    assert approved["approved_cohort_sha256"] is None
+    assert approved["approved_adapters"] == {}
+
+
 def test_admission_rejects_partial_cohort_even_with_verified_adapters() -> None:
     cohort = _cohort()
     cohort["sources"] = cohort["sources"][:-1]
     _seal_cohort(cohort)
-    with pytest.raises(contracts.C10Error, match="exactly 20"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         admission.admit_plan(cohort, registry=_registry())
 
 
@@ -212,7 +270,7 @@ def test_admission_rejects_underfilled_or_wrong_plane_cohort() -> None:
     source["core_selected_rows"] = 15
     source["core_target_rows"] = 15
     _seal_cohort(cohort)
-    with pytest.raises(contracts.C10Error, match="incomplete immutable membership"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         admission.admit_plan(cohort, registry=_registry())
 
 
@@ -221,7 +279,7 @@ def test_admission_rejects_a_cohort_whose_declared_hash_does_not_bind_membership
 ):
     cohort = _cohort()
     cohort["sources"][0]["core"][0]["provider_id"] = "mutated-after-review"
-    with pytest.raises(contracts.C10Error, match="digest"):
+    with pytest.raises(contracts.C10Error, match="authority"):
         admission.admit_plan(cohort, registry=_registry())
 
 
@@ -265,8 +323,8 @@ def test_runner_has_no_public_callback_driven_production_bypass() -> None:
 
 def test_comparator_is_plane_separated_no_write_and_never_executable_adoption() -> None:
     plan = _plan()
-    result = compare.compare(plan, [_arm(plan, index) for index in range(8)])
-    assert result["state"] == "candidate_for_operator_review"
+    result = _compare(plan, [_arm(plan, index) for index in range(8)])
+    assert result["state"] == "offline_measurement_only"
     assert result["adoptable"] is False
     assert result["cross_plane_aggregation"] == "not_computed_distinct_plane_estimands"
     assert set(result["planes"]) == {"strict_detail", "authoritative_inventory"}
@@ -285,11 +343,11 @@ def test_comparator_rejects_missing_source_or_write_claim() -> None:
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
     with pytest.raises(contracts.C10Error, match="exactly match"):
-        compare.compare(plan, arms)
+        _compare(plan, arms)
     arms = [_arm(plan, index) for index in range(8)]
     arms[0]["no_write"]["cache_writes"] = 1
     with pytest.raises(contracts.C10Error, match="no-write"):
-        compare.compare(plan, arms)
+        _compare(plan, arms)
 
 
 def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
@@ -301,7 +359,7 @@ def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
     with pytest.raises(contracts.C10Error, match="browser-rendered"):
-        compare.compare(plan, arms)
+        _compare(plan, arms)
     arms = [_arm(plan, index) for index in range(8)]
     evidence = arms[0]["sealed_browser_evidence"]
     evidence["scheduler"]["observed_max_active"] = 3
@@ -309,7 +367,7 @@ def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
     with pytest.raises(contracts.C10Error, match="planned saturation"):
-        compare.compare(plan, arms)
+        _compare(plan, arms)
 
 
 def test_policy_loader_rejects_duplicate_source_or_nonserial_worker(

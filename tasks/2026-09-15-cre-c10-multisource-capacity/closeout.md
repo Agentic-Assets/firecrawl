@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`5448aa0d24f66de45cf124b8e17950f8ce0090f0`
+`fc235e863e7993a87febd37303364fa32ec26915`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -70,21 +70,56 @@ not change the Wave 1 execution boundary.
 - Execution and comparison revalidate the canonical policy digest, exact source
   set and schema, fixed 12/8 plane allocation, and exact P0/P1 resource tuples.
   A caller cannot make an arbitrary direct plan admissible merely by rehashing it.
+- `admit_plan()` succeeds only after the canonical repository authority approves
+  one exact cohort digest and all twenty actual source-tree implementation
+  digests, plus the exact complete derived plan digest. Every plan consumer
+  revalidates that authority and the current source-byte fingerprints. The
+  checked-in authority approves none, so this wave cannot issue or consume a
+  plan or substitute per-source cohort bindings under an approved cohort hash.
+- Buildout inventory cards use the provider-supported `q[s][]` array-form stable
+  sort, matching the production adapter's cross-page ordering contract.
+- Adapter admission now requires the exact concrete repository implementation
+  type plus approval from immutable repository configuration. Implementation
+  fingerprints hash actual verifier source files and shared dependencies rather
+  than mutable flags, caller-provided values, or version labels.
+- Marcus member receipts extract the native `DealId` from `PropertyDetail` and
+  require it to match the selected provider identity before sealing evidence.
+- JLL enumeration treats GraphQL card IDs as search identities, binds cohort
+  members through enumerated canonical URLs, and independently verifies the
+  numeric provider ID from each detail response.
+- Implementation authority covers the complete collector Python/TypeScript
+  source tree and package/config dependencies, including runtime, checkpoint,
+  and multisource verification modules imported outside `capacity_c10/`.
+- Browser evidence requires the reviewed `playwright` engine and exact
+  per-source scheduled count/hash parity with every immutable cohort member;
+  the aggregate scheduler count must equal the complete cohort.
+- Comparison accepts no caller-supplied arm sequence. It reopens the canonical
+  owner-only durable ledger while locked and compares only its hash-validated
+  terminal results; arbitrary or subsequently mutated mappings are not inputs.
+- Because this offline wave has no non-forgeable host attestation, comparison
+  reports `offline_measurement_only` and `meets_gain_threshold` for engineering
+  analysis but can never emit an adoption-review candidate.
+- Foundry member receipts extract the provider's explicit status note and
+  require the shared reviewed status classifier to return `active`; terminal,
+  unknown, and missing statuses fail before a member receipt is sealed.
+- The coordinator rejects path-matching substitutes for the runtime lock. It
+  requires the concrete canonical `SharedLock` and verifies a live owned
+  directory descriptor immediately after acquisition, including for P0 arms.
 
 ## Verification
 
-The final code candidate `5448aa0d24f66de45cf124b8e17950f8ce0090f0`
-passed the complete collector suites and static gates before this closeout-only
-correction:
+The final code candidate `fc235e863e7993a87febd37303364fa32ec26915`
+passed the complete collector suites and static gates before this final
+closeout documentation correction:
 
-- `python3 -m pytest -q`: 3211 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 906 passed, 1 expected
+- `python3 -m pytest -q`: 3218 passed, 18 skipped.
+- `npm test`: TypeScript typecheck passed; 909 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Ten exact-head Codex review passes produced twenty-two material findings. All
-twenty-two were confirmed and fixed: immutable cohort binding, per-source timing,
+Twenty-one exact-head Codex review passes produced forty material findings. All
+forty were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -95,7 +130,18 @@ durable session creation, stable-transition rollback attestation, and aggregate
 JLL enumeration across exact cohort strata, plus complete JLL Investor pages,
 Colliers slices, and Marcus map inventory, with each member graph expansion
 bound to the enumeration event that exposed it, plus canonical fixed-policy
-revalidation at the execution and comparison boundary.
+revalidation and an admission-issued cohort/adapter capability at the execution
+and comparison boundary, plus Buildout's provider-supported array-form stable
+sort for cross-page inventory enumeration, Marcus native `DealId` verification
+from `PropertyDetail`, and a non-substitutable repository authority that pins a
+real cohort and source-byte-derived verifier implementations before admission,
+plus JLL's distinct search-card and numeric detail identities, complete imported
+dependency coverage, complete per-source scheduled cohort parity, and an exact
+reviewed browser engine, plus consumption-time repository authority validation,
+durable-ledger-only comparison inputs, exact complete-plan authority pinning,
+measurement-only offline comparison with no positive candidate state, and
+Foundry active-status enforcement before member receipt sealing, plus concrete
+canonical lock-type and live ownership verification before P0 or P1 work.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation

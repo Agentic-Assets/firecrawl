@@ -7,9 +7,11 @@ import time
 from pathlib import Path
 
 import pytest
-from capacity_c10 import admission, contracts
+from capacity_c10_test_support import sealed_jll_plan
+from test_capacity_c10 import _cohort, _plan
+
+from capacity_c10 import contracts
 from capacity_c10.host_session import C10SealedCardRegistry, C10SessionStore, _OpenSsl
-from test_capacity_c10 import _cohort, _plan, _registry, _seal_cohort
 
 
 def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
@@ -101,15 +103,7 @@ def test_typescript_public_barrel_does_not_export_lifecycle_or_key_minting() -> 
 
 
 def test_sealed_registry_rejects_arbitrary_non_jll_or_oversized_cards() -> None:
-    cohort = _cohort()
-    jll = next(source for source in cohort["sources"] if source["source_key"] == "jll")
-    for index, member in enumerate(jll["core"]):
-        member["provider_id"] = str(index + 1)
-        member["canonical_url"] = (
-            f"https://property.jll.com/listings/member-{index + 1}"
-        )
-    _seal_cohort(cohort)
-    plan = admission.admit_plan(cohort, registry=_registry())
+    plan, cohort = sealed_jll_plan()
     registry = C10SealedCardRegistry(plan, cohort)
     assert registry.resolve("jll-member-0")["id"] == "jll-member-0"
     projection = registry.resolve("jll-member-0")

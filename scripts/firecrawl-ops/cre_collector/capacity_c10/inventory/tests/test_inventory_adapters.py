@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from capacity_c10.contracts import C10Error, sha256
 from capacity_c10.inventory import (
     BullRealtyAdapter,

@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self
 
-import cre_capacity_runtime as runtime
 import pytest
+from capacity_c10_test_support import sealed_jll_plan
+
+import cre_capacity_runtime as runtime
 from capacity_c10 import contracts, host_store, production
 from capacity_c10.host_session import C10HostExecutionSession, C10SessionStore, _OpenSsl
 from capacity_c10.production import execute_production_arm, main
-from capacity_c10_test_support import sealed_jll_plan
 
 
 def _secure_roots(*paths: Path) -> None:

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Self
 
 import pytest
+from capacity_c10_test_support import sealed_jll_plan
+
 from capacity_c10 import contracts
 from capacity_c10.host_session import (
     C10HostExecutionSession,
@@ -18,7 +20,6 @@ from capacity_c10.host_session import (
     C10SessionStore,
     _OpenSsl,
 )
-from capacity_c10_test_support import sealed_jll_plan
 
 
 def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(

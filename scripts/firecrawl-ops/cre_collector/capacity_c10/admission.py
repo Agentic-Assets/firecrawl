@@ -10,6 +10,7 @@ from typing import Any
 import cre_capacity_experiment as experiment
 
 from .adapters import C10SourceAdapter, default_registry, verified_registry
+from .authority import load_authority, repository_implementation_sha256
 from .contracts import (
     ARM_SEQUENCE,
     EXPECTED_PLANE_COUNTS,
@@ -19,6 +20,7 @@ from .contracts import (
     C10Error,
     require_sha256,
     sha256,
+    validate_plan,
 )
 from .policy import DEFAULT_POLICY, load_policy
 
@@ -158,13 +160,20 @@ def admit_plan(
 ) -> dict[str, Any]:
     """Return a sealed plan; source/runtime execution remains outside Wave 1."""
     policy = load_policy(policy_path)
+    authority = load_authority()
+    approved_cohort_sha256 = authority["approved_cohort_sha256"]
+    if (
+        approved_cohort_sha256 is None
+        or cohort.get("cohort_sha256") != approved_cohort_sha256
+    ):
+        raise C10Error("C10 cohort is not approved by repository authority")
     adapters = verified_registry(
         policy, default_registry() if registry is None else registry
     )
     sources = _verified_cohort_sources(cohort, policy)
     profiles = _profiles(profile_config, policy["profiles"])
     implementation_sha256 = sha256(
-        {key: adapters[key].implementation_sha256 for key in sorted(adapters)}
+        {key: repository_implementation_sha256(key) for key in sorted(adapters)}
     )
     unsigned = {
         "schema_version": 1,
@@ -177,4 +186,6 @@ def admit_plan(
         "no_write": NO_WRITE,
         "arm_sequence": list(ARM_SEQUENCE),
     }
-    return {**unsigned, "plan_sha256": sha256(unsigned)}
+    plan = {**unsigned, "plan_sha256": sha256(unsigned)}
+    validate_plan(plan)
+    return plan

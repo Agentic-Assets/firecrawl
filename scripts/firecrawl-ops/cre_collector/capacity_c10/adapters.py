@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .authority import load_authority, repository_implementation_sha256
 from .contracts import C10Error, require_sha256
 from .inventory import (
     BullRealtyAdapter,
@@ -130,19 +131,33 @@ def candidate_registry() -> dict[str, C10SourceAdapter]:
 def verified_registry(
     policy: Mapping[str, Any], registry: Mapping[str, C10SourceAdapter]
 ) -> dict[str, C10SourceAdapter]:
-    """Require exact policy parity and a reviewed adapter for every source."""
+    """Require exact policy parity and a reviewed adapter for every source.
+
+    Admission is controlled by the canonical repository authority, not mutable
+    fields on caller-provided objects. The authority must approve all policy
+    slots using digests of the actual verifier source tree and dependencies.
+    """
     expected = {source["key"] for source in policy["sources"]}
     if set(registry) != expected:
         raise C10Error("C10 adapter registry must exactly match the fixed policy")
+    authority = load_authority()
+    approved = authority["approved_adapters"]
+    if set(approved) != expected:
+        raise C10Error("C10 adapter authority does not approve the full fixed policy")
+    trusted = candidate_registry()
     admitted: dict[str, C10SourceAdapter] = {}
     for key in sorted(expected):
         adapter = registry[key]
         if adapter.key != key:
             raise C10Error("C10 adapter key does not match its registry slot")
-        if adapter.fully_verified is not True:
-            raise C10Error(f"C10 adapter {key} is not fully verified")
-        require_sha256(
-            adapter.implementation_sha256, f"C10 adapter {key} implementation"
-        )
+        trusted_adapter = trusted[key]
+        if type(adapter) is not type(trusted_adapter):
+            raise C10Error(
+                f"C10 adapter {key} is not the reviewed repository implementation"
+            )
+        implementation_sha256 = repository_implementation_sha256(key)
+        require_sha256(implementation_sha256, f"C10 adapter {key} implementation")
+        if approved[key] != implementation_sha256:
+            raise C10Error(f"C10 adapter {key} implementation is not approved")
         admitted[key] = adapter
     return admitted

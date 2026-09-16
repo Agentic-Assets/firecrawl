@@ -148,3 +148,17 @@ export function foundryProviderIdentity(html: string, requestedUrl: string): str
     return null;
   }
 }
+
+/** Extract the provider-owned property notes from a detail page. */
+export function foundryPropertyNotes(html: string): string[] {
+  const $ = cheerio.load(html);
+  return $(".property-notes li")
+    .map((_, element) => clean($(element).text()))
+    .get()
+    .filter((value): value is string => Boolean(value));
+}
+
+/** Extract the provider's explicit property-status note from a detail page. */
+export function foundryExplicitStatus(html: string): string | null {
+  return foundryPropertyNotes(html)[0] ?? null;
+}
