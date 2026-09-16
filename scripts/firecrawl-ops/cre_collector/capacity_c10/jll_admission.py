@@ -44,6 +44,14 @@ JLL_COHORT_KIND = "cre_capacity_c10_jll_v1_cohort"
 JLL_BUNDLE_KIND = "cre_capacity_c10_jll_v1_admission_bundle"
 JLL_PLAN_KIND = "cre_capacity_c10_jll_v1_plan"
 JLL_RECEIPT_MANIFEST_KIND = "cre_capacity_c10_jll_v1_receipt_manifest"
+JLL_CONTROLLER_COMPLETION_KIND = "cre_capacity_c10_jll_v1_controller_completion"
+JLL_CONTROLLER_COMPLETION_STEM = "jll-admission-completion"
+_CONTROLLER_COMPLETION_NAME = re.compile(
+    rf"{JLL_CONTROLLER_COMPLETION_STEM}-([0-9a-f]{{64}})\.sealed"
+)
+_MAX_CONTROLLER_COMPLETION_BYTES = 64 * 1024
+# Written by production when sidecar teardown could not be proven.
+JLL_ADMISSION_QUARANTINE_NAME = "jll-admission-quarantine.json"
 JLL_MEMBER_COUNT = 16
 JLL_SELECTION_RULE = "jll-canonical-url-lexicographic-v1"
 JLL_ENUMERATION_BODY_SHA256 = (
@@ -585,6 +593,79 @@ def _validate_manifest(
     }
 
 
+def _verify_controller_completion(
+    root: Any, manifest_name: str, raw: bytes, manifest: Mapping[str, Any]
+) -> None:
+    """Require the controller's post-verification completion attestation.
+
+    A child-sealed manifest can exist in a root the controller later rejected
+    (deadline, verification, or teardown failure).  Only the controller seals
+    this record, and only after verifying the manifest against its own state.
+    """
+    root.recheck()
+    try:
+        entries = os.listdir(root.fd)
+    except OSError as exc:
+        raise C10Error("JLL controller completion is unavailable") from exc
+    if any(name.startswith("jll-admission-quarantine") for name in entries):
+        raise C10Error("JLL receipt root is quarantined and cannot be admitted")
+    names = [
+        name for name in entries if name.startswith(JLL_CONTROLLER_COMPLETION_STEM)
+    ]
+    if len(names) != 1:
+        raise C10Error(
+            "JLL receipt root lacks exactly one controller completion attestation"
+        )
+    match = _CONTROLLER_COMPLETION_NAME.fullmatch(names[0])
+    if match is None:
+        raise C10Error("JLL controller completion name is invalid")
+    record, record_raw = _read_private_json(
+        root,
+        root.path / names[0],
+        _MAX_CONTROLLER_COMPLETION_BYTES,
+        "JLL controller completion",
+    )
+    if hashlib.sha256(record_raw).hexdigest() != match.group(1):
+        raise C10Error("JLL controller completion digest is invalid")
+    required = {
+        "schema_version",
+        "kind",
+        "receipt_root",
+        "receipt_manifest",
+        "manifest_sha256",
+        "selection_digest",
+        "adapter_implementation_sha256",
+        "session_sha256",
+        "run_sha256",
+        "completion_sha256",
+    }
+    unsigned = {
+        key: value for key, value in record.items() if key != "completion_sha256"
+    }
+    if (
+        set(record) != required
+        or record.get("schema_version") != 1
+        or record.get("kind") != JLL_CONTROLLER_COMPLETION_KIND
+        or record.get("completion_sha256") != sha256(unsigned)
+        or record.get("receipt_root") != str(root.path)
+        or record.get("receipt_manifest")
+        != {
+            "name": manifest_name,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        }
+        or record.get("manifest_sha256") != manifest.get("manifest_sha256")
+        or record.get("selection_digest") != manifest.get("selection_digest")
+        or record.get("adapter_implementation_sha256")
+        != manifest.get("adapter_implementation_sha256")
+    ):
+        raise C10Error(
+            "JLL controller completion does not attest this receipt manifest"
+        )
+    require_sha256(record.get("session_sha256"), "JLL controller session")
+    require_sha256(record.get("run_sha256"), "JLL controller run")
+
+
 def build_jll_bundle(
     *, receipt_root: Path, receipt_manifest: Path, admission_root: Path
 ) -> dict[str, str]:
@@ -594,6 +675,7 @@ def build_jll_bundle(
             root, receipt_manifest, MAX_MANIFEST_BYTES, "JLL receipt manifest"
         )
         verified = _validate_manifest(manifest, raw, root)
+        _verify_controller_completion(root, receipt_manifest.name, raw, manifest)
     cohort_unsigned = {
         "schema_version": 1,
         "kind": JLL_COHORT_KIND,
@@ -665,6 +747,9 @@ def render_jll_authority(bundle_path: Path) -> dict[str, Any]:
             "JLL receipt manifest",
         )
         verified = _validate_manifest(manifest, raw, root)
+        _verify_controller_completion(
+            root, bundle["receipt_manifest_name"], raw, manifest
+        )
     if hashlib.sha256(raw).hexdigest() != bundle["receipt_manifest_sha256"]:
         raise C10Error("JLL receipt manifest is stale or tampered")
     cohort = bundle["cohort"]
@@ -700,6 +785,9 @@ def render_jll_plan(bundle_path: Path) -> dict[str, Any]:
             "JLL receipt manifest",
         )
         verified = _validate_manifest(manifest, raw, root)
+        _verify_controller_completion(
+            root, bundle["receipt_manifest_name"], raw, manifest
+        )
     if hashlib.sha256(raw).hexdigest() != bundle["receipt_manifest_sha256"]:
         raise C10Error("JLL receipt manifest is stale or tampered")
     cohort = bundle["cohort"]

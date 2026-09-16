@@ -16,7 +16,7 @@ from typing import Any, Self
 
 import pytest
 
-from capacity_c10 import contracts, jll_admission, production
+from capacity_c10 import admission_controller, contracts, jll_admission, production
 from capacity_c10.admission_controller import (
     JLL_MEMBER_COUNT,
     _expected_enumeration_card,
@@ -1058,6 +1058,21 @@ def test_cross_language_manifest_satisfies_independent_python_validator(
     manifest_name = result["manifest"]["name"]
     assert manifest_name.startswith("jll-admission-manifest-")
 
+    # Happy path: `_run` returns the controller's own sealed completion
+    # attestation, and exactly one completion file lands next to the
+    # manifest on disk -- the exact shape `jll_admission._verify_controller_
+    # completion` requires before an offline builder will admit the root.
+    completion = result["controller_completion"]
+    assert completion["name"].startswith(
+        f"{jll_admission.JLL_CONTROLLER_COMPLETION_STEM}-"
+    )
+    completion_files = [
+        entry.name
+        for entry in receipt_root.iterdir()
+        if entry.name.startswith(jll_admission.JLL_CONTROLLER_COMPLETION_STEM)
+    ]
+    assert completion_files == [completion["name"]]
+
     expected_routes = sorted(
         f"https://property.jll.com/listings/member-{i + 1}" for i in range(16)
     )
@@ -1094,3 +1109,335 @@ def test_cross_language_manifest_satisfies_independent_python_validator(
         expected_routes
     )
     assert manifest["selection_digest"] == result["selection_digest"]
+
+
+# --- 11. Controller-completion attestation (reviewer recovery fix) --------
+#
+# Reviewer finding: the child seals its manifest *before* the controller
+# verifies it, so a receipt root the controller ultimately rejected (deadline,
+# a failed `_verify_manifest`, any post-seal failure) could previously still
+# be fed to the offline `build_jll_bundle` successfully -- the manifest alone
+# never proved controller acceptance. `_seal_completion` now seals a separate
+# controller-only attestation *after* verification succeeds, and
+# `jll_admission._verify_controller_completion` requires it.
+
+
+def test_reviewer_recovery_probe_manifest_without_completion_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The exact reviewer-found recovery gap, now closed.
+
+    Mirrors the standalone probe that demonstrated the gap: `_verify_manifest`
+    is monkeypatched to raise *after* the child has already sealed its
+    manifest, so the manifest artifact exists on disk but no completion does.
+    `build_jll_bundle` must now refuse to admit that root.
+    """
+    keys = _keys()
+    root = _fresh_root(tmp_path, "receipts")
+    store = _DiskStore(root)
+    monkeypatch.setattr(
+        "capacity_c10.admission_controller.PrivateReceiptStore.create",
+        lambda _root: store,
+    )
+    adapter = "d" * 64
+    controller = _JllAdmissionController(
+        REPO_ROOT,
+        root,
+        "http://127.0.0.1:38111",
+        lambda issued, _deadline: _flex_evidence(issued, keys),
+        "e" * 64,
+    )
+    monkeypatch.setattr(controller, "_keys", lambda _deadline: keys)
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise contracts.C10Error("simulated deadline after manifest seal")
+
+    monkeypatch.setattr(controller, "_verify_manifest", boom)
+    with pytest.raises(contracts.C10Error, match="simulated deadline"):
+        controller._run(binding=_binding(), adapter_implementation_sha256=adapter)
+
+    names = sorted(entry.name for entry in root.iterdir())
+    manifest_names = [n for n in names if n.startswith("jll-admission-manifest-")]
+    assert manifest_names, names
+    completion_names = [
+        n for n in names if n.startswith(jll_admission.JLL_CONTROLLER_COMPLETION_STEM)
+    ]
+    assert completion_names == []
+
+    monkeypatch.setattr(
+        "capacity_c10.jll_admission.repository_implementation_sha256",
+        lambda _key: adapter,
+    )
+    admission_root = tmp_path / "admission"
+    admission_root.mkdir(mode=0o700)
+    admission_root.chmod(0o700)
+    with pytest.raises(contracts.C10Error, match="controller completion"):
+        jll_admission.build_jll_bundle(
+            receipt_root=root,
+            receipt_manifest=root / manifest_names[0],
+            admission_root=admission_root,
+        )
+
+
+def test_completion_from_a_different_accepted_run_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A completion sealed for run A cannot admit run B's receipt root.
+
+    Both runs are real controller-driven, independently accepted receipt
+    sets; only run B's own completion file is swapped for run A's (different
+    receipt_root, different manifest bytes, different session/run digests).
+    """
+    keys = _keys()
+    adapter = "d" * 64
+
+    def run(name: str) -> tuple[Path, dict[str, Any]]:
+        root = _fresh_root(tmp_path, name)
+        store = _DiskStore(root)
+        monkeypatch.setattr(
+            "capacity_c10.admission_controller.PrivateReceiptStore.create",
+            lambda _root, _store=store: _store,
+        )
+        controller = _JllAdmissionController(
+            REPO_ROOT,
+            root,
+            "http://127.0.0.1:38111",
+            lambda issued, _deadline: _flex_evidence(issued, keys),
+            "e" * 64,
+        )
+        monkeypatch.setattr(controller, "_keys", lambda _deadline: keys)
+        result = controller._run(
+            binding=_binding(), adapter_implementation_sha256=adapter
+        )
+        return root, result
+
+    root_a, result_a = run("receipts-a")
+    root_b, result_b = run("receipts-b")
+
+    completion_a_name = result_a["controller_completion"]["name"]
+    completion_b_name = result_b["controller_completion"]["name"]
+    assert completion_a_name != completion_b_name
+
+    (root_b / completion_b_name).unlink()
+    (root_b / completion_a_name).write_bytes((root_a / completion_a_name).read_bytes())
+    (root_b / completion_a_name).chmod(0o600)
+
+    monkeypatch.setattr(
+        "capacity_c10.jll_admission.repository_implementation_sha256",
+        lambda _key: adapter,
+    )
+    admission_root = tmp_path / "admission-mixed"
+    admission_root.mkdir(mode=0o700)
+    admission_root.chmod(0o700)
+    with pytest.raises(
+        contracts.C10Error, match="does not attest this receipt manifest"
+    ):
+        jll_admission.build_jll_bundle(
+            receipt_root=root_b,
+            receipt_manifest=root_b / result_b["manifest"]["name"],
+            admission_root=admission_root,
+        )
+
+
+def test_quarantine_marker_rejects_an_otherwise_accepted_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    keys = _keys()
+    root = _fresh_root(tmp_path, "receipts")
+    store = _DiskStore(root)
+    monkeypatch.setattr(
+        "capacity_c10.admission_controller.PrivateReceiptStore.create",
+        lambda _root: store,
+    )
+    adapter = "d" * 64
+    controller = _JllAdmissionController(
+        REPO_ROOT,
+        root,
+        "http://127.0.0.1:38111",
+        lambda issued, _deadline: _flex_evidence(issued, keys),
+        "e" * 64,
+    )
+    monkeypatch.setattr(controller, "_keys", lambda _deadline: keys)
+    result = controller._run(binding=_binding(), adapter_implementation_sha256=adapter)
+
+    # Written by production when sidecar teardown could not be proven; even
+    # a fully controller-accepted root (real manifest + real completion) must
+    # never be admitted once this marker exists.
+    quarantine_path = root / jll_admission.JLL_ADMISSION_QUARANTINE_NAME
+    quarantine_path.write_bytes(
+        contracts.canonical_bytes({"reason": "teardown unproven"})
+    )
+    quarantine_path.chmod(0o600)
+
+    monkeypatch.setattr(
+        "capacity_c10.jll_admission.repository_implementation_sha256",
+        lambda _key: adapter,
+    )
+    admission_root = tmp_path / "admission"
+    admission_root.mkdir(mode=0o700)
+    admission_root.chmod(0o700)
+    with pytest.raises(contracts.C10Error, match="quarantined"):
+        jll_admission.build_jll_bundle(
+            receipt_root=root,
+            receipt_manifest=root / result["manifest"]["name"],
+            admission_root=admission_root,
+        )
+
+
+def test_child_cannot_seal_a_completion_stem_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only the controller may seal ``jll-admission-completion-*``.
+
+    A scripted fake child sends one ``seal`` frame whose stem is the
+    controller-reserved completion stem; the controller must reject it before
+    ever calling ``store.seal_*`` (i.e. before it could be mistaken for a
+    controller-sealed attestation).
+    """
+    keys, store = _keys(), _MemoryStore()
+    monkeypatch.setattr(
+        "capacity_c10.admission_controller.PrivateReceiptStore.create",
+        lambda _root: store,
+    )
+    real_popen = subprocess.Popen
+
+    def rogue_popen(_argv: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        script = (
+            "import sys, json, time\n"
+            "sys.stdin.readline()\n"
+            f"frame = json.dumps({{'protocol': {admission_controller._PROTOCOL!r}, "
+            "'type': 'seal', 'id': '1', "
+            f"'stem': {jll_admission.JLL_CONTROLLER_COMPLETION_STEM!r}}})\n"
+            "sys.stdout.write(frame + chr(10))\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(5)\n"
+        )
+        return real_popen([sys.executable, "-c", script], **kwargs)
+
+    monkeypatch.setattr(
+        "capacity_c10.admission_controller.subprocess.Popen", rogue_popen
+    )
+    controller = _JllAdmissionController(
+        REPO_ROOT,
+        _fresh_root(tmp_path),
+        "http://127.0.0.1:38111",
+        lambda issued, _deadline: _flex_evidence(issued, keys),
+        "e" * 64,
+    )
+    monkeypatch.setattr(controller, "_keys", lambda _deadline: keys)
+    with pytest.raises(contracts.C10Error, match="artifact stem is invalid"):
+        controller._run(
+            binding=_binding(),
+            adapter_implementation_sha256="d" * 64,
+            timeout_seconds=10,
+        )
+    assert not store.values
+
+
+def test_child_is_reaped_after_a_failure_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """After any failure, the real child's pipes are closed and it is waited on."""
+    keys, store = _keys(), _MemoryStore()
+    monkeypatch.setattr(
+        "capacity_c10.admission_controller.PrivateReceiptStore.create",
+        lambda _root: store,
+    )
+    spawned: list[subprocess.Popen[bytes]] = []
+    real_popen = subprocess.Popen
+
+    def capturing_popen(argv: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        # `_OpenSsl` also shells out via `subprocess.Popen` for signing and
+        # verification; only capture the JLL admission child itself.
+        process = real_popen(argv, **kwargs)
+        if (
+            isinstance(argv, list)
+            and argv[:1] == ["node"]
+            and any(str(arg).endswith("jll_admission_child.ts") for arg in argv)
+        ):
+            spawned.append(process)
+        return process
+
+    monkeypatch.setattr(
+        "capacity_c10.admission_controller.subprocess.Popen", capturing_popen
+    )
+    controller = _JllAdmissionController(
+        REPO_ROOT,
+        _fresh_root(tmp_path),
+        "http://127.0.0.1:38111",
+        # An empty enumeration item list fails the independent-recomputation
+        # bound ("insufficient canonical candidates") right after the first
+        # card, so the real child is still alive (mid-protocol) when the
+        # controller raises and must reap it in `finally`.
+        lambda issued, _deadline: _flex_evidence(issued, keys, enumeration_items=[]),
+        "e" * 64,
+    )
+    monkeypatch.setattr(controller, "_keys", lambda _deadline: keys)
+    with pytest.raises(contracts.C10Error):
+        controller._run(
+            binding=_binding(),
+            adapter_implementation_sha256="d" * 64,
+            timeout_seconds=30,
+        )
+
+    assert len(spawned) == 1
+    process = spawned[0]
+    for _ in range(50):
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
+    assert process.poll() is not None
+    assert process.stdin is not None and process.stdin.closed
+    assert process.stdout is not None and process.stdout.closed
+
+
+def test_timeout_bound_rejects_invalid_values_before_any_child_starts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def refuse_popen(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("subprocess must not start before the timeout bound check")
+
+    monkeypatch.setattr(
+        "capacity_c10.admission_controller.subprocess.Popen", refuse_popen
+    )
+
+    def refuse_executor(_issued: Any, _deadline: float) -> Any:
+        raise AssertionError("executor must not run before the timeout bound check")
+
+    controller = _JllAdmissionController(
+        REPO_ROOT,
+        _fresh_root(tmp_path),
+        "http://127.0.0.1:38111",
+        refuse_executor,
+        "e" * 64,
+    )
+    for bad_timeout in (
+        admission_controller.JLL_ADMISSION_COLLECTION_MAX_SECONDS + 1,
+        True,
+        0,
+    ):
+        with pytest.raises(contracts.C10Error, match="timeout is outside its bound"):
+            controller._run(
+                binding=_binding(),
+                adapter_implementation_sha256="d" * 64,
+                timeout_seconds=bad_timeout,
+            )
+
+
+def test_timeout_bound_accepts_the_exact_maximum(tmp_path: Path) -> None:
+    """570 passes the bound gate itself; a later, unrelated check stops the run."""
+    nonempty = _fresh_root(tmp_path, "nonempty")
+    (nonempty / "stray-file").write_text("x")
+
+    def refuse_executor(_issued: Any, _deadline: float) -> Any:
+        raise AssertionError("executor must not run before the fresh-root check")
+
+    controller = _JllAdmissionController(
+        REPO_ROOT, nonempty, "http://127.0.0.1:38111", refuse_executor, "e" * 64
+    )
+    with pytest.raises(contracts.C10Error, match="fresh and empty"):
+        controller._run(
+            binding=_binding(),
+            adapter_implementation_sha256="d" * 64,
+            timeout_seconds=admission_controller.JLL_ADMISSION_COLLECTION_MAX_SECONDS,
+        )

@@ -106,6 +106,47 @@ def _graphql_payload(indices: list[int]) -> dict[str, Any]:
     return {"errors": [], "data": {"properties": {"count": len(items), "items": items}}}
 
 
+def _write_controller_completion(
+    root: Path,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    *,
+    session_sha256: str | None = None,
+    run_sha256: str | None = None,
+) -> str:
+    """Seal a controller completion record exactly as the real controller would.
+
+    Content-addressed name (``jll-admission-completion-<sha>.sealed``), owner
+    0600, canonical bytes -- mirrors what
+    ``_JllAdmissionController._seal_completion`` seals via
+    ``PrivateReceiptStore.seal_json`` in production, so offline scenarios that
+    represent a controller-accepted root can satisfy
+    ``jll_admission._verify_controller_completion``. Returns the written name.
+    """
+    raw = manifest_path.read_bytes()
+    unsigned = {
+        "schema_version": 1,
+        "kind": jll_admission.JLL_CONTROLLER_COMPLETION_KIND,
+        "receipt_root": str(root),
+        "receipt_manifest": {
+            "name": manifest_path.name,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        },
+        "manifest_sha256": manifest["manifest_sha256"],
+        "selection_digest": manifest["selection_digest"],
+        "adapter_implementation_sha256": manifest["adapter_implementation_sha256"],
+        "session_sha256": session_sha256 or "1" * 64,
+        "run_sha256": run_sha256 or "2" * 64,
+    }
+    record = {**unsigned, "completion_sha256": contracts.sha256(unsigned)}
+    body = contracts.canonical_bytes(record)
+    digest = hashlib.sha256(body).hexdigest()
+    name = f"{jll_admission.JLL_CONTROLLER_COMPLETION_STEM}-{digest}.sealed"
+    _write_bytes(root / name, body)
+    return name
+
+
 def _replace_artifact(
     root: Path, artifacts: list[dict[str, Any]], old_sha256: str, new_body: bytes
 ) -> str:
@@ -303,6 +344,15 @@ class _Scenario:
         self.manifest = _resign_manifest({**unsigned, "manifest_sha256": ""})
         self.path = root / "jll-manifest.json"
         _write(self.path, self.manifest)
+        # A fresh scenario represents a root the controller already accepted:
+        # seal the matching completion attestation, exactly like the real
+        # controller does after `_verify_manifest` succeeds. Tests exercising
+        # the reviewer-fix's recovery/quarantine/tamper surface remove or
+        # mutate this file explicitly (see test_capacity_c10_jll_admission.py
+        # section B and test_capacity_c10_jll_admission_controller.py).
+        self.completion_name = _write_controller_completion(
+            self.root, self.path, self.manifest
+        )
 
     def _seal(self, value: Any, *, expect_sha256: str) -> None:
         body = contracts.canonical_bytes(value)
@@ -1071,3 +1121,197 @@ def test_body_with_duplicate_candidate_is_rejected(
     with pytest.raises(contracts.C10Error, match="duplicate"):
         _bundle(scenario, monkeypatch, admission_root)
     assert list(admission_root.iterdir()) == []
+
+
+# --- Controller-completion attestation (reviewer recovery fix) -------------
+#
+# The child seals its manifest *before* the controller verifies it, so a
+# manifest alone on disk never proves the controller accepted the root (see
+# `_verify_controller_completion` in jll_admission.py and
+# `_JllAdmissionController._seal_completion` in admission_controller.py). Every
+# `_Scenario` now seals a matching completion record at construction time
+# (`scenario.completion_name`); these tests remove or mutate that file to
+# prove `build_jll_bundle`, `render_jll_authority`, and `render_jll_plan` all
+# refuse a root the controller never (or ambiguously) attested.
+
+
+def test_missing_controller_completion_rejects_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    (receipt_root / scenario.completion_name).unlink()
+    monkeypatch.setattr(
+        jll_admission, "repository_implementation_sha256", lambda _key: "d" * 64
+    )
+    with pytest.raises(contracts.C10Error, match="controller completion attestation"):
+        jll_admission.build_jll_bundle(
+            receipt_root=receipt_root,
+            receipt_manifest=scenario.path,
+            admission_root=admission_root,
+        )
+    assert list(admission_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("render_name", ["render_jll_authority", "render_jll_plan"])
+def test_missing_controller_completion_rejects_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, render_name: str
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    bundle = _bundle(scenario, monkeypatch, admission_root)
+    (receipt_root / scenario.completion_name).unlink()
+    render = getattr(jll_admission, render_name)
+    with pytest.raises(contracts.C10Error, match="controller completion attestation"):
+        render(Path(bundle["path"]))
+
+
+def test_two_controller_completion_files_reject_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    # A second, differently-nonced completion record for the same manifest:
+    # distinct content -> distinct content-addressed filename -> two files.
+    second_name = _write_controller_completion(
+        receipt_root, scenario.path, scenario.manifest, session_sha256="3" * 64
+    )
+    assert second_name != scenario.completion_name
+    monkeypatch.setattr(
+        jll_admission, "repository_implementation_sha256", lambda _key: "d" * 64
+    )
+    with pytest.raises(contracts.C10Error, match="controller completion attestation"):
+        jll_admission.build_jll_bundle(
+            receipt_root=receipt_root,
+            receipt_manifest=scenario.path,
+            admission_root=admission_root,
+        )
+    assert list(admission_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("render_name", ["render_jll_authority", "render_jll_plan"])
+def test_two_controller_completion_files_reject_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, render_name: str
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    bundle = _bundle(scenario, monkeypatch, admission_root)
+    _write_controller_completion(
+        receipt_root, scenario.path, scenario.manifest, session_sha256="3" * 64
+    )
+    render = getattr(jll_admission, render_name)
+    with pytest.raises(contracts.C10Error, match="controller completion attestation"):
+        render(Path(bundle["path"]))
+
+
+def test_tampered_controller_completion_digest_rejects_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    completion_path = receipt_root / scenario.completion_name
+    record = json.loads(completion_path.read_text())
+    # Mutate the record's content without renaming the content-addressed
+    # file, so the embedded digest in the filename no longer matches.
+    record["run_sha256"] = "9" * 64
+    _write(completion_path, record)
+    monkeypatch.setattr(
+        jll_admission, "repository_implementation_sha256", lambda _key: "d" * 64
+    )
+    with pytest.raises(contracts.C10Error, match="digest is invalid"):
+        jll_admission.build_jll_bundle(
+            receipt_root=receipt_root,
+            receipt_manifest=scenario.path,
+            admission_root=admission_root,
+        )
+    assert list(admission_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("render_name", ["render_jll_authority", "render_jll_plan"])
+def test_tampered_controller_completion_digest_rejects_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, render_name: str
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    bundle = _bundle(scenario, monkeypatch, admission_root)
+    completion_path = receipt_root / scenario.completion_name
+    record = json.loads(completion_path.read_text())
+    record["run_sha256"] = "9" * 64
+    _write(completion_path, record)
+    render = getattr(jll_admission, render_name)
+    with pytest.raises(contracts.C10Error, match="digest is invalid"):
+        render(Path(bundle["path"]))
+
+
+def test_controller_completion_manifest_name_mismatch_rejects_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completion sealed for a differently-named manifest cannot admit this one.
+
+    Same bytes, same digests, only the recorded receipt-manifest *name*
+    differs -- proving `receipt_manifest.name` is checked, not inferred.
+    """
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    (receipt_root / scenario.completion_name).unlink()
+    decoy_manifest_path = receipt_root / "decoy-manifest.json"
+    decoy_manifest_path.write_bytes(scenario.path.read_bytes())
+    decoy_manifest_path.chmod(0o600)
+    _write_controller_completion(receipt_root, decoy_manifest_path, scenario.manifest)
+    decoy_manifest_path.unlink()
+    monkeypatch.setattr(
+        jll_admission, "repository_implementation_sha256", lambda _key: "d" * 64
+    )
+    with pytest.raises(
+        contracts.C10Error, match="does not attest this receipt manifest"
+    ):
+        jll_admission.build_jll_bundle(
+            receipt_root=receipt_root,
+            receipt_manifest=scenario.path,
+            admission_root=admission_root,
+        )
+    assert list(admission_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("render_name", ["render_jll_authority", "render_jll_plan"])
+def test_controller_completion_manifest_name_mismatch_rejects_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, render_name: str
+) -> None:
+    receipt_root, admission_root = (
+        _private(tmp_path / "receipts"),
+        _private(tmp_path / "admission"),
+    )
+    scenario = _Scenario(receipt_root)
+    bundle = _bundle(scenario, monkeypatch, admission_root)
+    (receipt_root / scenario.completion_name).unlink()
+    decoy_manifest_path = receipt_root / "decoy-manifest.json"
+    decoy_manifest_path.write_bytes(scenario.path.read_bytes())
+    decoy_manifest_path.chmod(0o600)
+    _write_controller_completion(receipt_root, decoy_manifest_path, scenario.manifest)
+    decoy_manifest_path.unlink()
+    render = getattr(jll_admission, render_name)
+    with pytest.raises(
+        contracts.C10Error, match="does not attest this receipt manifest"
+    ):
+        render(Path(bundle["path"]))

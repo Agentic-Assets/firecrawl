@@ -40,6 +40,8 @@ from .host_orchestration import (
 from .host_sidecar import C10EphemeralKeys
 from .host_store import PrivateReceiptStore
 from .jll_admission import (
+    JLL_CONTROLLER_COMPLETION_KIND,
+    JLL_CONTROLLER_COMPLETION_STEM,
     JLL_ENUMERATION_BODY_SHA256,
     JLL_ENUMERATION_CARD_ID,
     JLL_GRAPHQL_URL,
@@ -65,6 +67,16 @@ _STEM = re.compile(r"[a-z0-9][a-z0-9-]{0,160}")
 _REQUEST_ID = re.compile(r"[1-9][0-9]{0,8}")
 _CARD_TIMEOUT_MS = 30_000
 _CARD_MAX_BYTES = 2 * 1024 * 1024
+# The lane sidecar runs at capacity one, so the 1 + 16 cards are sequential and
+# each is bounded by its sidecar-enforced card timeout (queue included).  The
+# margin covers child start, signing, verification, and sealing.  This is the
+# explicit upper bound of the collection phase; sidecar startup and teardown
+# have their own separate bounds in production.py and host_sidecar.py.
+_COLLECTION_MARGIN_SECONDS = 60
+JLL_ADMISSION_COLLECTION_MAX_SECONDS = float(
+    (1 + JLL_MEMBER_COUNT) * (_CARD_TIMEOUT_MS // 1000) + _COLLECTION_MARGIN_SECONDS
+)
+_CHILD_REAP_SECONDS = 5.0
 _BINDING_FIELDS = frozenset(
     {
         "planSha256",
@@ -378,12 +390,50 @@ class _JllAdmissionController:
             )
         return dict(manifest)
 
+    def _seal_completion(
+        self,
+        store: PrivateReceiptStore,
+        manifest_artifact: Mapping[str, Any],
+        manifest: Mapping[str, Any],
+        sidecar_binding: Mapping[str, str],
+        run_nonce: str,
+    ) -> dict[str, Any]:
+        """Attest, after verification only, that this controller accepted the root.
+
+        The child seals its manifest before the controller verifies it, so a
+        manifest alone never proves acceptance.  The offline builder requires
+        exactly this controller-sealed record, bound to the manifest bytes.
+        """
+        unsigned = {
+            "schema_version": 1,
+            "kind": JLL_CONTROLLER_COMPLETION_KIND,
+            "receipt_root": str(self.receipt_root),
+            "receipt_manifest": {
+                "name": manifest_artifact["name"],
+                "sha256": manifest_artifact["sha256"],
+                "bytes": manifest_artifact["bytes"],
+            },
+            "manifest_sha256": manifest["manifest_sha256"],
+            "selection_digest": manifest["selection_digest"],
+            "adapter_implementation_sha256": manifest["adapter_implementation_sha256"],
+            "session_sha256": sidecar_binding["sessionSha256"],
+            "run_sha256": sha256(
+                {
+                    "kind": "cre_capacity_c10_jll_v1_admission_run",
+                    "nonce": run_nonce,
+                    "sidecarBinding": dict(sidecar_binding),
+                }
+            ),
+        }
+        record = {**unsigned, "completion_sha256": sha256(unsigned)}
+        return dict(store.seal_json(JLL_CONTROLLER_COMPLETION_STEM, record))
+
     def _run(
         self,
         *,
         binding: Mapping[str, str],
         adapter_implementation_sha256: str,
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = JLL_ADMISSION_COLLECTION_MAX_SECONDS,
         keys: C10EphemeralKeys | None = None,
     ) -> Mapping[str, Any]:
         """Run exactly one enumeration and sixteen member cards, or fail closed.
@@ -393,7 +443,10 @@ class _JllAdmissionController:
         writes database/cache/listing/scheduler state, or accepts members,
         cards, URLs, or artifact paths from its caller.
         """
-        if timeout_seconds <= 0 or timeout_seconds > 120:
+        if (
+            type(timeout_seconds) not in {int, float}
+            or not 0 < timeout_seconds <= JLL_ADMISSION_COLLECTION_MAX_SECONDS
+        ):
             raise C10Error("JLL admission controller timeout is outside its bound")
         require_sha256(adapter_implementation_sha256, "JLL adapter implementation")
         if set(binding) != _BINDING_FIELDS:
@@ -405,7 +458,8 @@ class _JllAdmissionController:
         collector_root = self.repo_root / "scripts/firecrawl-ops/cre_collector"
         script = collector_root / "capacity_c10/receipts/jll_admission_child.ts"
         keys = keys or self._keys(deadline)
-        sidecar_binding = self._sidecar_binding(binding, secrets.token_hex(32))
+        run_nonce = secrets.token_hex(32)
+        sidecar_binding = self._sidecar_binding(binding, run_nonce)
         sequence = 0
         selection: dict[str, Any] | None = None
         sealed: list[Mapping[str, Any]] = []
@@ -475,15 +529,24 @@ class _JllAdmissionController:
                             selection,
                             adapter_implementation_sha256,
                         )
+                        completion = self._seal_completion(
+                            store, sealed[-1], manifest, sidecar_binding, run_nonce
+                        )
                         return {
                             "manifest": dict(sealed[-1]),
                             "manifest_sha256": manifest["manifest_sha256"],
                             "selection_digest": selection["digest"],
                             "artifacts": [dict(item) for item in sealed[:-1]],
+                            "controller_completion": completion,
                         }
                     if message.get("type") == "seal":
                         stem = message.get("stem")
-                        if not isinstance(stem, str) or _STEM.fullmatch(stem) is None:
+                        if (
+                            not isinstance(stem, str)
+                            or _STEM.fullmatch(stem) is None
+                            # Only the controller may seal its completion record.
+                            or stem.startswith(JLL_CONTROLLER_COMPLETION_STEM)
+                        ):
                             raise C10Error(
                                 "JLL admission child artifact stem is invalid"
                             )
@@ -573,5 +636,23 @@ class _JllAdmissionController:
         except (OSError, subprocess.SubprocessError) as exc:
             raise C10Error("JLL admission controller child failed") from exc
         finally:
-            if process is not None and process.poll() is None:
-                _C10HostTransport._kill_child_group(process)
+            if process is not None:
+                _reap_child(process)
+
+
+def _reap_child(process: subprocess.Popen[bytes]) -> None:
+    """Kill a still-running child group, then wait for it and close its pipes."""
+    try:
+        if process.poll() is None:
+            _C10HostTransport._kill_child_group(process)
+        try:
+            process.wait(timeout=_CHILD_REAP_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
