@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import os
@@ -13,10 +14,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
-import pytest
-
 import cre_capacity_experiment as experiment
 import cre_capacity_runtime as runtime
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -1214,8 +1214,86 @@ def test_review_approval_requires_operator_ownership_and_is_one_use(
     assert approval["nonce"] == "e" * 64
     assert grant_path == runtime._benchmark_grant_path(approval_path.parent, approval)
     assert not approval_path.exists()
-    with pytest.raises(runtime.RuntimeAdmissionError, match="atomically consumed"):
+    with pytest.raises(runtime.RuntimeAdmissionError, match="path is unavailable"):
         runtime.consume_review_approval(approval_path, receipt, "bold-jll-128", digest)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "value"),
+    [
+        (None, None),
+        ("profile", "wrong-profile"),
+        ("config_sha256", "invalid"),
+        ("nonce", "invalid"),
+        ("transition_receipt_sha256", "f" * 64),
+        ("source_git_sha", "f" * 40),
+        ("created_at", "2000-01-01T00:00:00+00:00"),
+    ],
+)
+def test_static_and_consuming_approval_validation_have_payload_parity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str | None,
+    value: str | None,
+) -> None:
+    selected, digest = profile()
+    receipt = runtime._receipt_payload("bold-jll-128", selected, digest, capture())
+    approval_path = write_approval(
+        tmp_path / "approval" / "review.json", receipt, digest
+    )
+    if mutation is not None:
+        approval = json.loads(approval_path.read_text(encoding="utf-8"))
+        approval[mutation] = value
+        approval_path.write_text(json.dumps(approval), encoding="utf-8")
+
+    def consume_bytes(path: Path, _recovery_path: Path, **_kwargs: object) -> bytes:
+        raw = path.read_bytes()
+        path.unlink()
+        return raw
+
+    monkeypatch.setattr(runtime, "_consume_review_approval_bytes", consume_bytes)
+    monkeypatch.setattr(runtime, "_recover_review_consumption", lambda *a, **kw: None)
+
+    static_error: type[BaseException] | None = None
+    try:
+        static = runtime.validate_review_approval(
+            approval_path,
+            "bold-jll-128",
+            digest,
+            transition_receipt_sha256=receipt["receipt_sha256"],  # type: ignore[arg-type]
+            source_git_sha=receipt["baseline"]["repo"]["git_sha"],  # type: ignore[index]
+        )
+    except runtime.RuntimeAdmissionError as exc:
+        static_error = type(exc)
+
+    consuming_error: type[BaseException] | None = None
+    try:
+        consumed, _grant = runtime.consume_review_approval(
+            approval_path, receipt, "bold-jll-128", digest
+        )
+    except runtime.RuntimeAdmissionError as exc:
+        consuming_error = type(exc)
+
+    assert (static_error is None) is (consuming_error is None)
+    if mutation is None:
+        assert static == consumed
+        assert not approval_path.exists()
+        with pytest.raises(runtime.RuntimeAdmissionError):
+            runtime.consume_review_approval(
+                approval_path, receipt, "bold-jll-128", digest
+            )
+    else:
+        assert approval_path.exists()
+
+
+def test_consuming_approval_contract_reuses_the_static_validator() -> None:
+    """Keep static approval schema and consuming transition checks in one contract."""
+    assert "_validate_review_approval_fields(" in inspect.getsource(
+        runtime._validate_approval_payload
+    )
+    assert "validate_review_approval(" in inspect.getsource(
+        runtime.consume_review_approval
+    )
 
 
 @pytest.mark.parametrize(
@@ -1471,7 +1549,7 @@ def test_review_benchmark_grant_is_exact_private_and_exclusive(tmp_path: Path) -
     assert json.loads(grant_path.read_text()) == grant
 
 
-def test_invalid_consumed_approval_destroys_its_review_grant(
+def test_invalid_bytes_after_static_validation_destroy_the_review_grant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     selected, digest = profile()
@@ -1492,7 +1570,7 @@ def test_invalid_consumed_approval_destroys_its_review_grant(
         "_destroy_review_benchmark_grant",
         lambda path: destroyed.append(path),
     )
-    with pytest.raises(runtime.RuntimeAdmissionError, match="does not bind"):
+    with pytest.raises(runtime.RuntimeAdmissionError, match="bindings are invalid"):
         runtime.consume_review_approval(approval_path, receipt, "bold-jll-128", digest)
     assert destroyed == [runtime._benchmark_grant_path(approval_path.parent, approval)]
 

@@ -14,7 +14,6 @@ import stat
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -159,9 +158,11 @@ def _require_private_root(path: Path, label: str) -> None:
     """Require an existing, real, owner-only directory before a C10 claim."""
     try:
         metadata = path.lstat()
-        owner_uid = runtime._operator_uid()
-    except (OSError, runtime.RuntimeAdmissionError) as exc:
+    except OSError as exc:
         raise C10Error(f"C10 {label} root is unavailable") from exc
+    owner_uid = os.getuid()
+    if owner_uid == 0 or os.geteuid() != owner_uid:
+        raise C10Error("C10 roots require a non-root unswitched operating account")
     if (
         path.is_symlink()
         or not stat.S_ISDIR(metadata.st_mode)
@@ -174,55 +175,6 @@ def _require_private_root(path: Path, label: str) -> None:
 def _require_absent_output(path: Path, label: str) -> None:
     if os.path.lexists(path):
         raise C10Error(f"C10 {label} output path already exists")
-
-
-def _validate_p1_approval(path: Path, plan: Mapping[str, Any]) -> None:
-    """Validate the non-consuming, receipt-independent approval contract."""
-    try:
-        runtime._validate_review_authority(path)
-        if path.stat().st_size > runtime.REVIEW_APPROVAL_MAX_BYTES:
-            raise C10Error("C10 P1 approval exceeds its private size bound")
-        approval = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, runtime.RuntimeAdmissionError) as exc:
-        raise C10Error("C10 P1 approval is unavailable or invalid") from exc
-    required = {
-        "schema_version",
-        "kind",
-        "profile",
-        "config_sha256",
-        "transition_receipt_sha256",
-        "source_git_sha",
-        "approved_by",
-        "approved",
-        "created_at",
-        "expires_after_seconds",
-        "nonce",
-    }
-    if (
-        not isinstance(approval, Mapping)
-        or set(approval) != required
-        or approval.get("schema_version") != runtime.SCHEMA_VERSION
-        or approval.get("kind") != runtime.APPROVAL_KIND
-        or approval.get("profile") != plan["profiles"]["p1"]["name"]
-        or approval.get("config_sha256") != plan["profiles"]["config_sha256"]
-        or approval.get("approved_by") != "coordinating-review"
-        or approval.get("approved") is not True
-        or approval.get("expires_after_seconds") != runtime.RECEIPT_MAX_AGE_SECONDS
-        or not runtime.NONCE_PATTERN.fullmatch(
-            str(approval.get("transition_receipt_sha256"))
-        )
-        or not runtime.SHA_PATTERN.fullmatch(str(approval.get("source_git_sha")))
-        or not runtime.NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
-    ):
-        raise C10Error("C10 P1 approval is not bound to the immutable profile")
-    try:
-        age = (
-            datetime.now(timezone.utc) - runtime._parse_time(approval["created_at"])
-        ).total_seconds()
-    except (KeyError, runtime.RuntimeAdmissionError) as exc:
-        raise C10Error("C10 P1 approval timestamp is invalid") from exc
-    if age < 0 or age > runtime.RECEIPT_MAX_AGE_SECONDS:
-        raise C10Error("C10 P1 approval is stale")
 
 
 def _validate_claim_inputs(
@@ -263,7 +215,14 @@ def _validate_claim_inputs(
         _require_private_root(approval_root, "approval")
         _require_private_root(admission_root, "admission")
         assert approval_path is not None and admission_path is not None
-        _validate_p1_approval(approval_path, plan)
+        try:
+            runtime.validate_review_approval(
+                approval_path,
+                plan["profiles"]["p1"]["name"],
+                plan["profiles"]["config_sha256"],
+            )
+        except runtime.RuntimeAdmissionError as exc:
+            raise C10Error("C10 P1 approval is unavailable or invalid") from exc
         _require_absent_output(admission_path, "admission")
     return arm_private_root, receipt_path, approval_path, admission_path
 

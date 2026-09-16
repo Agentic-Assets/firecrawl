@@ -1431,6 +1431,105 @@ def _validate_review_authority(path: Path) -> None:
         )
 
 
+def _validate_review_approval_fields(
+    approval: Mapping[str, Any],
+    profile_name: str,
+    config_sha256: str,
+    now: datetime | None = None,
+    transition_receipt_sha256: str | None = None,
+    source_git_sha: str | None = None,
+) -> dict[str, Any]:
+    """Validate approval fields independent of a mutable runtime receipt."""
+    required = {
+        "schema_version",
+        "kind",
+        "profile",
+        "config_sha256",
+        "transition_receipt_sha256",
+        "source_git_sha",
+        "approved_by",
+        "approved",
+        "created_at",
+        "expires_after_seconds",
+        "nonce",
+    }
+    if (
+        set(approval) != required
+        or not isinstance(profile_name, str)
+        or not profile_name
+        or not NONCE_PATTERN.fullmatch(str(config_sha256))
+        or approval.get("schema_version") != SCHEMA_VERSION
+        or approval.get("kind") != APPROVAL_KIND
+        or approval.get("profile") != profile_name
+        or approval.get("config_sha256") != config_sha256
+        or not NONCE_PATTERN.fullmatch(str(approval.get("config_sha256")))
+        or approval.get("approved_by") != "coordinating-review"
+        or approval.get("approved") is not True
+        or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
+        or not NONCE_PATTERN.fullmatch(str(approval.get("transition_receipt_sha256")))
+        or not SHA_PATTERN.fullmatch(str(approval.get("source_git_sha")))
+        or not NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
+    ):
+        raise RuntimeAdmissionError("review approval bindings are invalid")
+    if (
+        transition_receipt_sha256 is not None
+        and approval.get("transition_receipt_sha256") != transition_receipt_sha256
+    ) or (
+        source_git_sha is not None and approval.get("source_git_sha") != source_git_sha
+    ):
+        raise RuntimeAdmissionError(
+            "review approval does not bind the admitted transition"
+        )
+    age = (datetime.now(timezone.utc) if now is None else now) - _parse_time(
+        approval.get("created_at")
+    )
+    if age.total_seconds() < 0 or age.total_seconds() > RECEIPT_MAX_AGE_SECONDS:
+        raise RuntimeAdmissionError("review approval is stale")
+    return dict(approval)
+
+
+def validate_review_approval(
+    path: Path,
+    profile_name: str,
+    config_sha256: str,
+    now: datetime | None = None,
+    *,
+    transition_receipt_sha256: str | None = None,
+    source_git_sha: str | None = None,
+) -> dict[str, Any]:
+    """Non-consumingly validate one private approval's static contract.
+
+    The caller receives no mutation authority. Optional receipt fingerprints
+    bind this static check, while the one-use transition remains the
+    responsibility of ``consume_review_approval``.
+    """
+    _validate_review_authority(path)
+    try:
+        if path.stat().st_size > REVIEW_APPROVAL_MAX_BYTES:
+            raise RuntimeAdmissionError(
+                "review approval exceeds its private size bound"
+            )
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeAdmissionError("review approval path is unavailable") from exc
+    if len(raw) > REVIEW_APPROVAL_MAX_BYTES:
+        raise RuntimeAdmissionError("review approval exceeds its private size bound")
+    try:
+        approval = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeAdmissionError("review approval contains invalid JSON") from exc
+    if not isinstance(approval, Mapping):
+        raise RuntimeAdmissionError("review approval contains invalid JSON")
+    return _validate_review_approval_fields(
+        approval,
+        profile_name,
+        config_sha256,
+        now,
+        transition_receipt_sha256,
+        source_git_sha,
+    )
+
+
 def _benchmark_grant_payload(approval: Mapping[str, Any]) -> dict[str, Any]:
     required = {
         "profile",
@@ -1612,41 +1711,15 @@ def _validate_approval_payload(
     config_sha256: str,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    required = {
-        "schema_version",
-        "kind",
-        "profile",
-        "config_sha256",
-        "transition_receipt_sha256",
-        "source_git_sha",
-        "approved_by",
-        "approved",
-        "created_at",
-        "expires_after_seconds",
-        "nonce",
-    }
-    if (
-        set(approval) != required
-        or approval.get("schema_version") != SCHEMA_VERSION
-        or approval.get("kind") != APPROVAL_KIND
-        or approval.get("profile") != profile_name
-        or approval.get("config_sha256") != config_sha256
-        or approval.get("transition_receipt_sha256") != receipt.get("receipt_sha256")
-        or approval.get("source_git_sha")
-        != receipt.get("baseline", {}).get("repo", {}).get("git_sha")
-        or approval.get("approved_by") != "coordinating-review"
-        or approval.get("approved") is not True
-        or approval.get("expires_after_seconds") != RECEIPT_MAX_AGE_SECONDS
-        or not NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
-    ):
-        raise RuntimeAdmissionError(
-            "review approval does not bind the admitted transition"
-        )
-    current = now or datetime.now(timezone.utc)
-    age = (current - _parse_time(approval.get("created_at"))).total_seconds()
-    if age < 0 or age > RECEIPT_MAX_AGE_SECONDS:
-        raise RuntimeAdmissionError("review approval is stale")
-    return dict(approval)
+    validated = _validate_review_approval_fields(
+        approval,
+        profile_name,
+        config_sha256,
+        now,
+        receipt.get("receipt_sha256"),
+        receipt.get("baseline", {}).get("repo", {}).get("git_sha"),
+    )
+    return validated
 
 
 def consume_review_approval(
@@ -1659,6 +1732,15 @@ def consume_review_approval(
 ) -> tuple[dict[str, Any], Path]:
     """Atomically consume one operator-owned approval before issuing a mutation."""
     path = Path(os.path.abspath(path))
+    # Reject invalid static authority before beginning its one-use transaction.
+    validate_review_approval(
+        path,
+        profile_name,
+        config_sha256,
+        now,
+        transition_receipt_sha256=receipt.get("receipt_sha256"),
+        source_git_sha=receipt.get("baseline", {}).get("repo", {}).get("git_sha"),
+    )
     recovery_path = path.parent / (
         f".cre-capacity-consumption-{secrets.token_hex(32)}.json"
     )
