@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`7f5e7ef4c7c3468c85c752b90694ffde2b0619c3`
+`dea20bb5d3ad84fdfb5f2fe7fd0e841811ec72a0`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -46,23 +46,24 @@ not change the Wave 1 execution boundary.
 
 ## Verification
 
-The final code candidate `7f5e7ef4c7c3468c85c752b90694ffde2b0619c3`
+The final code candidate `dea20bb5d3ad84fdfb5f2fe7fd0e841811ec72a0`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
 - `python3 -m pytest tests/ -q`: 3156 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 899 passed, 1 expected
+- `npm test`: TypeScript typecheck passed; 901 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-The first exact-head Codex review produced five material findings. All five
+Two exact-head Codex review passes produced seven material findings. All seven
 were confirmed and fixed: immutable cohort binding, per-source timing,
-Buildout `show_link`, fail-closed Deal Flow blocking, and bounded member-graph
-sharding. The threads were answered and resolved. GitHub Actions are not used
-as the primary completion proof. The exact final PR head and fresh review
-status must still be read back after this documentation correction before
-merge.
+Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
+sharding, bounded cumulative request-accounting commitments, and recursively
+immutable strict-detail plans. The threads were answered and resolved. GitHub
+Actions are not used as the primary completion proof. The exact final PR head
+and fresh review status must still be read back after this documentation
+correction before merge.
 
 ## Decisions made
 
