@@ -14,6 +14,7 @@ import {
 } from "../../../capacity_c10/receipts/index.js";
 import { MemoryReceiptStore } from "./receipt_test_store.js";
 import {
+  blockedInventoryReceiptProducers,
   inventoryReceiptProducers,
   type InventoryReceiptProducer,
   type InventorySourceKey,
@@ -32,8 +33,6 @@ function enumerationBody(sourceKey: InventorySourceKey): unknown {
   switch (sourceKey) {
     case "cbre":
       return { DocumentCount: 1, Documents: [{ "Common.PrimaryKey": "cbre-1" }] };
-    case "cbre-dealflow":
-      return { total: 1, cards: [{ id: "cdf-1", url_kind: "detail", url: "https://www.cbredealflow.com/property?pv=cdf-1" }] };
     case "cushman-wakefield":
       return { total_item: 1, content: [{ id: "cw-1", url: "/properties/cw-1" }] };
     case "newmark":
@@ -41,11 +40,11 @@ function enumerationBody(sourceKey: InventorySourceKey): unknown {
     case "srs":
       return { total: 1, properties: [{ apto_data: { SRS_Listings_ID__c: "srs-1" }, permalink: "/properties/srs-1" }] };
     case "svn":
-      return { meta: { total: 1 }, inventory: [{ id: "svn-1", url: "https://svn.com/properties/svn-1" }] };
+      return { meta: { total: 1 }, inventory: [{ id: "svn-1", show_link: "https://svn.com/properties/?propertyId=svn-1-sale" }] };
     case "lee-associates":
-      return { meta: { total: 1 }, inventory: [{ id: "lee-1", url: "https://www.lee-associates.com/properties/lee-1" }] };
+      return { meta: { total: 1 }, inventory: [{ id: "lee-1", show_link: "https://www.lee-associates.com/properties/?propertyId=lee-1-sale" }] };
     case "bull-realty":
-      return { meta: { total: 1 }, inventory: [{ id: "bull-1", url: "https://www.bullrealty.com/properties/bull-1" }] };
+      return { meta: { total: 1 }, inventory: [{ id: "bull-1", show_link: "https://www.bullrealty.com/properties/?propertyId=bull-1-sale" }] };
   }
 }
 
@@ -90,8 +89,8 @@ async function contextFor(producer: InventoryReceiptProducer, direct?: FakeDirec
   return { context: { transport }, fake };
 }
 
-test("all eight source producers seal fake native enumeration then member receipts", async () => {
-  assert.equal(inventoryReceiptProducers.size, 8);
+test("all executable source producers seal fake native enumeration then member receipts", async () => {
+  assert.equal(inventoryReceiptProducers.size, 7);
   for (const [sourceKey, producer] of inventoryReceiptProducers) {
     assert.equal(producer.sourceKey, sourceKey);
     assert.equal(producer.fully_verified, false);
@@ -100,7 +99,6 @@ test("all eight source producers seal fake native enumeration then member receip
     const memberCard = fake.calls.find((card) => card.stage === "member");
     assert.equal(memberCard, undefined, `${sourceKey}: member graph must be frozen, not executed, by enumeration`);
     const expectedProviderId = sourceKey === "cbre" ? "cbre-1"
-      : sourceKey === "cbre-dealflow" ? "cdf-1"
       : sourceKey === "cushman-wakefield" ? "cw-1"
       : sourceKey === "newmark" ? "nm-1"
       : sourceKey === "srs" ? "srs-1"
@@ -148,21 +146,45 @@ test("a terminal provider redirect is one attempt, with no fallback or member gr
   assert.equal(context.transport.requestAccounting().events[0]?.outcome, "rejected");
 });
 
-test("Deal Flow preserves noncomparable cards as sealed population evidence and refuses to invent members", async () => {
-  const producer = inventoryReceiptProducers.get("cbre-dealflow")!;
-  const fake = new FakeDirectTransport("cbre-dealflow");
+test("Deal Flow is explicitly blocked before an old GET/cards fixture can execute", async () => {
+  const blocked = blockedInventoryReceiptProducers.get("cbre-dealflow");
+  assert.equal(inventoryReceiptProducers.has("cbre-dealflow"), false);
+  assert.equal(blocked?.executable, false);
+  assert.match(blocked?.reason ?? "", /engine key.*form-urlencoded POST.*html/i);
+  assert.throws(() => blocked?.refuse(), /blocked: ListingEngine/);
+});
+
+test("Buildout refuses URL aliases and invalid native show_link identities", async () => {
+  const producer = inventoryReceiptProducers.get("svn")!;
+  const fake = new FakeDirectTransport("svn");
   fake.execute = async (card: Readonly<RequestCard>): Promise<TransportResponse> => {
     fake.calls.push(card);
     return {
       status: 200, finalUrl: card.url, redirectCount: 0, elapsedMs: 1, challengeDetected: false,
-      body: Buffer.from(JSON.stringify({ total: 1, cards: [{ id: "cdf-card-only", url_kind: "brochure" }] })),
+      body: Buffer.from(JSON.stringify({ meta: { total: 1 }, inventory: [{ id: "svn-1", url: "https://svn.com/properties/legacy" }] })),
       contentType: "application/json", providerAttempts: 1, cacheMode: "no-store",
     };
   };
   const { context } = await contextFor(producer, fake);
-  await assert.rejects(producer.produceEnumerationReceipt(context), /no comparable native members/);
+  await assert.rejects(producer.produceEnumerationReceipt(context), C10ReceiptError);
   assert.equal(fake.calls.length, 1);
-  assert.equal(context.transport.requestAccounting().events[0]?.outcome, "accepted");
+  assert.equal(context.transport.requestAccounting().events[0]?.outcome, "rejected");
+});
+
+test("Buildout refuses a native show_link without its provider propertyId", async () => {
+  const producer = inventoryReceiptProducers.get("svn")!;
+  const fake = new FakeDirectTransport("svn");
+  fake.execute = async (card: Readonly<RequestCard>): Promise<TransportResponse> => {
+    fake.calls.push(card);
+    return {
+      status: 200, finalUrl: card.url, redirectCount: 0, elapsedMs: 1, challengeDetected: false,
+      body: Buffer.from(JSON.stringify({ meta: { total: 1 }, inventory: [{ id: "svn-1", show_link: "https://svn.com/properties/legacy" }] })),
+      contentType: "application/json", providerAttempts: 1, cacheMode: "no-store",
+    };
+  };
+  const { context } = await contextFor(producer, fake);
+  await assert.rejects(producer.produceEnumerationReceipt(context), C10ReceiptError);
+  assert.equal(fake.calls.length, 1);
 });
 
 test("inventory producer rejects a mismatched transport before any request", async () => {

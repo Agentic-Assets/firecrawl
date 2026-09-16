@@ -231,6 +231,55 @@ test("staged graph rejects arbitrary, replayed, backward, excess, and post-freez
   await transport.oneShot("member-1", (view) => projection(view.finalUrl));
 });
 
+test("large member graphs use size-bounded shards and a hash-bound root manifest", async () => {
+  const store = new MemoryReceiptStore(2 * 1024 * 1024);
+  const fake = new FakeTransport((card) => response(card.url));
+  const transport = new SourceBoundOneShotTransport("jll", binding, cards(), store, fake);
+  const enumeration = await transport.oneShot("enum", (view) => projection(view.finalUrl));
+  const memberFactory = {
+    sourceKey: "jll",
+    stage: "member" as const,
+    maximumCards: 300,
+    create(parent: Readonly<typeof enumeration>, index: number) {
+      if (parent !== enumeration || !Number.isInteger(index) || index < 0 || index >= 300) {
+        throw new C10ReceiptError("invalid large-graph member coordinate");
+      }
+      return {
+        id: `member-${index}`,
+        sourceKey: "jll",
+        stage: "member" as const,
+        method: "GET" as const,
+        url: `https://example.test/member/${index}`,
+        allowedHost: "example.test",
+        headers: { accept: "text/html", "x-test-padding": "x".repeat(8_192) },
+        contentType: null,
+        body: null,
+        cacheMode: "no-store" as const,
+        timeoutMs: 1_000,
+        maxBytes: 64,
+      };
+    },
+  };
+  for (let index = 0; index < 300; index++) {
+    await transport.appendFrom(enumeration, memberFactory, index);
+  }
+  const frozen = await transport.freezeMemberGraph();
+  assert.equal(frozen.memberCardCount, 300);
+  assert.ok(frozen.shardCount > 1);
+  assert.match(frozen.graphRootSha256, /^[0-9a-f]{64}$/);
+  const root = store.jsonFor(frozen.graphArtifactSha256);
+  assert.equal(root.kind, "cre_capacity_c10_member_graph_root_v1");
+  assert.equal(root.memberCardCount, 300);
+  assert.equal(root.graphRootSha256, frozen.graphRootSha256);
+  const shards = root.shards as readonly Readonly<Record<string, unknown>>[];
+  assert.equal(shards.length, frozen.shardCount);
+  for (const [index, shard] of shards.entries()) {
+    assert.equal(shard.index, index);
+    assert.match(shard.sha256 as string, /^[0-9a-f]{64}$/);
+    assert.ok(store.jsonFor(shard.sha256 as string));
+  }
+});
+
 test("challenge, status, byte, time, and final-URL bounds are terminal", async () => {
   const invalidResponses: readonly Partial<TransportResponse>[] = [
     { status: 503 },

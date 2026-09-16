@@ -101,7 +101,8 @@ def _browser_evidence_rates(
         or scheduler["scheduled_member_count"] < configured
     ):
         raise C10Error("C10 scheduler did not demonstrate the planned saturation")
-    expected = {source["key"]: source["plane"] for source in plan["sources"]}
+    expected_sources = plan["sources"]
+    expected = {source["key"]: source for source in expected_sources}
     sources = evidence.get("sources")
     if (
         not isinstance(sources, list)
@@ -110,30 +111,44 @@ def _browser_evidence_rates(
     ):
         raise C10Error("C10 browser evidence does not exactly match the cohort")
     source_keys = [source.get("key") for source in sources]
-    if (
-        any(not isinstance(key, str) for key in source_keys)
-        or len(set(source_keys)) != len(source_keys)
-        or set(source_keys) != set(expected)
-    ):
+    if any(not isinstance(key, str) for key in source_keys) or source_keys != [
+        source["key"] for source in expected_sources
+    ]:
         raise C10Error("C10 browser evidence does not exactly match the cohort")
-    elapsed_minutes = (finished - started) / 60_000_000_000
     rates: dict[str, float] = {}
+    previous_finished = started
     for source in sources:
         if not isinstance(source, Mapping) or set(source) != {
             "key",
             "plane",
+            "cohort_member_count",
+            "cohort_member_sha256",
             "execution_mode",
             "engine",
             "client_attempts",
             "engine_attempts",
             "cache_read",
             "cache_write",
+            "started_monotonic_ns",
+            "finished_monotonic_ns",
             "qualified_rows",
         }:
             raise C10Error("C10 browser source evidence schema is invalid")
         key = source.get("key")
+        expected_source = expected.get(key)
+        source_started = _positive_int(
+            source.get("started_monotonic_ns"), "source start"
+        )
+        source_finished = _positive_int(
+            source.get("finished_monotonic_ns"), "source finish"
+        )
         if (
-            source.get("plane") != expected.get(key)
+            expected_source is None
+            or source.get("plane") != expected_source["plane"]
+            or source.get("cohort_member_count")
+            != expected_source["cohort_member_count"]
+            or source.get("cohort_member_sha256")
+            != expected_source["cohort_member_sha256"]
             or source.get("execution_mode") != "browser_rendered"
             or not isinstance(source.get("engine"), str)
             or not source["engine"]
@@ -143,9 +158,16 @@ def _browser_evidence_rates(
             or source.get("cache_write") is not False
         ):
             raise C10Error("C10 source is not one browser-rendered no-cache attempt")
-        rates[key] = (
-            _positive_int(source.get("qualified_rows"), "qualified rows")
-            / elapsed_minutes
+        if (
+            source_finished <= source_started
+            or source_started < started
+            or source_finished > finished
+            or source_started < previous_finished
+        ):
+            raise C10Error("C10 source timing is outside the serial browser arm")
+        previous_finished = source_finished
+        rates[key] = _positive_int(source.get("qualified_rows"), "qualified rows") / (
+            (source_finished - source_started) / 60_000_000_000
         )
     return rates
 

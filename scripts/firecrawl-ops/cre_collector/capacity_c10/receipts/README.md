@@ -23,6 +23,9 @@ must be emitted by a source-specific request-graph factory from a sealed parent
 event and parsed coordinate. Each append is privately sealed with the parent
 event and projection hashes; member cards must be frozen before execution. POST
 cards require exact canonical JSON, a bounded body hash, and JSON content type.
+Large member graphs are sealed as bounded private shards plus a small root
+manifest that commits to ordered shard digests, card count, member count, and a
+graph-root digest; the per-artifact 2 MiB ceiling is never relaxed.
 
 Private artifacts contain the request and response evidence under an absolute
 0700 root. They are written through an exclusive no-follow temporary file and
@@ -37,8 +40,10 @@ implementation/source byte-hash recipe. This package cannot
 create a plan, acquire a lock, execute an arm, settle, roll back, quarantine,
 or activate a source.
 
-`inventory.ts` contains source-local candidates for all eight
-authoritative-inventory sources. `strict_detail/` contains Batch A candidates
+`inventory.ts` contains executable source-local candidates for seven
+authoritative-inventory sources. CBRE Deal Flow is an explicit blocked
+descriptor, not an executable fallback: its ListingEngine needs a
+provider-derived engine key and form-urlencoded POST response HTML. `strict_detail/` contains Batch A candidates
 for JLL, JLL Investor, Colliers SalesTracker, and Marcus & Millichap.
 `sources/batch_b.ts` contains the sole currently representable Batch B
 candidate, Foundry. They all require a future reviewed coordinator to supply a

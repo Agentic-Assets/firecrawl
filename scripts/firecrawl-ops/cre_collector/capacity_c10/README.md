@@ -40,10 +40,12 @@ ordinary controller retains its historic default profile behavior.
 
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot
-and transition fingerprints, monotonic timing, and saturation evidence. P0
+and transition fingerprints, immutable per-source cohort count/hash bindings,
+serial per-source monotonic timing, and saturation evidence. P0
 must demonstrate four active scheduled members and P1 ten, with at least that
-many scheduled members. The comparator derives qualified rows per minute from
-that sealed timing and row count. It rejects direct/native transport,
+many scheduled members. The comparator derives each source's qualified rows
+per minute from that source's sealed interval and row count. It rejects
+direct/native transport,
 cache reads/writes, fallback/multiple attempts, caller-supplied throughput
 scalars, and unsaturated cohorts.
 
@@ -85,8 +87,11 @@ source-specific attrition behavior; it must not turn these fixtures or
 descriptors into a generic fetcher.
 
 The TypeScript receipt package additionally has source-owned inventory
-producers for the eight authoritative-inventory sources and one Batch B
+producers for seven authoritative-inventory sources and one Batch B
 producer for Foundry. The remaining Batch B sources, together with Avison
-Young and Colliers Main, retain explicit blockers. These candidates have no
+Young, Colliers Main, and CBRE Deal Flow, retain explicit blockers. CBRE Deal
+Flow remains blocked until its provider-derived engine key and form-urlencoded
+POST/HTML ListingEngine protocol can be represented without weakening the
+sealed request-card boundary. These candidates have no
 concrete direct-provider transport, CLI or controller wiring, verified-registry
 entry, admission, or live-run evidence.

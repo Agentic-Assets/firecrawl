@@ -94,8 +94,30 @@ export interface FrozenMemberGraph {
   readonly sourceKey: string;
   readonly bindingSha256: string;
   readonly memberCardCount: number;
+  readonly shardCount: number;
+  readonly graphRootSha256: string;
   readonly graphArtifactSha256: string;
 }
+
+interface MemberGraphEntry {
+  readonly card: RequestCard;
+  readonly expansion: SealedGraphExpansion | null;
+}
+
+interface MemberGraphShard {
+  readonly kind: "cre_capacity_c10_member_graph_shard_v1";
+  readonly binding: ReceiptBinding;
+  readonly index: number;
+  readonly entries: readonly MemberGraphEntry[];
+}
+
+interface MemberGraphShardReference {
+  readonly index: number;
+  readonly entryCount: number;
+  readonly sha256: string;
+}
+
+const MEMBER_GRAPH_SHARD_MAX_BYTES = 1024 * 1024;
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object") {
@@ -288,16 +310,93 @@ export class SourceBoundOneShotTransport {
     if (this.memberGraphFrozen) throw new C10ReceiptError("member request graph is already frozen");
     const memberCardCount = [...this.cards.values()].filter((card) => card.stage === "member").length;
     if (memberCardCount === 0) throw new C10ReceiptError("member request graph cannot be empty");
-    const sealed = await this.store.sealJson(`graph-${this.sourceKey}-frozen`, {
+    const expansions = new Map<string, SealedGraphExpansion>();
+    for (const expansion of this.expansions) {
+      if (expansion.sourceKey !== this.sourceKey || expansions.has(expansion.cardId)) {
+        throw new C10ReceiptError("member request graph expansions are invalid");
+      }
+      expansions.set(expansion.cardId, expansion);
+    }
+    const entries: MemberGraphEntry[] = [...this.cards.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((card) => {
+        const expansion = expansions.get(card.id) ?? null;
+        if (card.stage === "member" && expansion === null) {
+          throw new C10ReceiptError("member request graph card lacks its sealed expansion");
+        }
+        return Object.freeze({ card, expansion });
+      });
+    if (entries.length !== this.cards.size || expansions.size !== this.expansions.length) {
+      throw new C10ReceiptError("member request graph entries are invalid");
+    }
+    const chunks: MemberGraphEntry[][] = [];
+    let chunk: MemberGraphEntry[] = [];
+    for (const entry of entries) {
+      const candidate = [...chunk, entry];
+      const candidateBytes = Buffer.byteLength(canonicalJson({
+        kind: "cre_capacity_c10_member_graph_shard_v1",
+        binding: this.binding,
+        index: chunks.length,
+        entries: candidate,
+      }), "utf8");
+      if (candidateBytes > MEMBER_GRAPH_SHARD_MAX_BYTES) {
+        if (chunk.length === 0) {
+          throw new C10ReceiptError("member request graph entry exceeds shard limit");
+        }
+        chunks.push(chunk);
+        chunk = [entry];
+        const entryBytes = Buffer.byteLength(canonicalJson({
+          kind: "cre_capacity_c10_member_graph_shard_v1",
+          binding: this.binding,
+          index: chunks.length,
+          entries: chunk,
+        }), "utf8");
+        if (entryBytes > MEMBER_GRAPH_SHARD_MAX_BYTES) {
+          throw new C10ReceiptError("member request graph entry exceeds shard limit");
+        }
+      } else {
+        chunk = candidate;
+      }
+    }
+    if (chunk.length === 0) throw new C10ReceiptError("member request graph cannot be empty");
+    chunks.push(chunk);
+    const shardReferences: MemberGraphShardReference[] = [];
+    for (const [index, shardEntries] of chunks.entries()) {
+      const shard: MemberGraphShard = {
+        kind: "cre_capacity_c10_member_graph_shard_v1",
+        binding: this.binding,
+        index,
+        entries: shardEntries,
+      };
+      const sealedShard = await this.store.sealJson(
+        `graph-${this.sourceKey}-member-shard-${index}`,
+        shard,
+      );
+      shardReferences.push(Object.freeze({
+        index,
+        entryCount: shardEntries.length,
+        sha256: sealedShard.sha256,
+      }));
+    }
+    const rootUnsigned = {
+      kind: "cre_capacity_c10_member_graph_root_v1",
       binding: this.binding,
-      cards: [...this.cards.values()],
-      expansions: this.expansions,
+      memberCardCount,
+      cardCount: entries.length,
+      shards: shardReferences,
+    };
+    const graphRootSha256 = canonicalSha256(rootUnsigned);
+    const sealed = await this.store.sealJson(`graph-${this.sourceKey}-frozen`, {
+      ...rootUnsigned,
+      graphRootSha256,
     });
     this.memberGraphFrozen = true;
     return Object.freeze({
       sourceKey: this.sourceKey,
       bindingSha256: this.bindingSha256,
       memberCardCount,
+      shardCount: shardReferences.length,
+      graphRootSha256,
       graphArtifactSha256: sealed.sha256,
     });
   }
