@@ -722,7 +722,10 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
  * or Firecrawl route.
  */
 if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_KEY) {
-  c10App.get("/health", (_req: Request, res: Response) => {
+  c10App.get("/health", (req: Request, res: Response) => {
+    if (!validC10HostTransportKey(req.header("x-firecrawl-host-transport-key") ?? undefined)) {
+      return res.sendStatus(401);
+    }
     const health = {
       protocolVersion: 3,
       status: "healthy",
@@ -772,6 +775,9 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
       if (!browser) await initializeBrowser();
       await pageSemaphore.acquire(remaining());
       permitAcquired = true;
+      // A capability may expire while waiting for a real page permit.  Never
+      // let a consumed-but-expired nonce reach DNS, context, or page lease.
+      if (input.capability.expiresAtMs <= Date.now()) return res.sendStatus(404);
       lease = c10PageLeasePool.acquire();
       // A lease begins only after the real shared semaphore and slot are both
       // owned. Queueing, DNS and browser initialization are never lease time.
@@ -833,7 +839,7 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
       };
       return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, evidence) });
     } catch (error) {
-      console.error("C10 internal browser execution failed:", error);
+      console.error("C10 internal browser execution failed");
       return res.status(502).json({ error: "C10 internal browser execution failed" });
     } finally {
       // The sole wall-clock deadline includes cleanup. Once it is exhausted,
