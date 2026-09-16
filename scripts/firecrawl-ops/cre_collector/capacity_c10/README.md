@@ -36,9 +36,14 @@ ordinary controller retains its historic default profile behavior.
 
 The former TypeScript JLL executor, lifecycle preflight, and local browser
 constructor have been removed. A host creates a sealed, plan-bound JLL card
-registry and asks the narrow issued-capability child to perform only a single
-host-issued card. It cannot receive or create a lock, keypair, receipt store,
-Compose configuration, or arbitrary card.
+registry only from the canonical GraphQL enumeration recipe and the exact
+sixteen hash-bound JLL cohort members. It issues the enumeration and all
+sixteen member capabilities before the bounded P0/P1 scheduler begins. The
+narrow issued-capability child can perform only one host-issued card and cannot
+receive or create a lock, keypair, receipt store, Compose configuration, or an
+arbitrary card. The host accepts a terminal success only after it has verified
+signed cleanup-complete evidence and derived the exact 4/10 active-lease peak
+from sidecar lease intervals.
 
 The coordinator seals a browser arm only when it carries the plan/config and
 requested-profile digests, private runtime receipt digest, container snapshot

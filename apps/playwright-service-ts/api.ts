@@ -760,7 +760,13 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
     }
 
     const queuedAt = Date.now();
-    const deadlineAt = queuedAt + input.card.timeoutMs;
+    // The host's absolute lifecycle deadline is authoritative. A reviewed card
+    // may shorten it, but neither queueing nor cleanup gets a second window.
+    const deadlineAt = Math.min(
+      queuedAt + input.card.timeoutMs,
+      input.capability.expiresAtMs,
+      input.capability.hostDeadlineAtMs,
+    );
     const remaining = () => {
       const value = deadlineAt - Date.now();
       if (value < 1) throw new Error("C10 browser hard deadline expired");
@@ -770,6 +776,9 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
     let lease: { leaseId: string; slot: number } | null = null;
     let requestContext: BrowserContext | null = null;
     let page: Page | null = null;
+    let evidence: Record<string, unknown> | null = null;
+    let executionFailed = false;
+    let cleanupConfirmed = false;
     try {
       await assertSafeTargetUrl(input.card.browserBootstrapUrl, C10_BROWSER_TEST_LOCAL_TARGETS);
       await assertSafeTargetUrl(input.card.url, C10_BROWSER_TEST_LOCAL_TARGETS);
@@ -779,7 +788,9 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
       permitAcquired = true;
       // A capability may expire while waiting for a real page permit.  Never
       // let a consumed-but-expired nonce reach DNS, context, or page lease.
-      if (input.capability.expiresAtMs <= Date.now()) return res.sendStatus(404);
+      if (input.capability.expiresAtMs <= Date.now() || input.capability.hostDeadlineAtMs <= Date.now()) {
+        throw new Error("C10 capability expired while queued");
+      }
       lease = c10PageLeasePool.acquire();
       // A lease begins only after the real shared semaphore and slot are both
       // owned. Queueing, DNS and browser initialization are never lease time.
@@ -812,7 +823,7 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
         ? createHash("sha256").update(PROXY_SERVER).digest("hex")
         : null;
       const leaseEndMonotonicNs = process.hrtime.bigint().toString();
-      const evidence = {
+      evidence = {
         protocolVersion: 3,
         binding: input.capability.binding,
         status: browserResponse.status,
@@ -839,17 +850,16 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
         cacheRead: false, // measured from CDP Network.responseReceived
         cacheWrite: false, // Network.setCacheDisabled succeeded before navigation/fetch
       };
-      return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, evidence) });
     } catch (error) {
       console.error("C10 internal browser execution failed");
-      return res.status(502).json({ error: "C10 internal browser execution failed" });
+      executionFailed = true;
     } finally {
       // The sole wall-clock deadline includes cleanup. Once it is exhausted,
       // do not grant a grace period or return the permit: capacity is
       // quarantined until the sidecar is restarted and inspected.
       const remainingCleanupMs = deadlineAt - Date.now();
       if (remainingCleanupMs > 0) {
-        await cleanupBrowserBatchResources(
+        cleanupConfirmed = await cleanupBrowserBatchResources(
           page ? () => page!.close() : null,
           requestContext ? () => requestContext!.close() : null,
           () => {
@@ -862,6 +872,13 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
         console.error("C10 v3 deadline exhausted before cleanup; capacity quarantined");
       }
     }
+    // A signed success is never observable until the page/context/permit have
+    // all been confirmed cleaned up. An unhealthy sidecar is restart-only.
+    if (!executionFailed && cleanupConfirmed && evidence) {
+      return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, evidence) });
+    }
+    console.error("C10 internal browser execution quarantined");
+    return res.status(502).json({ error: "C10 internal browser execution quarantined" });
   });
 }
 

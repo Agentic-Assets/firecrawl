@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
-from test_capacity_c10 import _plan
+from test_capacity_c10 import _cohort, _plan, _registry, _seal_cohort
 
-from capacity_c10 import contracts
+from capacity_c10 import admission, contracts
 from capacity_c10.host_session import (
+    C10HostExecutionSession,
     C10SealedCardRegistry,
     C10SessionStore,
     DockerComposeSidecar,
@@ -63,45 +65,178 @@ def test_typescript_public_barrel_does_not_export_lifecycle_or_key_minting() -> 
 
 
 def test_sealed_registry_rejects_arbitrary_non_jll_or_oversized_cards() -> None:
-    plan = _plan()
-    valid = {
-        "id": "jll-1",
-        "sourceKey": "jll",
-        "cacheMode": "no-store",
-        "maxBytes": 1024,
-    }
-    registry = C10SealedCardRegistry(plan, {"jll-1": valid})
-    assert registry.resolve("jll-1")["id"] == "jll-1"
+    cohort = _cohort()
+    jll = next(source for source in cohort["sources"] if source["source_key"] == "jll")
+    for index, member in enumerate(jll["core"]):
+        member["provider_id"] = str(index + 1)
+        member["canonical_url"] = (
+            f"https://property.jll.com/listings/member-{index + 1}"
+        )
+    _seal_cohort(cohort)
+    plan = admission.admit_plan(cohort, registry=_registry())
+    registry = C10SealedCardRegistry(plan, cohort)
+    assert registry.resolve("jll-member-0")["id"] == "jll-member-0"
+    projection = registry.resolve("jll-member-0")
+    projection["url"] = "https://attacker.invalid/"
+    assert registry.resolve("jll-member-0")["allowedHost"] == "property.jll.com"
     with pytest.raises(contracts.C10Error, match="sealed registry"):
         registry.resolve("arbitrary")
-    invalid = {**valid, "sourceKey": "cbre"}
-    with pytest.raises(contracts.C10Error, match="JLL"):
-        C10SealedCardRegistry(plan, {"jll-1": invalid})
+    alternate = _cohort()
+    with pytest.raises(contracts.C10Error, match="different plan or cohort"):
+        C10SealedCardRegistry(plan, alternate)
 
 
 def test_compose_overlay_is_rendered_before_start_and_owner_env_is_removed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[list[str]] = []
+    environments: list[object] = []
 
     class Result:
         def __init__(self, code: int, stdout: str = "") -> None:
             self.returncode, self.stdout = code, stdout
 
-    def fake_run(command: list[str], **_: object) -> Result:
+    def fake_run(command: list[str], **kwargs: object) -> Result:
         calls.append(command)
+        environments.append(kwargs.get("env"))
         if "config" in command:
             return Result(
                 0,
-                '{"services":{"playwright-service":{"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
+                '{"services":{"playwright-service":{"cpus":"2","environment":{"MAX_CONCURRENT_PAGES":"4","C10_PROFILE_SHA256":"a"},"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
             )
         return Result(0)
 
     monkeypatch.setattr("capacity_c10.host_session.subprocess.run", fake_run)
     lifecycle = DockerComposeSidecar(tmp_path)
-    lifecycle.start({"C10_BROWSER_CPUS": "2"}, 4444, time.monotonic() + 10)
+    lifecycle.start(
+        {
+            "C10_BROWSER_CPUS": "2",
+            "MAX_CONCURRENT_PAGES": "4",
+            "C10_PROFILE_SHA256": "a",
+        },
+        4444,
+        time.monotonic() + 10,
+    )
     lifecycle.stop(time.monotonic() + 10)
 
     assert all("docker-compose.yaml" in call for call in calls)
     assert any("config" in call for call in calls)
+    assert any("ps" in call for call in calls)
+    assert environments[0] is environments[1] is environments[2] is environments[3]
     assert lifecycle._env_file is None
+
+
+def test_signed_lease_intervals_reject_false_capacity_saturation() -> None:
+    def evidence(
+        start: int, end: int, active: int, capacity: int = 4
+    ) -> dict[str, object]:
+        return {
+            "leaseStartMonotonicNs": str(start),
+            "leaseEndMonotonicNs": str(end),
+            "observedActivePages": active,
+            "configuredCapacity": capacity,
+        }
+
+    # Sixteen completed requests are not P0 capacity proof when only three
+    # leases overlap, even if a caller claims the configured capacity is four.
+    serial = [evidence(index * 10, index * 10 + 9, 3) for index in range(16)]
+    with pytest.raises(contracts.C10Error, match="exact P0/P1 target"):
+        C10HostExecutionSession._verify_saturation(serial, 4)
+
+    saturated = [evidence(0, 10, 4) for _ in range(4)] + [
+        evidence(20 + index * 10, 29 + index * 10, 1) for index in range(12)
+    ]
+    C10HostExecutionSession._verify_saturation(saturated, 4)
+
+
+def test_compose_partial_start_uses_same_environment_for_stop_and_quiescence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[list[str], object]] = []
+
+    class Result:
+        def __init__(self, code: int, stdout: str = "") -> None:
+            self.returncode, self.stdout = code, stdout
+
+    def fake_run(command: list[str], **kwargs: object) -> Result:
+        calls.append((command, kwargs.get("env")))
+        if "config" in command:
+            return Result(
+                0,
+                '{"services":{"playwright-service":{"cpus":"2","environment":{"MAX_CONCURRENT_PAGES":"4","C10_PROFILE_SHA256":"a"},"ports":[{"host_ip":"127.0.0.1","published":"4444","target":3004}]}}}',
+            )
+        if "up" in command:
+            return Result(1)
+        return Result(0)
+
+    monkeypatch.setattr("capacity_c10.host_session.subprocess.run", fake_run)
+    lifecycle = DockerComposeSidecar(tmp_path)
+    with pytest.raises(contracts.C10Error, match="startup failed"):
+        lifecycle.start(
+            {
+                "C10_BROWSER_CPUS": "2",
+                "MAX_CONCURRENT_PAGES": "4",
+                "C10_PROFILE_SHA256": "a",
+            },
+            4444,
+            time.monotonic() + 10,
+        )
+    assert any("stop" in command for command, _ in calls)
+    assert any("ps" in command for command, _ in calls)
+    assert len({id(environment) for _, environment in calls}) == 1
+    assert lifecycle._env_file is None
+
+
+def test_hung_child_is_process_group_killed_at_the_host_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class HungChild:
+        pid = 7654
+        returncode = None
+        calls = 0
+
+        def communicate(self, *_: object, **__: object) -> tuple[bytes, bytes]:
+            self.calls += 1
+            if self.calls == 1:
+                raise subprocess.TimeoutExpired(["node"], 0.01)
+            return b"", b""
+
+        def kill(self) -> None:
+            raise AssertionError("process-group kill must be preferred")
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "capacity_c10.host_session.subprocess.Popen",
+        lambda *_args, **_kwargs: HungChild(),
+    )
+    monkeypatch.setattr(
+        "capacity_c10.host_session.os.killpg",
+        lambda pid, signal: killed.append((pid, signal)),
+    )
+    session = object.__new__(C10HostExecutionSession)
+    session.repo_root = tmp_path
+    with pytest.raises(contracts.C10Error, match="exceeded its deadline"):
+        session._run_child({}, time.monotonic() + 1)
+    assert killed == [(7654, 9)]
+
+
+def test_compose_stop_failure_removes_private_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Result:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(
+        "capacity_c10.host_session.subprocess.run", lambda *_args, **_kwargs: Result()
+    )
+    lifecycle = DockerComposeSidecar(tmp_path)
+    env_file = tmp_path / "private.env"
+    env_file.write_text("x=y\n", encoding="utf-8")
+    lifecycle._env_file = env_file
+    lifecycle._compose_env = {"C10_BROWSER_PRIVATE_ENV_FILE": str(env_file)}
+    with pytest.raises(contracts.C10Error, match="stop was not confirmed"):
+        lifecycle.stop(time.monotonic() + 10)
+    assert lifecycle._env_file is None
+    assert lifecycle._compose_env is None
+    assert not env_file.exists()

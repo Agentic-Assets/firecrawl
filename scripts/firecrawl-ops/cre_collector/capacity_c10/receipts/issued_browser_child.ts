@@ -30,7 +30,7 @@ function parseIssued(raw: string): Issued {
     else if (input && typeof input === "object") Object.values(input).forEach((item) => visit(item, depth + 1));
   };
   visit(value);
-  if (!exact(value, ["authorization", "capability", "card", "endpoint", "hostTransportKey"]) || typeof value.endpoint !== "string" || typeof value.authorization !== "string" || typeof value.hostTransportKey !== "string" || !exact(value.capability, ["binding", "coordinatorKeyId", "expiresAtMs", "nonce", "protocolVersion", "sourceKey"]) || !value.card || typeof value.card !== "object" || Array.isArray(value.card)) throw new Error("C10 child frame is invalid");
+  if (!exact(value, ["authorization", "capability", "card", "endpoint", "hostTransportKey"]) || typeof value.endpoint !== "string" || typeof value.authorization !== "string" || typeof value.hostTransportKey !== "string" || !exact(value.capability, ["binding", "cardSequence", "coordinatorKeyId", "expiresAtMs", "hostDeadlineAtMs", "nonce", "protocolVersion", "sourceKey"]) || !value.card || typeof value.card !== "object" || Array.isArray(value.card)) throw new Error("C10 child frame is invalid");
   const endpoint = new URL(value.endpoint);
   if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || endpoint.port === "" || endpoint.pathname !== "/" || endpoint.search || endpoint.hash || endpoint.username || endpoint.password) throw new Error("C10 child endpoint is not issued loopback");
   return value as Issued;
