@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`25f78ce059ae2cb35a9babfa8c0b38379d353df1`
+`fc235e863e7993a87febd37303364fa32ec26915`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -102,21 +102,24 @@ not change the Wave 1 execution boundary.
 - Foundry member receipts extract the provider's explicit status note and
   require the shared reviewed status classifier to return `active`; terminal,
   unknown, and missing statuses fail before a member receipt is sealed.
+- The coordinator rejects path-matching substitutes for the runtime lock. It
+  requires the concrete canonical `SharedLock` and verifies a live owned
+  directory descriptor immediately after acquisition, including for P0 arms.
 
 ## Verification
 
-The final code candidate `25f78ce059ae2cb35a9babfa8c0b38379d353df1`
-passed the complete collector suites and static gates before the subsequent
-closeout and forward-queue documentation corrections:
+The final code candidate `fc235e863e7993a87febd37303364fa32ec26915`
+passed the complete collector suites and static gates before this final
+closeout documentation correction:
 
-- `python3 -m pytest -q`: 3217 passed, 18 skipped.
+- `python3 -m pytest -q`: 3218 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 909 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Twenty exact-head Codex review passes produced thirty-nine material findings. All
-thirty-nine were confirmed and fixed: immutable cohort binding, per-source timing,
+Twenty-one exact-head Codex review passes produced forty material findings. All
+forty were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -137,7 +140,8 @@ dependency coverage, complete per-source scheduled cohort parity, and an exact
 reviewed browser engine, plus consumption-time repository authority validation,
 durable-ledger-only comparison inputs, exact complete-plan authority pinning,
 measurement-only offline comparison with no positive candidate state, and
-Foundry active-status enforcement before member receipt sealing.
+Foundry active-status enforcement before member receipt sealing, plus concrete
+canonical lock-type and live ownership verification before P0 or P1 work.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
