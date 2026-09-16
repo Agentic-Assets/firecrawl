@@ -210,6 +210,17 @@ function normalizedC10MemberRoute(value: unknown, card: C10SidecarCard): string 
   }
 }
 
+/**
+ * An absent or empty GraphQL `errors` array means no errors; any other value
+ * (non-empty, null, or a non-array) is a failure.  Python `_verify_evidence`
+ * and the JLL selection rule share this contract via golden vectors.
+ */
+export function hasNoC10GraphqlErrors(payload: object): boolean {
+  if (!Object.prototype.hasOwnProperty.call(payload, "errors")) return true;
+  const errors = (payload as { errors?: unknown }).errors;
+  return Array.isArray(errors) && errors.length === 0;
+}
+
 /** Reject GraphQL transport successes that do not prove the sealed cohort is current. */
 export function hasC10EnumerationMembership(
   card: C10SidecarCard,
@@ -220,7 +231,7 @@ export function hasC10EnumerationMembership(
   }
   try {
     const payload: unknown = JSON.parse(Buffer.from(bodyBase64, "base64").toString("utf8"));
-    if (!payload || typeof payload !== "object" || Array.isArray(payload) || "errors" in payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) || !hasNoC10GraphqlErrors(payload)) {
       return false;
     }
     const data = (payload as { data?: unknown }).data;
@@ -250,7 +261,7 @@ export function hasC10EnumerationMembership(
 export function hasC10AdmissionEnumerationCandidates(bodyBase64: string): boolean {
   try {
     const payload: unknown = JSON.parse(Buffer.from(bodyBase64, "base64").toString("utf8"));
-    if (!payload || typeof payload !== "object" || Array.isArray(payload) || "errors" in payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) || !hasNoC10GraphqlErrors(payload)) {
       return false;
     }
     const data = (payload as { data?: unknown }).data;

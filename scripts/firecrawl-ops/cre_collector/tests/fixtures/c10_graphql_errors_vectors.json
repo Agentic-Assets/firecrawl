@@ -1,0 +1,96 @@
+[
+  {
+    "name": "errors_absent",
+    "errors": {
+      "present": false,
+      "value": null
+    },
+    "accepted": true
+  },
+  {
+    "name": "errors_empty_array",
+    "errors": {
+      "present": true,
+      "value": []
+    },
+    "accepted": true
+  },
+  {
+    "name": "errors_nonempty_array",
+    "errors": {
+      "present": true,
+      "value": [
+        {
+          "message": "x"
+        }
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_array_with_null_element",
+    "errors": {
+      "present": true,
+      "value": [
+        null
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_null",
+    "errors": {
+      "present": true,
+      "value": null
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_empty_object",
+    "errors": {
+      "present": true,
+      "value": {}
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_empty_string",
+    "errors": {
+      "present": true,
+      "value": ""
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_nonempty_string",
+    "errors": {
+      "present": true,
+      "value": "boom"
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_number_zero",
+    "errors": {
+      "present": true,
+      "value": 0
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_boolean_false",
+    "errors": {
+      "present": true,
+      "value": false
+    },
+    "accepted": false
+  },
+  {
+    "name": "errors_boolean_true",
+    "errors": {
+      "present": true,
+      "value": true
+    },
+    "accepted": false
+  }
+]

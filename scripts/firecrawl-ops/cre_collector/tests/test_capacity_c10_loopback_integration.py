@@ -31,7 +31,7 @@ def _free_loopback_port() -> int:
 
 @contextmanager
 def _loopback_listener(
-    repo_root: Path, environment: dict[str, str]
+    repo_root: Path, environment: dict[str, str], *, wait_ready: bool = True
 ) -> Iterator[subprocess.Popen[str]]:
     # `--import tsx` resolves the "tsx" package from cwd's node module
     # resolution chain. Only apps/playwright-service-ts (not the repository
@@ -53,21 +53,22 @@ def _loopback_listener(
     )
     assert process.stdout is not None
     try:
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([process.stdout], [], [], 0.1)
-            if ready and process.stdout.readline().strip() == "c10-loopback-ready":
-                break
+        if wait_ready:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([process.stdout], [], [], 0.1)
+                if ready and process.stdout.readline().strip() == "c10-loopback-ready":
+                    break
+                if process.poll() is not None:
+                    break
+            else:
+                pytest.fail("C10 loopback listener did not become ready")
             if process.poll() is not None:
-                break
-        else:
-            pytest.fail("C10 loopback listener did not become ready")
-        if process.poll() is not None:
-            assert process.stderr is not None
-            pytest.fail(
-                "C10 loopback listener exited before readiness: "
-                f"{process.stderr.read()}"
-            )
+                assert process.stderr is not None
+                pytest.fail(
+                    "C10 loopback listener exited before readiness: "
+                    f"{process.stderr.read()}"
+                )
         yield process
     finally:
         if process.poll() is None:
@@ -185,5 +186,47 @@ def test_python_verifies_signed_health_reports_the_admission_lane(
             contracts.C10Error, match="signed health binding is invalid"
         ):
             host._verify_health(endpoint, keys, profile, deadline)
+
+    assert listener.returncode == 0
+
+
+def test_verify_health_polls_through_the_real_listener_starting_up(
+    tmp_path: Path,
+) -> None:
+    """Call `_verify_health` immediately after `Popen`, without waiting for
+    the fixture's own "c10-loopback-ready" line. `_poll_health`'s retry over
+    connection-refused/reset must itself absorb the real Node startup delay,
+    against the real TypeScript loopback listener (no Docker)."""
+    repo_root = Path(__file__).parents[4]
+    plan, cohort = sealed_jll_plan()
+    cards = C10SealedCardRegistry(plan, cohort)
+    store = C10SessionStore(tmp_path / "ledger" / "session.json")
+    host = object.__new__(_C10HostTransport)
+    host.repo_root = repo_root
+    host.cards = cards
+    host.session_store = store
+
+    deadline = time.monotonic() + 60
+    keys = host._keys(deadline)
+    claim = controller_claim(store, plan)
+    profile = plan["profiles"][claim["arm"]["variant"]]
+    port = _free_loopback_port()
+    environment = {
+        **os.environ,
+        "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
+            keys.coordinator_public_pem.encode("utf-8")
+        ).decode("ascii"),
+        "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
+            keys.sidecar_private_pem.encode("utf-8")
+        ).decode("ascii"),
+        "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
+        "C10_BROWSER_INTERNAL_PORT": str(port),
+        "C10_PROFILE_SHA256": contracts.sha256(profile["requested"]),
+        "NODE_ENV": "test",
+    }
+    endpoint = f"http://127.0.0.1:{port}"
+
+    with _loopback_listener(repo_root, environment, wait_ready=False) as listener:
+        host._verify_health(endpoint, keys, profile, deadline)
 
     assert listener.returncode == 0

@@ -2,6 +2,9 @@
 # playwright-service: each lifecycle gets a unique COMPOSE_PROJECT_NAME.
 services:
   playwright-service-c10:
+    # Prebuilt by the operator from the reviewed checkout; C10 runs pass
+    # --no-build --pull never and verify this exact tag in the rendered config.
+    image: firecrawl-playwright-service-c10:local
     build: apps/playwright-service-ts
     env_file:
       - path: ${C10_BROWSER_PRIVATE_ENV_FILE:?set an owner-only C10 env file}

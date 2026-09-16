@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
 import {
   assertC10BrowserListenerConfiguration,
   hasC10AdmissionEnumerationCandidates,
+  hasC10EnumerationMembership,
+  hasNoC10GraphqlErrors,
   isC10SuccessfulBrowserResponse,
   readC10BrowserListenerConfig,
 } from "./c10_browser_listener";
@@ -153,10 +157,11 @@ test("readC10BrowserListenerConfig/assertC10BrowserListenerConfiguration: admiss
   );
 });
 
-test("hasC10AdmissionEnumerationCandidates accepts >=16 candidates and rejects 15, an errors envelope, or non-JSON", () => {
-  const bodyWith = (count: number) =>
+test("hasC10AdmissionEnumerationCandidates accepts >=16 candidates and an empty errors array, and rejects 15, a non-empty errors array, or non-JSON", () => {
+  const bodyWith = (count: number, extra: Record<string, unknown> = {}) =>
     Buffer.from(
       JSON.stringify({
+        ...extra,
         data: {
           properties: {
             items: Array.from({ length: count }, (_, index) => ({
@@ -167,7 +172,14 @@ test("hasC10AdmissionEnumerationCandidates accepts >=16 candidates and rejects 1
       }),
     ).toString("base64");
   assert.equal(hasC10AdmissionEnumerationCandidates(bodyWith(16)), true);
+  assert.equal(hasC10AdmissionEnumerationCandidates(bodyWith(16, { errors: [] })), true);
   assert.equal(hasC10AdmissionEnumerationCandidates(bodyWith(15)), false);
+  assert.equal(
+    hasC10AdmissionEnumerationCandidates(
+      bodyWith(16, { errors: [{ message: "upstream failure" }] }),
+    ),
+    false,
+  );
   assert.equal(
     hasC10AdmissionEnumerationCandidates(
       Buffer.from(JSON.stringify({ errors: [{ message: "upstream failure" }] })).toString(
@@ -181,6 +193,83 @@ test("hasC10AdmissionEnumerationCandidates accepts >=16 candidates and rejects 1
     false,
   );
 });
+
+/**
+ * Golden-vector parity for the GraphQL `errors` "no errors" contract, shared
+ * with the Python host (`_graphql_errors_absent`, `select_jll_admission_members`,
+ * `_C10HostTransport._verify_evidence`) via
+ * tests/fixtures/c10_graphql_errors_vectors.json. An absent or empty `errors`
+ * array means no errors; any other value is a failure.
+ */
+interface GraphqlErrorsVector {
+  name: string;
+  errors: { present: boolean; value: unknown };
+  accepted: boolean;
+}
+
+const graphqlErrorsFixturePath = path.join(
+  __dirname,
+  "../../scripts/firecrawl-ops/cre_collector/tests/fixtures/c10_graphql_errors_vectors.json",
+);
+const graphqlErrorsVectors: GraphqlErrorsVector[] = JSON.parse(
+  readFileSync(graphqlErrorsFixturePath, "utf-8"),
+);
+
+// Sixteen canonical JLL enumeration candidates, matching the Python test's
+// base envelope so the two suites exercise the identical shape.
+const canonicalGraphqlErrorsItems = Array.from({ length: 16 }, (_, index) => ({
+  id: `900${index + 1}`,
+  pageUrl: `/listings/member-${index + 1}`,
+}));
+
+function graphqlErrorsEnvelope(vector: GraphqlErrorsVector): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    data: {
+      properties: { count: canonicalGraphqlErrorsItems.length, items: canonicalGraphqlErrorsItems },
+    },
+  };
+  if (vector.errors.present) {
+    payload.errors = vector.errors.value;
+  }
+  return payload;
+}
+
+test("graphql errors fixture is non-empty and covers both dispositions", () => {
+  assert.ok(graphqlErrorsVectors.length > 0);
+  assert.ok(graphqlErrorsVectors.some((vector) => vector.accepted));
+  assert.ok(graphqlErrorsVectors.some((vector) => !vector.accepted));
+});
+
+for (const vector of graphqlErrorsVectors) {
+  test(`hasNoC10GraphqlErrors: ${vector.name}`, () => {
+    const payload = graphqlErrorsEnvelope(vector);
+    assert.equal(hasNoC10GraphqlErrors(payload), vector.accepted);
+  });
+
+  test(`hasC10AdmissionEnumerationCandidates: ${vector.name}`, () => {
+    const bodyBase64 = Buffer.from(JSON.stringify(graphqlErrorsEnvelope(vector))).toString(
+      "base64",
+    );
+    assert.equal(hasC10AdmissionEnumerationCandidates(bodyBase64), vector.accepted);
+  });
+
+  test(`hasC10EnumerationMembership: ${vector.name}`, () => {
+    const expectedMemberRoutes = canonicalGraphqlErrorsItems.map(
+      (item) => `https://property.jll.com${item.pageUrl}`,
+    );
+    const card: C10SidecarCard = {
+      ...enumerationCard,
+      id: "graphql-errors-membership",
+      allowedHost: "property.jll.com",
+      url: "https://property.jll.com/api/graphql",
+      expectedMemberRoutes,
+    };
+    const bodyBase64 = Buffer.from(JSON.stringify(graphqlErrorsEnvelope(vector))).toString(
+      "base64",
+    );
+    assert.equal(hasC10EnumerationMembership(card, bodyBase64), vector.accepted);
+  });
+}
 
 test("C10 admission enumeration success accepts >=16 candidates while a strict card still requires sealed membership", () => {
   const admissionEnumerationCard: C10SidecarCard = {

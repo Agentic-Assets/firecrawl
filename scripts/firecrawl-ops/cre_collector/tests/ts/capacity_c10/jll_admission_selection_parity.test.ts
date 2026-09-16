@@ -87,3 +87,76 @@ for (const vector of vectors) {
     );
   });
 }
+
+/**
+ * Golden-vector parity for the GraphQL `errors` "no errors" contract, shared
+ * with the Python host (`_graphql_errors_absent`, `select_jll_admission_members`,
+ * `_C10HostTransport._verify_evidence`) and the playwright sidecar
+ * (`hasNoC10GraphqlErrors`). An absent or empty `errors` array means no
+ * errors; any other value (non-empty array, null, object, string, number,
+ * boolean) is a failure. Vectors: tests/fixtures/c10_graphql_errors_vectors.json.
+ */
+interface GraphqlErrorsVector {
+  name: string;
+  errors: { present: boolean; value: unknown };
+  accepted: boolean;
+}
+
+const graphqlErrorsFixtureUrl = new URL(
+  "../../fixtures/c10_graphql_errors_vectors.json",
+  import.meta.url,
+);
+const graphqlErrorsVectors: GraphqlErrorsVector[] = JSON.parse(
+  readFileSync(graphqlErrorsFixtureUrl, "utf-8"),
+);
+
+// Sixteen canonical JLL enumeration candidates, matching the Python test's
+// base envelope so both suites exercise the identical shape.
+const canonicalGraphqlErrorsItems = Array.from({ length: 16 }, (_, index) => ({
+  id: `900${index + 1}`,
+  pageUrl: `/listings/member-${index + 1}`,
+}));
+
+function graphqlErrorsEnvelope(vector: GraphqlErrorsVector): unknown {
+  const payload: Record<string, unknown> = {
+    data: {
+      properties: {
+        count: canonicalGraphqlErrorsItems.length,
+        items: canonicalGraphqlErrorsItems,
+      },
+    },
+  };
+  if (vector.errors.present) {
+    payload.errors = vector.errors.value;
+  }
+  return payload;
+}
+
+test("graphql errors fixture is non-empty and covers both dispositions", () => {
+  assert.ok(graphqlErrorsVectors.length > 0);
+  assert.ok(graphqlErrorsVectors.some((vector) => vector.accepted));
+  assert.ok(graphqlErrorsVectors.some((vector) => !vector.accepted));
+});
+
+for (const vector of graphqlErrorsVectors) {
+  test(`selectJllAdmissionMembers graphql errors parity: ${vector.name}`, () => {
+    const payload = graphqlErrorsEnvelope(vector);
+    if (vector.accepted) {
+      const result = selectJllAdmissionMembers(payload);
+      assert.equal(result.candidateCount, 16);
+      assert.equal(result.selectedMembers.length, 16);
+    } else {
+      assert.throws(
+        () => selectJllAdmissionMembers(payload),
+        (err: unknown) => {
+          assert.ok(err instanceof C10ReceiptError, `expected C10ReceiptError, got ${String(err)}`);
+          assert.ok(
+            (err as Error).message.includes("envelope is invalid"),
+            `expected envelope-invalid message, got ${JSON.stringify((err as Error).message)}`,
+          );
+          return true;
+        },
+      );
+    }
+  });
+}

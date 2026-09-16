@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
@@ -50,6 +51,10 @@ _MAX_CHILD_FRAME_BYTES = 64 * 1024
 _MAX_CHILD_STDOUT_BYTES = 8 * 1024 * 1024
 _MAX_CHILD_STDERR_BYTES = 64 * 1024
 _MAX_CARD_TIMEOUT_MS = 30_000
+# `up -d` returns before the listener binds. Only connection refused/reset is
+# a not-yet-ready signal; any HTTP response is verified strictly and at once.
+_HEALTH_READINESS_SECONDS = 60.0
+_HEALTH_POLL_INTERVAL_SECONDS = 0.25
 _C10_COMPOSE_SERVICE = "playwright-service-c10"
 _JLL_HOST = "property.jll.com"
 _JLL_BOOTSTRAP_URL = "https://property.jll.com/"
@@ -118,6 +123,16 @@ def _safe_json(value: Any, label: str) -> Mapping[str, Any]:
     # Re-encoding rejects non-finite and unsupported values through contracts.
     json.loads(_canonical_text(value))
     return value
+
+
+def _graphql_errors_absent(payload: Mapping[str, Any]) -> bool:
+    """An absent or empty GraphQL ``errors`` array means no errors.
+
+    Any other value (non-empty, null, or a non-array) is a failure.  The
+    sidecar and the JLL selection rule share this exact contract.
+    """
+    errors = payload.get("errors", [])
+    return isinstance(errors, list) and not errors
 
 
 def _remaining(deadline: float) -> float:
@@ -390,15 +405,7 @@ class _C10HostTransport:
         P0/P1 calibration requires a strict sidecar (``admissionLane`` null);
         only the JLL admission action may require its named admission lane.
         """
-        request = Request(
-            f"{endpoint}/health",
-            headers={"x-firecrawl-host-transport-key": keys.transport_key},
-        )
-        try:
-            with urlopen(request, timeout=_remaining(deadline)) as response:
-                raw = json.loads(response.read(_MAX_PRIVATE_ARTIFACT + 1))
-        except Exception as exc:
-            raise C10Error("C10 signed sidecar health is unavailable") from exc
+        raw = self._poll_health(endpoint, keys, deadline)
         health = _safe_json(raw, "C10 signed health")
         if set(health) != _HEALTH_FIELDS | {"profileSha256"}:
             raise C10Error("C10 signed health schema is invalid")
@@ -422,6 +429,37 @@ class _C10HostTransport:
             or unsigned.get("admissionLane") != admission_lane
         ):
             raise C10Error("C10 signed health binding is invalid")
+
+    @staticmethod
+    def _poll_health(endpoint: str, keys: C10EphemeralKeys, deadline: float) -> Any:
+        """Wait, bounded, for the listener to accept; never retry a response.
+
+        Connection refused or reset (including a docker-proxy accept followed
+        by an immediate close) means the sidecar is not listening yet.  Every
+        other failure, and every HTTP response, is returned to strict signed
+        verification or fails closed immediately.
+        """
+        readiness_deadline = min(deadline, time.monotonic() + _HEALTH_READINESS_SECONDS)
+        while True:
+            request = Request(
+                f"{endpoint}/health",
+                headers={"x-firecrawl-host-transport-key": keys.transport_key},
+            )
+            try:
+                with urlopen(request, timeout=_remaining(deadline)) as response:
+                    return json.loads(response.read(_MAX_PRIVATE_ARTIFACT + 1))
+            except Exception as exc:
+                reason = exc.reason if isinstance(exc, URLError) else exc
+                not_listening = isinstance(
+                    reason, ConnectionRefusedError | ConnectionResetError
+                ) and not isinstance(exc, HTTPError)
+                if (
+                    not not_listening
+                    or time.monotonic() + _HEALTH_POLL_INTERVAL_SECONDS
+                    >= readiness_deadline
+                ):
+                    raise C10Error("C10 signed sidecar health is unavailable") from exc
+            time.sleep(_HEALTH_POLL_INTERVAL_SECONDS)
 
     def _issue(
         self,
@@ -653,7 +691,7 @@ class _C10HostTransport:
                 raise C10Error("C10 enumeration evidence is not usable JSON") from exc
             if (
                 not isinstance(payload, Mapping)
-                or "errors" in payload
+                or not _graphql_errors_absent(payload)
                 or not isinstance(items, list)
             ):
                 raise C10Error("C10 enumeration evidence contains no accepted cohort")

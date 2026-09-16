@@ -70,10 +70,16 @@ loopback port, hold the canonical `SharedLock`, durably claim an arm in
 signed, host-key-authenticated v3 health before execution. The coordinator
 binds the durable claim digest, rather than a caller-controlled mutable ledger,
 as `sessionSha256`; it never permits an alternate plan or ledger to resume a
-claim. A lifecycle has one deadline covering Compose startup, health, browser
-execution, evidence sealing, and cleanup. Any timeout, child failure, bad
-signature, root replacement, or cleanup failure retains the canonical lock for
-quarantine before it can be released.
+claim. A P0/P1 lifecycle has one deadline covering Compose startup, health,
+browser execution, and evidence sealing. Sidecar teardown has its own bounded
+budget (60 s, retried) so an expired run still removes its exact compose
+project. The image `firecrawl-playwright-service-c10:local` must be prebuilt
+from the reviewed checkout (`docker compose -f docker-compose.yaml -f
+docker-compose.c10.yaml build playwright-service-c10`); a run passes
+`--no-build --pull never`. Health is polled only while the listener refuses or
+resets connections; any HTTP response is verified strictly at once. Any
+timeout, child failure, bad signature, root replacement, or cleanup failure
+retains the canonical lock for quarantine before it can be released.
 The sidecar signs every evidence record with lease monotonic start/end values,
 active/capacity observations, one exact engine attempt, ephemeral context/cache
 semantics, and plan/cohort/card/manifest/session/arm/profile bindings.

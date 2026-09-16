@@ -7,6 +7,8 @@ import copy
 import hashlib
 import json
 import os
+import socket
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -774,3 +776,241 @@ def test_rendered_identity_rejects_admission_lane_mismatch_in_either_direction()
         )
         is False
     )
+
+
+# ---------------------------------------------------------------------------
+# Real-socket readiness-poll tests for `_poll_health` (via `_verify_health`).
+# No Docker; a real loopback TCP listener stands in for the sidecar.
+# ---------------------------------------------------------------------------
+
+
+def _reserve_loopback_port() -> int:
+    """Bind then close so the port is free but genuinely not listening."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        return int(reserved.getsockname()[1])
+
+
+def _http_response_bytes(status: int, reason: str, body: bytes) -> bytes:
+    headers = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii")
+    return headers + body
+
+
+def _serve_one_response(
+    listener: socket.socket, status: int, reason: str, body: bytes
+) -> None:
+    connection, _addr = listener.accept()
+    try:
+        connection.recv(65536)
+        connection.sendall(_http_response_bytes(status, reason, body))
+    finally:
+        connection.close()
+
+
+def _health_fixture() -> tuple[C10EphemeralKeys, dict[str, object], float, bytes]:
+    sidecar_private, sidecar_public = _OpenSsl.pair(time.monotonic() + 30)
+    coordinator_public = "coordinator-public-fixture"
+    keys = C10EphemeralKeys(
+        "unused", coordinator_public, sidecar_private, sidecar_public, "transport-key"
+    )
+    profile = {"requested": {"global_pages": 4}}
+    deadline = time.monotonic() + 30
+    signed = _signed_health(
+        coordinator_public=coordinator_public,
+        sidecar_private=sidecar_private,
+        sidecar_public=sidecar_public,
+        configured_capacity=4,
+        profile_sha256=contracts.sha256(profile["requested"]),
+        admission_lane=None,
+        deadline=deadline,
+    )
+    return keys, profile, deadline, json.dumps(signed).encode("utf-8")
+
+
+def test_verify_health_retries_through_an_initial_connection_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The port is genuinely closed (reserved then released) when
+    ``_verify_health`` is first called, so the first poll attempt(s) must hit
+    ECONNREFUSED. Only once the fixture server starts listening, ~0.5s later,
+    does the poll succeed."""
+    keys, profile, deadline, body = _health_fixture()
+    port = _reserve_loopback_port()
+    started = threading.Event()
+
+    def serve() -> None:
+        time.sleep(0.5)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", port))
+            listener.listen(1)
+            started.set()
+            _serve_one_response(listener, 200, "OK", body)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    start = time.monotonic()
+    _C10HostTransport._verify_health(
+        object.__new__(_C10HostTransport),
+        f"http://127.0.0.1:{port}",
+        keys,
+        profile,
+        deadline,
+    )
+    elapsed = time.monotonic() - start
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    # The fixture server did not start listening until ~0.5s in, so success
+    # proves at least one earlier attempt observed connection refused and the
+    # poll loop retried rather than failing closed on it.
+    assert elapsed >= 0.4
+
+
+def test_verify_health_retries_through_reset_connections_then_succeeds() -> None:
+    """The server accepts and immediately closes the first two connections
+    (no bytes written), which the client observes as a reset/disconnect, not
+    an HTTP response. `_verify_health` must retry through those and succeed
+    on the third, real response."""
+    keys, profile, deadline, body = _health_fixture()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen(5)
+
+        def serve() -> None:
+            for _ in range(2):
+                connection, _addr = listener.accept()
+                connection.close()
+            _serve_one_response(listener, 200, "OK", body)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        _C10HostTransport._verify_health(
+            object.__new__(_C10HostTransport),
+            f"http://127.0.0.1:{port}",
+            keys,
+            profile,
+            deadline,
+        )
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+def test_verify_health_fails_closed_immediately_on_an_http_error_status() -> None:
+    """A real HTTP response, even an error one, is never a not-yet-ready
+    signal: `_verify_health` must fail closed on the first request, with no
+    retry."""
+    keys, profile, deadline, _body = _health_fixture()
+    request_count: list[int] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen(1)
+
+        def serve() -> None:
+            connection, _addr = listener.accept()
+            request_count.append(1)
+            connection.recv(65536)
+            connection.sendall(_http_response_bytes(503, "Service Unavailable", b"{}"))
+            connection.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        start = time.monotonic()
+        with pytest.raises(
+            contracts.C10Error, match="signed sidecar health is unavailable"
+        ):
+            _C10HostTransport._verify_health(
+                object.__new__(_C10HostTransport),
+                f"http://127.0.0.1:{port}",
+                keys,
+                profile,
+                deadline,
+            )
+        elapsed = time.monotonic() - start
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert request_count == [1]
+    assert elapsed < 2.0
+
+
+def test_verify_health_rejects_a_wrongly_signed_response_with_no_retry() -> None:
+    """A validly-shaped HTTP 200 response whose signature does not verify is
+    a strict verification failure, not a not-yet-ready signal: exactly one
+    request, no retry."""
+    keys, profile, deadline, _body = _health_fixture()
+    other_sidecar_private, _other_sidecar_public = _OpenSsl.pair(deadline)
+    wrongly_signed = _signed_health(
+        coordinator_public="coordinator-public-fixture",
+        sidecar_private=other_sidecar_private,  # signed with the WRONG key
+        sidecar_public=keys.sidecar_public_pem,
+        configured_capacity=4,
+        profile_sha256=contracts.sha256(profile["requested"]),
+        admission_lane=None,
+        deadline=deadline,
+    )
+    body = json.dumps(wrongly_signed).encode("utf-8")
+    request_count: list[int] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen(1)
+
+        def serve() -> None:
+            connection, _addr = listener.accept()
+            request_count.append(1)
+            connection.recv(65536)
+            connection.sendall(_http_response_bytes(200, "OK", body))
+            connection.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        with pytest.raises(
+            contracts.C10Error, match="signed health attestation is invalid"
+        ):
+            _C10HostTransport._verify_health(
+                object.__new__(_C10HostTransport),
+                f"http://127.0.0.1:{port}",
+                keys,
+                profile,
+                deadline,
+            )
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert request_count == [1]
+
+
+def test_verify_health_gives_up_after_the_readiness_bound_on_a_never_listening_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A port that never starts listening must fail closed once the readiness
+    bound elapses, rather than retrying until the outer run deadline."""
+    monkeypatch.setattr(
+        "capacity_c10.host_orchestration._HEALTH_READINESS_SECONDS", 1.0
+    )
+    keys, profile, deadline, _body = _health_fixture()
+    port = _reserve_loopback_port()
+    start = time.monotonic()
+    with pytest.raises(
+        contracts.C10Error, match="signed sidecar health is unavailable"
+    ):
+        _C10HostTransport._verify_health(
+            object.__new__(_C10HostTransport),
+            f"http://127.0.0.1:{port}",
+            keys,
+            profile,
+            deadline,
+        )
+    elapsed = time.monotonic() - start
+    # Bounded roughly by the 1.0s readiness bound (minus one poll interval of
+    # slack) and well under the outer 30s deadline used by other tests here.
+    assert 0.5 <= elapsed < 5.0

@@ -38,6 +38,14 @@ _MAX_CHILD_STDOUT_BYTES = 8 * 1024 * 1024
 _MAX_CHILD_STDERR_BYTES = 64 * 1024
 _MAX_CARD_TIMEOUT_MS = 30_000
 _C10_COMPOSE_SERVICE = "playwright-service-c10"
+# A fixed, operator-prebuilt image. Each lifecycle uses a fresh compose project
+# name, so without a pinned tag compose would name (and therefore build) a new
+# image inside every bounded run. `up` refuses to build or pull.
+C10_BROWSER_IMAGE = "firecrawl-playwright-service-c10:local"
+# Teardown has its own bound, independent of the (possibly expired) run
+# deadline: a controller timeout must still remove the per-session container.
+_TEARDOWN_BUDGET_SECONDS = 60.0
+_TEARDOWN_ATTEMPTS = 3
 _JLL_HOST = "property.jll.com"
 _JLL_BOOTSTRAP_URL = "https://property.jll.com/"
 # This is deliberately a fixed recipe rather than a caller supplied request
@@ -113,6 +121,13 @@ def _remaining(deadline: float) -> float:
     return value
 
 
+def _cleanup_remaining(cleanup_deadline: float) -> float:
+    value = cleanup_deadline - time.monotonic()
+    if value <= 0:
+        raise C10Error("C10 sidecar teardown budget expired")
+    return value
+
+
 @dataclass(frozen=True)
 class C10EphemeralKeys:
     coordinator_private_pem: str
@@ -126,7 +141,7 @@ class SidecarLifecycle(Protocol):
     def start(
         self, environment: Mapping[str, str], port: int, deadline: float
     ) -> None: ...
-    def stop(self, deadline: float) -> None: ...
+    def stop(self, deadline: float | None = None) -> None: ...
 
 
 class DockerComposeSidecar:
@@ -136,6 +151,13 @@ class DockerComposeSidecar:
         self.repo_root = repo_root
         self._env_file: Path | None = None
         self._compose_env: dict[str, str] | None = None
+        # Retained after stop (success or failure) so an unproven teardown can
+        # name the exact compose project in its quarantine record.
+        self.compose_project: str | None = None
+        # Sticky: once removal was not proven (including inside start's own
+        # partial-start cleanup), every later stop reports it again rather
+        # than treating the cleared compose env as a clean teardown.
+        self._teardown_unproven = False
 
     def start(self, environment: Mapping[str, str], port: int, deadline: float) -> None:
         descriptor, raw = tempfile.mkstemp(prefix="c10-sidecar-", suffix=".env")
@@ -158,6 +180,9 @@ class DockerComposeSidecar:
             "up",
             "-d",
             "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
             _C10_COMPOSE_SERVICE,
         ]
         env = {
@@ -169,6 +194,7 @@ class DockerComposeSidecar:
         }
         env["COMPOSE_PROJECT_NAME"] = env["C10_COMPOSE_PROJECT"]
         self._compose_env = env
+        self.compose_project = env["C10_COMPOSE_PROJECT"]
         try:
             rendered = subprocess.run(
                 [
@@ -204,7 +230,12 @@ class DockerComposeSidecar:
                 check=False,
             )
             if result.returncode != 0:
-                raise C10Error("C10 sidecar compose startup failed")
+                raise C10Error(
+                    "C10 sidecar compose startup failed; runs never build or "
+                    f"pull, so prebuild {C10_BROWSER_IMAGE} from the reviewed "
+                    "checkout: docker compose -f docker-compose.yaml -f "
+                    f"docker-compose.c10.yaml build {_C10_COMPOSE_SERVICE}"
+                )
         except BaseException:
             # A compose validation timeout or `up` failure may have created a
             # container. Always use this exact env/project identity to remove
@@ -217,66 +248,99 @@ class DockerComposeSidecar:
                 ) from cleanup_error
             raise
 
-    def stop(self, deadline: float) -> None:
+    def stop(self, deadline: float | None = None) -> None:
+        """Remove the exact per-session project within its own cleanup budget.
+
+        ``deadline`` is the caller's run deadline and deliberately does not
+        bound teardown: a run that timed out must still issue ``rm`` and prove
+        absence.  Teardown retries within ``_TEARDOWN_BUDGET_SECONDS`` and
+        raises when absence cannot be proven; ``compose_project`` survives for
+        the caller's quarantine record.
+        """
+        del deadline
         try:
             if self._compose_env is None:
                 # Start owns failed-start cleanup locally. A host finally block
-                # may race only that already-confirmed cleanup, never another
+                # may race only that already-attempted cleanup, never another
                 # project or ordinary sidecar.
+                if self._teardown_unproven:
+                    raise C10Error(
+                        "C10 sidecar removal was not confirmed "
+                        f"(compose project {self.compose_project})"
+                    )
                 return
-            result = subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "-f",
-                    "docker-compose.yaml",
-                    "-f",
-                    "docker-compose.c10.yaml",
-                    "rm",
-                    "--force",
-                    "--stop",
-                    _C10_COMPOSE_SERVICE,
-                ],
-                cwd=self.repo_root,
-                env=self._compose_env,
-                capture_output=True,
-                timeout=_remaining(deadline),
-                check=False,
+            cleanup_deadline = time.monotonic() + _TEARDOWN_BUDGET_SECONDS
+            failure: BaseException | None = None
+            # Unproven until an attempt proves absence, even if interrupted.
+            self._teardown_unproven = True
+            for _attempt in range(_TEARDOWN_ATTEMPTS):
+                if time.monotonic() >= cleanup_deadline:
+                    break
+                try:
+                    self._remove_once(self._compose_env, cleanup_deadline)
+                    self._teardown_unproven = False
+                    return
+                except (C10Error, OSError, subprocess.SubprocessError) as exc:
+                    failure = exc
+            detail = (
+                str(failure)
+                if isinstance(failure, C10Error)
+                else "C10 sidecar removal was not confirmed"
             )
-            if result.returncode != 0:
-                raise C10Error("C10 sidecar removal was not confirmed")
-            quiescence = subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "-f",
-                    "docker-compose.yaml",
-                    "-f",
-                    "docker-compose.c10.yaml",
-                    "ps",
-                    "--all",
-                    "--format",
-                    "json",
-                    _C10_COMPOSE_SERVICE,
-                ],
-                cwd=self.repo_root,
-                env=self._compose_env,
-                capture_output=True,
-                text=True,
-                timeout=_remaining(deadline),
-                check=False,
-            )
-            if quiescence.returncode != 0 or not self._compose_is_absent(
-                quiescence.stdout
-            ):
-                # Absence is stronger than stopped: it removes the container
-                # Config.Env which held the per-session sidecar secrets.
-                raise C10Error(
-                    "C10 sidecar removal/Config.Env absence was not confirmed"
-                )
+            raise C10Error(
+                f"{detail} (compose project {self.compose_project})"
+            ) from failure
         finally:
             self._remove_env()
             self._compose_env = None
+
+    def _remove_once(self, env: Mapping[str, str], cleanup_deadline: float) -> None:
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                "docker-compose.yaml",
+                "-f",
+                "docker-compose.c10.yaml",
+                "rm",
+                "--force",
+                "--stop",
+                _C10_COMPOSE_SERVICE,
+            ],
+            cwd=self.repo_root,
+            env=env,
+            capture_output=True,
+            timeout=_cleanup_remaining(cleanup_deadline),
+            check=False,
+        )
+        if result.returncode != 0:
+            raise C10Error("C10 sidecar removal was not confirmed")
+        quiescence = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                "docker-compose.yaml",
+                "-f",
+                "docker-compose.c10.yaml",
+                "ps",
+                "--all",
+                "--format",
+                "json",
+                _C10_COMPOSE_SERVICE,
+            ],
+            cwd=self.repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_cleanup_remaining(cleanup_deadline),
+            check=False,
+        )
+        if quiescence.returncode != 0 or not self._compose_is_absent(quiescence.stdout):
+            # Absence is stronger than stopped: it removes the container
+            # Config.Env which held the per-session sidecar secrets.
+            raise C10Error("C10 sidecar removal/Config.Env absence was not confirmed")
 
     @staticmethod
     def _rendered_identity(
@@ -301,6 +365,7 @@ class DockerComposeSidecar:
             )
         return (
             loopback
+            and service.get("image") == C10_BROWSER_IMAGE
             and str(service.get("cpus")) == expected_environment["C10_BROWSER_CPUS"]
             and isinstance(actual_environment, Mapping)
             and all(
