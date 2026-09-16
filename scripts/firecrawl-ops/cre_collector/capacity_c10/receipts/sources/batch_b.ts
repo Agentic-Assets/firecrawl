@@ -8,10 +8,12 @@
  */
 import {
   FOUNDRY_SITEMAP_URL,
+  foundryExplicitStatus,
   foundryPropertySitemaps,
   foundryPropertyUrls,
   foundryProviderIdentity,
 } from "../../../sources/pure/foundry-identity.js";
+import { classifyFoundryStatus } from "../../../sources/pure/foundry-status.js";
 import {
   C10ReceiptError,
   sha256,
@@ -163,9 +165,19 @@ export const foundryCommercialReceiptProducer: ReceiptProducer = Object.freeze({
     const url = state.memberCards.get(member.key);
     if (!url) throw new C10ReceiptError("Foundry member is not in the sealed graph");
     const event = await transport.oneShot(member.key, (view: Readonly<SourceResponseView>) => {
-      const providerId = foundryProviderIdentity(text(view.body), view.finalUrl);
+      const html = text(view.body);
+      const providerId = foundryProviderIdentity(html, view.finalUrl);
       if (!providerId) throw new C10ReceiptError("Foundry detail lacks canonical WordPress identity");
-      return { providerId, canonicalUrl: view.finalUrl, requiredFields: ["canonical-url", "wordpress-shortlink-id"] };
+      const status = classifyFoundryStatus(foundryExplicitStatus(html));
+      if (status.disposition !== "active" || !status.status) {
+        throw new C10ReceiptError("Foundry detail lacks an admitted active native status");
+      }
+      return {
+        providerId,
+        canonicalUrl: view.finalUrl,
+        explicitStatus: status.status,
+        requiredFields: ["canonical-url", "wordpress-shortlink-id", "active-native-status"],
+      };
     });
     if (event.projection.providerId !== member.providerId || event.projection.canonicalUrl !== url) {
       throw new C10ReceiptError("Foundry member receipt does not bind the cohort identity");

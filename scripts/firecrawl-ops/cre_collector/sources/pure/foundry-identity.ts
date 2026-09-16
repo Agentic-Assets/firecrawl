@@ -148,3 +148,9 @@ export function foundryProviderIdentity(html: string, requestedUrl: string): str
     return null;
   }
 }
+
+/** Extract the provider's explicit property-status note from a detail page. */
+export function foundryExplicitStatus(html: string): string | null {
+  const $ = cheerio.load(html);
+  return clean($(".property-notes li").first().text());
+}
