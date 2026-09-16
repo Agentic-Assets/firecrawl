@@ -126,6 +126,12 @@ def _check_c10_image() -> dict[str, Any]:
             "ok": False,
             "detail": "docker CLI not found",
         }
+    except subprocess.TimeoutExpired:
+        return {
+            "name": "c10_image_present",
+            "ok": False,
+            "detail": "docker image inspect timed out",
+        }
     ok = result.returncode == 0 and bool(result.stdout.strip())
     return {
         "name": "c10_image_present",
@@ -177,6 +183,12 @@ def _check_compose_config() -> dict[str, Any]:
             "ok": False,
             "detail": "docker CLI not found",
         }
+    except subprocess.TimeoutExpired:
+        return {
+            "name": "compose_config_renders",
+            "ok": False,
+            "detail": "docker compose config timed out",
+        }
     if result.returncode != 0:
         return {
             "name": "compose_config_renders",
@@ -196,6 +208,35 @@ def _check_compose_config() -> dict[str, Any]:
     }
 
 
+def _check_canonical_lock_domain() -> dict[str, Any]:
+    """Fail when this process is marked as an untrusted CRE lock domain.
+
+    `fcntl.flock` does not coordinate between a macOS host process and a
+    process reached through an OrbStack bind mount (see
+    LOCK_AUTHORITY_RECOVERY.md). `docker-compose.c10-runner.yaml` sets
+    CRE_LOCK_DOMAIN_UNTRUSTED on this container for exactly that reason, and
+    `cre_checkpoint_refresh.SharedLock.acquire` refuses whenever it is set.
+    Preflight must report failure here too, so it can never say `ok` while
+    this container is unsafe for any lock-holding live work.
+    """
+    untrusted_domain = os.environ.get("CRE_LOCK_DOMAIN_UNTRUSTED", "")
+    ok = not untrusted_domain
+    return {
+        "name": "canonical_lock_domain",
+        "ok": ok,
+        "detail": {
+            "CRE_LOCK_DOMAIN_UNTRUSTED": untrusted_domain or None,
+            "note": (
+                "unset"
+                if ok
+                else "this environment cannot safely hold the canonical CRE "
+                "lock (flock does not coordinate across the host/container "
+                "boundary); SharedLock.acquire also refuses"
+            ),
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     del argv
     checks = [
@@ -204,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         _check_docker_socket(),
         _check_c10_image(),
         _check_compose_config(),
+        _check_canonical_lock_domain(),
     ]
     overall_ok = all(check["ok"] for check in checks)
     print(json.dumps({"ok": overall_ok, "checks": checks}, indent=2, sort_keys=True))

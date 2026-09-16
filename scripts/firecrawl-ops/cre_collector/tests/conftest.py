@@ -27,7 +27,9 @@ unchanged, and fails the test loudly if it is not.
 import hashlib
 import os
 import stat
+import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -41,13 +43,25 @@ if _PARENT not in sys.path:
 
 import cre_checkpoint_refresh as _refresh
 
-# Captured once, at collection time, before any test can monkeypatch it. This
-# is the one reference we trust to compute what the REAL canonical lock path
-# is; every module-local `canonical_shared_lock_dir` binding discovered below
-# is compared against this exact function object by identity, and every
-# resolution funnelled back through it is checked against the real result.
+# `canonical_shared_lock_dir()` resolves the real lock dir via
+# `git rev-parse --path-format=absolute --git-common-dir` (with `check=True`,
+# so it raises on any git failure). Captured once, at collection time, before
+# any test can monkeypatch it -- this is the one reference we trust to
+# compute what the REAL canonical lock path is; every module-local
+# `canonical_shared_lock_dir` binding discovered below is compared against
+# this exact function object by identity, and every resolution funnelled
+# back through it is checked against the real result.
 _REAL_CANONICAL_SHARED_LOCK_DIR = _refresh.canonical_shared_lock_dir
-_REAL_CANONICAL_LOCK_DIR = _REAL_CANONICAL_SHARED_LOCK_DIR(Path(_PARENT)).resolve()
+try:
+    _REAL_CANONICAL_LOCK_DIR = _REAL_CANONICAL_SHARED_LOCK_DIR(Path(_PARENT)).resolve()
+except (OSError, subprocess.CalledProcessError):
+    # git is unavailable or this checkout has no `.git` (e.g. a tarball
+    # export); fall back to the path relative to the collector dir that
+    # `canonical_shared_lock_dir()` would derive from the primary checkout on
+    # an ordinary clone. A test-collection failure here would silently
+    # disable the real-lock safety net below for the whole session, which is
+    # worse than a best-effort fallback.
+    _REAL_CANONICAL_LOCK_DIR = (Path(_PARENT) / "out" / "daily" / ".cre.lock").resolve()
 _REAL_AUTHORITY_PATH = _REAL_CANONICAL_LOCK_DIR.with_name(
     f"{_REAL_CANONICAL_LOCK_DIR.name}.authority"
 )
@@ -162,6 +176,91 @@ def _modules_bound_to_real_resolver():
             yield module
 
 
+def _authority_owner_pid(path: Path) -> int | None:
+    """Best-effort, read-only owner pid from a real authority sidecar.
+
+    Returns None (never raises) whenever the file is absent, unreadable, or
+    malformed -- the caller treats that as "could not attribute" and fails
+    closed rather than guessing.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        fields = _refresh.SharedLock._authority_fields(fd)
+    except Exception:  # noqa: BLE001 - any parse failure is "unattributed"
+        return None
+    finally:
+        os.close(fd)
+    if not fields:
+        return None
+    pid = fields[0]
+    return pid or None
+
+
+def _process_is_pytest_or_descendant(pid: int) -> bool:
+    """True if `pid` is this pytest process or one of its descendants.
+
+    Best-effort via `ps -eo pid=,ppid=` (available on both macOS and Linux).
+    Any failure to determine the tree returns True (fail closed: an
+    unattributable pid is treated as "could be us", so the caller still
+    fails the test rather than silently swallowing a real leak).
+    """
+    this_pid = os.getpid()
+    if pid == this_pid:
+        return True
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    if result.returncode != 0:
+        return True
+    children: dict[int, list[int]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            child_pid, parent_pid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        children.setdefault(parent_pid, []).append(child_pid)
+    stack = list(children.get(this_pid, []))
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if current == pid:
+            return True
+        stack.extend(children.get(current, []))
+    return False
+
+
+def _lock_change_verdict(authority_path: Path) -> tuple[bool, int | None]:
+    """Decide whether a detected real-lock change should fail the test.
+
+    Returns (attributable_to_pytest, owner_pid). `attributable_to_pytest`
+    is True (fail the test) whenever the owner pid cannot be positively
+    identified as external, and False only when the authority record names
+    a pid that is definitively neither the pytest process nor a descendant
+    of it (e.g. a legitimate external owner such as a launchd tier-dispatch
+    run that happened to touch the real lock while this test ran).
+    """
+    owner_pid = _authority_owner_pid(authority_path)
+    if owner_pid is None:
+        return True, None
+    return _process_is_pytest_or_descendant(owner_pid), owner_pid
+
+
 @pytest.fixture(autouse=True)
 def _never_touch_real_canonical_cre_lock(
     monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
@@ -187,6 +286,20 @@ def _never_touch_real_canonical_cre_lock(
     changed = _snapshots_indicate_a_real_change(
         before_primary, after_primary
     ) or _snapshots_indicate_a_real_change(before_authority, after_authority)
+    if not changed:
+        return
+    attributable_to_pytest, owner_pid = _lock_change_verdict(_REAL_AUTHORITY_PATH)
+    if not attributable_to_pytest:
+        warnings.warn(
+            "the REAL canonical CRE lock pair "
+            f"({_REAL_CANONICAL_LOCK_DIR}) changed during "
+            f"{request.node.nodeid}, attributed to pid {owner_pid}, which is "
+            "not the pytest process or a descendant of it (e.g. a legitimate "
+            "external owner such as a launchd tier-dispatch run). Not "
+            "failing this test, but investigate if this persists.",
+            stacklevel=2,
+        )
+        return
     assert not changed, (
         "the REAL canonical CRE lock pair "
         f"({_REAL_CANONICAL_LOCK_DIR}) changed during "

@@ -122,11 +122,31 @@ and immediately issues the real GraphQL enumeration request against
 mode in that function, so exercising it for real *is* the live run. That is
 explicitly out of scope for this phase.
 
+> **Superseded (2026-09-16, live-calibration session):** section 4 below, as
+> originally written, recommended the generic Linux runner container as "a
+> viable substitute" for a real Linux host on a non-Linux operator machine.
+> That is no longer accepted: this session established that `fcntl.flock`
+> does not coordinate between a macOS host process and a process reached
+> through an OrbStack bind mount (a host process and a container process
+> have both been observed holding `LOCK_EX|LOCK_NB` on the same file at
+> once), so the runner container must never hold the canonical CRE lock on
+> a macOS host. See
+> `docs/firecrawl-ops/c10-live-calibration-jll-run-2026-09-16.md` ("Recommended
+> next step") and `docs/firecrawl-ops/c10-live-calibration-2026-09-16.md` for
+> the full finding and the gated options going forward
+> (`CRE_LOCK_DOMAIN_UNTRUSTED` now fails closed on this in code). Section 4's
+> command sequence is still the right admission steps once run from a
+> trusted lock domain; only the "runner container as substitute host" claim
+> below is retracted.
+
 ## 4. Exact commands for the next phase (live run)
 
-On the Linux production host (not this Mac; `PrivateReceiptStore` requires
-real Linux, and the generic runner container above is a viable substitute if
-the live run is done from a non-Linux operator machine instead):
+On a real Linux production host only (not this Mac, and not the generic
+Linux runner container from section 2: `PrivateReceiptStore` requires real
+Linux, but the runner container is reached from macOS over an OrbStack bind
+mount whose `fcntl.flock` does not coordinate with the host -- see the
+superseded note above. Do not substitute the container for a real Linux
+host for any lock-holding live-run step):
 
 ```bash
 cd /Users/caymanseagraves/Github/agentic-assets/firecrawl

@@ -106,8 +106,20 @@ EXPECTED_FK_TABLES = [
 DEFAULT_ARTIFACT = Path(__file__).resolve().parent / (
     "out/checkpoint-refresh/2026-07-30T082113Z/sources/cushman-wakefield.json"
 )
-DEFAULT_LOCK = canonical_shared_lock_dir()
 ADVISORY_LOCK_KEY = 734_251_907_300_821_130
+
+
+def default_lock() -> Path:
+    """Resolve the canonical shared CRE lock lazily, at call time.
+
+    Kept as a function rather than a module-level constant so a test can
+    monkeypatch `canonical_shared_lock_dir` (e.g. the session-wide real-lock
+    guard in tests/conftest.py) before this is ever resolved; a module-level
+    `DEFAULT_LOCK = canonical_shared_lock_dir()` would instead resolve the
+    real production lock path at import time, before any test gets a chance
+    to patch it.
+    """
+    return canonical_shared_lock_dir()
 # Bound both the compact outer file and the exact decrypted rollback document.
 # Live schema-v5 diagnostics measured 96,244,620 inner bytes before whole-
 # document compression, so 128 MiB leaves bounded headroom for the exact state.
@@ -3523,7 +3535,7 @@ def main(argv: list[str] | None = None) -> int:
 
     db_url, _ = load_db_url(args.env_file)
     assert_db_target(db_url)
-    with shared_cre_lock(DEFAULT_LOCK):
+    with shared_cre_lock(default_lock()):
         if args.rollback_preimage:
             assert args.expected_preimage_sha256 is not None
             preimage, preimage_sha256 = load_private_preimage(

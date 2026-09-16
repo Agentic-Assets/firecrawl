@@ -32,6 +32,12 @@
 # container on demand if it is not already running. Nothing here builds or
 # starts the C10 browser sidecar itself -- that is the coordinator's job, not
 # this wrapper's.
+#
+# NOT SAFE FOR ANY LOCK-HOLDING ACTION ON MACOS/ORBSTACK HOSTS: `fcntl.flock`
+# does not coordinate between a macOS host process and a process inside this
+# container reached over the bind-mounted repo. The compose service sets
+# CRE_LOCK_DOMAIN_UNTRUSTED so any attempt to acquire the canonical CRE lock
+# from inside the container fails closed; never unset it to work around that.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,7 +55,7 @@ compose() {
 }
 
 usage() {
-  sed -n '2,33p' "${BASH_SOURCE[0]}"
+  sed -n '2,40p' "${BASH_SOURCE[0]}"
 }
 
 cmd="${1:-}"

@@ -45,7 +45,7 @@ requested 1+8 budget per brokerage rather than doubling it for lease).
 | Brokerage (source key) | Reachable | Enumeration total | Detail success | Wall time (1 enum + 8 detail) | Response shape | Challenge/anti-bot signal |
 |---|---|---:|---|---:|---|---|
 | CBRE (`cbre`) | Yes | 6,155 (1 page) | 8/8 | 5s | JSON API | None |
-| Cushman & Wakefield (`cushman-wakefield`) | Yes | 2,874 | 8/8 (after retry) | 69s | JSON API (list) + HTML (detail) | **8/8 detail fetches tripped the `assertCushmanDetailDoc` challenge regex** (see Overfit finding below) |
+| Cushman & Wakefield (`cushman-wakefield`) | Yes | 2,874 | 0/8 pre-fix (false challenge); 8/8 after fix | 69s | JSON API (list) + HTML (detail) | **8/8 detail fetches tripped the `assertCushmanDetailDoc` challenge regex** (see Overfit finding below) |
 | Colliers (`colliers-main`) | Yes | 15,985 (sitemap) | 8/8 fetched, 0 errors, 0 deferred; collapsed to 3 unique listings | 73s | XML sitemap + HTML detail (`RealEstateListing` JSON-LD) | None; runtime canary passed |
 | Newmark (`newmark`) | Yes | 1,308 | 8/8 | 5s | Algolia-style JSON | None |
 | Marcus & Millichap (`marcus-millichap`) | Yes | 3,159 | 8/8 | 8s | JSON (map API) + HTML detail | None |
@@ -188,6 +188,12 @@ and after the full run (`collect.ts` never opens the canonical lock; only
   reproduction was captured for them in this run, and a blind regex change
   across seven files without reproduction would risk silently weakening real
   challenge detection.
+- `sources/matthews.ts` has the same class of risk in a different shape: a
+  bare `\bg-recaptcha\b` check (alongside its own bare `\bcaptcha\b`) that
+  would false-positive on an ordinary reCAPTCHA-bearing lead-gen form the
+  same way Cushman's did. Matthews was not part of this run's live sample,
+  so there is no reproduction to fix against; flagging for the same future
+  sampling pass rather than a blind change.
 - No latency percentile (p50/p90) breakdown per individual HTTP request is
   reported: `collect.ts` does not emit per-request timestamps to stdout, so
   the wall-clock durations above are aggregate (1 enumeration pass + up to 8

@@ -76,8 +76,20 @@ IDENTITY_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 DEFAULT_ARTIFACT = Path(__file__).resolve().parent / (
     "out/checkpoint-refresh/2026-07-30T031805Z/sources/newmark.json"
 )
-DEFAULT_LOCK = canonical_shared_lock_dir()
 ADVISORY_LOCK_KEY = 734_251_907_300_318_050
+
+
+def default_lock() -> Path:
+    """Resolve the canonical shared CRE lock lazily, at call time.
+
+    Kept as a function rather than a module-level constant so a test can
+    monkeypatch `canonical_shared_lock_dir` (e.g. the session-wide real-lock
+    guard in tests/conftest.py) before this is ever resolved; a module-level
+    `DEFAULT_LOCK = canonical_shared_lock_dir()` would instead resolve the
+    real production lock path at import time, before any test gets a chance
+    to patch it.
+    """
+    return canonical_shared_lock_dir()
 
 
 @dataclass(frozen=True)
@@ -2354,7 +2366,7 @@ def main() -> int:
     db_url, _ = load_db_url(args.env_file)
     assert_db_target(db_url)
 
-    with shared_cre_lock(DEFAULT_LOCK):
+    with shared_cre_lock(default_lock()):
         if args.rollback_preimage is not None:
             rollback_path = args.rollback_preimage.resolve()
             preimage, preimage_sha256 = load_private_preimage(

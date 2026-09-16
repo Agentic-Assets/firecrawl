@@ -1982,6 +1982,19 @@ def test_resume_checkpoint_rejects_artifact_from_another_generation(tmp_path):
     )
 
 
+def test_lock_refuses_untrusted_domain_before_any_mutation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRE_LOCK_DOMAIN_UNTRUSTED", "container-bind-mount")
+    lock_dir = tmp_path / ".cre.lock"
+    lock = refresh.SharedLock(lock_dir)
+    with pytest.raises(refresh.LockHeldError, match="CRE_LOCK_DOMAIN_UNTRUSTED"):
+        lock.acquire()
+    # Fails before touching the filesystem: no lock directory, no authority
+    # sidecar, no quarantine-recovery synchronizer file.
+    assert not lock_dir.exists()
+    assert not lock.authority_path.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_lock_refuses_live_owner(tmp_path):
     lock_dir = tmp_path / ".cre.lock"
     lock_dir.mkdir()

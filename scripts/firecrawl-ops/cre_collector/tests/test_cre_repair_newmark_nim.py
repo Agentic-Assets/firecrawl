@@ -539,3 +539,15 @@ def test_repair_refuses_while_governed_recovery_sync_is_held(tmp_path):
     finally:
         refresh.release_quarantine_recovery_sync(sync)
     assert not lock_dir.exists()
+
+
+def test_default_lock_is_lazy_and_uses_the_current_module_resolver(
+    tmp_path, monkeypatch
+):
+    """M2: DEFAULT_LOCK must not be a module-level constant resolved once at
+    import time (which would resolve the REAL canonical lock before any test
+    guard can patch it). `default_lock()` must call the module-local
+    `canonical_shared_lock_dir` binding fresh on every call."""
+    fake_lock = tmp_path / "fake" / ".cre.lock"
+    monkeypatch.setattr(repair, "canonical_shared_lock_dir", lambda: fake_lock)
+    assert repair.default_lock() == fake_lock

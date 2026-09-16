@@ -1114,7 +1114,7 @@ def test_run_psql_reports_rollback_verification_timeout(monkeypatch):
 
 
 def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
-    monkeypatch, capsys
+    monkeypatch, capsys, tmp_path
 ):
     calls = []
     preimage = reviewed_empty_preimage()
@@ -1133,6 +1133,9 @@ def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
     monkeypatch.setattr(repair, "assert_db_target", lambda _url: None)
     monkeypatch.setattr(
         repair, "shared_cre_lock", lambda _path: nullcontext()
+    )
+    monkeypatch.setattr(
+        repair, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
     )
     monkeypatch.setattr(repair, "load_artifact", lambda _path: minimal_artifact())
     monkeypatch.setattr(repair, "load_live_state", lambda _url: minimal_state())
@@ -1168,7 +1171,7 @@ def test_roundtrip_cli_times_only_noncommitting_preimage_and_roundtrip(
 
 
 def test_apply_rollback_verification_uses_client_timeout(
-    monkeypatch, capsys
+    monkeypatch, capsys, tmp_path
 ):
     calls = []
 
@@ -1184,6 +1187,9 @@ def test_apply_rollback_verification_uses_client_timeout(
     monkeypatch.setattr(repair, "assert_db_target", lambda _url: None)
     monkeypatch.setattr(
         repair, "shared_cre_lock", lambda _path: nullcontext()
+    )
+    monkeypatch.setattr(
+        repair, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
     )
     monkeypatch.setattr(repair, "load_artifact", lambda _path: minimal_artifact())
     monkeypatch.setattr(repair, "load_live_state", lambda _url: minimal_state())
@@ -1232,6 +1238,9 @@ def test_persistent_apply_and_explicit_rollback_have_no_client_timeout(
     monkeypatch.setattr(repair, "assert_db_target", lambda _url: None)
     monkeypatch.setattr(
         repair, "shared_cre_lock", lambda _path: nullcontext()
+    )
+    monkeypatch.setattr(
+        repair, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
     )
     monkeypatch.setattr(repair, "load_artifact", lambda _path: minimal_artifact())
     monkeypatch.setattr(repair, "load_live_state", lambda _url: minimal_state())
@@ -2016,3 +2025,15 @@ def test_chunked_roundtrip_preserves_every_rollback_child_guard():
         assert f"Cushman rollback {key} readback failed" in sql
     assert sql.count("BEGIN ISOLATION LEVEL SERIALIZABLE;") == 1
     assert sql.rstrip().endswith("ROLLBACK;")
+
+
+def test_default_lock_is_lazy_and_uses_the_current_module_resolver(
+    tmp_path, monkeypatch
+):
+    """M2: DEFAULT_LOCK must not be a module-level constant resolved once at
+    import time (which would resolve the REAL canonical lock before any test
+    guard can patch it). `default_lock()` must call the module-local
+    `canonical_shared_lock_dir` binding fresh on every call."""
+    fake_lock = tmp_path / "fake" / ".cre.lock"
+    monkeypatch.setattr(repair, "canonical_shared_lock_dir", lambda: fake_lock)
+    assert repair.default_lock() == fake_lock

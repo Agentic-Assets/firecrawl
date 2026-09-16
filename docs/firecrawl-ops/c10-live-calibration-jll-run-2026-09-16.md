@@ -73,9 +73,18 @@ With the canonical lock genuinely clear, this session:
 - Ran the offline `collect-jll` dry-run inside the runner to reconfirm
   intent before touching the live path: `selection_rule:
   jll-canonical-url-lexicographic-v1`, 16 members, one sale/office/page-1
-  enumeration card, `external_calls: false`. Adapter digest on this checkout
-  (recomputed inside the runner, matches the Phase-3 value since no JLL
-  source file changed): `1371211b54bc73d72b45c48daf241abf9588a7f20ec5dee76df567bcb065e390`.
+  enumeration card, `external_calls: false`. Adapter digest on this checkout,
+  recomputed inside the runner: `1371211b54bc73d72b45c48daf241abf9588a7f20ec5dee76df567bcb065e390`.
+  This is **not** claimed to "match" the Phase-3 value
+  (`94c6dae7bda753e28f206c8e23e6f3d6f5a724689dfcb6f2a4588d4995789527`,
+  `c10-live-calibration-phase2-2026-09-16.md`): the two digests were computed
+  on different commits, and
+  `capacity_c10.authority.repository_implementation_sha256("jll")` covers the
+  whole verifier tree, not only `sources/jll.ts`, so an unrelated change
+  anywhere in that tree between the two commits would change the digest even
+  with no JLL-specific edit. Each phase must recompute and record its own
+  digest on the exact commit it runs from rather than compare against a
+  prior phase's number.
 - Provisioned a fresh, empty, owner-0700 receipt root:
   `tasks/tmp/c10-live-calibration/receipts-run-20260916T103705/`
   (gitignored, verified via `git check-ignore`). Never reused the prior
@@ -145,11 +154,18 @@ physical macOS files, so the content is byte-identical, but:
   APFS ones.
 
 So the recovery guard produced by sub-attempt A can never validate from
-inside the Linux runner container, and the live admission call can never
-run outside it (the Linux-only receipt store). This is a structural
+inside the Linux runner container, and the live admission call can never run
+outside a Linux environment (the Linux-only receipt store). That Linux
+environment does not have to be this specific container: a real Linux host
+in the same lock domain as every other cooperating CRE process works too,
+and is in fact the safer of the two (see the "established fact" this
+session confirmed: `fcntl.flock` does not coordinate between a macOS host
+process and a process reached through an OrbStack bind mount, so a
+container reached that way must never hold the canonical CRE lock even once
+this cross-mount identity gap is separately resolved). This is a structural
 environment-topology gap between how quarantine recovery was documented and
 run (directly on the macOS host) and how the live JLL admission call must
-run (inside a Linux container), not a defect introduced by this branch's
+run (inside a Linux environment), not a defect introduced by this branch's
 JLL admission code, and not something introduced by sub-attempt A's actions.
 
 ### Why no code fix was attempted this session
@@ -195,34 +211,61 @@ deletes lock artifacts" were both honored.
 
 ### Recommended next step (operator decision)
 
-One of:
+The cross-mount identity mismatch above is a symptom, not the root cause.
+The root cause, confirmed this session, is that **`fcntl.flock` does not
+coordinate between a macOS host process and a process reached through an
+OrbStack bind mount**: a host process and a container process have both been
+observed holding `LOCK_EX|LOCK_NB` on the same file at once. That makes the
+generic Linux runner container (`docker-compose.c10-runner.yaml`,
+`capacity_c10/tools/linux-runner.Dockerfile`, `run_linux_controller.sh`,
+`c10_linux_preflight.py`) unsafe for holding the canonical CRE lock on a
+macOS host, independent of whether the archived-evidence identity check is
+ever fixed to tolerate a bind-mount-assigned inode. `SharedLock.acquire`
+now refuses whenever `CRE_LOCK_DOMAIN_UNTRUSTED` is set (the runner sets it
+unconditionally) and `c10_linux_preflight.py` reports failure in that state,
+so neither path can silently report "ready" while this is true.
 
-1. A separately reviewed fix that (a) normalizes the guard's path
-   comparisons to a mount-prefix-invariant repo-relative form, and (b)
-   extends the archived-evidence identity check to accept an explicitly
-   attested bind-mount equivalence (not a same-session ad hoc relaxation),
-   so a guard produced on the macOS host can be validated from inside the
-   Linux runner container and vice versa; or
-2. Run **both** the quarantine recovery **and** the live JLL admission call
-   from the same execution environment — i.e., perform recovery itself
-   inside a Linux environment (the runner container, or a genuine Linux
-   host) rather than on the macOS host, so the guard's path and inode
-   identity are captured under the same view the live run will later use.
-   This requires a live quarantine residue to still be present at recovery
-   time; since sub-attempt A already archived the only residue, this would
-   need either a fresh reproduction of the quarantine scenario in a Linux
-   environment (not recommended solely to enable this) or would apply only
-   to a future occurrence; or
-3. A separately reviewed change to `cre_capacity_runtime.py`'s CPU-idle
-   sampler so a single non-advancing Darwin tick-counter read is retried
-   with a widened window instead of raising `CpuTelemetryError`, reducing
-   operator friction on the next occasion recovery must run on macOS.
+Normalizing the path comparison or accepting an attested bind-mount
+equivalence, and running quarantine recovery from inside the container, are
+each **unsafe on their own** for exactly this reason: either would let a
+container process take the canonical CRE lock while a macOS host process
+could independently believe it holds the same lock, which is the leak this
+task exists to close, not merely a false-positive identity mismatch to
+work around.
 
-Once the guard can validate from the Linux runner container (via option 1
-or 2), the exact sequence in
+Valid options, in order of preference:
+
+1. **A real Linux host.** Run the C10 controller, the sidecar, and any
+   lock-holding recovery step on an actual Linux machine (not a macOS/
+   OrbStack container reached over a bind mount), so every cooperating
+   process and the canonical lock file share one kernel's `flock` table.
+   This is the only option that needs no new code.
+2. **A host-side lock broker.** A small service running natively on the
+   macOS host (not inside any container) that owns the real
+   `fcntl.flock` on `out/daily/.cre.lock` / `.cre.lock.authority` and
+   arbitrates requests from both host and container processes over an
+   explicit RPC protocol, so the flock itself is always held from a single
+   process on a single kernel. This needs a separately reviewed design and
+   implementation; it is not a same-session patch.
+3. **Move every lock holder into one kernel.** Run the macOS-side
+   collector/orchestrator processes themselves inside the same Linux
+   environment as the runner (e.g. the whole CRE toolchain moves onto a
+   Linux host or VM), eliminating the host/container split entirely rather
+   than bridging it.
+
+Do not pursue a fix that only normalizes path/inode comparisons or only
+moves recovery into the container: both leave the underlying flock
+non-coordination in place and would reintroduce exactly the concurrent-
+acquisition risk `CRE_LOCK_DOMAIN_UNTRUSTED` now blocks.
+
+Once one of the above is in place and the C10 Linux runner (or its
+replacement) is confirmed to be operating inside the *same* trusted lock
+domain as every other cooperating CRE process, the sequence in
 `docs/firecrawl-ops/c10-live-calibration-phase2-2026-09-16.md` section 4
-remains valid and unchanged: fresh 0700 root, `execute_jll_admission_collection`,
-`build-jll-bundle`, `render-jll-authority` (never install), reviewed pin PR.
+(fresh 0700 root, `execute_jll_admission_collection`, `build-jll-bundle`,
+`render-jll-authority` (never install), reviewed pin PR) still describes the
+right admission steps, but that section is marked superseded pending this
+lock-domain decision; see its own dated note.
 
 ## Files this session added (gitignored, not committed)
 

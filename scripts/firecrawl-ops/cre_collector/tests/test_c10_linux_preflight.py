@@ -124,6 +124,16 @@ def test_check_c10_image_fails_when_image_missing(preflight, monkeypatch):
     assert "No such image" in result["detail"]
 
 
+def test_check_c10_image_reports_timeout(preflight, monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=30)
+
+    monkeypatch.setattr(preflight.subprocess, "run", fake_run)
+    result = preflight._check_c10_image()
+    assert result["ok"] is False
+    assert "timed out" in result["detail"]
+
+
 def test_check_compose_config_only_renders_never_starts(preflight, monkeypatch):
     captured = {}
 
@@ -162,6 +172,34 @@ def test_check_compose_config_fails_closed_on_wrong_image(preflight, monkeypatch
     assert result["ok"] is False
 
 
+def test_check_compose_config_reports_timeout(preflight, monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=60)
+
+    monkeypatch.setattr(preflight.subprocess, "run", fake_run)
+    result = preflight._check_compose_config()
+    assert result["ok"] is False
+    assert "timed out" in result["detail"]
+
+
+def test_check_canonical_lock_domain_ok_when_unset(preflight, monkeypatch):
+    monkeypatch.delenv("CRE_LOCK_DOMAIN_UNTRUSTED", raising=False)
+    result = preflight._check_canonical_lock_domain()
+    assert result == {
+        "name": "canonical_lock_domain",
+        "ok": True,
+        "detail": {"CRE_LOCK_DOMAIN_UNTRUSTED": None, "note": "unset"},
+    }
+
+
+def test_check_canonical_lock_domain_fails_when_set(preflight, monkeypatch):
+    monkeypatch.setenv("CRE_LOCK_DOMAIN_UNTRUSTED", "container-bind-mount")
+    result = preflight._check_canonical_lock_domain()
+    assert result["name"] == "canonical_lock_domain"
+    assert result["ok"] is False
+    assert result["detail"]["CRE_LOCK_DOMAIN_UNTRUSTED"] == "container-bind-mount"
+
+
 def test_main_exits_nonzero_when_any_check_fails(preflight, monkeypatch, capsys):
     monkeypatch.setattr(
         preflight,
@@ -188,11 +226,16 @@ def test_main_exits_nonzero_when_any_check_fails(preflight, monkeypatch, capsys)
         "_check_compose_config",
         lambda: {"name": "compose_config_renders", "ok": True, "detail": {}},
     )
+    monkeypatch.setattr(
+        preflight,
+        "_check_canonical_lock_domain",
+        lambda: {"name": "canonical_lock_domain", "ok": True, "detail": {}},
+    )
     exit_code = preflight.main([])
     assert exit_code == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
-    assert len(payload["checks"]) == 5
+    assert len(payload["checks"]) == 6
 
 
 def test_main_exits_zero_when_every_check_passes(preflight, monkeypatch, capsys):
@@ -202,6 +245,7 @@ def test_main_exits_zero_when_every_check_passes(preflight, monkeypatch, capsys)
         "_check_docker_socket",
         "_check_c10_image",
         "_check_compose_config",
+        "_check_canonical_lock_domain",
     ):
         monkeypatch.setattr(
             preflight, name, lambda name=name: {"name": name, "ok": True, "detail": {}}

@@ -1528,6 +1528,28 @@ class SharedLock:
             os.close(directory_fd)
 
     def acquire(self) -> None:
+        # fcntl.flock does NOT coordinate between a macOS host and a
+        # container reached through an OrbStack bind mount: a host process
+        # and a container process have both been observed holding
+        # LOCK_EX|LOCK_NB on the same file at once (see
+        # LOCK_AUTHORITY_RECOVERY.md and
+        # docs/firecrawl-ops/c10-live-calibration-jll-run-2026-09-16.md).
+        # CRE_LOCK_DOMAIN_UNTRUSTED marks a process as running in a lock
+        # domain that cannot be trusted to cooperate with the canonical
+        # lock's flock protocol (e.g. the generic C10 Linux runner
+        # container). Refuse before any filesystem mutation, including the
+        # quarantine-recovery synchronizer flock below.
+        untrusted_domain = os.environ.get("CRE_LOCK_DOMAIN_UNTRUSTED", "")
+        if untrusted_domain:
+            raise LockHeldError(
+                "CRE lock refused: CRE_LOCK_DOMAIN_UNTRUSTED="
+                f"{untrusted_domain!r} marks this process as running in an "
+                "untrusted lock domain (fcntl.flock does not coordinate "
+                "across a macOS host / container bind mount). Acquiring the "
+                "canonical CRE lock here is unsafe; run lock-holding work "
+                "only on a host in the same trusted lock domain as every "
+                "other cooperating CRE process."
+            )
         # Keep this flock for the full lifetime of the canonical lock.  The
         # operator-only paired archive takes the same flock before publishing
         # its guard, so no process can create a fresh authority/lock between a

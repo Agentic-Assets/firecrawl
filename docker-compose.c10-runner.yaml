@@ -23,6 +23,17 @@
 # composed alongside docker-compose.c10.yaml's own services in the same
 # invocation; the runner calls `docker compose ... playwright-service-c10`
 # itself, from inside the container, once it is up.
+#
+# NOT SAFE FOR ANY LOCK-HOLDING ACTION ON MACOS/ORBSTACK HOSTS: `fcntl.flock`
+# does NOT coordinate between a macOS host process and a process in this
+# container reached over the bind-mounted repo (a host process and a
+# container process have both been observed holding LOCK_EX|LOCK_NB on the
+# same file at once). CRE_LOCK_DOMAIN_UNTRUSTED below makes
+# `cre_checkpoint_refresh.SharedLock.acquire` refuse to take the canonical
+# CRE lock from inside this container, and `c10_linux_preflight.py` fails its
+# `canonical_lock_domain` check whenever it is set. Never unset it to work
+# around a refusal; see LOCK_AUTHORITY_RECOVERY.md and
+# docs/firecrawl-ops/c10-live-calibration-2026-09-16.md.
 # Distinct project name so this overlay never shares a Compose project with
 # the ordinary dev stack (docker-compose.yaml) or the C10 sidecar overlay's
 # own per-run projects (`c10-<random>`, minted by host_sidecar.py), and so
@@ -48,6 +59,10 @@ services:
       # never runs through this container's node_modules.
       - c10-runner-collector-node-modules:/workspace/firecrawl/scripts/firecrawl-ops/cre_collector/node_modules
     working_dir: /workspace/firecrawl
+    environment:
+      # Fails closed any canonical CRE lock acquisition attempted from
+      # inside this container. See the header comment above; never unset.
+      CRE_LOCK_DOMAIN_UNTRUSTED: "container-bind-mount"
     security_opt:
       - no-new-privileges:true
     # Stays up for `docker compose ... exec`; never started by a plain `up -d`
