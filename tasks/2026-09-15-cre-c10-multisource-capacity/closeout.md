@@ -3,8 +3,9 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`62d866633f94e9b5f36a5ae08475a52dba9c63a6`
-**State:** draft [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is open; no merge, runtime, or data mutation occurred.
+`7f5e7ef4c7c3468c85c752b90694ffde2b0619c3`
+**State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
+repository-integration candidate; no runtime or data mutation occurred.
 
 ## Goal
 
@@ -30,28 +31,38 @@ not change the Wave 1 execution boundary.
 - Offline fixtures cover policy and cohort hashing, registry parity, exact
   cohort membership, no-write proof, P0/P1 resource whitelist, counterbalance,
   one-use arms, settlement/rollback/quarantine ordering, and comparison.
-- The receipt package now seals private artifacts and request graphs and has
-  candidate inventory producers, strict-detail Batch A producers, and one
-  Foundry Batch B producer. They describe source-specific cards and parsers;
-  no concrete direct-provider transport, CLI/controller integration, registry
-  admission, or C10 live run was added. Avison Young, Colliers Main, and the
-  remaining Batch B sources remain explicit blockers.
+- The receipt package now seals private artifacts and size-bounded request-graph
+  shards and has seven candidate inventory producers, strict-detail Batch A
+  producers, and one Foundry Batch B producer. They describe source-specific
+  cards and parsers; no concrete direct-provider transport, CLI/controller
+  integration, registry admission, or C10 live run was added. CBRE Deal Flow,
+  Avison Young, Colliers Main, and the remaining Batch B sources remain explicit
+  blockers.
+- Browser-arm evidence binds each source to its immutable cohort member count
+  and digest and derives throughput from source-level serial monotonic timing.
+  Buildout candidates use the native `show_link` identity. CBRE Deal Flow was
+  removed from the executable map rather than approximating its form POST/HTML
+  protocol.
 
 ## Verification
 
-The final code candidate `62d866633f94e9b5f36a5ae08475a52dba9c63a6`
+The final code candidate `7f5e7ef4c7c3468c85c752b90694ffde2b0619c3`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest tests/ -q`: 3152 passed, 20 skipped.
-- `npm test`: TypeScript typecheck passed; 896 passed, 1 expected
+- `python3 -m pytest tests/ -q`: 3156 passed, 18 skipped.
+- `npm test`: TypeScript typecheck passed; 899 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-GitHub Actions are not used as the primary completion proof. The exact final
-PR head and review status must still be read back after this documentation
-correction before merge.
+The first exact-head Codex review produced five material findings. All five
+were confirmed and fixed: immutable cohort binding, per-source timing,
+Buildout `show_link`, fail-closed Deal Flow blocking, and bounded member-graph
+sharding. The threads were answered and resolved. GitHub Actions are not used
+as the primary completion proof. The exact final PR head and fresh review
+status must still be read back after this documentation correction before
+merge.
 
 ## Decisions made
 
