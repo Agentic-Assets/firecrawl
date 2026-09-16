@@ -21,9 +21,11 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Self
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
@@ -46,6 +48,23 @@ _MAX_RAW_BODY_BYTES = 2 * 1024 * 1024
 _MAX_PRIVATE_ARTIFACT = 8 * 1024 * 1024
 _MAX_CHILD_FRAME_BYTES = 64 * 1024
 _MAX_CHILD_STDOUT_BYTES = 8 * 1024 * 1024
+_MAX_CHILD_STDERR_BYTES = 64 * 1024
+_MAX_CARD_TIMEOUT_MS = 30_000
+_JLL_HOST = "property.jll.com"
+_JLL_BOOTSTRAP_URL = "https://property.jll.com/"
+# This is deliberately a fixed recipe rather than a caller supplied request
+# graph.  The query is the reviewed public property search operation.  The
+# immutable cohort supplies only the sixteen selected canonical member routes.
+_JLL_QUERY = """query SearchResults($market: String! $language: String! $propertyTypes: [String!] $tenureTypes: [String!] $skip: Int $take: IntString = 50 $orderBy: PropertiesOrderInput) { properties(market: $market language: $language propertyTypes: $propertyTypes tenureTypes: $tenureTypes skip: $skip take: $take orderBy: $orderBy) { count items { id title images address propertyTypes tenureTypes rentPrice { amount currency unit } salePrice { amount currency unit } hidePrice pageUrl latitude longitude city state postcode surfaceAreas { value unit label alternativeUnit showEstimateDesks metrics { value unit } } } } }"""
+_JLL_RECIPE = {"transaction": "sale", "property_type": "office", "page": 1}
+_COHORT_HASH_FIELDS = (
+    "schema_version",
+    "config_sha256",
+    "sampling",
+    "sources",
+    "planes",
+    "aggregate",
+)
 _HEALTH_FIELDS = {
     "activePages",
     "configuredCapacity",
@@ -438,35 +457,177 @@ class C10SessionStore:
 
 
 class C10SealedCardRegistry:
-    """Immutable host-owned JLL cards. C10 never accepts a caller-provided URL."""
+    """The only C10 request graph: one fixed JLL enumeration and 16 members.
 
-    def __init__(
-        self, plan: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]
-    ) -> None:
+    Construction intentionally takes a hash-bound v1 cohort, never an
+    arbitrary card map.  The route bytes and GraphQL body are manufactured by
+    the host from the immutable selected JLL membership.
+    """
+
+    def __init__(self, plan: Mapping[str, Any], cohort: Mapping[str, Any]) -> None:
         validate_plan(plan)
-        if not cards:
-            raise C10Error("C10 sealed registry cannot be empty")
-        frozen: dict[str, Mapping[str, Any]] = {}
-        for card_id, raw in cards.items():
-            card = _safe_json(raw, "C10 sealed card")
-            if card_id != card.get("id") or card.get("sourceKey") != "jll":
-                raise C10Error("C10 registry permits only exact sealed JLL cards")
+        if cohort.get("cohort_sha256") != plan["cohort_sha256"] or sha256(
+            {key: cohort.get(key) for key in _COHORT_HASH_FIELDS}
+        ) != cohort.get("cohort_sha256"):
+            raise C10Error("C10 registry rejects a different plan or cohort")
+        sources = cohort.get("sources")
+        if not isinstance(sources, list):
+            raise C10Error("C10 registry cohort is invalid")
+        jll = next(
+            (
+                value
+                for value in sources
+                if isinstance(value, Mapping) and value.get("source_key") == "jll"
+            ),
+            None,
+        )
+        if not isinstance(jll, Mapping) or jll.get("core_state") != "ready":
+            raise C10Error("C10 registry requires the sealed JLL cohort")
+        members = jll.get("core")
+        fresh = jll.get("fresh_enumeration")
+        if (
+            not isinstance(members, list)
+            or len(members) != 16
+            or jll.get("core_selected_rows") != 16
+            or jll.get("core_target_rows") != 16
+            or not isinstance(fresh, Mapping)
+            or fresh.get("population_state") != "verified"
+        ):
+            raise C10Error("C10 registry requires exactly sixteen sealed JLL members")
+        require_sha256(fresh.get("receipt_sha256"), "JLL enumeration receipt")
+        frozen: dict[str, Mapping[str, Any]] = {
+            "jll-enumeration": self._enumeration_card()
+        }
+        observed_routes: set[str] = set()
+        observed_ids: set[str] = set()
+        for index, member in enumerate(members):
+            if not isinstance(member, Mapping):
+                raise C10Error("C10 JLL member is invalid")
+            provider_id = member.get("provider_id")
+            route = self._member_route(member.get("canonical_url"))
             if (
-                card.get("cacheMode") != "no-store"
-                or not isinstance(card.get("maxBytes"), int)
-                or not 0 < card["maxBytes"] <= _MAX_RAW_BODY_BYTES
+                not isinstance(provider_id, str)
+                or not provider_id.isdigit()
+                or provider_id in observed_ids
+                or route in observed_routes
             ):
                 raise C10Error(
-                    "C10 sealed card violates its reviewed body/cache bounds"
+                    "C10 JLL membership does not have exact canonical identity"
                 )
-            frozen[card_id] = json.loads(_canonical_text(card))
-        self._cards = frozen
-        self.manifest_sha256 = sha256(frozen)
+            observed_ids.add(provider_id)
+            observed_routes.add(route)
+            frozen[f"jll-member-{index}"] = self._member_card(index, route)
+        # Keep canonical bytes, not caller-reachable mutable dictionaries. A
+        # resolve always returns a fresh decoded projection for one capability.
+        self._cards = {
+            card_id: _canonical_text(card) for card_id, card in frozen.items()
+        }
+        self.cohort_sha256 = plan["cohort_sha256"]
+        self.plan_sha256 = plan["plan_sha256"]
+        self.manifest_sha256 = sha256(
+            {card_id: json.loads(card) for card_id, card in self._cards.items()}
+        )
+
+    @staticmethod
+    def _member_route(value: Any) -> str:
+        if not isinstance(value, str):
+            raise C10Error("C10 JLL member lacks a canonical route")
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != _JLL_HOST
+            or not parsed.path.startswith("/listings/")
+            or parsed.path.rstrip("/") == "/listings"
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            raise C10Error("C10 JLL member route is outside the reviewed path")
+        return urlunsplit(("https", _JLL_HOST, parsed.path.rstrip("/"), "", ""))
+
+    @staticmethod
+    def _card(
+        *,
+        card_id: str,
+        stage: str,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        content_type: str | None,
+        body: str | None,
+    ) -> Mapping[str, Any]:
+        return {
+            "id": card_id,
+            "sourceKey": "jll",
+            "stage": stage,
+            "method": method,
+            "url": url,
+            "allowedHost": _JLL_HOST,
+            "headers": dict(headers),
+            "contentType": content_type,
+            "body": body,
+            "browserBootstrapUrl": _JLL_BOOTSTRAP_URL,
+            "cacheMode": "no-store",
+            "timeoutMs": _MAX_CARD_TIMEOUT_MS,
+            "maxBytes": _MAX_RAW_BODY_BYTES,
+            "bodySha256": hashlib.sha256(body.encode("utf-8")).hexdigest()
+            if body is not None
+            else None,
+        }
+
+    @classmethod
+    def _enumeration_card(cls) -> Mapping[str, Any]:
+        variables = {
+            "market": "us",
+            "language": "en",
+            "propertyTypes": [_JLL_RECIPE["property_type"]],
+            "tenureTypes": ["sale"],
+            "skip": 0,
+            "take": 50,
+            "orderBy": {
+                "field": "dateModified",
+                "direction": "desc",
+                "imagePriority": True,
+            },
+        }
+        return cls._card(
+            card_id="jll-enumeration",
+            stage="enumeration",
+            method="POST",
+            url=f"https://{_JLL_HOST}/api/graphql",
+            headers={
+                "accept": "application/json",
+                "cache-control": "no-cache",
+                "content-type": "application/json",
+                "pragma": "no-cache",
+            },
+            content_type="application/json",
+            body=_canonical_text(
+                {
+                    "operationName": "SearchResults",
+                    "query": _JLL_QUERY,
+                    "variables": variables,
+                }
+            ),
+        )
+
+    @classmethod
+    def _member_card(cls, index: int, route: str) -> Mapping[str, Any]:
+        return cls._card(
+            card_id=f"jll-member-{index}",
+            stage="member",
+            method="GET",
+            url=route,
+            headers={"accept": "text/html,application/xhtml+xml"},
+            content_type=None,
+            body=None,
+        )
 
     def resolve(self, card_id: str) -> Mapping[str, Any]:
         if not isinstance(card_id, str) or card_id not in self._cards:
             raise C10Error("C10 rejects a card outside the sealed registry")
-        return self._cards[card_id]
+        return json.loads(self._cards[card_id])
 
 
 @dataclass(frozen=True)
@@ -491,6 +652,7 @@ class DockerComposeSidecar:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
         self._env_file: Path | None = None
+        self._compose_env: dict[str, str] | None = None
 
     def start(self, environment: Mapping[str, str], port: int, deadline: float) -> None:
         descriptor, raw = tempfile.mkstemp(prefix="c10-sidecar-", suffix=".env")
@@ -521,6 +683,7 @@ class DockerComposeSidecar:
             "C10_BROWSER_PRIVATE_ENV_FILE": str(self._env_file),
             "C10_BROWSER_HOST_PORT": str(port),
         }
+        self._compose_env = env
         rendered = subprocess.run(
             [
                 "docker",
@@ -540,8 +703,8 @@ class DockerComposeSidecar:
             timeout=_remaining(deadline),
             check=False,
         )
-        if rendered.returncode != 0 or not self._rendered_loopback_only(
-            rendered.stdout, port
+        if rendered.returncode != 0 or not self._rendered_identity(
+            rendered.stdout, port, environment
         ):
             self._remove_env()
             raise C10Error(
@@ -556,10 +719,21 @@ class DockerComposeSidecar:
             check=False,
         )
         if result.returncode != 0:
+            # `up` can create a container before reporting a failure. Stop with
+            # the identical retained interpolation identity before propagating
+            # the failure; a stop failure itself is quarantine-worthy.
+            try:
+                self.stop(deadline)
+            except BaseException as cleanup_error:
+                raise C10Error(
+                    "C10 sidecar partial-start cleanup failed"
+                ) from cleanup_error
             raise C10Error("C10 sidecar compose startup failed")
 
     def stop(self, deadline: float) -> None:
         try:
+            if self._compose_env is None:
+                raise C10Error("C10 sidecar has no retained compose identity")
             result = subprocess.run(
                 [
                     "docker",
@@ -572,33 +746,89 @@ class DockerComposeSidecar:
                     "playwright-service",
                 ],
                 cwd=self.repo_root,
+                env=self._compose_env,
                 capture_output=True,
                 timeout=_remaining(deadline),
                 check=False,
             )
             if result.returncode != 0:
                 raise C10Error("C10 sidecar stop was not confirmed")
+            quiescence = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    "docker-compose.yaml",
+                    "-f",
+                    "docker-compose.c10.yaml",
+                    "ps",
+                    "--format",
+                    "json",
+                    "playwright-service",
+                ],
+                cwd=self.repo_root,
+                env=self._compose_env,
+                capture_output=True,
+                text=True,
+                timeout=_remaining(deadline),
+                check=False,
+            )
+            if quiescence.returncode != 0 or self._compose_is_running(
+                quiescence.stdout
+            ):
+                raise C10Error("C10 sidecar quiescence was not confirmed")
         finally:
             self._remove_env()
+            self._compose_env = None
 
     @staticmethod
-    def _rendered_loopback_only(rendered: str, port: int) -> bool:
+    def _rendered_identity(
+        rendered: str, port: int, expected_environment: Mapping[str, str]
+    ) -> bool:
         try:
-            ports = json.loads(rendered)["services"]["playwright-service"]["ports"]
+            service = json.loads(rendered)["services"]["playwright-service"]
+            ports = service["ports"]
         except (KeyError, TypeError, json.JSONDecodeError):
             return False
-        return any(
+        loopback = any(
             isinstance(item, Mapping)
             and item.get("host_ip") == "127.0.0.1"
             and str(item.get("published")) == str(port)
             and int(item.get("target", 0)) == 3004
             for item in ports
         )
+        actual_environment = service.get("environment")
+        if isinstance(actual_environment, list):
+            actual_environment = dict(
+                item.split("=", 1) for item in actual_environment if "=" in item
+            )
+        return (
+            loopback
+            and str(service.get("cpus")) == expected_environment["C10_BROWSER_CPUS"]
+            and isinstance(actual_environment, Mapping)
+            and all(
+                actual_environment.get(key) == expected_environment[key]
+                for key in ("MAX_CONCURRENT_PAGES", "C10_PROFILE_SHA256")
+            )
+        )
 
     def _remove_env(self) -> None:
         if self._env_file is not None:
             self._env_file.unlink(missing_ok=True)
             self._env_file = None
+
+    @staticmethod
+    def _compose_is_running(output: str) -> bool:
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            try:
+                state = json.loads(line).get("State", "")
+            except json.JSONDecodeError:
+                return True
+            if str(state).lower() in {"running", "restarting", "created"}:
+                return True
+        return False
 
 
 class C10HostExecutionSession:
@@ -625,7 +855,6 @@ class C10HostExecutionSession:
         self,
         plan: Mapping[str, Any],
         session: Mapping[str, Any],
-        card_id: str,
         *,
         timeout_seconds: float = 120,
         child: Callable[[Mapping[str, Any], float], Mapping[str, Any]] | None = None,
@@ -633,7 +862,6 @@ class C10HostExecutionSession:
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
         validate_plan(plan)
-        card = self.cards.resolve(card_id)
         deadline = time.monotonic() + timeout_seconds
         lock = SharedLock(self.lock_path)
         if lock.path.resolve() != canonical_shared_lock_dir(self.repo_root).resolve():
@@ -641,6 +869,7 @@ class C10HostExecutionSession:
         lock.acquire()
         sidecar_attempted = False
         claim: Mapping[str, Any] | None = None
+        result: Mapping[str, Any] | None = None
         try:
             claim = self.session_store.claim(plan, session)
             with PrivateReceiptStore.create(self.private_root) as store:
@@ -648,7 +877,6 @@ class C10HostExecutionSession:
                 port = self._free_loopback_port()
                 arm = _safe_json(claim["arm"], "C10 arm")
                 profile = _safe_json(plan["profiles"][arm["variant"]], "C10 profile")
-                sidecar_attempted = True
                 self.sidecar.start(
                     {
                         "C10_COORDINATOR_PUBLIC_KEY_PEM": keys.coordinator_public_pem,
@@ -663,17 +891,17 @@ class C10HostExecutionSession:
                     port,
                     deadline,
                 )
+                sidecar_attempted = True
                 endpoint = f"http://127.0.0.1:{port}"
                 self._verify_health(endpoint, keys, profile, deadline)
-                issued = self._issue(endpoint, claim, plan, card, keys, deadline)
-                evidence = (child or self._run_child)(issued, deadline)
-                self._verify_evidence(evidence, issued, keys, deadline)
-                private = store.seal_json("browser-evidence", evidence)
-                return {
+                evidence, artifacts = self._run_cohort(
+                    endpoint, claim, plan, profile, keys, store, deadline, child
+                )
+                result = {
                     "claim": claim,
-                    "private_artifact": private,
-                    "evidence_sha256": sha256(evidence),
-                    "binding": issued["capability"]["binding"],
+                    "private_artifacts": artifacts,
+                    "evidence_manifest_sha256": sha256(evidence),
+                    "binding": evidence[0]["binding"],
                 }
         except BaseException as exc:
             lock.retain_on_exit = True
@@ -691,6 +919,119 @@ class C10HostExecutionSession:
                 raise
             finally:
                 lock.release()
+        if result is None:
+            raise C10Error("C10 host did not produce a terminal cohort result")
+        return result
+
+    def _run_cohort(
+        self,
+        endpoint: str,
+        claim: Mapping[str, Any],
+        plan: Mapping[str, Any],
+        profile: Mapping[str, Any],
+        keys: C10EphemeralKeys,
+        store: PrivateReceiptStore,
+        deadline: float,
+        child: Callable[[Mapping[str, Any], float], Mapping[str, Any]] | None,
+    ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+        """Run the one enumeration then all 16 immutable members at P0/P1.
+
+        The sidecar supplies signed lease intervals.  The coordinator derives
+        saturation itself, instead of accepting a caller's throughput scalar.
+        """
+        target = profile["requested"].get("global_pages")
+        if target not in {4, 10} or target != profile["requested"].get(
+            "jll_detail_concurrency"
+        ):
+            raise C10Error("C10 profile has no reviewed P0/P1 JLL capacity")
+        execute_child = child or self._run_child
+        issued_cards = [
+            self._issue(
+                endpoint,
+                claim,
+                plan,
+                self.cards.resolve("jll-enumeration"),
+                keys,
+                deadline,
+                0,
+            )
+        ]
+        issued_cards.extend(
+            self._issue(
+                endpoint,
+                claim,
+                plan,
+                self.cards.resolve(f"jll-member-{index}"),
+                keys,
+                deadline,
+                index + 1,
+            )
+            for index in range(16)
+        )
+        # The native enumeration is a required predecessor of every selected
+        # detail member. It is still host-issued and sealed like every card.
+        enumeration = execute_child(issued_cards[0], deadline)
+        self._verify_evidence(enumeration, issued_cards[0], keys, deadline)
+        evidence: list[Mapping[str, Any]] = [enumeration]
+        pool = ThreadPoolExecutor(max_workers=target, thread_name_prefix="c10-jll")
+        try:
+            futures = {
+                pool.submit(execute_child, issued, deadline): issued
+                for issued in issued_cards[1:]
+            }
+            for future in as_completed(futures, timeout=_remaining(deadline)):
+                issued = futures[future]
+                raw = future.result(timeout=_remaining(deadline))
+                self._verify_evidence(raw, issued, keys, deadline)
+                evidence.append(raw)
+        finally:
+            # An actual child is process-group-killed by _run_child. Do not let
+            # an injected/hung test transport make the lifecycle wait past its
+            # one deadline while unwinding this host authority scope.
+            pool.shutdown(wait=False, cancel_futures=True)
+        if len(evidence) != 17:
+            raise C10Error(
+                "C10 cohort did not execute its exact enumeration and members"
+            )
+        self._verify_saturation(evidence[1:], int(target))
+        artifacts = [
+            store.seal_json(f"browser-evidence-{index}", item)
+            for index, item in enumerate(evidence)
+        ]
+        return evidence, artifacts
+
+    @staticmethod
+    def _verify_saturation(evidence: list[Mapping[str, Any]], target: int) -> None:
+        if len(evidence) != 16:
+            raise C10Error("C10 saturation requires all sixteen JLL members")
+        intervals: list[tuple[int, int]] = []
+        observed: list[int] = []
+        for item in evidence:
+            unsigned = _safe_json(item, "C10 member evidence")
+            try:
+                start = int(unsigned["leaseStartMonotonicNs"])
+                end = int(unsigned["leaseEndMonotonicNs"])
+                active = unsigned["observedActivePages"]
+                capacity = unsigned["configuredCapacity"]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise C10Error("C10 signed member lease evidence is malformed") from exc
+            if start >= end or type(active) is not int or capacity != target:
+                raise C10Error(
+                    "C10 signed member lease does not bind the target capacity"
+                )
+            intervals.append((start, end))
+            observed.append(active)
+        events = sorted(
+            (point, delta)
+            for start, end in intervals
+            for point, delta in ((start, 1), (end, -1))
+        )
+        active, maximum = 0, 0
+        for _, delta in events:
+            active += delta
+            maximum = max(maximum, active)
+        if maximum != target or max(observed) != target:
+            raise C10Error("C10 signed leases did not reach the exact P0/P1 target")
 
     def _keys(self, deadline: float) -> C10EphemeralKeys:
         coordinator_private, coordinator_public = _OpenSsl.pair(deadline)
@@ -756,6 +1097,7 @@ class C10HostExecutionSession:
         card: Mapping[str, Any],
         keys: C10EphemeralKeys,
         deadline: float,
+        sequence: int,
     ) -> Mapping[str, Any]:
         card_digest = sha256(card)
         arm = _safe_json(claim["arm"], "C10 arm")
@@ -775,13 +1117,15 @@ class C10HostExecutionSession:
             "armSha256": sha256(arm),
             "profileSha256": sha256(profile["requested"]),
         }
+        remaining_ms = max(1, int(_remaining(deadline) * 1000))
+        now_ms = int(time.time() * 1000)
         capability = {
             "protocolVersion": 3,
             "coordinatorKeyId": _key_id(keys.coordinator_public_pem),
             "nonce": secrets.token_urlsafe(32),
-            "expiresAtMs": int(
-                time.time() * 1000 + min(_remaining(deadline) * 1000, 120_000)
-            ),
+            "expiresAtMs": now_ms + min(remaining_ms, 120_000),
+            "hostDeadlineAtMs": now_ms + remaining_ms,
+            "cardSequence": sequence,
             "sourceKey": source_key,
             "binding": binding,
         }
@@ -811,27 +1155,45 @@ class C10HostExecutionSession:
         try:
             process = subprocess.Popen(
                 ["node", "--import", "tsx", str(script)],
-                text=True,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 cwd=self.repo_root,
+                start_new_session=True,
             )
-            assert process.stdin is not None and process.stdout is not None
-            frame = _canonical_text(payload) + "\n"
-            if len(frame.encode("utf-8")) > _MAX_CHILD_FRAME_BYTES:
+            frame = (_canonical_text(payload) + "\n").encode("utf-8")
+            if len(frame) > _MAX_CHILD_FRAME_BYTES:
                 raise C10Error("C10 issued child frame exceeds its bound")
-            process.stdin.write(frame)
-            process.stdin.close()
-            output = process.stdout.read(_MAX_CHILD_STDOUT_BYTES + 1)
-            if len(output.encode("utf-8")) > _MAX_CHILD_STDOUT_BYTES:
-                process.kill()
+            try:
+                output, stderr = process.communicate(
+                    frame, timeout=_remaining(deadline)
+                )
+            except subprocess.TimeoutExpired as exc:
+                self._kill_child_group(process)
+                process.communicate()
+                raise C10Error(
+                    "C10 issued browser child exceeded its deadline"
+                ) from exc
+            if (
+                len(output) > _MAX_CHILD_STDOUT_BYTES
+                or len(stderr) > _MAX_CHILD_STDERR_BYTES
+            ):
+                self._kill_child_group(process)
                 raise C10Error("C10 issued child output exceeds its bound")
-            if process.wait(timeout=_remaining(deadline)) != 0:
+            if process.returncode != 0:
                 raise C10Error("C10 issued browser child failed")
-            return _safe_json(json.loads(output), "C10 issued browser child evidence")
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            return _safe_json(
+                json.loads(output.decode("utf-8")), "C10 issued browser child evidence"
+            )
+        except (OSError, json.JSONDecodeError) as exc:
             raise C10Error("C10 issued browser child failed") from exc
+
+    @staticmethod
+    def _kill_child_group(process: subprocess.Popen[bytes]) -> None:
+        try:
+            os.killpg(process.pid, 9)
+        except (ProcessLookupError, OSError):
+            process.kill()
 
     def _verify_evidence(
         self,

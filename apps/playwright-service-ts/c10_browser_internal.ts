@@ -9,7 +9,7 @@ const MAX_REPLAY_ENTRIES = 4_096;
 
 export type C10Binding = Readonly<{ planSha256: string; cohortSha256: string; cardSha256: string; manifestSha256: string; sessionSha256: string; armSha256: string; profileSha256: string }>;
 export type C10SidecarCard = Readonly<{ id: string; sourceKey: string; stage: "enumeration" | "member"; method: "GET" | "POST"; url: string; allowedHost: string; headers: Record<string, string>; contentType: "application/json" | null; body: string | null; browserBootstrapUrl: string; cacheMode: "no-store"; timeoutMs: number; maxBytes: number; bodySha256: string | null }>;
-export type C10CapabilityPayload = Readonly<{ protocolVersion: 3; coordinatorKeyId: string; nonce: string; expiresAtMs: number; sourceKey: string; binding: C10Binding }>;
+export type C10CapabilityPayload = Readonly<{ protocolVersion: 3; coordinatorKeyId: string; nonce: string; expiresAtMs: number; hostDeadlineAtMs: number; cardSequence: number; sourceKey: string; binding: C10Binding }>;
 export type C10SidecarInput = Readonly<{ capability: C10CapabilityPayload; card: C10SidecarCard }>;
 
 export function canonicalJson(value: unknown): string {
@@ -30,6 +30,7 @@ function exactKeys(value: unknown, expected: readonly string[]): value is Record
 function digest(value: unknown, label: string): string { if (typeof value !== "string" || !SHA256.test(value)) throw new Error(`${label} must be a SHA-256 digest`); return value; }
 function text(value: unknown, label: string, maximum = 4_096): string { if (typeof value !== "string" || value.length === 0 || value.length > maximum) throw new Error(`${label} is invalid`); return value; }
 function positiveInteger(value: unknown, label: string): number { if (!Number.isInteger(value) || (value as number) < 1) throw new Error(`${label} is invalid`); return value as number; }
+function nonnegativeInteger(value: unknown, label: string): number { if (!Number.isInteger(value) || (value as number) < 0) throw new Error(`${label} is invalid`); return value as number; }
 function bindingFrom(value: unknown): C10Binding {
   const names = ["armSha256", "cardSha256", "cohortSha256", "manifestSha256", "planSha256", "profileSha256", "sessionSha256"];
   if (!exactKeys(value, names)) throw new Error("C10 binding schema is invalid");
@@ -48,13 +49,15 @@ function cardFrom(value: unknown, sourceKey: string): C10SidecarCard {
   const body: string | null = typeof value.body === "string" ? value.body : value.body === null ? null : (() => { throw new Error("C10 browser body is invalid"); })();
   if (value.method === "GET" && (body !== null || contentType !== null || value.bodySha256 !== null)) throw new Error("C10 GET browser card cannot carry a body");
   if (value.method === "POST" && (body === null || contentType !== "application/json" || sha256(body) !== value.bodySha256)) throw new Error("C10 POST browser card body is invalid");
-  return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs: positiveInteger(value.timeoutMs, "C10 browser timeout"), maxBytes: positiveInteger(value.maxBytes, "C10 browser byte limit"), bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body") });
+  const timeoutMs = positiveInteger(value.timeoutMs, "C10 browser timeout"), maxBytes = positiveInteger(value.maxBytes, "C10 browser byte limit");
+  if (timeoutMs > 30_000 || maxBytes > 2 * 1024 * 1024) throw new Error("C10 browser card exceeds reviewed bounds");
+  return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs, maxBytes, bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body") });
 }
 export function parseC10SidecarInput(value: unknown): C10SidecarInput {
-  if (!exactKeys(value, ["capability", "card"]) || !exactKeys(value.capability, ["binding", "coordinatorKeyId", "expiresAtMs", "nonce", "protocolVersion", "sourceKey"])) throw new Error("C10 v3 browser request schema is invalid");
+  if (!exactKeys(value, ["capability", "card"]) || !exactKeys(value.capability, ["binding", "cardSequence", "coordinatorKeyId", "expiresAtMs", "hostDeadlineAtMs", "nonce", "protocolVersion", "sourceKey"])) throw new Error("C10 v3 browser request schema is invalid");
   const capability = value.capability; if (capability.protocolVersion !== C10_PROTOCOL_VERSION) throw new Error("C10 browser protocol version is invalid");
   const sourceKey = text(capability.sourceKey, "C10 source key", 81);
-  const parsed = Object.freeze({ protocolVersion: C10_PROTOCOL_VERSION, coordinatorKeyId: digest(capability.coordinatorKeyId, "C10 coordinator key"), nonce: text(capability.nonce, "C10 nonce", 128), expiresAtMs: positiveInteger(capability.expiresAtMs, "C10 expiry"), sourceKey, binding: bindingFrom(capability.binding) });
+  const parsed = Object.freeze({ protocolVersion: C10_PROTOCOL_VERSION, coordinatorKeyId: digest(capability.coordinatorKeyId, "C10 coordinator key"), nonce: text(capability.nonce, "C10 nonce", 128), expiresAtMs: positiveInteger(capability.expiresAtMs, "C10 expiry"), hostDeadlineAtMs: positiveInteger(capability.hostDeadlineAtMs, "C10 host deadline"), cardSequence: nonnegativeInteger(capability.cardSequence, "C10 card sequence"), sourceKey, binding: bindingFrom(capability.binding) });
   const card = cardFrom(value.card, sourceKey); if (sha256(canonicalJson(card)) !== parsed.binding.cardSha256) throw new Error("C10 browser card digest is invalid"); return Object.freeze({ capability: parsed, card });
 }
 /** Coordinator-only helper: this private key must never reach the sidecar. */
@@ -65,7 +68,7 @@ export class C10SidecarCapabilityRegistry {
   consume(coordinatorPublicKeyPem: string | undefined, input: C10SidecarInput, authorization: string | undefined, now = Date.now()): boolean {
     this.prune(now); if (!coordinatorPublicKeyPem || !authorization) return false; const [payload, signature, extra] = authorization.split(".");
     if (!payload || !signature || extra || !verify(null, Buffer.from(payload, "utf8"), coordinatorPublicKeyPem, Buffer.from(signature, "base64url"))) return false;
-    try { const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); if (!exactKeys(value, ["binding", "coordinatorKeyId", "expiresAtMs", "nonce", "protocolVersion", "sourceKey"])) return false; const parsed = parseC10SidecarInput({ capability: value, card: input.card }).capability; if (parsed.coordinatorKeyId !== publicKeyId(coordinatorPublicKeyPem) || parsed.expiresAtMs <= now || parsed.expiresAtMs > now + MAX_LIFETIME_MS || canonicalJson(parsed) !== canonicalJson(input.capability) || this.consumed.has(parsed.nonce)) return false; if (this.consumed.size >= MAX_REPLAY_ENTRIES) this.prune(now, true); if (this.consumed.size >= MAX_REPLAY_ENTRIES) return false; this.consumed.set(parsed.nonce, parsed.expiresAtMs); return true; } catch { return false; }
+    try { const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); if (!exactKeys(value, ["binding", "cardSequence", "coordinatorKeyId", "expiresAtMs", "hostDeadlineAtMs", "nonce", "protocolVersion", "sourceKey"])) return false; const parsed = parseC10SidecarInput({ capability: value, card: input.card }).capability; if (parsed.coordinatorKeyId !== publicKeyId(coordinatorPublicKeyPem) || parsed.expiresAtMs <= now || parsed.hostDeadlineAtMs <= now || parsed.expiresAtMs > parsed.hostDeadlineAtMs || parsed.expiresAtMs > now + MAX_LIFETIME_MS || parsed.hostDeadlineAtMs > now + MAX_LIFETIME_MS || canonicalJson(parsed) !== canonicalJson(input.capability) || this.consumed.has(parsed.nonce)) return false; if (this.consumed.size >= MAX_REPLAY_ENTRIES) this.prune(now, true); if (this.consumed.size >= MAX_REPLAY_ENTRIES) return false; this.consumed.set(parsed.nonce, parsed.expiresAtMs); return true; } catch { return false; }
   }
   size(now = Date.now()): number { this.prune(now); return this.consumed.size; }
   private prune(now: number, force = false): void { for (const [nonce, expiry] of this.consumed) if (expiry <= now || (force && this.consumed.size >= MAX_REPLAY_ENTRIES)) this.consumed.delete(nonce); }
