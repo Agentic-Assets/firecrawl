@@ -105,9 +105,14 @@ test("Foundry producer rejects terminal and unknown native statuses", async () =
   }
 });
 
-test("Foundry producer requires explicit sale or lease tenure for generic active status", async () => {
+test("Foundry producer requires an exact explicit sale or lease tenure for generic active status", async () => {
   const memberKey = `foundry-member-${sha256(propertyUrl).slice(0, 24)}`;
-  for (const notes of [["Available"], ["Coming Soon", "Office"]]) {
+  for (const notes of [
+    ["Available"],
+    ["Coming Soon", "Office"],
+    ["Available", "Not for Sale / Lease"],
+    ["Available", "Contact us for sale or lease information"],
+  ]) {
     const receiptContext = await context(new FakeFoundryTransport(notes));
     await foundryCommercialReceiptProducer.produceEnumerationReceipt(receiptContext);
     await assert.rejects(
