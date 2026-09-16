@@ -123,8 +123,6 @@ def candidate_registry() -> dict[str, C10SourceAdapter]:
     expected = {source["key"] for source in load_policy()["sources"]}
     if set(registry) != expected:
         raise C10Error("C10 candidate registry must exactly match the fixed policy")
-    if any(adapter.fully_verified is not False for adapter in registry.values()):
-        raise C10Error("C10 candidate registry cannot contain an admitting adapter")
     return registry
 
 
@@ -154,6 +152,13 @@ def verified_registry(
         if type(adapter) is not type(trusted_adapter):
             raise C10Error(
                 f"C10 adapter {key} is not the reviewed repository implementation"
+            )
+        if (
+            adapter.fully_verified is not True
+            or trusted_adapter.fully_verified is not True
+        ):
+            raise C10Error(
+                f"C10 adapter {key} is not independently reviewed for admission"
             )
         implementation_sha256 = repository_implementation_sha256(key)
         require_sha256(implementation_sha256, f"C10 adapter {key} implementation")

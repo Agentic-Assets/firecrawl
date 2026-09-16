@@ -151,6 +151,34 @@ def _profiles(profile_config: Path, names: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def unsigned_plan(
+    cohort: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    adapter_implementation_sha256: Mapping[str, str],
+    *,
+    profile_config: Path = PROFILE_CONFIG,
+) -> dict[str, Any]:
+    """Build the canonical unsigned plan from already-reviewed adapter bytes."""
+    expected = {source["key"] for source in policy["sources"]}
+    if set(adapter_implementation_sha256) != expected:
+        raise C10Error("C10 plan adapter implementations do not match the fixed policy")
+    for key, digest in adapter_implementation_sha256.items():
+        require_sha256(digest, f"C10 adapter {key} implementation")
+    sources = _verified_cohort_sources(cohort, policy)
+    profiles = _profiles(profile_config, policy["profiles"])
+    return {
+        "schema_version": 1,
+        "kind": PLAN_KIND,
+        "policy_sha256": policy["policy_sha256"],
+        "cohort_sha256": cohort["cohort_sha256"],
+        "implementation_sha256": sha256(dict(adapter_implementation_sha256)),
+        "profiles": profiles,
+        "sources": sources,
+        "no_write": NO_WRITE,
+        "arm_sequence": list(ARM_SEQUENCE),
+    }
+
+
 def admit_plan(
     cohort: Mapping[str, Any],
     *,
@@ -170,22 +198,12 @@ def admit_plan(
     adapters = verified_registry(
         policy, default_registry() if registry is None else registry
     )
-    sources = _verified_cohort_sources(cohort, policy)
-    profiles = _profiles(profile_config, policy["profiles"])
-    implementation_sha256 = sha256(
-        {key: repository_implementation_sha256(key) for key in sorted(adapters)}
+    unsigned = unsigned_plan(
+        cohort,
+        policy,
+        {key: repository_implementation_sha256(key) for key in sorted(adapters)},
+        profile_config=profile_config,
     )
-    unsigned = {
-        "schema_version": 1,
-        "kind": PLAN_KIND,
-        "policy_sha256": policy["policy_sha256"],
-        "cohort_sha256": cohort["cohort_sha256"],
-        "implementation_sha256": implementation_sha256,
-        "profiles": profiles,
-        "sources": sources,
-        "no_write": NO_WRITE,
-        "arm_sequence": list(ARM_SEQUENCE),
-    }
     plan = {**unsigned, "plan_sha256": sha256(unsigned)}
     validate_plan(plan)
     return plan
