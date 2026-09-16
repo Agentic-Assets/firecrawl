@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`2a8b037a239c71cc7d6d0dc0d51ac9c1b5134f5a`
+`7fc6dc1b2e0f1e660fc5edd43c3ac9d1080b119a`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -83,10 +83,13 @@ not change the Wave 1 execution boundary.
   than mutable flags, caller-provided values, or version labels.
 - Marcus member receipts extract the native `DealId` from `PropertyDetail` and
   require it to match the selected provider identity before sealing evidence.
+- JLL enumeration treats GraphQL card IDs as search identities, binds cohort
+  members through enumerated canonical URLs, and independently verifies the
+  numeric provider ID from each detail response.
 
 ## Verification
 
-The final code candidate `2a8b037a239c71cc7d6d0dc0d51ac9c1b5134f5a`
+The final code candidate `7fc6dc1b2e0f1e660fc5edd43c3ac9d1080b119a`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
@@ -96,8 +99,8 @@ correction:
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Fourteen exact-head Codex review passes produced twenty-nine material findings. All
-twenty-nine were confirmed and fixed: immutable cohort binding, per-source timing,
+Fifteen exact-head Codex review passes produced thirty material findings. All
+thirty were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -112,7 +115,8 @@ revalidation and an admission-issued cohort/adapter capability at the execution
 and comparison boundary, plus Buildout's provider-supported array-form stable
 sort for cross-page inventory enumeration, Marcus native `DealId` verification
 from `PropertyDetail`, and a non-substitutable repository authority that pins a
-real cohort and source-byte-derived verifier implementations before admission.
+real cohort and source-byte-derived verifier implementations before admission,
+plus JLL's distinct search-card and numeric detail identities.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
