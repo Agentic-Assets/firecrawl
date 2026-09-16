@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol, Self
 from urllib.request import Request, urlopen
 
-from cre_checkpoint_refresh import SharedLock
+from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 
 from .contracts import (
     C10Error,
@@ -40,7 +40,12 @@ from .contracts import (
 _ENV_MODE = 0o600
 _ROOT_MODE = 0o700
 _FILE_MODE = 0o600
-_MAX_PRIVATE_ARTIFACT = 2 * 1024 * 1024
+_MAX_RAW_BODY_BYTES = 2 * 1024 * 1024
+# Signed JSON contains base64 data. Keep the response cap independent from the
+# envelope cap so a valid two-MiB browser response can still be sealed.
+_MAX_PRIVATE_ARTIFACT = 8 * 1024 * 1024
+_MAX_CHILD_FRAME_BYTES = 64 * 1024
+_MAX_CHILD_STDOUT_BYTES = 8 * 1024 * 1024
 _HEALTH_FIELDS = {
     "activePages",
     "configuredCapacity",
@@ -399,6 +404,70 @@ class C10SessionStore:
             raise C10Error("C10 durable session rejects an alternate plan or ledger")
         return payload
 
+    def record_quarantine(self, claim: Mapping[str, Any] | None, reason: str) -> None:
+        """Durably preserve the failure before the canonical lock can release."""
+        record = {
+            "kind": "cre_capacity_c10_v3_host_quarantine",
+            "claim_id": claim.get("claim_id") if isinstance(claim, Mapping) else None,
+            "session_sha256": claim.get("session_sha256")
+            if isinstance(claim, Mapping)
+            else None,
+            "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest(),
+            "state": "quarantined",
+        }
+        target = self.path.with_name(f"{self.path.name}.quarantine")
+        try:
+            descriptor = os.open(
+                target,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                _FILE_MODE,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(canonical_bytes(record))
+                handle.flush()
+                os.fsync(handle.fileno())
+            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+        except FileExistsError:
+            return
+        except OSError as exc:
+            raise C10Error("C10 quarantine evidence could not be persisted") from exc
+
+
+class C10SealedCardRegistry:
+    """Immutable host-owned JLL cards. C10 never accepts a caller-provided URL."""
+
+    def __init__(
+        self, plan: Mapping[str, Any], cards: Mapping[str, Mapping[str, Any]]
+    ) -> None:
+        validate_plan(plan)
+        if not cards:
+            raise C10Error("C10 sealed registry cannot be empty")
+        frozen: dict[str, Mapping[str, Any]] = {}
+        for card_id, raw in cards.items():
+            card = _safe_json(raw, "C10 sealed card")
+            if card_id != card.get("id") or card.get("sourceKey") != "jll":
+                raise C10Error("C10 registry permits only exact sealed JLL cards")
+            if (
+                card.get("cacheMode") != "no-store"
+                or not isinstance(card.get("maxBytes"), int)
+                or not 0 < card["maxBytes"] <= _MAX_RAW_BODY_BYTES
+            ):
+                raise C10Error(
+                    "C10 sealed card violates its reviewed body/cache bounds"
+                )
+            frozen[card_id] = json.loads(_canonical_text(card))
+        self._cards = frozen
+        self.manifest_sha256 = sha256(frozen)
+
+    def resolve(self, card_id: str) -> Mapping[str, Any]:
+        if not isinstance(card_id, str) or card_id not in self._cards:
+            raise C10Error("C10 rejects a card outside the sealed registry")
+        return self._cards[card_id]
+
 
 @dataclass(frozen=True)
 class C10EphemeralKeys:
@@ -438,7 +507,7 @@ class DockerComposeSidecar:
             "docker",
             "compose",
             "-f",
-            "docker-compose.yml",
+            "docker-compose.yaml",
             "-f",
             "docker-compose.c10.yaml",
             "up",
@@ -448,9 +517,36 @@ class DockerComposeSidecar:
         ]
         env = {
             **os.environ,
+            **environment,
             "C10_BROWSER_PRIVATE_ENV_FILE": str(self._env_file),
             "C10_BROWSER_HOST_PORT": str(port),
         }
+        rendered = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                "docker-compose.yaml",
+                "-f",
+                "docker-compose.c10.yaml",
+                "config",
+                "--format",
+                "json",
+            ],
+            cwd=self.repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_remaining(deadline),
+            check=False,
+        )
+        if rendered.returncode != 0 or not self._rendered_loopback_only(
+            rendered.stdout, port
+        ):
+            self._remove_env()
+            raise C10Error(
+                "C10 compose overlay did not render the exact loopback sidecar"
+            )
         result = subprocess.run(
             command,
             cwd=self.repo_root,
@@ -464,12 +560,12 @@ class DockerComposeSidecar:
 
     def stop(self, deadline: float) -> None:
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [
                     "docker",
                     "compose",
                     "-f",
-                    "docker-compose.yml",
+                    "docker-compose.yaml",
                     "-f",
                     "docker-compose.c10.yaml",
                     "stop",
@@ -480,10 +576,29 @@ class DockerComposeSidecar:
                 timeout=_remaining(deadline),
                 check=False,
             )
+            if result.returncode != 0:
+                raise C10Error("C10 sidecar stop was not confirmed")
         finally:
-            if self._env_file is not None:
-                self._env_file.unlink(missing_ok=True)
-                self._env_file = None
+            self._remove_env()
+
+    @staticmethod
+    def _rendered_loopback_only(rendered: str, port: int) -> bool:
+        try:
+            ports = json.loads(rendered)["services"]["playwright-service"]["ports"]
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return False
+        return any(
+            isinstance(item, Mapping)
+            and item.get("host_ip") == "127.0.0.1"
+            and str(item.get("published")) == str(port)
+            and int(item.get("target", 0)) == 3004
+            for item in ports
+        )
+
+    def _remove_env(self) -> None:
+        if self._env_file is not None:
+            self._env_file.unlink(missing_ok=True)
+            self._env_file = None
 
 
 class C10HostExecutionSession:
@@ -493,14 +608,16 @@ class C10HostExecutionSession:
         self,
         *,
         repo_root: Path,
-        lock_path: Path,
         session_store: C10SessionStore,
         private_root: Path,
+        cards: C10SealedCardRegistry,
         sidecar: SidecarLifecycle | None = None,
         quarantine: Callable[[str], None] | None = None,
     ) -> None:
-        self.repo_root, self.lock_path = repo_root, lock_path
+        self.repo_root = repo_root.resolve()
+        self.lock_path = canonical_shared_lock_dir(self.repo_root).resolve()
         self.session_store, self.private_root = session_store, private_root
+        self.cards = cards
         self.sidecar = sidecar or DockerComposeSidecar(repo_root)
         self.quarantine = quarantine or (lambda _reason: None)
 
@@ -508,7 +625,7 @@ class C10HostExecutionSession:
         self,
         plan: Mapping[str, Any],
         session: Mapping[str, Any],
-        card: Mapping[str, Any],
+        card_id: str,
         *,
         timeout_seconds: float = 120,
         child: Callable[[Mapping[str, Any], float], Mapping[str, Any]] | None = None,
@@ -516,27 +633,38 @@ class C10HostExecutionSession:
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
         validate_plan(plan)
+        card = self.cards.resolve(card_id)
         deadline = time.monotonic() + timeout_seconds
         lock = SharedLock(self.lock_path)
+        if lock.path.resolve() != canonical_shared_lock_dir(self.repo_root).resolve():
+            raise C10Error("C10 host rejected a noncanonical SharedLock identity")
         lock.acquire()
-        started = False
+        sidecar_attempted = False
+        claim: Mapping[str, Any] | None = None
         try:
             claim = self.session_store.claim(plan, session)
             with PrivateReceiptStore.create(self.private_root) as store:
                 keys = self._keys(deadline)
                 port = self._free_loopback_port()
+                arm = _safe_json(claim["arm"], "C10 arm")
+                profile = _safe_json(plan["profiles"][arm["variant"]], "C10 profile")
+                sidecar_attempted = True
                 self.sidecar.start(
                     {
                         "C10_COORDINATOR_PUBLIC_KEY_PEM": keys.coordinator_public_pem,
                         "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM": keys.sidecar_private_pem,
                         "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
+                        "MAX_CONCURRENT_PAGES": str(
+                            profile["requested"]["global_pages"]
+                        ),
+                        "C10_PROFILE_SHA256": sha256(profile["requested"]),
+                        "C10_BROWSER_CPUS": str(profile["requested"]["browser_cpus"]),
                     },
                     port,
                     deadline,
                 )
-                started = True
                 endpoint = f"http://127.0.0.1:{port}"
-                self._verify_health(endpoint, keys, deadline)
+                self._verify_health(endpoint, keys, profile, deadline)
                 issued = self._issue(endpoint, claim, plan, card, keys, deadline)
                 evidence = (child or self._run_child)(issued, deadline)
                 self._verify_evidence(evidence, issued, keys, deadline)
@@ -549,14 +677,16 @@ class C10HostExecutionSession:
                 }
         except BaseException as exc:
             lock.retain_on_exit = True
+            self.session_store.record_quarantine(claim, str(exc))
             self.quarantine(str(exc))
             raise
         finally:
             try:
-                if started:
+                if sidecar_attempted:
                     self.sidecar.stop(deadline)
             except BaseException as cleanup_error:
                 lock.retain_on_exit = True
+                self.session_store.record_quarantine(claim, str(cleanup_error))
                 self.quarantine(f"C10 sidecar cleanup failed: {cleanup_error}")
                 raise
             finally:
@@ -580,7 +710,11 @@ class C10HostExecutionSession:
             return int(listener.getsockname()[1])
 
     def _verify_health(
-        self, endpoint: str, keys: C10EphemeralKeys, deadline: float
+        self,
+        endpoint: str,
+        keys: C10EphemeralKeys,
+        profile: Mapping[str, Any],
+        deadline: float,
     ) -> None:
         request = Request(
             f"{endpoint}/health",
@@ -592,7 +726,7 @@ class C10HostExecutionSession:
         except Exception as exc:
             raise C10Error("C10 signed sidecar health is unavailable") from exc
         health = _safe_json(raw, "C10 signed health")
-        if set(health) != _HEALTH_FIELDS:
+        if set(health) != _HEALTH_FIELDS | {"profileSha256"}:
             raise C10Error("C10 signed health schema is invalid")
         signature = health["healthSignature"]
         unsigned = {
@@ -608,6 +742,9 @@ class C10HostExecutionSession:
             or unsigned.get("transport") != "docker-loopback-tcp"
             or unsigned.get("coordinatorKeyId") != _key_id(keys.coordinator_public_pem)
             or unsigned.get("evidenceKeyId") != _key_id(keys.sidecar_public_pem)
+            or unsigned.get("configuredCapacity")
+            != profile["requested"]["global_pages"]
+            or unsigned.get("profileSha256") != sha256(profile["requested"])
         ):
             raise C10Error("C10 signed health binding is invalid")
 
@@ -633,7 +770,7 @@ class C10HostExecutionSession:
             "planSha256": plan["plan_sha256"],
             "cohortSha256": plan["cohort_sha256"],
             "cardSha256": card_digest,
-            "manifestSha256": plan["policy_sha256"],
+            "manifestSha256": self.cards.manifest_sha256,
             "sessionSha256": session_digest,
             "armSha256": sha256(arm),
             "profileSha256": sha256(profile["requested"]),
@@ -672,20 +809,27 @@ class C10HostExecutionSession:
             / "scripts/firecrawl-ops/cre_collector/capacity_c10/receipts/issued_browser_child.ts"
         )
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 ["node", "--import", "tsx", str(script)],
-                input=_canonical_text(payload) + "\n",
                 text=True,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 cwd=self.repo_root,
-                timeout=_remaining(deadline),
-                check=False,
             )
-            if completed.returncode != 0:
+            assert process.stdin is not None and process.stdout is not None
+            frame = _canonical_text(payload) + "\n"
+            if len(frame.encode("utf-8")) > _MAX_CHILD_FRAME_BYTES:
+                raise C10Error("C10 issued child frame exceeds its bound")
+            process.stdin.write(frame)
+            process.stdin.close()
+            output = process.stdout.read(_MAX_CHILD_STDOUT_BYTES + 1)
+            if len(output.encode("utf-8")) > _MAX_CHILD_STDOUT_BYTES:
+                process.kill()
+                raise C10Error("C10 issued child output exceeds its bound")
+            if process.wait(timeout=_remaining(deadline)) != 0:
                 raise C10Error("C10 issued browser child failed")
-            return _safe_json(
-                json.loads(completed.stdout), "C10 issued browser child evidence"
-            )
+            return _safe_json(json.loads(output), "C10 issued browser child evidence")
         except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
             raise C10Error("C10 issued browser child failed") from exc
 
