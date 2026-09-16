@@ -55,6 +55,18 @@ export interface InventoryReceiptProducer extends ReceiptProducer {
   readonly initialCards: readonly RequestCardInput[];
 }
 
+/**
+ * A source whose native protocol cannot yet be represented without weakening
+ * the sealed request-card boundary.  Blocked sources are deliberately absent
+ * from the executable producer map.
+ */
+export interface BlockedInventoryReceiptProducer {
+  readonly sourceKey: InventorySourceKey;
+  readonly executable: false;
+  readonly reason: string;
+  refuse(): never;
+}
+
 interface SourceSpec {
   readonly sourceKey: InventorySourceKey;
   readonly memberHost: string;
@@ -94,10 +106,6 @@ function requiredInteger(value: unknown, label: string): number {
 function nonemptyString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new C10ReceiptError(`${label} must be a nonempty string`);
   return value.trim();
-}
-
-function optionalString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function requireRows(record: JsonRecord, field: string, label: string): readonly JsonRecord[] {
@@ -173,7 +181,11 @@ function buildoutProjection(sourceKey: "svn" | "lee-associates" | "bull-realty",
   const rows = requireRows(record, "inventory", `${sourceKey} Buildout response`);
   const coordinates = rows.map((row) => {
     const providerId = nonemptyString(row.id, `${sourceKey} Buildout id`);
-    const url = absoluteUrl(row.url ?? row.property_url ?? row.permalink, `https://${memberHost}/`, memberHost, `${sourceKey} Buildout URL`);
+    const url = absoluteUrl(row.show_link, `https://${memberHost}/`, memberHost, `${sourceKey} Buildout show_link`);
+    const propertyIds = new URL(url).searchParams.getAll("propertyId");
+    if (propertyIds.length !== 1 || !propertyIds[0]?.trim()) {
+      throw new C10ReceiptError(`${sourceKey} Buildout show_link lacks propertyId`);
+    }
     return { key: `member-${safeCardPart(providerId, `${sourceKey} Buildout id`)}`, providerId, url };
   });
   return pageProjection(sourceKey, page, total, rows, coordinates);
@@ -226,26 +238,6 @@ function srsProjection(response: Readonly<SourceResponseView>, page: number): Pa
     return { key: `member-${safeCardPart(providerId, "SRS listing id")}`, providerId, url };
   });
   return pageProjection("srs", page, total, rows, coordinates);
-}
-
-/** CDF keeps all cards and explicitly separates comparable and noncomparable cards. */
-function dealflowProjection(response: Readonly<SourceResponseView>, page: number): PageProjection {
-  const record = decodeJson(response, "CBRE Deal Flow response");
-  const total = requiredInteger(record.total, "CBRE Deal Flow total");
-  const cards = requireRows(record, "cards", "CBRE Deal Flow response");
-  const comparable: MemberCoordinate[] = [];
-  const noncomparable: JsonRecord[] = [];
-  for (const card of cards) {
-    const providerId = nonemptyString(card.id ?? card.listing_pv, "CBRE Deal Flow card id");
-    const urlKind = optionalString(card.url_kind) ?? "unlinked";
-    if (urlKind === "detail") {
-      comparable.push({ key: `member-${safeCardPart(providerId, "CBRE Deal Flow card id")}`, providerId, url: absoluteUrl(card.url, "https://www.cbredealflow.com/", "www.cbredealflow.com", "CBRE Deal Flow detail URL") });
-    } else {
-      noncomparable.push(Object.freeze({ providerId, urlKind, reason: "not_public_detail_card" }));
-    }
-  }
-  if (comparable.length + noncomparable.length !== cards.length) throw new C10ReceiptError("CBRE Deal Flow card classification drifted");
-  return { kind: "native-inventory-page", sourceKey: "cbre-dealflow", page, total, rows: comparable, nativeRows: cards, cards, comparable, noncomparable };
 }
 
 function memberProjection(sourceKey: InventorySourceKey, member: C10Member, response: Readonly<SourceResponseView>): MemberProjection {
@@ -361,15 +353,16 @@ function buildoutSpec(sourceKey: "svn" | "lee-associates" | "bull-realty", plugi
   };
   return spec;
 }
-const dealflowSpec: SourceSpec = {
-  sourceKey: "cbre-dealflow", memberHost: "www.cbredealflow.com", pageSize: 200,
-  initialCards: [getCard("cbre-dealflow", "enumeration-0", "enumeration", "https://www.cbredealflow.com/api/AjaxEngine/GetListingsHtml?Start=1&PageSize=200&FilterProjectType=Investment%20Sale", "www.cbredealflow.com", HTML_HEADERS)],
-  pageCard: (page) => getCard("cbre-dealflow", `enumeration-${page}`, "enumeration", `https://www.cbredealflow.com/api/AjaxEngine/GetListingsHtml?Start=${page * 200 + 1}&PageSize=200&FilterProjectType=Investment%20Sale`, "www.cbredealflow.com", HTML_HEADERS),
-  memberCard: (coordinate) => memberCardFor(dealflowSpec, coordinate), parsePage: dealflowProjection, parseMember: (response, member) => memberProjection("cbre-dealflow", member, response),
-};
+export const cbreDealflowReceiptProducerBlock: BlockedInventoryReceiptProducer = Object.freeze({
+  sourceKey: "cbre-dealflow",
+  executable: false,
+  reason: "blocked: ListingEngine requires a provider-derived engine key and form-urlencoded POST response html; the sealed card contract does not represent that protocol",
+  refuse(): never {
+    throw new C10ReceiptError(this.reason);
+  },
+});
 
 export const cbreReceiptProducer = makeProducer(cbreSpec);
-export const cbreDealflowReceiptProducer = makeProducer(dealflowSpec);
 export const cushmanWakefieldReceiptProducer = makeProducer(cushmanSpec);
 export const newmarkReceiptProducer = makeProducer(newmarkSpec);
 export const srsReceiptProducer = makeProducer(srsSpec);
@@ -377,6 +370,10 @@ export const svnReceiptProducer = makeProducer(buildoutSpec("svn", "b93348047402
 export const leeAssociatesReceiptProducer = makeProducer(buildoutSpec("lee-associates", "9a64a93980aeae8db347e72cdfa8ca61017acc9a", "www.lee-associates.com"));
 export const bullRealtyReceiptProducer = makeProducer(buildoutSpec("bull-realty", "6e2064ba71e11d85d50740c87a9372ef9c961a46", "www.bullrealty.com"));
 export const inventoryReceiptProducers: ReadonlyMap<InventorySourceKey, InventoryReceiptProducer> = new Map([
-  ["cbre", cbreReceiptProducer], ["cbre-dealflow", cbreDealflowReceiptProducer], ["cushman-wakefield", cushmanWakefieldReceiptProducer], ["newmark", newmarkReceiptProducer],
+  ["cbre", cbreReceiptProducer], ["cushman-wakefield", cushmanWakefieldReceiptProducer], ["newmark", newmarkReceiptProducer],
   ["srs", srsReceiptProducer], ["svn", svnReceiptProducer], ["lee-associates", leeAssociatesReceiptProducer], ["bull-realty", bullRealtyReceiptProducer],
+]);
+
+export const blockedInventoryReceiptProducers: ReadonlyMap<InventorySourceKey, BlockedInventoryReceiptProducer> = new Map([
+  ["cbre-dealflow", cbreDealflowReceiptProducerBlock],
 ]);

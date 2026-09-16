@@ -128,15 +128,19 @@ def _arm(
             {
                 "key": source["key"],
                 "plane": source["plane"],
+                "cohort_member_count": source["cohort_member_count"],
+                "cohort_member_sha256": source["cohort_member_sha256"],
                 "execution_mode": "browser_rendered",
                 "engine": "c10-browser-only",
                 "client_attempts": 1,
                 "engine_attempts": 1,
                 "cache_read": False,
                 "cache_write": False,
+                "started_monotonic_ns": 1_000_000_000 + index * 2_000_000_000,
+                "finished_monotonic_ns": 2_000_000_000 + index * 2_000_000_000,
                 "qualified_rows": int(rate),
             }
-            for source in plan["sources"]  # type: ignore[index]
+            for index, source in enumerate(plan["sources"])  # type: ignore[index]
         ],
     }
     evidence["evidence_sha256"] = contracts.sha256(evidence)
@@ -351,15 +355,19 @@ def _raw_browser_arm(
             {
                 "key": source["key"],
                 "plane": source["plane"],
+                "cohort_member_count": source["cohort_member_count"],
+                "cohort_member_sha256": source["cohort_member_sha256"],
                 "execution_mode": "browser_rendered",
                 "engine": "c10-browser-only",
                 "client_attempts": 1,
                 "engine_attempts": 1,
                 "cache_read": False,
                 "cache_write": False,
+                "started_monotonic_ns": 1_000_000_000 + index * 2_000_000_000,
+                "finished_monotonic_ns": 2_000_000_000 + index * 2_000_000_000,
                 "qualified_rows": 100,
             }
-            for source in plan["sources"]  # type: ignore[index]
+            for index, source in enumerate(plan["sources"])  # type: ignore[index]
         ],
     }
 
@@ -675,6 +683,46 @@ def test_comparator_rejects_missing_source_or_write_claim() -> None:
     )
     with pytest.raises(contracts.C10Error, match="exactly match"):
         compare.compare(plan, arms)
+
+
+def test_comparator_binds_source_cohort_and_serial_source_timing() -> None:
+    plan = _plan()
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
+    evidence["sources"][0]["cohort_member_sha256"] = _digest("other-cohort")
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="browser-rendered"):
+        compare.compare(plan, arms)
+
+    arms = [_arm(plan, index) for index in range(8)]
+    evidence = arms[0]["sealed_browser_evidence"]
+    evidence["sources"][1]["started_monotonic_ns"] = evidence["sources"][0][
+        "started_monotonic_ns"
+    ]
+    evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+    )
+    with pytest.raises(contracts.C10Error, match="serial browser arm"):
+        compare.compare(plan, arms)
+
+
+def test_comparator_derives_each_source_rate_from_its_own_interval() -> None:
+    plan = _plan()
+    p0 = _arm(plan, 0)
+    p1 = _arm(plan, 1)
+    p1_evidence = p1["sealed_browser_evidence"]
+    p1_evidence["sources"][0]["finished_monotonic_ns"] = 3_000_000_000
+    p1_evidence["sources"][1]["started_monotonic_ns"] = 3_000_000_000
+    p1_evidence["sources"][1]["finished_monotonic_ns"] = 4_000_000_000
+    p1_evidence["evidence_sha256"] = contracts.sha256(
+        {key: value for key, value in p1_evidence.items() if key != "evidence_sha256"}
+    )
+    p0_rates = compare._browser_evidence_rates(plan, p0, 0)
+    p1_rates = compare._browser_evidence_rates(plan, p1, 1)
+    key = plan["sources"][0]["key"]
+    assert round((p1_rates[key] / p0_rates[key] - 1.0) * 100, 3) == -40.0
 
 
 def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:

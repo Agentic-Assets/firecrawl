@@ -9,11 +9,16 @@ import {
 export class MemoryReceiptStore implements ReceiptArtifactStore {
   readonly artifacts = new Map<string, Uint8Array>();
 
+  constructor(private readonly maxArtifactBytes = Number.POSITIVE_INFINITY) {}
+
   async sealJson(stem: string, value: unknown): Promise<SealedArtifact> {
     return this.sealBytes(stem, Buffer.from(canonicalJson(value), "utf8"));
   }
 
   async sealBytes(stem: string, value: Uint8Array): Promise<SealedArtifact> {
+    if (value.byteLength > this.maxArtifactBytes) {
+      throw new Error("test receipt artifact exceeded its size limit");
+    }
     const digest = sha256(value);
     const name = `${stem}-${digest}.sealed`;
     if (this.artifacts.has(name)) throw new Error("test artifact was sealed twice");
