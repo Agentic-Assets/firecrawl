@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`598a5226ffe95b9837ce70d014fcc04647ad13e0`
+`df092d68f581126aef38f26bc8bc75ec8301e404`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -92,21 +92,24 @@ not change the Wave 1 execution boundary.
 - Browser evidence requires the reviewed `playwright` engine and exact
   per-source scheduled count/hash parity with every immutable cohort member;
   the aggregate scheduler count must equal the complete cohort.
+- Comparison and durable-ledger commits accept only process-local coordinated
+  arm capabilities issued after runtime validation or authenticated ledger
+  recovery. Plain or subsequently mutated arm mappings fail closed.
 
 ## Verification
 
-The final code candidate `598a5226ffe95b9837ce70d014fcc04647ad13e0`
+The final code candidate `df092d68f581126aef38f26bc8bc75ec8301e404`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest -q`: 3214 passed, 18 skipped.
+- `python3 -m pytest -q`: 3215 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 908 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Sixteen exact-head Codex review passes produced thirty-three material findings. All
-thirty-three were confirmed and fixed: immutable cohort binding, per-source timing,
+Seventeen exact-head Codex review passes produced thirty-four material findings. All
+thirty-four were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -124,7 +127,8 @@ from `PropertyDetail`, and a non-substitutable repository authority that pins a
 real cohort and source-byte-derived verifier implementations before admission,
 plus JLL's distinct search-card and numeric detail identities, complete imported
 dependency coverage, complete per-source scheduled cohort parity, and an exact
-reviewed browser engine.
+reviewed browser engine, plus coordinator- or ledger-issued arm evidence at
+comparison and terminal-commit boundaries.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
