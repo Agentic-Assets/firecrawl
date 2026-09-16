@@ -27,7 +27,7 @@ from .host_session import (
 
 
 def _canonical_session_store(
-    repo_root: Path, plan: Mapping[str, Any], session: Mapping[str, Any]
+    repo_root: Path, plan: Mapping[str, Any]
 ) -> C10SessionStore:
     """Derive a stable owner-only sibling ledger, never inside the lock tree."""
     validate_plan(plan)
@@ -126,7 +126,6 @@ def execute_production_arm(
     repo_root: Path,
     plan: Mapping[str, Any],
     cohort: Mapping[str, Any],
-    session: Mapping[str, Any],
     private_root: Path,
     runtime_receipt_path: Path,
     approval_path: Path | None = None,
@@ -142,8 +141,8 @@ def execute_production_arm(
     """
     validate_plan(plan)
     registry = C10SealedCardRegistry(plan, cohort)
-    store = _canonical_session_store(repo_root, plan, session)
-    store.assert_available(plan, session)
+    store = _canonical_session_store(repo_root, plan)
+    store.assert_available(plan)
     host = C10HostExecutionSession(
         repo_root=repo_root,
         session_store=store,
@@ -155,13 +154,25 @@ def execute_production_arm(
     if lock.path.resolve() != host.lock_path:
         raise C10Error("C10 host and runtime canonical locks differ")
     lock.acquire()
+    # The canonical lock marker is the crash/reclaim boundary.  A durable
+    # sibling ledger alone is not enough because it survives outside the lock
+    # tree while a dead owner could otherwise be stale-reclaimed.
+    lock.arm_benchmark(
+        {
+            "kind": "cre_capacity_c10_v3",
+            "plan_sha256": plan["plan_sha256"],
+            "protocol_ledger_sha256": sha256(
+                {"protocol": "cre_capacity_c10_v3", "plan_sha256": plan["plan_sha256"]}
+            ),
+        }
+    )
     claim: Mapping[str, Any] | None = None
     candidate_transition: Mapping[str, Any] | None = None
     receipt: Mapping[str, Any] | None = None
     try:
         # Claim precedes any host, runtime, Compose, or provider activity.
         _remaining(deadline)
-        claim = store.claim(plan, session)
+        claim = store.claim(plan)
         arm = claim["arm"]
         if not isinstance(arm, Mapping):
             raise C10Error("C10 durable claim arm is invalid")
@@ -193,7 +204,6 @@ def execute_production_arm(
             )
         host_result = host.execute(
             plan,
-            session,
             timeout_seconds=_remaining(deadline),
             _claim=claim,
             _held_shared_lock=lock,
@@ -239,8 +249,11 @@ def execute_production_arm(
         compare.validate_authenticated_host_arm(plan, authenticated_arm)
         _remaining(deadline)
         terminal = store.record_terminal(claim, authenticated_arm)
+        # The terminal ledger has committed and every required P1 restoration
+        # has settled. Only now may ordinary lock reclamation resume.
+        lock.disarm_benchmark()
         return {
-            "session": terminal["claimed_session"],
+            "next_arm_index": arm["index"] + 1,
             "claim": claim,
             "authenticated_arm": authenticated_arm,
             "terminal": terminal,
@@ -283,7 +296,6 @@ def execute_counterbalanced_sequence(
     repo_root: Path,
     plan: Mapping[str, Any],
     cohort: Mapping[str, Any],
-    session: Mapping[str, Any],
     private_root: Path,
     runtime_receipt_root: Path,
     approval_root: Path,
@@ -292,14 +304,12 @@ def execute_counterbalanced_sequence(
 ) -> Sequence[Mapping[str, Any]]:
     """Run the fixed 8-arm counterbalance with one distinct P1 approval per arm."""
     results: list[Mapping[str, Any]] = []
-    current = session
     for index, variant in enumerate(contracts.ARM_SEQUENCE):
         suffix = f"arm-{index}"
         result = execute_production_arm(
             repo_root=repo_root,
             plan=plan,
             cohort=cohort,
-            session=current,
             private_root=private_root / suffix,
             runtime_receipt_path=runtime_receipt_root / f"{suffix}.json",
             approval_path=approval_root / f"{suffix}.json" if variant == "p1" else None,
@@ -308,7 +318,6 @@ def execute_counterbalanced_sequence(
             else None,
             timeout_seconds=timeout_seconds,
         )
-        current = result["session"]
         results.append(result)
     return results
 
@@ -323,6 +332,40 @@ def _read(path: Path, label: str) -> Mapping[str, Any]:
     return value
 
 
+def _validate_dry_run_paths(
+    *,
+    plan: Mapping[str, Any],
+    store: C10SessionStore,
+    private_root: Path,
+    runtime_receipt: Path,
+    approval: Path | None,
+    admission_out: Path | None,
+    counterbalanced: bool,
+) -> int:
+    """Validate all local admission inputs without claiming an arm or calling I/O."""
+    if not private_root.is_absolute() or not runtime_receipt.is_absolute():
+        raise C10Error("C10 dry-run requires absolute receipt and runtime paths")
+    next_index = store.next_arm_index(plan)
+    needs_candidate = counterbalanced or plan["arm_sequence"][next_index] == "p1"
+    if not needs_candidate:
+        return next_index
+    if approval is None or admission_out is None:
+        raise C10Error("C10 candidate execution requires approval and admission paths")
+    if not approval.is_absolute() or not admission_out.is_absolute():
+        raise C10Error("C10 candidate paths must be absolute")
+    if counterbalanced:
+        if not approval.is_dir() or not admission_out.is_dir():
+            raise C10Error(
+                "C10 counterbalance requires existing approval and admission directories"
+            )
+        for index, variant in enumerate(plan["arm_sequence"]):
+            if variant == "p1" and not (approval / f"arm-{index}.json").is_file():
+                raise C10Error("C10 counterbalance is missing a P1 approval artifact")
+    elif not approval.is_file():
+        raise C10Error("C10 candidate execution requires an approval file")
+    return next_index
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -335,7 +378,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--cohort", type=Path, required=True)
-    parser.add_argument("--session", type=Path, required=True)
     parser.add_argument("--private-root", type=Path, required=True)
     parser.add_argument("--runtime-receipt", type=Path, required=True)
     parser.add_argument("--approval", type=Path)
@@ -343,20 +385,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=120)
     args = parser.parse_args(argv)
-    plan, cohort, session = (
+    plan, cohort = (
         _read(args.plan, "plan"),
         _read(args.cohort, "cohort"),
-        _read(args.session, "session"),
     )
     validate_plan(plan)
     C10SealedCardRegistry(plan, cohort)
-    _canonical_session_store(args.repo_root, plan, session).assert_available(
-        plan, session
-    )
+    store = _canonical_session_store(args.repo_root, plan)
+    store.assert_available(plan)
     # This dry-run deliberately reads only sealed local inputs. It never calls
     # Docker, the runtime controller, the host sidecar, or a provider.
     selected = "counterbalanced" if args.counterbalanced else "smoke"
     if not args.execute:
+        if not 0 < args.timeout_seconds <= 120:
+            raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
+        next_index = _validate_dry_run_paths(
+            plan=plan,
+            store=store,
+            private_root=args.private_root.resolve(),
+            runtime_receipt=args.runtime_receipt.resolve(),
+            approval=args.approval.resolve() if args.approval else None,
+            admission_out=args.admission_out.resolve() if args.admission_out else None,
+            counterbalanced=args.counterbalanced,
+        )
         print(
             json.dumps(
                 {
@@ -366,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
                     "arm_sequence": plan["arm_sequence"]
                     if args.counterbalanced
                     else None,
+                    "next_arm_index": next_index,
                 },
                 sort_keys=True,
             )
@@ -380,7 +432,6 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=args.repo_root.resolve(),
             plan=plan,
             cohort=cohort,
-            session=session,
             private_root=args.private_root.resolve(),
             runtime_receipt_root=args.runtime_receipt.resolve(),
             approval_root=args.approval.resolve(),
@@ -392,7 +443,6 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=args.repo_root.resolve(),
             plan=plan,
             cohort=cohort,
-            session=session,
             private_root=args.private_root.resolve(),
             runtime_receipt_path=args.runtime_receipt.resolve(),
             approval_path=args.approval.resolve() if args.approval else None,

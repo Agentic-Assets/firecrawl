@@ -148,7 +148,6 @@ class C10HostExecutionSession:
     def execute(
         self,
         plan: Mapping[str, Any],
-        session: Mapping[str, Any],
         *,
         timeout_seconds: float = 120,
         _claim: Mapping[str, Any] | None = None,
@@ -184,9 +183,9 @@ class C10HostExecutionSession:
         result: Mapping[str, Any] | None = None
         try:
             if _claim is None:
-                claim = self.session_store.claim(plan, session)
+                claim = self.session_store.claim(plan)
             else:
-                durable = self.session_store.read_bound(plan, session)
+                durable = self.session_store.read_bound(plan, _claim)
                 if dict(durable) != dict(_claim):
                     raise C10Error("C10 host rejects an unbound durable claim")
                 claim = durable
@@ -224,8 +223,11 @@ class C10HostExecutionSession:
                 )
                 result = {
                     "claim": claim,
-                    "private_artifacts": artifacts,
+                    "receipt_root": store.descriptor(),
+                    "evidence_manifest": artifacts,
                     "evidence_manifest_sha256": sha256(evidence),
+                    "evidence_public_key": keys.sidecar_public_pem,
+                    "evidence_key_id": _key_id(keys.sidecar_public_pem),
                     "binding": evidence[0]["binding"],
                 }
         except BaseException as exc:

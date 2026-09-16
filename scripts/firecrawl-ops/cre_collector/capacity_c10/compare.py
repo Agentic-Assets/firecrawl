@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from statistics import median
@@ -257,13 +258,16 @@ def validate_authenticated_host_arm(
     host = arm.get("host_result")
     if not isinstance(host, Mapping) or set(host) != {
         "claim",
-        "private_artifacts",
+        "receipt_root",
+        "evidence_manifest",
         "evidence_manifest_sha256",
+        "evidence_public_key",
+        "evidence_key_id",
         "binding",
     }:
         raise C10Error("C10 authenticated host result is invalid")
     claim = host.get("claim")
-    artifacts = host.get("private_artifacts")
+    artifacts = host.get("evidence_manifest")
     binding = host.get("binding")
     if (
         not isinstance(claim, Mapping)
@@ -279,6 +283,17 @@ def validate_authenticated_host_arm(
     ):
         raise C10Error("C10 authenticated host result is not bound to the arm")
     require_sha256(host.get("evidence_manifest_sha256"), "C10 host manifest")
+    root = host.get("receipt_root")
+    if (
+        not isinstance(root, Mapping)
+        or set(root) != {"path", "id"}
+        or not isinstance(root.get("path"), str)
+        or not isinstance(root.get("id"), str)
+        or not isinstance(host.get("evidence_public_key"), str)
+        or host.get("evidence_key_id")
+        != hashlib.sha256(host["evidence_public_key"].encode("utf-8")).hexdigest()
+    ):
+        raise C10Error("C10 authenticated host receipt authority is invalid")
     for artifact in artifacts:
         if (
             not isinstance(artifact, Mapping)
