@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+
 from capacity_c10 import adapters, contracts
 from capacity_c10.strict_detail_batch_b import strict_detail_batch_b_adapters
 
@@ -135,7 +136,7 @@ def _enumeration(key: str, adapter: Any) -> dict[str, Any]:
 
 
 def _member(adapter: Any) -> dict[str, Any]:
-    host = sorted(adapter.hosts)[0]
+    host = min(adapter.hosts)
     return {
         **_header(adapter, f"c10_{adapter.key}_member_v1"),
         "provider_id": "native-1",
