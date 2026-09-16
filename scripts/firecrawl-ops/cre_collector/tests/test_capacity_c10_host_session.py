@@ -724,6 +724,8 @@ def test_production_cli_is_dry_run_by_default_and_never_calls_runtime(
     }
     for key, value in (("plan", plan), ("cohort", cohort)):
         paths[key].write_text(json.dumps(value), encoding="utf-8")
+    receipt_root = tmp_path / "receipts"
+    receipt_root.mkdir()
     monkeypatch.setattr(
         "capacity_c10.production.runtime.preflight",
         lambda *_args, **_kwargs: pytest.fail("dry-run must not call runtime"),
@@ -741,8 +743,8 @@ def test_production_cli_is_dry_run_by_default_and_never_calls_runtime(
                 str(paths["cohort"]),
                 "--private-root",
                 str(tmp_path / "private"),
-                "--runtime-receipt",
-                str(tmp_path / "receipt.json"),
+                "--runtime-receipt-root",
+                str(receipt_root),
                 "--repo-root",
                 str(tmp_path),
             ]
@@ -768,6 +770,8 @@ def test_production_dry_run_rejects_counterbalance_without_all_p1_admissions(
     approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
     approvals.mkdir()
     admissions.mkdir()
+    receipt_root = tmp_path / "receipts"
+    receipt_root.mkdir()
     with pytest.raises(contracts.C10Error, match="missing a P1 approval"):
         main(
             [
@@ -778,16 +782,75 @@ def test_production_dry_run_rejects_counterbalance_without_all_p1_admissions(
                 str(cohort_path),
                 "--private-root",
                 str(tmp_path / "private"),
-                "--runtime-receipt",
-                str(tmp_path / "receipts"),
-                "--approval",
+                "--runtime-receipt-root",
+                str(receipt_root),
+                "--approval-root",
                 str(approvals),
-                "--admission-out",
+                "--admission-root",
                 str(admissions),
                 "--repo-root",
                 str(Path(__file__).parents[4]),
             ]
         )
+
+
+def test_smoke_dry_run_and_execute_bind_the_same_durable_p1_arm_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    plan_path, cohort_path = tmp_path / "plan.json", tmp_path / "cohort.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    cohort_path.write_text(json.dumps(cohort), encoding="utf-8")
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
+    store = C10SessionStore(
+        tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
+    )
+    first = store.claim(plan)
+    store.record_terminal(first, {})
+    roots = {
+        "private": tmp_path / "private",
+        "receipts": tmp_path / "receipts",
+        "approvals": tmp_path / "approvals",
+        "admissions": tmp_path / "admissions",
+    }
+    for root in roots.values():
+        root.mkdir()
+    approved = roots["approvals"] / "arm-1.json"
+    approved.write_text("{}", encoding="utf-8")
+    command = [
+        "--smoke",
+        "--plan",
+        str(plan_path),
+        "--cohort",
+        str(cohort_path),
+        "--private-root",
+        str(roots["private"]),
+        "--runtime-receipt-root",
+        str(roots["receipts"]),
+        "--approval-root",
+        str(roots["approvals"]),
+        "--admission-root",
+        str(roots["admissions"]),
+        "--repo-root",
+        str(tmp_path),
+    ]
+    assert main(command) == 0
+
+    def execute(**kwargs: object) -> dict[str, object]:
+        assert kwargs["approval_root"] / "arm-1.json" == approved  # type: ignore[operator]
+        assert not (kwargs["admission_root"] / "arm-1.json").exists()  # type: ignore[operator]
+        return {"state": "fake-executed"}
+
+    monkeypatch.setattr("capacity_c10.production.execute_production_arm", execute)
+    assert main(["--execute", *command]) == 0
+
+
+def test_cli_rejects_ambiguous_singular_root_flags() -> None:
+    with pytest.raises(contracts.C10Error, match="obsolete; use canonical"):
+        main(["--runtime-receipt", "/tmp/receipt.json"])
 
 
 def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated_result(
@@ -1225,6 +1288,28 @@ def test_counterbalance_passes_only_canonical_roots_until_protocol_terminal(
         assert call["admission_root"] == fresh / "admissions"
 
 
+@pytest.mark.parametrize("arm_sequence", [[], ["p0"]])
+def test_counterbalance_rejects_noncanonical_arm_sequences_before_execution(
+    tmp_path: Path, arm_sequence: list[str]
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    invalid = copy.deepcopy(plan)
+    invalid["arm_sequence"] = arm_sequence
+    invalid["plan_sha256"] = contracts.sha256(
+        {key: value for key, value in invalid.items() if key != "plan_sha256"}
+    )
+    with pytest.raises(contracts.C10Error):
+        execute_counterbalanced_sequence(
+            repo_root=tmp_path,
+            plan=invalid,
+            cohort=cohort,
+            private_root=tmp_path / "private",
+            runtime_receipt_root=tmp_path / "receipts",
+            approval_root=tmp_path / "approvals",
+            admission_root=tmp_path / "admissions",
+        )
+
+
 @pytest.mark.parametrize("timeout_seconds", [0, -1, 121, float("inf")])
 def test_production_rejects_invalid_timeout_before_lock_or_ledger_mutation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, timeout_seconds: float
@@ -1310,8 +1395,8 @@ def test_cli_execute_rejects_invalid_timeout_before_reading_or_mutating_paths() 
                 "/definitely/missing/cohort.json",
                 "--private-root",
                 "/definitely/missing/private",
-                "--runtime-receipt",
-                "/definitely/missing/receipt.json",
+                "--runtime-receipt-root",
+                "/definitely/missing/receipts",
                 "--repo-root",
                 "/definitely/missing/repo",
             ]
