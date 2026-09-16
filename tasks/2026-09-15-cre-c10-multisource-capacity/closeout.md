@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`01e06a9619b861748cf74ddba4487826cb943cd0`
+`624a4064f8a592e032d0df8da89ee183b3ac6141`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -60,21 +60,25 @@ not change the Wave 1 execution boundary.
 - JLL strict-detail plans enumerate every exact transaction, property-type, and
   page stratum needed by the immutable cohort. The producer reconciles identity
   across the aggregate before any member request card is admitted.
+- JLL Investor and Colliers likewise seal every exact page or map/list slice
+  represented by the cohort and reconcile native identities across the combined
+  responses. Marcus reconciles the complete map inventory to the provider's
+  native count before it admits activity-bound member cards.
 
 ## Verification
 
-The final code candidate `01e06a9619b861748cf74ddba4487826cb943cd0`
+The final code candidate `624a4064f8a592e032d0df8da89ee183b3ac6141`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
 - `python3 -m pytest -q`: 3210 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 904 passed, 1 expected
+- `npm test`: TypeScript typecheck passed; 906 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Seven exact-head Codex review passes produced seventeen material findings. All
-seventeen were confirmed and fixed: immutable cohort binding, per-source timing,
+Eight exact-head Codex review passes produced twenty material findings. All
+twenty were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -82,7 +86,8 @@ recoverable terminal-result evidence, independently derived canonical lock
 ownership, fail-closed inventory HTML member paths, the Marcus native detail
 endpoint/envelope, Colliers' native page-count field, and empty-ledger-only
 durable session creation, stable-transition rollback attestation, and aggregate
-JLL enumeration across exact cohort strata.
+JLL enumeration across exact cohort strata, plus complete JLL Investor pages,
+Colliers slices, and Marcus map inventory.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
