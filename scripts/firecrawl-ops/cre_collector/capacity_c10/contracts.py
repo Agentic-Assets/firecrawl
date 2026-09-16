@@ -139,6 +139,14 @@ def claim_next_arm(
 
 
 def validate_plan(plan: Mapping[str, Any]) -> None:
+    # The JLL experiment is deliberately a separate authority domain.  Keep
+    # the compatibility-panel validator below intact rather than allowing a
+    # one-source shape to seep into its 20-source policy checks.
+    if plan.get("kind") == "cre_capacity_c10_jll_v1_plan":
+        from .jll_admission import validate_jll_plan
+
+        validate_jll_plan(plan)
+        return
     required = {
         "schema_version",
         "kind",

@@ -13,6 +13,8 @@ from .contracts import C10Error, require_sha256, sha256
 SCHEMA_VERSION = 1
 AUTHORITY_KIND = "cre_capacity_c10_v1_authority"
 DEFAULT_AUTHORITY = Path(__file__).parent.parent / "cre_capacity_c10_authority_v1.json"
+JLL_AUTHORITY_KIND = "cre_capacity_c10_jll_v1_authority"
+DEFAULT_JLL_AUTHORITY = Path(__file__).parent.parent / "cre_capacity_c10_jll_authority_v1.json"
 MAX_AUTHORITY_BYTES = 64 * 1024
 PACKAGE_ROOT = Path(__file__).resolve().parent
 COLLECTOR_ROOT = PACKAGE_ROOT.parent
@@ -63,6 +65,47 @@ def load_authority() -> dict[str, Any]:
         "approved_plan_sha256": plan_sha256,
         "approved_adapters": dict(adapters),
     }
+
+
+def load_jll_authority() -> dict[str, Any]:
+    """Load the separate JLL-only authority; it cannot approve the 20 panel."""
+    try:
+        raw = DEFAULT_JLL_AUTHORITY.read_bytes()
+    except OSError as exc:
+        raise C10Error("cannot read canonical JLL C10 authority") from exc
+    if not raw or len(raw) > MAX_AUTHORITY_BYTES:
+        raise C10Error("canonical JLL C10 authority size is invalid")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise C10Error("canonical JLL C10 authority JSON is invalid") from exc
+    required = {
+        "schema_version",
+        "kind",
+        "approved_cohort_sha256",
+        "approved_plan_sha256",
+        "approved_receipt_manifest_sha256",
+        "approved_adapter_sha256",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("schema_version") != SCHEMA_VERSION
+        or value.get("kind") != JLL_AUTHORITY_KIND
+    ):
+        raise C10Error("canonical JLL C10 authority schema is invalid")
+    values = {
+        key: value.get(key)
+        for key in required
+        if key not in {"schema_version", "kind"}
+    }
+    if all(item is None for item in values.values()):
+        return values
+    if any(item is None for item in values.values()):
+        raise C10Error("JLL authority requires all provenance pins or none")
+    for key, digest in values.items():
+        require_sha256(digest, f"canonical JLL C10 authority {key}")
+    return values
 
 
 def _implementation_files() -> tuple[Path, ...]:
