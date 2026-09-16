@@ -15,25 +15,13 @@ from capacity_c10.host_session import C10SealedCardRegistry, C10SessionStore, _O
 
 
 def test_public_store_calls_cannot_fabricate_a_controller_accepted_terminal(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
-    plan = _plan()
     store = C10SessionStore(tmp_path / "private" / "session.json")
-    with pytest.raises(contracts.C10Error, match="controller provenance"):
-        store.claim(plan)
+    assert not hasattr(store, "claim")
+    assert not hasattr(store, "record_terminal")
 
-    claim = controller_claim(store, plan)
-    monkeypatch.setattr(
-        store, "_validate_authenticated_terminal", lambda *_a, **_k: None
-    )
-    fabricated = {
-        "host_result": {
-            "evidence_public_key": "attacker-key",
-            "receipt_root": {"path": str(tmp_path), "id": "a" * 64},
-        }
-    }
-    with pytest.raises(contracts.C10Error, match="controller provenance"):
-        store.record_terminal(plan, claim, fabricated, deadline=time.monotonic() + 30)
+    # No public mutator remains for a fabricated claim, key, or receipt root.
 
 
 def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
@@ -47,8 +35,6 @@ def test_durable_claim_is_one_use_and_rejects_an_alternate_ledger(
     assert store.read_bound(plan, claim)["claim_id"] == claim["claim_id"]
     with pytest.raises(contracts.C10Error, match="terminal recovery"):
         controller_claim(store, plan)
-    with pytest.raises(contracts.C10Error, match="authenticated host arm schema"):
-        store.record_terminal(plan, claim, {})
     assert store.read_bound(plan, claim)["claim_id"] == claim["claim_id"]
 
 

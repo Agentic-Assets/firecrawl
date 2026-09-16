@@ -415,7 +415,7 @@ def execute_production_arm(
         with _controller_ledger_authorization(
             "claim", plan, pending_arm, attempt=None, deadline=deadline
         ):
-            claim = store.claim(plan, deadline=deadline)
+            claim = store._controller_claim(plan, deadline=deadline)
         arm = claim["arm"]
         if not isinstance(arm, Mapping):
             raise C10Error("C10 durable claim arm is invalid")
@@ -518,7 +518,7 @@ def execute_production_arm(
         with _controller_ledger_authorization(
             "terminal", plan, arm, attempt=claim["claim_id"], deadline=deadline
         ):
-            terminal = store.record_terminal(
+            terminal = store._controller_record_terminal(
                 plan, claim, authenticated_arm, deadline=deadline
             )
         # The terminal ledger has committed and every required P1 restoration

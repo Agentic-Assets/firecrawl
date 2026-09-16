@@ -74,7 +74,7 @@ def test_session_store_rejects_root_swaps_for_every_ledger_operation(
         "claim": lambda: controller_claim(store, plan),
         "read": lambda: store.read_bound(plan, claim),
         "quarantine": lambda: store.record_quarantine(claim, "hostile-root"),
-        "terminal": lambda: store.record_terminal(plan, claim, {}),
+        "terminal": lambda: store._controller_record_terminal(plan, claim, {}),
     }
     if operation == "terminal":
         monkeypatch.setattr(

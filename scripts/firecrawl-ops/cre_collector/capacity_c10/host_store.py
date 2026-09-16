@@ -541,7 +541,7 @@ class C10SessionStore:
             "consumed_arm_indexes": consumed,
         }
 
-    def claim(
+    def _controller_claim(
         self, plan: Mapping[str, Any], *, deadline: float | None = None
     ) -> Mapping[str, Any]:
         validate_plan(plan)
@@ -659,7 +659,7 @@ class C10SessionStore:
         except FileExistsError:
             return
 
-    def record_terminal(
+    def _controller_record_terminal(
         self,
         plan: Mapping[str, Any],
         claim: Mapping[str, Any],

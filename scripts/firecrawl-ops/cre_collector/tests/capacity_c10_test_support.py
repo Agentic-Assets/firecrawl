@@ -24,7 +24,7 @@ def controller_claim(
     with _controller_ledger_authorization(
         "claim", plan, arm, attempt=None, deadline=deadline
     ):
-        return store.claim(plan, deadline=deadline)
+        return store._controller_claim(plan, deadline=deadline)
 
 
 def controller_terminal(
@@ -39,7 +39,9 @@ def controller_terminal(
     with _controller_ledger_authorization(
         "terminal", plan, arm, attempt=claim_id, deadline=deadline
     ):
-        return store.record_terminal(plan, claim, authenticated_arm, deadline=deadline)
+        return store._controller_record_terminal(
+            plan, claim, authenticated_arm, deadline=deadline
+        )
 
 
 def sealed_jll_plan() -> tuple[dict[str, Any], dict[str, Any]]:
