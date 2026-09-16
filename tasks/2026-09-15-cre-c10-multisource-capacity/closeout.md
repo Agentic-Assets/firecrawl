@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`574714d1b7920878cd5250f95cf8dafafaf4abb7`
+`0e4f404d8da7c6aec68423c53a8f8aad2fa147b0`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -51,27 +51,30 @@ not change the Wave 1 execution boundary.
 - The coordinator derives the canonical shared CRE lock independently and
   treats the injected path only as an attestation. P0 can no longer bypass the
   collector lock merely because it does not call the transition hook.
+- A new durable arm ledger accepts only the canonical empty session. A caller
+  cannot skip the first P0 arm by presenting an advanced in-memory prefix.
 
 ## Verification
 
-The final code candidate `574714d1b7920878cd5250f95cf8dafafaf4abb7`
+The final code candidate `0e4f404d8da7c6aec68423c53a8f8aad2fa147b0`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest tests/ -q`: 3160 passed, 18 skipped.
+- `python3 -m pytest tests/ -q`: 3161 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 903 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Five exact-head Codex review passes produced fourteen material findings. All fourteen
+Six exact-head Codex review passes produced fifteen material findings. All fifteen
 were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
 recoverable terminal-result evidence, independently derived canonical lock
 ownership, fail-closed inventory HTML member paths, the Marcus native detail
-endpoint/envelope, and Colliers' native page-count field.
+endpoint/envelope, Colliers' native page-count field, and empty-ledger-only
+durable session creation.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
