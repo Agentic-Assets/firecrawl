@@ -81,7 +81,7 @@ export function jllEnumerationCard(plan: JllEnumerationSlice, index = 0): Reques
     }),
     browserBootstrapUrl: JLL_BROWSER_BOOTSTRAP_URL,
     cacheMode: "no-store",
-    timeoutMs: 30_000,
+    timeoutMs: 90_000,
     maxBytes: 2 * 1024 * 1024,
   };
 }
@@ -107,7 +107,7 @@ export function jllMemberCard(
     body: null,
     browserBootstrapUrl: JLL_BROWSER_BOOTSTRAP_URL,
     cacheMode: "no-store",
-    timeoutMs: 30_000,
+    timeoutMs: 90_000,
     maxBytes: 2 * 1024 * 1024,
   };
 }

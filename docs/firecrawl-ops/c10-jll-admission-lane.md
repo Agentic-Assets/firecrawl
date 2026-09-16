@@ -58,13 +58,13 @@ authorize the panel.
    rejects an adapter digest that differs from the repository JLL
    implementation. It then holds the canonical CRE `SharedLock` with an armed
    benchmark marker, so it never overlaps a P0/P1 arm or collector run. Budgets
-   are separate: sidecar startup and signed health at most 180 s (prebuilt
+   are separate: sidecar startup and signed health at most 600 s (prebuilt
    image only, `--no-build --pull never`; health is polled only while the
-   listener refuses or resets connections); collection at most 570 s (1 + 16
-   sequential cards at the sidecar-enforced 30 s card bound, plus 60 s), plus
-   at most 5 s to reap a killed controller child; teardown at most 60 s with
+   listener refuses or resets connections); collection at most 1710 s (1 + 16
+   sequential cards at the sidecar-enforced 90 s card bound, plus 180 s), plus
+   at most 5 s to reap a killed controller child; teardown at most 180 s with
    retries, independent of an expired run deadline. The explicit upper bound of
-   one action is 815 s. Before a run, the operator builds the image
+   one action is 2495 s. Before a run, the operator builds the image
    `firecrawl-playwright-service-c10:local` from the reviewed checkout with
    `docker compose -f docker-compose.yaml -f docker-compose.c10.yaml build
    playwright-service-c10`; a missing image fails startup. If teardown cannot be

@@ -140,14 +140,11 @@ def test_production_entrypoint_constructs_host_without_browser_callback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     production_parameters = set(inspect.signature(execute_production_arm).parameters)
-    host_parameters = set(
-        inspect.signature(_C10HostTransport._retired_direct_execution).parameters
-    )
     assert {"child", "cards", "evidence", "run_browser_arm"}.isdisjoint(
         production_parameters
     )
     assert "session" not in production_parameters
-    assert "child" not in host_parameters
+    assert not hasattr(_C10HostTransport, "_retired_direct_execution")
     assert not hasattr(_C10HostTransport, "execute")
     assert not hasattr(host_session, "C10HostExecutionSession")
 

@@ -575,7 +575,9 @@ def test_validate_card_static_pins_exact_card_shape(
             enum_variant(headers={"accept": "text/plain"}), [], 0
         )
     with pytest.raises(contracts.C10Error):
-        _JllAdmissionController._validate_card(enum_variant(timeoutMs=30001), [], 0)
+        _JllAdmissionController._validate_card(
+            enum_variant(timeoutMs=admission_controller._CARD_TIMEOUT_MS + 1), [], 0
+        )
     with pytest.raises(contracts.C10Error):
         _JllAdmissionController._validate_card(
             enum_variant(maxBytes=2 * 1024 * 1024 + 1), [], 0
@@ -617,7 +619,9 @@ def test_validate_card_static_pins_exact_card_shape(
         )
     with pytest.raises(contracts.C10Error):
         _JllAdmissionController._validate_card(
-            member_variant(timeoutMs=30001), selected, 1
+            member_variant(timeoutMs=admission_controller._CARD_TIMEOUT_MS + 1),
+            selected,
+            1,
         )
     with pytest.raises(contracts.C10Error):
         _JllAdmissionController._validate_card(
@@ -1425,7 +1429,8 @@ def test_timeout_bound_rejects_invalid_values_before_any_child_starts(
 
 
 def test_timeout_bound_accepts_the_exact_maximum(tmp_path: Path) -> None:
-    """570 passes the bound gate itself; a later, unrelated check stops the run."""
+    """The exact collection-budget maximum passes the bound gate itself; a
+    later, unrelated check stops the run."""
     nonempty = _fresh_root(tmp_path, "nonempty")
     (nonempty / "stray-file").write_text("x")
 

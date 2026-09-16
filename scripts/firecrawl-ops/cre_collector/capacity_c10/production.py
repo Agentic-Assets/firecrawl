@@ -42,11 +42,11 @@ from .jll_admission import JLL_ADMISSION_QUARANTINE_NAME, JLL_SELECTION_RULE
 
 # JLL admission budgets are separate so a slow `up`/listener start cannot eat
 # the per-card collection budget.  Explicit upper bound of one admission action:
-# startup (180 s) + collection (17 x 30 s + 60 s = 570 s) + teardown (60 s,
-# host_sidecar._TEARDOWN_BUDGET_SECONDS) = 810 s, plus at most 5 s to reap a
-# killed controller child (admission_controller._CHILD_REAP_SECONDS) = 815 s.
+# startup (600 s) + collection (17 x 90 s + 180 s = 1710 s) + teardown (180 s,
+# host_sidecar._TEARDOWN_BUDGET_SECONDS) = 2490 s, plus at most 5 s to reap a
+# killed controller child (admission_controller._CHILD_REAP_SECONDS) = 2495 s.
 # The image is prebuilt; a run never builds or pulls.
-JLL_ADMISSION_STARTUP_MAX_SECONDS = 180.0
+JLL_ADMISSION_STARTUP_MAX_SECONDS = 600.0
 _JLL_ADMISSION_KIND = "cre_capacity_c10_jll_admission"
 
 # This context is populated only by the lexical production-controller scope
@@ -646,7 +646,7 @@ def execute_production_arm(
     runtime_receipt_root: Path,
     approval_root: Path | None = None,
     admission_root: Path | None = None,
-    timeout_seconds: float = 120,
+    timeout_seconds: float = 600,
 ) -> Mapping[str, Any]:
     """Execute one C10 arm under its one durable claim and canonical lock.
 
@@ -655,8 +655,8 @@ def execute_production_arm(
     and proves post-rollback idleness before terminalizing. Any uncertainty
     retains the shared lock and writes a quarantine record.
     """
-    if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 120:
-        raise C10Error("C10 timeout_seconds must be greater than 0 and at most 120")
+    if type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 600:
+        raise C10Error("C10 timeout_seconds must be greater than 0 and at most 600")
     deadline = time.monotonic() + timeout_seconds
     validate_plan(plan)
     registry = C10SealedCardRegistry(plan, cohort)
@@ -872,7 +872,7 @@ def execute_counterbalanced_sequence(
     runtime_receipt_root: Path,
     approval_root: Path,
     admission_root: Path,
-    timeout_seconds: float = 120,
+    timeout_seconds: float = 600,
 ) -> Sequence[Mapping[str, Any]]:
     """Run the fixed 8-arm counterbalance with one distinct P1 approval per arm."""
     validate_plan(plan)
@@ -989,9 +989,9 @@ def main(argv: list[str] | None = None) -> int:
         help="canonical P1 admission root; C10 derives arm-N.json after claim",
     )
     parser.add_argument("--repo-root", type=Path, required=True)
-    parser.add_argument("--timeout-seconds", type=float, default=120)
+    parser.add_argument("--timeout-seconds", type=float, default=600)
     args = parser.parse_args(arguments)
-    if not 0 < args.timeout_seconds <= 120:
+    if not 0 < args.timeout_seconds <= 600:
         raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
     plan, cohort = (
         _read(args.plan, "plan"),

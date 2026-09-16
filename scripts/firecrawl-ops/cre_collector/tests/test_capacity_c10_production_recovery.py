@@ -262,7 +262,7 @@ def test_counterbalance_rejects_noncanonical_arm_sequences_before_execution(
         )
 
 
-@pytest.mark.parametrize("timeout_seconds", [0, -1, 121, float("inf")])
+@pytest.mark.parametrize("timeout_seconds", [0, -1, 601, float("inf")])
 def test_production_rejects_invalid_timeout_before_lock_or_ledger_mutation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, timeout_seconds: float
 ) -> None:

@@ -26,14 +26,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
+from cre_checkpoint_refresh import canonical_shared_lock_dir
 
 from .contracts import (
     C10Error,
     canonical_bytes,
     require_sha256,
     sha256,
-    validate_plan,
 )
 from .host_crypto import _OpenSsl
 from .host_registry import C10SealedCardRegistry
@@ -50,10 +49,10 @@ _MAX_PRIVATE_ARTIFACT = 8 * 1024 * 1024
 _MAX_CHILD_FRAME_BYTES = 64 * 1024
 _MAX_CHILD_STDOUT_BYTES = 8 * 1024 * 1024
 _MAX_CHILD_STDERR_BYTES = 64 * 1024
-_MAX_CARD_TIMEOUT_MS = 30_000
+_MAX_CARD_TIMEOUT_MS = 90_000
 # `up -d` returns before the listener binds. Only connection refused/reset is
 # a not-yet-ready signal; any HTTP response is verified strictly and at once.
-_HEALTH_READINESS_SECONDS = 60.0
+_HEALTH_READINESS_SECONDS = 180.0
 _HEALTH_POLL_INTERVAL_SECONDS = 0.25
 _C10_COMPOSE_SERVICE = "playwright-service-c10"
 _JLL_HOST = "property.jll.com"
@@ -161,110 +160,6 @@ class _C10HostTransport:
         self.cards = cards
         self.sidecar = sidecar or DockerComposeSidecar(repo_root)
         self.quarantine = quarantine or (lambda _reason: None)
-
-    def _retired_direct_execution(
-        self,
-        plan: Mapping[str, Any],
-        *,
-        timeout_seconds: float,
-        _claim: Mapping[str, Any],
-        _held_shared_lock: SharedLock,
-        _deadline: float,
-    ) -> Mapping[str, Any]:
-        """Refuse the removed direct host execution surface.
-
-        This private primitive deliberately cannot acquire a lock or create a
-        claim. The canonical production entrypoint owns runtime preflight,
-        P1 approval/transition, settlement, rollback, and authorization of the
-        supplied lock-held claim before this host may start a sidecar.
-        """
-        raise C10Error(
-            "C10 direct host execution is retired; use production.execute_production_arm"
-        )
-        if timeout_seconds <= 0 or timeout_seconds > 120:
-            raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
-        validate_plan(plan)
-        # Reject an alternate but syntactically valid Plan B before lock
-        # acquisition, durable claim, key generation, or Compose activity.
-        self.cards.assert_plan_identity(plan)
-        deadline = _deadline
-        _remaining(deadline)
-        lock = _held_shared_lock
-        if lock.path.resolve() != canonical_shared_lock_dir(self.repo_root).resolve():
-            raise C10Error("C10 host rejected a noncanonical SharedLock identity")
-        try:
-            descriptor = lock._owned_directory_fd()
-        except Exception as exc:
-            raise C10Error("C10 host requires the owned canonical SharedLock") from exc
-        os.close(descriptor)
-        sidecar_attempted = False
-        claim: Mapping[str, Any] = _claim
-        result: Mapping[str, Any] | None = None
-        try:
-            durable = self.session_store.read_bound(plan, _claim)
-            if dict(durable) != dict(_claim):
-                raise C10Error("C10 host rejects an unbound durable claim")
-            claim = durable
-            with PrivateReceiptStore.create(self.private_root) as store:
-                keys = self._keys(deadline)
-                port = self._free_loopback_port()
-                arm = _safe_json(claim["arm"], "C10 arm")
-                profile = _safe_json(plan["profiles"][arm["variant"]], "C10 profile")
-                # Cleanup responsibility begins before Compose is invoked: an
-                # `up` timeout can leave a container even when start raises.
-                sidecar_attempted = True
-                self.sidecar.start(
-                    {
-                        "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
-                            keys.coordinator_public_pem.encode("utf-8")
-                        ).decode("ascii"),
-                        "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
-                            keys.sidecar_private_pem.encode("utf-8")
-                        ).decode("ascii"),
-                        "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
-                        "MAX_CONCURRENT_PAGES": str(
-                            profile["requested"]["global_pages"]
-                        ),
-                        "C10_PROFILE_SHA256": sha256(profile["requested"]),
-                        "C10_BROWSER_CPUS": str(profile["requested"]["browser_cpus"]),
-                        "C10_BROWSER_PIDS": str(profile["requested"]["browser_pids"]),
-                    },
-                    port,
-                    deadline,
-                )
-                endpoint = f"http://127.0.0.1:{port}"
-                self._verify_health(endpoint, keys, profile, deadline)
-                evidence, artifacts = self._run_cohort(
-                    endpoint, claim, plan, profile, keys, store, deadline
-                )
-                result = {
-                    "claim": claim,
-                    "receipt_root": store.descriptor(),
-                    "evidence_manifest": artifacts,
-                    "evidence_manifest_sha256": sha256(evidence),
-                    "evidence_public_key": keys.sidecar_public_pem,
-                    "evidence_key_id": _key_id(keys.sidecar_public_pem),
-                    "binding": evidence[0]["binding"],
-                }
-        except BaseException as exc:
-            lock.retain_on_exit = True
-            self.session_store._controller_record_quarantine(claim, str(exc))
-            self.quarantine(str(exc))
-            raise
-        finally:
-            try:
-                if sidecar_attempted:
-                    self.sidecar.stop(deadline)
-            except BaseException as cleanup_error:
-                lock.retain_on_exit = True
-                self.session_store._controller_record_quarantine(
-                    claim, str(cleanup_error)
-                )
-                self.quarantine(f"C10 sidecar cleanup failed: {cleanup_error}")
-                raise
-        if result is None:
-            raise C10Error("C10 host did not produce a terminal cohort result")
-        return result
 
     def _run_cohort(
         self,

@@ -203,18 +203,21 @@ def test_stale_adapter_digest_rejected_before_lock_or_sidecar(
 
 # --- 2. timeout validation ---------------------------------------------------
 
+_STARTUP_MAX = production.JLL_ADMISSION_STARTUP_MAX_SECONDS
+_COLLECTION_MAX = production.JLL_ADMISSION_COLLECTION_MAX_SECONDS
+
 
 @pytest.mark.parametrize(
     "startup,collection",
     [
-        (181, 570),
-        (180, 571),
-        (0, 570),
-        (True, 570),
-        ("10", 570),
-        (180, 0),
-        (180, True),
-        (180, "10"),
+        (_STARTUP_MAX + 1, _COLLECTION_MAX),
+        (_STARTUP_MAX, _COLLECTION_MAX + 1),
+        (0, _COLLECTION_MAX),
+        (True, _COLLECTION_MAX),
+        ("10", _COLLECTION_MAX),
+        (_STARTUP_MAX, 0),
+        (_STARTUP_MAX, True),
+        (_STARTUP_MAX, "10"),
     ],
 )
 def test_invalid_timeouts_rejected_before_lock(
@@ -260,7 +263,9 @@ def test_boundary_timeouts_accepted(
     )
     result = production.execute_jll_admission_collection(
         **_valid_kwargs(
-            tmp_path, startup_timeout_seconds=180, collection_timeout_seconds=570
+            tmp_path,
+            startup_timeout_seconds=_STARTUP_MAX,
+            collection_timeout_seconds=_COLLECTION_MAX,
         )
     )
     assert result == {"ok": True}

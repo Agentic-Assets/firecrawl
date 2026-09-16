@@ -74,7 +74,7 @@ function cardFrom(value: unknown, sourceKey: string, options: C10SidecarParseOpt
     throw new Error("C10 member card cannot carry enumeration membership");
   }
   const timeoutMs = positiveInteger(value.timeoutMs, "C10 browser timeout"), maxBytes = positiveInteger(value.maxBytes, "C10 browser byte limit");
-  if (timeoutMs > 30_000 || maxBytes > 2 * 1024 * 1024) throw new Error("C10 browser card exceeds reviewed bounds");
+  if (timeoutMs > 90_000 || maxBytes > 2 * 1024 * 1024) throw new Error("C10 browser card exceeds reviewed bounds");
   return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs, maxBytes, bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body"), expectedMemberRoutes: value.stage === "enumeration" && options.admissionLane === null ? (expectedMemberRoutes as readonly string[]).map((route) => new URL(route).toString().replace(/\/$/, "")) : null });
 }
 export function parseC10SidecarInput(value: unknown, options: C10SidecarParseOptions = STRICT_OPTIONS): C10SidecarInput {

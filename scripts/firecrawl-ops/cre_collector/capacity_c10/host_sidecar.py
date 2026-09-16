@@ -36,7 +36,7 @@ _MAX_PRIVATE_ARTIFACT = 8 * 1024 * 1024
 _MAX_CHILD_FRAME_BYTES = 64 * 1024
 _MAX_CHILD_STDOUT_BYTES = 8 * 1024 * 1024
 _MAX_CHILD_STDERR_BYTES = 64 * 1024
-_MAX_CARD_TIMEOUT_MS = 30_000
+_MAX_CARD_TIMEOUT_MS = 90_000
 _C10_COMPOSE_SERVICE = "playwright-service-c10"
 # A fixed, operator-prebuilt image. Each lifecycle uses a fresh compose project
 # name, so without a pinned tag compose would name (and therefore build) a new
@@ -44,7 +44,7 @@ _C10_COMPOSE_SERVICE = "playwright-service-c10"
 C10_BROWSER_IMAGE = "firecrawl-playwright-service-c10:local"
 # Teardown has its own bound, independent of the (possibly expired) run
 # deadline: a controller timeout must still remove the per-session container.
-_TEARDOWN_BUDGET_SECONDS = 60.0
+_TEARDOWN_BUDGET_SECONDS = 180.0
 _TEARDOWN_ATTEMPTS = 3
 _JLL_HOST = "property.jll.com"
 _JLL_BOOTSTRAP_URL = "https://property.jll.com/"

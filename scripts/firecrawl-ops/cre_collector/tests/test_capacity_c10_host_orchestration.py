@@ -155,6 +155,17 @@ def test_python_rejects_transport_success_without_sealed_enumeration_membership(
 def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """An alternate plan/source projection is rejected by the registry itself.
+
+    ``production._execute_authorized_host_action`` calls
+    ``host.cards.assert_plan_identity(plan)`` immediately after ``validate_plan``
+    and before any lock-ownership proof, durable-claim lookup, or sidecar
+    start. Plan B carries an altered source family (and a plan_sha256
+    recomputed to match), so it is a genuinely different plan/source
+    projection from the one the registry was sealed with. ``validate_plan``'s
+    separate repository-authority pinning is orthogonal to the registry gate
+    under test here, so it is bypassed for this plan-identity-only case.
+    """
     plan_a, cohort = sealed_jll_plan()
     registry = C10SealedCardRegistry(plan_a, cohort)
     plan_b = copy.deepcopy(plan_a)
@@ -172,27 +183,51 @@ def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
         def stop(self, *_: object) -> None:
             raise AssertionError("Plan B must not reach lifecycle cleanup")
 
+    class LockSpy:
+        def __init__(self) -> None:
+            self.touched = False
+
+        @property
+        def path(self) -> Path:
+            self.touched = True
+            raise AssertionError("Plan B must not reach lock ownership proof")
+
+    class SessionStoreSpy:
+        def read_bound(self, *_: object, **__: object) -> None:
+            raise AssertionError("Plan B must not reach durable claim lookup")
+
     monkeypatch.setattr(
         "capacity_c10.host_orchestration.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
+    monkeypatch.setattr("capacity_c10.production.validate_plan", lambda _plan: None)
     sidecar = Sidecar()
     host = _C10HostTransport(
         repo_root=tmp_path,
-        session_store=C10SessionStore(tmp_path / "session.json"),
+        session_store=SessionStoreSpy(),  # type: ignore[arg-type]
         private_root=tmp_path / "private",
         cards=registry,
         sidecar=sidecar,
     )
     assert not hasattr(host, "execute")
-    with pytest.raises(contracts.C10Error, match="direct host execution is retired"):
-        host._retired_direct_execution(
-            plan_a,
-            timeout_seconds=1,
-            _claim={},
-            _held_shared_lock=None,  # type: ignore[arg-type]
-            _deadline=time.monotonic() + 1,
-        )
+    assert not hasattr(host, "_retired_direct_execution")
+    authority = object()
+    token = production._ACTIVE_PRODUCTION_ACTION.set(authority)
+    try:
+        with pytest.raises(
+            contracts.C10Error,
+            match="C10 registry rejects an alternate plan/source projection",
+        ):
+            production._execute_authorized_host_action(
+                host,
+                plan_b,
+                claim={},
+                lock=LockSpy(),  # type: ignore[arg-type]
+                deadline=time.monotonic() + 1,
+                authority=authority,
+            )
+    finally:
+        production._ACTIVE_PRODUCTION_ACTION.reset(token)
     assert sidecar.started is False
 
 
@@ -268,7 +303,6 @@ def test_host_workflow_issues_signed_17_card_cohort_and_removes_sidecar_before_s
         "capacity_c10.production.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
-    monkeypatch.setattr("capacity_c10.host_orchestration.SharedLock", FakeLock)
     monkeypatch.setattr(
         "capacity_c10.production.PrivateReceiptStore.create",
         lambda _root: FakeStore(),
@@ -466,7 +500,6 @@ def test_host_cleanup_failure_quarantines_and_never_returns_success(
         def _owned_directory_fd(self) -> int:
             return os.open(self.path, os.O_RDONLY | os.O_DIRECTORY)
 
-    monkeypatch.setattr("capacity_c10.host_orchestration.SharedLock", Lock)
     monkeypatch.setattr(
         "capacity_c10.production.PrivateReceiptStore.create",
         lambda _root: FakeStore(),

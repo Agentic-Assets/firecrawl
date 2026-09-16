@@ -65,14 +65,14 @@ _MAX_SEALED_ARTIFACTS = 96
 _MAX_SEALED_BYTES = 160 * 1024 * 1024
 _STEM = re.compile(r"[a-z0-9][a-z0-9-]{0,160}")
 _REQUEST_ID = re.compile(r"[1-9][0-9]{0,8}")
-_CARD_TIMEOUT_MS = 30_000
+_CARD_TIMEOUT_MS = 90_000
 _CARD_MAX_BYTES = 2 * 1024 * 1024
 # The lane sidecar runs at capacity one, so the 1 + 16 cards are sequential and
 # each is bounded by its sidecar-enforced card timeout (queue included).  The
 # margin covers child start, signing, verification, and sealing.  This is the
 # explicit upper bound of the collection phase; sidecar startup and teardown
 # have their own separate bounds in production.py and host_sidecar.py.
-_COLLECTION_MARGIN_SECONDS = 60
+_COLLECTION_MARGIN_SECONDS = 180
 JLL_ADMISSION_COLLECTION_MAX_SECONDS = float(
     (1 + JLL_MEMBER_COUNT) * (_CARD_TIMEOUT_MS // 1000) + _COLLECTION_MARGIN_SECONDS
 )

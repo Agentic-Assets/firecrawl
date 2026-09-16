@@ -72,7 +72,7 @@ binds the durable claim digest, rather than a caller-controlled mutable ledger,
 as `sessionSha256`; it never permits an alternate plan or ledger to resume a
 claim. A P0/P1 lifecycle has one deadline covering Compose startup, health,
 browser execution, and evidence sealing. Sidecar teardown has its own bounded
-budget (60 s, retried) so an expired run still removes its exact compose
+budget (180 s, retried) so an expired run still removes its exact compose
 project. The image `firecrawl-playwright-service-c10:local` must be prebuilt
 from the reviewed checkout (`docker compose -f docker-compose.yaml -f
 docker-compose.c10.yaml build playwright-service-c10`); a run passes
