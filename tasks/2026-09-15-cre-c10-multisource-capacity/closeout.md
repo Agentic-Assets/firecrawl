@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`5888230ea220440dce643255e3c4a0d6daa97aeb`
+`e48262c9ac740f84711868e9080d9e6242646216`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -75,21 +75,27 @@ not change the Wave 1 execution boundary.
   copies or self-rehashed mappings even when their structural fields look valid.
 - Buildout inventory cards use the provider-supported `q[s][]` array-form stable
   sort, matching the production adapter's cross-page ordering contract.
+- Adapter admission now requires the exact concrete repository implementation
+  type and reviewed digest for every policy slot. A caller-created object cannot
+  acquire plan authority by self-declaring a verification flag and SHA-shaped
+  string.
+- Marcus member receipts extract the native `DealId` from `PropertyDetail` and
+  require it to match the selected provider identity before sealing evidence.
 
 ## Verification
 
-The final code candidate `5888230ea220440dce643255e3c4a0d6daa97aeb`
+The final code candidate `e48262c9ac740f84711868e9080d9e6242646216`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest -q`: 3211 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 907 passed, 1 expected
+- `python3 -m pytest -q`: 3212 passed, 18 skipped.
+- `npm test`: TypeScript typecheck passed; 908 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Twelve exact-head Codex review passes produced twenty-four material findings. All
-twenty-four were confirmed and fixed: immutable cohort binding, per-source timing,
+Thirteen exact-head Codex review passes produced twenty-six material findings. All
+twenty-six were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -102,7 +108,8 @@ Colliers slices, and Marcus map inventory, with each member graph expansion
 bound to the enumeration event that exposed it, plus canonical fixed-policy
 revalidation and an admission-issued cohort/adapter capability at the execution
 and comparison boundary, plus Buildout's provider-supported array-form stable
-sort for cross-page inventory enumeration.
+sort for cross-page inventory enumeration, exact concrete adapter provenance,
+and Marcus native `DealId` verification from `PropertyDetail`.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
