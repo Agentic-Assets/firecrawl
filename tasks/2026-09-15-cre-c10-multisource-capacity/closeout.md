@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`0e4f404d8da7c6aec68423c53a8f8aad2fa147b0`
+`01e06a9619b861748cf74ddba4487826cb943cd0`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -53,28 +53,36 @@ not change the Wave 1 execution boundary.
   collector lock merely because it does not call the transition hook.
 - A new durable arm ledger accepts only the canonical empty session. A caller
   cannot skip the first P0 arm by presenting an advanced in-memory prefix.
+- P1 rollback attestation compares the stable baseline transition fingerprint,
+  profile, state, and verification result. It deliberately does not compare the
+  runtime container snapshot digest, whose usage counters can change during a
+  healthy arm.
+- JLL strict-detail plans enumerate every exact transaction, property-type, and
+  page stratum needed by the immutable cohort. The producer reconciles identity
+  across the aggregate before any member request card is admitted.
 
 ## Verification
 
-The final code candidate `0e4f404d8da7c6aec68423c53a8f8aad2fa147b0`
+The final code candidate `01e06a9619b861748cf74ddba4487826cb943cd0`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest tests/ -q`: 3161 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 903 passed, 1 expected
+- `python3 -m pytest -q`: 3210 passed, 18 skipped.
+- `npm test`: TypeScript typecheck passed; 904 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Six exact-head Codex review passes produced fifteen material findings. All fifteen
-were confirmed and fixed: immutable cohort binding, per-source timing,
+Seven exact-head Codex review passes produced seventeen material findings. All
+seventeen were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
 recoverable terminal-result evidence, independently derived canonical lock
 ownership, fail-closed inventory HTML member paths, the Marcus native detail
 endpoint/envelope, Colliers' native page-count field, and empty-ledger-only
-durable session creation.
+durable session creation, stable-transition rollback attestation, and aggregate
+JLL enumeration across exact cohort strata.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
