@@ -65,14 +65,40 @@ export class RecordingReceiptStore implements ReceiptArtifactStore {
   }
 }
 
-function selectionFromEnumeration(body: Uint8Array): JllAdmissionSelection {
-  const parsed = parseJllGraphqlSearchEnvelope(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)));
+/**
+ * `jll-canonical-url-lexicographic-v1`, mirrored exactly by the Python
+ * controller and offline manifest validator (shared golden vectors pin both).
+ *
+ * A candidate is admissible only when its provider id is a string of ASCII
+ * digits and its `pageUrl` is one listing slug, optionally absolute on the JLL
+ * origin, optionally with one trailing slash, query, or fragment.  That grammar
+ * makes canonicalization language-independent: drop query/fragment/trailing
+ * slash and prefix the JLL origin.  Any malformed or duplicate candidate
+ * rejects the whole enumeration.  Routes are ordered by UTF-16 code unit (the
+ * canonical routes are ASCII, so this equals Python code-point order), never
+ * by locale collation, and the first sixteen are selected.
+ */
+const JLL_ADMISSION_ROUTE = /^(?:https:\/\/property\.jll\.com)?\/listings\/([A-Za-z0-9][A-Za-z0-9._~-]*)\/?(?:[?#][^\n\r\u2028\u2029]*)?$/;
+const JLL_ADMISSION_PROVIDER_ID = /^[0-9]+$/;
+
+export function selectJllAdmissionMembers(payload: unknown): JllAdmissionSelection {
+  let parsed: ReturnType<typeof parseJllGraphqlSearchEnvelope>;
+  try {
+    parsed = parseJllGraphqlSearchEnvelope(payload);
+  } catch {
+    throw new C10ReceiptError("JLL admission enumeration envelope is invalid");
+  }
   const ids = new Set<string>();
   const routes = new Set<string>();
   const candidates = parsed.items.map((item) => {
-    const providerId = String(item.id ?? "").trim();
-    const canonicalUrl = normalizedJllListingUrl(String(item.pageUrl ?? ""));
-    if (!/^[0-9]+$/.test(providerId) || !canonicalUrl.startsWith("https://property.jll.com/listings/")) {
+    const providerId = item.id;
+    const pageUrl = item.pageUrl;
+    const match = typeof pageUrl === "string" ? JLL_ADMISSION_ROUTE.exec(pageUrl) : null;
+    if (typeof providerId !== "string" || !JLL_ADMISSION_PROVIDER_ID.test(providerId) || match === null) {
+      throw new C10ReceiptError("JLL admission enumeration contains a noncanonical candidate");
+    }
+    const canonicalUrl = `https://property.jll.com/listings/${match[1]}`;
+    if (normalizedJllListingUrl(pageUrl as string) !== canonicalUrl) {
       throw new C10ReceiptError("JLL admission enumeration contains a noncanonical candidate");
     }
     if (ids.has(providerId) || routes.has(canonicalUrl)) {
@@ -80,7 +106,7 @@ function selectionFromEnumeration(body: Uint8Array): JllAdmissionSelection {
     }
     ids.add(providerId); routes.add(canonicalUrl);
     return { providerId, canonicalUrl };
-  }).sort((left, right) => left.canonicalUrl.localeCompare(right.canonicalUrl));
+  }).sort((left, right) => (left.canonicalUrl < right.canonicalUrl ? -1 : left.canonicalUrl > right.canonicalUrl ? 1 : 0));
   if (candidates.length < JLL_ADMISSION_MEMBER_COUNT) {
     throw new C10ReceiptError("JLL admission enumeration has insufficient canonical candidates");
   }
@@ -89,6 +115,16 @@ function selectionFromEnumeration(body: Uint8Array): JllAdmissionSelection {
   })));
   const digest = canonicalSha256({ rule: JLL_ADMISSION_SELECTION_RULE, memberRoutes: selectedMembers.map((member) => member.canonicalUrl), providerIds: selectedMembers.map((member) => member.providerId) });
   return Object.freeze({ rule: JLL_ADMISSION_SELECTION_RULE, candidateCount: candidates.length, selectedMembers, digest });
+}
+
+function selectionFromEnumeration(body: Uint8Array): JllAdmissionSelection {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    throw new C10ReceiptError("JLL admission enumeration envelope is invalid");
+  }
+  return selectJllAdmissionMembers(payload);
 }
 
 function collectionIntentSha256(members: readonly JllReceiptMember[], selection: JllAdmissionSelection): string {
@@ -208,7 +244,6 @@ export async function sealJllAdmissionManifest(
       enumeration: { transaction: "sale", property_type: "office", page: 1 },
       member_count: JLL_ADMISSION_MEMBER_COUNT,
       selection_rule: JLL_ADMISSION_SELECTION_RULE,
-      selection_digest: set.selection.digest,
       no_write: set.enumeration.noWrite,
     },
     collection_intent_sha256: set.collectionIntentSha256,

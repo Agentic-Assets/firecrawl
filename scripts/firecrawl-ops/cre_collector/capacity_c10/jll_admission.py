@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 from collections.abc import Mapping
 from pathlib import Path
@@ -68,6 +69,95 @@ def _jll_intent() -> dict[str, Any]:
     }
 
 
+JLL_GRAPHQL_URL = "https://property.jll.com/api/graphql"
+JLL_ENUMERATION_CARD_ID = "jll-enumeration-0"
+# ``jll-canonical-url-lexicographic-v1``.  The TypeScript source selector in
+# receipts/strict_detail/jll_admission.ts implements the identical grammar;
+# tests/fixtures/c10_jll_selection_vectors.json pins both implementations.
+_JLL_ADMISSION_ROUTE = re.compile(
+    r"(?:https://property\.jll\.com)?/listings/([A-Za-z0-9][A-Za-z0-9._~-]*)/?(?:[?#][^\n\r\u2028\u2029]*)?"
+)
+_JLL_PROVIDER_ID = re.compile(r"[0-9]+")
+
+
+def select_jll_admission_members(payload: Any) -> dict[str, Any]:
+    """Recompute the source-owned JLL cohort from one native GraphQL payload.
+
+    Any malformed or duplicate candidate, or fewer than sixteen candidates,
+    rejects the whole enumeration.  Canonical routes are ASCII, so code-point
+    ordering here equals the TypeScript UTF-16 code-unit ordering.
+    """
+    if not isinstance(payload, Mapping):
+        raise C10Error("JLL admission enumeration envelope is invalid")
+    errors = payload.get("errors", [])
+    data = payload.get("data")
+    properties = data.get("properties") if isinstance(data, Mapping) else None
+    count = properties.get("count") if isinstance(properties, Mapping) else None
+    items = properties.get("items") if isinstance(properties, Mapping) else None
+    if (
+        not isinstance(errors, list)
+        or errors
+        or isinstance(count, bool)
+        or not isinstance(count, int | float)
+        or not float(count).is_integer()
+        or count < 0
+        or not isinstance(items, list)
+        or not all(isinstance(item, Mapping) for item in items)
+    ):
+        raise C10Error("JLL admission enumeration envelope is invalid")
+    ids: set[str] = set()
+    routes: set[str] = set()
+    candidates: list[tuple[str, str]] = []
+    for item in items:
+        provider_id, page_url = item.get("id"), item.get("pageUrl")
+        match = (
+            _JLL_ADMISSION_ROUTE.fullmatch(page_url)
+            if isinstance(page_url, str)
+            else None
+        )
+        if (
+            not isinstance(provider_id, str)
+            or _JLL_PROVIDER_ID.fullmatch(provider_id) is None
+            or match is None
+        ):
+            raise C10Error(
+                "JLL admission enumeration contains a noncanonical candidate"
+            )
+        route = f"https://property.jll.com/listings/{match.group(1)}"
+        if provider_id in ids or route in routes:
+            raise C10Error("JLL admission enumeration contains duplicate candidates")
+        ids.add(provider_id)
+        routes.add(route)
+        candidates.append((route, provider_id))
+    if len(candidates) < JLL_MEMBER_COUNT:
+        raise C10Error(
+            "JLL admission enumeration has insufficient canonical candidates"
+        )
+    candidates.sort(key=lambda candidate: candidate[0])
+    members = [
+        {"key": f"jll-{index + 1}", "provider_id": provider_id, "canonical_url": route}
+        for index, (route, provider_id) in enumerate(candidates[:JLL_MEMBER_COUNT])
+    ]
+    return {
+        "rule": JLL_SELECTION_RULE,
+        "candidate_count": len(candidates),
+        "members": members,
+        "digest": _selection_digest(members),
+    }
+
+
+def _parse_enumeration_body(raw: bytes) -> Any:
+    """Decode exactly like the TypeScript fatal UTF-8 decoder plus JSON.parse."""
+
+    def _reject_constant(_: str) -> Any:
+        raise ValueError("non-finite JSON constant")
+
+    try:
+        return json.loads(raw.decode("utf-8-sig"), parse_constant=_reject_constant)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise C10Error("JLL admission enumeration envelope is invalid") from exc
+
+
 def _selection_digest(members: list[dict[str, str]]) -> str:
     return sha256(
         {
@@ -102,9 +192,11 @@ def _validate_member(value: Any, index: int) -> dict[str, str]:
     if (
         value.get("key") != expected_key
         or not isinstance(provider_id, str)
-        or not provider_id.isdigit()
+        or _JLL_PROVIDER_ID.fullmatch(provider_id) is None
         or not isinstance(url, str)
+        or _JLL_ADMISSION_ROUTE.fullmatch(url) is None
         or not url.startswith("https://property.jll.com/listings/")
+        or url.endswith("/")
         or "?" in url
         or "#" in url
     ):
@@ -260,6 +352,121 @@ def _bind_stage_artifact(
         raise C10Error("JLL sealed stage artifact does not bind its public receipt")
 
 
+def _json_artifact(raw: bytes) -> Any:
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _verify_source_selection(
+    manifest: Mapping[str, Any],
+    members: list[dict[str, str]],
+    artifact_contents: Mapping[str, bytes],
+) -> None:
+    """Recompute the cohort from the sealed native enumeration response body.
+
+    The manifest's member list, selection digest, and the TypeScript selection
+    recorded in the enumeration stage artifact are all untrusted claims until
+    this independent Python recomputation matches them.  The enumeration event
+    is bound to the public receipt through its request-accounting digest, and
+    its response body is bound to the event by content address.
+    """
+    receipt = manifest["enumeration"]
+    stage = json.loads(artifact_contents[receipt["privateArtifactSha256"]])
+    evidence = stage.get("evidence")
+    claimed = evidence.get("selection") if isinstance(evidence, Mapping) else None
+    if not isinstance(claimed, Mapping) or set(evidence) != {
+        "selection",
+        "memberGraph",
+    }:
+        raise C10Error("JLL enumeration stage artifact lacks its source selection")
+    events = [
+        (digest, value)
+        for digest, raw in artifact_contents.items()
+        if isinstance(value := _json_artifact(raw), Mapping)
+        and set(value) == {"binding", "card", "response"}
+        and isinstance(value.get("card"), Mapping)
+        and value["card"].get("id") == JLL_ENUMERATION_CARD_ID
+    ]
+    if len(events) != 1:
+        raise C10Error(
+            "JLL receipt manifest needs exactly one sealed enumeration event"
+        )
+    event_sha256, event = events[0]
+    card, response = event["card"], event["response"]
+    body_sha256 = response.get("bodySha256") if isinstance(response, Mapping) else None
+    if (
+        event.get("binding") != receipt.get("binding")
+        or card.get("sourceKey") != "jll"
+        or card.get("stage") != "enumeration"
+        or card.get("method") != "POST"
+        or card.get("url") != JLL_GRAPHQL_URL
+        or card.get("bodySha256") != JLL_ENUMERATION_BODY_SHA256
+        or not isinstance(response, Mapping)
+        or type(response.get("status")) is not int
+        or not 200 <= response["status"] <= 299
+        or response.get("finalUrl") != JLL_GRAPHQL_URL
+        or response.get("challengeDetected") is not False
+        or response.get("redirectCount") != 0
+        or response.get("providerAttempts") != 1
+        or response.get("cacheMode") != "no-store"
+        or not isinstance(body_sha256, str)
+        or response.get("bodyArtifactSha256") != body_sha256
+        or body_sha256 not in artifact_contents
+    ):
+        raise C10Error("JLL sealed enumeration event does not bind its response")
+    body = artifact_contents[body_sha256]
+    accounting_event = {
+        "cardId": JLL_ENUMERATION_CARD_ID,
+        "outcome": "accepted",
+        "status": response["status"],
+        "elapsedMs": response.get("elapsedMs"),
+        "bytes": len(body),
+        "bodySha256": body_sha256,
+        "privateEventSha256": event_sha256,
+    }
+    accounting = receipt["requestAccounting"]
+    if accounting.get("logicalRequests") != 1 or accounting.get(
+        "eventsSha256"
+    ) != sha256([accounting_event]):
+        raise C10Error("JLL enumeration receipt does not account for its sealed event")
+    selection = select_jll_admission_members(_parse_enumeration_body(body))
+    expected_claim = {
+        "rule": JLL_SELECTION_RULE,
+        "candidateCount": selection["candidate_count"],
+        "selectedMembers": [
+            {
+                "key": member["key"],
+                "providerId": member["provider_id"],
+                "canonicalUrl": member["canonical_url"],
+            }
+            for member in selection["members"]
+        ],
+        "digest": selection["digest"],
+    }
+    if (
+        selection["members"] != members
+        or manifest.get("selection_digest") != selection["digest"]
+        or dict(claimed) != expected_claim
+    ):
+        raise C10Error(
+            "JLL receipt manifest members do not match the recomputed source selection"
+        )
+
+
+def _verify_member_projection(raw: bytes, member: Mapping[str, str]) -> None:
+    stage = json.loads(raw)
+    evidence = stage.get("evidence")
+    projected = evidence.get("member") if isinstance(evidence, Mapping) else None
+    if (
+        not isinstance(projected, Mapping)
+        or projected.get("canonicalUrl") != member["canonical_url"]
+        or projected.get("providerId") != member["provider_id"]
+    ):
+        raise C10Error("JLL member stage artifact does not bind its selected member")
+
+
 def _validate_manifest(
     manifest: Mapping[str, Any], raw: bytes, root: Path
 ) -> dict[str, Any]:
@@ -351,6 +558,10 @@ def _validate_manifest(
             stage="member",
             member_key=member["key"],
         )
+        _verify_member_projection(
+            artifact_contents[receipt["privateArtifactSha256"]], member
+        )
+    _verify_source_selection(manifest, normalized, artifact_contents)
     adapter = manifest.get("adapter_implementation_sha256")
     require_sha256(adapter, "JLL adapter implementation")
     if adapter != repository_implementation_sha256("jll"):
