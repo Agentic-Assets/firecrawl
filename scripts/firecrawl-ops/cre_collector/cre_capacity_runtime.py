@@ -74,6 +74,9 @@ EXECUTION_INPUTS = {
     "candidate_override": OVERRIDE_PATH,
     "shared_lock": Path(checkpoint_refresh.__file__).resolve(),
 }
+C10_PROFILE_CONFIG = (
+    Path(__file__).with_name("cre_capacity_c10_profiles_v1.json").resolve()
+)
 PRIVATE_PAGE_KEY = "MAX_CONCURRENT_PAGES"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40,64}\Z")
 NONCE_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
@@ -1077,11 +1080,44 @@ def recover_quarantine(
     )
 
 
+def _runtime_profile_config(
+    profile_config: Path | None, experiment_kind: str | None
+) -> Path:
+    """Resolve the one approved non-default capacity profile configuration."""
+    if profile_config is None and experiment_kind is None:
+        return experiment.DEFAULT_CONFIG.resolve()
+    if experiment_kind != "C10" or profile_config is None:
+        raise RuntimeAdmissionError(
+            "alternate runtime profiles require experiment_kind C10 and its profile path"
+        )
+    try:
+        selected = profile_config.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeAdmissionError("C10 profile configuration is unavailable") from exc
+    if selected != C10_PROFILE_CONFIG:
+        raise RuntimeAdmissionError("C10 profile configuration is not canonical")
+    return selected
+
+
 def preflight(
-    profile_name: str, out: Path, runner: CommandRunner = _default_runner
+    profile_name: str,
+    out: Path,
+    runner: CommandRunner = _default_runner,
+    *,
+    profile_config: Path | None = None,
+    experiment_kind: str | None = None,
 ) -> dict[str, Any]:
+    """Capture a receipt for the default controller or the explicit C10 plan.
+
+    The ordinary capacity controller keeps its historic implicit configuration.
+    C10 is the sole alternate configuration and must name both its experiment
+    kind and this checkout's reviewed profile document.  In particular, this
+    prevents an arbitrary JSON file from changing runtime resources through the
+    otherwise generic controller interface.
+    """
     out = _controller_output(out)
-    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, profile_name)
+    selected_config = _runtime_profile_config(profile_config, experiment_kind)
+    profile, digest = experiment.load_profile(selected_config, profile_name)
     if profile["kind"] not in {"baseline", "experiment"}:
         raise RuntimeAdmissionError("runtime transition requires a benchmark profile")
     capture = capture_runtime(runner)
@@ -1112,9 +1148,12 @@ def load_fresh_receipt(
     now: datetime | None = None,
     *,
     require_fresh: bool = True,
+    profile_config: Path | None = None,
+    experiment_kind: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     receipt = experiment._read_json(path)
-    profile, digest = experiment.load_profile(experiment.DEFAULT_CONFIG, profile_name)
+    selected_config = _runtime_profile_config(profile_config, experiment_kind)
+    profile, digest = experiment.load_profile(selected_config, profile_name)
     supplied_receipt_hash = receipt.get("receipt_sha256")
     unsigned_receipt = {
         key: value for key, value in receipt.items() if key != "receipt_sha256"
@@ -2175,9 +2214,15 @@ def transition(
     admission_out: Path | None = None,
     approval_path: Path | None = None,
     _held_shared_lock: SharedLock | None = None,
+    profile_config: Path | None = None,
+    experiment_kind: str | None = None,
 ) -> dict[str, Any]:
     receipt, profile, digest = load_fresh_receipt(
-        receipt_path, profile_name, require_fresh=state == "candidate"
+        receipt_path,
+        profile_name,
+        require_fresh=state == "candidate",
+        profile_config=profile_config,
+        experiment_kind=experiment_kind,
     )
     if execute and state == "candidate":
         if admission_out is None:
@@ -2303,6 +2348,8 @@ def transition(
                 "state": state,
                 "checks": checks,
                 "verified": True,
+                "container_snapshot_sha256": after.public["snapshot_sha256"],
+                "transition_sha256": after.public["transition_sha256"],
             }
             if state == "candidate" and admission_out is not None:
                 admission = _admission_payload(

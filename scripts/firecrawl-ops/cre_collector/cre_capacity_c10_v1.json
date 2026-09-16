@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "cre_capacity_c10_v1_policy",
+  "source_workers": 1,
+  "profiles": {"p0": "c10-p0", "p1": "c10-p1"},
+  "sources": [
+    {"key": "jll", "plane": "strict_detail", "family": "jll", "hosts": ["property.jll.com"]},
+    {"key": "jll-investor", "plane": "strict_detail", "family": "jll", "hosts": ["invest.jll.com"]},
+    {"key": "colliers", "plane": "strict_detail", "family": "colliers", "hosts": ["sales.colliers.com", "my.rcm1.com"]},
+    {"key": "colliers-main", "plane": "strict_detail", "family": "colliers", "hosts": ["colliers.com", "www.colliers.com"], "exclusive": true},
+    {"key": "marcus-millichap", "plane": "strict_detail", "family": "marcus-millichap", "hosts": ["marcusmillichap.com", "www.marcusmillichap.com"]},
+    {"key": "avison-young", "plane": "strict_detail", "family": "avison-young", "hosts": ["www.avisonyoung.us", "pse-api.sharplaunch.com"]},
+    {"key": "savills", "plane": "strict_detail", "family": "savills", "hosts": ["search.savills.com"]},
+    {"key": "nai-global", "plane": "strict_detail", "family": "nai", "hosts": ["ab.infabode.com", "infabode.com"]},
+    {"key": "transwestern", "plane": "strict_detail", "family": "transwestern", "hosts": ["transwestern.com", "www.transwestern.com"]},
+    {"key": "matthews", "plane": "strict_detail", "family": "matthews", "hosts": ["matthews.com", "www.matthews.com"]},
+    {"key": "foundry-commercial", "plane": "strict_detail", "family": "foundry", "hosts": ["foundrycommercial.com", "www.foundrycommercial.com"]},
+    {"key": "daum-commercial", "plane": "strict_detail", "family": "daum", "hosts": ["daumcommercial.com", "www.daumcommercial.com"]},
+    {"key": "cbre", "plane": "authoritative_inventory", "family": "cbre", "hosts": ["cbre.com", "www.cbre.com"]},
+    {"key": "cbre-dealflow", "plane": "authoritative_inventory", "family": "cbre", "hosts": ["www.cbredealflow.com"]},
+    {"key": "cushman-wakefield", "plane": "authoritative_inventory", "family": "cushman", "hosts": ["cushmanwakefield.com", "www.cushmanwakefield.com"]},
+    {"key": "newmark", "plane": "authoritative_inventory", "family": "newmark", "hosts": ["api-public.nim.nmrk.com", "nim.nmrk.com", "nmrk.com", "www.nmrk.com"]},
+    {"key": "svn", "plane": "authoritative_inventory", "family": "buildout", "hosts": ["svn.com"]},
+    {"key": "lee-associates", "plane": "authoritative_inventory", "family": "buildout", "hosts": ["www.lee-associates.com"]},
+    {"key": "srs", "plane": "authoritative_inventory", "family": "srs", "hosts": ["srsre-next-412955565034.us-central1.run.app", "srsre.com", "www.srsre.com"]},
+    {"key": "bull-realty", "plane": "authoritative_inventory", "family": "buildout", "hosts": ["www.bullrealty.com"]}
+  ]
+}

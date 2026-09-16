@@ -11,6 +11,10 @@ import {
   detailObservation,
   requireFreshDetails,
 } from "../lib/freshness.js";
+import {
+  jllInvestorSearchPageUrl as pureJllInvestorSearchPageUrl,
+  parseJllInvestorSearchPage as parsePureJllInvestorSearchPage,
+} from "./pure/jll-investor-receipt.js";
 
 
 // --- JLL Investor Center: rendered page (sale-only by nature) ---
@@ -406,75 +410,14 @@ export type JllInvestorSearchSnapshot = {
 };
 
 export function jllInvestorSearchPageUrl(page: number): string {
-  if (!Number.isInteger(page) || page < 1) {
-    throw new Error("invalid JLL Investor search page");
-  }
-  return page === 1 ? JLL_INVESTOR_SEARCH_URL : `${JLL_INVESTOR_SEARCH_URL}&page=${page}`;
+  return pureJllInvestorSearchPageUrl(page);
 }
 
 export function parseJllInvestorSearchPage(
   rawHtml: string,
   expectedPage: number
 ): JllInvestorSearchPage {
-  const next = jllInvestorNextData(rawHtml);
-  const search = next?.props?.pageProps?.initialState?.advancedSearch;
-  const filters = Array.isArray(search?.filters) ? search.filters : [];
-  if (
-    filters.length !== 1 ||
-    clean(filters[0]?.key) !== "location" ||
-    clean(filters[0]?.value) !== "United States" ||
-    clean(filters[0]?.label) !== "United States" ||
-    clean(filters[0]?.type) !== "collection"
-  ) {
-    throw new Error("JLL Investor search page lacks the exact United States filter state");
-  }
-  const count = search?.count;
-  const page = search?.searchPage;
-  const rows = search?.listings;
-  if (!Number.isInteger(count) || count <= 0) {
-    throw new Error("JLL Investor search page lacks a positive integer count");
-  }
-  if (!Number.isInteger(page) || page !== expectedPage) {
-    throw new Error(
-      `JLL Investor search page mismatch: expected ${expectedPage}, received ${String(page)}`
-    );
-  }
-  if (!Array.isArray(rows)) {
-    throw new Error("JLL Investor search page lacks a listings array");
-  }
-  const pageCount = Math.ceil(count / JLL_INVESTOR_SEARCH_PAGE_SIZE);
-  if (expectedPage > pageCount) {
-    throw new Error("JLL Investor search page exceeds the declared page count");
-  }
-  const expectedRows =
-    expectedPage < pageCount
-      ? JLL_INVESTOR_SEARCH_PAGE_SIZE
-      : count - JLL_INVESTOR_SEARCH_PAGE_SIZE * (pageCount - 1);
-  if (rows.length !== expectedRows) {
-    throw new Error(
-      `JLL Investor search page ${expectedPage} returned ${rows.length}/${expectedRows} rows`
-    );
-  }
-  const ids = new Set<string>();
-  const urls = new Set<string>();
-  for (const row of rows) {
-    const id = clean(row?.id);
-    const url = jllInvestorUrlFromAlias(row?.alias);
-    if (!id || !/^006[A-Za-z0-9]{15}$/.test(id)) {
-      throw new Error(`JLL Investor search page ${expectedPage} has an invalid listing id`);
-    }
-    if (!url) {
-      throw new Error(`JLL Investor search page ${expectedPage} has a missing listing URL`);
-    }
-    jllInvestorDetailRoute("search-proof", url);
-    if (ids.has(id) || urls.has(url)) {
-      throw new Error(`JLL Investor search page ${expectedPage} has a duplicate identity`);
-    }
-    ids.add(id);
-    urls.add(url);
-
-  }
-  return { count, page, rows };
+  return parsePureJllInvestorSearchPage(rawHtml, expectedPage);
 }
 
 export function jllInvestorSearchSnapshotFingerprint(rows: any[]): string {

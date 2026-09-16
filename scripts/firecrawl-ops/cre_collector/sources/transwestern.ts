@@ -9,25 +9,17 @@ import { detailObservation, refreshGenerationId } from "../lib/freshness.js";
 import { ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 import { parseLeaseRate, normBuildingClass, acresToSf } from "../lib/parse.js";
+import { canonicalTranswesternUrl, TRANSWESTERN_HOST, transwesternDetailUrl } from "./pure/transwestern-identity.js";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
 
-export const TRANSWESTERN_HOST = "https://transwestern.com";
+export { canonicalTranswesternUrl, TRANSWESTERN_HOST, transwesternDetailUrl } from "./pure/transwestern-identity.js";
 export const TRANSWESTERN_BUCKETS: Record<Tx, string[]> = {
   sale: ["Sale", "Sale or Lease"],
   lease: ["Lease", "Sublease", "Sale or Lease"],
 };
 
-export function canonicalTranswesternUrl(href: string | null): string | null {
-  const h = clean(href);
-  if (!h || /^javascript:/i.test(h) || h === "-") return null;
-  try {
-    return new URL(h, TRANSWESTERN_HOST).toString();
-  } catch {
-    return null;
-  }
-}
 
 export function transwesternFeedUrl(bucket: string): string {
   const params = new URLSearchParams({
@@ -57,11 +49,6 @@ export function transwesternFeedUrl(bucket: string): string {
   return `${TRANSWESTERN_HOST}/properties?${params.toString()}`;
 }
 
-export function transwesternDetailUrl(pageUrl: any): string | null {
-  const slug = clean(String(pageUrl ?? ""));
-  if (!slug || slug === "-") return null;
-  return `${TRANSWESTERN_HOST}/property/${encodeURIComponent(slug).replace(/%2F/g, "/")}`;
-}
 
 export function transwesternTransactionType(bucket: string): string {
   if (/sale or lease/i.test(bucket)) return "Sale/Lease";

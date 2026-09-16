@@ -9,15 +9,25 @@ import { parseJsonBody } from "../lib/scrape.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { parseLeaseRate } from "../lib/parse.js";
 import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import {
+  COLLIERS_PAGE_SIZE as pureColliersPageSize,
+  COLLIERS_RCM_BASE as pureColliersRcmBase,
+  colliersHeaders as pureColliersHeaders,
+  colliersListUrl as pureColliersListUrl,
+  colliersMapUrl as pureColliersMapUrl,
+  colliersSlpInitUrl as pureColliersSlpInitUrl,
+  groupColliersMapLocations as pureGroupColliersMapLocations,
+  parseColliersReceiptCards,
+} from "./pure/colliers-receipt.js";
 
 
 // --- Colliers: public SalesTracker RCM ListingEngine GET path ---
 
 export const COLLIERS_SALESTRACKER_BASE = "https://sales.colliers.com";
-export const COLLIERS_RCM_BASE = "https://my.rcm1.com";
+export const COLLIERS_RCM_BASE = pureColliersRcmBase;
 export const COLLIERS_SOURCE_URL = `${COLLIERS_SALESTRACKER_BASE}/`;
 export const COLLIERS_FALLBACK_ENGINE_KEY = "BX0EQVWsJMGzGR6ZiWBDEnJAH-tErDnvHaBoKDFAOy4";
-export const COLLIERS_PAGE_SIZE = 100;
+export const COLLIERS_PAGE_SIZE = pureColliersPageSize;
 export const COLLIERS_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 
 export type ColliersCard = {
@@ -57,13 +67,7 @@ export type ColliersMapGroup = {
 export class ColliersIdentityError extends Error {}
 
 export function colliersHeaders(accept = "application/json, text/javascript, */*; q=0.01"): Record<string, string> {
-  return {
-    accept,
-    origin: COLLIERS_SALESTRACKER_BASE,
-    referer: COLLIERS_SOURCE_URL,
-    "user-agent": "Mozilla/5.0 CRE collector",
-    "x-requested-with": "XMLHttpRequest",
-  };
+  return pureColliersHeaders(accept);
 }
 
 export function colliersUrl(href: string | null | undefined): string | null {
@@ -102,15 +106,15 @@ export function extractColliersEngineKey(html: string): string {
 }
 
 export function colliersListUrl(engineKey: string, start: number, pageSize: number): string {
-  return `${COLLIERS_RCM_BASE}/api/AjaxEngine/GetListingsHtml?pv=${encodeURIComponent(engineKey)}&Start=${start}&PageSize=${pageSize}`;
+  return pureColliersListUrl(engineKey, start, pageSize);
 }
 
 export function colliersMapUrl(engineKey: string, start: number, pageSize: number): string {
-  return `${COLLIERS_RCM_BASE}/api/AjaxEngine/GetMapData?pv=${encodeURIComponent(engineKey)}&Start=${start}&PageSize=${pageSize}`;
+  return pureColliersMapUrl(engineKey, start, pageSize);
 }
 
 export function colliersSlpInitUrl(pv: string): string {
-  return `${COLLIERS_RCM_BASE}/api/handler/slp/Init?pv=${encodeURIComponent(pv)}`;
+  return pureColliersSlpInitUrl(pv);
 }
 
 export function parseColliersLocation(text: string | null): { city: string | null; state: string | null } {
@@ -132,39 +136,7 @@ export function listingPvFromColliersUrl(url: string | null): string | null {
 }
 
 export function groupColliersMapLocations(rows: any[]): ColliersMapGroup[] {
-  const groups = new Map<string, ColliersMapGroup>();
-  for (const [index, row] of rows.entries()) {
-    const rawProjectId = row?.ProjectId ?? row?.projectId;
-    if (
-      rawProjectId === null ||
-      rawProjectId === undefined ||
-      !String(rawProjectId).trim()
-    ) {
-      throw new Error(`Colliers map row ${index} is missing ProjectId`);
-    }
-    const projectId = String(rawProjectId).trim();
-    let group = groups.get(projectId);
-    if (!group) {
-      group = { projectId, pins: [] };
-      groups.set(projectId, group);
-    }
-    const latitude = num(Number(row?.Latitude ?? row?.latitude));
-    const longitude = num(Number(row?.Longitude ?? row?.longitude));
-    if (
-      latitude !== null &&
-      longitude !== null &&
-      latitude >= -90 &&
-      latitude <= 90 &&
-      longitude >= -180 &&
-      longitude <= 180 &&
-      !group.pins.some(
-        (pin) => pin.latitude === latitude && pin.longitude === longitude
-      )
-    ) {
-      group.pins.push({ latitude, longitude });
-    }
-  }
-  return [...groups.values()];
+  return pureGroupColliersMapLocations(rows);
 }
 
 export function colliersMapScalarCoordinates(group: ColliersMapGroup): {
@@ -277,6 +249,15 @@ export function parseColliersCards(
     throw new Error(
       `Colliers parsed-card/map-group parity failed at start ${start}: ${cards.length} != ${mapGroups.length}`
     );
+  }
+  // The receipt lane and collector must agree on the provider-native card
+  // identity, even though the collector additionally enriches each card.
+  const receiptCards = parseColliersReceiptCards(html, mapGroups, start);
+  for (const [index, card] of cards.entries()) {
+    const receiptCard = receiptCards[index];
+    if (!receiptCard || card.mapProjectId !== receiptCard.mapProjectId || card.detailPv !== receiptCard.detailPv || card.detailUrl !== receiptCard.detailUrl) {
+      throw new Error("Colliers collector/receipt card identity parser drifted");
+    }
   }
   return cards;
 }

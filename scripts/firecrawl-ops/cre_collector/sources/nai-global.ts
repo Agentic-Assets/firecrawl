@@ -11,6 +11,8 @@ import {
 import { parseAmountIgnoringCurrencyLabel, normBuildingClass } from "../lib/parse.js";
 import { DetailObservation, LinkItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, num, pmap } from "../lib/util.js";
+import { naiDocumentUrls, naiImageUrls } from "./pure/nai-assets.js";
+import { naiPublicPostId } from "./pure/nai-identity.js";
 
 
 // --- NAI Global: Infabode public GraphQL feed ---
@@ -359,13 +361,11 @@ export function naiFeedPageCacheKey(offset: number, sourceIds: number[] = NAI_SO
  */
 export function naiPageSignature(rows: any[]): string | null {
   const ids = rows
-    .map((row) => {
-      const id = row?.id;
-      return typeof id === "string" || typeof id === "number" ? clean(String(id)) : null;
-    })
+    .map((row) => naiPublicPostId(row?.id))
     .filter((id): id is string => !!id);
   return ids.length === rows.length && ids.length > 0 ? ids.join(",") : null;
 }
+export { naiPublicPostId } from "./pure/nai-identity.js";
 
 export function naiResultTruncated(
   max: number,
@@ -476,19 +476,7 @@ export function naiLocation(partsSource: any[]): { city: string | null; state: s
   };
 }
 
-export function naiImageUrls(row: any, detail: any): string[] {
-  const urls = [...(detail?.postImages ?? []), ...(row?.postImages ?? [])]
-    .map((img: any) => clean(img?.url))
-    .filter((url: string | null): url is string => !!url && /^https?:\/\//i.test(url));
-  return [...new Set(urls)];
-}
-
-export function naiDocumentUrls(detail: any): string[] {
-  const urls = [detail?.urlDocument, detail?.documentPreview]
-    .map((url) => clean(url))
-    .filter((url: string | null): url is string => !!url && /^https?:\/\//i.test(url));
-  return [...new Set(urls)];
-}
+export { naiDocumentUrls, naiImageUrls } from "./pure/nai-assets.js";
 
 export function naiPriceText(detail: any): string | null {
   if (detail?.price === null || detail?.price === undefined) return null;

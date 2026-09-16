@@ -1,0 +1,50 @@
+{
+  "cbre": {
+    "canonical_url": "https://www.cbre.com/details/CBRE-1/example",
+    "provider_id": "CBRE-1",
+    "raw": {"Common.PrimaryKey": "CBRE-1", "Common.Name": "CBRE Example", "Common.LongDescription": "Public CBRE card", "images": ["https://images.example.net/cbre.jpg"], "documents": ["https://docs.example.net/cbre.pdf"]},
+    "normalized": {"fields": {"title": "CBRE Example", "description": "Public CBRE card"}, "assets": {"images": ["https://images.example.net/cbre.jpg"], "documents": ["https://docs.example.net/cbre.pdf"]}}
+  },
+  "cbre-dealflow": {
+    "canonical_url": "https://www.cbredealflow.com/landing.aspx?pv=PV-1",
+    "provider_id": "PV-1",
+    "raw": {"id": "PV-1", "url": "https://www.cbredealflow.com/landing.aspx?pv=PV-1", "url_kind": "detail", "listing_pv": "PV-1", "name": "Deal Flow Example", "description": "Public ListingEngine card", "photos": ["https://images.example.net/dealflow.jpg"], "brochures": ["https://docs.example.net/dealflow.pdf"]},
+    "normalized": {"fields": {"title": "Deal Flow Example", "description": "Public ListingEngine card"}, "assets": {"images": ["https://images.example.net/dealflow.jpg"], "documents": ["https://docs.example.net/dealflow.pdf"]}}
+  },
+  "cushman-wakefield": {
+    "canonical_url": "https://www.cushmanwakefield.com/properties/example?tracking=ignored",
+    "provider_id": "url:v1:PLACEHOLDER",
+    "raw": {"id": "mutable-guid", "title": "Cushman Example", "description": "Public API row", "images": ["https://assets.cushmanwakefield.com/example.jpg"], "documents": ["https://assets.cushmanwakefield.com/example.pdf"]},
+    "normalized": {"fields": {"title": "Cushman Example", "description": "Public API row"}, "assets": {"images": ["https://assets.cushmanwakefield.com/example.jpg"], "documents": ["https://assets.cushmanwakefield.com/example.pdf"]}}
+  },
+  "newmark": {
+    "canonical_url": "https://nim.nmrk.com/properties/example",
+    "provider_id": "NMRK-1",
+    "raw": {"id": "NMRK-1", "title": "Newmark Example", "description": "NIM record", "images": ["https://images.example.net/newmark.jpg"], "documents": ["https://docs.example.net/newmark.pdf"]},
+    "normalized": {"fields": {"title": "Newmark Example", "description": "NIM record"}, "assets": {"images": ["https://images.example.net/newmark.jpg"], "documents": ["https://docs.example.net/newmark.pdf"]}}
+  },
+  "srs": {
+    "canonical_url": "https://www.srsre.com/properties/example",
+    "provider_id": "SRS-1",
+    "raw": {"apto_data": {"SRS_Listings_ID__c": "SRS-1"}, "Name": "SRS Example", "Description__c": "Salesforce record", "images": ["https://images.example.net/srs.jpg"], "documents": ["https://docs.example.net/srs.pdf"]},
+    "normalized": {"fields": {"title": "SRS Example", "description": "Salesforce record"}, "assets": {"images": ["https://images.example.net/srs.jpg"], "documents": ["https://docs.example.net/srs.pdf"]}}
+  },
+  "svn": {
+    "canonical_url": "https://svn.com/properties/?propertyId=example-sale",
+    "provider_id": "SVN-1",
+    "raw": {"id": "SVN-1", "show_link": "https://svn.com/properties/?propertyId=example-sale", "display_name": "SVN Example", "description": "Buildout card", "photo_url": "https://images.example.net/svn.jpg", "pdf_url": "https://docs.example.net/svn.pdf"},
+    "normalized": {"fields": {"title": "SVN Example", "description": "Buildout card"}, "assets": {"images": ["https://images.example.net/svn.jpg"], "documents": ["https://docs.example.net/svn.pdf"]}}
+  },
+  "lee-associates": {
+    "canonical_url": "https://www.lee-associates.com/properties/?propertyId=example-lease",
+    "provider_id": "LEE-1",
+    "raw": {"id": "LEE-1", "show_link": "https://www.lee-associates.com/properties/?propertyId=example-lease", "display_name": "Lee Example", "description": "Buildout card", "photo_url": "https://images.example.net/lee.jpg", "pdf_url": "https://docs.example.net/lee.pdf"},
+    "normalized": {"fields": {"title": "Lee Example", "description": "Buildout card"}, "assets": {"images": ["https://images.example.net/lee.jpg"], "documents": ["https://docs.example.net/lee.pdf"]}}
+  },
+  "bull-realty": {
+    "canonical_url": "https://www.bullrealty.com/properties/?propertyId=example-sale",
+    "provider_id": "BULL-1",
+    "raw": {"id": "BULL-1", "show_link": "https://www.bullrealty.com/properties/?propertyId=example-sale", "display_name": "Bull Example", "description": "Buildout card", "photo_url": "https://images.example.net/bull.jpg", "pdf_url": "https://docs.example.net/bull.pdf"},
+    "normalized": {"fields": {"title": "Bull Example", "description": "Buildout card"}, "assets": {"images": ["https://images.example.net/bull.jpg"], "documents": ["https://docs.example.net/bull.pdf"]}}
+  }
+}

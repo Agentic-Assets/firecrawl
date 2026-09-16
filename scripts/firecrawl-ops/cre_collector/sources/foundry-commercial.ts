@@ -4,33 +4,32 @@ import { refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
 import { dedupeStrings, jsonLdObjects } from "../lib/html.js";
 import { clean, pmap, prune } from "../lib/util.js";
 import type { SourceResult, Tx } from "../types.js";
+import {
+  foundryPropertySitemaps,
+  foundryPropertyUrls,
+  foundryProviderIdentity,
+  foundryUrl,
+  FOUNDRY_HOST,
+  FOUNDRY_SITEMAP_URL,
+  samePage,
+} from "./pure/foundry-identity.js";
+import { classifyFoundryStatus, normalizedFoundryStatus, type FoundryStatusDecision } from "./pure/foundry-status.js";
 
-export const FOUNDRY_HOST = "https://www.foundrycommercial.com";
 export const FOUNDRY_SOURCE_URL = `${FOUNDRY_HOST}/properties/`;
-export const FOUNDRY_SITEMAP_URL = `${FOUNDRY_HOST}/sitemap.xml`;
 export const FOUNDRY_FETCH_TIMEOUT_MS = 60_000;
 export const FOUNDRY_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 const FOUNDRY_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 const FOUNDRY_NON_PHOTO = /avatar|headshot|logo|favicon|placeholder|sprite|cropped-/i;
 const FOUNDRY_ASSET_QUERY_KEYS = new Set(["ver", "w"]);
-const FOUNDRY_PROPERTY_SITEMAP_PATH = /(?:^|\/)property-sitemap(?:\d+)?\.xml$/i;
-const FOUNDRY_TERMINAL_STATUSES = new Set([
-  "closed",
-  "discontinued",
-  "leased",
-  "off market",
-  "sold",
-  "unavailable",
-  "withdrawn",
-]);
-
-export type FoundryStatusDecision = {
-  disposition: "active" | "terminal" | "held";
-  status: string | null;
-  tenures: Tx[];
-  reason: string;
-};
+export {
+  foundryPropertySitemaps,
+  foundryPropertyUrls,
+  foundryProviderIdentity,
+  FOUNDRY_HOST,
+  FOUNDRY_SITEMAP_URL,
+} from "./pure/foundry-identity.js";
+export { classifyFoundryStatus, type FoundryStatusDecision } from "./pure/foundry-status.js";
 
 export type FoundryParseContext = {
   inventoryObservedAt?: string;
@@ -61,186 +60,6 @@ function foundryAssetQueryIsBenign(url: URL): boolean {
   return true;
 }
 
-function normalizedStatus(value: string | null): string | null {
-  return clean(value)
-    ?.toLowerCase()
-    .replace(/[_-]+/g, " ")
-    .replace(/\s*[/|]\s*/g, " or ")
-    .replace(/\s+/g, " ")
-    .trim() ?? null;
-}
-
-/**
- * Foundry publishes an explicit WordPress property-status taxonomy. Only the
- * documented tokens below may admit a row. Missing or novel status text is
- * held so a theme or taxonomy change cannot silently activate old inventory.
- */
-export function classifyFoundryStatus(value: string | null): FoundryStatusDecision {
-  const status = normalizedStatus(value);
-  if (!status) {
-    return {
-      disposition: "held",
-      status: null,
-      tenures: [],
-      reason: "missing explicit Foundry property status",
-    };
-  }
-  if (FOUNDRY_TERMINAL_STATUSES.has(status)) {
-    return {
-      disposition: "terminal",
-      status,
-      tenures: [],
-      reason: `terminal Foundry property status: ${status}`,
-    };
-  }
-  if (status === "for sale") {
-    return { disposition: "active", status, tenures: ["sale"], reason: "explicit for-sale status" };
-  }
-  if (status === "for lease" || status === "sublease") {
-    return { disposition: "active", status, tenures: ["lease"], reason: `explicit ${status} status` };
-  }
-  if (
-    status === "for sale or lease"
-    || status === "for lease or sale"
-    || status === "sale and lease"
-  ) {
-    return {
-      disposition: "active",
-      status,
-      tenures: ["sale", "lease"],
-      reason: "explicit dual-tenure status",
-    };
-  }
-  if (
-    status === "available"
-    || status === "coming soon"
-    || status === "proposed"
-    || status === "under contract"
-  ) {
-    return {
-      disposition: "active",
-      status,
-      tenures: [],
-      reason: `active status ${status} requires a separate explicit transaction token`,
-    };
-  }
-  return {
-    disposition: "held",
-    status,
-    tenures: [],
-    reason: `unknown Foundry property status: ${status}`,
-  };
-}
-
-function foundryUrl(value: string, kind: "detail" | "sitemap"): string | null {
-  try {
-    const parsed = new URL(value, FOUNDRY_HOST);
-    if (
-      parsed.protocol !== "https:"
-      || parsed.hostname.toLowerCase().replace(/^www\./, "") !== "foundrycommercial.com"
-      || parsed.username
-      || parsed.password
-      || parsed.port
-      || parsed.search
-      || parsed.hash
-    ) {
-      return null;
-    }
-    if (/\.pdf$/i.test(parsed.pathname)) return null;
-    if (kind === "detail" && !/^\/property\/[^/]+\/?$/i.test(parsed.pathname)) return null;
-    if (
-      kind === "sitemap"
-      && !/^\/(?:sitemap|sitemap_index|property-sitemap(?:\d+)?)\.xml$/i.test(parsed.pathname)
-    ) {
-      return null;
-    }
-    return parsed.toString();
-  } catch {
-    return null;
-  }
-}
-
-function samePage(left: string, right: string): boolean {
-  const normalize = (value: string) => {
-    const parsed = new URL(value);
-    return `${parsed.hostname.toLowerCase().replace(/^www\./, "")}${parsed.pathname
-      .replace(/\/+$/, "")
-      .toLowerCase()}`;
-  };
-  try {
-    return normalize(left) === normalize(right);
-  } catch {
-    return false;
-  }
-}
-
-export function foundryPropertySitemaps(indexXml: string): string[] {
-  const locations = sitemapLocations(indexXml, "sitemapindex", "sitemap", "Foundry sitemap index");
-  const urls = dedupeStrings(
-    locations.flatMap((value, index) => {
-      let propertyShaped = false;
-      try {
-        propertyShaped = FOUNDRY_PROPERTY_SITEMAP_PATH.test(
-          new URL(value, FOUNDRY_HOST).pathname
-        );
-      } catch {
-        propertyShaped = FOUNDRY_PROPERTY_SITEMAP_PATH.test(value.split(/[?#]/, 1)[0]);
-      }
-      if (!propertyShaped) return [];
-      const url = foundryUrl(value, "sitemap");
-      if (!url) throw new Error(`Foundry sitemap index property loc ${index} is invalid`);
-      return [url];
-    })
-  );
-  if (!urls.length) throw new Error("Foundry sitemap index has no valid property sitemap");
-  return urls;
-}
-
-export function foundryPropertyUrls(propertyXml: string): string[] {
-  const locations = sitemapLocations(propertyXml, "urlset", "url", "Foundry property sitemap");
-  const urls = dedupeStrings(
-    locations.map((value, index) => {
-      const url = foundryUrl(value, "detail");
-      if (!url) throw new Error(`Foundry property sitemap URL ${index} is invalid`);
-      return url;
-    })
-  );
-  return urls;
-}
-
-function sitemapLocations(
-  xml: string,
-  rootName: "sitemapindex" | "urlset",
-  entryName: "sitemap" | "url",
-  label: string
-): string[] {
-  if (!xml.trim()) throw new Error(`${label} is empty`);
-  const $ = cheerio.load(xml, { xmlMode: true });
-  const roots = $.root().children().toArray();
-  if (
-    roots.length !== 1
-    || roots[0].type !== "tag"
-    || roots[0].name.toLowerCase() !== rootName
-  ) {
-    throw new Error(`${label} requires one ${rootName} root`);
-  }
-  const entries = $(roots[0]).children().toArray();
-  if (
-    entries.length === 0
-    || entries.some((entry) => entry.type !== "tag" || entry.name.toLowerCase() !== entryName)
-  ) {
-    throw new Error(`${label} requires ${entryName} child elements`);
-  }
-  return entries.map((entry, index) => {
-    const locs = $(entry)
-      .children()
-      .filter((_, child) => child.type === "tag" && child.name.toLowerCase() === "loc")
-      .toArray();
-    const location = locs.length === 1 ? clean($(locs[0]).text()) : null;
-    if (!location) throw new Error(`${label} ${entryName} ${index} requires exactly one loc`);
-    return location;
-  });
-}
 
 export function foundryAssetUrl(value: unknown): string | null {
   const raw = clean(value);
@@ -272,40 +91,6 @@ export function assertFoundryUniqueProviderIds(
     if (!id) throw new Error("Foundry emitted a listing without a provider ID");
     if (ids.has(id)) throw new Error(`Foundry emitted duplicate provider ID ${id}`);
     ids.add(id);
-  }
-}
-
-export function foundryProviderIdentity(html: string, requestedUrl: string): string | null {
-  const requested = foundryUrl(requestedUrl, "detail");
-  if (!requested) return null;
-  const $ = cheerio.load(html);
-  const canonicalRaw =
-    clean($("link[rel='canonical']").first().attr("href"))
-    ?? clean($("meta[property='og:url']").first().attr("content"));
-  const canonical = canonicalRaw ? foundryUrl(canonicalRaw, "detail") : null;
-  if (!canonical || !samePage(canonical, requested)) return null;
-
-  const shortlink = clean($("link[rel='shortlink']").first().attr("href"));
-  if (!shortlink) return null;
-  try {
-    const parsed = new URL(shortlink);
-    if (
-      parsed.origin !== FOUNDRY_HOST
-      || parsed.pathname !== "/"
-      || parsed.hash
-      || parsed.username
-      || parsed.password
-      || parsed.port
-      || parsed.searchParams.size !== 1
-      || parsed.searchParams.getAll("p").length !== 1
-    ) {
-      return null;
-    }
-    const rawId = parsed.searchParams.get("p");
-    const id = rawId && /^[1-9]\d*$/.test(rawId) ? Number(rawId) : NaN;
-    return Number.isSafeInteger(id) ? String(id) : null;
-  } catch {
-    return null;
   }
 }
 
@@ -381,7 +166,7 @@ function foundryStatusFromNotes(notes: string[]): FoundryStatusDecision {
 function explicitFoundryTenures(notes: string[]): Tx[] {
   const tenures = new Set<Tx>();
   for (const note of notes) {
-    const normalized = normalizedStatus(note);
+    const normalized = normalizedFoundryStatus(note);
     if (!normalized) continue;
     if (/\bfor sale\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
       tenures.add("sale");

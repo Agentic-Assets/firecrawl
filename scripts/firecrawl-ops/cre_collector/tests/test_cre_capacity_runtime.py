@@ -567,6 +567,48 @@ def test_preflight_rejects_output_outside_controlled_root_without_chmod(
     assert not target.exists()
 
 
+def test_c10_profile_config_is_explicit_canonical_and_receipt_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "tasks" / "tmp").mkdir(parents=True)
+    monkeypatch.setattr(runtime, "REPO_ROOT", repo)
+    monkeypatch.setattr(
+        runtime, "capture_runtime", lambda runner=runtime._default_runner: capture()
+    )
+    path = repo / "tasks" / "tmp" / "cre-capacity-transition-c10" / "receipt.json"
+    receipt = runtime.preflight(
+        "c10-p0",
+        path,
+        profile_config=runtime.C10_PROFILE_CONFIG,
+        experiment_kind="C10",
+    )
+    _, c10_digest = experiment.load_profile(runtime.C10_PROFILE_CONFIG, "c10-p0")
+    assert receipt["config_sha256"] == c10_digest
+    loaded, selected, digest = runtime.load_fresh_receipt(
+        path,
+        "c10-p0",
+        profile_config=runtime.C10_PROFILE_CONFIG,
+        experiment_kind="C10",
+    )
+    assert loaded["receipt_sha256"] == receipt["receipt_sha256"]
+    assert selected["requested"]["jll_detail_concurrency"] == 4
+    assert digest == c10_digest
+    with pytest.raises(
+        runtime.RuntimeAdmissionError, match="alternate runtime profiles"
+    ):
+        runtime.preflight("c10-p0", path, profile_config=runtime.C10_PROFILE_CONFIG)
+    noncanonical = tmp_path / "not-the-c10-profile.json"
+    noncanonical.write_text("{}")
+    with pytest.raises(runtime.RuntimeAdmissionError, match="not canonical"):
+        runtime.preflight(
+            "c10-p0",
+            path,
+            profile_config=noncanonical,
+            experiment_kind="C10",
+        )
+
+
 def test_dry_run_transition_requires_unchanged_machine_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

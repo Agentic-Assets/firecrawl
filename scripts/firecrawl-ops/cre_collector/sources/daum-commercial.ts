@@ -4,9 +4,9 @@ import { detailObservation } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { SourceResult, Tx } from "../types.js";
 import { clean, moneyToNumber, prune } from "../lib/util.js";
+import { canonicalDaumPropertyUrl, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
 
-export const DAUM_HOST = "https://daumcommercial.com";
-export const DAUM_SEARCH_URL = `${DAUM_HOST}/property-search/`;
+export { canonicalDaumPropertyUrl, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
 export const DAUM_PAGE_SIZE = 90;
 export const DAUM_ROBOTS_DELAY_MS = 3000;
 export const DAUM_MAX_RESPONSE_BYTES = 5_000_000;
@@ -17,7 +17,6 @@ type FetchLike = (
   init?: RequestInit
 ) => Promise<Response>;
 
-export type DaumTenure = "sale" | "lease" | "sale_or_lease" | "unknown";
 
 export type DaumInventoryRow = {
   url: string;
@@ -102,35 +101,6 @@ async function daumBoundedResponseText(
   }
 }
 
-export function daumPageUrl(page: number): string {
-  if (!Number.isInteger(page) || page < 1) {
-    throw new Error(`DAUM page must be a positive integer, got ${page}`);
-  }
-  return page === 1 ? DAUM_SEARCH_URL : `${DAUM_SEARCH_URL}page/${page}/`;
-}
-
-export function canonicalDaumPropertyUrl(value: unknown): string | null {
-  const raw = clean(value);
-  if (!raw || /^(?:javascript|mailto|tel):/i.test(raw)) return null;
-  try {
-    const url = new URL(raw, DAUM_HOST);
-    if (
-      url.protocol !== "https:" ||
-      url.hostname !== "daumcommercial.com" ||
-      url.username ||
-      url.password ||
-      url.port ||
-      !/^\/property\/[^/]+\/$/.test(url.pathname) ||
-      url.search ||
-      url.hash
-    ) {
-      return null;
-    }
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
 
 function daumAbsoluteUrl(value: unknown): string | null {
   const raw = clean(value);
@@ -152,14 +122,6 @@ function daumAbsoluteUrl(value: unknown): string | null {
   }
 }
 
-export function daumTenure(value: unknown): DaumTenure {
-  const text = clean(value)?.toLowerCase();
-  if (!text) return "unknown";
-  if (text === "lease or sale" || text === "sale or lease") return "sale_or_lease";
-  if (text === "lease" || text === "sublease") return "lease";
-  if (text === "sale- user" || text === "sale- investment" || text === "sale") return "sale";
-  throw new Error(`DAUM inventory contains unknown transaction type ${JSON.stringify(value)}`);
-}
 
 function parseDaumMapData(html: string): any[] {
   const match = html.match(/\bvar\s+propertySearchData\s*=\s*(\[[\s\S]*?\]);/);
