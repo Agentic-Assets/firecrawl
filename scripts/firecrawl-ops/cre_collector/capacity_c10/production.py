@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -152,6 +155,119 @@ def _claimed_arm_paths(
     )
 
 
+def _require_private_root(path: Path, label: str) -> None:
+    """Require an existing, real, owner-only directory before a C10 claim."""
+    try:
+        metadata = path.lstat()
+        owner_uid = runtime._operator_uid()
+    except (OSError, runtime.RuntimeAdmissionError) as exc:
+        raise C10Error(f"C10 {label} root is unavailable") from exc
+    if (
+        path.is_symlink()
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != owner_uid
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise C10Error(f"C10 {label} root must be operator-owned mode 0700 directory")
+
+
+def _require_absent_output(path: Path, label: str) -> None:
+    if os.path.lexists(path):
+        raise C10Error(f"C10 {label} output path already exists")
+
+
+def _validate_p1_approval(path: Path, plan: Mapping[str, Any]) -> None:
+    """Validate the non-consuming, receipt-independent approval contract."""
+    try:
+        runtime._validate_review_authority(path)
+        if path.stat().st_size > runtime.REVIEW_APPROVAL_MAX_BYTES:
+            raise C10Error("C10 P1 approval exceeds its private size bound")
+        approval = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, runtime.RuntimeAdmissionError) as exc:
+        raise C10Error("C10 P1 approval is unavailable or invalid") from exc
+    required = {
+        "schema_version",
+        "kind",
+        "profile",
+        "config_sha256",
+        "transition_receipt_sha256",
+        "source_git_sha",
+        "approved_by",
+        "approved",
+        "created_at",
+        "expires_after_seconds",
+        "nonce",
+    }
+    if (
+        not isinstance(approval, Mapping)
+        or set(approval) != required
+        or approval.get("schema_version") != runtime.SCHEMA_VERSION
+        or approval.get("kind") != runtime.APPROVAL_KIND
+        or approval.get("profile") != plan["profiles"]["p1"]["name"]
+        or approval.get("config_sha256") != plan["profiles"]["config_sha256"]
+        or approval.get("approved_by") != "coordinating-review"
+        or approval.get("approved") is not True
+        or approval.get("expires_after_seconds") != runtime.RECEIPT_MAX_AGE_SECONDS
+        or not runtime.NONCE_PATTERN.fullmatch(
+            str(approval.get("transition_receipt_sha256"))
+        )
+        or not runtime.SHA_PATTERN.fullmatch(str(approval.get("source_git_sha")))
+        or not runtime.NONCE_PATTERN.fullmatch(str(approval.get("nonce")))
+    ):
+        raise C10Error("C10 P1 approval is not bound to the immutable profile")
+    try:
+        age = (
+            datetime.now(timezone.utc) - runtime._parse_time(approval["created_at"])
+        ).total_seconds()
+    except (KeyError, runtime.RuntimeAdmissionError) as exc:
+        raise C10Error("C10 P1 approval timestamp is invalid") from exc
+    if age < 0 or age > runtime.RECEIPT_MAX_AGE_SECONDS:
+        raise C10Error("C10 P1 approval is stale")
+
+
+def _validate_claim_inputs(
+    plan: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    *,
+    private_root: Path,
+    runtime_receipt_root: Path,
+    approval_root: Path | None,
+    admission_root: Path | None,
+) -> tuple[Path, Path, Path | None, Path | None]:
+    """Validate root and exact arm output inputs before marker or claim."""
+    _require_private_root(private_root, "private")
+    _require_private_root(runtime_receipt_root, "runtime receipt")
+    paths = _claimed_arm_paths(
+        arm,
+        private_root=private_root,
+        runtime_receipt_root=runtime_receipt_root,
+        approval_root=approval_root,
+        admission_root=admission_root,
+    )
+    arm_private_root, receipt_path, approval_path, admission_path = paths
+    _require_absent_output(receipt_path, "runtime receipt")
+    variant = arm["variant"]
+    if variant == "p0":
+        if approval_root is not None:
+            _require_private_root(approval_root, "approval")
+            _require_absent_output(
+                approval_root / f"arm-{arm['index']}.json", "P0 approval"
+            )
+        if admission_root is not None:
+            _require_private_root(admission_root, "admission")
+            _require_absent_output(
+                admission_root / f"arm-{arm['index']}.json", "P0 admission"
+            )
+    else:
+        assert approval_root is not None and admission_root is not None
+        _require_private_root(approval_root, "approval")
+        _require_private_root(admission_root, "admission")
+        assert approval_path is not None and admission_path is not None
+        _validate_p1_approval(approval_path, plan)
+        _require_absent_output(admission_path, "admission")
+    return arm_private_root, receipt_path, approval_path, admission_path
+
+
 def execute_production_arm(
     *,
     repo_root: Path,
@@ -182,10 +298,32 @@ def execute_production_arm(
     candidate_transition: Mapping[str, Any] | None = None
     receipt: Mapping[str, Any] | None = None
     try:
-        # Resolve availability and make the one atomic claim only after the
-        # canonical lock is held. A concurrent runner can therefore never
-        # cause this runner to reuse arm-specific caller paths.
+        # Resolve the actual next arm while the canonical lock is held, then
+        # reject unsafe roots or exact outputs before arming or claiming.
         store.assert_available(plan)
+        next_index = store.next_arm_index(plan)
+        pending_arm = {
+            "index": next_index,
+            "variant": plan["arm_sequence"][next_index],
+        }
+        (
+            arm_private_root,
+            runtime_receipt_path,
+            approval_path,
+            admission_out,
+        ) = _validate_claim_inputs(
+            plan,
+            pending_arm,
+            private_root=private_root,
+            runtime_receipt_root=runtime_receipt_root,
+            approval_root=approval_root,
+            admission_root=admission_root,
+        )
+        _remaining(deadline)
+    except BaseException:
+        lock.release()
+        raise
+    try:
         # The canonical lock marker is the crash/reclaim boundary. A durable
         # sibling ledger alone is not enough because it survives outside the
         # lock tree while a dead owner could otherwise be stale-reclaimed.
@@ -210,18 +348,11 @@ def execute_production_arm(
         variant = arm.get("variant")
         if variant not in {"p0", "p1"}:
             raise C10Error("C10 durable claim variant is invalid")
-        (
-            arm_private_root,
-            runtime_receipt_path,
-            approval_path,
-            admission_out,
-        ) = _claimed_arm_paths(
-            arm,
-            private_root=private_root,
-            runtime_receipt_root=runtime_receipt_root,
-            approval_root=approval_root,
-            admission_root=admission_root,
-        )
+        if (
+            arm.get("index") != pending_arm["index"]
+            or variant != pending_arm["variant"]
+        ):
+            raise C10Error("C10 lock-held claim differs from its resolved next arm")
         # A later arm cannot advance based on ledger metadata alone. Reopen
         # every completed predecessor's owner-only receipt root and prove its
         # ordered artifacts using this one lifecycle deadline.

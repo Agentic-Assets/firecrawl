@@ -8,9 +8,11 @@ import hashlib
 import inspect
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self
 
+import cre_capacity_runtime as runtime
 import pytest
 from capacity_c10 import admission, contracts, host_store
 from capacity_c10.host_session import (
@@ -418,6 +420,30 @@ def _seed_valid_terminal(
     }
     store.record_terminal(claim, authenticated)
     return artifacts
+
+
+def _secure_roots(*paths: Path) -> None:
+    for path in paths:
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
+
+
+def _valid_p1_approval(path: Path, plan: dict[str, object]) -> None:
+    approval = {
+        "schema_version": runtime.SCHEMA_VERSION,
+        "kind": runtime.APPROVAL_KIND,
+        "profile": plan["profiles"]["p1"]["name"],  # type: ignore[index]
+        "config_sha256": plan["profiles"]["config_sha256"],  # type: ignore[index]
+        "transition_receipt_sha256": "a" * 64,
+        "source_git_sha": "b" * 40,
+        "approved_by": "coordinating-review",
+        "approved": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_after_seconds": runtime.RECEIPT_MAX_AGE_SECONDS,
+        "nonce": "c" * 64,
+    }
+    path.write_text(json.dumps(approval), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
@@ -940,6 +966,7 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
     monkeypatch.setattr(
         "capacity_c10.production.runtime.evaluate_state", lambda *_: {"idle": True}
     )
+    _secure_roots(tmp_path / "private", tmp_path / "receipts")
     result = execute_production_arm(
         repo_root=tmp_path,
         plan=plan,
@@ -1024,6 +1051,15 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
         }
 
     monkeypatch.setattr("capacity_c10.production.runtime.transition", transition)
+    monkeypatch.setattr(
+        "capacity_c10.production._validate_claim_inputs",
+        lambda _plan, arm, **kwargs: (
+            kwargs["private_root"] / f"arm-{arm['index']}",
+            kwargs["runtime_receipt_root"] / f"arm-{arm['index']}.json",
+            kwargs["approval_root"] / f"arm-{arm['index']}.json",
+            kwargs["admission_root"] / f"arm-{arm['index']}.json",
+        ),
+    )
     with pytest.raises(contracts.C10Error, match="host failure"):
         execute_production_arm(
             repo_root=tmp_path,
@@ -1036,6 +1072,212 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
         )
     assert events == ["lock", "arm", "candidate", "host", "baseline", "release"]
     assert list((tmp_path / ".cre-c10-ledger-v1").glob("*.quarantine"))
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_approval",
+        "stale_approval",
+        "invalid_approval",
+        "existing_receipt",
+        "private_root_file",
+        "receipt_root_file",
+        "approval_root_file",
+        "admission_root_file",
+    ],
+)
+def test_direct_execute_rejects_unsafe_claim_inputs_without_quarantine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    store = C10SessionStore(
+        tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
+    )
+    first = store.claim(plan)
+    store.record_terminal(first, {})
+    private, receipts = tmp_path / "private", tmp_path / "receipts"
+    approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
+    roots = {
+        "private_root_file": private,
+        "receipt_root_file": receipts,
+        "approval_root_file": approvals,
+        "admission_root_file": admissions,
+    }
+    for name, root in roots.items():
+        if name == case:
+            root.write_text("not-a-root", encoding="utf-8")
+        else:
+            _secure_roots(root)
+    if case in {
+        "stale_approval",
+        "invalid_approval",
+        "existing_receipt",
+        "admission_root_file",
+    }:
+        _valid_p1_approval(approvals / "arm-1.json", plan)
+    if case in {"stale_approval", "invalid_approval"}:
+        approval_path = approvals / "arm-1.json"
+        approval = json.loads(approval_path.read_text(encoding="utf-8"))
+        approval["created_at" if case == "stale_approval" else "profile"] = (
+            "2000-01-01T00:00:00+00:00" if case == "stale_approval" else "other"
+        )
+        approval_path.write_text(json.dumps(approval), encoding="utf-8")
+    if case == "existing_receipt":
+        (receipts / "arm-1.json").write_text("blocked", encoding="utf-8")
+
+    events: list[str] = []
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            events.append("lock")
+
+        def arm_benchmark(self, _evidence: object) -> None:
+            events.append("arm")
+
+        def release(self) -> None:
+            events.append("release")
+
+    monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.preflight",
+        lambda *_args, **_kwargs: pytest.fail("unsafe input reached runtime preflight"),
+    )
+    with pytest.raises(contracts.C10Error):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            private_root=private,
+            runtime_receipt_root=receipts,
+            approval_root=approvals,
+            admission_root=admissions,
+        )
+    assert events == ["lock", "release"]
+    assert not list((tmp_path / ".cre-c10-ledger-v1").glob("*.quarantine"))
+    assert store.next_arm_index(plan) == 1
+
+
+@pytest.mark.parametrize("artifact", ["approval", "admission"])
+def test_direct_p0_rejects_candidate_artifact_without_claim_or_quarantine(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, artifact: str
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    private, receipts = tmp_path / "private", tmp_path / "receipts"
+    approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
+    _secure_roots(private, receipts, approvals, admissions)
+    target = approvals if artifact == "approval" else admissions
+    (target / "arm-0.json").write_text("unexpected", encoding="utf-8")
+
+    events: list[str] = []
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            events.append("lock")
+
+        def arm_benchmark(self, _evidence: object) -> None:
+            events.append("arm")
+
+        def release(self) -> None:
+            events.append("release")
+
+    monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.preflight",
+        lambda *_args, **_kwargs: pytest.fail("P0 artifact rejection reached runtime"),
+    )
+    with pytest.raises(contracts.C10Error, match=f"P0 {artifact}"):
+        execute_production_arm(
+            repo_root=tmp_path,
+            plan=plan,
+            cohort=cohort,
+            private_root=private,
+            runtime_receipt_root=receipts,
+            approval_root=approvals,
+            admission_root=admissions,
+        )
+    assert events == ["lock", "release"]
+    assert not (tmp_path / ".cre-c10-ledger-v1").exists()
+
+
+def test_cli_execute_cannot_bypass_lock_held_claim_input_checks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan, cohort = _sealed_jll_plan()
+    plan_path, cohort_path = tmp_path / "plan.json", tmp_path / "cohort.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    cohort_path.write_text(json.dumps(cohort), encoding="utf-8")
+    store = C10SessionStore(
+        tmp_path / ".cre-c10-ledger-v1" / f"{plan['plan_sha256']}.json"
+    )
+    first = store.claim(plan)
+    store.record_terminal(first, {})
+    private, receipts = tmp_path / "private", tmp_path / "receipts"
+    approvals, admissions = tmp_path / "approvals", tmp_path / "admissions"
+    _secure_roots(private, receipts, approvals, admissions)
+
+    events: list[str] = []
+
+    class Lock:
+        def __init__(self) -> None:
+            self.path, self.retain_on_exit = tmp_path / ".cre.lock", False
+
+        def acquire(self) -> None:
+            events.append("lock")
+
+        def arm_benchmark(self, _evidence: object) -> None:
+            events.append("arm")
+
+        def release(self) -> None:
+            events.append("release")
+
+    monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
+    monkeypatch.setattr(
+        "capacity_c10.production.canonical_shared_lock_dir",
+        lambda _root: tmp_path / ".cre.lock",
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production.runtime.preflight",
+        lambda *_args, **_kwargs: pytest.fail("CLI execute reached runtime preflight"),
+    )
+    with pytest.raises(contracts.C10Error, match="P1 approval"):
+        main(
+            [
+                "--execute",
+                "--smoke",
+                "--plan",
+                str(plan_path),
+                "--cohort",
+                str(cohort_path),
+                "--private-root",
+                str(private),
+                "--runtime-receipt-root",
+                str(receipts),
+                "--approval-root",
+                str(approvals),
+                "--admission-root",
+                str(admissions),
+                "--repo-root",
+                str(tmp_path),
+            ]
+        )
+    assert events == ["lock", "release"]
+    assert not list((tmp_path / ".cre-c10-ledger-v1").glob("*.quarantine"))
+    assert store.next_arm_index(plan) == 1
 
 
 def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
@@ -1156,6 +1398,15 @@ def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
     monkeypatch.setattr(
         "capacity_c10.production.runtime.evaluate_state", lambda *_: {"idle": True}
     )
+    monkeypatch.setattr(
+        "capacity_c10.production._validate_claim_inputs",
+        lambda _plan, arm, **kwargs: (
+            kwargs["private_root"] / f"arm-{arm['index']}",
+            kwargs["runtime_receipt_root"] / f"arm-{arm['index']}.json",
+            kwargs["approval_root"] / f"arm-{arm['index']}.json",
+            kwargs["admission_root"] / f"arm-{arm['index']}.json",
+        ),
+    )
     result = execute_production_arm(
         repo_root=tmp_path,
         plan=plan,
@@ -1218,6 +1469,15 @@ def test_prior_terminal_receipts_block_later_arm_before_runtime_or_host(
     monkeypatch.setattr(
         "capacity_c10.production.C10HostExecutionSession",
         lambda **_kwargs: pytest.fail("tampered predecessor must fail before host"),
+    )
+    monkeypatch.setattr(
+        "capacity_c10.production._validate_claim_inputs",
+        lambda _plan, arm, **kwargs: (
+            kwargs["private_root"] / f"arm-{arm['index']}",
+            kwargs["runtime_receipt_root"] / f"arm-{arm['index']}.json",
+            kwargs["approval_root"] / f"arm-{arm['index']}.json",
+            kwargs["admission_root"] / f"arm-{arm['index']}.json",
+        ),
     )
     with pytest.raises(
         contracts.C10Error, match="artifact is missing|signature is invalid"
@@ -1360,6 +1620,7 @@ def test_lock_arm_failure_quarantines_and_releases_before_a_replay_attempt(
         "capacity_c10.production.C10HostExecutionSession",
         lambda **_kwargs: type("Host", (), {"lock_path": tmp_path / ".cre.lock"})(),
     )
+    _secure_roots(tmp_path / "private", tmp_path / "receipts")
     with pytest.raises(contracts.C10Error, match="arm marker failed"):
         execute_production_arm(
             repo_root=tmp_path,
