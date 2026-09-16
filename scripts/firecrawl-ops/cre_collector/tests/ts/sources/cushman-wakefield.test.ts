@@ -421,6 +421,37 @@ test("Cushman detail admission rejects challenge, error, and wrong-property shel
   );
 });
 
+test("Cushman detail admission does not reject a normal page with a reCAPTCHA request-info form", () => {
+  // Live 2026-09-16 calibration: 8/8 sampled Cushman detail fetches tripped
+  // a bare-"captcha" challenge regex against ordinary property pages, each of
+  // which embeds a Google reCAPTCHA widget on its "Request Info" lead form.
+  const base = {
+    id: "cw-999",
+    name: "Aurora Land Parcel",
+    street: "7190 Watkins Road",
+    url: `${CUSHMAN_HOST}/en/united-states/properties/for-sale/land/co/aurora/7190-watkins-road/s117010570s117010570-s`,
+  };
+  assert.doesNotThrow(() =>
+    assertCushmanDetailDoc(
+      {
+        rawHtml: `
+          <html><h1>Aurora Land Parcel</h1>
+          <script async src="https://www.gstatic.com/recaptcha/releases/x/recaptcha__en.js"></script>
+          <div class="fxt-captcha" data-val-required="Please confirm you are not a robot."></div>
+          <input type="hidden" id="g-recaptcha-response" name="g-recaptcha-response" />
+          <script type="application/ld+json">
+            {"@type": "RealEstateListing", "url": "${base.url}"}
+          </script>
+          </html>`,
+        markdown: "Aurora Land Parcel request info form g-recaptcha-response",
+        links: [],
+        metadata: { statusCode: 200, sourceURL: base.url },
+      },
+      base
+    )
+  );
+});
+
 test("Cushman detail admission accepts matching listing structure", () => {
   const base = {
     id: "cw-123",

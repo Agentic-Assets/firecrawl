@@ -1,0 +1,73 @@
+# Generic Linux runner for the C10 host coordinator (capacity_c10). Opt-in
+# overlay, never composed by default.
+#
+# capacity_c10.host_store.PrivateReceiptStore is intentionally Linux-only and
+# that refusal must never be weakened. On a non-Linux operator machine (e.g.
+# macOS), the C10 Python controller and its typed TypeScript child therefore
+# need to run inside a Linux container instead. This service is that
+# container. It has no C10- or JLL-specific behavior of its own: it is a
+# general "python3 + node + docker CLI" box that reaches the host Docker
+# daemon over the mounted socket (Docker-outside-of-Docker), so the C10
+# sidecar (docker-compose.c10.yaml) it starts is a sibling container on the
+# same daemon, never nested inside this one.
+#
+# `network_mode: host` is required, not cosmetic: host_orchestration.py and
+# admission_controller.py hardcode the sidecar endpoint as
+# `http://127.0.0.1:<published-port>`. The sidecar publishes on
+# `127.0.0.1:<port>` of the Docker daemon's own network namespace
+# (docker-compose.c10.yaml `ports: "127.0.0.1:${C10_BROWSER_HOST_PORT}:3004"`).
+# Only a container sharing that same namespace can reach that loopback
+# address, so this runner must use the daemon's host network, not a bridge.
+#
+# Usage: see tools/run_linux_controller.sh (build / shell / exec). Never
+# composed alongside docker-compose.c10.yaml's own services in the same
+# invocation; the runner calls `docker compose ... playwright-service-c10`
+# itself, from inside the container, once it is up.
+#
+# NOT SAFE FOR ANY LOCK-HOLDING ACTION ON MACOS/ORBSTACK HOSTS: `fcntl.flock`
+# does NOT coordinate between a macOS host process and a process in this
+# container reached over the bind-mounted repo (a host process and a
+# container process have both been observed holding LOCK_EX|LOCK_NB on the
+# same file at once). CRE_LOCK_DOMAIN_UNTRUSTED below makes
+# `cre_checkpoint_refresh.SharedLock.acquire` refuse to take the canonical
+# CRE lock from inside this container, and `c10_linux_preflight.py` fails its
+# `canonical_lock_domain` check whenever it is set. Never unset it to work
+# around a refusal; see LOCK_AUTHORITY_RECOVERY.md and
+# docs/firecrawl-ops/c10-live-calibration-2026-09-16.md.
+# Distinct project name so this overlay never shares a Compose project with
+# the ordinary dev stack (docker-compose.yaml) or the C10 sidecar overlay's
+# own per-run projects (`c10-<random>`, minted by host_sidecar.py), and so
+# `down` here never touches either.
+name: firecrawl-c10-runner
+services:
+  c10-linux-runner:
+    build:
+      context: .
+      dockerfile: scripts/firecrawl-ops/cre_collector/capacity_c10/tools/linux-runner.Dockerfile
+    image: firecrawl-c10-linux-runner:local
+    network_mode: host
+    # Docker-outside-of-Docker: talk to the *host's* daemon, never run one
+    # nested in this container.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace/firecrawl
+      # Separate named volume for node_modules so a Linux container never
+      # overwrites the operator's host (e.g. macOS arm64) node_modules with
+      # Linux binaries via the bind mount above. Only the collector's own
+      # `tsx` (used to run `capacity_c10/receipts/jll_admission_child.ts`)
+      # is needed in-container; the sidecar image is built separately and
+      # never runs through this container's node_modules.
+      - c10-runner-collector-node-modules:/workspace/firecrawl/scripts/firecrawl-ops/cre_collector/node_modules
+    working_dir: /workspace/firecrawl
+    environment:
+      # Fails closed any canonical CRE lock acquisition attempted from
+      # inside this container. See the header comment above; never unset.
+      CRE_LOCK_DOMAIN_UNTRUSTED: "container-bind-mount"
+    security_opt:
+      - no-new-privileges:true
+    # Stays up for `docker compose ... exec`; never started by a plain `up -d`
+    # in normal collector workflows.
+    entrypoint: ["sleep", "infinity"]
+
+volumes:
+  c10-runner-collector-node-modules: {}
