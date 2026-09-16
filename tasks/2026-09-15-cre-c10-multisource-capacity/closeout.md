@@ -2,7 +2,8 @@
 
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
-**Wave 1 implementation commit:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643`
+**Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
+`62d866633f94e9b5f36a5ae08475a52dba9c63a6`
 **State:** draft [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is open; no merge, runtime, or data mutation occurred.
 
 ## Goal
@@ -16,9 +17,10 @@ not change the Wave 1 execution boundary.
 ## What shipped
 
 - `capacity_c10/` is a small, typed package with versioned policy/contracts,
-  verified-only adapter admission, immutable v1 cohort binding, serial one-use
-  arms, injected settlement/rollback/quarantine hooks, and a pure per-plane
-  comparator.
+  verified-only adapter admission, immutable v1 cohort binding, a canonical
+  durable one-use arm ledger, an injected library-only coordinator that holds
+  the existing `SharedLock` across runtime and recovery hooks, and a pure
+  per-plane comparator.
 - `cre_capacity_c10_v1.json` fixes the exact 20-source matrix and 12 strict
   detail / 8 authoritative inventory floor. The default registry names every
   source but intentionally admits none.
@@ -35,25 +37,21 @@ not change the Wave 1 execution boundary.
   admission, or C10 live run was added. Avison Young, Colliers Main, and the
   remaining Batch B sources remain explicit blockers.
 
-## Wave 1 verification baseline
+## Verification
 
-All results below were obtained on implementation commit `16fb3567a`, before
-the later receipt-substrate and producer additions recorded above.
+The final code candidate `62d866633f94e9b5f36a5ae08475a52dba9c63a6`
+passed the complete collector suites and static gates before this closeout-only
+correction:
 
-- `python3 -m pytest scripts/firecrawl-ops/cre_collector/tests -q`: 3105
-  passed, 20 skipped.
-- Focused C10, experiment, multisource, benchmark, runtime, and telemetry suite:
-  294 passed, 1 skipped.
-- Changed Python: Ruff I/F, Ruff format, `py_compile`, JSON parsing, and
-  `git diff --check` passed.
-- Existing unchanged collector TypeScript surface on the main checkout:
-  `npm run typecheck` passed and unit tests reported 864 passing.
+- `python3 -m pytest tests/ -q`: 3152 passed, 20 skipped.
+- `npm test`: TypeScript typecheck passed; 896 passed, 1 expected
+  platform skip, 0 failed.
+- Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
+- `git diff --check` and the conflict-marker guard passed.
 
-GitHub CI has not been used as completion proof. At the Wave 1 commit, the
-worktree lacked its own Node dependencies, so the then-unchanged TypeScript
-checks were run from the clean main checkout with its existing dependencies.
-That historical baseline is not verification of the later TypeScript receipt
-work.
+GitHub Actions are not used as the primary completion proof. The exact final
+PR head and review status must still be read back after this documentation
+correction before merge.
 
 ## Decisions made
 
@@ -65,18 +63,22 @@ work.
 - Do not add a generic adapter, executor, or fallback. Every source must later
   provide reviewed native enumeration, member verification, and attrition
   classification before it can enter a live plan.
-- Keep runtime ownership outside this package. A future wiring layer must reuse
-  canonical `SharedLock`, capacity runtime transitions, settlement telemetry,
-  and quarantine recovery instead of duplicating those safety mechanisms.
+- Reuse runtime ownership instead of duplicating it. The library-only
+  coordinator invokes the canonical `SharedLock`, capacity runtime,
+  settlement, rollback, and quarantine behavior through explicit injected
+  hooks. It intentionally provides no CLI, concrete browser transport, or live
+  source admission.
 
 ## Deliberately deferred
 
-No native live adapter, concrete direct-provider transport, receipt CLI or
-controller integration, runtime/resource transition, lock acquisition, source
-call, database/cache/status/scheduler/model/OCR change, registry admission, or
-experiment arm is included. The request-card and private-artifact seals exist,
-but their presence is not execution evidence. These steps require a separately
-reviewed integration wave and explicit operator approval.
+No native live adapter, concrete direct-provider transport, receipt CLI,
+concrete browser executor, source call, database/cache/status/scheduler/model/
+OCR change, registry admission, or experiment arm is included. Runtime and
+canonical-lock orchestration exists only as an injected library seam; no
+shipped command can invoke it as a live C10 run. The request-card,
+private-artifact, and durable arm-ledger seals are not execution evidence.
+Concrete host/browser integration, source admission, and any live run require
+a separately reviewed integration wave and explicit operator approval.
 
 ## Left to the operator
 
