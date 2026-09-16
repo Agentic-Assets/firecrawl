@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -360,6 +361,7 @@ def execute_counterbalanced_sequence(
     timeout_seconds: float = 120,
 ) -> Sequence[Mapping[str, Any]]:
     """Run the fixed 8-arm counterbalance with one distinct P1 approval per arm."""
+    validate_plan(plan)
     results: list[Mapping[str, Any]] = []
     for _ in range(len(plan["arm_sequence"])):
         try:
@@ -398,36 +400,52 @@ def _validate_dry_run_paths(
     plan: Mapping[str, Any],
     store: C10SessionStore,
     private_root: Path,
-    runtime_receipt: Path,
-    approval: Path | None,
-    admission_out: Path | None,
+    runtime_receipt_root: Path,
+    approval_root: Path | None,
+    admission_root: Path | None,
     counterbalanced: bool,
 ) -> int:
-    """Validate all local admission inputs without claiming an arm or calling I/O."""
-    if not private_root.is_absolute() or not runtime_receipt.is_absolute():
-        raise C10Error("C10 dry-run requires absolute receipt and runtime paths")
+    """Validate canonical roots and the exact next durable arm without claiming."""
+    for root, label in (
+        (private_root, "private"),
+        (runtime_receipt_root, "runtime receipt"),
+    ):
+        if not root.is_absolute() or (root.exists() and not root.is_dir()):
+            raise C10Error(f"C10 dry-run requires an absolute {label} root directory")
+    if not runtime_receipt_root.is_dir():
+        raise C10Error("C10 dry-run requires an existing runtime receipt root")
     next_index = store.next_arm_index(plan)
+    suffix = f"arm-{next_index}.json"
+    if (runtime_receipt_root / suffix).exists():
+        raise C10Error("C10 next-arm runtime receipt path already exists")
     needs_candidate = counterbalanced or plan["arm_sequence"][next_index] == "p1"
     if not needs_candidate:
         return next_index
-    if approval is None or admission_out is None:
-        raise C10Error("C10 candidate execution requires approval and admission paths")
-    if not approval.is_absolute() or not admission_out.is_absolute():
-        raise C10Error("C10 candidate paths must be absolute")
+    if approval_root is None or admission_root is None:
+        raise C10Error("C10 candidate execution requires approval and admission roots")
+    for root, label in ((approval_root, "approval"), (admission_root, "admission")):
+        if not root.is_absolute() or not root.is_dir():
+            raise C10Error(f"C10 candidate requires an existing absolute {label} root")
     if counterbalanced:
-        if not approval.is_dir() or not admission_out.is_dir():
-            raise C10Error(
-                "C10 counterbalance requires existing approval and admission directories"
-            )
         for index, variant in enumerate(plan["arm_sequence"]):
-            if variant == "p1" and not (approval / f"arm-{index}.json").is_file():
+            if variant == "p1" and not (approval_root / f"arm-{index}.json").is_file():
                 raise C10Error("C10 counterbalance is missing a P1 approval artifact")
-    elif not approval.is_file():
-        raise C10Error("C10 candidate execution requires an approval file")
+    elif not (approval_root / suffix).is_file():
+        raise C10Error("C10 next-arm P1 approval artifact is missing")
+    if (admission_root / suffix).exists():
+        raise C10Error("C10 next-arm admission path already exists")
     return next_index
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    for legacy, canonical in {
+        "--runtime-receipt": "--runtime-receipt-root",
+        "--approval": "--approval-root",
+        "--admission-out": "--admission-root",
+    }.items():
+        if any(item == legacy or item.startswith(f"{legacy}=") for item in arguments):
+            raise C10Error(f"{legacy} is obsolete; use canonical {canonical}")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--execute", action="store_true", help="permit guarded external work"
@@ -440,12 +458,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--cohort", type=Path, required=True)
     parser.add_argument("--private-root", type=Path, required=True)
-    parser.add_argument("--runtime-receipt", type=Path, required=True)
-    parser.add_argument("--approval", type=Path)
-    parser.add_argument("--admission-out", type=Path)
+    parser.add_argument(
+        "--runtime-receipt-root",
+        type=Path,
+        required=True,
+        help="canonical root; C10 derives arm-N.json after its durable claim",
+    )
+    parser.add_argument(
+        "--approval-root",
+        type=Path,
+        help="canonical P1 approval root; C10 derives arm-N.json after claim",
+    )
+    parser.add_argument(
+        "--admission-root",
+        type=Path,
+        help="canonical P1 admission root; C10 derives arm-N.json after claim",
+    )
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=120)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     if not 0 < args.timeout_seconds <= 120:
         raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
     plan, cohort = (
@@ -464,9 +495,11 @@ def main(argv: list[str] | None = None) -> int:
             plan=plan,
             store=store,
             private_root=args.private_root.resolve(),
-            runtime_receipt=args.runtime_receipt.resolve(),
-            approval=args.approval.resolve() if args.approval else None,
-            admission_out=args.admission_out.resolve() if args.admission_out else None,
+            runtime_receipt_root=args.runtime_receipt_root.resolve(),
+            approval_root=args.approval_root.resolve() if args.approval_root else None,
+            admission_root=args.admission_root.resolve()
+            if args.admission_root
+            else None,
             counterbalanced=args.counterbalanced,
         )
         print(
@@ -485,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.counterbalanced:
-        if args.approval is None or args.admission_out is None:
+        if args.approval_root is None or args.admission_root is None:
             raise C10Error(
                 "C10 counterbalance requires approval and admission directories"
             )
@@ -494,9 +527,9 @@ def main(argv: list[str] | None = None) -> int:
             plan=plan,
             cohort=cohort,
             private_root=args.private_root.resolve(),
-            runtime_receipt_root=args.runtime_receipt.resolve(),
-            approval_root=args.approval.resolve(),
-            admission_root=args.admission_out.resolve(),
+            runtime_receipt_root=args.runtime_receipt_root.resolve(),
+            approval_root=args.approval_root.resolve(),
+            admission_root=args.admission_root.resolve(),
             timeout_seconds=args.timeout_seconds,
         )
     else:
@@ -505,9 +538,11 @@ def main(argv: list[str] | None = None) -> int:
             plan=plan,
             cohort=cohort,
             private_root=args.private_root.resolve(),
-            runtime_receipt_root=args.runtime_receipt.resolve(),
-            approval_root=args.approval.resolve() if args.approval else None,
-            admission_root=args.admission_out.resolve() if args.admission_out else None,
+            runtime_receipt_root=args.runtime_receipt_root.resolve(),
+            approval_root=args.approval_root.resolve() if args.approval_root else None,
+            admission_root=args.admission_root.resolve()
+            if args.admission_root
+            else None,
             timeout_seconds=args.timeout_seconds,
         )
     print(json.dumps(result, sort_keys=True))

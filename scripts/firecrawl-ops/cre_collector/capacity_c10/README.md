@@ -48,14 +48,20 @@ from sidecar lease intervals.
 The only production entrypoint is `python -m capacity_c10.production`. It
 defaults to a local-input-only dry run. `--execute --smoke` runs one sealed
 16-member P0/P1 arm only after its canonical runtime preflight, and P1 also
-requires a fresh approval plus admission path. `--execute --counterbalanced`
-runs the fixed eight-arm sequence and requires one approval and admission file
-per P1 arm. It constructs the host registry itself and accepts no browser
-callback, arbitrary card, or caller scheduler evidence.
+requires a fresh approval plus admission path. All CLI paths are canonical
+roots: `--runtime-receipt-root`, `--approval-root`, and `--admission-root`.
+After the coordinator claims the next durable arm under `SharedLock`, it alone
+derives `arm-N.json` beneath each root. The dry run validates that exact next
+arm's receipt output and, for P1, approval/admission files; an approved P1
+smoke therefore executes the same `approval-root/arm-N.json` file.
+`--execute --counterbalanced` runs the fixed eight-arm sequence and requires
+one approval and admission file per P1 arm. It constructs the host registry
+itself and accepts no browser callback, arbitrary card, or caller scheduler
+evidence.
 
-The durable ledger path is derived solely from the canonical shared-lock root,
-the immutable plan digest, and the input session identity. It is not a CLI
-argument. Claim and terminal state are one atomically replaced ledger record;
+The durable ledger path is derived solely from the canonical shared-lock root
+and immutable plan digest. It is not a CLI argument. Claim and terminal state
+are one atomically replaced ledger record;
 the terminal record retains the safe authenticated comparator envelope and
 artifact manifest hashes, never browser bodies. Replaying an unadvanced session
 or selecting an alternate ledger fails closed. One monotonic deadline begins
