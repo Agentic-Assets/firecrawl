@@ -50,62 +50,6 @@ class C10Error(ValueError):
     """A C10 safety or evidence invariant did not hold."""
 
 
-_ADMISSION_TOKEN = object()
-_COORDINATION_TOKEN = object()
-
-
-class _AdmittedPlan(dict[str, Any]):
-    """Process-local capability issued only after cohort and adapter admission."""
-
-    __slots__ = ("_sealed_sha256", "_sealed")
-
-    def __init__(self, value: Mapping[str, Any], token: object) -> None:
-        if token is not _ADMISSION_TOKEN:
-            raise C10Error("C10 admitted plans can only be issued by admission")
-        super().__init__(json.loads(canonical_bytes(value)))
-        object.__setattr__(self, "_sealed_sha256", sha256(dict(self)))
-        object.__setattr__(self, "_sealed", True)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if getattr(self, "_sealed", False):
-            raise AttributeError("C10 admission capability is immutable")
-        object.__setattr__(self, name, value)
-
-    def admission_is_intact(self) -> bool:
-        return self._sealed_sha256 == sha256(dict(self))
-
-
-def _seal_admitted_plan(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Issue the opaque execution capability after ``admit_plan`` verifies inputs."""
-    return _AdmittedPlan(value, _ADMISSION_TOKEN)
-
-
-class _CoordinatedArm(dict[str, Any]):
-    """Process-local capability issued from validated coordinator/ledger state."""
-
-    __slots__ = ("_sealed_sha256",)
-
-    def __init__(self, value: Mapping[str, Any], token: object) -> None:
-        if token is not _COORDINATION_TOKEN:
-            raise C10Error("C10 coordinated arms can only be issued internally")
-        super().__init__(json.loads(canonical_bytes(value)))
-        object.__setattr__(self, "_sealed_sha256", sha256(dict(self)))
-
-    def coordination_is_intact(self) -> bool:
-        return self._sealed_sha256 == sha256(dict(self))
-
-
-def _seal_coordinated_arm(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Issue arm authority after coordinator or durable-ledger validation."""
-    return _CoordinatedArm(value, _COORDINATION_TOKEN)
-
-
-def require_coordinated_arm(value: Mapping[str, Any]) -> None:
-    """Reject ordinary or mutated mappings at execution/comparison boundaries."""
-    if type(value) is not _CoordinatedArm or not value.coordination_is_intact():
-        raise C10Error("C10 arm is not authenticated coordinator evidence")
-
-
 def canonical_bytes(value: Any) -> bytes:
     """Encode an evidence value with one stable, finite JSON representation."""
     try:
@@ -277,8 +221,33 @@ def validate_plan(plan: Mapping[str, Any]) -> None:
     unsigned = {key: value for key, value in plan.items() if key != "plan_sha256"}
     if sha256(unsigned) != plan["plan_sha256"]:
         raise C10Error("C10 plan digest does not match its immutable contents")
-    if type(plan) is not _AdmittedPlan or not plan.admission_is_intact():
-        raise C10Error("C10 plan lacks an authenticated cohort and adapter admission")
+    _require_repository_plan_authority(plan)
+
+
+def _require_repository_plan_authority(plan: Mapping[str, Any]) -> None:
+    """Revalidate canonical cohort and implementation authority when consumed.
+
+    Admission cannot rely on a Python object type or an underscore-prefixed
+    constructor as authority. Every session, coordinator, and comparison call
+    reaches ``validate_plan`` and therefore checks the current checked-in
+    authority and current source-byte implementation fingerprints again.
+    """
+    from .authority import load_authority, repository_implementation_sha256
+
+    authority = load_authority()
+    approved = authority["approved_adapters"]
+    source_keys = exact_source_keys(plan["sources"])
+    if authority["approved_cohort_sha256"] != plan["cohort_sha256"] or set(
+        approved
+    ) != set(source_keys):
+        raise C10Error("C10 plan lacks current repository cohort and adapter authority")
+    implementation_by_key = {
+        key: repository_implementation_sha256(key) for key in sorted(source_keys)
+    }
+    if any(approved[key] != digest for key, digest in implementation_by_key.items()):
+        raise C10Error("C10 plan adapter authority does not match current source bytes")
+    if plan["implementation_sha256"] != sha256(implementation_by_key):
+        raise C10Error("C10 plan implementation digest is not currently authorized")
 
 
 def exact_source_keys(values: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:

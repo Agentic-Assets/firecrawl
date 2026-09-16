@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from statistics import median
 from typing import Any
 
 from .contracts import (
     ARM_SEQUENCE,
     C10Error,
-    require_coordinated_arm,
     require_no_write,
     require_sha256,
     sha256,
@@ -192,7 +191,6 @@ def _browser_evidence_rates(
 def _validated_arm(
     plan: Mapping[str, Any], arm: Mapping[str, Any], index: int
 ) -> dict[str, float]:
-    require_coordinated_arm(arm)
     if (
         arm.get("plan_sha256") != plan["plan_sha256"]
         or arm.get("index") != index
@@ -207,17 +205,26 @@ def _validated_arm(
 
 def validate_browser_arm(plan: Mapping[str, Any], arm: Mapping[str, Any]) -> None:
     """Reject an unsaturated or non-browser arm before it can become terminal."""
+    validate_plan(plan)
     index = arm.get("index")
     if type(index) is not int or index < 0 or index >= len(ARM_SEQUENCE):
         raise C10Error("C10 browser arm index is invalid")
     _validated_arm(plan, arm, index)
 
 
-def compare(
-    plan: Mapping[str, Any], arms: Sequence[Mapping[str, Any]]
-) -> dict[str, Any]:
-    """Compare all four matched pairs; never make runtime adoption executable."""
+def compare(plan: Mapping[str, Any], session_store: Any) -> dict[str, Any]:
+    """Compare all four matched pairs from the canonical durable arm ledger.
+
+    Arbitrary mappings are deliberately not a comparison input. The store
+    reopens its owner-only, hash-validated ledger while locked and returns the
+    exact terminal results committed after coordinator settlement.
+    """
+    from .session_store import DurableArmSessionStore
+
     validate_plan(plan)
+    if type(session_store) is not DurableArmSessionStore:
+        raise C10Error("C10 comparison requires the canonical durable arm ledger")
+    arms = session_store.terminal_results(plan)
     if len(arms) != len(ARM_SEQUENCE):
         raise C10Error("C10 comparison requires all eight counterbalanced arms")
     rates = [_validated_arm(plan, arm, index) for index, arm in enumerate(arms)]

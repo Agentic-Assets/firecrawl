@@ -13,7 +13,6 @@ from . import admission
 from .compare import validate_browser_arm
 from .contracts import (
     C10Error,
-    _seal_coordinated_arm,
     new_session,
     require_sha256,
     sha256,
@@ -236,21 +235,19 @@ def run_one_coordinated_arm(
             raw = hooks.run_browser_arm(arm, _scheduler_concurrency(plan, arm))
             if not isinstance(raw, Mapping):
                 raise C10Error("C10 browser arm returned invalid evidence")
-            result = _seal_coordinated_arm(
-                {
-                    "plan_sha256": plan["plan_sha256"],
-                    "index": arm["index"],
-                    "variant": arm["variant"],
-                    "terminal": True,
-                    "no_write": plan["no_write"],
-                    "sealed_browser_evidence": _sealed_browser_arm(
-                        plan,
-                        arm,
-                        raw,
-                        _runtime_fingerprints(plan, arm, receipt, candidate_transition),
-                    ),
-                }
-            )
+            result = {
+                "plan_sha256": plan["plan_sha256"],
+                "index": arm["index"],
+                "variant": arm["variant"],
+                "terminal": True,
+                "no_write": plan["no_write"],
+                "sealed_browser_evidence": _sealed_browser_arm(
+                    plan,
+                    arm,
+                    raw,
+                    _runtime_fingerprints(plan, arm, receipt, candidate_transition),
+                ),
+            }
             validate_browser_arm(plan, result)
             settlement = hooks.settle(arm)
             if not isinstance(settlement, Mapping) or not _settlement_is_idle(

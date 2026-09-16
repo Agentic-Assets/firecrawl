@@ -18,9 +18,9 @@ from .contracts import (
     P1_REQUESTED,
     PLAN_KIND,
     C10Error,
-    _seal_admitted_plan,
     require_sha256,
     sha256,
+    validate_plan,
 )
 from .policy import DEFAULT_POLICY, load_policy
 
@@ -186,4 +186,6 @@ def admit_plan(
         "no_write": NO_WRITE,
         "arm_sequence": list(ARM_SEQUENCE),
     }
-    return _seal_admitted_plan({**unsigned, "plan_sha256": sha256(unsigned)})
+    plan = {**unsigned, "plan_sha256": sha256(unsigned)}
+    validate_plan(plan)
+    return plan
