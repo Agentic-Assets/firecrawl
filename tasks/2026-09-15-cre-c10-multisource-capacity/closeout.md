@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`9659b88778e7fee6d3a209d0634fa68e333523a8`
+`317253849280e168cd3fe1074e45d0a02f3ee321`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -34,7 +34,9 @@ not change the Wave 1 execution boundary.
 - The receipt package now seals private artifacts and size-bounded request-graph
   shards and has seven candidate inventory producers, strict-detail Batch A
   producers, and one Foundry Batch B producer. They describe source-specific
-  cards and parsers; no concrete direct-provider transport, CLI/controller
+  cards and parsers. Inventory member receipts now require reviewed native JSON
+  envelopes, provider-derived identity, and non-shell content; unreviewed HTML
+  shapes fail closed. No concrete direct-provider transport, CLI/controller
   integration, registry admission, or C10 live run was added. CBRE Deal Flow,
   Avison Young, Colliers Main, and the remaining Batch B sources remain explicit
   blockers.
@@ -43,25 +45,30 @@ not change the Wave 1 execution boundary.
   Buildout candidates use the native `show_link` identity. CBRE Deal Flow was
   removed from the executable map rather than approximating its form POST/HTML
   protocol.
+- The coordinator derives the canonical shared CRE lock independently and
+  treats the injected path only as an attestation. P0 can no longer bypass the
+  collector lock merely because it does not call the transition hook.
 
 ## Verification
 
-The final code candidate `9659b88778e7fee6d3a209d0634fa68e333523a8`
+The final code candidate `317253849280e168cd3fe1074e45d0a02f3ee321`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest tests/ -q`: 3158 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 901 passed, 1 expected
+- `python3 -m pytest tests/ -q`: 3160 passed, 18 skipped.
+- `npm test`: TypeScript typecheck passed; 905 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Three exact-head Codex review passes produced nine material findings. All nine
+Four exact-head Codex review passes produced eleven material findings. All eleven
 were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
-recoverable terminal-result evidence. The threads were answered and resolved.
+recoverable terminal-result evidence, independently derived canonical lock
+ownership, and provider-derived native member identity with shell rejection.
+The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
 correction before merge.
@@ -95,6 +102,6 @@ a separately reviewed integration wave and explicit operator approval.
 
 ## Left to the operator
 
-Review and merge draft PR #66 only after normal review gates. Any live C10
+Review and merge PR #66 only after normal review gates. Any live C10
 run also needs independently reviewed adapters, canonical runtime hook wiring,
 fresh operator admission, and the existing production safety gates.
