@@ -84,7 +84,7 @@ def _no_write() -> dict[str, object]:
 
 
 def _arm(
-    plan: Mapping[str, object], index: int, p0_rate: float = 100.0
+    plan: Mapping[str, object], index: int, p0_rate: float = 10.0
 ) -> dict[str, object]:
     variant = contracts.ARM_SEQUENCE[index]
     rate = p0_rate if variant == "p0" else p0_rate * 1.2
@@ -118,15 +118,19 @@ def _arm(
             {
                 "key": source["key"],
                 "plane": source["plane"],
+                "cohort_member_count": source["cohort_member_count"],
+                "cohort_member_sha256": source["cohort_member_sha256"],
                 "execution_mode": "browser_rendered",
                 "engine": "c10-browser-only",
                 "client_attempts": 1,
                 "engine_attempts": 1,
                 "cache_read": False,
                 "cache_write": False,
+                "started_monotonic_ns": 1_000_000_000 + index * 2_000_000_000,
+                "finished_monotonic_ns": 2_000_000_000 + index * 2_000_000_000,
                 "qualified_rows": int(rate),
             }
-            for source in plan["sources"]  # type: ignore[index]
+            for index, source in enumerate(plan["sources"])  # type: ignore[index]
         ],
     }
     evidence["evidence_sha256"] = contracts.sha256(evidence)

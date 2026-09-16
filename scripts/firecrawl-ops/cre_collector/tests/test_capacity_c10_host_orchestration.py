@@ -53,7 +53,7 @@ def test_registry_rejects_same_cohort_plan_b_before_any_lifecycle(
         cards=registry,
         sidecar=sidecar,
     )
-    with pytest.raises(contracts.C10Error, match="alternate plan/source projection"):
+    with pytest.raises(contracts.C10Error, match="fixed policy"):
         host.execute(plan_b)
     assert sidecar.started is False
 
