@@ -106,8 +106,8 @@ not change the Wave 1 execution boundary.
 ## Verification
 
 The final code candidate `25f78ce059ae2cb35a9babfa8c0b38379d353df1`
-passed the complete collector suites and static gates before this closeout-only
-correction:
+passed the complete collector suites and static gates before the subsequent
+closeout and forward-queue documentation corrections:
 
 - `python3 -m pytest -q`: 3217 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 909 passed, 1 expected
