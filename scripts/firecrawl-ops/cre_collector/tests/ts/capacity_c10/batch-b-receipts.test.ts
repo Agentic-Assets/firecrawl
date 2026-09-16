@@ -122,7 +122,12 @@ test("Foundry producer requires explicit sale or lease tenure for generic active
 
 test("Foundry producer accepts generic active status only with explicit provider tenure", async () => {
   const memberKey = `foundry-member-${sha256(propertyUrl).slice(0, 24)}`;
-  for (const notes of [["Available", "For Lease"], ["Under Contract", "For Sale / Lease"]]) {
+  for (const notes of [
+    ["Available", "For Lease"],
+    ["Under Contract", "For Sale / Lease"],
+    ["Available", "Sale / Lease"],
+    ["Proposed", "Lease / Sale"],
+  ]) {
     const receiptContext = await context(new FakeFoundryTransport(notes));
     await foundryCommercialReceiptProducer.produceEnumerationReceipt(receiptContext);
     const member = await foundryCommercialReceiptProducer.produceMemberReceipt(receiptContext, {

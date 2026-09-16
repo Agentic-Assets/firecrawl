@@ -27,10 +27,10 @@ export function explicitFoundryTenures(notes: readonly string[]): Tx[] {
   for (const note of notes) {
     const normalized = normalizedFoundryStatus(note);
     if (!normalized) continue;
-    if (/\bfor sale\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
+    if (/\bfor sale\b|\bsale and lease\b|\bsale or lease\b|\blease or sale\b/.test(normalized)) {
       tenures.add("sale");
     }
-    if (/\bfor lease\b|\bsublease\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
+    if (/\bfor lease\b|\bsublease\b|\bsale and lease\b|\bsale or lease\b|\blease or sale\b/.test(normalized)) {
       tenures.add("lease");
     }
   }
