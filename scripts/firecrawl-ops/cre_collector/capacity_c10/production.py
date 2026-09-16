@@ -29,11 +29,11 @@ from .host_session import (
 def _canonical_session_store(
     repo_root: Path, plan: Mapping[str, Any], session: Mapping[str, Any]
 ) -> C10SessionStore:
-    """Derive the sole durable arm ledger; callers cannot select its path."""
+    """Derive a stable owner-only sibling ledger, never inside the lock tree."""
     validate_plan(plan)
-    root = canonical_shared_lock_dir(repo_root.resolve()).resolve()
-    identity = sha256({"plan_sha256": plan["plan_sha256"], "session": session})
-    return C10SessionStore(root / "c10-ledgers" / f"{identity}.json")
+    lock_root = canonical_shared_lock_dir(repo_root.resolve()).resolve()
+    root = lock_root.with_name(".cre-c10-ledger-v1")
+    return C10SessionStore(root / f"{plan['plan_sha256']}.json")
 
 
 def _runtime_profile(plan: Mapping[str, Any], variant: str) -> Mapping[str, Any]:
