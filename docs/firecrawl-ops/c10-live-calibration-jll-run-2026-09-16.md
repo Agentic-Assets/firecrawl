@@ -1,151 +1,230 @@
 # C10 live calibration, JLL admission run attempt (2026-09-16)
 
-Phase 3 of the JLL admission live-run sequence
+Continuation of Phase 3 of the JLL admission live-run sequence
 (`docs/firecrawl-ops/c10-jll-admission-lane.md`,
 `docs/firecrawl-ops/c10-jll-admission-closeout-2026-09-16.md`,
 `docs/firecrawl-ops/c10-live-calibration-phase2-2026-09-16.md`). **No live
-network request against JLL was made.** The bounded admission action never
-reached sidecar startup: every attempt failed while acquiring the canonical
-CRE lock, before any Docker Compose, browser, or provider work began.
+network request against JLL was made in either sub-attempt below.** The
+bounded admission action never reached sidecar startup on either occasion:
+every attempt failed while acquiring the canonical CRE lock, before any
+Docker Compose, browser, or provider work began. No database, cache,
+listing, scheduler, or authority write occurred. No C10 sidecar
+(`playwright-service-c10`) container was ever created this session
+(`docker ps -a` shows none, both before and after); the generic Linux
+runner container was brought up for preflight and the live-run attempt and
+was torn down afterward (`run_linux_controller.sh down`, confirmed removed).
 
-## What was attempted
+## Sub-attempt A (prior session): canonical lock quarantine, recovered
 
-1. Verified HEAD (`9dcfb4300`) matches the commit that last touched the
-   sidecar image and C10/collector code, so the images built in Phase 2
-   (`firecrawl-playwright-service-c10:local` `a5225c40abd6`,
-   `firecrawl-c10-linux-runner:local` `7f492878e1dc`) were still valid without
-   a rebuild.
-2. Brought up the generic Linux runner (`run_linux_controller.sh up`),
-   confirmed `node_modules` and Docker-socket-to-host reachability, and ran
-   the offline `collect-jll` dry-run inside it to confirm intent
-   (`selection_rule: jll-canonical-url-lexicographic-v1`, 16 members,
-   `external_calls: false`) before touching the live path.
-3. Provisioned a fresh owner-0700 receipt root:
-   `tasks/tmp/c10-live-calibration/receipts-run-20260916T100930/` (gitignored,
-   verified with `git check-ignore`).
-4. Wrote a one-off driver script (`tasks/tmp/c10-live-calibration/run_live_admission.py`,
-   not part of the reviewed collector surface, gitignored) that calls
-   `capacity_c10.production.execute_jll_admission_collection` with a fresh
-   operator-supplied provenance binding (real SHA-256 digests derived from
-   descriptive labels, not placeholders) and
-   `adapter_implementation_sha256 = repository_implementation_sha256("jll")`
-   (`1371211b54bc73d72b45c48daf241abf9588a7f20ec5dee76df567bcb065e390` on this
-   checkout).
-5. Ran the script inside the Linux runner (`cwd=/workspace/firecrawl`, the
-   repo bind mount).
+The first blocker (documented in the version of this file superseded by this
+rewrite) was a pre-existing historic pytest quarantine residue in
+`out/daily/.cre.lock` / `.cre.lock.authority`, unrelated to this branch's
+code, that made `lock.acquire()` fail with `LockHeldError: CRE lock
+authority is malformed` before any Docker Compose, sidecar, or provider work
+began.
 
-## Attempts and outcome
+The orchestrator resolved this ahead of the current session:
 
-| # | Result | Where it failed | Notes |
-| --- | --- | --- | --- |
-| 1 (script bug) | Failed in ~14 µs | Python call itself (`TypeError: missing adapter_implementation_sha256`) | Driver script bug; never reached `lock.acquire()`, receipt root untouched (verified empty). Not counted as a live attempt: no lock, sidecar, or network activity occurred. |
-| 1 (real) | Failed in ~0.4 s | `lock.acquire()` inside `execute_jll_admission_collection`, before `arm_benchmark`, before any Docker Compose or sidecar work | `LockHeldError: CRE lock authority is malformed`. Root cause below. |
+1. `firecrawl-playwright-service-1` (the shared, general-purpose self-hosted
+   Firecrawl playwright sidecar, not a C10-specific container) was recreated
+   from the repo's governed `docker-compose.yaml` baseline (16 GiB
+   mem/memswap, 8 GiB shm) so its live cgroup limits would exactly match the
+   `bold-jll-128` benchmark profile the recovery tool validates against.
+   Pre-recreate state was captured
+   (`tasks/tmp/c10-live-calibration/playwright-pre-recreate-inspect.json`);
+   the recreated container's healthcheck passed.
+2. `cre_capacity_runtime.py recover-quarantine --execute` was run against
+   the governed lock path. **Observed defect candidate:** the first
+   `--execute` attempt failed pre-claim with `CpuTelemetryError: Darwin CPU
+   tick counters did not advance` — the tool's CPU-idle sampler read two
+   identical `host_processor_info` ticks under real timing on this
+   Mac/OrbStack combination and treated that as a hard error rather than
+   retrying or widening the sample window. A bare retry of the identical
+   command succeeded on the next attempt (`phase: "completed"`, archive
+   `out/daily/.cre-quarantine-forensics/e68ea0ebacf8ab39237934443b13bdcfc6cd48bdf853ead2015d3dc1f92e5ba5`,
+   receipt sha256
+   `b5544a427bbc01b5f7d3c0259afff3727ed58dd7d3872e64b0548baa5d3b7692`). This
+   flakiness (transient non-advancing Darwin tick counters treated as fatal
+   instead of retried) is a plausible root cause worth a separately reviewed
+   fix in the CPU-idle sampler; it was not attempted in this session because
+   reproducing and fixing a timing-sensitive macOS syscall wrapper safely
+   requires dedicated test coverage outside this bounded run's scope.
+3. Post-recovery, `out/daily/.cre.lock` and `.cre.lock.authority` were both
+   confirmed absent (`find` over `out/daily/` shows no `.cre.lock` or
+   `.cre.lock.authority` entries), and a `.cre-quarantine-recovery.json`
+   terminal `"phase": "completed"` guard journal was durably retained per
+   design ("retains a completed, identity-bound journal rather than
+   unlinking evidence").
+4. A session-wide pytest guard (commit `95167b66f`) now prevents test runs
+   from leaking into the real canonical CRE lock path, closing the gap that
+   produced the original quarantine residue.
 
-No second or third live attempt was made: the blocking condition is a
-pre-existing environment state issue, not a code defect in the JLL admission
-path, and retrying without fixing it would fail identically every time.
+## Sub-attempt B (this session): cross-mount identity mismatch, not resolved
 
-## Root cause
+With the canonical lock genuinely clear, this session:
 
-`scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock.authority` (the
-canonical, persistent CRE `SharedLock` authority file shared by every C10 and
-checkpoint-refresh caller, per `LOCK_AUTHORITY_RECOVERY.md`) currently holds a
-truncated two-field record (`40557 <token>`, 50 bytes, timestamped
-2026-09-15T07:17 — matches `os.stat` mtime `Sep 15 03:17` local time) instead
-of the expected three-field legacy or five-field v1 format. The sibling
-`.cre.lock/` directory carries matching
-`capacity-benchmark-active.json` / `capacity-benchmark-quarantine.json`
-markers recording `"reason": "candidate_baseline_rollback_failed"` from a
-`pytest-of-caymanseagraves` run (`test_counterbalanced_pair_step0`, profile
-`bold-jll-128`) — i.e. this is exactly the **historic pytest quarantine
-residue** scenario `LOCK_AUTHORITY_RECOVERY.md` describes: a test run wrote
-into the real canonical lock path instead of an isolated fixture, crashed
-before completing rollback, and left a "legacy two-field authority sibling"
-requiring operator-governed recovery. It predates this session and this
-branch; it is not something Phase 1/2 of this work introduced, and PID 40557
-is confirmed dead (`ps -p 40557` → no such process).
+- Verified HEAD `95167b66f` (matches PR #73), rebuilt both
+  `firecrawl-playwright-service-c10:local` and
+  `firecrawl-c10-linux-runner:local` from this exact checkout.
+- Brought up the generic Linux runner, ran `npm install`, and confirmed all
+  five `c10_linux_preflight.py` checks pass (`linux_platform`,
+  `private_receipt_store`, `docker_socket`, `c10_image_present`,
+  `compose_config_renders`).
+- Ran the offline `collect-jll` dry-run inside the runner to reconfirm
+  intent before touching the live path: `selection_rule:
+  jll-canonical-url-lexicographic-v1`, 16 members, one sale/office/page-1
+  enumeration card, `external_calls: false`. Adapter digest on this checkout
+  (recomputed inside the runner, matches the Phase-3 value since no JLL
+  source file changed): `1371211b54bc73d72b45c48daf241abf9588a7f20ec5dee76df567bcb065e390`.
+- Provisioned a fresh, empty, owner-0700 receipt root:
+  `tasks/tmp/c10-live-calibration/receipts-run-20260916T103705/`
+  (gitignored, verified via `git check-ignore`). Never reused the prior
+  session's `receipts-run-20260916T100930/` root (left untouched, still
+  empty).
+- Ran the existing driver script
+  (`tasks/tmp/c10-live-calibration/run_live_admission.py`, gitignored, not
+  part of the reviewed collector surface) inside the Linux runner
+  (`cwd=/workspace/firecrawl`).
 
-`LOCK_AUTHORITY_RECOVERY.md` names the single supported repair:
-`cre_capacity_runtime.py recover-quarantine` (dry-run by default,
-`--execute` to archive). It ran and reported the exact stop condition to use
-next (`quarantine recovery requires an exact idle baseline runtime`). Manual
-inspection of the underlying `checks` dict (`cre_quarantine_recovery.evaluate_state`)
-showed 23 of 25 checks passing, including every safety-relevant one:
-`api_queue_idle`, `active_crawls_idle`, `rabbitmq_idle`, `nuq_idle`,
-`collector_idle`, `orb_running`, `docker_usable_memory`, `browser_cpu`,
-`browser_pages`, `browser_pids`, `browser_port`, `browser_network`,
-`browser_security`, `api_*`. The two failing checks were `browser_memory` and
-`browser_shm`: the recovery tool always validates the live runtime against
-the `bold-jll-128` experiment profile's `runtime_baseline`
-(`browser_memory_bytes: 17179869184` / 16 GiB, `browser_shm_bytes:
-8589934592` / 8 GiB, exact-equality checks against `firecrawl-playwright-service-1`'s
-live cgroup limits), and the currently running `firecrawl-playwright-service-1`
-— the ordinary, shared, general-purpose Firecrawl playwright sidecar used by
-all self-hosted scraping on this Mac, not a C10-specific container — is
-configured with 4 GiB memory / ~15.68 GiB shm (`docker inspect`:
-`Memory=4294967296`, `ShmSize=16834887680`), neither of which matches the
-required exact values.
+### Attempt 1 (only attempt made)
 
-## Why this was not forced through
+| Field | Value |
+| --- | --- |
+| Outcome | Failure |
+| Where it failed | `SharedLock.acquire()`, at the quarantine-recovery guard check, before `arm_benchmark`, before any Docker Compose or sidecar work |
+| Wall time | 0.548 s |
+| Error | `LockHeldError: CRE quarantine recovery requires operator completion` |
+| Receipt root after | Confirmed empty (`ls -la` shows no entries besides `.`/`..`) |
 
-Reconfiguring `firecrawl-playwright-service-1`'s memory/shm limits to match
-the `bold-jll-128` baseline (and restarting it) to satisfy this check would
-be a disruptive change to shared, actively-serving production Firecrawl
-infrastructure — well outside "one bounded, read-only live JLL admission run
-plus root-cause fixes." It is not a JLL-specific hack and not a weakening of
-a fail-closed refusal, but it is a consequential infrastructure change this
-session is not authorized to make unilaterally, and the host (31.36 GiB
-Docker memory total, ~3 GiB already committed to other running containers)
-would be materially more memory-constrained with a 16 GiB + 8 GiB reservation
-added for a container that would otherwise sit idle. No file under
-`out/daily/.cre.lock*` was modified, read past its already-known content, or
-deleted; `LOCK_AUTHORITY_RECOVERY.md` explicitly forbids ad hoc deletion as a
-repair step, and this session honored that.
+No live network request was made; `external_calls` never left the dry-run
+`false` state this session. No second or third attempt was made: the
+blocking condition is a structural environment mismatch (below), not a
+transient fault, and retrying identically would fail identically every
+time, per this task's own "only retry after root-causing a failure" rule.
 
-## What is unaffected
+### Root cause
 
-- No provider (JLL) request was made — `external_calls` never left the
-  dry-run `false` state for this session.
+`SharedLock.acquire()` (`cre_checkpoint_refresh.py`) only trusts a retained
+`"phase": "completed"` quarantine-recovery guard journal
+(`.cre-quarantine-recovery.json`) after
+`cre_quarantine_recovery.completed_guard_evidence_is_valid()` revalidates it
+against the *current process's* live filesystem view. That revalidation
+chain compares, by exact value, several fields that were captured by
+sub-attempt A running **directly on the macOS host**:
+
+- `state["lock_path"]` — an absolute host path
+  (`/Users/caymanseagraves/Github/agentic-assets/firecrawl/scripts/firecrawl-ops/cre_collector/out/daily/.cre.lock`)
+  compared with `!=` against the runtime `str(lock_path)`.
+- `archive.parent` (parsed from `state["archive"]`, also an absolute host
+  path) compared with `!=` against `lock_path.parent /
+  QUARANTINE_ARCHIVE_DIR` computed at runtime.
+- Inside `_validate_recovery_receipt`, the sealed receipt's own
+  `lock_path`/`archive` fields (written by sub-attempt A, also absolute host
+  paths) are compared the same way.
+- `_archive_pair_is_exact()` additionally compares the archived lock/
+  authority files' *current* `(st_dev, st_ino)` identity against the
+  `(st_dev, st_ino)` pair captured by sub-attempt A at archive time
+  (`_same_identity`, a deliberate anti-tamper/anti-hardlink-substitution
+  check, not merely a path comparison).
+
+This session's live-run driver necessarily executes inside the Linux runner
+container (`/workspace/firecrawl/...`), per this repository's own documented
+requirement that `capacity_c10.host_store.PrivateReceiptStore` is
+Linux-only. The repo is reached there via an OrbStack bind mount of the same
+physical macOS files, so the content is byte-identical, but:
+
+- the absolute path prefix differs (`/workspace/firecrawl/...` vs.
+  `/Users/caymanseagraves/Github/agentic-assets/firecrawl/...`), which fails
+  every one of the string/`Path` comparisons above; and, independently,
+- **`(st_dev, st_ino)` are not preserved across the bind mount.** Verified
+  directly: `os.stat('out/daily')` on the host reports `(16777235,
+  38957426)`; the identical directory, stat'd from inside the Linux runner
+  container at `/workspace/firecrawl/scripts/firecrawl-ops/cre_collector/out/daily`,
+  reports `(35, 5067)`. OrbStack's virtiofs-backed bind mount assigns the
+  Linux VM its own inode numbers rather than passing through the macOS
+  APFS ones.
+
+So the recovery guard produced by sub-attempt A can never validate from
+inside the Linux runner container, and the live admission call can never
+run outside it (the Linux-only receipt store). This is a structural
+environment-topology gap between how quarantine recovery was documented and
+run (directly on the macOS host) and how the live JLL admission call must
+run (inside a Linux container), not a defect introduced by this branch's
+JLL admission code, and not something introduced by sub-attempt A's actions.
+
+### Why no code fix was attempted this session
+
+A path-only fix (normalizing the absolute-path comparisons to a
+mount-prefix-invariant repo-relative form) was scoped and would have been
+sufficient on its own, but `_archive_pair_is_exact()`'s `(st_dev, st_ino)`
+identity check is a deliberate, separate anti-tamper measure guarding
+against a hardlink/path-replacement substitution attack on the archived
+forensic evidence, exactly the class of check
+`LOCK_AUTHORITY_RECOVERY.md` says must fail closed on any mismatch
+("A path or inode mismatch is a fail-closed stop and never modifies the
+replacement"). Relaxing or bypassing that check to tolerate a legitimately
+different (bind-mount-assigned) inode would blur the line between "the same
+file, viewed through a different mount" and "a different file with the same
+content," which this module is explicitly designed never to conflate
+automatically. Doing that safely needs a deliberate, separately reviewed
+design (e.g., an explicit, attested bind-mount-equivalence declaration
+checked through its own protocol) rather than a same-session patch to a
+security-critical identity check, which this task's instructions
+specifically forbid weakening. No file under `out/daily/.cre.lock*` or
+`.cre-quarantine-recovery.json` was modified, deleted, or read past its
+already-known content; per `LOCK_AUTHORITY_RECOVERY.md`, "never delete the
+sidecar as an automated repair step" and "it never unlinks or recursively
+deletes lock artifacts" were both honored.
+
+### What is unaffected
+
+- No provider (JLL) request was made.
 - No database/cache/listing/scheduler write occurred.
 - No authority file was installed or edited.
-- No C10 sidecar (`playwright-service-c10`) container was ever created this
-  session (`docker ps --all` shows none); the generic Linux runner container
-  (`firecrawl-c10-runner-c10-linux-runner-1`, the non-C10-specific shell used
-  to reach Linux-only `PrivateReceiptStore`) was brought up for the preflight
-  check and the live-run attempt and was torn down afterward
-  (`run_linux_controller.sh down`, confirmed removed).
-- The canonical lock and its authority/quarantine markers are byte-identical
-  to their pre-session state (verified via `stat`/`md5` before and after).
-- No collector/capacity_c10 source file was changed. No test gate reruns were
-  needed.
+- No collector/`capacity_c10` source file was changed this session; no test
+  gate reruns were needed.
+- The canonical lock, its authority, and the quarantine-recovery guard are
+  byte-identical to their pre-session (post-sub-attempt-A) state.
+- `firecrawl-playwright-service-1` remains up and healthy at the governed
+  16 GiB/16 GiB/8 GiB profile the orchestrator recreated it at; this session
+  did not modify or restart it or any other shared infra container.
+- Both C10 images (`firecrawl-playwright-service-c10:local`,
+  `firecrawl-c10-linux-runner:local`) were rebuilt from HEAD `95167b66f` and
+  left present for the next attempt; no container from either image was
+  left running (`docker ps -a` confirmed clean of both after teardown).
 
-## Recommended next step (operator decision)
+### Recommended next step (operator decision)
 
-Recovering the canonical lock requires either:
+One of:
 
-1. Operator approval to temporarily reconfigure
-   `firecrawl-playwright-service-1` to the `bold-jll-128` baseline
-   (`mem_limit`/`memswap_limit` 16 GiB, `shm_size` exactly 8 GiB), run
-   `cre_capacity_runtime.py recover-quarantine --execute` once idle-verified,
-   then restore the container to its prior configuration; or
-2. Running the recovery from a host/session where
-   `firecrawl-playwright-service-1` is already sized to that profile (e.g. an
-   active C10 P0/P1 benchmark session), rather than the ordinary self-hosted
-   dev stack; or
-3. A separately reviewed change to `cre_quarantine_recovery`'s baseline
-   selection so historic-residue recovery does not require the *exact*
-   benchmark profile that happened to be active when the residue was
-   created — out of scope for this session (it is exactly the kind of
-   "weakening a fail-closed refusal" this task was told never to do without
-   review).
+1. A separately reviewed fix that (a) normalizes the guard's path
+   comparisons to a mount-prefix-invariant repo-relative form, and (b)
+   extends the archived-evidence identity check to accept an explicitly
+   attested bind-mount equivalence (not a same-session ad hoc relaxation),
+   so a guard produced on the macOS host can be validated from inside the
+   Linux runner container and vice versa; or
+2. Run **both** the quarantine recovery **and** the live JLL admission call
+   from the same execution environment — i.e., perform recovery itself
+   inside a Linux environment (the runner container, or a genuine Linux
+   host) rather than on the macOS host, so the guard's path and inode
+   identity are captured under the same view the live run will later use.
+   This requires a live quarantine residue to still be present at recovery
+   time; since sub-attempt A already archived the only residue, this would
+   need either a fresh reproduction of the quarantine scenario in a Linux
+   environment (not recommended solely to enable this) or would apply only
+   to a future occurrence; or
+3. A separately reviewed change to `cre_capacity_runtime.py`'s CPU-idle
+   sampler so a single non-advancing Darwin tick-counter read is retried
+   with a widened window instead of raising `CpuTelemetryError`, reducing
+   operator friction on the next occasion recovery must run on macOS.
 
-Once the canonical lock is recovered, the exact sequence in
+Once the guard can validate from the Linux runner container (via option 1
+or 2), the exact sequence in
 `docs/firecrawl-ops/c10-live-calibration-phase2-2026-09-16.md` section 4
 remains valid and unchanged: fresh 0700 root, `execute_jll_admission_collection`,
 `build-jll-bundle`, `render-jll-authority` (never install), reviewed pin PR.
 
 ## Files this session added (gitignored, not committed)
 
-- `tasks/tmp/c10-live-calibration/receipts-run-20260916T100930/` (empty)
-- `tasks/tmp/c10-live-calibration/run_live_admission.py`
-- `tasks/tmp/c10-live-calibration/attempt1.log`
+- `tasks/tmp/c10-live-calibration/receipts-run-20260916T103705/` (empty)
+- `tasks/tmp/c10-live-calibration/attempt1-run-20260916T103705.log`
