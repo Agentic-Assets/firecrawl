@@ -54,6 +54,9 @@ After the coordinator claims the next durable arm under `SharedLock`, it alone
 derives `arm-N.json` beneath each root. The dry run validates that exact next
 arm's receipt output and, for P1, approval/admission files; an approved P1
 smoke therefore executes the same `approval-root/arm-N.json` file.
+Execution repeats those owner-only-root, exact-output, and P1 approval checks
+while holding that lock before it marks or claims an arm, so dry-run success is
+never execution authority. P0 accepts no same-arm approval or admission output.
 `--execute --counterbalanced` runs the fixed eight-arm sequence and requires
 one approval and admission file per P1 arm. It constructs the host registry
 itself and accepts no browser callback, arbitrary card, or caller scheduler
