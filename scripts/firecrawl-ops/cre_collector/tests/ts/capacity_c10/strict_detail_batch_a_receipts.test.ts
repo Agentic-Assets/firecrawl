@@ -140,7 +140,7 @@ test("JLL seals native GraphQL enumeration and exact canonical POST detail graph
   };
   const fake = new FixtureTransport({
     "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 1, items: [{
-      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      id: "search-card-1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
     "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":["https://asset.test/a.jpg"]}}}}</script>',
@@ -170,11 +170,11 @@ test("JLL reconciles cohort members across exact filter and page strata", async 
   };
   const fake = new FixtureTransport({
     "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 2, items: [{
-      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      id: "search-card-1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
     "jll-enumeration-1": JSON.stringify({ data: { properties: { count: 2, items: [{
-      id: "2", title: "Two", images: [], address: "2 Main", propertyTypes: ["industrial"], tenureTypes: ["sale"],
+      id: "search-card-2", title: "Two", images: [], address: "2 Main", propertyTypes: ["industrial"], tenureTypes: ["sale"],
       pageUrl: "/listings/industrial-2", surfaceAreas: [],
     }] } } }),
     "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":[]}}}}</script>',
@@ -204,7 +204,7 @@ test("strict-detail producer isolates nested routes and source settings from cal
   const initialCard = jllEnumerationCard(plan.enumerations[0]!, 0);
   const fake = new FixtureTransport({
     "jll-enumeration-0": JSON.stringify({ data: { properties: { count: 1, items: [{
-      id: "1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
+      id: "search-card-1", title: "One", images: [], address: "1 Main", propertyTypes: ["office"], tenureTypes: ["sale"],
       pageUrl: "/listings/office-1", surfaceAreas: [],
     }] } } }),
     "jll-member-0": '<script id="__NEXT_DATA__">{"props":{"pageProps":{"property":{"id":"1","pageUrl":"https://property.jll.com/listings/office-1","images":[]}}}}</script>',

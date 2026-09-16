@@ -139,22 +139,22 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
       validateEnumerationSlices(plan.enumerations);
       const events: Readonly<SealedTransportEvent<SourceProjection>>[] = [];
       const projections: SourceProjection[] = [];
-      const byProvider = new Map<string, string>();
+      const bySearchId = new Map<string, string>();
       const byUrl = new Map<string, string>();
-      const parentsByProvider = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
+      const parentsByUrl = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       for (const [index, slice] of plan.enumerations.entries()) {
         const event = await context.transport.oneShot(`jll-enumeration-${index}`, (response) => {
           const parsed = parseJllGraphqlSearchEnvelope(utf8Json(response.body, "JLL GraphQL"));
           const routes = parsed.items.map((item) => {
-            const providerId = String(item.id ?? "").trim();
+            const searchId = String(item.id ?? "").trim();
             const canonicalUrl = normalizedJllListingUrl(String(item.pageUrl ?? ""));
-            if (!providerId || !canonicalUrl) {
+            if (!searchId || !canonicalUrl) {
               throw new C10ReceiptError("JLL GraphQL enumeration contains a missing identity");
             }
-            return { providerId, canonicalUrl };
+            return { searchId, canonicalUrl };
           });
           if (
-            new Set(routes.map((route) => route.providerId)).size !== routes.length
+            new Set(routes.map((route) => route.searchId)).size !== routes.length
             || new Set(routes.map((route) => route.canonicalUrl)).size !== routes.length
           ) {
             throw new C10ReceiptError("JLL GraphQL page contains duplicate identities");
@@ -163,30 +163,30 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
             index,
             page: slice.page,
             propertyType: slice.propertyType,
-            providerIds: routes.map((route) => route.providerId),
+            searchIds: routes.map((route) => route.searchId),
             total: parsed.total,
             transaction: slice.transaction,
             urls: routes.map((route) => route.canonicalUrl),
           } satisfies SourceProjection;
         });
         const projection = event.projection as {
-          readonly providerIds: readonly string[];
+          readonly searchIds: readonly string[];
           readonly urls: readonly string[];
         };
-        for (const [routeIndex, providerId] of projection.providerIds.entries()) {
+        for (const [routeIndex, searchId] of projection.searchIds.entries()) {
           const canonicalUrl = projection.urls[routeIndex];
           if (!canonicalUrl) throw new C10ReceiptError("JLL GraphQL route is missing");
-          const priorUrl = byProvider.get(providerId);
-          const priorProvider = byUrl.get(canonicalUrl);
+          const priorUrl = bySearchId.get(searchId);
+          const priorSearchId = byUrl.get(canonicalUrl);
           if (
             (priorUrl !== undefined && priorUrl !== canonicalUrl)
-            || (priorProvider !== undefined && priorProvider !== providerId)
+            || (priorSearchId !== undefined && priorSearchId !== searchId)
           ) {
             throw new C10ReceiptError("JLL GraphQL strata disagree on native identity");
           }
-          byProvider.set(providerId, canonicalUrl);
-          byUrl.set(canonicalUrl, providerId);
-          if (!parentsByProvider.has(providerId)) parentsByProvider.set(providerId, event);
+          bySearchId.set(searchId, canonicalUrl);
+          byUrl.set(canonicalUrl, searchId);
+          if (!parentsByUrl.has(canonicalUrl)) parentsByUrl.set(canonicalUrl, event);
         }
         events.push(event);
         projections.push(event.projection);
@@ -194,9 +194,9 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
       const memberRoutes = new Map<string, string>();
       const memberParents = new Map<string, Readonly<SealedTransportEvent<SourceProjection>>>();
       for (const member of sourcePlan.members) {
-        const observed = byProvider.get(member.providerId);
-        const parent = parentsByProvider.get(member.providerId);
-        if (!observed || !parent || observed !== normalizedJllListingUrl(member.canonicalUrl)) {
+        const observed = normalizedJllListingUrl(member.canonicalUrl);
+        const parent = observed ? parentsByUrl.get(observed) : undefined;
+        if (!observed || !parent || !byUrl.has(observed)) {
           throw new C10ReceiptError("JLL selected member is absent from exact native enumeration");
         }
         memberRoutes.set(member.key, observed);
@@ -205,8 +205,8 @@ function spec(plan: JllReceiptPlan): StrictDetailSourceSpec<JllReceiptMember> {
       return {
         evidence: {
           enumerations: projections,
-          providerIds: [...byProvider.keys()],
-          urls: [...byProvider.values()],
+          searchIds: [...bySearchId.keys()],
+          urls: [...bySearchId.values()],
         },
         memberParents,
         observedMemberKeys: sourcePlan.members.map((member) => member.key),
