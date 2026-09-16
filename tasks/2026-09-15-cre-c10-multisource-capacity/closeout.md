@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`5448aa0d24f66de45cf124b8e17950f8ce0090f0`
+`2a0995553ae87377b6173af3874f7aa99b4109a7`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -70,10 +70,13 @@ not change the Wave 1 execution boundary.
 - Execution and comparison revalidate the canonical policy digest, exact source
   set and schema, fixed 12/8 plane allocation, and exact P0/P1 resource tuples.
   A caller cannot make an arbitrary direct plan admissible merely by rehashing it.
+- `admit_plan()` issues a process-local admission capability only after cohort and
+  adapter verification. Execution, session, and comparison reject plain JSON
+  copies or self-rehashed mappings even when their structural fields look valid.
 
 ## Verification
 
-The final code candidate `5448aa0d24f66de45cf124b8e17950f8ce0090f0`
+The final code candidate `2a0995553ae87377b6173af3874f7aa99b4109a7`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
@@ -83,8 +86,8 @@ correction:
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Ten exact-head Codex review passes produced twenty-two material findings. All
-twenty-two were confirmed and fixed: immutable cohort binding, per-source timing,
+Eleven exact-head Codex review passes produced twenty-three material findings. All
+twenty-three were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -95,7 +98,8 @@ durable session creation, stable-transition rollback attestation, and aggregate
 JLL enumeration across exact cohort strata, plus complete JLL Investor pages,
 Colliers slices, and Marcus map inventory, with each member graph expansion
 bound to the enumeration event that exposed it, plus canonical fixed-policy
-revalidation at the execution and comparison boundary.
+revalidation and an admission-issued cohort/adapter capability at the execution
+and comparison boundary.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
