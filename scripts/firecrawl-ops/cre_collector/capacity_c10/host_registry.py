@@ -151,11 +151,9 @@ class C10SealedCardRegistry:
         ):
             raise C10Error("C10 registry requires exactly sixteen sealed JLL members")
         require_sha256(fresh.get("receipt_sha256"), "JLL enumeration receipt")
-        frozen: dict[str, Mapping[str, Any]] = {
-            "jll-enumeration": self._enumeration_card()
-        }
         observed_routes: set[str] = set()
         observed_ids: set[str] = set()
+        member_routes: list[str] = []
         for index, member in enumerate(members):
             if not isinstance(member, Mapping):
                 raise C10Error("C10 JLL member is invalid")
@@ -172,6 +170,11 @@ class C10SealedCardRegistry:
                 )
             observed_ids.add(provider_id)
             observed_routes.add(route)
+            member_routes.append(route)
+        frozen: dict[str, Mapping[str, Any]] = {
+            "jll-enumeration": self._enumeration_card(member_routes)
+        }
+        for index, route in enumerate(member_routes):
             frozen[f"jll-member-{index}"] = self._member_card(index, route)
         # Keep canonical bytes, not caller-reachable mutable dictionaries. A
         # resolve always returns a fresh decoded projection for one capability.
@@ -264,6 +267,7 @@ class C10SealedCardRegistry:
         headers: Mapping[str, str],
         content_type: str | None,
         body: str | None,
+        expected_member_routes: list[str] | None,
     ) -> Mapping[str, Any]:
         return {
             "id": card_id,
@@ -282,10 +286,11 @@ class C10SealedCardRegistry:
             "bodySha256": hashlib.sha256(body.encode("utf-8")).hexdigest()
             if body is not None
             else None,
+            "expectedMemberRoutes": expected_member_routes,
         }
 
     @classmethod
-    def _enumeration_card(cls) -> Mapping[str, Any]:
+    def _enumeration_card(cls, expected_member_routes: list[str]) -> Mapping[str, Any]:
         variables = {
             "market": "us",
             "language": "en",
@@ -318,6 +323,7 @@ class C10SealedCardRegistry:
                     "variables": variables,
                 }
             ),
+            expected_member_routes=expected_member_routes,
         )
 
     @classmethod
@@ -330,6 +336,7 @@ class C10SealedCardRegistry:
             headers={"accept": "text/html,application/xhtml+xml"},
             content_type=None,
             body=None,
+            expected_member_routes=None,
         )
 
     def resolve(self, card_id: str) -> Mapping[str, Any]:

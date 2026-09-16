@@ -5,6 +5,11 @@ import { isC10SuccessfulBrowserResponse } from "./c10_browser_listener";
 import type { C10BrowserPageResponse } from "./c10_browser_execution";
 import type { C10SidecarCard } from "./c10_browser_internal";
 
+const enumerationRoutes = Array.from(
+  { length: 16 },
+  (_, index) => `https://www.us.jll.com/properties/example-${index + 1}`,
+);
+
 const enumerationCard: C10SidecarCard = {
   id: "enumeration",
   sourceKey: "jll",
@@ -20,6 +25,7 @@ const enumerationCard: C10SidecarCard = {
   timeoutMs: 1_000,
   maxBytes: 1_024,
   bodySha256: "a".repeat(64),
+  expectedMemberRoutes: enumerationRoutes,
 };
 
 const memberCard: C10SidecarCard = {
@@ -42,7 +48,9 @@ function response(
     finalUrl: enumerationCard.url,
     redirected: false,
     contentType: "application/json; charset=utf-8",
-    bodyBase64: "",
+    bodyBase64: Buffer.from(JSON.stringify({
+      data: { properties: { items: enumerationRoutes.map((pageUrl) => ({ pageUrl })) } },
+    })).toString("base64"),
     ...changes,
   };
 }
@@ -59,6 +67,31 @@ test("C10 signs only reviewed success responses", () => {
       false,
     ),
     true,
+  );
+});
+
+test("C10 enumeration success requires current sealed membership, not a 2xx JSON transport", () => {
+  for (const body of [
+    { errors: [{ message: "upstream failure" }] },
+    { data: { properties: { items: [] } } },
+    { data: { properties: { items: [{ pageUrl: "https://www.us.jll.com/properties/other" }] } } },
+  ]) {
+    assert.equal(
+      isC10SuccessfulBrowserResponse(
+        enumerationCard,
+        response({ bodyBase64: Buffer.from(JSON.stringify(body)).toString("base64") }),
+        false,
+      ),
+      false,
+    );
+  }
+  assert.equal(
+    isC10SuccessfulBrowserResponse(
+      enumerationCard,
+      response({ bodyBase64: Buffer.from("not-json").toString("base64") }),
+      false,
+    ),
+    false,
   );
 });
 

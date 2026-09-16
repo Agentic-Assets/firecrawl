@@ -155,7 +155,7 @@ def test_prior_terminal_receipts_block_later_arm_before_runtime_or_host(
         lambda _root: Lock(),
     )
     monkeypatch.setattr(
-        "capacity_c10.production.C10HostExecutionSession",
+        "capacity_c10.production._C10HostTransport",
         lambda **_kwargs: pytest.fail("tampered predecessor must fail before host"),
     )
     monkeypatch.setattr(
@@ -305,7 +305,7 @@ def test_lock_arm_failure_quarantines_and_releases_before_a_replay_attempt(
         lambda _root: tmp_path / ".cre.lock",
     )
     monkeypatch.setattr(
-        "capacity_c10.production.C10HostExecutionSession",
+        "capacity_c10.production._C10HostTransport",
         lambda **_kwargs: type("Host", (), {"lock_path": tmp_path / ".cre.lock"})(),
     )
     _secure_roots(tmp_path / "private", tmp_path / "receipts")

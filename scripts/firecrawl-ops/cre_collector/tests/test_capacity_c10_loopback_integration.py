@@ -18,7 +18,7 @@ import pytest
 from capacity_c10_test_support import sealed_jll_plan
 
 from capacity_c10 import contracts
-from capacity_c10.host_orchestration import C10HostExecutionSession
+from capacity_c10.host_orchestration import _C10HostTransport
 from capacity_c10.host_registry import C10SealedCardRegistry
 from capacity_c10.host_store import C10SessionStore
 
@@ -83,7 +83,7 @@ def test_python_issued_capability_reaches_real_loopback_listener_and_quarantines
     plan, cohort = sealed_jll_plan()
     cards = C10SealedCardRegistry(plan, cohort)
     store = C10SessionStore(tmp_path / "ledger" / "session.json")
-    host = object.__new__(C10HostExecutionSession)
+    host = object.__new__(_C10HostTransport)
     host.repo_root = repo_root
     host.cards = cards
     host.session_store = store

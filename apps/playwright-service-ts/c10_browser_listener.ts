@@ -182,6 +182,54 @@ function normalizedContentType(value: string | null): string | null {
   return value.split(";", 1)[0]?.trim().toLowerCase() || null;
 }
 
+function normalizedC10MemberRoute(value: unknown, card: C10SidecarCard): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const route = new URL(value, `https://${card.allowedHost}`);
+    if (
+      route.protocol !== "https:" ||
+      route.host !== card.allowedHost ||
+      route.search ||
+      route.hash
+    ) return null;
+    return route.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+/** Reject GraphQL transport successes that do not prove the sealed cohort is current. */
+export function hasC10EnumerationMembership(
+  card: C10SidecarCard,
+  bodyBase64: string,
+): boolean {
+  if (card.stage !== "enumeration" || !Array.isArray(card.expectedMemberRoutes)) {
+    return false;
+  }
+  try {
+    const payload: unknown = JSON.parse(Buffer.from(bodyBase64, "base64").toString("utf8"));
+    if (!payload || typeof payload !== "object" || Array.isArray(payload) || "errors" in payload) {
+      return false;
+    }
+    const data = (payload as { data?: unknown }).data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+    const properties = (data as { properties?: unknown }).properties;
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) return false;
+    const items = (properties as { items?: unknown }).items;
+    if (!Array.isArray(items) || items.length === 0) return false;
+    const observed = new Set(
+      items.map((item) => (
+        item && typeof item === "object"
+          ? normalizedC10MemberRoute((item as { pageUrl?: unknown }).pageUrl, card)
+          : null
+      )),
+    );
+    return card.expectedMemberRoutes.every((route) => observed.has(route));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Success evidence is intentionally stricter than transport completion. A
  * result has to be the reviewed route, status, response representation, and
@@ -198,7 +246,8 @@ export function isC10SuccessfulBrowserResponse(
     response.finalUrl === card.url &&
     normalizedContentType(response.contentType) ===
       expectedC10ResponseContentType(card) &&
-    !challengeDetected
+    !challengeDetected &&
+    (card.stage !== "enumeration" || hasC10EnumerationMembership(card, response.bodyBase64))
   );
 }
 

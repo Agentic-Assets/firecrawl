@@ -21,6 +21,10 @@ const card: C10SidecarCard = {
   timeoutMs: 1_000,
   maxBytes: 1_024,
   bodySha256: null,
+  expectedMemberRoutes: Array.from(
+    { length: 16 },
+    (_, index) => `https://fixture.test/listings/member-${index + 1}`,
+  ),
 };
 
 test("C10 executes one reviewed page operation with cache disabled", async () => {

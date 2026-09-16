@@ -14,9 +14,9 @@ import pytest
 from capacity_c10_test_support import sealed_jll_plan
 
 import cre_capacity_runtime as runtime
-from capacity_c10 import contracts, host_store, production
-from capacity_c10.host_session import C10HostExecutionSession, C10SessionStore, _OpenSsl
-from capacity_c10.production import execute_production_arm, main
+from capacity_c10 import contracts, host_session, host_store, production
+from capacity_c10.host_session import C10SessionStore, _OpenSsl
+from capacity_c10.production import _C10HostTransport, execute_production_arm, main
 
 
 def _secure_roots(*paths: Path) -> None:
@@ -137,14 +137,29 @@ def test_production_entrypoint_constructs_host_without_browser_callback(
 ) -> None:
     production_parameters = set(inspect.signature(execute_production_arm).parameters)
     host_parameters = set(
-        inspect.signature(C10HostExecutionSession._execute_locked_claim).parameters
+        inspect.signature(_C10HostTransport._retired_direct_execution).parameters
     )
     assert {"child", "cards", "evidence", "run_browser_arm"}.isdisjoint(
         production_parameters
     )
     assert "session" not in production_parameters
     assert "child" not in host_parameters
-    assert not hasattr(C10HostExecutionSession, "execute")
+    assert not hasattr(_C10HostTransport, "execute")
+    assert not hasattr(host_session, "C10HostExecutionSession")
+
+
+def test_host_action_rejects_a_claim_and_lock_without_active_production_authority() -> (
+    None
+):
+    with pytest.raises(contracts.C10Error, match="production-controller authority"):
+        production._execute_authorized_host_action(
+            object(),  # type: ignore[arg-type]
+            {},
+            claim={},
+            lock=None,  # type: ignore[arg-type]
+            deadline=time.monotonic() + 1,
+            authority=object(),
+        )
 
 
 def test_production_approval_gate_uses_only_runtime_public_validator() -> None:
@@ -332,7 +347,7 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
         def __init__(self, **_: object) -> None:
             self.lock_path = tmp_path / ".cre.lock"
 
-        def _execute_locked_claim(
+        def _obsolete_host_method(
             self, plan: object, **kwargs: object
         ) -> dict[str, object]:
             assert (tmp_path / ".cre-c10-ledger-v1").exists()
@@ -359,12 +374,43 @@ def test_production_claims_before_runtime_or_host_and_terminalizes_authenticated
                 },
             }
 
+    def run_authorized(
+        _host: object, plan: object, **kwargs: object
+    ) -> dict[str, object]:
+        assert (tmp_path / ".cre-c10-ledger-v1").exists()
+        events.append("host")
+        claim = kwargs["claim"]
+        assert isinstance(claim, dict)
+        assert isinstance(plan, dict)
+        return {
+            "claim": claim,
+            "receipt_root": {"path": str(tmp_path / "private"), "id": "f" * 64},
+            "evidence_manifest": [
+                {
+                    "name": f"browser-evidence-{index}-{'d' * 64}.sealed",
+                    "sha256": "d" * 64,
+                    "bytes": 1,
+                }
+                for index in range(17)
+            ],
+            "evidence_manifest_sha256": "e" * 64,
+            "evidence_public_key": "public-test-key",
+            "evidence_key_id": hashlib.sha256(b"public-test-key").hexdigest(),
+            "binding": {
+                "planSha256": plan["plan_sha256"],
+                "cohortSha256": plan["cohort_sha256"],
+            },
+        }
+
     monkeypatch.setattr("capacity_c10.production._canonical_lock", lambda _: Lock())
     monkeypatch.setattr(
         "capacity_c10.production.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
-    monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr("capacity_c10.production._C10HostTransport", Host)
+    monkeypatch.setattr(
+        "capacity_c10.production._execute_authorized_host_action", run_authorized
+    )
     monkeypatch.setattr(
         C10SessionStore,
         "_validate_authenticated_terminal",
@@ -445,7 +491,7 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
         def __init__(self, **_: object) -> None:
             self.lock_path = tmp_path / ".cre.lock"
 
-        def _execute_locked_claim(self, *_: object, **__: object) -> dict[str, object]:
+        def _obsolete_host_method(self, *_: object, **__: object) -> dict[str, object]:
             events.append("host")
             raise contracts.C10Error("host failure")
 
@@ -454,7 +500,14 @@ def test_production_rolls_back_and_quarantines_p1_failure_before_lock_release(
         "capacity_c10.production.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
-    monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr("capacity_c10.production._C10HostTransport", Host)
+    monkeypatch.setattr(
+        "capacity_c10.production._execute_authorized_host_action",
+        lambda *_args, **_kwargs: (
+            events.append("host"),
+            (_ for _ in ()).throw(contracts.C10Error("host failure")),
+        )[1],
+    )
     monkeypatch.setattr(
         C10SessionStore,
         "_validate_authenticated_terminal",
@@ -757,7 +810,7 @@ def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
             self.lock_path = tmp_path / ".cre.lock"
             captured["private_root"] = private_root
 
-        def _execute_locked_claim(
+        def _obsolete_host_method(
             self, plan: object, **kwargs: object
         ) -> dict[str, object]:
             events.append("host")
@@ -788,7 +841,13 @@ def test_racing_runner_claims_the_actual_next_arm_and_derived_paths(
         "capacity_c10.production.canonical_shared_lock_dir",
         lambda _root: tmp_path / ".cre.lock",
     )
-    monkeypatch.setattr("capacity_c10.production.C10HostExecutionSession", Host)
+    monkeypatch.setattr("capacity_c10.production._C10HostTransport", Host)
+    monkeypatch.setattr(
+        "capacity_c10.production._execute_authorized_host_action",
+        lambda host, plan, **kwargs: host._obsolete_host_method(
+            plan, _claim=kwargs["claim"]
+        ),
+    )
     monkeypatch.setattr(
         C10SessionStore,
         "load_terminal",

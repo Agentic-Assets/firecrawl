@@ -4,14 +4,12 @@ Public API remains intentionally small; ownership is split by responsibility.
 """
 
 from .host_crypto import _OpenSsl
-from .host_orchestration import C10HostExecutionSession
 from .host_registry import C10SealedCardRegistry
 from .host_sidecar import C10EphemeralKeys, DockerComposeSidecar, SidecarLifecycle
 from .host_store import C10SessionStore, PrivateReceiptStore
 
 __all__ = [
     "C10EphemeralKeys",
-    "C10HostExecutionSession",
     "C10SealedCardRegistry",
     "C10SessionStore",
     "DockerComposeSidecar",

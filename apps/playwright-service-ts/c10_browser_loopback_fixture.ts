@@ -45,7 +45,19 @@ const page = {
       redirected: false,
       contentType:
         instruction.method === "POST" ? "application/json" : "text/html",
-      bodyBase64: Buffer.from('{"loopback":true}').toString("base64"),
+      bodyBase64: Buffer.from(
+        instruction.method === "POST"
+          ? JSON.stringify({
+              data: {
+                properties: {
+                  items: Array.from({ length: 16 }, (_, index) => ({
+                    pageUrl: `https://property.jll.com/listings/member-${index + 1}`,
+                  })),
+                },
+              },
+            })
+          : "<html>loopback</html>",
+      ).toString("base64"),
     };
   },
   async close(): Promise<void> {},

@@ -8,7 +8,7 @@ const MAX_LIFETIME_MS = 120_000;
 const MAX_REPLAY_ENTRIES = 4_096;
 
 export type C10Binding = Readonly<{ planSha256: string; cohortSha256: string; cardSha256: string; manifestSha256: string; sessionSha256: string; armSha256: string; profileSha256: string }>;
-export type C10SidecarCard = Readonly<{ id: string; sourceKey: string; stage: "enumeration" | "member"; method: "GET" | "POST"; url: string; allowedHost: string; headers: Record<string, string>; contentType: "application/json" | null; body: string | null; browserBootstrapUrl: string; cacheMode: "no-store"; timeoutMs: number; maxBytes: number; bodySha256: string | null }>;
+export type C10SidecarCard = Readonly<{ id: string; sourceKey: string; stage: "enumeration" | "member"; method: "GET" | "POST"; url: string; allowedHost: string; headers: Record<string, string>; contentType: "application/json" | null; body: string | null; browserBootstrapUrl: string; cacheMode: "no-store"; timeoutMs: number; maxBytes: number; bodySha256: string | null; expectedMemberRoutes: readonly string[] | null }>;
 export type C10CapabilityPayload = Readonly<{ protocolVersion: 3; coordinatorKeyId: string; nonce: string; expiresAtMs: number; hostDeadlineAtMs: number; cardSequence: number; sourceKey: string; binding: C10Binding }>;
 export type C10SidecarInput = Readonly<{ capability: C10CapabilityPayload; card: C10SidecarCard }>;
 
@@ -37,7 +37,7 @@ function bindingFrom(value: unknown): C10Binding {
   return Object.freeze({ planSha256: digest(value.planSha256, "C10 plan"), cohortSha256: digest(value.cohortSha256, "C10 cohort"), cardSha256: digest(value.cardSha256, "C10 card"), manifestSha256: digest(value.manifestSha256, "C10 manifest"), sessionSha256: digest(value.sessionSha256, "C10 session"), armSha256: digest(value.armSha256, "C10 arm"), profileSha256: digest(value.profileSha256, "C10 profile") });
 }
 function cardFrom(value: unknown, sourceKey: string): C10SidecarCard {
-  const names = ["allowedHost", "body", "bodySha256", "browserBootstrapUrl", "cacheMode", "contentType", "headers", "id", "maxBytes", "method", "sourceKey", "stage", "timeoutMs", "url"];
+  const names = ["allowedHost", "body", "bodySha256", "browserBootstrapUrl", "cacheMode", "contentType", "expectedMemberRoutes", "headers", "id", "maxBytes", "method", "sourceKey", "stage", "timeoutMs", "url"];
   if (!exactKeys(value, names)) throw new Error("C10 browser card schema is invalid");
   if (value.sourceKey !== sourceKey || (value.stage !== "enumeration" && value.stage !== "member") || (value.method !== "GET" && value.method !== "POST") || value.cacheMode !== "no-store") throw new Error("C10 browser card is not executable");
   const url = new URL(text(value.url, "C10 browser URL", 2_048)), bootstrap = new URL(text(value.browserBootstrapUrl, "C10 browser bootstrap URL", 2_048));
@@ -49,9 +49,21 @@ function cardFrom(value: unknown, sourceKey: string): C10SidecarCard {
   const body: string | null = typeof value.body === "string" ? value.body : value.body === null ? null : (() => { throw new Error("C10 browser body is invalid"); })();
   if (value.method === "GET" && (body !== null || contentType !== null || value.bodySha256 !== null)) throw new Error("C10 GET browser card cannot carry a body");
   if (value.method === "POST" && (body === null || contentType !== "application/json" || sha256(body) !== value.bodySha256)) throw new Error("C10 POST browser card body is invalid");
+  const expectedMemberRoutes = value.expectedMemberRoutes;
+  if (value.stage === "enumeration") {
+    if (!Array.isArray(expectedMemberRoutes) || expectedMemberRoutes.length !== 16) throw new Error("C10 enumeration card lacks its sealed membership");
+    const routes = expectedMemberRoutes.map((route) => {
+      const parsed = new URL(text(route, "C10 expected member route", 2_048));
+      if (parsed.protocol !== "https:" || parsed.host !== value.allowedHost || parsed.search || parsed.hash) throw new Error("C10 expected member route is outside its reviewed origin");
+      return parsed.toString().replace(/\/$/, "");
+    });
+    if (new Set(routes).size !== routes.length) throw new Error("C10 enumeration membership is not unique");
+  } else if (expectedMemberRoutes !== null) {
+    throw new Error("C10 member card cannot carry enumeration membership");
+  }
   const timeoutMs = positiveInteger(value.timeoutMs, "C10 browser timeout"), maxBytes = positiveInteger(value.maxBytes, "C10 browser byte limit");
   if (timeoutMs > 30_000 || maxBytes > 2 * 1024 * 1024) throw new Error("C10 browser card exceeds reviewed bounds");
-  return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs, maxBytes, bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body") });
+  return Object.freeze({ id: text(value.id, "C10 browser card id", 81), sourceKey, stage: value.stage as "enumeration" | "member", method: value.method as "GET" | "POST", url: url.toString(), allowedHost: text(value.allowedHost, "C10 browser allowed host", 255), headers, contentType, body, browserBootstrapUrl: bootstrap.toString(), cacheMode: "no-store", timeoutMs, maxBytes, bodySha256: value.bodySha256 === null ? null : digest(value.bodySha256, "C10 browser body"), expectedMemberRoutes: value.stage === "enumeration" ? (expectedMemberRoutes as readonly string[]).map((route) => new URL(route).toString().replace(/\/$/, "")) : null });
 }
 export function parseC10SidecarInput(value: unknown): C10SidecarInput {
   if (!exactKeys(value, ["capability", "card"]) || !exactKeys(value.capability, ["binding", "cardSequence", "coordinatorKeyId", "expiresAtMs", "hostDeadlineAtMs", "nonce", "protocolVersion", "sourceKey"])) throw new Error("C10 v3 browser request schema is invalid");

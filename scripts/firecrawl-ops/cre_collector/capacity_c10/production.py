@@ -8,6 +8,8 @@ runtime controller remains the only component allowed to change P0/P1 state.
 from __future__ import annotations
 
 import argparse
+import base64
+import contextvars
 import json
 import os
 import stat
@@ -22,10 +24,18 @@ from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
 
 from . import admission, compare
 from .contracts import C10Error, require_sha256, sha256, validate_plan
+from .host_orchestration import _C10HostTransport, _key_id
 from .host_session import (
-    C10HostExecutionSession,
     C10SealedCardRegistry,
     C10SessionStore,
+)
+from .host_store import PrivateReceiptStore
+
+# This context is populated only by the lexical production-controller scope
+# after preflight and, for P1, the approved candidate transition. A supplied
+# durable claim and canonical lock are therefore insufficient to start a host.
+_ACTIVE_PRODUCTION_ACTION: contextvars.ContextVar[object | None] = (
+    contextvars.ContextVar("c10_active_production_action", default=None)
 )
 
 
@@ -227,6 +237,108 @@ def _validate_claim_inputs(
     return arm_private_root, receipt_path, approval_path, admission_path
 
 
+def _execute_authorized_host_action(
+    host: _C10HostTransport,
+    plan: Mapping[str, Any],
+    *,
+    claim: Mapping[str, Any],
+    lock: SharedLock,
+    deadline: float,
+    authority: object,
+) -> Mapping[str, Any]:
+    """Run browser transport only inside the production-controller lifecycle.
+
+    This is deliberately the sole code path that starts the C10 sidecar.  The
+    caller has already completed the canonical lock, durable claim, runtime
+    preflight, and (for P1) reviewed transition.  The transport object has no
+    full-lifecycle execution method and is never exported from host_session.
+    """
+    if _ACTIVE_PRODUCTION_ACTION.get() is not authority:
+        raise C10Error(
+            "C10 host action requires active production-controller authority"
+        )
+    validate_plan(plan)
+    host.cards.assert_plan_identity(plan)
+    _remaining(deadline)
+    if lock.path.resolve() != canonical_shared_lock_dir(host.repo_root).resolve():
+        raise C10Error("C10 host rejected a noncanonical SharedLock identity")
+    try:
+        descriptor = lock._owned_directory_fd()
+    except Exception as exc:
+        raise C10Error("C10 host requires the owned canonical SharedLock") from exc
+    os.close(descriptor)
+    durable = host.session_store.read_bound(plan, claim)
+    if dict(durable) != dict(claim):
+        raise C10Error("C10 host rejects an unbound durable claim")
+
+    sidecar_attempted = False
+    result: Mapping[str, Any] | None = None
+    try:
+        with PrivateReceiptStore.create(host.private_root) as private_store:
+            keys = host._keys(deadline)
+            port = host._free_loopback_port()
+            arm = durable["arm"]
+            if not isinstance(arm, Mapping):
+                raise C10Error("C10 durable claim arm is invalid")
+            profile = plan["profiles"].get(arm.get("variant"))
+            if not isinstance(profile, Mapping):
+                raise C10Error("C10 profile is invalid for durable claim")
+            requested = profile.get("requested")
+            if not isinstance(requested, Mapping):
+                raise C10Error("C10 profile request is invalid")
+            # Cleanup responsibility begins before Compose is invoked: an up
+            # timeout can leave a container even when start raises.
+            sidecar_attempted = True
+            host.sidecar.start(
+                {
+                    "C10_COORDINATOR_PUBLIC_KEY_PEM_B64": base64.b64encode(
+                        keys.coordinator_public_pem.encode("utf-8")
+                    ).decode("ascii"),
+                    "C10_SIDECAR_EVIDENCE_PRIVATE_KEY_PEM_B64": base64.b64encode(
+                        keys.sidecar_private_pem.encode("utf-8")
+                    ).decode("ascii"),
+                    "PLAYWRIGHT_HOST_TRANSPORT_V3_KEY": keys.transport_key,
+                    "MAX_CONCURRENT_PAGES": str(requested["global_pages"]),
+                    "C10_PROFILE_SHA256": sha256(requested),
+                    "C10_BROWSER_CPUS": str(requested["browser_cpus"]),
+                    "C10_BROWSER_PIDS": str(requested["browser_pids"]),
+                },
+                port,
+                deadline,
+            )
+            endpoint = f"http://127.0.0.1:{port}"
+            host._verify_health(endpoint, keys, profile, deadline)
+            evidence, artifacts = host._run_cohort(
+                endpoint, durable, plan, profile, keys, private_store, deadline
+            )
+            result = {
+                "claim": durable,
+                "receipt_root": private_store.descriptor(),
+                "evidence_manifest": artifacts,
+                "evidence_manifest_sha256": sha256(evidence),
+                "evidence_public_key": keys.sidecar_public_pem,
+                "evidence_key_id": _key_id(keys.sidecar_public_pem),
+                "binding": evidence[0]["binding"],
+            }
+    except BaseException as exc:
+        lock.retain_on_exit = True
+        host.session_store.record_quarantine(durable, str(exc))
+        host.quarantine(str(exc))
+        raise
+    finally:
+        try:
+            if sidecar_attempted:
+                host.sidecar.stop(deadline)
+        except BaseException as cleanup_error:
+            lock.retain_on_exit = True
+            host.session_store.record_quarantine(durable, str(cleanup_error))
+            host.quarantine(f"C10 sidecar cleanup failed: {cleanup_error}")
+            raise
+    if result is None:
+        raise C10Error("C10 host did not produce a terminal cohort result")
+    return result
+
+
 def execute_production_arm(
     *,
     repo_root: Path,
@@ -319,7 +431,7 @@ def execute_production_arm(
             _remaining(deadline)
             store.load_terminal(plan, prior_index, deadline=deadline)
             _remaining(deadline)
-        host = C10HostExecutionSession(
+        host = _C10HostTransport(
             repo_root=repo_root,
             session_store=store,
             private_root=arm_private_root,
@@ -348,13 +460,19 @@ def execute_production_arm(
                 experiment_kind="C10",
                 deadline=deadline,
             )
-        host_result = host._execute_locked_claim(
-            plan,
-            timeout_seconds=_remaining(deadline),
-            _claim=claim,
-            _held_shared_lock=lock,
-            _deadline=deadline,
-        )
+        action_authority = object()
+        action_context = _ACTIVE_PRODUCTION_ACTION.set(action_authority)
+        try:
+            host_result = _execute_authorized_host_action(
+                host,
+                plan,
+                claim=claim,
+                lock=lock,
+                deadline=deadline,
+                authority=action_authority,
+            )
+        finally:
+            _ACTIVE_PRODUCTION_ACTION.reset(action_context)
         _settle(profile, "candidate" if variant == "p1" else "baseline", deadline)
         rollback: Mapping[str, Any] | None = None
         if variant == "p1":

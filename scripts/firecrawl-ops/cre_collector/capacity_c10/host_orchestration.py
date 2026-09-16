@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
@@ -125,8 +126,8 @@ def _remaining(deadline: float) -> float:
     return value
 
 
-class C10HostExecutionSession:
-    """One lock-held v3 lifecycle; failures quarantine before the lock releases."""
+class _C10HostTransport:
+    """Private transport mechanics; production.py owns lifecycle authority."""
 
     def __init__(
         self,
@@ -145,7 +146,7 @@ class C10HostExecutionSession:
         self.sidecar = sidecar or DockerComposeSidecar(repo_root)
         self.quarantine = quarantine or (lambda _reason: None)
 
-    def _execute_locked_claim(
+    def _retired_direct_execution(
         self,
         plan: Mapping[str, Any],
         *,
@@ -154,13 +155,16 @@ class C10HostExecutionSession:
         _held_shared_lock: SharedLock,
         _deadline: float,
     ) -> Mapping[str, Any]:
-        """Execute only a claim already authorized by production.py.
+        """Refuse the removed direct host execution surface.
 
         This private primitive deliberately cannot acquire a lock or create a
         claim. The canonical production entrypoint owns runtime preflight,
         P1 approval/transition, settlement, rollback, and authorization of the
         supplied lock-held claim before this host may start a sidecar.
         """
+        raise C10Error(
+            "C10 direct host execution is retired; use production.execute_production_arm"
+        )
         if timeout_seconds <= 0 or timeout_seconds > 120:
             raise C10Error("C10 lifecycle timeout is outside its reviewed bound")
         validate_plan(plan)
@@ -605,3 +609,43 @@ class C10HostExecutionSession:
             or unsigned.get("challengeDetected") is not False
         ):
             raise C10Error("C10 sidecar evidence is not an accepted reviewed response")
+        card = issued.get("card")
+        if not isinstance(card, Mapping):
+            raise C10Error("C10 issued card is invalid")
+        if card.get("stage") == "enumeration":
+            expected = card.get("expectedMemberRoutes")
+            allowed_host = card.get("allowedHost")
+            if (
+                not isinstance(expected, list)
+                or len(expected) != 16
+                or not all(isinstance(route, str) for route in expected)
+                or not isinstance(allowed_host, str)
+            ):
+                raise C10Error("C10 enumeration card lacks sealed membership")
+            try:
+                payload = json.loads(base64.b64decode(body, validate=True))
+                items = payload["data"]["properties"]["items"]
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise C10Error("C10 enumeration evidence is not usable JSON") from exc
+            if (
+                not isinstance(payload, Mapping)
+                or "errors" in payload
+                or not isinstance(items, list)
+            ):
+                raise C10Error("C10 enumeration evidence contains no accepted cohort")
+            observed: set[str] = set()
+            for item in items:
+                route = item.get("pageUrl") if isinstance(item, Mapping) else None
+                if not isinstance(route, str):
+                    continue
+                parsed = urlsplit(urljoin(f"https://{allowed_host}", route))
+                if (
+                    parsed.scheme != "https"
+                    or parsed.netloc != allowed_host
+                    or parsed.query
+                    or parsed.fragment
+                ):
+                    continue
+                observed.add(f"https://{parsed.netloc}{parsed.path}".rstrip("/"))
+            if not set(expected).issubset(observed):
+                raise C10Error("C10 enumeration evidence does not bind sealed cohort")

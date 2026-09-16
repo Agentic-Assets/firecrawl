@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from capacity_c10 import contracts
-from capacity_c10.host_session import C10HostExecutionSession, DockerComposeSidecar
+from capacity_c10.host_orchestration import _C10HostTransport
+from capacity_c10.host_session import DockerComposeSidecar
 
 
 def test_compose_overlay_is_rendered_before_start_and_owner_env_is_removed(
@@ -65,12 +66,12 @@ def test_signed_lease_intervals_reject_false_capacity_saturation() -> None:
 
     serial = [evidence(index * 10, index * 10 + 9, 3) for index in range(16)]
     with pytest.raises(contracts.C10Error, match="exact P0/P1 target"):
-        C10HostExecutionSession._verify_saturation(serial, 4)
+        _C10HostTransport._verify_saturation(serial, 4)
 
     saturated = [evidence(0, 10, 4) for _ in range(4)] + [
         evidence(20 + index * 10, 29 + index * 10, 1) for index in range(12)
     ]
-    C10HostExecutionSession._verify_saturation(saturated, 4)
+    _C10HostTransport._verify_saturation(saturated, 4)
 
 
 def test_compose_partial_start_uses_same_environment_for_stop_and_quiescence(
@@ -133,7 +134,7 @@ def test_hung_child_is_process_group_killed_at_the_host_deadline(
         "capacity_c10.host_orchestration.os.killpg",
         lambda pid, signal: killed.append((pid, signal)),
     )
-    session = object.__new__(C10HostExecutionSession)
+    session = object.__new__(_C10HostTransport)
     session.repo_root = tmp_path
     with pytest.raises(contracts.C10Error, match="pipes are unavailable"):
         session._run_child({}, time.monotonic() + 1)
