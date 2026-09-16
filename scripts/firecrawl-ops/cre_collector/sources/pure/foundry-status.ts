@@ -20,3 +20,19 @@ export function classifyFoundryStatus(value: string | null): FoundryStatusDecisi
   if (status === "available" || status === "coming soon" || status === "proposed" || status === "under contract") return { disposition: "active", status, tenures: [], reason: `active status ${status} requires a separate explicit transaction token` };
   return { disposition: "held", status, tenures: [], reason: `unknown Foundry property status: ${status}` };
 }
+
+/** Extract explicit sale/lease tenure tokens from provider-owned property notes. */
+export function explicitFoundryTenures(notes: readonly string[]): Tx[] {
+  const tenures = new Set<Tx>();
+  for (const note of notes) {
+    const normalized = normalizedFoundryStatus(note);
+    if (!normalized) continue;
+    if (/\bfor sale\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
+      tenures.add("sale");
+    }
+    if (/\bfor lease\b|\bsublease\b|\bsale and lease\b|\bfor sale or lease\b|\bfor lease or sale\b/.test(normalized)) {
+      tenures.add("lease");
+    }
+  }
+  return [...tenures];
+}
