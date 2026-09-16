@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`df092d68f581126aef38f26bc8bc75ec8301e404`
+`a1970d66aa50aad77152ddcf32df57cc9e3b8829`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -70,11 +70,11 @@ not change the Wave 1 execution boundary.
 - Execution and comparison revalidate the canonical policy digest, exact source
   set and schema, fixed 12/8 plane allocation, and exact P0/P1 resource tuples.
   A caller cannot make an arbitrary direct plan admissible merely by rehashing it.
-- `admit_plan()` can issue a process-local capability only after the canonical
-  repository authority approves one exact cohort digest and all twenty actual
-  source-tree implementation digests. The checked-in authority approves none,
-  so this wave cannot issue a plan. Execution, session, and comparison reject
-  plain JSON copies or self-rehashed mappings even when their fields look valid.
+- `admit_plan()` succeeds only after the canonical repository authority approves
+  one exact cohort digest and all twenty actual source-tree implementation
+  digests. Every plan consumer revalidates that authority and the current
+  source-byte fingerprints. The checked-in authority approves none, so this
+  wave cannot issue or consume a plan.
 - Buildout inventory cards use the provider-supported `q[s][]` array-form stable
   sort, matching the production adapter's cross-page ordering contract.
 - Adapter admission now requires the exact concrete repository implementation
@@ -92,24 +92,24 @@ not change the Wave 1 execution boundary.
 - Browser evidence requires the reviewed `playwright` engine and exact
   per-source scheduled count/hash parity with every immutable cohort member;
   the aggregate scheduler count must equal the complete cohort.
-- Comparison and durable-ledger commits accept only process-local coordinated
-  arm capabilities issued after runtime validation or authenticated ledger
-  recovery. Plain or subsequently mutated arm mappings fail closed.
+- Comparison accepts no caller-supplied arm sequence. It reopens the canonical
+  owner-only durable ledger while locked and compares only its hash-validated
+  terminal results; arbitrary or subsequently mutated mappings are not inputs.
 
 ## Verification
 
-The final code candidate `df092d68f581126aef38f26bc8bc75ec8301e404`
+The final code candidate `a1970d66aa50aad77152ddcf32df57cc9e3b8829`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest -q`: 3215 passed, 18 skipped.
+- `python3 -m pytest -q`: 3216 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 908 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Seventeen exact-head Codex review passes produced thirty-four material findings. All
-thirty-four were confirmed and fixed: immutable cohort binding, per-source timing,
+Eighteen exact-head Codex review passes produced thirty-six material findings. All
+thirty-six were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -127,8 +127,8 @@ from `PropertyDetail`, and a non-substitutable repository authority that pins a
 real cohort and source-byte-derived verifier implementations before admission,
 plus JLL's distinct search-card and numeric detail identities, complete imported
 dependency coverage, complete per-source scheduled cohort parity, and an exact
-reviewed browser engine, plus coordinator- or ledger-issued arm evidence at
-comparison and terminal-commit boundaries.
+reviewed browser engine, plus consumption-time repository authority validation
+and durable-ledger-only comparison inputs.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
