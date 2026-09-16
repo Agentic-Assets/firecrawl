@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
+from cre_checkpoint_refresh import LockHeldError, SharedLock, canonical_shared_lock_dir
 
 from . import admission
 from .compare import validate_browser_arm
@@ -197,8 +198,18 @@ def run_one_coordinated_arm(
     lock = hooks.lock_factory(lock_path)
     if Path(getattr(lock, "path", lock_path)).expanduser().resolve() != lock_path:
         raise C10Error("C10 coordinator did not receive the canonical SharedLock")
+    if type(lock) is not SharedLock:
+        raise C10Error("C10 coordinator requires the concrete canonical SharedLock")
     lock.acquire()
     try:
+        try:
+            owned_lock_fd = lock._owned_directory_fd()
+        except LockHeldError as exc:
+            raise C10Error(
+                "C10 coordinator does not own the canonical SharedLock"
+            ) from exc
+        else:
+            os.close(owned_lock_fd)
         with DurableArmSessionStore(
             _canonical_ledger_path(lock_path, plan, session)
         ) as session_store:

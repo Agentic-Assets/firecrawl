@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -572,6 +572,31 @@ def _runtime_receipt(plan: Mapping[str, object], variant: str) -> dict[str, obje
     }
 
 
+def _recording_lock_factory(
+    events: list[str],
+) -> Callable[[Path], runner.SharedLock]:
+    """Return real SharedLocks while preserving protocol-order assertions."""
+
+    def factory(path: Path) -> runner.SharedLock:
+        lock = runner.SharedLock(path)
+        acquire = lock.acquire
+        release = lock.release
+
+        def recorded_acquire() -> None:
+            acquire()
+            events.append("acquire")
+
+        def recorded_release() -> None:
+            release()
+            events.append("release")
+
+        lock.acquire = recorded_acquire  # type: ignore[method-assign]
+        lock.release = recorded_release  # type: ignore[method-assign]
+        return lock
+
+    return factory
+
+
 def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -581,17 +606,6 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
     monkeypatch.setattr(
         runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
     )
-
-    class FakeLock:
-        def __init__(self, path: Path) -> None:
-            self.path = path
-            self.retain_on_exit = False
-
-        def acquire(self) -> None:
-            events.append("acquire")
-
-        def release(self) -> None:
-            events.append("release")
 
     def preflight(profile_name: str, _out: Path, **kwargs: object) -> dict[str, object]:
         assert kwargs == {
@@ -638,7 +652,7 @@ def test_coordinator_holds_one_lock_and_binds_p0_p1_scheduler_evidence(
             or {"state": "idle", "complete": True}
         ),
         quarantine=lambda reason: events.append(f"quarantine:{reason}"),
-        lock_factory=FakeLock,
+        lock_factory=_recording_lock_factory(events),
         canonical_lock_path=lambda: tmp_path / ".cre.lock",
     )
     first = runner.run_one_coordinated_arm(
@@ -699,17 +713,6 @@ def test_coordinator_derives_one_ledger_and_rejects_stale_replay_preflight(
         runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
     )
 
-    class FakeLock:
-        def __init__(self, path: Path) -> None:
-            self.path = path
-            self.retain_on_exit = False
-
-        def acquire(self) -> None:
-            events.append("acquire")
-
-        def release(self) -> None:
-            events.append("release")
-
     lock_path = tmp_path / ".cre.lock"
     hooks = runner.C10CoordinatorHooks(
         preflight=lambda profile, out, **kwargs: (
@@ -723,7 +726,7 @@ def test_coordinator_derives_one_ledger_and_rejects_stale_replay_preflight(
             events.append("settle") or {"state": "idle", "complete": True}
         ),
         quarantine=lambda reason: events.append("quarantine"),
-        lock_factory=FakeLock,
+        lock_factory=_recording_lock_factory(events),
         canonical_lock_path=lambda: lock_path,
     )
     initial = runner.initial_session(plan)
@@ -813,6 +816,38 @@ def test_coordinator_rejects_factory_lock_path_before_acquire(
         )
 
 
+def test_coordinator_rejects_path_matching_noop_lock_before_p0_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _plan()
+    canonical = tmp_path / "out" / "daily" / ".cre.lock"
+    monkeypatch.setattr(runner, "canonical_shared_lock_dir", lambda: canonical)
+
+    class NoopLock:
+        path = canonical
+
+        def acquire(self) -> None:
+            pytest.fail("non-SharedLock must not be acquired")
+
+    hooks = runner.C10CoordinatorHooks(
+        preflight=lambda *args, **kwargs: pytest.fail("must fail before preflight"),
+        transition=lambda *args, **kwargs: pytest.fail("must fail before transition"),
+        run_browser_arm=lambda *args, **kwargs: pytest.fail("must fail before browser"),
+        settle=lambda *args, **kwargs: pytest.fail("must fail before settlement"),
+        quarantine=lambda *args, **kwargs: pytest.fail("must fail before quarantine"),
+        lock_factory=lambda path: NoopLock(),  # type: ignore[arg-type,return-value]
+        canonical_lock_path=lambda: canonical,
+    )
+
+    with pytest.raises(contracts.C10Error, match="concrete canonical SharedLock"):
+        runner.run_one_coordinated_arm(
+            plan,
+            runner.initial_session(plan),
+            paths=runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json"),
+            hooks=hooks,
+        )
+
+
 def test_coordinator_quarantines_before_releasing_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -821,17 +856,6 @@ def test_coordinator_quarantines_before_releasing_lock(
     monkeypatch.setattr(
         runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
     )
-
-    class FakeLock:
-        def __init__(self, path: Path) -> None:
-            self.path = path
-            self.retain_on_exit = False
-
-        def acquire(self) -> None:
-            events.append("acquire")
-
-        def release(self) -> None:
-            events.append("release")
 
     hooks = runner.C10CoordinatorHooks(
         preflight=lambda profile, out, **kwargs: _runtime_receipt(plan, "p0"),
@@ -846,7 +870,7 @@ def test_coordinator_quarantines_before_releasing_lock(
         },
         settle=lambda arm: pytest.fail("invalid evidence must not settle"),
         quarantine=lambda reason: events.append("quarantine"),
-        lock_factory=FakeLock,
+        lock_factory=_recording_lock_factory(events),
         canonical_lock_path=lambda: tmp_path / ".cre.lock",
     )
     with pytest.raises(contracts.C10Error, match="planned saturation"):
@@ -871,17 +895,6 @@ def test_coordinator_failure_persists_claim_and_blocks_recovery_replay(
         runner, "canonical_shared_lock_dir", lambda: tmp_path / ".cre.lock"
     )
 
-    class FakeLock:
-        def __init__(self, path: Path) -> None:
-            self.path = path
-            self.retain_on_exit = False
-
-        def acquire(self) -> None:
-            events.append("acquire")
-
-        def release(self) -> None:
-            events.append("release")
-
     hooks = runner.C10CoordinatorHooks(
         preflight=lambda profile, out, **kwargs: (
             events.append("preflight") or _runtime_receipt(plan, "p0")
@@ -892,7 +905,7 @@ def test_coordinator_failure_persists_claim_and_blocks_recovery_replay(
         ),
         settle=lambda arm: pytest.fail("crashed arm must not settle"),
         quarantine=lambda reason: events.append("quarantine"),
-        lock_factory=FakeLock,
+        lock_factory=_recording_lock_factory(events),
         canonical_lock_path=lambda: tmp_path / ".cre.lock",
     )
     paths = runner.C10CoordinatorPaths(receipt_path=tmp_path / "p0.json")
@@ -903,15 +916,13 @@ def test_coordinator_failure_persists_claim_and_blocks_recovery_replay(
     with session_store.DurableArmSessionStore(ledger_path) as recovered:
         durable = recovered.session(plan)
         assert durable["consumed_arm_indexes"] == [0]
-    with pytest.raises(contracts.C10Error, match="unresolved claimed"):
+    assert (tmp_path / ".cre.lock").is_dir()
+    with pytest.raises(runner.LockHeldError, match="live owner"):
         runner.run_one_coordinated_arm(plan, durable, paths=paths, hooks=hooks)
     assert events == [
         "acquire",
         "preflight",
         "browser",
-        "quarantine",
-        "release",
-        "acquire",
         "quarantine",
         "release",
     ]
