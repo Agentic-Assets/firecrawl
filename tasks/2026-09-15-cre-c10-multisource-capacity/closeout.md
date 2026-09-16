@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`660b3bc9c05e8e9f6eb0378377a505b21abea444`
+`25f78ce059ae2cb35a9babfa8c0b38379d353df1`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -99,21 +99,24 @@ not change the Wave 1 execution boundary.
 - Because this offline wave has no non-forgeable host attestation, comparison
   reports `offline_measurement_only` and `meets_gain_threshold` for engineering
   analysis but can never emit an adoption-review candidate.
+- Foundry member receipts extract the provider's explicit status note and
+  require the shared reviewed status classifier to return `active`; terminal,
+  unknown, and missing statuses fail before a member receipt is sealed.
 
 ## Verification
 
-The final code candidate `660b3bc9c05e8e9f6eb0378377a505b21abea444`
+The final code candidate `25f78ce059ae2cb35a9babfa8c0b38379d353df1`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
 - `python3 -m pytest -q`: 3217 passed, 18 skipped.
-- `npm test`: TypeScript typecheck passed; 908 passed, 1 expected
+- `npm test`: TypeScript typecheck passed; 909 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Nineteen exact-head Codex review passes produced thirty-eight material findings. All
-thirty-eight were confirmed and fixed: immutable cohort binding, per-source timing,
+Twenty exact-head Codex review passes produced thirty-nine material findings. All
+thirty-nine were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -133,7 +136,8 @@ plus JLL's distinct search-card and numeric detail identities, complete imported
 dependency coverage, complete per-source scheduled cohort parity, and an exact
 reviewed browser engine, plus consumption-time repository authority validation,
 durable-ledger-only comparison inputs, exact complete-plan authority pinning,
-and measurement-only offline comparison with no positive candidate state.
+measurement-only offline comparison with no positive candidate state, and
+Foundry active-status enforcement before member receipt sealing.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
