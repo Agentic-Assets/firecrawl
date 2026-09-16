@@ -32,6 +32,7 @@ import {
   publicKeyId,
   signC10Evidence,
 } from "./c10_browser_internal";
+import { c10TerminalEvidence } from "./c10_browser_response";
 import { executeC10BrowserPageFetch } from "./c10_browser_execution";
 
 // Register stealth plugin before any launch call.
@@ -874,8 +875,13 @@ if (c10V3Enabled && C10_COORDINATOR_PUBLIC_KEY && C10_SIDECAR_EVIDENCE_PRIVATE_K
     }
     // A signed success is never observable until the page/context/permit have
     // all been confirmed cleaned up. An unhealthy sidecar is restart-only.
-    if (!executionFailed && cleanupConfirmed && evidence) {
-      return res.json({ ...evidence, evidenceSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, evidence) });
+    const terminalEvidence = c10TerminalEvidence(
+      evidence,
+      executionFailed,
+      cleanupConfirmed,
+    );
+    if (terminalEvidence) {
+      return res.json({ ...terminalEvidence, evidenceSignature: signC10Evidence(C10_SIDECAR_EVIDENCE_PRIVATE_KEY, terminalEvidence) });
     }
     console.error("C10 internal browser execution quarantined");
     return res.status(502).json({ error: "C10 internal browser execution quarantined" });
