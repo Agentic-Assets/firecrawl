@@ -3,7 +3,7 @@
 **Branch:** `feat/cre-c10-multisource-capacity`
 **Base:** `main` at `db801fa551260e90e6139b6fbfd2d03af0f65048`
 **Implementation range:** `16fb3567a14ade2a4b9690fa0c58daa65ec7b643` through
-`e48262c9ac740f84711868e9080d9e6242646216`
+`2a8b037a239c71cc7d6d0dc0d51ac9c1b5134f5a`
 **State:** [PR #66](https://github.com/Agentic-Assets/firecrawl/pull/66) is the
 repository-integration candidate; no runtime or data mutation occurred.
 
@@ -70,32 +70,34 @@ not change the Wave 1 execution boundary.
 - Execution and comparison revalidate the canonical policy digest, exact source
   set and schema, fixed 12/8 plane allocation, and exact P0/P1 resource tuples.
   A caller cannot make an arbitrary direct plan admissible merely by rehashing it.
-- `admit_plan()` issues a process-local admission capability only after cohort and
-  adapter verification. Execution, session, and comparison reject plain JSON
-  copies or self-rehashed mappings even when their structural fields look valid.
+- `admit_plan()` can issue a process-local capability only after the canonical
+  repository authority approves one exact cohort digest and all twenty actual
+  source-tree implementation digests. The checked-in authority approves none,
+  so this wave cannot issue a plan. Execution, session, and comparison reject
+  plain JSON copies or self-rehashed mappings even when their fields look valid.
 - Buildout inventory cards use the provider-supported `q[s][]` array-form stable
   sort, matching the production adapter's cross-page ordering contract.
 - Adapter admission now requires the exact concrete repository implementation
-  type and reviewed digest for every policy slot. A caller-created object cannot
-  acquire plan authority by self-declaring a verification flag and SHA-shaped
-  string.
+  type plus approval from immutable repository configuration. Implementation
+  fingerprints hash actual verifier source files and shared dependencies rather
+  than mutable flags, caller-provided values, or version labels.
 - Marcus member receipts extract the native `DealId` from `PropertyDetail` and
   require it to match the selected provider identity before sealing evidence.
 
 ## Verification
 
-The final code candidate `e48262c9ac740f84711868e9080d9e6242646216`
+The final code candidate `2a8b037a239c71cc7d6d0dc0d51ac9c1b5134f5a`
 passed the complete collector suites and static gates before this closeout-only
 correction:
 
-- `python3 -m pytest -q`: 3212 passed, 18 skipped.
+- `python3 -m pytest -q`: 3213 passed, 18 skipped.
 - `npm test`: TypeScript typecheck passed; 908 passed, 1 expected
   platform skip, 0 failed.
 - Changed Python: Ruff I/F, Ruff format, and `python3 -m py_compile` passed.
 - `git diff --check` and the conflict-marker guard passed.
 
-Thirteen exact-head Codex review passes produced twenty-six material findings. All
-twenty-six were confirmed and fixed: immutable cohort binding, per-source timing,
+Fourteen exact-head Codex review passes produced twenty-nine material findings. All
+twenty-nine were confirmed and fixed: immutable cohort binding, per-source timing,
 Buildout `show_link`, fail-closed Deal Flow blocking, bounded member-graph
 sharding, bounded cumulative request-accounting commitments, and recursively
 immutable strict-detail plans, plus cohort-bounded qualified rows and durable
@@ -108,8 +110,9 @@ Colliers slices, and Marcus map inventory, with each member graph expansion
 bound to the enumeration event that exposed it, plus canonical fixed-policy
 revalidation and an admission-issued cohort/adapter capability at the execution
 and comparison boundary, plus Buildout's provider-supported array-form stable
-sort for cross-page inventory enumeration, exact concrete adapter provenance,
-and Marcus native `DealId` verification from `PropertyDetail`.
+sort for cross-page inventory enumeration, Marcus native `DealId` verification
+from `PropertyDetail`, and a non-substitutable repository authority that pins a
+real cohort and source-byte-derived verifier implementations before admission.
 The threads were answered and resolved.
 GitHub Actions are not used as the primary completion proof. The exact final PR
 head and fresh review status must still be read back after this documentation
