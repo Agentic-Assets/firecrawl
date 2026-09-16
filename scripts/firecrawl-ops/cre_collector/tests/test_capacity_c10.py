@@ -154,14 +154,20 @@ def _arm(
         ],
     }
     evidence["evidence_sha256"] = contracts.sha256(evidence)
-    return {
-        "plan_sha256": plan["plan_sha256"],
-        "index": index,
-        "variant": variant,
-        "terminal": True,
-        **_no_write(),
-        "sealed_browser_evidence": evidence,
-    }
+    return contracts._seal_coordinated_arm(
+        {
+            "plan_sha256": plan["plan_sha256"],
+            "index": index,
+            "variant": variant,
+            "terminal": True,
+            **_no_write(),
+            "sealed_browser_evidence": evidence,
+        }
+    )  # type: ignore[return-value]
+
+
+def _reseal_arm(arm: Mapping[str, object]) -> dict[str, object]:
+    return contracts._seal_coordinated_arm(json.loads(json.dumps(arm)))  # type: ignore[return-value]
 
 
 def test_policy_is_hashed_fixed_and_preserves_twenty_source_twelve_eight_floor() -> (
@@ -355,7 +361,13 @@ def test_durable_claim_is_atomic_terminal_and_never_replays_after_recovery(
         assert claimed["arm"]["index"] == 0
         with pytest.raises(contracts.C10Error, match="unresolved claimed"):
             store.claim(plan, claimed["session"])
-        result = {"terminal": True, "arm": claimed["arm"]}
+        with pytest.raises(contracts.C10Error, match="authenticated coordinator"):
+            store.mark_terminal(
+                plan, claimed["arm"], {"terminal": True, "arm": claimed["arm"]}
+            )
+        result = contracts._seal_coordinated_arm(
+            {"terminal": True, "arm": claimed["arm"]}
+        )
         store.mark_terminal(plan, claimed["arm"], result)
         assert store.session(plan) == claimed["session"]
         persisted = json.loads(path.read_text())
@@ -409,7 +421,9 @@ def test_durable_terminal_result_rejects_tamper_and_oversize(
             store.mark_terminal(
                 plan,
                 claimed["arm"],
-                {"terminal": True, "evidence": "x" * (1024 * 1024)},
+                contracts._seal_coordinated_arm(
+                    {"terminal": True, "evidence": "x" * (1024 * 1024)}
+                ),
             )
 
     persisted = json.loads(path.read_text())
@@ -874,6 +888,19 @@ def test_comparator_is_plane_separated_no_write_and_never_executable_adoption() 
     )
 
 
+def test_comparator_rejects_plain_or_mutated_arm_mappings() -> None:
+    plan = _plan()
+    arms = [_arm(plan, index) for index in range(8)]
+    arms[0] = json.loads(json.dumps(arms[0]))
+    with pytest.raises(contracts.C10Error, match="authenticated coordinator evidence"):
+        compare.compare(plan, arms)
+
+    arms = [_arm(plan, index) for index in range(8)]
+    arms[0]["sealed_browser_evidence"]["sources"][0]["qualified_rows"] = 16
+    with pytest.raises(contracts.C10Error, match="authenticated coordinator evidence"):
+        compare.compare(plan, arms)
+
+
 def test_comparator_rejects_missing_source_or_write_claim() -> None:
     plan = _plan()
     arms = [_arm(plan, index) for index in range(8)]
@@ -882,10 +909,12 @@ def test_comparator_rejects_missing_source_or_write_claim() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="exactly match"):
         compare.compare(plan, arms)
     arms = [_arm(plan, index) for index in range(8)]
     arms[0]["no_write"]["cache_writes"] = 1
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="no-write"):
         compare.compare(plan, arms)
     arms = [_arm(plan, index) for index in range(8)]
@@ -894,6 +923,7 @@ def test_comparator_rejects_missing_source_or_write_claim() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="exactly match"):
         compare.compare(plan, arms)
 
@@ -906,6 +936,7 @@ def test_comparator_binds_source_cohort_and_serial_source_timing() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="browser-rendered"):
         compare.compare(plan, arms)
 
@@ -917,6 +948,7 @@ def test_comparator_binds_source_cohort_and_serial_source_timing() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="serial browser arm"):
         compare.compare(plan, arms)
 
@@ -931,6 +963,7 @@ def test_comparator_bounds_qualified_rows_and_treats_zero_as_not_adoptable() -> 
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="within the immutable cohort"):
         compare.compare(plan, arms)
 
@@ -940,6 +973,7 @@ def test_comparator_bounds_qualified_rows_and_treats_zero_as_not_adoptable() -> 
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[1] = _reseal_arm(arms[1])
     result = compare.compare(plan, arms)
     assert result["state"] == "measured_not_adoptable"
     assert result["adoptable"] is False
@@ -970,6 +1004,7 @@ def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="browser-rendered"):
         compare.compare(plan, arms)
     arms = [_arm(plan, index) for index in range(8)]
@@ -978,6 +1013,7 @@ def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="browser-rendered"):
         compare.compare(plan, arms)
     arms = [_arm(plan, index) for index in range(8)]
@@ -986,6 +1022,7 @@ def test_comparator_rejects_direct_or_unsaturated_browser_evidence() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="planned saturation"):
         compare.compare(plan, arms)
 
@@ -998,6 +1035,7 @@ def test_comparator_requires_every_immutable_member_to_be_scheduled() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="planned saturation"):
         compare.compare(plan, arms)
 
@@ -1007,6 +1045,7 @@ def test_comparator_requires_every_immutable_member_to_be_scheduled() -> None:
     evidence["evidence_sha256"] = contracts.sha256(
         {key: value for key, value in evidence.items() if key != "evidence_sha256"}
     )
+    arms[0] = _reseal_arm(arms[0])
     with pytest.raises(contracts.C10Error, match="browser-rendered"):
         compare.compare(plan, arms)
 

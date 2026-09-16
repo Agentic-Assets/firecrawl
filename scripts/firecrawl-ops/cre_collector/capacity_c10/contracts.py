@@ -51,6 +51,7 @@ class C10Error(ValueError):
 
 
 _ADMISSION_TOKEN = object()
+_COORDINATION_TOKEN = object()
 
 
 class _AdmittedPlan(dict[str, Any]):
@@ -77,6 +78,32 @@ class _AdmittedPlan(dict[str, Any]):
 def _seal_admitted_plan(value: Mapping[str, Any]) -> Mapping[str, Any]:
     """Issue the opaque execution capability after ``admit_plan`` verifies inputs."""
     return _AdmittedPlan(value, _ADMISSION_TOKEN)
+
+
+class _CoordinatedArm(dict[str, Any]):
+    """Process-local capability issued from validated coordinator/ledger state."""
+
+    __slots__ = ("_sealed_sha256",)
+
+    def __init__(self, value: Mapping[str, Any], token: object) -> None:
+        if token is not _COORDINATION_TOKEN:
+            raise C10Error("C10 coordinated arms can only be issued internally")
+        super().__init__(json.loads(canonical_bytes(value)))
+        object.__setattr__(self, "_sealed_sha256", sha256(dict(self)))
+
+    def coordination_is_intact(self) -> bool:
+        return self._sealed_sha256 == sha256(dict(self))
+
+
+def _seal_coordinated_arm(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Issue arm authority after coordinator or durable-ledger validation."""
+    return _CoordinatedArm(value, _COORDINATION_TOKEN)
+
+
+def require_coordinated_arm(value: Mapping[str, Any]) -> None:
+    """Reject ordinary or mutated mappings at execution/comparison boundaries."""
+    if type(value) is not _CoordinatedArm or not value.coordination_is_intact():
+        raise C10Error("C10 arm is not authenticated coordinator evidence")
 
 
 def canonical_bytes(value: Any) -> bytes:

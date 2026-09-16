@@ -10,6 +10,7 @@ from typing import Any
 from .contracts import (
     ARM_SEQUENCE,
     C10Error,
+    require_coordinated_arm,
     require_no_write,
     require_sha256,
     sha256,
@@ -191,6 +192,7 @@ def _browser_evidence_rates(
 def _validated_arm(
     plan: Mapping[str, Any], arm: Mapping[str, Any], index: int
 ) -> dict[str, float]:
+    require_coordinated_arm(arm)
     if (
         arm.get("plan_sha256") != plan["plan_sha256"]
         or arm.get("index") != index

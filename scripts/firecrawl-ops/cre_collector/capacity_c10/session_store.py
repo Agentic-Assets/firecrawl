@@ -18,8 +18,10 @@ from typing import Any, Self
 
 from .contracts import (
     C10Error,
+    _seal_coordinated_arm,
     claim_next_arm,
     new_session,
+    require_coordinated_arm,
     require_sha256,
     sha256,
     validate_plan,
@@ -319,6 +321,7 @@ class DurableArmSessionStore:
         self, plan: Mapping[str, Any], arm: Mapping[str, Any], result: Mapping[str, Any]
     ) -> None:
         """Atomically commit a completed arm after all settlement and rollback checks."""
+        require_coordinated_arm(result)
         descriptor = self._lock()
         try:
             state = self._read_state()
@@ -366,7 +369,7 @@ class DurableArmSessionStore:
                 raise C10Error("C10 durable session claim is missing")
             self._validate_state(plan, state)
             return [
-                json.loads(_canonical(arm["result"]))
+                _seal_coordinated_arm(json.loads(_canonical(arm["result"])))
                 for arm in state["arms"]
                 if arm["state"] == "terminal"
             ]
