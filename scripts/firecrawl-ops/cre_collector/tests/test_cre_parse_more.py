@@ -62,14 +62,14 @@ def test_parse_lease_rate_per_sf_context_only_letters():
 
 def test_parse_lease_rate_monthly_annualizes():
     """A per-month rate is multiplied x12 (line 184-185)."""
-    lo, hi, t = p.parse_lease_rate("$3.00/sf/mo")
+    lo, hi, t = p.parse_lease_rate("USD 3.00/sf/mo")
     assert lo == pytest.approx(36.0)
     assert hi is None
 
 
 def test_parse_lease_rate_monthly_range_annualizes():
     """A monthly range is annualized: both ends x12."""
-    lo, hi, t = p.parse_lease_rate("$2.50 - $3.50/sf/mo")
+    lo, hi, t = p.parse_lease_rate("USD 2.50 - $3.50/sf/mo")
     assert lo == pytest.approx(30.0)
     assert hi == pytest.approx(42.0)
 
@@ -82,13 +82,13 @@ def test_parse_lease_rate_not_annual_over_100_no_marker():
 
 def test_parse_lease_rate_not_annual_exactly_100_is_ok():
     """$100/sf with no explicit annual marker is under the >100 threshold -> kept."""
-    lo, hi, t = p.parse_lease_rate("$100.00 /sf")
+    lo, hi, t = p.parse_lease_rate("USD 100.00 /sf/year")
     assert lo == pytest.approx(100.0)
 
 
 def test_parse_lease_rate_annual_marker_over_100_accepted():
     """Per-SF > 100 with explicit annual marker (/yr) -> NOT blocked by line 186-188."""
-    lo, hi, t = p.parse_lease_rate("$120.00 /sf/yr")
+    lo, hi, t = p.parse_lease_rate("USD 120.00 /sf/yr")
     assert lo == pytest.approx(120.0)
 
 
@@ -243,25 +243,12 @@ def test_classify_doc_buildout_docs_path():
 
 
 # ---------------------------------------------------------------------------
-# parse_lease_rate: monthly annualized x12 exceeds _MAX_LEASE_PSF_YR cap (line 192)
-# ---------------------------------------------------------------------------
+# Explicit monthly rates preserve high annual values.
 
 
-def test_parse_lease_rate_monthly_annualized_over_max_cap_returns_none():
-    """Line 192: monthly rate x12 exceeds _MAX_LEASE_PSF_YR (500) -> nums empty -> None.
-
-    $50/sf/mo * 12 = $600/sf/yr which is > 500 cap, so the filter
-    'nums = [n for n in nums if 0 < n <= _MAX_LEASE_PSF_YR]' empties nums,
-    triggering 'if not nums: return None, None, None' at line 192.
-    """
-    result = p.parse_lease_rate("$50.00/sf/mo")
-    assert result == (None, None, None)
-
-
-def test_parse_lease_rate_monthly_42_annualized_over_cap():
-    """$42/sf/mo * 12 = $504/sf/yr > 500 cap -> line 192 None."""
-    result = p.parse_lease_rate("$42.00/sf/mo")
-    assert result == (None, None, None)
+def test_high_monthly_rate_is_preserved():
+    assert p.parse_lease_rate("USD 50/sf/mo") == (600, None, None)
+    assert p.parse_lease_rate("USD 42/sf/mo") == (504, None, None)
 
 
 import pytest

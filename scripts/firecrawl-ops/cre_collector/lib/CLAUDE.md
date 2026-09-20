@@ -26,6 +26,11 @@
 
 ## Integration & Gotchas
 
+- Rent parsing requires explicit USD, SF denominator, and period. See
+  `../../../docs/firecrawl-ops/references/rent-comp-evidence-v1.md` from the
+  collector root. `rent-evidence.ts` mirrors `cre_rent_evidence.py`; supported
+  high rates remain present with anomaly flags, never magnitude caps.
+
 - One `broker.ts` table per `collect.ts` run across all sources.
 - Importing `config.ts` parses argv; tests needing scrape/util alone should avoid it.
 - `num()` drops zero; `parseJsonBody` handles Chrome JSON viewer and bad quotes.

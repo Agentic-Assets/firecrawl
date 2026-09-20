@@ -366,13 +366,10 @@ def derive_avison_young(raw):
     _set(cols, "max_divisible_sf",
          num_or_none(rsl.get("availabilities_max_surface_sqft"), lo=0, hi=1e9))
 
-    # lease_rate_min/max <- availabilities_min_rent / availabilities_max_rent.
-    # (DQ guard 3) AY anomalous $7500/SF/YR: clamp through the >500 cap so the
-    # known anomaly is rejected exactly like cre_parse.parse_lease_rate would.
-    _set(cols, "lease_rate_min",
-         num_or_none(rsl.get("availabilities_min_rent"), lo=0, hi=500))
-    _set(cols, "lease_rate_max",
-         num_or_none(rsl.get("availabilities_max_rent"), lo=0, hi=500))
+    # Numeric source fields alone cannot establish currency or period.
+    rent_min, rent_max, _ = cre_parse.parse_lease_rate(dual_get(raw, "leaseRateText"))
+    _set(cols, "lease_rate_min", rent_min)
+    _set(cols, "lease_rate_max", rent_max)
 
     # submarket <- submarket.
     _set(cols, "submarket", clean_text(rsl.get("submarket"), 128))
@@ -477,9 +474,9 @@ def derive_transwestern(raw):
             if not is_sale:
                 lease_sizes.append(sz)
         if not is_sale:
-            # lease rate: rate<1000 psf, parse via cre_parse (annualized psf).
+            # Shared parser validates source units without magnitude caps.
             lo, _hi, _t = cre_parse.parse_lease_rate(row.get("rate"))
-            if lo is not None and lo < 1000:
+            if lo is not None:
                 lease_rates.append(lo)
             # lease_rate_type token lives in raw[]: match against the vocabulary,
             # index VARIES, so scan each token (never hardcode an index).
@@ -491,8 +488,8 @@ def derive_transwestern(raw):
     if lease_sizes:
         _set(cols, "available_sf", num_or_none(sum(lease_sizes), lo=0, hi=1e9))
     if lease_rates:
-        _set(cols, "lease_rate_min", num_or_none(min(lease_rates), lo=0, hi=500))
-        _set(cols, "lease_rate_max", num_or_none(max(lease_rates), lo=0, hi=500))
+        _set(cols, "lease_rate_min", min(lease_rates))
+        _set(cols, "lease_rate_max", max(lease_rates))
     if lease_type_token:
         _set(cols, "lease_rate_type", norm_lease_rate_type(lease_type_token))
 
@@ -608,9 +605,10 @@ def derive_nai_global(raw):
     if mode == "sale":
         _set(cols, "sale_price_usd", num_or_none(price, lo=100, hi=1e11))
     elif mode == "lease":
-        # per-SF annual lease price.
-        _set(cols, "lease_rate_min", num_or_none(price, lo=0, hi=500))
-        _set(cols, "lease_rate_max", num_or_none(price, lo=0, hi=500))
+        # Do not relabel foreign or ambiguous rent as annual USD/SF.
+        rent_min, rent_max, _ = cre_parse.parse_lease_rate(dual_get(raw, "leaseRateText"))
+        _set(cols, "lease_rate_min", rent_min)
+        _set(cols, "lease_rate_max", rent_max)
 
     # min/max divisible <- sizeRangeL / sizeRangeH (non-zero).
     _set(cols, "min_divisible_sf", num_or_none(post.get("sizeRangeL"), lo=0, hi=1e9))

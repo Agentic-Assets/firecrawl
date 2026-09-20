@@ -53,6 +53,7 @@ from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunspli
 # below (parse_lease_rates, parse_money, parse_size_text, is_sale_psf_text)
 # delegate to it without changing their observable to_row()-level behavior.
 import cre_parse
+from cre_rent_evidence import rent_evidence, with_listing_evidence
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -2461,21 +2462,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
         # overwrite a correctly rejected explicit value.
         price_per_sf = num_or_none(round(sale_price / size_sf, 2), lo=0, hi=10000)
 
-    # (DQ guard 3) AY $5000/SF/YR anomaly + the >500 $/SF/yr cap live in
-    # cre_parse.parse_lease_rate, so parse_lease_rates returns (None, None) for them.
-    lease_min, lease_max = parse_lease_rates(listing.get("leaseRateText"))
-    # An adapter may pre-parse a cleaner lease rate than leaseRateText; prefer the
-    # explicit leaseRateMin/Max when present (contract B), COALESCE-style.
-    lease_min = (
-        lease_min
-        if lease_min is not None
-        else num_or_none(listing.get("leaseRateMin"), lo=0, hi=500)
-    )
-    lease_max = (
-        lease_max
-        if lease_max is not None
-        else num_or_none(listing.get("leaseRateMax"), lo=0, hi=500)
-    )
+    rate_evidence = rent_evidence(listing.get("leaseRateText"), listing.get("leaseRateSourceLabel"))
+    lease_min = rate_evidence["annual_psf_min"]
+    lease_max = rate_evidence["annual_psf_max"]
     if jll_pricing_withheld or jll_foreign_lease_currency:
         lease_min = None
         lease_max = None
@@ -2764,7 +2753,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         # compatibility fallback for legacy/non-strict artifacts and must not
         # manufacture current detail freshness.
         "scraped_at": observation_scraped_at or scraped_at,
-        "raw_data": _safe_jll_raw_data(listing),
+        "raw_data": with_listing_evidence(_safe_jll_raw_data(listing), group_source_lastmod([listing]), observation_scraped_at or scraped_at),
         "contacts": contacts,
         "documents": documents,
         "images": images,
