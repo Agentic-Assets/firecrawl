@@ -42,10 +42,21 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             "sources": {
                 "jll": {
                     "state": "ingested",
-                    "ingest_recovery": {"outcome": "exact_rollback", "replay_safe": True},
+                    "ingest_recovery": {
+                        "outcome": "exact_rollback",
+                        "replay_safe": True,
+                    },
                     "ingest": {"rc": 0, "finished_at": "2026-09-22T19:00:00Z"},
-                    "readback": {"ok": True, "generation_id": "child-1", "expected_staged_unique": 1},
-                    "artifact": {"sha256": self.artifact_sha, "path": "sources/jll.json", "staged_unique": 1},
+                    "readback": {
+                        "ok": True,
+                        "generation_id": "child-1",
+                        "expected_staged_unique": 1,
+                    },
+                    "artifact": {
+                        "sha256": self.artifact_sha,
+                        "path": "sources/jll.json",
+                        "staged_unique": 1,
+                    },
                 }
             },
         }
@@ -82,7 +93,9 @@ class ReconcileSeriesChildTests(unittest.TestCase):
 
     def test_mutated_artifact_is_refused(self) -> None:
         self.artifact.write_bytes(b"changed")
-        with self.assertRaisesRegex(ReconciliationError, "immutable artifact bytes differ"):
+        with self.assertRaisesRegex(
+            ReconciliationError, "immutable artifact bytes differ"
+        ):
             self._validate()
 
     def test_missing_exact_rollback_is_refused(self) -> None:
@@ -106,7 +119,9 @@ class ReconcileSeriesChildTests(unittest.TestCase):
     def test_non_series_success_status_is_refused(self) -> None:
         self.child["status"] = "additive_scope_complete_coverage_hold"
         self._write()
-        with self.assertRaisesRegex(ReconciliationError, "expected child has not completed"):
+        with self.assertRaisesRegex(
+            ReconciliationError, "expected child has not completed"
+        ):
             self._validate()
 
 

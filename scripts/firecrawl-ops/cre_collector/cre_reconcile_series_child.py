@@ -30,7 +30,9 @@ def _load_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ReconciliationError(f"cannot read {path.name}: {type(exc).__name__}") from exc
+        raise ReconciliationError(
+            f"cannot read {path.name}: {type(exc).__name__}"
+        ) from exc
     if not isinstance(value, dict):
         raise ReconciliationError(f"{path.name} must contain an object")
     return value
@@ -45,7 +47,10 @@ def _sha256(path: Path) -> str:
 
 
 def _require_clean_checkout(series_dir: Path, expected_sha: str) -> None:
-    if series_dir.parent.name != "checkpoint-series" or series_dir.parent.parent.name != "out":
+    if (
+        series_dir.parent.name != "checkpoint-series"
+        or series_dir.parent.parent.name != "out"
+    ):
         raise ReconciliationError("series directory is outside the checkpoint layout")
     checkout = series_dir.parents[2]
     try:
@@ -70,7 +75,10 @@ def validate_reconciliation(
     expected_artifact_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     parent = _load_object(series_dir / "manifest.json")
-    if parent.get("schema_version") != 1 or parent.get("collector_git_sha") != expected_sha:
+    if (
+        parent.get("schema_version") != 1
+        or parent.get("collector_git_sha") != expected_sha
+    ):
         raise ReconciliationError("parent schema or collector SHA differs")
     if parent.get("status") != "failed":
         raise ReconciliationError("parent must be failed")
@@ -83,16 +91,26 @@ def validate_reconciliation(
     if checkpoint.get("checkpoint_run") != str(child_relative):
         raise ReconciliationError("parent is not bound to the expected child")
     attempts = checkpoint.get("attempts")
-    if not isinstance(attempts, list) or not attempts or attempts[-1].get("rc") in (None, 0):
+    if (
+        not isinstance(attempts, list)
+        or not attempts
+        or attempts[-1].get("rc") in (None, 0)
+    ):
         raise ReconciliationError("parent lacks a recorded failed child attempt")
 
     child_dir = series_dir / child_relative
     if child_dir.resolve().parent != (series_dir / "runs").resolve():
         raise ReconciliationError("child path escapes the series")
     child = _load_object(child_dir / "manifest.json")
-    if child.get("schema_version") != 2 or child.get("collector_git_sha") != expected_sha:
+    if (
+        child.get("schema_version") != 2
+        or child.get("collector_git_sha") != expected_sha
+    ):
         raise ReconciliationError("child schema or collector SHA differs")
-    if child.get("run_id") != expected_child_run or child.get("status") != SUCCESS_STATUS:
+    if (
+        child.get("run_id") != expected_child_run
+        or child.get("status") != SUCCESS_STATUS
+    ):
         raise ReconciliationError("expected child has not completed")
     validation = child.get("validation") or {}
     if validation.get("rc") != 0 or validation.get("readback_ok") is not True:
@@ -100,16 +118,25 @@ def validate_reconciliation(
     if (child.get("config") or {}).get("sources") != [source]:
         raise ReconciliationError("child source scope differs")
     child_checkpoint = (child.get("sources") or {}).get(source)
-    if not isinstance(child_checkpoint, dict) or child_checkpoint.get("state") != "ingested":
+    if (
+        not isinstance(child_checkpoint, dict)
+        or child_checkpoint.get("state") != "ingested"
+    ):
         raise ReconciliationError("child source is not ingested")
     recovery = child_checkpoint.get("ingest_recovery") or {}
-    if recovery.get("outcome") != "exact_rollback" or recovery.get("replay_safe") is not True:
+    if (
+        recovery.get("outcome") != "exact_rollback"
+        or recovery.get("replay_safe") is not True
+    ):
         raise ReconciliationError("child lacks exact rollback evidence")
     ingest = child_checkpoint.get("ingest") or {}
     if ingest.get("rc") != 0 or ingest.get("finished_at") is None:
         raise ReconciliationError("child lacks a completed live ingest")
     readback = child_checkpoint.get("readback") or {}
-    if readback.get("ok") is not True or readback.get("generation_id") != expected_child_run:
+    if (
+        readback.get("ok") is not True
+        or readback.get("generation_id") != expected_child_run
+    ):
         raise ReconciliationError("child lacks exact generation readback")
     artifact = child_checkpoint.get("artifact") or {}
     if readback.get("expected_staged_unique") != artifact.get("staged_unique"):
@@ -118,9 +145,15 @@ def validate_reconciliation(
         raise ReconciliationError("artifact digest differs from expected")
     relative_artifact = Path(str(artifact.get("path") or ""))
     artifact_path = child_dir / relative_artifact
-    if relative_artifact.is_absolute() or artifact_path.resolve().parent != (child_dir / "sources").resolve():
+    if (
+        relative_artifact.is_absolute()
+        or artifact_path.resolve().parent != (child_dir / "sources").resolve()
+    ):
         raise ReconciliationError("artifact path escapes the child")
-    if not artifact_path.is_file() or _sha256(artifact_path) != expected_artifact_sha256:
+    if (
+        not artifact_path.is_file()
+        or _sha256(artifact_path) != expected_artifact_sha256
+    ):
         raise ReconciliationError("immutable artifact bytes differ")
     return parent, child
 
@@ -188,7 +221,9 @@ def main() -> int:
     }
     parent["updated_at"] = checkpoint["reconciliation"]["recorded_at"]
     _atomic_write_json(parent_path, parent)
-    print("parent source reconciled; resume the pinned series with its original configuration")
+    print(
+        "parent source reconciled; resume the pinned series with its original configuration"
+    )
     return 0
 
 
