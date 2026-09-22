@@ -797,6 +797,18 @@ resume. Any partial, conflicting, or missing probe remains
 generation ID, exact active canonical count, exact inventory-only scope count,
 and observation timestamps no earlier than the generation start.
 
+If an exact rollback makes the child replay-safe but the parent series has
+already recorded `failed_global`, resume the bound child directly with its
+original arguments and pinned collector SHA. Do not restart collection or
+hand-edit either manifest. Once the child reports `supported_scope_complete`
+and its final readback passes, use `cre_reconcile_series_child.py` first
+without `--apply` to verify the failed parent, exact child, immutable artifact
+digest, rollback evidence, and clean pinned checkout. Review that result,
+then repeat with `--apply` and the same explicit expected SHA, child run ID,
+source, and artifact digest. The command atomically records the reconciliation
+in the parent; resume the parent series with its original configuration.
+An incomplete child, changed artifact, or failed readback is not admissible.
+
 **Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
 one HTML card per project, while the map endpoint emits one row per map pin.
 Never pair raw map rows to cards by array index. The adapter first groups map
