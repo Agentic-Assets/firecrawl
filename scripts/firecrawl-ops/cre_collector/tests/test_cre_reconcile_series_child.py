@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
-from cre_reconcile_series_child import ReconciliationError, validate_reconciliation
+from cre_reconcile_series_child import (
+    ReconciliationError,
+    main,
+    validate_reconciliation,
+)
 
 
 class ReconcileSeriesChildTests(unittest.TestCase):
@@ -91,6 +98,16 @@ class ReconcileSeriesChildTests(unittest.TestCase):
         with self.assertRaisesRegex(ReconciliationError, "bound to the expected child"):
             self._validate()
 
+    def test_child_path_traversal_is_refused(self) -> None:
+        with self.assertRaisesRegex(ReconciliationError, "one exact directory name"):
+            validate_reconciliation(
+                self.series,
+                source="jll",
+                expected_sha="a" * 40,
+                expected_child_run="../child-1",
+                expected_artifact_sha256=self.artifact_sha,
+            )
+
     def test_mutated_artifact_is_refused(self) -> None:
         self.artifact.write_bytes(b"changed")
         with self.assertRaisesRegex(
@@ -123,6 +140,39 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             ReconciliationError, "expected child has not completed"
         ):
             self._validate()
+
+    def test_apply_records_completion_without_changing_child(self) -> None:
+        original_child = (self.child_dir / "manifest.json").read_bytes()
+        argv = [
+            "cre_reconcile_series_child.py",
+            "--series-dir",
+            str(self.series),
+            "--source",
+            "jll",
+            "--expected-collector-sha",
+            "a" * 40,
+            "--expected-child-run",
+            "child-1",
+            "--expected-artifact-sha256",
+            self.artifact_sha,
+            "--apply",
+        ]
+        with (
+            patch("sys.argv", argv),
+            patch("cre_reconcile_series_child._require_clean_checkout"),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(main(), 0)
+        updated = json.loads((self.series / "manifest.json").read_text())
+        self.assertEqual(updated["status"], "failed")
+        self.assertEqual(updated["sources"]["jll"]["state"], "complete")
+        self.assertEqual(
+            updated["sources"]["jll"]["checkpoint_status"],
+            "supported_scope_complete",
+        )
+        self.assertEqual(
+            (self.child_dir / "manifest.json").read_bytes(), original_child
+        )
 
 
 if __name__ == "__main__":

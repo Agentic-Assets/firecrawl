@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from cre_resource_recovery import SeriesOwnershipLock
+
 
 SUCCESS_STATUS = "supported_scope_complete"
 
@@ -74,6 +76,11 @@ def validate_reconciliation(
     expected_child_run: str,
     expected_artifact_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    if Path(expected_child_run).name != expected_child_run or expected_child_run in {
+        ".",
+        "..",
+    }:
+        raise ReconciliationError("child run must be one exact directory name")
     parent = _load_object(series_dir / "manifest.json")
     if (
         parent.get("schema_version") != 1
@@ -187,6 +194,10 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     series_dir = args.series_dir.resolve()
+    if Path(
+        args.expected_child_run
+    ).name != args.expected_child_run or args.expected_child_run in {".", ".."}:
+        raise ReconciliationError("child run must be one exact directory name")
     _require_clean_checkout(series_dir, args.expected_collector_sha)
     parent_path = series_dir / "manifest.json"
     child_path = series_dir / "runs" / args.expected_child_run / "manifest.json"
@@ -207,20 +218,29 @@ def main() -> int:
     if not args.apply:
         print("dry run; parent remains failed")
         return 0
-    if _sha256(parent_path) != parent_before or _sha256(child_path) != child_before:
-        raise ReconciliationError("manifest changed during review")
-    checkpoint = parent["sources"][args.source]
-    checkpoint["state"] = "complete"
-    checkpoint["checkpoint_status"] = child["status"]
-    checkpoint["error"] = None
-    checkpoint["reconciliation"] = {
-        "kind": "exact_rollback_child_completion_v1",
-        "child_run": str(Path("runs") / args.expected_child_run),
-        "artifact_sha256": args.expected_artifact_sha256,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-    }
-    parent["updated_at"] = checkpoint["reconciliation"]["recorded_at"]
-    _atomic_write_json(parent_path, parent)
+    with SeriesOwnershipLock(series_dir / ".series.lock"):
+        _require_clean_checkout(series_dir, args.expected_collector_sha)
+        if _sha256(parent_path) != parent_before or _sha256(child_path) != child_before:
+            raise ReconciliationError("manifest changed during review")
+        parent, child = validate_reconciliation(
+            series_dir,
+            source=args.source,
+            expected_sha=args.expected_collector_sha,
+            expected_child_run=args.expected_child_run,
+            expected_artifact_sha256=args.expected_artifact_sha256,
+        )
+        checkpoint = parent["sources"][args.source]
+        checkpoint["state"] = "complete"
+        checkpoint["checkpoint_status"] = child["status"]
+        checkpoint["error"] = None
+        checkpoint["reconciliation"] = {
+            "kind": "exact_rollback_child_completion_v1",
+            "child_run": str(Path("runs") / args.expected_child_run),
+            "artifact_sha256": args.expected_artifact_sha256,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        parent["updated_at"] = checkpoint["reconciliation"]["recorded_at"]
+        _atomic_write_json(parent_path, parent)
     print(
         "parent source reconciled; resume the pinned series with its original configuration"
     )
