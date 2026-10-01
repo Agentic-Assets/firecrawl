@@ -1,7 +1,10 @@
 # Local Firecrawl Agent Adoption Plan
 
 **Date:** 2026-08-14
-**Status:** proposed, no runtime or production change authorized
+**Status:** historical proposal, no runtime or production change authorized
+**Current execution authority:** live AGENTIC-2253 and its child issues. This
+reference preserves design rationale; it is not a second plan or status ledger.
+Tracking, labels and closeout follow root `AGENTS.md`.
 **Linear project:** Firecrawl Ops & Automation
 **Parent context:** [AGENTIC-2253](https://linear.app/agenticassets/issue/AGENTIC-2253/local-firecrawl-api-agent-cli-crawl-polling-parse-quality-and)
 
@@ -99,7 +102,7 @@ the `linear-cli` skill instead.
 | Python helper changes | `ruff`, `pytest-patterns`, and `pytest-coverage` when a coverage target is agreed | `ruff`, `py_compile`, focused tests, monotonic-time and HTTP fixtures |
 | API or model-path changes | `firecrawl-local-api` and the API harness rules in `AGENTS.md` | `pnpm harness vitest run <pattern>`, AI-gated snips, Vercel AI Gateway provider configuration |
 | Security decision work | `codex-security:threat-model`, only after a founder-authorized repository-scoped decision | static allowlist/deny tests, Compose inspection, no live ingress or sandbox change |
-| Tracking and closeout | `linear-cli`, `branch-closeout`, and `adversarial-pr-review` before a non-trivial merge | authenticated `linear` CLI, Git branch/PR evidence, closeout and forward-queue artifacts |
+| Tracking and closeout | `linear-cli`, `branch-closeout`, and `adversarial-pr-review` before a non-trivial merge | authenticated `linear` CLI, Git branch/PR evidence, Linear closeout comments and Backlog follow-up children |
 
 Use `sync_agent_skills.sh --dry-run` before an installed-skill pilot and again
 as a deliberate post-merge synchronization step. Do not treat skill sync as a
@@ -261,10 +264,14 @@ saved split fields, advanced PDF options, or shell-stable bounded polling.
 
 Live deduplication was performed on 2026-08-14 against Firecrawl Ops &
 Automation and AGENTIC-2253. The execution map below preserves the three
-existing issue identities that already own their domains and creates a distinct
-issue only where the plan adds a new independently reviewable outcome. Every
-issue uses the `Agentic-Assets/firecrawl` and `Local` labels. Decision-gated
-items also use `Needs Cayman` and `Human-Signoff`.
+existing issue identities that owned their domains at that time and proposed
+a distinct issue only for a new independently reviewable outcome. The original
+packets used `Agentic-Assets/firecrawl` and the now-retired `Local` label; this
+is historical provenance, not an instruction to apply retired labels. Current
+work follows root `AGENTS.md`: preserve existing label unions, include every
+applicable repo label and one Type, and use `Needs Founder` for founder gates.
+Query the live issues for current scope and state; do not mutate old issues
+merely to match this historical map.
 
 | Plan item | Live Linear packet | Disposition |
 | --- | --- | --- |
@@ -405,7 +412,7 @@ items also use `Needs Cayman` and `Human-Signoff`.
   integration proof confirms the additive contract.
 - **Dependency:** A separately reviewed, merged Gateway structured-output
   fallback and a named consumer.
-- **Founder gate:** Apply Needs Cayman if the retention is product or research
+- **Founder gate:** Apply Needs Founder if the retention is product or research
   facing.
 - **Execution aids:** `firecrawl-local-api`, AI-gated API snips, the existing
   Vercel AI Gateway profile, and `adversarial-pr-review` before adoption.
@@ -450,7 +457,7 @@ items also use `Needs Cayman` and `Human-Signoff`.
   caps, cleanup, and egress tests. A pilot begins only after approval and
   proves no Docker, shared API, root environment, CRE, or database surface is
   reachable.
-- **Founder gate:** Needs Cayman plus Human-Signoff.
+- **Founder gate:** Needs Founder.
 - **Execution aids:** `codex-security:threat-model` only after approval, plus
   `firecrawl-ops` static Compose evidence. No sandbox plugin, Docker socket,
   or shared API access is granted by this issue.
@@ -462,7 +469,7 @@ items also use `Needs Cayman` and `Human-Signoff`.
   keep the shared local API local, without creating a tunnel or remote runner.
 - **Definition of done:** Read the actual Compose binding, host firewall, and
   intended local clients; record a go or no-go decision, rollback, and proof.
-- **Founder gate:** Needs Cayman plus Human-Signoff. No binding or network
+- **Founder gate:** Needs Founder. No binding or network
   change is authorized by this plan.
 - **Execution aids:** `codex-security:threat-model` and `firecrawl-ops`; use
   read-only Compose, host-firewall, and reachability evidence before any

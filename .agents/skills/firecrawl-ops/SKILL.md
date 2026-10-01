@@ -19,8 +19,8 @@ docker compose ps
 For durable evidence during reviews or handoffs:
 
 ```bash
-scripts/firecrawl-ops/firecrawl_healthcheck.sh --evidence-dir tasks/tmp/firecrawl-healthcheck
-scripts/firecrawl-ops/local_api_smoke_matrix.py
+scripts/firecrawl-ops/firecrawl_healthcheck.sh --evidence-dir .scratch/firecrawl-healthcheck
+scripts/firecrawl-ops/local_api_smoke_matrix.py --out-dir .scratch/local-api-smoke
 scripts/firecrawl-ops/local_capability_matrix.py
 scripts/firecrawl-ops/pdf_parse_canary.py
 scripts/firecrawl-ops/check_pnpm_docker_config.py

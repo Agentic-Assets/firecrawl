@@ -1,3 +1,5 @@
+READ ~/AGENTS.md FIRST (skip if missing).
+
 # AGENTS.md
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
@@ -15,9 +17,11 @@ For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, a
 ## Root hygiene
 
 Keep the root reserved for durable entrypoints, configs, and top-level context.
-Put logs, browser captures, and one-off run outputs under task-specific folders
-or `tasks/tmp/`; durable reference docs under `docs/`; and workflow/example
-artifacts beside the relevant script or example.
+Put agent logs, browser captures, reviews, drafts and one-off run outputs under
+ignored `.scratch/<date>-<slug>/`. Summarize proof on the Linear issue or PR.
+Durable reference docs stay under `docs/`; workflow/example artifacts stay beside
+the relevant script or example. Existing runtime-owned receipt/state paths keep
+their current owner contracts; this process change does not migrate them.
 
 ## Linear tracking
 
@@ -25,11 +29,29 @@ artifacts beside the relevant script or example.
 - **Project:** Firecrawl Ops & Automation (`8e2110d7-5a75-4b67-bae1-2c6e8500552d`, slug `f13a738a83bf`)
 - **Repository label:** `Agentic-Assets/firecrawl`
 
-For non-trivial Firecrawl work, first search the project for an existing issue.
-Create or update the relevant `AGENTIC` issue, apply the repository label, and
-add an evidence comment with branch, commit, verification, production gates,
-and rollback status. Do not self-assign, mark an issue Done, or alter routing
-labels; the hub workflow owns those transitions.
+Linear owns Firecrawl issues, plans, decisions and follow-ups. Company rules:
+`$AA_CONTEXT_ROOT/reference/linear.md` and `policies/task-management.md`.
+
+1. Read the issue, parent and canonical plan before non-trivial work; search
+   before creating issues or plans. Respect `HOLD:No-Agents`.
+2. Plans live in the Linear parent body or linked project document. Each phase
+   or PR-sized step is a self-contained child with goal, files, acceptance and
+   verification. Create no dated task plans, progress logs, closeouts or queues.
+   PR-bound design/research docs name their Linear parent on the first line.
+3. Agent working output and plugin specs/plans go to ignored `.scratch/`;
+   publish findings and verification to the issue or PR before session end.
+4. Move work In Progress on start and In Review when a PR opens. Record branch,
+   SHA, PR, verification, production gates and rollback status.
+5. The working agent closes verified work after a merge to `main` or a verified
+   non-code result. Use `Fixes AGENTIC-123` for completed main-target children;
+   partial work, parents and other targets use `Part of`. Read back issue state
+   after merges; never close a parent with open children or unmet acceptance.
+6. Read labels before saving and preserve the full union, including every
+   applicable repository label. Use one Type and an existing area when applicable.
+   `Needs Founder` marks founder decisions/approval; clear it on verified Done.
+   Founders own assignee and `delegate`; labels describe, never dispatch.
+7. Durable follow-ups become deduplicated Backlog children labeled
+   `Agent-Created`, the repo label and one Type. No local backlog or runner.
 
 ## Shared CRE data ownership
 
