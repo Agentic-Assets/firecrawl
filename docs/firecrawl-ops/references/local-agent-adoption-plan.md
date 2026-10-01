@@ -264,10 +264,14 @@ saved split fields, advanced PDF options, or shell-stable bounded polling.
 
 Live deduplication was performed on 2026-08-14 against Firecrawl Ops &
 Automation and AGENTIC-2253. The execution map below preserves the three
-existing issue identities that already own their domains and creates a distinct
-issue only where the plan adds a new independently reviewable outcome. Every
-issue uses the `Agentic-Assets/firecrawl` and `Local` labels. Decision-gated
-items also use `Needs Founder`.
+existing issue identities that owned their domains at that time and proposed
+a distinct issue only for a new independently reviewable outcome. The original
+packets used `Agentic-Assets/firecrawl` and the now-retired `Local` label; this
+is historical provenance, not an instruction to apply retired labels. Current
+work follows root `AGENTS.md`: preserve existing label unions, include every
+applicable repo label and one Type, and use `Needs Founder` for founder gates.
+Query the live issues for current scope and state; do not mutate old issues
+merely to match this historical map.
 
 | Plan item | Live Linear packet | Disposition |
 | --- | --- | --- |
