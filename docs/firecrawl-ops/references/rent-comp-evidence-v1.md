@@ -9,7 +9,8 @@ GetCREdata owns qualification and OM extraction.
 The envelope contains `version: 1`, `rent`, `areas`, `coordinates`,
 `source_updated_at`, and `collected_at`. Clocks use the ingest source lastmod and
 actual observation timestamp respectively, ISO strings or null. Missing clocks
-must not be replaced with the current time.
+must not be replaced with the current time or the run-level `scraped_at`
+fallback.
 
 `rent` contains `raw_quote`, `source_field_label`, `original_period`
 (`annual`, `monthly`, `unknown`, `conflict`), `denominator` (`sf`, `unknown`, `conflict`),
@@ -23,7 +24,10 @@ Monthly rates multiply by 12. Conflicting periods or currencies remain unresolve
 Numbers are associated with a currency marker or the start of a structured rate
 field, so lease-term years cannot become rent. Leading decimal quotes are supported.
 Positive amounts round to cents using IEEE-754 scaling and half-up rounding in
-both implementations. Conflicting NNN/gross bases set basis null and add
+both implementations. The Python mirror applies JavaScript (non-`u`) regex
+semantics: ASCII-only word boundaries, digits and case folding, and the
+ECMAScript whitespace set. `tests/fixtures/rent_evidence_parity_vectors.json`
+is asserted by both test suites. Conflicting NNN/gross bases set basis null and add
 `lease_basis_conflict`. Area ranges keep their original quote and a null scalar;
 an upper bound is never substituted for the offered-space area.
 High values and wide ranges retain both bounds and receive review flags;

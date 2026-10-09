@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {rentEvidence} from "../../../lib/rent-evidence.js";
+
+// Shared with tests/test_rent_evidence.py so the Python mirror cannot drift.
+const PARITY_VECTORS: Array<{input: string; label: string | null; note: string; expected: unknown}> = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../fixtures/rent_evidence_parity_vectors.json"), "utf8"),
+);
 
 test("rent amount is not lease term, supports leading decimals and flags basis conflict", () => {
   assert.equal(rentEvidence("USD 1.125/SF/year").annual_psf_min, 1.13);
@@ -25,3 +33,9 @@ test("source units, period conflicts and negative amounts remain unresolved", ()
     assert.equal(rentEvidence(text).annual_psf_min, null);
   assert.equal(rentEvidence("USD 20/SF/year", "per sqm").denominator, "conflict");
 });
+
+for (const vector of PARITY_VECTORS) {
+  test(`shared rent evidence parity vector: ${vector.note}`, () => {
+    assert.deepEqual(rentEvidence(vector.input, vector.label), vector.expected);
+  });
+}
