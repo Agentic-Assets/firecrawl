@@ -1,9 +1,14 @@
-import { Request, Response } from "express";
+import type { AgentInteropStatus } from "../../lib/agent-interop";
+import type { ThirdPartyDataTermsRequiredError } from "../../lib/exchange";
+import { Request } from "express";
 import { config } from "../../config";
 import { z } from "zod";
 import { protocolIncluded, checkUrl } from "../../lib/validateUrl";
 import { hasReachableHost } from "../../lib/url-utils";
 import { countries } from "../../lib/validate-country";
+import { addPathRegexIssues, pathPatternsSchema } from "../../lib/crawl-regex";
+import { addStrictSchemaIssue } from "../../lib/openai-strict-schema";
+import type { PdfPageBlocks } from "../../scraper/scrapeURL/engines/pdf/types";
 import {
   ExtractorOptions,
   PageOptions,
@@ -22,11 +27,13 @@ import { ProductProfile } from "../../types/product";
 import { MenuProfile } from "../../types/menu";
 import { threatProtectionOverrideSchema } from "../../lib/threat-protection/config";
 import { auditMetadataSchema } from "../../lib/siem-logging/types";
+import type { RateLimiterMode } from "../../types";
 
 type Format =
   | "markdown"
   | "html"
   | "rawHtml"
+  | "rawBase64"
   | "links"
   | "screenshot"
   | "screenshot@fullPage"
@@ -215,10 +222,12 @@ export const extractOptions = z
       .transform(val => normalizeSchemaForOpenAI(val))
       .refine(val => validateSchemaForOpenAI(val), {
         message: OPENAI_SCHEMA_ERROR_MESSAGE,
-      }),
+      })
+      .superRefine(addStrictSchemaIssue),
     systemPrompt: z.string().max(10000).prefault(""),
     prompt: z.string().max(10000).optional(),
     temperature: z.number().optional(),
+    checkPromptInjection: z.boolean().optional(),
   })
   .transform(data => ({
     ...data,
@@ -249,10 +258,12 @@ const extractOptionsWithAgent = z
       .transform(val => normalizeSchemaForOpenAI(val))
       .refine(val => validateSchemaForOpenAI(val), {
         message: OPENAI_SCHEMA_ERROR_MESSAGE,
-      }),
+      })
+      .superRefine(addStrictSchemaIssue),
     systemPrompt: z.string().max(10000).prefault(""),
     prompt: z.string().max(10000).optional(),
     temperature: z.number().optional(),
+    checkPromptInjection: z.boolean().optional(),
     agent: z
       .strictObject({
         model: z.string().prefault(agentExtractModelValue),
@@ -434,6 +445,7 @@ const baseScrapeOptions = z.strictObject({
       "markdown",
       "html",
       "rawHtml",
+      "rawBase64",
       "links",
       "screenshot",
       "screenshot@fullPage",
@@ -455,6 +467,10 @@ const baseScrapeOptions = z.strictObject({
     .refine(
       x => !x.includes("changeTracking") || x.includes("markdown"),
       "The changeTracking format requires the markdown format to be specified as well",
+    )
+    .refine(
+      x => !x.includes("rawBase64") || x.length === 1,
+      "The rawBase64 format cannot be combined with other formats",
     ),
   headers: z.record(z.string(), z.string()).optional(),
   includeTags: z
@@ -498,7 +514,8 @@ const baseScrapeOptions = z.strictObject({
         .transform(val => normalizeSchemaForOpenAI(val))
         .refine(val => validateSchemaForOpenAI(val), {
           message: OPENAI_SCHEMA_ERROR_MESSAGE,
-        }),
+        })
+        .superRefine(addStrictSchemaIssue),
       modes: z.enum(["json", "git-diff"]).array().optional().prefault([]),
       tag: z.string().or(z.null()).prefault(null),
     })
@@ -531,12 +548,19 @@ const baseScrapeOptions = z.strictObject({
   fastMode: z.boolean().prefault(false),
   useMock: z.string().optional(),
   blockAds: z.boolean().prefault(true),
-  proxy: z.enum(["basic", "stealth", "enhanced", "auto"]).prefault("basic"),
+  // No prefault here: the default is conditional on location (see extractTransform).
+  // Requests without a non-default country default to "auto"; requests with one
+  // default to "basic".
+  proxy: z.enum(["basic", "stealth", "enhanced", "auto"]).optional(),
   maxAge: z
     .int()
     .gte(0)
     .prefault(1 * 24 * 60 * 60 * 1000),
   storeInCache: z.boolean().prefault(true),
+  // Enterprise: per-request Safe Mode opt-out/affirmation. Tri-state, so NOT
+  // prefaulted — an absent value must stay undefined (a default of false would
+  // read as an explicit bypass attempt). Honored only if the org allows it.
+  safeMode: z.boolean().optional(),
   // Enterprise: per-request field-level override of the org's threat
   // protection policy. Gated on the team flag + org config (checkPermissions).
   threatProtection: threatProtectionOverrideSchema.optional(),
@@ -569,6 +593,23 @@ const extractTransformRequired = <T extends ScrapeOptions>(obj: T): T => {
 };
 
 const extractTransform = (obj: ScrapeOptions) => {
+  // Proxy default: "auto" when no non-default country is specified, so
+  // requests can upgrade to stealth on proxy failures. When a country is
+  // specified, keep the historical "basic" default.
+  if (obj.proxy === undefined) {
+    // Check both location fields: a non-default country in either one counts
+    // as specified, even if the other omitted its country (its schema fills
+    // in the "us-generic" default, which must not shadow the other field).
+    const hasNonDefaultCountry = [
+      obj.location?.country,
+      obj.geolocation?.country,
+    ].some(
+      country =>
+        country !== undefined && country.toLowerCase() !== "us-generic",
+    );
+    obj = { ...obj, proxy: hasNonDefaultCountry ? "basic" : "auto" };
+  }
+
   // Handle timeout
   if (
     (includesFormat(obj.formats, "extract") ||
@@ -730,7 +771,8 @@ const extractV1Options = z
       .transform(val => normalizeSchemaForOpenAI(val))
       .refine(val => validateSchemaForOpenAI(val), {
         message: OPENAI_SCHEMA_ERROR_MESSAGE,
-      }),
+      })
+      .superRefine(addStrictSchemaIssue),
     limit: z.int().positive().finite().optional(),
     ignoreSitemap: z.boolean().prefault(false),
     includeSubdomains: z.boolean().prefault(true),
@@ -862,8 +904,8 @@ export type BatchScrapeRequest = z.infer<typeof batchScrapeRequestSchema>;
 export type BatchScrapeRequestInput = z.input<typeof batchScrapeRequestSchema>;
 
 const crawlerOptions = z.strictObject({
-  includePaths: z.string().array().prefault([]),
-  excludePaths: z.string().array().prefault([]),
+  includePaths: pathPatternsSchema.prefault([]),
+  excludePaths: pathPatternsSchema.prefault([]),
   maxDepth: z.number().prefault(10), // default?
   maxDiscoveryDepth: z.number().optional(),
   limit: z.number().prefault(10000), // default?
@@ -912,6 +954,9 @@ const crawlRequestSchemaBase = crawlerOptions.extend({
 
 export const crawlRequestSchema = crawlRequestSchemaBase
   .strict()
+  .superRefine((x, ctx) => {
+    addPathRegexIssues(x, ctx);
+  })
   .refine(
     x => (x.scrapeOptions ? extractRefine(x.scrapeOptions) : true),
     extractRefineOpts,
@@ -990,7 +1035,11 @@ const mapRequestSchemaBase = crawlerOptions
     auditMetadata: auditMetadataSchema.optional(),
   });
 
-export const mapRequestSchema = mapRequestSchemaBase.strict();
+export const mapRequestSchema = mapRequestSchemaBase
+  .strict()
+  .superRefine((x, ctx) => {
+    addPathRegexIssues(x, ctx);
+  });
 
 // export type MapRequest = {
 //   url: string;
@@ -1005,10 +1054,14 @@ export type Document = {
   description?: string;
   url?: string;
   markdown?: string;
-  /** Physical PDF pages, populated by the v2 pageMarkdown parser option. */
+  /** Physical PDF pages, populated by the v2 `pages` parser option. */
   pages?: Array<{ pageNumber: number; markdown: string }>;
+  /** Typed PDF layout blocks with bounding boxes, populated by the v2
+   * `blocks` parser option. */
+  blocks?: PdfPageBlocks[];
   html?: string;
   rawHtml?: string;
+  rawBase64?: string;
   links?: string[];
   images?: string[];
   screenshot?: string;
@@ -1251,6 +1304,7 @@ export type CrawlErrorsResponse =
         timestamp?: string;
         url: string;
         error: string;
+        requiresAction?: ThirdPartyDataTermsRequiredError["requiresAction"];
       }[];
       robotsBlocked: string[];
     };
@@ -1258,6 +1312,9 @@ export type CrawlErrorsResponse =
 type AuthObject = {
   team_id: string;
   org_id?: string | null;
+  // Set only by authMiddleware from the raw request; controllers may re-parse
+  // the body and drop `__agentInterop`, so read this instead.
+  agentInterop?: AgentInteropStatus;
 };
 
 type Account = {
@@ -1272,13 +1329,19 @@ export type AuthCreditUsageChunk = {
   org_id: string;
   flags: TeamFlags;
 
-  // teams.banned surfaced from auth_chunk_1 — banned teams are rejected (403)
+  // teams.banned surfaced from auth_chunk_2 — banned teams are rejected (403)
   // in supaAuthenticateUser. Optional because pre-rollout cached ACUC entries
   // and the bypass/preview mocks omit it (treated as not banned).
   is_banned?: boolean;
 
   // appended on JS-side
   is_extract?: boolean;
+
+  // The team's effective Autumn limits and plan, always set by
+  // getACUC/getACUCTeam.
+  concurrency_limit: number;
+  rate_limit_multiplier: number;
+  is_paid_plan: boolean;
 
   // Agent signup: populated when the key is agent-provisioned
   _agentSponsor?: {
@@ -1292,6 +1355,22 @@ export type TeamFlags = {
   ignoreRobots?: "disabled" | "allowed" | "forced";
   customRobotsAgent?: "disabled" | "allowed";
   threatProtection?: "disabled" | "allowed" | "forced";
+  safeMode?: boolean;
+  safeModeConfig?: {
+    allowBypassSafeMode?: boolean;
+    lockdown?: boolean;
+    domainControls?: boolean;
+    enforceRobots?: boolean;
+    disableStealthProxy?: boolean;
+    disableAuthentication?: boolean;
+    disableSiteHandling?: boolean;
+    exposeWebdriver?: boolean;
+    useHeadlessUserAgent?: boolean;
+    disablePlatformSelection?: boolean;
+    disableCountrySelection?: boolean;
+    disableAutomaticReferrer?: boolean;
+    allowlist?: string[];
+  };
   siemLogging?: boolean;
   unblockedDomains?: string[];
   forceZDR?: boolean;
@@ -1311,6 +1390,8 @@ export type TeamFlags = {
   bypassCreditChecks?: boolean;
   debugBranding?: boolean;
   maxBrowserSessions?: number;
+  // grants the privileged large-PDF size cap (PDF_BY_REFERENCE_MAX_BYTES_PRIVILEGED)
+  largePdfs?: boolean;
   // POST /v2/search/:jobId/feedback returns 403 TEAM_OPTED_OUT when true.
   searchFeedbackOptOut?: boolean;
   researchBeta?: boolean;
@@ -1318,6 +1399,9 @@ export type TeamFlags = {
   labsSearch?: boolean;
   exchangeRetrieve?: boolean;
   professionalProfileCompanyDataBeta?: boolean;
+  // The org's DPA (or partner amendment) restricts how its data may be
+  // handled. Informational only: the API does not change behavior on it.
+  dpaRestricted?: boolean;
   organizationDataSourceAccess?: Record<
     string,
     {
@@ -1332,6 +1416,15 @@ export type TeamFlags = {
   >;
   // routes the team's new queue work to the FoundationDB backend
   nuqFdb?: boolean;
+  /**
+   * Per-endpoint rate-limit overrides, in requests per minute. A value here
+   * replaces the computed limit for that mode, so the Autumn multiplier is
+   * not applied. The map is sparse: a mode that is absent keeps the normal
+   * computation. Only a finite integer above zero is used; any other value is
+   * ignored. Read by getAutumnRateLimiter, so it never affects the preview
+   * token.
+   */
+  rateLimitOverrides?: Partial<Record<RateLimiterMode, number>>;
 } | null;
 
 export type AuthCreditUsageChunkFromTeam = Omit<
@@ -1372,11 +1465,6 @@ export interface RequestWithAuth<
 > extends RequestWithMaybeACUC<ReqParams, ReqBody, ResBody> {
   auth: AuthObject;
   account?: Account;
-}
-
-export interface ResponseWithSentry<ResBody = undefined>
-  extends Response<ResBody> {
-  sentry?: string;
 }
 
 export function toLegacyCrawlerOptions(x: CrawlerOptions) {

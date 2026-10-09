@@ -29,6 +29,7 @@ public class ParseOptions {
     private Boolean blockAds;
     private String proxy;
     private String integration;
+    private Boolean checkPromptInjection;
     @JsonProperty("redactPII")
     private Boolean redactPII;
     private AuditMetadata auditMetadata;
@@ -47,6 +48,7 @@ public class ParseOptions {
     public Boolean getBlockAds() { return blockAds; }
     public String getProxy() { return proxy; }
     public String getIntegration() { return integration; }
+    public Boolean getCheckPromptInjection() { return checkPromptInjection; }
     @JsonProperty("redactPII")
     public Boolean getRedactPII() { return redactPII; }
     @JsonProperty("auditMetadata")
@@ -68,6 +70,7 @@ public class ParseOptions {
         b.blockAds = this.blockAds;
         b.proxy = this.proxy;
         b.integration = this.integration;
+        b.checkPromptInjection = this.checkPromptInjection;
         b.redactPII = this.redactPII;
         b.auditMetadata = this.auditMetadata;
         return b;
@@ -116,6 +119,7 @@ public class ParseOptions {
         private Boolean blockAds;
         private String proxy;
         private String integration;
+        private Boolean checkPromptInjection;
         private Boolean redactPII;
         private AuditMetadata auditMetadata;
 
@@ -127,12 +131,18 @@ public class ParseOptions {
         public Builder excludeTags(List<String> excludeTags) { this.excludeTags = excludeTags; return this; }
         public Builder onlyMainContent(Boolean onlyMainContent) { this.onlyMainContent = onlyMainContent; return this; }
         public Builder timeout(Integer timeout) { this.timeout = timeout; return this; }
+        /** Parsers to use (e.g., "pdf" or PdfParser with maxPages, pages, blocks, pageMarkers). */
         public Builder parsers(List<Object> parsers) { this.parsers = parsers; return this; }
         public Builder skipTlsVerification(Boolean skipTlsVerification) { this.skipTlsVerification = skipTlsVerification; return this; }
         public Builder removeBase64Images(Boolean removeBase64Images) { this.removeBase64Images = removeBase64Images; return this; }
         public Builder blockAds(Boolean blockAds) { this.blockAds = blockAds; return this; }
         public Builder proxy(String proxy) { this.proxy = proxy; return this; }
         public Builder integration(String integration) { this.integration = integration; return this; }
+        /**
+         * Scans the parsed content for prompt injection before LLM-backed formats run.
+         * A detection fails the parse with SCRAPE_PROMPT_INJECTION_DETECTED. Adds 4 credits when the check scans the whole content.
+         */
+        public Builder checkPromptInjection(Boolean checkPromptInjection) { this.checkPromptInjection = checkPromptInjection; return this; }
         public Builder redactPII(Boolean redactPII) { this.redactPII = redactPII; return this; }
         public Builder auditMetadata(AuditMetadata auditMetadata) { this.auditMetadata = auditMetadata; return this; }
 
@@ -167,6 +177,7 @@ public class ParseOptions {
             o.blockAds = this.blockAds;
             o.proxy = this.proxy;
             o.integration = this.integration;
+            o.checkPromptInjection = this.checkPromptInjection;
             o.redactPII = this.redactPII;
             o.auditMetadata = this.auditMetadata;
             return o;

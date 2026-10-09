@@ -2,49 +2,49 @@ import type { Response } from "express";
 import { describe, expect, it, vi } from "vitest";
 
 const { mockConfig, mockListBrowserSessions } = vi.hoisted(() => ({
-  mockConfig: { BROWSER_SERVICE_URL: undefined as string | undefined },
+  mockConfig: { HANGAR_URL: undefined as string | undefined },
   mockListBrowserSessions: vi.fn(),
 }));
 
 vi.mock("../../../config", () => ({ config: mockConfig }));
-vi.mock("../../../lib/logger", () => ({
-  logger: { child: vi.fn(() => ({ info: vi.fn() })) },
-}));
 vi.mock("../../../lib/browser-sessions", () => ({
-  insertBrowserSession: vi.fn(),
+  deleteBrowserProfile: vi.fn(),
   getBrowserSession: vi.fn(),
-  getBrowserSessionByBrowserId: vi.fn(),
   listBrowserSessions: mockListBrowserSessions,
   updateBrowserSessionActivity: vi.fn(),
-  updateBrowserSessionStatus: vi.fn(),
-  updateBrowserSessionCreditsUsed: vi.fn(),
-  claimBrowserSessionDestroyed: vi.fn(),
-  invalidateActiveBrowserSessionCount: vi.fn(),
-  didBrowserSessionUsePrompt: vi.fn(),
-  clearBrowserSessionPromptFlag: vi.fn(),
 }));
-vi.mock("../../../services/worker/nuq-router", () => ({
-  getCombinedTeamActiveCount: vi.fn(),
-  mirrorExternalSlotAcquire: vi.fn(),
-  mirrorExternalSlotRelease: vi.fn(),
+vi.mock("../../../lib/hangar", () => ({
+  deleteHangarProfile: vi.fn(),
+  executeHangarBrowser: vi.fn(),
+  getHangarBrowser: vi.fn(),
+  getHangarRecording: vi.fn(),
+  HangarError: class HangarError extends Error {},
 }));
-vi.mock("../../../lib/concurrency-limit", () => ({
-  getEffectiveConcurrencyLimit: vi.fn(),
-}));
-vi.mock("../../../services/billing/credit_billing", () => ({
-  billTeam: vi.fn(),
+vi.mock("../../../lib/browser-lifecycle", () => ({
+  createBrowserSession: vi.fn(),
+  getBrowserZDR: vi.fn(),
+  BrowserSessionError: class BrowserSessionError extends Error {},
+  browserSessionLinks: (session: {
+    cdp_url: string;
+    cdp_path: string | null;
+    cdp_interactive_path: string | null;
+  }) => ({
+    cdpUrl: session.cdp_url,
+    liveViewUrl: session.cdp_path ?? "",
+    interactiveLiveViewUrl: session.cdp_interactive_path ?? "",
+  }),
+  stopBrowserSession: vi.fn(),
+  settleBrowserSession: vi.fn(),
 }));
 vi.mock("../../../lib/browser-session-activity", () => ({
   enqueueBrowserSessionActivity: vi.fn(),
 }));
-vi.mock("../../../services/logging/log_job", () => ({ logRequest: vi.fn() }));
-vi.mock("../../../lib/browser-billing", () => ({
-  BROWSER_CREDITS_PER_HOUR: 120,
-  INTERACT_CREDITS_PER_HOUR: 420,
-  calculateBrowserSessionCredits: vi.fn(),
+vi.mock("../../../lib/keyless", () => ({
+  KEYLESS_FREE_TIER_LIMIT_MESSAGE: "keyless limit",
+  keylessLimitPromptForTeam: vi.fn(),
 }));
-vi.mock("../../../services/autumn/autumn.service", () => ({
-  autumnService: { checkCredits: vi.fn() },
+vi.mock("../../../lib/agent-interop", () => ({
+  isAgentInteropSecretValid: vi.fn(),
 }));
 
 import { browserListController } from "../browser";
@@ -53,12 +53,12 @@ import type { RequestWithAuth } from "../types";
 function buildResponse() {
   const json = vi.fn();
   const status = vi.fn(() => ({ json }));
-  return { res: { status } as unknown as Response, status, json };
+  return { res: { status, json } as unknown as Response, status, json };
 }
 
 describe("browserListController", () => {
-  it("returns the same stable configuration response as browser creation when browser service is absent", async () => {
-    mockConfig.BROWSER_SERVICE_URL = undefined;
+  it("returns the same stable configuration response as browser creation when the browser service is absent", async () => {
+    mockConfig.HANGAR_URL = undefined;
     const { res, status, json } = buildResponse();
     const req = {
       auth: { team_id: "local-team" },
@@ -71,13 +71,12 @@ describe("browserListController", () => {
     expect(status).toHaveBeenCalledWith(503);
     expect(json).toHaveBeenCalledWith({
       success: false,
-      error:
-        "Browser feature is not configured (BROWSER_SERVICE_URL is missing).",
+      error: "Browser feature is not configured (HANGAR_URL is missing).",
     });
   });
 
-  it("lists persisted browser sessions when browser service is configured", async () => {
-    mockConfig.BROWSER_SERVICE_URL = "http://browser-service";
+  it("lists persisted browser sessions when the browser service is configured", async () => {
+    mockConfig.HANGAR_URL = "http://hangar";
     mockListBrowserSessions.mockResolvedValueOnce([
       {
         id: "session-123",
@@ -101,7 +100,7 @@ describe("browserListController", () => {
     expect(mockListBrowserSessions).toHaveBeenCalledWith("team-123", {
       status: undefined,
     });
-    expect(status).toHaveBeenCalledWith(200);
+    expect(status).not.toHaveBeenCalled();
     expect(json).toHaveBeenCalledWith({
       success: true,
       sessions: [

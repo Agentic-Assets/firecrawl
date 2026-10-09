@@ -15,9 +15,9 @@ import type { ThreatDecision } from "./threat-protection/types";
 import { UnsafeDomainBlockedError } from "./threat-protection/error";
 
 const creditsPerPDFPage = 1;
-const stealthProxyCostBonus = 4;
 const unblockedDomainCostBonus = 4;
 const xTwitterCostBonus = 29;
+const jsonCostBonus = 4;
 const redactPIICostBonus = 4;
 // Each additional PDF page also gets redacted through fire-privacy, so
 // the per-page surcharge mirrors the +4 base — same tier as lockdown.
@@ -28,7 +28,8 @@ const redactPIIPdfPageCostBonus = 4;
 // scope — a scrape and its same-URL re-check share one fee, while a crawl of
 // N pages bills N scans (each page job is its own scope). Verdicts are never
 // reused across requests (no verdict cache — ZDR). Local-only decisions
-// (whitelist/blacklist/blocked-tld, mode off, provider failure) never bill.
+// (whitelist/blacklist/blocked-tld, modes off / manual-only, provider
+// failure) never bill.
 const threatScanCost = 2;
 
 /**
@@ -61,6 +62,31 @@ export function calculateThreatScanCredits(
   return credits;
 }
 
+/**
+ * Whether the prompt injection guard gave this scrape's content a verdict, and
+ * so whether its fee bills. The guard writes one cost-tracking record per
+ * chunk it attempted and fails open on a chunk it could not classify
+ * (verdict "none"): a scan that left any chunk unscanned does not bill. A
+ * detection is a verdict for the whole page even if a concurrent chunk failed,
+ * since it blocked the scrape.
+ */
+function promptInjectionGuardGaveVerdict(
+  costTrackingJSON: ReturnType<typeof CostTracking.prototype.toJSON>,
+): boolean {
+  const guardCalls = (costTrackingJSON.calls ?? []).filter(
+    call =>
+      call.metadata?.module === "scrapeURL" &&
+      call.metadata?.method === "checkForPromptInjection",
+  );
+  if (guardCalls.some(call => call.metadata.verdict === "injection")) {
+    return true;
+  }
+  return (
+    guardCalls.length > 0 &&
+    guardCalls.every(call => call.metadata.verdict === "clean")
+  );
+}
+
 export async function calculateCreditsToBeBilled(
   options: ScrapeOptions,
   internalOptions: InternalOptions,
@@ -68,7 +94,11 @@ export async function calculateCreditsToBeBilled(
   costTracking: CostTracking | ReturnType<typeof CostTracking.prototype.toJSON>,
   flags: TeamFlags,
   error?: Error | null,
-  unsupportedFeatures?: Set<FeatureFlag>,
+  // Unused by billing today (Enhanced Mode proxies no longer carry a
+  // surcharge, so there is nothing to waive when the engine could not honour
+  // the feature). Kept because callers pass `exchange` and `threatDecisions`
+  // positionally after it.
+  _unsupportedFeatures?: Set<FeatureFlag>,
   exchange?: ExchangeScrapeMetadata,
   // Threat protection decisions for this scrape (initial + redirect checks,
   // in order). Each decision with `providerConsulted` bills a scan fee (+2
@@ -110,21 +140,26 @@ export async function calculateCreditsToBeBilled(
       creditsToBeBilled = 1;
     }
 
+    if (
+      creditsToBeBilled === 0 &&
+      promptInjectionGuardGaveVerdict(costTrackingJSON)
+    ) {
+      creditsToBeBilled = 5;
+    }
+
     // Failed scrapes bill no base cost (except the cases above), but threat
     // protection scans that already happened still bill — including scrapes
     // blocked by the policy itself.
     return creditsToBeBilled + threatScanCredits;
   }
 
+  // An Exchange access is priced by its provider in place of the base
+  // credit; format surcharges (json, question, ...) still apply on top.
   const exchangeCredits = getExchangeSuccessCredits({
     exchange,
     statusCode: document.metadata?.statusCode,
   });
-  if (exchangeCredits !== null) {
-    return exchangeCredits + threatScanCredits;
-  }
-
-  let creditsToBeBilled = 1; // Assuming 1 credit per document
+  let creditsToBeBilled = exchangeCredits ?? 1;
 
   if (options.lockdown) {
     creditsToBeBilled += 4;
@@ -138,7 +173,9 @@ export async function calculateCreditsToBeBilled(
     hasFormatOfType(options.formats, "json") ||
     changeTrackingFormat?.modes?.includes("json")
   ) {
-    creditsToBeBilled = 5;
+    // Additive, so an earlier surcharge such as lockdown survives. A json
+    // scrape on its own still totals 5 credits (1 base + 4).
+    creditsToBeBilled += jsonCostBonus;
   }
 
   if (hasFormatOfType(options.formats, "deterministicJson")) {
@@ -153,10 +190,19 @@ export async function calculateCreditsToBeBilled(
   }
 
   if (
+    options.checkPromptInjection &&
+    promptInjectionGuardGaveVerdict(costTrackingJSON)
+  ) {
+    creditsToBeBilled += 4;
+  }
+
+  if (
     internalOptions.v1Agent?.model === "fire-1" ||
     internalOptions.v1JSONAgent?.model?.toLowerCase() === "fire-1"
   ) {
-    creditsToBeBilled = Math.ceil((costTrackingJSON.totalCost ?? 1) * 1800);
+    creditsToBeBilled =
+      (exchangeCredits ?? 0) +
+      Math.ceil((costTrackingJSON.totalCost ?? 1) * 1800);
   }
 
   const hasQuestionFormat =
@@ -198,7 +244,7 @@ export async function calculateCreditsToBeBilled(
   }
 
   if (options.redactPII) {
-    // Flat +4 to match lockdown / audio / video / stealth — fire-privacy
+    // Flat +4 to match lockdown / audio / video — fire-privacy
     // is a peer premium feature, not a cost-based one. PDF pages all
     // pass through redaction too, so each additional page picks up
     // another +4 on top of the +1 page parse cost.
@@ -208,18 +254,14 @@ export async function calculateCreditsToBeBilled(
     }
   }
 
-  if (
-    document?.metadata?.proxyUsed === "stealth" &&
-    !unsupportedFeatures?.has("stealthProxy") // if stealth proxy was unsupported, don't bill for it
-  ) {
-    creditsToBeBilled += stealthProxyCostBonus;
-  }
-
   const urlsToCheck = [
     document.metadata?.url,
     document.metadata?.sourceURL,
   ].filter((u): u is string => !!u);
-  if (urlsToCheck.some(u => isUrlBlocked(u, null) && !isUrlBlocked(u, flags))) {
+  if (
+    exchangeCredits === null &&
+    urlsToCheck.some(u => isUrlBlocked(u, null) && !isUrlBlocked(u, flags))
+  ) {
     creditsToBeBilled += unblockedDomainCostBonus;
   }
 

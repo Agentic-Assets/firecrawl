@@ -12,6 +12,7 @@ import { UNSUPPORTED_SITE_MESSAGE } from "../../lib/strings";
 import { isUrlBlocked } from "../../scraper/WebScraper/utils/blocklist";
 import { logger as _logger } from "../../lib/logger";
 import { logRequest } from "../../services/logging/log_job";
+import { externalRequestId } from "../../lib/external-request-id";
 import { config } from "../../config";
 import { getScrapeZDR } from "../../lib/zdr-helpers";
 import {
@@ -22,7 +23,7 @@ import { UnsafeDomainBlockedError } from "../../lib/threat-protection/error";
 import { calculateThreatScanCredits } from "../../lib/scrape-billing";
 import { billTeam } from "../../services/billing/credit_billing";
 import { emitRejectedScrapeActivityEvents } from "../../lib/siem-logging";
-import { CrawlDenialError } from "../../lib/error";
+import { UnsupportedSiteError } from "../../lib/error";
 
 /**
  * Extracts data from the provided URLs based on the request parameters.
@@ -83,7 +84,7 @@ export async function extractController(
       apiKeyId: req.acuc?.api_key_id ?? null,
       auditMetadata: req.body.scrapeOptions?.auditMetadata,
       url,
-      error: new CrawlDenialError(UNSUPPORTED_SITE_MESSAGE),
+      error: new UnsupportedSiteError(),
       origin: req.body.origin ?? "api",
       integration: req.body.integration,
       zeroDataRetention: false,
@@ -130,9 +131,17 @@ export async function extractController(
     if (threatScanCredits > 0) {
       billTeam(
         req.auth.team_id,
+        req.acuc?.org_id ?? null,
         threatScanCredits,
         req.acuc?.api_key_id ?? null,
-        { endpoint: "extract", jobId: extractId },
+        {
+          endpoint: "extract",
+          externalRequestId: externalRequestId(req),
+          jobId: extractId,
+          // Suffixed: the extract's MAIN charge (fire-0) uses the bare
+          // extractId — a shared key would collapse the two into one charge.
+          chargeId: `${extractId}:threat`,
+        },
       ).catch(error => {
         _logger.error(
           `Failed to bill team ${req.auth.team_id} for ${threatScanCredits} threat scan credit(s): ${error}`,
@@ -179,6 +188,7 @@ export async function extractController(
     id: extractId,
     kind: "extract",
     api_version: "v2",
+    external_request_id: externalRequestId(req),
     team_id: req.auth.team_id,
     origin: req.body.origin ?? "api",
     integration: req.body.integration,
@@ -210,6 +220,7 @@ export async function extractController(
   await addExtractJobToQueue(extractId, {
     ...jobData,
     apiKeyId: req.acuc?.api_key_id ?? undefined,
+    externalRequestId: externalRequestId(req),
   });
 
   return res.status(200).json({

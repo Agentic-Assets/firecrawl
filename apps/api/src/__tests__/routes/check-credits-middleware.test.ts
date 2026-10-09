@@ -1,5 +1,16 @@
 import type { MockedFunction } from "vitest";
 import type { NextFunction } from "express";
+import { logger } from "../../lib/logger";
+
+vi.mock("../../lib/logger", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
 
 vi.mock("../../services/autumn/autumn.service", () => ({
   autumnService: {
@@ -52,16 +63,20 @@ function buildReq(overrides: any = {}): any {
   };
 }
 
-function runMiddleware(req: any): Promise<{ res: any; nextErr?: any }> {
+function runMiddleware(
+  req: any,
+): Promise<{ res: any; nextErr?: any; nextCalled: boolean }> {
   return new Promise(resolve => {
     let settled = false;
+    let nextCalled = false;
     const settle = (payload: { res: any; nextErr?: any }) => {
       if (settled) return;
       settled = true;
-      resolve(payload);
+      resolve({ ...payload, nextCalled });
     };
 
     const res: any = {
+      locals: {},
       status: vi.fn((..._args: any[]) => {
         // 402 / 403 paths terminate via res.status(...).json(...) without next()
         setImmediate(() => settle({ res }));
@@ -71,7 +86,10 @@ function runMiddleware(req: any): Promise<{ res: any; nextErr?: any }> {
       headersSent: false,
     };
 
-    const next: NextFunction = (err?: any) => settle({ res, nextErr: err });
+    const next: NextFunction = (err?: any) => {
+      nextCalled = true;
+      settle({ res, nextErr: err });
+    };
     checkCreditsMiddleware()(req, res, next);
   });
 }
@@ -89,6 +107,7 @@ describe("checkCreditsMiddleware – Autumn overage handling", () => {
 
     expect(res.status).not.toHaveBeenCalled();
     expect(req.account.remainingCredits).toBe(Infinity);
+    expect(res.locals.agentCreditsRemaining).toBe(0);
     // request body limit must NOT have been clamped down to 0
     expect(req.body.limit).toBe(100);
   });
@@ -100,15 +119,75 @@ describe("checkCreditsMiddleware – Autumn overage handling", () => {
     const { res } = await runMiddleware(req);
 
     expect(res.status).toHaveBeenCalledWith(402);
+    expect(res.locals.agentCreditsRemaining).toBe(0);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.not.objectContaining({ request: expect.anything() }),
+    );
   });
 
   it("adjusts crawl limit down when Autumn denies but some credits remain", async () => {
-    checkCreditsMock.mockResolvedValue({ allowed: false, remaining: 5 });
+    checkCreditsMock
+      .mockResolvedValueOnce({ allowed: false, remaining: 5 })
+      .mockResolvedValueOnce({ allowed: true, remaining: 5 });
 
     const req = buildReq({ body: { limit: 100 } });
     const { res } = await runMiddleware(req);
 
     expect(res.status).not.toHaveBeenCalled();
+    expect(res.locals.agentCreditsRemaining).toBe(5);
+    expect(req.body.limit).toBe(5);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Adjusting limit to remaining credits",
+      expect.not.objectContaining({ request: expect.anything() }),
+    );
+    expect(checkCreditsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        value: 5,
+        properties: expect.objectContaining({
+          source: "checkCreditsMiddleware:clamp",
+          apiKeyId: null,
+        }),
+      }),
+    );
+  });
+
+  it("blocks with 402 when a per-key spend limit denies but the team balance is healthy", async () => {
+    // A per-API-key spend limit does not lower the team balance, so both the
+    // initial check and the clamped re-check deny with credits still remaining.
+    checkCreditsMock.mockResolvedValue({ allowed: false, remaining: 5000 });
+
+    const req = buildReq({ body: { limit: 100 } });
+    const { res, nextCalled } = await runMiddleware(req);
+
+    expect(res.status).toHaveBeenCalledWith(402);
+    expect(nextCalled).toBe(false);
+    // A request that ends in a 402 keeps the caller's original limit.
+    expect(req.body.limit).toBe(100);
+  });
+
+  it("clamps the crawl limit down only, never up to the remaining balance", async () => {
+    checkCreditsMock
+      .mockResolvedValueOnce({ allowed: false, remaining: 5000 })
+      .mockResolvedValueOnce({ allowed: true, remaining: 5000 });
+
+    const req = buildReq({ body: { limit: 5 } });
+    const { res } = await runMiddleware(req);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(req.body.limit).toBe(5);
+  });
+
+  it("fails open when the clamped re-check finds Autumn unavailable", async () => {
+    checkCreditsMock
+      .mockResolvedValueOnce({ allowed: false, remaining: 5 })
+      .mockResolvedValueOnce(null);
+
+    const req = buildReq({ body: { limit: 100 } });
+    const { res, nextCalled } = await runMiddleware(req);
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(nextCalled).toBe(true);
     expect(req.body.limit).toBe(5);
   });
 
@@ -127,6 +206,41 @@ describe("checkCreditsMiddleware – Autumn overage handling", () => {
     );
   });
 
+  it("hands the ACUC's org to both checks, so neither reads teams.org_id", async () => {
+    checkCreditsMock
+      .mockResolvedValueOnce({ allowed: false, remaining: 5 })
+      .mockResolvedValueOnce({ allowed: true, remaining: 5 });
+
+    const req = buildReq({ body: { limit: 100 } });
+    await runMiddleware(req);
+
+    expect(checkCreditsMock).toHaveBeenCalledTimes(2);
+    for (const [params] of checkCreditsMock.mock.calls) {
+      expect(params).toEqual(
+        expect.objectContaining({ orgId: "org_test", teamId: "team_test" }),
+      );
+    }
+  });
+
+  // Keyless and preview identities carry no org, and neither does the DB-auth
+  // bypass. checkCredits answered null for all of them, so the middleware takes
+  // that fail-open answer itself rather than asking with an org it hasn't got.
+  it.each([null, undefined])(
+    "fails open without asking Autumn when org_id is %s",
+    async orgId => {
+      const req = buildReq({
+        auth: { team_id: "preview_1.2.3.4", org_id: orgId },
+      });
+      const { res, nextCalled } = await runMiddleware(req);
+
+      expect(checkCreditsMock).not.toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalled();
+      expect(nextCalled).toBe(true);
+      expect(req.account.remainingCredits).toBe(Infinity);
+      expect(req.body.limit).toBe(100);
+    },
+  );
+
   it("sends a null apiKeyId when the request has no resolved api key id", async () => {
     checkCreditsMock.mockResolvedValue({ allowed: true, remaining: 100 });
 
@@ -139,6 +253,52 @@ describe("checkCreditsMiddleware – Autumn overage handling", () => {
       }),
     );
   });
+});
+
+describe("checkCreditsMiddleware – agent-key denials", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function buildSponsoredReq(status: "blocked" | "pending") {
+    return buildReq({
+      acuc: {
+        team_id: "team_test",
+        api_key_id: 42,
+        _agentSponsor: {
+          status,
+          verification_deadline: new Date(Date.now() - 1000).toISOString(),
+          email: "owner@example.com",
+        },
+      },
+    });
+  }
+
+  it.each([
+    ["blocked", "agent_key_blocked"],
+    ["pending", "agent_key_verification_expired"],
+  ] as const)(
+    "logs a %s agent key as auth/denied before the 403",
+    async (status, reason) => {
+      const { res } = await runMiddleware(buildSponsoredReq(status));
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith("Request denied", {
+        canonicalLog: "auth/denied",
+        reason,
+        status: 403,
+        method: undefined,
+        route: "/v1/crawl",
+        teamId: "team_test",
+        apiKeyId: 42,
+      });
+      expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(
+        "owner@example.com",
+      );
+      expect(checkCreditsMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("checkCreditsMiddleware – unverified agent-key 50-credit cap", () => {

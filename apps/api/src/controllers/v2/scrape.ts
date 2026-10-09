@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { providerScrapeController } from "./scrape-alexandria";
+import { discoverTools } from "../../search/alexandria";
 import { config } from "../../config";
 import { logger as _logger } from "../../lib/logger";
 import {
@@ -11,9 +13,18 @@ import {
 } from "./types";
 import { v7 as uuidv7 } from "uuid";
 import { hasFormatOfType } from "../../lib/format-utils";
-import { TransportableError } from "../../lib/error";
+import {
+  getTimeoutProcessingDetails,
+  TransportableError,
+} from "../../lib/error";
+import { ThirdPartyDataTermsRequiredError } from "../../lib/exchange";
 import { NuQJob } from "../../services/worker/nuq";
 import { checkPermissions } from "../../lib/permissions";
+import {
+  applySafeMode,
+  resolveSafeMode,
+  isLockdownZeroDataRetention,
+} from "../../lib/safe-mode";
 import {
   actionTypesOf,
   checkKeyFormatRestriction,
@@ -25,8 +36,8 @@ import { ScrapeJobData } from "../../types";
 import { teamConcurrencySemaphore } from "../../services/worker/team-semaphore";
 import { getJobPriority } from "../../lib/job-priority";
 import { logRequest } from "../../services/logging/log_job";
+import { externalRequestId } from "../../lib/external-request-id";
 import { getErrorContactMessage } from "../../lib/deployment";
-import { captureExceptionWithZdrCheck } from "../../services/sentry";
 import type { BillingMetadata } from "../../services/billing/types";
 import { getScrapeZDR } from "../../lib/zdr-helpers";
 import {
@@ -38,7 +49,10 @@ import {
 import { projectScrapeCredits } from "../../lib/keyless-credit-projection";
 import { applyAgentAuthDiscoveryHeader } from "../../lib/agent-auth-discovery";
 import { resolveThreatProtection } from "../../lib/threat-protection/request";
-import { getEffectiveConcurrencyLimit } from "../../lib/concurrency-limit";
+import { emitRejectedScrapeActivityEvent } from "../../lib/siem-logging";
+import { isAgentInteropSecretValid } from "../../lib/agent-interop";
+import { markAlexandriaActivity } from "../../lib/alexandria-activity";
+import { DEFAULT_TEAM_LIMITS } from "../../services/autumn/autumn.service";
 
 const AGENT_INTEROP_CONCURRENCY_BOOST = 3;
 
@@ -46,6 +60,18 @@ export async function scrapeController(
   req: RequestWithAuth<{}, ScrapeResponse, ScrapeRequest>,
   res: Response<ScrapeResponse>,
 ) {
+  if (req.body && "alexandria" in req.body)
+    return providerScrapeController(req, res);
+  // Resolved before the root span starts so the whole request trace stays
+  // unrecorded for zero-data-retention requests (see otel-tracer). Safe Mode
+  // lockdown implies ZDR, so fold it in here too — otherwise the rejection
+  // paths below would export the target URL on the root span.
+  const zeroDataRetentionTrace =
+    getScrapeZDR(req.acuc?.flags) === "forced" ||
+    req.body?.zeroDataRetention === true ||
+    req.body?.lockdown === true ||
+    isLockdownZeroDataRetention(req.acuc?.flags, req.body?.safeMode);
+
   return withSpan(
     "api.scrape.request",
     async span => {
@@ -74,6 +100,43 @@ export async function scrapeController(
         });
       });
 
+      const emitSafeModeRejection = (message: string) =>
+        emitRejectedScrapeActivityEvent({
+          scrapeId: jobId,
+          requestId: jobId,
+          endpoint: "scrape",
+          teamId: req.auth.team_id,
+          apiKeyId: req.acuc?.api_key_id ?? null,
+          url: req.body.url,
+          error: new TransportableError("SAFE_MODE_BLOCKED", message),
+          origin: req.body.origin ?? "api",
+          integration: req.body.integration,
+          zeroDataRetention: req.body.zeroDataRetention ?? false,
+        });
+
+      const safeMode = resolveSafeMode(
+        req.acuc?.flags,
+        req.body.safeMode,
+        req.body.url,
+      );
+      if (safeMode.error) {
+        setSpanAttributes(span, {
+          "scrape.error": safeMode.error,
+          "scrape.status_code": 403,
+        });
+        emitSafeModeRejection(safeMode.error);
+        return res.status(403).json({
+          success: false,
+          code: safeMode.code,
+          error: safeMode.error,
+        });
+      }
+      setSpanAttributes(span, {
+        "scrape.safe_mode": safeMode.safeMode !== undefined,
+        "scrape.safe_mode_bypassed": safeMode.bypassed === true,
+        "scrape.safe_mode_allowlisted": safeMode.allowlisted === true,
+      });
+
       // Threat protection: resolve the effective policy (org config +
       // per-request override). No-ops (null policy, zero I/O) for teams
       // without the flag.
@@ -82,24 +145,28 @@ export async function scrapeController(
         orgId: req.acuc?.org_id ?? null,
         flags: req.acuc?.flags ?? null,
         override: req.body.threatProtection,
+        force: safeMode.safeMode?.domainControls === true,
       });
       if (threatProtection.error) {
         setSpanAttributes(span, {
           "scrape.error": threatProtection.error,
           "scrape.status_code": 403,
         });
+        if (safeMode.safeMode?.domainControls) {
+          emitSafeModeRejection(threatProtection.error);
+        }
         return res.status(403).json({
           success: false,
           error: threatProtection.error,
         });
       }
-
       // Permission check span
       const permissions = await withSpan(
         "api.scrape.check_permissions",
         async permSpan => {
           const perms = checkPermissions(req.body, req.acuc?.flags, {
             threatProtectionOrgConfig: threatProtection.orgConfig,
+            safeMode: safeMode.safeMode ?? null,
           });
           setSpanAttributes(permSpan, {
             "permissions.success": !perms.error,
@@ -114,8 +181,12 @@ export async function scrapeController(
           "scrape.error": permissions.error,
           "scrape.status_code": 403,
         });
+        if (permissions.code === "SAFE_MODE_BLOCKED") {
+          emitSafeModeRejection(permissions.error);
+        }
         return res.status(403).json({
           success: false,
+          code: permissions.code,
           error: permissions.error,
         });
       }
@@ -137,18 +208,28 @@ export async function scrapeController(
         });
       }
 
+      applySafeMode(safeMode.safeMode, req.body);
+
       const zeroDataRetention =
         getScrapeZDR(req.acuc?.flags) === "forced" ||
         (req.body.zeroDataRetention ?? false) ||
         (req.body.lockdown ?? false);
-      const billing: BillingMetadata = req.body.__agentInterop
-        ? { endpoint: "agent" as const, jobId }
-        : { endpoint: "scrape" as const, jobId };
+      if (req.body.domainTools && zeroDataRetention)
+        return res.status(403).json({
+          success: false,
+          error: "Provider discovery does not support zero data retention.",
+        });
+      const billing: BillingMetadata = {
+        ...(req.body.__agentInterop
+          ? { endpoint: "agent" as const, jobId }
+          : { endpoint: "scrape" as const, jobId }),
+        externalRequestId: externalRequestId(req),
+      };
 
       if (
         req.body.__agentInterop &&
         config.AGENT_INTEROP_SECRET &&
-        req.body.__agentInterop.auth !== config.AGENT_INTEROP_SECRET
+        !isAgentInteropSecretValid(req.body.__agentInterop.auth)
       ) {
         return res.status(403).json({
           success: false,
@@ -188,7 +269,7 @@ export async function scrapeController(
           applyAgentAuthDiscoveryHeader(res);
           return res
             .status(429)
-            .json(await keylessLimitBody(req.auth.team_id, "v2_scrape"));
+            .json(await keylessLimitBody(req.auth.team_id, "v2_scrape", req));
         }
         reservedKeylessCredits = projectedKeylessCredits;
       }
@@ -205,6 +286,12 @@ export async function scrapeController(
 
       const middlewareTime = controllerStartTime - middlewareStartTime;
 
+      if (safeMode.bypassed) {
+        logger.info("Safe Mode bypassed by request", {
+          apiKeyId: req.acuc?.api_key_id,
+        });
+      }
+
       logger.debug("Scrape " + jobId + " starting", {
         version: "v2",
         scrapeId: jobId,
@@ -220,6 +307,7 @@ export async function scrapeController(
           id: jobId,
           kind: "scrape",
           api_version: "v2",
+          external_request_id: externalRequestId(req),
           team_id: req.auth.team_id,
           origin: req.body.origin ?? "api",
           integration: req.body.integration,
@@ -264,10 +352,8 @@ export async function scrapeController(
         }
         req.on("close", () => aborter.abort());
 
-        const baseConcurrency = await getEffectiveConcurrencyLimit(
-          req.auth.team_id,
-          req.acuc?.org_id,
-        );
+        const baseConcurrency =
+          req.acuc?.concurrency_limit ?? DEFAULT_TEAM_LIMITS.concurrency_limit;
         const concurrency = boostConcurrency
           ? baseConcurrency * AGENT_INTEROP_CONCURRENCY_BOOST
           : baseConcurrency;
@@ -281,6 +367,7 @@ export async function scrapeController(
           async limited => {
             const jobPriority = await getJobPriority({
               team_id: req.auth.team_id,
+              acuc: req.acuc,
               basePriority: 10,
             });
 
@@ -335,6 +422,10 @@ export async function scrapeController(
                       teamConcurrency: baseConcurrency,
                       agentIndexOnly: (req as any).agentIndexOnly ?? false,
                       threatProtection: threatProtection.policy ?? undefined,
+                      safeMode: safeMode.allowlisted
+                        ? undefined
+                        : safeMode.safeMode,
+                      safeModeBypassed: safeMode.bypassed === true,
                     },
                     skipNuq: true,
                     origin,
@@ -372,7 +463,9 @@ export async function scrapeController(
         }
 
         const timeoutErr =
-          e instanceof TransportableError && e.code === "SCRAPE_TIMEOUT";
+          e instanceof TransportableError &&
+          (e.code === "SCRAPE_TIMEOUT" ||
+            e.code === "CONCURRENCY_QUEUE_TIMEOUT");
 
         setSpanAttributes(span, {
           "scrape.error": e instanceof Error ? e.message : String(e),
@@ -456,6 +549,17 @@ export async function scrapeController(
             });
           }
 
+          if (e.code === "UNSUPPORTED_SITE") {
+            setSpanAttributes(span, {
+              "scrape.status_code": 403,
+            });
+            return res.status(403).json({
+              success: false,
+              code: e.code,
+              error: e.message,
+            });
+          }
+
           if (e.code === "SCRAPE_MEDIA_ACCESS_DENIED") {
             setSpanAttributes(span, {
               "scrape.status_code": 403,
@@ -467,23 +571,100 @@ export async function scrapeController(
             });
           }
 
-          const statusCode =
-            e.code === "SCRAPE_TIMEOUT"
-              ? 408
-              : e.code === "SCRAPE_PDF_OCR_BACKPRESSURE"
-                ? 429
-                : e.code === "SCRAPE_PDF_OCR_TIMEOUT"
-                  ? 504
-                  : e.code === "SCRAPE_PDF_LOW_QUALITY"
-                    ? 422
-                    : 500;
+          if (e.code === "SCRAPE_PROMPT_INJECTION_DETECTED") {
+            setSpanAttributes(span, {
+              "scrape.status_code": 403,
+            });
+            return res.status(403).json({
+              success: false,
+              code: e.code,
+              error: e.message,
+            });
+          }
+
+          if (e.code === "SCRAPE_JSON_CONTENT_TOO_LARGE") {
+            setSpanAttributes(span, {
+              "scrape.status_code": 400,
+            });
+            return res.status(400).json({
+              success: false,
+              code: e.code,
+              error: e.message,
+            });
+          }
+
+          if (e instanceof ThirdPartyDataTermsRequiredError) {
+            setSpanAttributes(span, {
+              "scrape.status_code": 403,
+            });
+            return res.status(403).json(e.response());
+          }
+
+          if (
+            e.code === "THIRD_PARTY_DATA_NOT_ENABLED" ||
+            e.code === "THIRD_PARTY_DATA_ENRICHMENT_NOT_ENABLED"
+          ) {
+            setSpanAttributes(span, {
+              "scrape.status_code": 403,
+            });
+            return res.status(403).json({
+              success: false,
+              code: e.code,
+              error: e.message,
+            });
+          }
+
+          if (e.code === "THIRD_PARTY_DATA_NOT_FOUND") {
+            setSpanAttributes(span, {
+              "scrape.status_code": 404,
+            });
+            return res.status(404).json({
+              success: false,
+              code: e.code,
+              error: e.message,
+            });
+          }
+
+          if (
+            e.code === "THIRD_PARTY_DATA_UNSUPPORTED_URL" ||
+            e.code === "THIRD_PARTY_DATA_UNSUPPORTED_OPTION"
+          ) {
+            setSpanAttributes(span, {
+              "scrape.status_code": 400,
+            });
+            return res.status(400).json({
+              success: false,
+              code: e.code,
+              error: e.message,
+            });
+          }
+
+          const statusCode = timeoutErr
+            ? 408
+            : e.code === "SCRAPE_PDF_OCR_BACKPRESSURE"
+              ? 429
+              : e.code === "SCRAPE_PDF_OCR_TIMEOUT"
+                ? 504
+                : e.code === "SCRAPE_PDF_LOW_QUALITY"
+                  ? 422
+                  : 500;
           setSpanAttributes(span, {
             "scrape.status_code": statusCode,
           });
+          // Large-PDF timeouts where the fire-pdf job keeps processing
+          // server-side carry structured retry guidance: surface it as
+          // `details` plus a standard Retry-After header so clients (and
+          // retry libraries) know a timed retry returns the finished
+          // result instead of restarting the work.
+          const processing = getTimeoutProcessingDetails(e);
+          if (processing) {
+            res.setHeader("Retry-After", String(processing.retryAfterSeconds));
+          }
           return res.status(statusCode).json({
             success: false,
             code: e.code,
             error: e.message,
+            ...(processing && { details: processing }),
           });
         } else {
           const id = uuidv7();
@@ -493,18 +674,6 @@ export async function scrapeController(
             errorId: id,
             path: req.path,
             teamId: req.auth.team_id,
-          });
-          captureExceptionWithZdrCheck(e, {
-            tags: {
-              errorId: id,
-              version: "v2",
-              teamId: req.auth.team_id,
-            },
-            extra: {
-              path: req.path,
-              url: req.body.url,
-            },
-            zeroDataRetention,
           });
           setSpanAttributes(span, {
             "scrape.status_code": 500,
@@ -561,7 +730,8 @@ export async function scrapeController(
         !!hasFormatOfType(req.body.formats, "branding") ||
         !!hasFormatOfType(req.body.formats, "question") ||
         !!hasFormatOfType(req.body.formats, "highlights") ||
-        !!hasFormatOfType(req.body.formats, "query");
+        !!hasFormatOfType(req.body.formats, "query") ||
+        req.body.checkPromptInjection;
 
       if (!usedLlm) {
         const ct = hasFormatOfType(req.body.formats, "changeTracking");
@@ -589,6 +759,31 @@ export async function scrapeController(
         concurrencyLimited,
         concurrencyQueueDurationMs: lockTime || undefined,
       });
+      const tools =
+        req.body.domainTools && config.FIRE_EXCHANGE_URL
+          ? await discoverTools(
+              {
+                teamId: req.auth.team_id,
+                toolDetail: req.body.toolDetail,
+                urls: [
+                  ...new Set(
+                    [
+                      req.body.url,
+                      doc!.metadata?.sourceURL,
+                      doc!.metadata?.url,
+                    ].filter((u): u is string => typeof u === "string"),
+                  ),
+                ],
+                limit: 24,
+                timeoutMs: 10000,
+              },
+              logger,
+            ).catch(error => {
+              logger.warn("Domain tool discovery failed", { error });
+              return undefined;
+            })
+          : undefined;
+      if (tools) markAlexandriaActivity(req.auth.team_id);
 
       return res.status(200).json({
         success: true,
@@ -601,7 +796,9 @@ export async function scrapeController(
               ? lockTime || 0
               : undefined,
           },
+          ...(tools ? { tools: tools.items } : {}),
         },
+        ...(tools?.warning ? { warning: tools.warning } : {}),
         scrape_id: origin?.includes("website") ? jobId : undefined,
       });
     },
@@ -611,6 +808,7 @@ export async function scrapeController(
         "http.route": "/v2/scrape",
       },
       kind: SpanKind.SERVER,
+      zeroDataRetention: zeroDataRetentionTrace,
     },
   );
 }

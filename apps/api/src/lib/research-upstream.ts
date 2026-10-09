@@ -2,11 +2,10 @@ import { Agent, fetch } from "undici";
 import { config } from "../config";
 
 const TIMEOUT_MS = 120_000;
+const CONNECT_TIMEOUT_MS = 10_000;
 
 const dispatcher = new Agent({
-  connectTimeout: TIMEOUT_MS,
-  headersTimeout: TIMEOUT_MS,
-  bodyTimeout: TIMEOUT_MS,
+  connectTimeout: CONNECT_TIMEOUT_MS,
 });
 
 function appendQuery(
@@ -45,6 +44,24 @@ export async function fetchResearchUpstream(options: {
     method: "GET",
     headers: options.headers,
     signal: AbortSignal.timeout(options.timeoutMs ?? TIMEOUT_MS),
+    dispatcher,
+  });
+}
+
+export async function fetchGovUpstream(options: {
+  query: string;
+  k?: number;
+  headers: Record<string, string>;
+  timeoutMs: number;
+}) {
+  const base = config.SEARCH_PLATFORM_URL;
+  if (!base) return null;
+
+  return fetch(base.replace(/\/+$/, "") + "/api/v1/gov-search", {
+    method: "POST",
+    headers: { ...options.headers, "content-type": "application/json" },
+    body: JSON.stringify({ query: options.query, top_k: options.k }),
+    signal: AbortSignal.timeout(options.timeoutMs),
     dispatcher,
   });
 }

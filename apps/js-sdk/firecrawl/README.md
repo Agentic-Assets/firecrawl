@@ -102,6 +102,13 @@ const parsed = await app.parse(
 console.log(parsed.markdown);
 ```
 
+To see which file formats `parse` accepts, call `getParseFormats`. Each entry has `format`, `kind` (for example, `document` or `image`), `extensions`, `mimeTypes`, and `available` (false when the format is not enabled on this deployment).
+
+```js
+const formats = await app.getParseFormats();
+console.log(formats.filter((f) => f.available).map((f) => f.format));
+```
+
 ### Crawling a Website
 
 To crawl a website with error handling, use the `crawl` method. It takes the starting URL and optional parameters, including limits and per‑page `scrapeOptions`.
@@ -165,6 +172,129 @@ Use `map` to generate a list of URLs from a website. Options let you customize t
 const mapResult = await app.map('https://example.com');
 console.log(mapResult);
 ```
+
+### Search
+
+Use `search` to search the web and optionally scrape the results in the same call.
+
+```js
+const results = await app.search('what is retrieval augmented generation?', { limit: 5 });
+for (const result of results.web ?? []) {
+  console.log(result.url, '-', result.title);
+}
+
+// Scrape every result as part of the search:
+const scraped = await app.search('firecrawl changelog', {
+  limit: 3,
+  scrapeOptions: { formats: ['markdown'] },
+});
+```
+
+Results are grouped by source: `.web`, `.news` and `.images`. Developer
+and gov category results are served inside `.web`.
+
+Use `categories` to narrow web search to a kind of site:
+
+```js
+const results = await app.search('nanopore basecalling accuracy', {
+  categories: ['research'],
+});
+```
+
+> **`categories: ['research']` is a website filter, not the paper index.** It
+> restricts ordinary web search to roughly 14 academic domains (arxiv.org,
+> pubmed.ncbi.nlm.nih.gov, nature.com, biorxiv.org, ...) and returns web page
+> results. To search papers themselves, use `research.searchPapers` below.
+
+### Developer search
+
+Use `developerSearch` for the dedicated developer index and its complete filter
+and response contract. Generic `search(..., { categories: ['developer'] })`
+returns developer results inside `.web` in the ordinary web-result shape
+(first passage as the description) and does not accept these filters.
+
+```js
+const evidence = await app.developerSearch('configure retry backoff', {
+  repos: ['firecrawl/firecrawl'],
+  types: ['issue', 'pull_request', 'readme'],
+  passages: 3,
+  language: 'TypeScript',
+  license: 'MIT',
+});
+
+for (const result of evidence.results) {
+  // Result kind is the id prefix; the API intentionally omits a type field.
+  console.log(result.id, result.license);
+  for (const passage of result.passages) {
+    console.log(passage.text, passage.citation_url);
+  }
+}
+console.log(evidence.repos); // indexed-status echoes for requested repos
+```
+
+`developerSearch` also supports `sources`, `topic`, `minStars`, `maxStars`,
+`archived`, `fork`, and `skills: 'only'`. Supplying both `repos` and `sources`
+OR-combines GitHub-backed and documentation results.
+
+### Government search
+
+Use `govSearch` to search the Firecrawl Government Index: primary
+law and regulatory material from US federal, state, and local government
+sources, including statutes, regulations, codes, court opinions, and other
+government publications. Results come back in the ordinary web-result shape.
+Generic `search('food labeling requirements', { categories: ['gov'] })`
+returns index results inside `.web`; like `developer`, it cannot be combined
+with other categories.
+
+```js
+const law = await app.govSearch('food labeling requirements', {
+  k: 5,
+});
+
+for (const result of law.data.web) {
+  console.log(result.position, result.title, result.url);
+}
+```
+
+### Research / paper search
+
+Use `app.research` to search Firecrawl's research paper index: ~43M paper
+abstracts, roughly 90% biomedical and life sciences (PubMed, bioRxiv, medRxiv),
+plus arXiv for physics, mathematics and computer science.
+
+```js
+// Search the paper index (semantic search over abstracts):
+const papers = await app.research.searchPapers(
+  'CRISPR base editing off-target effects in primary human T cells',
+  { k: 10 },
+);
+for (const paper of papers.results) {
+  console.log(paper.primaryId, '-', paper.title);
+}
+
+// Inspect one paper's metadata (accepts pmid:, pmcid:, doi: or arxiv: ids):
+const paper = await app.research.getPaper('pmid:<id>');
+
+// Read the passages inside a paper that answer a specific question:
+const read = await app.research.getPaper('pmid:<id>', {
+  query: 'what was the primary endpoint and the reported hazard ratio?',
+  k: 4,
+});
+
+// Expand along the citation graph, re-ranked for your stated intent:
+const related = await app.research.similarPapers('pmid:<id>', {
+  intent: 'replication attempts in larger cohorts',
+  k: 20,
+});
+```
+
+> **`app.research.searchGithub` is deprecated.** The research index GitHub
+> endpoint stops responding after 2026-11-03. Use `app.developerSearch`
+> instead: it searches GitHub issues, pull requests and readmes plus curated
+> documentation sources, returns matched passages, and adds filters for repo,
+> language, license and stars. It does not carry over the `scores` breakdown
+> or the `resultType: "web"` fallback results. See
+> [the developer index docs](https://docs.firecrawl.dev/features/developer).
 
 ### Scrape-bound interactive browsing (v2)
 
@@ -283,3 +413,49 @@ The Firecrawl Node SDK is licensed under the MIT License. This means you are fre
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Please note that while this SDK is MIT licensed, it is part of a larger project which may be under different licensing terms. Always refer to the license information in the root directory of the main project for overall licensing details.
+
+### Alexandria
+
+With a matching API deployment, Search returns complete tool contracts in `tools`.
+`domainTools: true` adds domain matches to that same array. Find Tools walks the catalogue
+without executing the tools it returns.
+
+```ts
+const results = await firecrawl.search("podcast conversations about AI agents", {
+  sources: ["web", "alexandria"],
+  domainTools: true,
+  limit: 2,
+});
+console.log(results.tools?.[0].options);
+
+const catalogue = await firecrawl.findTools({ providers: ["particle"], limit: 2 });
+const next = catalogue.items[0]?.next;
+if (next) console.log(await firecrawl.scrape({ alexandria: next }));
+```
+
+Execute a selected contract with `scrape({ alexandria, requestId })`, where `alexandria`
+is one `{ provider, capability, options }` call or an array of up to ten calls:
+
+```ts
+const requestId = crypto.randomUUID();
+const result = await firecrawl.scrape({
+  alexandria: {
+    provider: "particle",
+    capability: "podcasts/episodes/search",
+    options: { semantic_search: "AI agents" },
+  },
+  requestId,
+});
+for (const item of result.alexandria) {
+  if (item.error) console.error(item.error.code, item.error.message);
+  else console.log(item.data);
+}
+```
+
+Check each returned `alexandria` item's `error` before using its `data`. The result and
+execution errors expose `requestId`; reuse it with the identical payload for a retry.
+Automatic retries retain the same ID. Find Tools costs zero credits; provider execution
+uses its published price. A provider whose data terms have not been accepted rejects the
+call with a 403 whose `SdkError` carries `code: "THIRD_PARTY_DATA_TERMS_REQUIRED"` and a
+`requiresAction: { type: "accept_terms", terms, version, url }` pointing at the page where
+an organization admin can accept them.

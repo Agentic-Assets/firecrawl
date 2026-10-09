@@ -6,7 +6,16 @@ import type { PDFProcessorResult } from "./types";
 import type { PDFMode } from "../../../../controllers/v2/types";
 import { safeMarkdownToHtml } from "./markdownToHtml";
 import { createPdfCacheKey } from "../../../../lib/gcs-pdf-cache";
-import { maybeSaveResult, tryGetCached } from "./fire-pdf/cache";
+import {
+  maybeSaveResult,
+  provenanceFromResponse,
+  tryGetCached,
+} from "./fire-pdf/cache";
+import { firePdfBlocksSchema, firePdfPagesSchema } from "./fire-pdf/schema";
+import {
+  buildFirePdfRequestMetadata,
+  type FirePdfSourceKind,
+} from "./fire-pdf/request-metadata";
 import {
   PDFLowQualityError,
   PDFOCRBackpressureError,
@@ -110,6 +119,9 @@ export async function scrapePDFWithFirePDF(
   pagesProcessed?: number,
   mode?: PDFMode,
   includePageMarkdown = false,
+  includeBlocks = false,
+  pageMarkers = false,
+  sourceKind: FirePdfSourceKind = "pdf",
 ): Promise<PDFProcessorResult> {
   const logger = meta.logger;
 
@@ -125,6 +137,11 @@ export async function scrapePDFWithFirePDF(
   //     running fire-pdf again.
   //   - `fast` is bypassed entirely (hard cost ceiling — must fail on
   //     scanned PDFs, not serve a cached OCR result).
+  //   - `page_markers` rewrites the document markdown itself (inter-page
+  //     `<!-- page N -->` separators), so marker requests read/write a
+  //     fully disjoint `…markers…` variant family — a base-variant entry
+  //     must never be served for a marker request and vice versa. See
+  //     cacheKeyShape in fire-pdf/cache.ts.
   const cacheable =
     mode !== "fast" && !maxPages && !meta.internalOptions.zeroDataRetention;
   const cached = cacheable
@@ -135,6 +152,8 @@ export async function scrapePDFWithFirePDF(
         maxPages,
         pagesProcessed,
         includePageMarkdown,
+        includeBlocks,
+        pageMarkers,
       )
     : null;
   if (cached) return cached;
@@ -173,59 +192,58 @@ export async function scrapePDFWithFirePDF(
     deadlineFields.created_at = Date.now();
   }
 
-  let resp: {
-    markdown: string;
-    failed_pages: number[] | null;
-    pages_processed?: number;
-    pages?: Array<{ page: number; markdown: string }>;
-    metadata?: Record<string, unknown>;
-  };
-  try {
-    resp = await robustFetch({
-      url: `${config.FIRE_PDF_BASE_URL}/ocr`,
-      method: "POST",
-      headers: config.FIRE_PDF_API_KEY
-        ? { Authorization: `Bearer ${config.FIRE_PDF_API_KEY}` }
-        : undefined,
-      body: {
-        pdf: base64Content,
-        scrape_id: meta.id,
-        ...(maxPages !== undefined && { max_pages: maxPages }),
-        ...(mode !== undefined && { mode }),
-        ...(includePageMarkdown && { include_page_markdown: true }),
-        // Enrichment for the fire-pdf jobs DB / dashboard. fire-pdf treats
-        // these as optional — older fire-pdf builds will ignore unknown fields.
-        team_id: meta.internalOptions.teamId,
-        ...(meta.internalOptions.crawlId && {
-          crawl_id: meta.internalOptions.crawlId,
-        }),
-        ...(zdr ? {} : { url: meta.rewrittenUrl ?? meta.url }),
-        pdf_sha256: pdfSha256,
-        source: "firecrawl",
-        zdr,
-        ...deadlineFields,
-      },
-      logger,
-      schema: z.object({
-        markdown: z.string(),
-        failed_pages: z.array(z.number()).nullable(),
-        pages_processed: z.number().optional(),
-        pages: z
-          .array(
-            z.object({
-              page: z.number().int().positive(),
-              markdown: z.string(),
-            }),
-          )
-          .optional(),
-        metadata: z.record(z.string(), z.unknown()).optional(),
+  const resp = await robustFetch({
+    url: `${config.FIRE_PDF_BASE_URL}/ocr`,
+    method: "POST",
+    headers: config.FIRE_PDF_API_KEY
+      ? { Authorization: `Bearer ${config.FIRE_PDF_API_KEY}` }
+      : undefined,
+    body: {
+      pdf: base64Content,
+      scrape_id: meta.id,
+      ...(maxPages !== undefined && { max_pages: maxPages }),
+      ...(mode !== undefined && { mode }),
+      ...(includePageMarkdown && { include_page_markdown: true }),
+      ...(includeBlocks && { include_blocks: true }),
+      ...(pageMarkers && { page_markers: true }),
+      // Enrichment for the fire-pdf jobs DB / dashboard. fire-pdf treats
+      // these as optional — older fire-pdf builds will ignore unknown fields.
+      team_id: meta.internalOptions.teamId,
+      ...(meta.internalOptions.crawlId && {
+        crawl_id: meta.internalOptions.crawlId,
       }),
-      mock: meta.mock,
-      abort: meta.abort.asSignal(),
-    });
-  } catch (error) {
-    throwTypedFirePdfFailure(error);
-  }
+      ...buildFirePdfRequestMetadata(meta, sourceKind),
+      pdf_sha256: pdfSha256,
+      source: "firecrawl",
+      zdr,
+      ...deadlineFields,
+    },
+    logger,
+    schema: z.object({
+      markdown: z.string(),
+      failed_pages: z.array(z.number()).nullable(),
+      partial_pages: z.array(z.number()).nullable().optional(),
+      pages_processed: z.number().optional(),
+      pages: firePdfPagesSchema,
+      blocks: firePdfBlocksSchema,
+      // fire-pdf's stamp (generation, build, stages, quality). Taken raw
+      // and parsed separately (provenanceFromResponse) so a stamp this
+      // build cannot read never fails the scrape; a missing stamp means an
+      // older fire-pdf build.
+      provenance: z.unknown().optional(),
+      // Echo of an honored page_markers request. Markers are baked into
+      // `markdown` and their absence is not reliably detectable there (a
+      // single-page or fully-stitched document legitimately has none), so
+      // the echo is the only proof the fire-pdf build understood the
+      // option — older builds ignore unknown request fields and omit it.
+      page_markers: z.literal(true).optional(),
+      // Fork: local Docling adapter OCR diagnostics.
+      metadata: z.record(z.string(), z.unknown()).optional(),
+    }),
+    mock: meta.mock,
+    abort: meta.abort.asSignal(),
+    // Fork: map local OCR adapter 429/504/422 to typed scrape errors.
+  }).catch((error: unknown) => throwTypedFirePdfFailure(error));
 
   const durationMs = Date.now() - startedAt;
   if (includePageMarkdown && resp.pages === undefined) {
@@ -233,7 +251,21 @@ export async function scrapePDFWithFirePDF(
       "FirePDF response did not include requested physical page markdown",
     );
   }
+  if (includeBlocks && resp.blocks === undefined) {
+    throw new Error("FirePDF response did not include requested typed blocks");
+  }
+  if (pageMarkers && resp.page_markers !== true) {
+    // Without the echo, the markdown is ordinary unmarked output; caching
+    // it under a marker variant would silently poison the marker cache.
+    throw new Error(
+      "FirePDF response did not acknowledge requested page markers",
+    );
+  }
   const pages = resp.pages_processed ?? pagesProcessed;
+  const provenance = provenanceFromResponse(resp.provenance, logger, {
+    scrapeId: meta.id,
+    cacheKey: pdfSha256,
+  });
 
   logger.info("FirePDF completed", {
     scrapeId: meta.id,
@@ -241,10 +273,16 @@ export async function scrapePDFWithFirePDF(
     durationMs,
     markdownLength: resp.markdown.length,
     failedPages: resp.failed_pages,
+    partialPages: resp.partial_pages ?? null,
     pagesProcessed: pages,
     pageMarkdownPages: resp.pages?.length,
     ocrMetadata: resp.metadata,
     perPageMs: pages ? Math.round(durationMs / pages) : undefined,
+    // The content-cache key and the producer, so a report can be turned
+    // into keys to purge and a result can be tied to a fire-pdf build.
+    cacheKey: pdfSha256,
+    generation: provenance?.generation ?? "unknown",
+    buildSha: provenance?.build_sha ?? "unknown",
   });
 
   const processorResult: PDFProcessorResult & { markdown: string } = {
@@ -253,6 +291,7 @@ export async function scrapePDFWithFirePDF(
     pagesProcessed: pages,
     ...(resp.pages ? { pageMarkdown: resp.pages } : {}),
     ocrMetadata: resp.metadata,
+    ...(resp.blocks ? { blocks: resp.blocks } : {}),
   };
 
   if (cacheable) {
@@ -262,7 +301,11 @@ export async function scrapePDFWithFirePDF(
       mode,
       maxPages,
       includePageMarkdown,
+      includeBlocks,
+      pageMarkers,
       result: processorResult,
+      provenance,
+      failedPages: resp.failed_pages,
     });
   }
 

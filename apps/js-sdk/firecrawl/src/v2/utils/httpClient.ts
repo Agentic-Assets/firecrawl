@@ -4,6 +4,7 @@ import axios, {
   type AxiosResponse,
 } from "axios";
 import { getVersion } from "./getVersion";
+import { pinToApiOrigin } from "../../utils/apiOrigin";
 
 export interface HttpClientOptions {
   apiKey: string;
@@ -51,6 +52,12 @@ export class HttpClient {
     return this.apiKey;
   }
 
+  /** The client-wide default request timeout, for callers that need to
+   * extend a specific request beyond it (e.g. scrape auto-resume). */
+  getTimeoutMs(): number {
+    return (this.instance.defaults.timeout as number | undefined) ?? 300000;
+  }
+
   private async request<T = any>(
     config: AxiosRequestConfig,
   ): Promise<AxiosResponse<T>> {
@@ -58,6 +65,7 @@ export class HttpClient {
     config.headers = {
       ...(config.headers || {}),
     };
+    if (config.url) config.url = pinToApiOrigin(this.apiUrl, config.url);
 
     let lastError: any;
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {

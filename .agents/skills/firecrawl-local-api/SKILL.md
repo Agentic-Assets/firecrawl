@@ -48,7 +48,7 @@ With the explicit output directory above, the smoke matrix writes JSON and Markd
 
 ## Not Configured Locally
 
-- `POST /v2/browser`, `GET /v2/browser`, and `POST /v2/browser/:sessionId/execute`: need `BROWSER_SERVICE_URL`.
+- `POST /v2/browser`, `GET /v2/browser`, and `POST /v2/browser/:sessionId/execute`: need `HANGAR_URL` (upstream renamed `BROWSER_SERVICE_URL`).
 - `POST /v2/agent`: needs `EXTRACT_V3_BETA_URL`; otherwise it returns an explicit HTTP 503 configuration gate.
 - Scrape `actions`, screenshot formats, and scrape-browser interaction: need Fire Engine or browser-service support.
 - Prompt-only extract/schema generation may fail on weaker budget models; provide an explicit schema.

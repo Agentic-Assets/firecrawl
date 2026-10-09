@@ -1,4 +1,4 @@
-import { describe, test, expect } from "@jest/globals";
+import { describe, test, expect } from "vitest";
 import { ensureValidFormats, ensureValidScrapeOptions } from "../../../v2/utils/validation";
 import type { FormatOption } from "../../../v2/types";
 import { z } from "zod";
@@ -87,6 +87,20 @@ describe("v2 utils: validation", () => {
     const before = [...options.parsers];
     expect(() => ensureValidScrapeOptions(options)).not.toThrow();
     expect(options.parsers).toEqual(before);
+  });
+
+  test("ensureValidScrapeOptions: leaves PDF parser pages, blocks, and pageMarkers options untouched", () => {
+    const options = {
+      parsers: [{ type: "pdf", mode: "auto", blocks: true, pages: true, pageMarkers: true }],
+    } as any;
+    expect(() => ensureValidScrapeOptions(options)).not.toThrow();
+    expect(options.parsers[0]).toEqual({
+      type: "pdf",
+      mode: "auto",
+      blocks: true,
+      pages: true,
+      pageMarkers: true,
+    });
   });
 
   test("ensureValidFormats: detects mistaken use of zod schema.shape", () => {

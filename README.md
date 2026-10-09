@@ -39,7 +39,7 @@
 
 # **🔥 Firecrawl**
 
-**The API to search, scrape, and interact with the web at scale. 🔥** The web context API to find sources, extract content, and turn it into clean Markdown or structured data your agents can ship with. Open source and available as a [hosted service](https://firecrawl.dev/?ref=github).
+**Supercharge your AI agents with data from the web and beyond. Building the library for superintelligence. 🔥** Open source and available as a [hosted service](https://firecrawl.dev/?ref=github).
 
 > **Agentic Assets fork note:** for local OrbStack setup, model profiles, local CLI/MCP helpers, agent skills, and optional local Docling OCR, start with [`LOCAL_DEVELOPMENT_GUIDE.md`](LOCAL_DEVELOPMENT_GUIDE.md). For a new Mac/business partner clone, use [`docs/firecrawl-ops/references/partner-orbstack-onboarding.md`](docs/firecrawl-ops/references/partner-orbstack-onboarding.md).
 
@@ -384,27 +384,31 @@ result = app.agent(
 )
 ```
 
-#### Model Selection
+#### Effort Selection
 
-Choose between two models based on your needs:
+Set how much reasoning the agent spends on the task:
 
-| Model | Cost | Best For |
-|-------|------|----------|
-| `spark-1-mini` (default) | 60% cheaper | Most tasks |
-| `spark-1-pro` | Standard | Complex research, critical data gathering |
+| Effort | Best For |
+|--------|----------|
+| `low` | Simple lookups on one site |
+| `medium` | Multi-step tasks on a few pages |
+| `high` | Deep research, complex navigation, critical data |
+
 ```python
 result = app.agent(
     prompt="Compare enterprise features across Firecrawl, Apify, and ScrapingBee",
-    model="spark-1-pro"
+    effort="high"
 )
 ```
 
+Every effort level runs the `spark-2` model. Effort changes the reasoning
+budget, not the model.
 
-**When to use Pro:**
-- Comparing data across multiple websites
-- Extracting from sites with complex navigation or auth
-- Research tasks where the agent needs to explore multiple paths
-- Critical data where accuracy is paramount
+#### Model
+
+Every agent run executes on `spark-2`, the default, so you don't need to set
+`model`. The retired `spark-1-pro` and `spark-1-mini` names are still accepted
+for backwards compatibility, but they are deprecated and run `spark-2`.
 
 Learn more about Spark models in our [Agent documentation](https://docs.firecrawl.dev/features/agent).
 
@@ -855,10 +859,11 @@ print_r($results);
 ## Integrations
 
 **Agents & AI Tools**
-- [Firecrawl Skill](https://docs.firecrawl.dev/sdks/cli)
-- [Firecrawl CLI Skills](https://github.com/firecrawl/cli#agent-skills)
-- [Firecrawl Workflows](https://github.com/firecrawl/firecrawl-workflows)
+- [Firecrawl Skills Catalog](https://github.com/firecrawl/skills) — install with `npx skills add firecrawl/skills`
+- [Firecrawl CLI](https://docs.firecrawl.dev/sdks/cli)
 - [Firecrawl MCP](https://github.com/mendableai/firecrawl-mcp-server)
+
+The build skills (integrating Firecrawl into product code) are authored in this repo under [`skills/`](./skills) and mirrored into the catalog by CI. Contributing skills? CLI skills (including the research/developer index skills) → PR [`firecrawl/cli`](https://github.com/firecrawl/cli). Build/SDK skills → PR this repo (`skills/`). Workflow skills → PR [`firecrawl/firecrawl-workflows`](https://github.com/firecrawl/firecrawl-workflows). The catalog ([`firecrawl/skills`](https://github.com/firecrawl/skills)) is read-only — never PR it directly.
 
 **Platforms**
 - [Lovable](https://docs.lovable.dev/integrations/firecrawl)

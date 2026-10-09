@@ -7,9 +7,12 @@ namespace Firecrawl\Client;
 use Firecrawl\Exceptions\FirecrawlException;
 use Firecrawl\Version;
 use Firecrawl\Exceptions\JobTimeoutException;
+use Firecrawl\Models\AgentListResponse;
 use Firecrawl\Models\AgentOptions;
 use Firecrawl\Models\AgentResponse;
+use Firecrawl\Models\AgentSnapshotResponse;
 use Firecrawl\Models\AgentStatusResponse;
+use Firecrawl\Models\AgentTraceResponse;
 use Firecrawl\Models\BatchScrapeJob;
 use Firecrawl\Models\BatchScrapeOptions;
 use Firecrawl\Models\BatchScrapeResponse;
@@ -29,6 +32,7 @@ use Firecrawl\Models\Monitor;
 use Firecrawl\Models\MonitorCheck;
 use Firecrawl\Models\MonitorCheckDetail;
 use Firecrawl\Models\ParseFile;
+use Firecrawl\Models\ParseFormat;
 use Firecrawl\Models\ParseOptions;
 use Firecrawl\Models\ScrapeOptions;
 use Firecrawl\Models\SearchData;
@@ -178,6 +182,10 @@ final class FirecrawlClient
     /**
      * Search GitHub research content.
      *
+     * @deprecated Stops responding after 2026-11-03. Use the developer index at
+     *   GET or POST /v2/search/developer, which this SDK does not wrap yet, so
+     *   call it directly. It does not carry over the score breakdown or the web
+     *   fallback results.
      * @param array<string, mixed> $options
      * @return array<string, mixed>
      */
@@ -250,6 +258,21 @@ final class FirecrawlClient
         );
 
         return Document::fromArray($response['data'] ?? $response);
+    }
+
+    /**
+     * List the file formats the parse endpoint accepts on this deployment.
+     *
+     * @return list<ParseFormat>
+     */
+    public function getParseFormats(): array
+    {
+        $response = $this->http->get('/v2/parse/formats');
+
+        return array_values(array_map(
+            static fn (array $item): ParseFormat => ParseFormat::fromArray($item),
+            array_filter($response['data']['formats'] ?? [], 'is_array'),
+        ));
     }
 
     // ================================================================
@@ -633,6 +656,48 @@ final class FirecrawlClient
         return $this->http->delete("/v2/agent/{$jobId}");
     }
 
+    /**
+     * Get the execution trace of an agent task.
+     *
+     * When $liveView is true, the response also carries the run's currently
+     * active browser sessions with live view URLs.
+     */
+    public function getAgentTrace(string $jobId, bool $liveView = false): AgentTraceResponse
+    {
+        return AgentTraceResponse::fromArray(
+            $this->http->get("/v2/agent/{$jobId}/trace" . $this->query([
+                'liveView' => $liveView ? 'true' : null,
+            ])),
+        );
+    }
+
+    /**
+     * Get a snapshot of an artifact produced by an agent task.
+     */
+    public function getAgentSnapshot(string $jobId, string $snapshotId): AgentSnapshotResponse
+    {
+        return AgentSnapshotResponse::fromArray(
+            $this->http->get("/v2/agent/{$jobId}/snapshots/{$snapshotId}"),
+        );
+    }
+
+    /**
+     * List agent runs, most recent first.
+     *
+     * Pages are fixed at 20 runs. To fetch the next page, pass the before
+     * value from the previous page's next URL. This method does not
+     * auto-paginate.
+     *
+     * @param int|null $before Only return agent runs created before this unix
+     *                         millisecond timestamp.
+     */
+    public function listAgents(?int $before = null): AgentListResponse
+    {
+        return AgentListResponse::fromArray(
+            $this->http->get('/v2/agent' . $this->query(['before' => $before])),
+        );
+    }
+
     // ================================================================
     // BROWSER
     // ================================================================
@@ -641,12 +706,14 @@ final class FirecrawlClient
      * Create a new browser session.
      *
      * @param array<string, string>|null $profile
+     * @param array{country: string}|null $location Country the session browses from, e.g. ['country' => 'GB'] (default US)
      */
     public function browser(
         ?int $ttl = null,
         ?int $activityTtl = null,
         ?bool $streamWebView = null,
         ?array $profile = null,
+        ?array $location = null,
     ): BrowserCreateResponse {
         $body = [];
         if ($ttl !== null) {
@@ -660,6 +727,9 @@ final class FirecrawlClient
         }
         if ($profile !== null) {
             $body['profile'] = $profile;
+        }
+        if ($location !== null) {
+            $body['location'] = $location;
         }
 
         return BrowserCreateResponse::fromArray($this->http->post('/v2/browser', $body));
@@ -759,9 +829,14 @@ final class FirecrawlClient
         if (($response['success'] ?? null) === false) {
             $error = $response['error'] ?? null;
 
-            throw new FirecrawlException(is_string($error) && $error !== ''
-                ? $error
-                : 'The API reported the request as unsuccessful.');
+            $code = $response['code'] ?? null;
+
+            throw new FirecrawlException(
+                is_string($error) && $error !== '' ? $error : 'The API reported the request as unsuccessful.',
+                200,
+                is_string($code) ? $code : null,
+                $response['details'] ?? null,
+            );
         }
 
         return $response;

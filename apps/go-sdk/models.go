@@ -24,17 +24,72 @@ type Document struct {
 	Branding       map[string]interface{}   `json:"branding,omitempty"`
 	Product        *ProductProfile          `json:"product,omitempty"`
 	Menu           *MenuProfile             `json:"menu,omitempty"`
+	// Pages is per-page PDF markdown, present only when parsers[].pages is true.
+	Pages []PdfPage `json:"pages,omitempty"`
+	// Blocks is typed PDF layout data, present only when parsers[].blocks is true.
+	Blocks []PdfPageBlocks `json:"blocks,omitempty"`
+	// Tools contains domain tools discovered during the scrape, present only
+	// when domainTools is enabled.
+	Tools []DiscoveredTool `json:"tools,omitempty"`
+}
+
+// PDFParser configures PDF parsing. Use in ScrapeOptions.Parsers / ParseOptions.Parsers.
+type PDFParser struct {
+	Type     string `json:"type"`
+	Mode     string `json:"mode,omitempty"`
+	MaxPages *int   `json:"maxPages,omitempty"`
+	Pages    *bool  `json:"pages,omitempty"`
+	Blocks   *bool  `json:"blocks,omitempty"`
+	// PageMarkers joins PDF pages in document.markdown with
+	// `\n\n---\n\n<!-- page N -->\n\n`. Markers appear between pages only;
+	// numbering may skip pages merged by cross-page stitching — use Pages
+	// when every physical page is needed. No new response field.
+	PageMarkers *bool `json:"pageMarkers,omitempty"`
+}
+
+// PdfPage is physical markdown for a single PDF page.
+type PdfPage struct {
+	PageNumber int    `json:"pageNumber"`
+	Markdown   string `json:"markdown"`
+}
+
+// PdfBlockConfidence is layout and OCR confidence for a PDF block.
+type PdfBlockConfidence struct {
+	Layout *float64 `json:"layout"`
+	OCR    *float64 `json:"ocr"`
+}
+
+// PdfBlockItem is a typed PDF layout block.
+type PdfBlockItem struct {
+	ID           string             `json:"id"`
+	Type         string             `json:"type"`
+	Label        *string            `json:"label"`
+	BBox         []float64          `json:"bbox"`
+	Content      string             `json:"content"`
+	MarkdownSpan []int              `json:"markdownSpan"`
+	ReadingOrder int                `json:"readingOrder"`
+	Source       *string            `json:"source"`
+	Confidence   PdfBlockConfidence `json:"confidence"`
+}
+
+// PdfPageBlocks is the typed layout for a single PDF page.
+type PdfPageBlocks struct {
+	PageNumber int            `json:"pageNumber"`
+	Width      *float64       `json:"width"`
+	Height     *float64       `json:"height"`
+	Status     string         `json:"status"`
+	Items      []PdfBlockItem `json:"items"`
 }
 
 // ProductProfile represents structured product data extracted from a page
 // via the `product` scrape format.
 type ProductProfile struct {
-	Title         string               `json:"title"`
-	Brand         string               `json:"brand,omitempty"`
-	Category      string               `json:"category,omitempty"`
-	URL           string               `json:"url"`
-	Description   string               `json:"description,omitempty"`
-	Variants      []ProductVariant     `json:"variants,omitempty"`
+	Title       string           `json:"title"`
+	Brand       string           `json:"brand,omitempty"`
+	Category    string           `json:"category,omitempty"`
+	URL         string           `json:"url"`
+	Description string           `json:"description,omitempty"`
+	Variants    []ProductVariant `json:"variants,omitempty"`
 }
 
 // ProductImage is a single product image.
@@ -552,9 +607,53 @@ type GetMonitorCheckOptions struct {
 
 // SearchData represents the result of a search request.
 type SearchData struct {
-	Web    []map[string]interface{} `json:"web,omitempty"`
-	News   []map[string]interface{} `json:"news,omitempty"`
-	Images []map[string]interface{} `json:"images,omitempty"`
+	Warning string                   `json:"warning,omitempty"`
+	Web     []map[string]interface{} `json:"web,omitempty"`
+	News    []map[string]interface{} `json:"news,omitempty"`
+	Images  []map[string]interface{} `json:"images,omitempty"`
+	Tools   []DiscoveredTool         `json:"tools,omitempty"`
+}
+
+type AlexandriaCall struct {
+	Provider   string                 `json:"provider"`
+	Capability string                 `json:"capability"`
+	Options    map[string]interface{} `json:"options,omitempty"`
+}
+
+type AlexandriaOptions struct {
+	RequestID   string  `json:"-"`
+	Timeout     *int    `json:"timeout,omitempty"`
+	Integration *string `json:"integration,omitempty"`
+	Origin      *string `json:"origin,omitempty"`
+}
+
+type AlexandriaScrapeError struct {
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+	Status   *int   `json:"status,omitempty"`
+	ChargeID string `json:"chargeId,omitempty"`
+}
+
+type AlexandriaScrapeResult struct {
+	Provider       string                 `json:"provider,omitempty"`
+	Capability     string                 `json:"capability,omitempty"`
+	CreditsCost    *int                   `json:"creditsCost,omitempty"`
+	Data           interface{}            `json:"data,omitempty"`
+	Records        *int                   `json:"records,omitempty"`
+	UpstreamStatus *int                   `json:"upstreamStatus,omitempty"`
+	RecordedAt     string                 `json:"recordedAt,omitempty"`
+	Error          *AlexandriaScrapeError `json:"error,omitempty"`
+}
+
+func (r *AlexandriaScrapeResult) Failed() bool {
+	return r.Error != nil
+}
+
+type AlexandriaScrapeData struct {
+	RequestID   string                   `json:"requestId"`
+	ScrapeID    string                   `json:"scrapeId"`
+	Alexandria  []AlexandriaScrapeResult `json:"alexandria"`
+	CreditsCost int                      `json:"creditsCost"`
 }
 
 // AgentResponse is returned when starting an async agent task.
@@ -562,6 +661,11 @@ type AgentResponse struct {
 	Success bool   `json:"success"`
 	ID      string `json:"id,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// ThreadID is the thread this run belongs to. Pass it back in
+	// AgentOptions.ThreadID to continue the conversation.
+	ThreadID string `json:"threadId,omitempty"`
+	// ThreadTurn is the 1-based position of this run in its thread.
+	ThreadTurn int `json:"threadTurn,omitempty"`
 }
 
 // AgentStatusResponse represents the status and results of an agent task.
@@ -571,13 +675,258 @@ type AgentStatusResponse struct {
 	Error       string      `json:"error,omitempty"`
 	Data        interface{} `json:"data,omitempty"`
 	Model       string      `json:"model,omitempty"`
+	Effort      string      `json:"effort,omitempty"`
 	ExpiresAt   string      `json:"expiresAt,omitempty"`
 	CreditsUsed *int        `json:"creditsUsed,omitempty"`
+	ThreadID    string      `json:"threadId,omitempty"`
+	ThreadTurn  int         `json:"threadTurn,omitempty"`
+	Mode        string      `json:"mode,omitempty"`
+	// Message is the text reply. Chat-mode runs answer here instead of in Data.
+	Message         string                `json:"message,omitempty"`
+	Suggestions     []AgentSuggestion     `json:"suggestions,omitempty"`
+	PendingApproval *AgentPendingApproval `json:"pendingApproval,omitempty"`
+	Exchange        *AgentExchangeSummary `json:"exchange,omitempty"`
 }
 
 // IsDone returns true if the agent task has finished.
 func (a *AgentStatusResponse) IsDone() bool {
 	return a.Status == "completed" || a.Status == "failed" || a.Status == "cancelled"
+}
+
+// AgentSuggestion is a follow-up the agent offers for the next turn.
+type AgentSuggestion struct {
+	Label  string `json:"label"`
+	Prompt string `json:"prompt"`
+}
+
+// AgentExchangeSummary reports what a run did with Exchange. Toolkits and
+// RequireApproval are what the run resolved to after thread inheritance.
+type AgentExchangeSummary struct {
+	Enabled         bool     `json:"enabled"`
+	Toolkits        []string `json:"toolkits,omitempty"`
+	RequireApproval bool     `json:"requireApproval,omitempty"`
+	OnTermsRequired string   `json:"onTermsRequired,omitempty"`
+	PaidCalls       int      `json:"paidCalls"`
+	// CreditsUsed is nil when unknown.
+	CreditsUsed *int `json:"creditsUsed"`
+	// SkippedProviders lists providers that would have helped but were not
+	// used because their data terms are not accepted.
+	SkippedProviders []AgentSkippedProvider `json:"skippedProviders,omitempty"`
+	// RequiresAction is set in "ask" mode when a terms offer ended the turn.
+	RequiresAction *AgentTermsRequiredAction `json:"requiresAction,omitempty"`
+}
+
+// AgentSkippedProvider is a provider a run did not use because its data terms
+// are not accepted.
+type AgentSkippedProvider struct {
+	Provider   string `json:"provider"`
+	Name       string `json:"name"`
+	Capability string `json:"capability,omitempty"`
+	Adds       string `json:"adds,omitempty"`
+	Reason     string `json:"reason"`
+	Version    string `json:"version"`
+	TermsURL   string `json:"termsUrl"`
+}
+
+// AgentTermsRequiredAction lists the Exchange calls that show and accept
+// providers' data terms. Run Accept with ScrapeAlexandria only after the user
+// has explicitly agreed, then continue the thread with Exchange.Approve.
+type AgentTermsRequiredAction struct {
+	Type       string                     `json:"type"`
+	ApprovalID string                     `json:"approvalId"`
+	Providers  []AgentTermsActionProvider `json:"providers"`
+}
+
+// AgentTermsActionProvider is one provider whose data terms can be accepted.
+type AgentTermsActionProvider struct {
+	Provider   string `json:"provider"`
+	Name       string `json:"name"`
+	Capability string `json:"capability,omitempty"`
+	Adds       string `json:"adds,omitempty"`
+	Version    string `json:"version"`
+	// Digest is empty when the catalog published none; Show returns it.
+	Digest string         `json:"digest"`
+	URL    string         `json:"url"`
+	Show   AlexandriaCall `json:"show"`
+	Accept AlexandriaCall `json:"accept"`
+}
+
+// AgentPendingApproval is set when a turn ended waiting for the caller. Kind
+// "terms" asks to accept the providers in Terms and leaves Calls empty; any
+// other Kind, including empty, asks to allow or refuse Calls.
+type AgentPendingApproval struct {
+	ID         string                          `json:"id"`
+	Kind       string                          `json:"kind,omitempty"`
+	Reason     string                          `json:"reason"`
+	Calls      []AgentPendingApprovalCall      `json:"calls"`
+	Terms      []AgentTermsGate                `json:"terms,omitempty"`
+	Resolution *AgentPendingApprovalResolution `json:"resolution"`
+}
+
+// AgentPendingApprovalCall is a paid provider call held back for approval.
+type AgentPendingApprovalCall struct {
+	ID              string                   `json:"id"`
+	Provider        string                   `json:"provider"`
+	Capability      string                   `json:"capability"`
+	Input           map[string]interface{}   `json:"input"`
+	More            []map[string]interface{} `json:"more,omitempty"`
+	CreditsEstimate *int                     `json:"creditsEstimate"`
+}
+
+// AgentTermsGate is a provider in a terms pending approval.
+type AgentTermsGate struct {
+	Provider   string `json:"provider"`
+	Name       string `json:"name"`
+	Logo       string `json:"logo,omitempty"`
+	Capability string `json:"capability,omitempty"`
+	Adds       string `json:"adds,omitempty"`
+	Version    string `json:"version"`
+	// Digest is empty when the catalog published none.
+	Digest string `json:"digest"`
+	URL    string `json:"url"`
+}
+
+// AgentPendingApprovalResolution records how a later turn answered a pending
+// approval.
+type AgentPendingApprovalResolution struct {
+	Approved bool     `json:"approved"`
+	CallIDs  []string `json:"callIds"`
+	Always   bool     `json:"always"`
+	ByRunID  string   `json:"byRunId"`
+}
+
+// AgentTraceResponse is returned when fetching the event trace of an agent task.
+type AgentTraceResponse struct {
+	Success               bool                             `json:"success"`
+	ID                    string                           `json:"id,omitempty"`
+	Events                []AgentTraceEvent                `json:"events,omitempty"`
+	CreditsUsed           *int                             `json:"creditsUsed,omitempty"`
+	ActiveBrowserSessions []AgentTraceActiveBrowserSession `json:"activeBrowserSessions,omitempty"`
+	Error                 string                           `json:"error,omitempty"`
+}
+
+// AgentTraceActiveBrowserSession represents a live browser session attached to
+// an agent run.
+type AgentTraceActiveBrowserSession struct {
+	ID          string             `json:"id"`
+	LiveViewURL string             `json:"liveViewUrl,omitempty"`
+	Viewport    AgentTraceViewport `json:"viewport,omitempty"`
+}
+
+// AgentTraceViewport represents the viewport dimensions of a live browser session.
+type AgentTraceViewport struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+// AgentTraceEvent represents a single event in an agent run trace. The Type
+// field discriminates the event kind (e.g. "run.started", "tool_call.finished",
+// "artifact.updated"); only the fields relevant to that kind are set.
+type AgentTraceEvent struct {
+	Type             string                    `json:"type"`
+	SchemaVersion    int                       `json:"schemaVersion"`
+	EventID          string                    `json:"eventId"`
+	RunID            string                    `json:"runId"`
+	OccurredAt       string                    `json:"occurredAt"`
+	ProducerSequence int                       `json:"producerSequence"`
+	Agent            AgentTraceAgentIdentity   `json:"agent"`
+	Reason           string                    `json:"reason,omitempty"`
+	Outcome          string                    `json:"outcome,omitempty"`
+	Error            *AgentTraceError          `json:"error,omitempty"`
+	DurationMs       *int64                    `json:"durationMs,omitempty"`
+	SessionID        string                    `json:"sessionId,omitempty"`
+	Phase            string                    `json:"phase,omitempty"`
+	Message          string                    `json:"message,omitempty"`
+	Text             string                    `json:"text,omitempty"`
+	ToolCallID       string                    `json:"toolCallId,omitempty"`
+	ToolName         string                    `json:"toolName,omitempty"`
+	Parameters       interface{}               `json:"parameters,omitempty"`
+	Result           interface{}               `json:"result,omitempty"`
+	Artifact         *AgentTraceArtifactChange `json:"artifact,omitempty"`
+}
+
+// AgentTraceAgentIdentity identifies the agent that produced a trace event.
+type AgentTraceAgentIdentity struct {
+	ID       string `json:"id"`
+	Role     string `json:"role"`
+	Name     string `json:"name"`
+	ParentID string `json:"parentId,omitempty"`
+}
+
+// AgentTraceError represents an error attached to a trace event.
+type AgentTraceError struct {
+	Code      string `json:"code"`
+	Source    string `json:"source"`
+	Retryable bool   `json:"retryable"`
+	Message   string `json:"message"`
+}
+
+// AgentTraceArtifactChange describes the artifact mutation reported by an
+// "artifact.updated" trace event.
+type AgentTraceArtifactChange struct {
+	Kind             string   `json:"kind"`
+	ArtifactID       string   `json:"artifactId"`
+	Path             string   `json:"path,omitempty"`
+	SnapshotID       string   `json:"snapshotId"`
+	Change           string   `json:"change"`
+	ChangedFields    []string `json:"changedFields,omitempty"`
+	ItemCount        *int     `json:"itemCount,omitempty"`
+	SourceToolCallID string   `json:"sourceToolCallId,omitempty"`
+}
+
+// AgentSnapshotResponse is returned when fetching a snapshot of an agent task.
+type AgentSnapshotResponse struct {
+	Success    bool   `json:"success"`
+	ID         string `json:"id,omitempty"`
+	SnapshotID string `json:"snapshotId,omitempty"`
+	Snapshot   string `json:"snapshot,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ListAgentsOptions controls agent list pagination.
+type ListAgentsOptions struct {
+	// Before only returns agent runs created before this unix millisecond
+	// timestamp.
+	Before *int64
+}
+
+// AgentListItemSettings represents per-session settings attached to an agent
+// run.
+type AgentListItemSettings struct {
+	Hidden  bool   `json:"hidden"`
+	Starred bool   `json:"starred"`
+	Label   string `json:"label,omitempty"`
+}
+
+// AgentListItemOptions represents the options an agent run was started with.
+type AgentListItemOptions struct {
+	URLs   []string               `json:"urls,omitempty"`
+	Prompt string                 `json:"prompt,omitempty"`
+	Schema map[string]interface{} `json:"schema,omitempty"`
+	Model  string                 `json:"model,omitempty"`
+	Effort string                 `json:"effort,omitempty"`
+}
+
+// AgentListItem represents a single agent run in the agent list.
+type AgentListItem struct {
+	ID          string                `json:"id"`
+	CreatedAt   string                `json:"createdAt"`
+	TargetHint  string                `json:"targetHint"`
+	Origin      string                `json:"origin"`
+	Integration string                `json:"integration,omitempty"`
+	Settings    AgentListItemSettings `json:"settings"`
+	Status      string                `json:"status"`
+	Options     *AgentListItemOptions `json:"options,omitempty"`
+}
+
+// AgentListResponse is returned when listing agent runs.
+type AgentListResponse struct {
+	Success bool            `json:"success"`
+	Agents  []AgentListItem `json:"agents,omitempty"`
+	// Next is the absolute URL of the next page, only present when more pages
+	// exist.
+	Next  string `json:"next,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 // BrowserCreateResponse is returned when creating a browser session.
@@ -639,4 +988,49 @@ type CreditUsage struct {
 	PlanCredits        int    `json:"planCredits"`
 	BillingPeriodStart string `json:"billingPeriodStart,omitempty"`
 	BillingPeriodEnd   string `json:"billingPeriodEnd,omitempty"`
+}
+
+// DiscoveredTool includes the contract and its semantic/domain provenance.
+type DiscoveredTool struct {
+	ID            string                   `json:"id,omitempty"`
+	Provider      string                   `json:"provider"`
+	Capability    string                   `json:"capability"`
+	Name          string                   `json:"name"`
+	Description   string                   `json:"description"`
+	CreditsCost   int                      `json:"creditsCost"`
+	PerRecord     bool                     `json:"perRecord"`
+	Options       []map[string]interface{} `json:"options"`
+	RequiresOneOf [][]string               `json:"requiresOneOf,omitempty"`
+	Response      map[string]interface{}   `json:"response,omitempty"`
+	Examples      map[string]string        `json:"examples,omitempty"`
+	Example       map[string]interface{}   `json:"example,omitempty"`
+	Label         string                   `json:"label,omitempty"`
+	WhenToUse     string                   `json:"whenToUse,omitempty"`
+	Returns       interface{}              `json:"returns,omitempty"`
+	Discovery     interface{}              `json:"discovery,omitempty"`
+	Attribution   interface{}              `json:"attribution,omitempty"`
+	MatchedBy     []string                 `json:"matchedBy,omitempty"`
+	MatchedURLs   []string                 `json:"matchedUrls,omitempty"`
+	Concept       string                   `json:"concept,omitempty"`
+	Cohorts       []string                 `json:"cohorts,omitempty"`
+	Similarity    *float64                 `json:"similarity,omitempty"`
+}
+
+type FindToolsOptions struct {
+	URLs         []string `json:"urls,omitempty"`
+	Providers    []string `json:"providers,omitempty"`
+	Categories   []string `json:"categories,omitempty"`
+	Groups       []string `json:"groups,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Level        string   `json:"level,omitempty"`
+	Expand       []string `json:"expand,omitempty"`
+	Limit        *int     `json:"limit,omitempty"`
+	Offset       *int     `json:"offset,omitempty"`
+}
+
+type FindToolsData struct {
+	Level string                   `json:"level"`
+	Items []map[string]interface{} `json:"items"`
+	Total int                      `json:"total"`
+	Next  *AlexandriaCall          `json:"next"`
 }

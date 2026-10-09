@@ -1,6 +1,7 @@
 import { RateLimiterRedis } from "rate-limiter-flexible";
 import { config } from "../config";
 import { RateLimiterMode } from "../types";
+import type { TeamFlags } from "../controllers/v1/types";
 import Redis from "ioredis";
 
 export const redisRateLimitClient = new Redis(config.REDIS_RATE_LIMIT_URL!, {
@@ -36,7 +37,11 @@ const fallbackRateLimits: Record<RateLimiterMode, number> = {
   supportDocsSearch: 3,
   research: 100,
   developerSearch: 100,
+  govSearch: 100,
   labs: 1000,
+  exchange: 100,
+  // Catalogue reads only; no paid tool runs behind them.
+  exchangeDiscover: 10000,
 };
 
 /**
@@ -47,10 +52,13 @@ const fallbackRateLimits: Record<RateLimiterMode, number> = {
  *
  * Endpoint → mode mapping: agent + extract share `Extract`; interact is
  * `Browser`; interactExecute is `BrowserExecute`; agentStatus is
- * `ExtractStatus`.
+ * `ExtractStatus`. Exchange data routes (discover, retrieve, records/fetch)
+ * match Scrape so an Alexandria call costs the same request budget whichever
+ * path it takes.
  */
 const BASE_RATE_LIMITS: Partial<Record<RateLimiterMode, number>> = {
   [RateLimiterMode.Scrape]: 10,
+  [RateLimiterMode.Exchange]: 10,
   [RateLimiterMode.Map]: 10,
   [RateLimiterMode.Crawl]: 2,
   [RateLimiterMode.Search]: 10,
@@ -73,15 +81,44 @@ export function getRateLimiter(mode: RateLimiterMode): RateLimiterRedis {
 }
 
 /**
+ * Reads the per-minute override for one mode from the org flags. Returns
+ * undefined when there is no usable override.
+ *
+ * Bad config is skipped, not thrown on: the value is validated on write, but a
+ * broken entry must never break authentication. Only a finite integer above
+ * zero counts.
+ */
+export function getRateLimitOverride(
+  mode: RateLimiterMode,
+  overrides: unknown,
+): number | undefined {
+  if (typeof overrides !== "object" || overrides === null) return undefined;
+  const value = (overrides as Record<string, unknown>)[mode];
+  if (typeof value !== "number") return undefined;
+  if (!Number.isInteger(value) || value <= 0) return undefined;
+  return value;
+}
+
+/**
  * Builds the per-minute rate limiter for an authenticated team from its Autumn
  * rate-limit multiplier: the effective limit is `base × multiplier` for
  * multiplier-scaled modes (default ×1). Modes without a base fall back to the
  * static table.
+ *
+ * An org-level override for the mode replaces that whole computation, so the
+ * multiplier and the base table are both discarded. Modes without an override
+ * keep the normal result.
  */
 export function getAutumnRateLimiter(
   mode: RateLimiterMode,
   multiplier: number = 1,
+  flags?: TeamFlags,
 ): RateLimiterRedis {
+  const override = getRateLimitOverride(mode, flags?.rateLimitOverrides);
+  if (override !== undefined) {
+    return createRateLimiter(`${mode}`, override);
+  }
+
   const base = BASE_RATE_LIMITS[mode];
   let rateLimit: number;
   if (base !== undefined) {
@@ -93,6 +130,17 @@ export function getAutumnRateLimiter(
 
   return createRateLimiter(`${mode}`, rateLimit);
 }
+
+/**
+ * Autumn rate-limit multiplier granted to the hobby plan. Trusted agent
+ * traffic (a valid `__agentInterop` secret) is floored at this multiplier so a
+ * free team's agent runs are limited like hobby rather than at ×1; see
+ * buildAuthenticatedRateLimiter in controllers/auth.ts. Paid plans already
+ * meet or exceed it, so the floor only ever lifts free. Pairs with
+ * HOBBY_CONCURRENCY_LIMIT in lib/concurrency-limit.ts; change both if the
+ * hobby plan in firecrawl-web autumn.config.ts changes.
+ */
+export const HOBBY_RATE_LIMIT_MULTIPLIER = 10;
 
 /**
  * Plan-priority tiers keyed by the minimum Autumn rate-limit multiplier that
@@ -110,7 +158,11 @@ const PLAN_PRIORITY_TIERS: {
   planModifier: number;
 }[] = [
   { minMultiplier: 1, bucketLimit: 25, planModifier: 0.5 }, // free
-  { minMultiplier: 10, bucketLimit: 100, planModifier: 0.3 }, // hobby
+  {
+    minMultiplier: HOBBY_RATE_LIMIT_MULTIPLIER,
+    bucketLimit: 100,
+    planModifier: 0.3,
+  }, // hobby
   { minMultiplier: 50, bucketLimit: 200, planModifier: 0.2 }, // standard
   { minMultiplier: 500, bucketLimit: 400, planModifier: 0.1 }, // growth
   { minMultiplier: 1000, bucketLimit: 400, planModifier: 0.1 }, // scale

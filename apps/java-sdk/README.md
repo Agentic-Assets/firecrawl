@@ -82,13 +82,13 @@ Before using the Java SDK, ensure you have the following installed:
 ### Gradle (Kotlin DSL)
 
 ```kotlin
-implementation("com.firecrawl:firecrawl-java:1.6.0")
+implementation("com.firecrawl:firecrawl-java:1.16.0")
 ```
 
 ### Gradle (Groovy)
 
 ```groovy
-implementation 'com.firecrawl:firecrawl-java:1.6.0'
+implementation 'com.firecrawl:firecrawl-java:1.16.0'
 ```
 
 ### Maven
@@ -97,7 +97,7 @@ implementation 'com.firecrawl:firecrawl-java:1.6.0'
 <dependency>
     <groupId>com.firecrawl</groupId>
     <artifactId>firecrawl-java</artifactId>
-    <version>1.6.0</version>
+    <version>1.16.0</version>
 </dependency>
 ```
 
@@ -178,6 +178,17 @@ Document parsed = client.parse(file,
         .build());
 
 System.out.println(parsed.getMarkdown());
+```
+
+To see which upload types the API accepts, call `getParseFormats()`. Each entry has a `format`, a `kind` (`document` or `image`), its `extensions` and `mimeTypes`, and whether it is `available` on the current deployment (image formats need image OCR enabled).
+
+```java
+import com.firecrawl.models.ParseFormat;
+
+for (ParseFormat format : client.getParseFormats()) {
+    System.out.println(format.getFormat() + " " + format.getKind()
+        + " " + format.getExtensions() + " available=" + format.isAvailable());
+}
 ```
 
 #### JSON Extraction
@@ -352,6 +363,23 @@ AgentStatusResponse result = client.agent(
 System.out.println(result.getData());
 ```
 
+To let the agent use the Exchange (Alexandria) data providers connected to your team, pass `exchange`. `toolkits` pins up to 5 providers by slug; omit it to allow all of them.
+
+```java
+AgentStatusResponse result = client.agent(
+    AgentOptions.builder()
+        .prompt("Find the head of engineering at example.com")
+        .exchange(AgentExchangeOptions.builder()
+            .enabled(true)
+            .toolkits(List.of("provider-slug"))
+            .build())
+        .build());
+
+if (result.getExchange() != null) {
+    System.out.println("Paid provider calls: " + result.getExchange().getPaidCalls());
+}
+```
+
 ### Usage & Metrics
 
 ```java
@@ -430,14 +458,14 @@ gradle build
 
 ```bash
 gradle jar
-# Output: build/libs/firecrawl-java-1.6.0.jar
+# Output: build/libs/firecrawl-java-1.16.0.jar
 ```
 
 ### Install Locally
 
 ```bash
 gradle publishToMavenLocal
-# Now available as: com.firecrawl:firecrawl-java:1.6.0 in local Maven repository
+# Now available as: com.firecrawl:firecrawl-java:1.16.0 in local Maven repository
 ```
 
 ## Running Tests

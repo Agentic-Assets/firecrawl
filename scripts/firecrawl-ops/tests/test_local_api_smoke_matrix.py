@@ -166,6 +166,10 @@ class LocalApiSmokeMatrixTests(unittest.TestCase):
                 self.assertEqual(MODULE.check_optional_support_proxy(ctx)[2], "support service not configured as expected")
             with patch.object(MODULE, "request_json", return_value=(503, {"error": "BROWSER_SERVICE_URL missing"})):
                 self.assertEqual(MODULE.check_optional_browser_create(ctx)[2], "browser service not configured as expected")
+            hangar_missing = {"error": "Browser feature is not configured (HANGAR_URL is missing)."}
+            with patch.object(MODULE, "request_json", return_value=(503, hangar_missing)):
+                self.assertEqual(MODULE.check_browser_list(ctx)[2], "browser service not configured as expected")
+                self.assertEqual(MODULE.check_optional_browser_create(ctx)[2], "browser service not configured as expected")
             with patch.object(MODULE, "request_json", return_value=(500, {"error": "Agent beta is not enabled"})):
                 with self.assertRaisesRegex(AssertionError, "unexpected agent"):
                     MODULE.check_optional_agent_create(ctx)

@@ -74,7 +74,7 @@ Model routing:
 
 Known local gaps:
 
-- `POST /v2/browser` and `/v2/browser/:sessionId/execute` are registered but need `BROWSER_SERVICE_URL`.
+- `POST /v2/browser` and `/v2/browser/:sessionId/execute` are registered but need `HANGAR_URL` (upstream renamed `BROWSER_SERVICE_URL`).
 - `POST /v2/agent` is registered but needs `EXTRACT_V3_BETA_URL`.
 - Scrape `actions`, screenshot formats, and scrape-browser interaction need Fire Engine or browser-service support.
 - AI-backed parse/scrape summary and JSON fail until `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME` are valid.
