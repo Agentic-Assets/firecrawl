@@ -807,7 +807,17 @@ digest, rollback evidence, and clean pinned checkout. Review that result,
 then repeat with `--apply` and the same explicit expected SHA, child run ID,
 source, and artifact digest. The command atomically records the reconciliation
 in the parent; resume the parent series with its original configuration.
-An incomplete child, changed artifact, or failed readback is not admissible.
+An incomplete child, changed artifact, or failed readback is not admissible,
+and neither is a child whose recorded configuration or database target differs
+from what the series binds for that source.
+
+The `--series-dir` checkout must be clean at the pinned SHA. A series pinned
+before this helper existed therefore needs the helper run from a separate
+checkout that contains it. Series created before `b8df6e093` do not take
+`.series.lock`, so the helper's lock cannot exclude their driver. Before
+`--apply`, confirm no driver for that series is running (including the
+`ai.agentic.cre-full-series` LaunchAgent), and do not resume the parent until
+the apply has returned.
 
 **Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
 one HTML card per project, while the map endpoint emits one row per map pin.

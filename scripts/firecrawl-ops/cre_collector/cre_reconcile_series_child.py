@@ -13,13 +13,14 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from cre_resource_recovery import SeriesOwnershipLock
-
+from cre_checkpoint_series import _exact_json_equal, _expected_child_config
+from cre_resource_recovery import RecoveryOwnershipError, SeriesOwnershipLock
 
 SUCCESS_STATUS = "supported_scope_complete"
 
@@ -89,9 +90,14 @@ def validate_reconciliation(
         raise ReconciliationError("parent schema or collector SHA differs")
     if parent.get("status") != "failed":
         raise ReconciliationError("parent must be failed")
-    if source not in (parent.get("config") or {}).get("sources", []):
+    parent_config = parent.get("config")
+    parent_sources = parent.get("sources")
+    if not isinstance(parent_config, dict) or not isinstance(parent_sources, dict):
+        raise ReconciliationError("parent manifest is malformed")
+    scope = parent_config.get("sources")
+    if not isinstance(scope, list) or source not in scope:
         raise ReconciliationError("source is not in the exact series scope")
-    checkpoint = (parent.get("sources") or {}).get(source)
+    checkpoint = parent_sources.get(source)
     if not isinstance(checkpoint, dict) or checkpoint.get("state") != "failed_global":
         raise ReconciliationError("parent source is not failed_global")
     child_relative = Path("runs") / expected_child_run
@@ -101,9 +107,14 @@ def validate_reconciliation(
     if (
         not isinstance(attempts, list)
         or not attempts
+        or not isinstance(attempts[-1], dict)
         or attempts[-1].get("rc") in (None, 0)
     ):
         raise ReconciliationError("parent lacks a recorded failed child attempt")
+    try:
+        expected_child_config = _expected_child_config(source, parent_config)
+    except (KeyError, TypeError) as exc:
+        raise ReconciliationError("parent manifest is malformed") from exc
 
     child_dir = series_dir / child_relative
     if child_dir.resolve().parent != (series_dir / "runs").resolve():
@@ -122,8 +133,15 @@ def validate_reconciliation(
     validation = child.get("validation") or {}
     if validation.get("rc") != 0 or validation.get("readback_ok") is not True:
         raise ReconciliationError("child final validation is incomplete")
-    if (child.get("config") or {}).get("sources") != [source]:
-        raise ReconciliationError("child source scope differs")
+    if not _exact_json_equal(child.get("config"), expected_child_config):
+        raise ReconciliationError("child configuration differs from the series")
+    parent_target = parent.get("database_target")
+    preflight = child.get("preflight")
+    child_target = (
+        preflight.get("database_target") if isinstance(preflight, dict) else None
+    )
+    if parent_target is not None and not _exact_json_equal(child_target, parent_target):
+        raise ReconciliationError("child database target differs from the series")
     child_checkpoint = (child.get("sources") or {}).get(source)
     if (
         not isinstance(child_checkpoint, dict)
@@ -185,6 +203,14 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    try:
+        return _run()
+    except (OSError, ReconciliationError, RecoveryOwnershipError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--series-dir", type=Path, required=True)
     parser.add_argument("--source", required=True)

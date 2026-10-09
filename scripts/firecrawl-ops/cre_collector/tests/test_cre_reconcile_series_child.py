@@ -1,19 +1,64 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from cre_checkpoint_series import series_config
 from cre_reconcile_series_child import (
     ReconciliationError,
+    _require_clean_checkout,
     main,
     validate_reconciliation,
 )
+from cre_resource_recovery import SeriesOwnershipLock
+
+# Parent config shape written by the pinned 4c4cfafef series runner: it
+# predates the resource_recovery block and the parent database_target binding.
+PINNED_PARENT_CONFIG = {
+    "sources": ["jll"],
+    "transactions": ["sale", "lease"],
+    "page_cap": 400,
+    "concurrency": 3,
+    "source_workers": 1,
+    "attempts_per_source": 3,
+    "max_resume_age_hours": 24.0,
+    "host_cpu_guard": {
+        "max_host_cpu_percent": 80.0,
+        "sustain_seconds": 30.0,
+        "sample_seconds": 5.0,
+    },
+    "nice": 10,
+    "continue_source_local_failures": True,
+}
+# Child config the series passes to cre_checkpoint_refresh.py for that parent.
+SERIES_CHILD_CONFIG = {
+    "sources": ["jll"],
+    "transactions": ["sale", "lease"],
+    "max_items": 0,
+    "page_cap": 400,
+    "concurrency": 3,
+    "source_workers": 1,
+    "host_cpu_guard": {
+        "max_host_cpu_percent": 80.0,
+        "sustain_seconds": 30.0,
+        "sample_seconds": 5.0,
+        "action": "interrupt_and_checkpoint",
+        "telemetry_failure_action": "interrupt_and_checkpoint",
+    },
+    "additive": True,
+    "status_activation": False,
+    "mark_missing": False,
+    "admit_baseline_hold_additively": False,
+}
+DATABASE_TARGET = {"algorithm": "sha256", "fingerprint": "f" * 64}
 
 
 class ReconcileSeriesChildTests(unittest.TestCase):
@@ -30,7 +75,7 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             "schema_version": 1,
             "collector_git_sha": "a" * 40,
             "status": "failed",
-            "config": {"sources": ["jll"]},
+            "config": copy.deepcopy(PINNED_PARENT_CONFIG),
             "sources": {
                 "jll": {
                     "state": "failed_global",
@@ -45,7 +90,8 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             "run_id": "child-1",
             "status": "supported_scope_complete",
             "validation": {"rc": 0, "readback_ok": True},
-            "config": {"sources": ["jll"]},
+            "config": copy.deepcopy(SERIES_CHILD_CONFIG),
+            "preflight": {"database_target": dict(DATABASE_TARGET)},
             "sources": {
                 "jll": {
                     "state": "ingested",
@@ -141,8 +187,7 @@ class ReconcileSeriesChildTests(unittest.TestCase):
         ):
             self._validate()
 
-    def test_apply_records_completion_without_changing_child(self) -> None:
-        original_child = (self.child_dir / "manifest.json").read_bytes()
+    def _main(self, *, apply: bool) -> tuple[int, str]:
         argv = [
             "cre_reconcile_series_child.py",
             "--series-dir",
@@ -155,14 +200,106 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             "child-1",
             "--expected-artifact-sha256",
             self.artifact_sha,
-            "--apply",
         ]
+        if apply:
+            argv.append("--apply")
+        stderr = io.StringIO()
         with (
             patch("sys.argv", argv),
             patch("cre_reconcile_series_child._require_clean_checkout"),
             redirect_stdout(io.StringIO()),
+            redirect_stderr(stderr),
         ):
-            self.assertEqual(main(), 0)
+            rc = main()
+        return rc, stderr.getvalue()
+
+    def test_current_series_parent_config_is_admitted(self) -> None:
+        self.parent["config"] = series_config(
+            sources=["jll"],
+            page_cap=400,
+            concurrency=3,
+            attempts_per_source=3,
+            max_resume_age_hours=24.0,
+            max_host_cpu_percent=80.0,
+            cpu_sustain_seconds=30.0,
+            cpu_sample_seconds=5.0,
+            nice=10,
+        )
+        self.parent["database_target"] = dict(DATABASE_TARGET)
+        self._write()
+        self._validate()
+
+    def test_child_config_drift_from_series_is_refused(self) -> None:
+        for key, value in (
+            ("page_cap", 60),
+            ("admit_baseline_hold_additively", True),
+            ("mark_missing", True),
+        ):
+            with self.subTest(key=key):
+                self.child["config"] = copy.deepcopy(SERIES_CHILD_CONFIG)
+                self.child["config"][key] = value
+                self._write()
+                with self.assertRaisesRegex(
+                    ReconciliationError, "child configuration differs"
+                ):
+                    self._validate()
+
+    def test_child_database_target_differing_from_series_is_refused(self) -> None:
+        self.parent["database_target"] = dict(DATABASE_TARGET)
+        self.child["preflight"]["database_target"] = {
+            "algorithm": "sha256",
+            "fingerprint": "0" * 64,
+        }
+        self._write()
+        with self.assertRaisesRegex(ReconciliationError, "database target differs"):
+            self._validate()
+
+    def test_malformed_parent_attempt_is_refused_cleanly(self) -> None:
+        self.parent["sources"]["jll"]["attempts"] = ["not-an-object"]
+        self._write()
+        with self.assertRaisesRegex(ReconciliationError, "failed child attempt"):
+            self._validate()
+
+    def test_malformed_parent_config_is_refused_cleanly(self) -> None:
+        self.parent["config"] = ["jll"]
+        self._write()
+        with self.assertRaisesRegex(
+            ReconciliationError, "parent manifest is malformed"
+        ):
+            self._validate()
+
+    def test_dry_run_leaves_parent_failed_and_unchanged(self) -> None:
+        original_parent = (self.series / "manifest.json").read_bytes()
+        rc, _stderr = self._main(apply=False)
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.series / "manifest.json").read_bytes(), original_parent)
+
+    def test_apply_refuses_while_series_lock_is_held(self) -> None:
+        original_parent = (self.series / "manifest.json").read_bytes()
+        with SeriesOwnershipLock(self.series / ".series.lock"):
+            rc, stderr = self._main(apply=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("owned by another foreground process", stderr)
+        self.assertEqual((self.series / "manifest.json").read_bytes(), original_parent)
+
+    def test_apply_refuses_parent_changed_after_review(self) -> None:
+        def mutate_then_lock(lock: SeriesOwnershipLock) -> SeriesOwnershipLock:
+            self.parent["sources"]["jll"]["error"] = "changed by another writer"
+            self._write()
+            SeriesOwnershipLock.acquire(lock)
+            return lock
+
+        with patch.object(SeriesOwnershipLock, "__enter__", mutate_then_lock):
+            rc, stderr = self._main(apply=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("manifest changed during review", stderr)
+        updated = json.loads((self.series / "manifest.json").read_text())
+        self.assertEqual(updated["sources"]["jll"]["state"], "failed_global")
+
+    def test_apply_records_completion_without_changing_child(self) -> None:
+        original_child = (self.child_dir / "manifest.json").read_bytes()
+        rc, _stderr = self._main(apply=True)
+        self.assertEqual(rc, 0)
         updated = json.loads((self.series / "manifest.json").read_text())
         self.assertEqual(updated["status"], "failed")
         self.assertEqual(updated["sources"]["jll"]["state"], "complete")
@@ -173,6 +310,55 @@ class ReconcileSeriesChildTests(unittest.TestCase):
         self.assertEqual(
             (self.child_dir / "manifest.json").read_bytes(), original_child
         )
+
+
+class RequireCleanCheckoutTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name) / "collector"
+        self.repo.mkdir()
+        self.series = self.repo / "out" / "checkpoint-series" / "series-1"
+        self.series.mkdir(parents=True)
+
+        def git(*args: str) -> str:
+            return subprocess.check_output(
+                ["git", "-C", str(self.repo), *args], text=True
+            ).strip()
+
+        git("init", "-q")
+        (self.repo / ".gitignore").write_text("out/\n")
+        (self.repo / "tracked.txt").write_text("pinned\n")
+        git("add", ".")
+        git(
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "pinned",
+        )
+        self.sha = git("rev-parse", "HEAD")
+
+    def test_clean_pinned_checkout_is_admitted(self) -> None:
+        _require_clean_checkout(self.series, self.sha)
+
+    def test_different_sha_is_refused(self) -> None:
+        with self.assertRaisesRegex(ReconciliationError, "SHA or cleanliness"):
+            _require_clean_checkout(self.series, "0" * 40)
+
+    def test_dirty_checkout_is_refused(self) -> None:
+        (self.repo / "tracked.txt").write_text("edited\n")
+        with self.assertRaisesRegex(ReconciliationError, "SHA or cleanliness"):
+            _require_clean_checkout(self.series, self.sha)
+
+    def test_series_outside_checkpoint_layout_is_refused(self) -> None:
+        elsewhere = self.repo / "series-1"
+        elsewhere.mkdir()
+        with self.assertRaisesRegex(ReconciliationError, "checkpoint layout"):
+            _require_clean_checkout(elsewhere, self.sha)
 
 
 if __name__ == "__main__":
