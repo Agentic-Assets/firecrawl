@@ -11,11 +11,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,62 @@ def _load_object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReconciliationError(f"{path.name} must contain an object")
     return value
+
+
+def _object_field(value: Any, name: str) -> dict[str, Any]:
+    """Return a manifest sub-object, treating only an absent one as empty."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ReconciliationError(f"child {name} is malformed")
+    return value
+
+
+def _parse_timestamp(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ReconciliationError(f"child {field} is missing")
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ReconciliationError(f"child {field} is invalid") from exc
+    if parsed.tzinfo is None:
+        raise ReconciliationError(f"child {field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _require_resume_age_within_limit(
+    parent_config: dict[str, Any], child: dict[str, Any]
+) -> None:
+    """Refuse a child whose run outlived the series resume-age limit.
+
+    The child refuses to resume a generation older than its
+    ``--max-resume-age-hours`` measured from the manifest ``started_at``. A
+    child that completed later than that limit after ``started_at`` can only
+    have been resumed under an age override, which needs founder sign-off.
+    """
+    if "max_resume_age_hours" not in parent_config:
+        return
+    limit = parent_config["max_resume_age_hours"]
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, (int, float))
+        or not math.isfinite(limit)
+        or limit <= 0
+    ):
+        raise ReconciliationError("parent max_resume_age_hours is malformed")
+    started_at = _parse_timestamp(child.get("started_at"), "started_at")
+    finished_at = _parse_timestamp(child.get("finished_at"), "finished_at")
+    if finished_at < started_at:
+        raise ReconciliationError("child run timestamps are inconsistent")
+    if finished_at - started_at > timedelta(hours=limit):
+        raise ReconciliationError(
+            f"child run span exceeds the series max_resume_age_hours ({limit:g}); "
+            "an age override needs founder sign-off on AGENTIC-3045, then "
+            "--acknowledge-resume-age-override"
+        )
 
 
 def _sha256(path: Path) -> str:
@@ -76,6 +133,7 @@ def validate_reconciliation(
     expected_sha: str,
     expected_child_run: str,
     expected_artifact_sha256: str,
+    acknowledge_resume_age_override: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if Path(expected_child_run).name != expected_child_run or expected_child_run in {
         ".",
@@ -130,11 +188,13 @@ def validate_reconciliation(
         or child.get("status") != SUCCESS_STATUS
     ):
         raise ReconciliationError("expected child has not completed")
-    validation = child.get("validation") or {}
+    validation = _object_field(child.get("validation"), "validation")
     if validation.get("rc") != 0 or validation.get("readback_ok") is not True:
         raise ReconciliationError("child final validation is incomplete")
     if not _exact_json_equal(child.get("config"), expected_child_config):
         raise ReconciliationError("child configuration differs from the series")
+    if not acknowledge_resume_age_override:
+        _require_resume_age_within_limit(parent_config, child)
     parent_target = parent.get("database_target")
     preflight = child.get("preflight")
     child_target = (
@@ -142,28 +202,28 @@ def validate_reconciliation(
     )
     if parent_target is not None and not _exact_json_equal(child_target, parent_target):
         raise ReconciliationError("child database target differs from the series")
-    child_checkpoint = (child.get("sources") or {}).get(source)
+    child_checkpoint = _object_field(child.get("sources"), "sources").get(source)
     if (
         not isinstance(child_checkpoint, dict)
         or child_checkpoint.get("state") != "ingested"
     ):
         raise ReconciliationError("child source is not ingested")
-    recovery = child_checkpoint.get("ingest_recovery") or {}
+    recovery = _object_field(child_checkpoint.get("ingest_recovery"), "ingest_recovery")
     if (
         recovery.get("outcome") != "exact_rollback"
         or recovery.get("replay_safe") is not True
     ):
         raise ReconciliationError("child lacks exact rollback evidence")
-    ingest = child_checkpoint.get("ingest") or {}
+    ingest = _object_field(child_checkpoint.get("ingest"), "ingest")
     if ingest.get("rc") != 0 or ingest.get("finished_at") is None:
         raise ReconciliationError("child lacks a completed live ingest")
-    readback = child_checkpoint.get("readback") or {}
+    readback = _object_field(child_checkpoint.get("readback"), "readback")
     if (
         readback.get("ok") is not True
         or readback.get("generation_id") != expected_child_run
     ):
         raise ReconciliationError("child lacks exact generation readback")
-    artifact = child_checkpoint.get("artifact") or {}
+    artifact = _object_field(child_checkpoint.get("artifact"), "artifact")
     if readback.get("expected_staged_unique") != artifact.get("staged_unique"):
         raise ReconciliationError("child readback count differs from the artifact")
     if artifact.get("sha256") != expected_artifact_sha256:
@@ -217,6 +277,14 @@ def _run() -> int:
     parser.add_argument("--expected-collector-sha", required=True)
     parser.add_argument("--expected-child-run", required=True)
     parser.add_argument("--expected-artifact-sha256", required=True)
+    parser.add_argument(
+        "--acknowledge-resume-age-override",
+        action="store_true",
+        help=(
+            "admit a child whose run span exceeds the series max_resume_age_hours; "
+            "requires founder sign-off recorded on AGENTIC-3045"
+        ),
+    )
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     series_dir = args.series_dir.resolve()
@@ -235,6 +303,7 @@ def _run() -> int:
         expected_sha=args.expected_collector_sha,
         expected_child_run=args.expected_child_run,
         expected_artifact_sha256=args.expected_artifact_sha256,
+        acknowledge_resume_age_override=args.acknowledge_resume_age_override,
     )
     print(
         f"validated exact child completion: source={args.source} "
@@ -254,8 +323,14 @@ def _run() -> int:
             expected_sha=args.expected_collector_sha,
             expected_child_run=args.expected_child_run,
             expected_artifact_sha256=args.expected_artifact_sha256,
+            acknowledge_resume_age_override=args.acknowledge_resume_age_override,
         )
         checkpoint = parent["sources"][args.source]
+        previous = {
+            "previous_state": checkpoint.get("state"),
+            "previous_error": checkpoint.get("error"),
+            "previous_checkpoint_status": checkpoint.get("checkpoint_status"),
+        }
         checkpoint["state"] = "complete"
         checkpoint["checkpoint_status"] = child["status"]
         checkpoint["error"] = None
@@ -264,6 +339,8 @@ def _run() -> int:
             "child_run": str(Path("runs") / args.expected_child_run),
             "artifact_sha256": args.expected_artifact_sha256,
             "recorded_at": datetime.now(timezone.utc).isoformat(),
+            **previous,
+            "resume_age_override_acknowledged": args.acknowledge_resume_age_override,
         }
         parent["updated_at"] = checkpoint["reconciliation"]["recorded_at"]
         _atomic_write_json(parent_path, parent)

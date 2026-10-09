@@ -799,7 +799,10 @@ and observation timestamps no earlier than the generation start.
 
 If an exact rollback makes the child replay-safe but the parent series has
 already recorded `failed_global`, resume the bound child directly with its
-original arguments and pinned collector SHA. Do not restart collection or
+original arguments and pinned collector SHA, from the clean pinned checkout.
+Never use `--allow-dirty`. The child refuses to resume a generation older than
+`--max-resume-age-hours` (default 24h); any age override needs founder sign-off
+recorded on the Linear issue (AGENTIC-3045). Do not restart collection or
 hand-edit either manifest. Once the child reports `supported_scope_complete`
 and its final readback passes, use `cre_reconcile_series_child.py` first
 without `--apply` to verify the failed parent, exact child, immutable artifact
@@ -809,15 +812,23 @@ source, and artifact digest. The command atomically records the reconciliation
 in the parent; resume the parent series with its original configuration.
 An incomplete child, changed artifact, or failed readback is not admissible,
 and neither is a child whose recorded configuration or database target differs
-from what the series binds for that source.
+from what the series binds for that source, or whose run span (`started_at` to
+`finished_at`) exceeds the parent's recorded `max_resume_age_hours`. The helper
+refuses that last case unless `--acknowledge-resume-age-override` is passed,
+which is allowed only with the founder sign-off on AGENTIC-3045; the override
+is recorded in the parent's `reconciliation` block. The block also keeps
+`previous_state`, `previous_error`, and `previous_checkpoint_status`.
 
 The `--series-dir` checkout must be clean at the pinned SHA. A series pinned
 before this helper existed therefore needs the helper run from a separate
 checkout that contains it. Series created before `b8df6e093` do not take
-`.series.lock`, so the helper's lock cannot exclude their driver. Before
-`--apply`, confirm no driver for that series is running (including the
-`ai.agentic.cre-full-series` LaunchAgent), and do not resume the parent until
-the apply has returned.
+`.series.lock`, so the helper's lock cannot exclude their driver. The
+`ai.agentic.cre-full-series` label existed only as a session-created,
+unregistered LaunchAgent on Cayman's MacBook, not in git, and was unloaded and
+archived on 2026-10-09. Before `--apply`, confirm with
+`launchctl list | grep ai.agentic` and a process check that no scheduled or
+background driver of the series is active, including Codex or Cowork
+automations, and do not resume the parent until the apply has returned.
 
 **Colliers SalesTracker identity safety (2026-07-29).** The list endpoint emits
 one HTML card per project, while the map endpoint emits one row per map pin.

@@ -89,6 +89,8 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             "collector_git_sha": "a" * 40,
             "run_id": "child-1",
             "status": "supported_scope_complete",
+            "started_at": "2026-09-22T10:00:00+00:00",
+            "finished_at": "2026-09-22T19:00:00+00:00",
             "validation": {"rc": 0, "readback_ok": True},
             "config": copy.deepcopy(SERIES_CHILD_CONFIG),
             "preflight": {"database_target": dict(DATABASE_TARGET)},
@@ -187,7 +189,7 @@ class ReconcileSeriesChildTests(unittest.TestCase):
         ):
             self._validate()
 
-    def _main(self, *, apply: bool) -> tuple[int, str]:
+    def _main(self, *, apply: bool, acknowledge_age: bool = False) -> tuple[int, str]:
         argv = [
             "cre_reconcile_series_child.py",
             "--series-dir",
@@ -203,6 +205,8 @@ class ReconcileSeriesChildTests(unittest.TestCase):
         ]
         if apply:
             argv.append("--apply")
+        if acknowledge_age:
+            argv.append("--acknowledge-resume-age-override")
         stderr = io.StringIO()
         with (
             patch("sys.argv", argv),
@@ -267,6 +271,159 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             ReconciliationError, "parent manifest is malformed"
         ):
             self._validate()
+
+    def _refused(self, pattern: str) -> None:
+        self._write()
+        with self.assertRaisesRegex(ReconciliationError, pattern):
+            self._validate()
+
+    def test_artifact_path_escape_is_refused(self) -> None:
+        outside = Path(self.temp.name) / "outside.json"
+        outside.write_bytes(b"immutable-listing-artifact")
+        for label, path in (
+            ("absolute", str(outside)),
+            ("parent traversal", "../../../outside.json"),
+            ("nested", "sources/../jll.json"),
+            ("empty", ""),
+        ):
+            with self.subTest(label=label):
+                self.child["sources"]["jll"]["artifact"]["path"] = path
+                self._refused("artifact path escapes the child")
+
+    def test_readback_count_differing_from_artifact_is_refused(self) -> None:
+        self.child["sources"]["jll"]["readback"]["expected_staged_unique"] = 2
+        self._refused("readback count differs")
+
+    def test_parent_status_and_source_state_must_be_failed(self) -> None:
+        for status in ("running", "complete", None):
+            with self.subTest(status=status):
+                self.parent["status"] = status
+                self._refused("parent must be failed")
+        self.parent["status"] = "failed"
+        for state in ("complete", "pending", None):
+            with self.subTest(state=state):
+                self.parent["sources"]["jll"]["state"] = state
+                self._refused("not failed_global")
+
+    def test_last_attempt_with_zero_rc_is_refused(self) -> None:
+        for attempts in ([{"rc": 0}], [{"rc": 1}, {"rc": 0}], [{"rc": None}], []):
+            with self.subTest(attempts=attempts):
+                self.parent["sources"]["jll"]["attempts"] = attempts
+                self._refused("failed child attempt")
+
+    def test_sha_and_schema_mismatches_are_refused(self) -> None:
+        cases = (
+            (self.parent, "collector_git_sha", "b" * 40, "parent schema or collector"),
+            (self.parent, "schema_version", 2, "parent schema or collector"),
+            (self.child, "collector_git_sha", "b" * 40, "child schema or collector"),
+            (self.child, "schema_version", 1, "child schema or collector"),
+        )
+        for manifest, key, value, pattern in cases:
+            with self.subTest(key=key, pattern=pattern):
+                original = manifest[key]
+                manifest[key] = value
+                self._refused(pattern)
+                manifest[key] = original
+
+    def test_malformed_child_sub_objects_are_refused_cleanly(self) -> None:
+        source = ("sources", "jll")
+        cases = (
+            ("validation", (), "validation"),
+            ("sources", (), "sources"),
+            ("ingest_recovery", source, "ingest_recovery"),
+            ("ingest", source, "ingest"),
+            ("readback", source, "readback"),
+            ("artifact", source, "artifact"),
+        )
+        for key, parents, name in cases:
+            for bad in (["x"], "x", 1, True, []):
+                with self.subTest(key=key, bad=bad):
+                    node = self.child
+                    for parent_key in parents:
+                        node = node[parent_key]
+                    original = node[key]
+                    node[key] = bad
+                    self._refused(f"child {name} is malformed")
+                    node[key] = original
+
+    def test_resume_age_guard(self) -> None:
+        self.child["finished_at"] = "2026-09-23T10:00:01+00:00"
+        self._write()
+        with self.assertRaisesRegex(ReconciliationError, "exceeds the series"):
+            self._validate()
+        validate_reconciliation(
+            self.series,
+            source="jll",
+            expected_sha="a" * 40,
+            expected_child_run="child-1",
+            expected_artifact_sha256=self.artifact_sha,
+            acknowledge_resume_age_override=True,
+        )
+        # Exactly at the limit is admitted.
+        self.child["finished_at"] = "2026-09-23T10:00:00Z"
+        self._write()
+        self._validate()
+
+    def test_resume_age_guard_fails_closed_on_bad_timestamps(self) -> None:
+        for key, value in (
+            ("started_at", None),
+            ("finished_at", None),
+            ("finished_at", "not-a-time"),
+            ("finished_at", "2026-09-22T19:00:00"),
+            ("finished_at", "2026-09-22T09:00:00+00:00"),
+        ):
+            with self.subTest(key=key, value=value):
+                original = self.child[key]
+                self.child[key] = value
+                self._refused("child .*(missing|invalid|timezone|inconsistent)")
+                self.child[key] = original
+
+    def test_malformed_parent_resume_age_limit_is_refused(self) -> None:
+        for bad in (0, -1, True, "24", float("inf")):
+            with self.subTest(bad=bad):
+                self.parent["config"]["max_resume_age_hours"] = bad
+                self._write()
+                with self.assertRaises(ReconciliationError):
+                    self._validate()
+
+    def test_cli_requires_acknowledgement_for_over_age_child(self) -> None:
+        self.child["finished_at"] = "2026-09-24T10:00:00+00:00"
+        self._write()
+        rc, stderr = self._main(apply=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("--acknowledge-resume-age-override", stderr)
+        self.assertEqual(
+            json.loads((self.series / "manifest.json").read_text())["sources"]["jll"][
+                "state"
+            ],
+            "failed_global",
+        )
+        rc, _stderr = self._main(apply=True, acknowledge_age=True)
+        self.assertEqual(rc, 0)
+        recon = json.loads((self.series / "manifest.json").read_text())["sources"][
+            "jll"
+        ]["reconciliation"]
+        self.assertIs(recon["resume_age_override_acknowledged"], True)
+
+    def test_apply_preserves_previous_state_in_reconciliation(self) -> None:
+        checkpoint = self.parent["sources"]["jll"]
+        checkpoint["error"] = "ingest interrupted"
+        checkpoint["checkpoint_status"] = "ingest_recovery_required"
+        self._write()
+        rc, _stderr = self._main(apply=True)
+        self.assertEqual(rc, 0)
+        updated = json.loads((self.series / "manifest.json").read_text())["sources"][
+            "jll"
+        ]
+        self.assertEqual(updated["state"], "complete")
+        self.assertIsNone(updated["error"])
+        recon = updated["reconciliation"]
+        self.assertEqual(recon["previous_state"], "failed_global")
+        self.assertEqual(recon["previous_error"], "ingest interrupted")
+        self.assertEqual(
+            recon["previous_checkpoint_status"], "ingest_recovery_required"
+        )
+        self.assertIs(recon["resume_age_override_acknowledged"], False)
 
     def test_dry_run_leaves_parent_failed_and_unchanged(self) -> None:
         original_parent = (self.series / "manifest.json").read_bytes()
