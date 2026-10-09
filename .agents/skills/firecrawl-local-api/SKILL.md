@@ -40,11 +40,11 @@ Prefer v2 endpoints for new work unless the user specifically asks for v1.
 For a repeatable local route audit:
 
 ```bash
-scripts/firecrawl-ops/local_api_smoke_matrix.py
+scripts/firecrawl-ops/local_api_smoke_matrix.py --out-dir .scratch/local-api-smoke
 scripts/firecrawl-ops/local_capability_matrix.py
 ```
 
-The smoke matrix writes JSON and Markdown under `tasks/tmp/local-api-smoke/`; the capability script regenerates `docs/firecrawl-ops/references/local-capability-matrix.md`.
+With the explicit output directory above, the smoke matrix writes JSON and Markdown under `.scratch/local-api-smoke/`; the capability script regenerates `docs/firecrawl-ops/references/local-capability-matrix.md`.
 
 ## Not Configured Locally
 
