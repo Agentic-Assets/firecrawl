@@ -1,0 +1,290 @@
+[
+  {
+    "input": "USD 18.50/SF/yr NNN",
+    "label": null,
+    "note": "explicit annual USD/SF",
+    "expected": {
+      "raw_quote": "USD 18.50/SF/yr NNN",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": "nnn",
+      "annual_psf_min": 18.5,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 1.10/SF/mo",
+    "label": null,
+    "note": "monthly annualized x12",
+    "expected": {
+      "raw_quote": "USD 1.10/SF/mo",
+      "source_field_label": null,
+      "original_period": "monthly",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": 13.2,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 1.10/SF/mo (USD 13.20/SF/yr)",
+    "label": null,
+    "note": "conflicting periods stay unresolved",
+    "expected": {
+      "raw_quote": "USD 1.10/SF/mo (USD 13.20/SF/yr)",
+      "source_field_label": null,
+      "original_period": "conflict",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": [
+        "period_conflict"
+      ]
+    }
+  },
+  {
+    "input": "$18.50 SF/yr NNN",
+    "label": null,
+    "note": "bare dollar does not establish USD",
+    "expected": {
+      "raw_quote": "$18.50 SF/yr NNN",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "unknown",
+      "lease_basis": "nnn",
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": [
+        "currency_unknown"
+      ]
+    }
+  },
+  {
+    "input": "USD 2.50 - 250 SF/month NNN",
+    "label": null,
+    "note": "high bound retained and flagged",
+    "expected": {
+      "raw_quote": "USD 2.50 - 250 SF/month NNN",
+      "source_field_label": null,
+      "original_period": "monthly",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": "nnn",
+      "annual_psf_min": 30,
+      "annual_psf_max": 3000,
+      "anomalies": [
+        "unusually_high_annual_psf",
+        "wide_range"
+      ]
+    }
+  },
+  {
+    "input": "USD 12/SF/yr, 2.5 acres",
+    "label": null,
+    "note": "mixed denominator is a conflict",
+    "expected": {
+      "raw_quote": "USD 12/SF/yr, 2.5 acres",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "conflict",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": [
+        "denominator_conflict"
+      ]
+    }
+  },
+  {
+    "input": "USD -5/SF/yr",
+    "label": null,
+    "note": "negative amount is not admitted",
+    "expected": {
+      "raw_quote": "USD -5/SF/yr",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 12/SF/yr",
+    "label": null,
+    "note": "NBSP is JS whitespace",
+    "expected": {
+      "raw_quote": "USD 12/SF/yr",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": 12,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 12/SF/yr ",
+    "label": null,
+    "note": "trailing NBSP",
+    "expected": {
+      "raw_quote": "USD 12/SF/yr ",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": 12,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "﻿USD 12/SF/yr",
+    "label": null,
+    "note": "BOM is JS whitespace",
+    "expected": {
+      "raw_quote": "﻿USD 12/SF/yr",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": 12,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 12/SF/yr",
+    "label": null,
+    "note": "NEL is not JS whitespace",
+    "expected": {
+      "raw_quote": "USD 12/SF/yr",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "éUSD 12/SF/yr",
+    "label": null,
+    "note": "JS \\b is ASCII-only: accented letter does not join the currency token",
+    "expected": {
+      "raw_quote": "éUSD 12/SF/yr",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": 12,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 12/SF/yrś",
+    "label": null,
+    "note": "JS \\b is ASCII-only after the period token",
+    "expected": {
+      "raw_quote": "USD 12/SF/yrś",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": 12,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 12/ſf/yr",
+    "label": null,
+    "note": "JS non-unicode ignoreCase does not fold long s to s",
+    "expected": {
+      "raw_quote": "USD 12/ſf/yr",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "unknown",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": [
+        "denominator_unknown"
+      ]
+    }
+  },
+  {
+    "input": "USD 12/SF/yr İG",
+    "label": null,
+    "note": "dotted capital I is not ASCII IG",
+    "expected": {
+      "raw_quote": "USD 12/SF/yr İG",
+      "source_field_label": null,
+      "original_period": "annual",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": 12,
+      "annual_psf_max": null,
+      "anomalies": []
+    }
+  },
+  {
+    "input": "USD 12/SF/yr",
+    "label": "Monthly é",
+    "note": "label period conflicts with quote",
+    "expected": {
+      "raw_quote": "USD 12/SF/yr",
+      "source_field_label": "Monthly é",
+      "original_period": "conflict",
+      "denominator": "sf",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": [
+        "period_conflict"
+      ]
+    }
+  },
+  {
+    "input": "USD 12\n",
+    "label": null,
+    "note": "number with trailing newline but no denominator",
+    "expected": {
+      "raw_quote": "USD 12\n",
+      "source_field_label": null,
+      "original_period": "unknown",
+      "denominator": "unknown",
+      "currency": "USD",
+      "lease_basis": null,
+      "annual_psf_min": null,
+      "annual_psf_max": null,
+      "anomalies": [
+        "period_unknown",
+        "denominator_unknown"
+      ]
+    }
+  }
+]

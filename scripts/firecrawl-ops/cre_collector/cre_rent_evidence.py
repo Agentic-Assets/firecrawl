@@ -5,19 +5,38 @@ import re
 
 HIGH_ANNUAL_PSF = 500  # Review flag only, never a rejection threshold.
 
+# lib/rent-evidence.ts uses JavaScript regexes without the `u` flag, where
+# \b, \d and case-insensitive matching are ASCII-only and \s / trim() use the
+# ECMAScript whitespace set. Python's default str patterns are Unicode-aware,
+# so mirror those semantics exactly; otherwise inputs such as "éUSD 12/SF/yr"
+# or "USD 12/ſf/yr" parse differently in the two implementations.
+_JS_WS_CHARS = (
+    "\t\n\v\f\r \u00a0\u1680"
+    + "".join(chr(c) for c in range(0x2000, 0x200B))
+    + "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+_JS_WS = "[" + _JS_WS_CHARS + "]"
+_JS_FLAGS = re.IGNORECASE | re.ASCII
+
+
+def _js(pattern):
+    return pattern.replace(r"\s", _JS_WS)
+
+
+def _search(pattern, text):
+    return re.search(_js(pattern), text, _JS_FLAGS)
+
+
+def _match(pattern, text):
+    return re.match(_js(pattern), text, _JS_FLAGS)
+
 
 def rent_evidence(text, source_field_label=None):
     raw = text if isinstance(text, str) else None
     label = source_field_label if isinstance(source_field_label, str) else None
     s = " ".join(filter(None, [raw, label]))
-    monthly = bool(
-        re.search(r"/\s*(?:mo|month)\b|\bmonthly\b|\bper\s+month\b", s, re.IGNORECASE)
-    )
-    annual = bool(
-        re.search(
-            r"/\s*(?:yr|year)\b|\bper\s+year\b|\bannual(?:ly)?\b", s, re.IGNORECASE
-        )
-    )
+    monthly = bool(_search(r"/\s*(?:mo|month)\b|\bmonthly\b|\bper\s+month\b", s))
+    annual = bool(_search(r"/\s*(?:yr|year)\b|\bper\s+year\b|\bannual(?:ly)?\b", s))
     period = (
         "conflict"
         if monthly and annual
@@ -29,18 +48,15 @@ def rent_evidence(text, source_field_label=None):
     )
     denominator = (
         "sf"
-        if re.search(
+        if _search(
             r"(?:/|\bper\s+)\s*(?:sf\b|sq\.?\s*ft\b|square\s*(?:feet|foot))|\bpsf\b|\bsf\s*/\s*(?:yr|mo|year|month)",
             s,
-            re.IGNORECASE,
         )
         else "unknown"
     )
-    if re.search(
-        r"\b(?:sqm|m2|acres?|units?)\b|square\s*met(?:er|re)s?", s, re.IGNORECASE
-    ):
+    if _search(r"\b(?:sqm|m2|acres?|units?)\b|square\s*met(?:er|re)s?", s):
         denominator = "conflict" if denominator == "sf" else "unknown"
-    currencies = set(re.findall(r"\b(?:USD|CAD|EUR|GBP|AUD)\b", s.upper()))
+    currencies = set(re.findall(r"\b(?:USD|CAD|EUR|GBP|AUD)\b", s.upper(), re.ASCII))
     if "€" in s:
         currencies.add("EUR")
     if "£" in s:
@@ -59,13 +75,11 @@ def rent_evidence(text, source_field_label=None):
         (r"\bnnn\b|triple[ -]net", "nnn"),
         (r"\big\b|\bgross\b", "gross"),
     ]:
-        if re.search(pattern, s, re.IGNORECASE):
+        if _search(pattern, s):
             basis = value
             break
-    basis_conflict = bool(
-        re.search(r"\bnnn\b|triple[ -]net", s, re.IGNORECASE)
-    ) and bool(
-        re.search(r"\bgross\b|\big\b|full[ _-]service|\bfsg\b", s, re.IGNORECASE)
+    basis_conflict = bool(_search(r"\bnnn\b|triple[ -]net", s)) and bool(
+        _search(r"\bgross\b|\big\b|full[ _-]service|\bfsg\b", s)
     )
     if basis_conflict:
         basis = None
@@ -73,29 +87,25 @@ def rent_evidence(text, source_field_label=None):
     if raw:
         clean = raw.replace(",", "")
         number = r"(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)"
-        money = re.search(
-            r"(?:\bUSD|\bCAD|\bEUR|\bGBP|\bAUD|\$|€|£)\s*(" + number + r")",
-            clean,
-            re.IGNORECASE,
+        money = _search(
+            r"(?:\bUSD|\bCAD|\bEUR|\bGBP|\bAUD|\$|€|£)\s*(" + number + r")", clean
         )
-        trailing = re.search(
-            r"(" + number + r")\s*(?:USD|CAD|EUR|GBP|AUD)\b", clean, re.IGNORECASE
-        )
+        trailing = _search(r"(" + number + r")\s*(?:USD|CAD|EUR|GBP|AUD)\b", clean)
         if money or trailing:
             clean = clean[(money or trailing).start(1) :]
-        match = re.match(
+        clean = clean.strip(_JS_WS_CHARS)
+        match = _match(
             r"(" + number + r")\s*(?:-|–|—|to)\s*\$?\s*(" + number + r")",
-            clean.strip(),
-            re.IGNORECASE,
+            clean,
         )
         if match:
             amounts = [float(match[1]), float(match[2])]
         else:
-            match = re.match(
+            # `\Z` mirrors JS `$`; Python `$` also matches before a final "\n".
+            match = _match(
                 number
-                + r"(?=\s*(?:$|/|USD\b|CAD\b|EUR\b|GBP\b|AUD\b|SF\b|PSF\b|per\b|NNN\b|gross\b))",
-                clean.strip(),
-                re.IGNORECASE,
+                + r"(?=\s*(?:\Z|/|USD\b|CAD\b|EUR\b|GBP\b|AUD\b|SF\b|PSF\b|per\b|NNN\b|gross\b))",
+                clean,
             )
             if match:
                 amounts = [float(match[0])]
@@ -115,7 +125,7 @@ def rent_evidence(text, source_field_label=None):
         and math.isfinite(n * (12 if period == "monthly" else 1) * 100)
         for n in amounts
     )
-    if raw and re.search(r"(?:^|USD\s*|\$\s*)-\s*\d", raw, re.IGNORECASE):
+    if raw and _search(r"(?:^|USD\s*|\$\s*)-\s*\d", raw):
         valid = False
     if amounts and not valid:
         anomalies.append("invalid_amount")

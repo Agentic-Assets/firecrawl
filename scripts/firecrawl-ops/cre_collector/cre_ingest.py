@@ -2462,7 +2462,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
         # overwrite a correctly rejected explicit value.
         price_per_sf = num_or_none(round(sale_price / size_sf, 2), lo=0, hi=10000)
 
-    rate_evidence = rent_evidence(listing.get("leaseRateText"), listing.get("leaseRateSourceLabel"))
+    rate_evidence = rent_evidence(
+        listing.get("leaseRateText"), listing.get("leaseRateSourceLabel")
+    )
     lease_min = rate_evidence["annual_psf_min"]
     lease_max = rate_evidence["annual_psf_max"]
     if jll_pricing_withheld or jll_foreign_lease_currency:
@@ -2753,7 +2755,14 @@ def to_row(listing, brokers_by_idx, scraped_at):
         # compatibility fallback for legacy/non-strict artifacts and must not
         # manufacture current detail freshness.
         "scraped_at": observation_scraped_at or scraped_at,
-        "raw_data": with_listing_evidence(_safe_jll_raw_data(listing), group_source_lastmod([listing]), observation_scraped_at or scraped_at),
+        # Evidence clocks are source facts only: the run-level ``scraped_at``
+        # fallback (runMeta.finishedAt, else ingest wall-clock) is not an
+        # observation time, so a missing observation clock stays null.
+        "raw_data": with_listing_evidence(
+            _safe_jll_raw_data(listing),
+            group_source_lastmod([listing]),
+            observation_scraped_at,
+        ),
         "contacts": contacts,
         "documents": documents,
         "images": images,
