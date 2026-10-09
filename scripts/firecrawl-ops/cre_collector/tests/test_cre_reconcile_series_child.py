@@ -294,6 +294,23 @@ class ReconcileSeriesChildTests(unittest.TestCase):
         self.child["sources"]["jll"]["readback"]["expected_staged_unique"] = 2
         self._refused("readback count differs")
 
+    def test_missing_or_malformed_readback_count_is_refused(self) -> None:
+        cases = (
+            ("both missing", None, None),
+            ("artifact missing", 1, None),
+            ("readback missing", None, 1),
+            ("bool", True, True),
+            ("string", "1", "1"),
+            ("negative", -1, -1),
+        )
+        for label, expected, staged in cases:
+            with self.subTest(label=label):
+                self.child["sources"]["jll"]["readback"]["expected_staged_unique"] = (
+                    expected
+                )
+                self.child["sources"]["jll"]["artifact"]["staged_unique"] = staged
+                self._refused("readback count is missing or malformed")
+
     def test_parent_status_and_source_state_must_be_failed(self) -> None:
         for status in ("running", "complete", None):
             with self.subTest(status=status):

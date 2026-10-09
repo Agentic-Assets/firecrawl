@@ -224,7 +224,14 @@ def validate_reconciliation(
     ):
         raise ReconciliationError("child lacks exact generation readback")
     artifact = _object_field(child_checkpoint.get("artifact"), "artifact")
-    if readback.get("expected_staged_unique") != artifact.get("staged_unique"):
+    staged_unique = artifact.get("staged_unique")
+    if (
+        type(staged_unique) is not int
+        or staged_unique < 0
+        or type(readback.get("expected_staged_unique")) is not int
+    ):
+        raise ReconciliationError("child readback count is missing or malformed")
+    if readback.get("expected_staged_unique") != staged_unique:
         raise ReconciliationError("child readback count differs from the artifact")
     if artifact.get("sha256") != expected_artifact_sha256:
         raise ReconciliationError("artifact digest differs from expected")
