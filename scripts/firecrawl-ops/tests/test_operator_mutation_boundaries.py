@@ -248,7 +248,7 @@ class OperatorMutationBoundaryTests(unittest.TestCase):
         )
         compose_contract_warning = re.compile(
             r"(?:not a (?:drop-in )?(?:Docker\s+)?Compose contract|"
-            r"do not\s+use\s+`apps/api/\.env\.example`\s+as a "
+            r"do\s+not\s+use\s+`apps/api/\.env\.example`\s+as a "
             r"(?:Docker\s+)?Compose contract)",
             re.IGNORECASE,
         )
