@@ -5,12 +5,14 @@ import test from "node:test";
 
 import {
   assertC10BrowserListenerConfiguration,
+  readC10BrowserListenerConfig,
+} from "./c10_browser_listener";
+import {
   hasC10AdmissionEnumerationCandidates,
   hasC10EnumerationMembership,
   hasNoC10GraphqlErrors,
   isC10SuccessfulBrowserResponse,
-  readC10BrowserListenerConfig,
-} from "./c10_browser_listener";
+} from "./c10_browser_response";
 import type { C10BrowserPageResponse } from "./c10_browser_execution";
 import type { C10SidecarCard } from "./c10_browser_internal";
 

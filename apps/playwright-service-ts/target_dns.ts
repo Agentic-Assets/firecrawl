@@ -11,6 +11,11 @@ export class TargetDnsUnavailableError extends Error {
     super("Target DNS validation is unavailable");
     this.name = "TargetDnsUnavailableError";
   }
+
+  // A prototype getter, not an own field, so logged errors print unchanged.
+  get code(): "TARGET_DNS_UNAVAILABLE" {
+    return "TARGET_DNS_UNAVAILABLE";
+  }
 }
 
 export type TargetResolver = (

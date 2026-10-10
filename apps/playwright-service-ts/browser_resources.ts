@@ -1,7 +1,8 @@
 /**
  * Route-neutral primitives for bounded browser work: capacity semaphores, hard
  * timeouts that clean up late values, and confirmed resource teardown. Shared
- * by /scrape, /browser-batch-fetch and the C10 listener.
+ * by /scrape, /browser-batch-fetch, /health and the C10 listener; permit
+ * ownership itself lives in permit_lease.ts.
  */
 
 export class HardTimeoutError extends Error {
@@ -57,6 +58,13 @@ export class Semaphore {
     });
   }
 
+  /** Takes a permit only if one is free right now; never queues. */
+  tryAcquire(): boolean {
+    if (this.permits <= 0) return false;
+    this.permits--;
+    return true;
+  }
+
   release(): void {
     this.permits++;
     const next = this.queue.shift();
@@ -109,10 +117,13 @@ export function withHardTimeout<T>(
   });
 }
 
-export async function cleanupBrowserResources(
+/**
+ * Closes a page and/or context within timeoutMs each and reports whether the
+ * browser resources are confirmed gone. Permits are the caller's business.
+ */
+export async function closeBrowserResources(
   closePage: (() => Promise<unknown>) | null,
   closeContext: (() => Promise<unknown>) | null,
-  release: () => void,
   timeoutMs = 5_000,
 ): Promise<boolean> {
   let pageClosed = closePage === null;
@@ -142,17 +153,6 @@ export async function cleanupBrowserResources(
     console.error("Browser batch context cleanup error:", error);
   }
   // A successfully closed context owns and tears down all of its pages, even
-  // when the earlier page.close() call timed out. When context teardown cannot
-  // be confirmed, retain the permit so a leaked Chromium context cannot cause
-  // the service to exceed its configured capacity. Process/container restart
-  // is the explicit recovery path for that genuinely unhealthy state.
-  const resourcesClosed = closeContext ? contextClosed : pageClosed;
-  if (resourcesClosed) {
-    release();
-  } else {
-    console.error(
-      "Browser resource cleanup was not confirmed; retaining the capacity permit",
-    );
-  }
-  return resourcesClosed;
+  // when the earlier page.close() call timed out.
+  return closeContext ? contextClosed : pageClosed;
 }
