@@ -10,7 +10,9 @@ Firecrawl is a web scraper API. The directory you have access to is a monorepo:
 - `apps/playwright-service-ts` — headless browser sidecar used by the API
 - `apps/go-html-to-md-service` — Go microservice that converts HTML to Markdown
 - `apps/nuq-postgres` — Postgres-backed queue (`nuq`) used alongside Redis/RabbitMQ
-- `apps/redis`, `apps/test-site`, `apps/test-suite`, `apps/ui` — supporting infra and tests
+- `apps/redis`, `apps/test-site` — supporting infra and tests
+- `apps/siem` — deployment artifacts for sending scrape activity to Microsoft Sentinel (Azure Monitor Logs Ingestion API); no runnable code
+- `apps/test-suite` — legacy test data, index benchmark notebook, and saved load-test results (no runnable suite)
 
 For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, and the `firecrawl-ops` skill.
 
@@ -109,8 +111,8 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 
 Default model routing: Vercel AI Gateway `gateway` profile with
 `deepseek/deepseek-v4-flash-0731` and a one-time
-`deepseek/deepseek-v4-pro-0813` fallback only for missing or schema-invalid
-structured summary/JSON output. `budget` and `escalated` remain explicit
+`deepseek/deepseek-v4-pro-0813` fallback only for missing, schema-invalid, or
+truncated structured summary/JSON output. `budget` and `escalated` remain explicit
 OpenRouter alternatives; shared profile changes require the operator procedure
 in `docs/firecrawl-ops/references/model-routing.md`.
 - `docs/firecrawl-ops/references/` — durable reference docs:

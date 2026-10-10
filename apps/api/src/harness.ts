@@ -821,7 +821,9 @@ function commandNeedsApiReady(command: string[]): boolean {
   if (command[0] === "vitest") return true;
   if (command[0] === "pnpm") {
     const script = command[1] ?? "";
-    return script.startsWith("test") || script === "vitest";
+    return (
+      script.startsWith("test") || script === "vitest" || script === "exec"
+    );
   }
   return false;
 }

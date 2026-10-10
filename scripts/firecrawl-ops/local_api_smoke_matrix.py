@@ -357,9 +357,19 @@ def check_active_crawls(ctx: SmokeContext) -> tuple[int, Any, str]:
     return http_status, payload, f"active={len(crawls or [])}"
 
 
+# Upstream renamed the browser service setting from BROWSER_SERVICE_URL to
+# HANGAR_URL (firecrawl/firecrawl#4757); accept either "not configured" reply.
+BROWSER_SERVICE_CONFIG_KEYS = ("BROWSER_SERVICE_URL", "HANGAR_URL")
+
+
+def browser_service_not_configured(http_status: int, payload: Any) -> bool:
+    text = json_text(payload)
+    return http_status == 503 and any(key in text for key in BROWSER_SERVICE_CONFIG_KEYS)
+
+
 def check_browser_list(ctx: SmokeContext) -> tuple[int, Any, str]:
     http_status, payload = request_json(ctx, "GET", "/v2/browser")
-    if http_status == 503 and "BROWSER_SERVICE_URL" in json_text(payload):
+    if browser_service_not_configured(http_status, payload):
         return http_status, payload, "browser service not configured as expected"
     if http_status >= 400:
         raise AssertionError(f"unexpected browser list response HTTP {http_status}")
@@ -370,7 +380,7 @@ def check_browser_list(ctx: SmokeContext) -> tuple[int, Any, str]:
 
 def check_optional_browser_create(ctx: SmokeContext) -> tuple[int, Any, str]:
     http_status, payload = request_json(ctx, "POST", "/v2/browser", {"ttl": 30, "activityTtl": 10})
-    if http_status == 503 and "BROWSER_SERVICE_URL" in json_text(payload):
+    if browser_service_not_configured(http_status, payload):
         return http_status, payload, "browser service not configured as expected"
     if http_status < 400:
         return http_status, payload, "browser service appears configured"

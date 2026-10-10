@@ -164,10 +164,10 @@ export interface WebSearchResult {
 export type SearchResultType = "web" | "images" | "news";
 
 export interface SearchV2Response {
+  tools?: import("../services/alexandria/contracts").DiscoveredTool[];
   web?: WebSearchResult[];
   images?: ImageSearchResult[];
   news?: NewsSearchResult[];
-  developer?: WebSearchResult[];
 }
 
 export interface ScrapeActionContent {

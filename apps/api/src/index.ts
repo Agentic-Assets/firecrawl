@@ -1,8 +1,6 @@
 import "dotenv/config";
 import { config } from "./config";
-import "./services/sentry";
-import { setSentryServiceTag } from "./services/sentry";
-import * as Sentry from "@sentry/node";
+import { shutdownTracing } from "./otel";
 import express, { NextFunction, Request, Response } from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -13,6 +11,7 @@ import {
   getPrecrawlQueue,
 } from "./services/queue-service";
 import { v0Router } from "./routes/v0";
+import { startNodeRuntimeMetrics } from "./lib/node-runtime-metrics";
 import os from "os";
 import { logger } from "./lib/logger";
 import { adminRouter } from "./routes/admin";
@@ -20,11 +19,7 @@ import http from "node:http";
 import https from "node:https";
 import { v1Router } from "./routes/v1";
 import expressWs from "express-ws";
-import {
-  ErrorResponse,
-  RequestWithMaybeACUC,
-  ResponseWithSentry,
-} from "./controllers/v1/types";
+import { ErrorResponse, RequestWithMaybeACUC } from "./controllers/v1/types";
 import { ZodError } from "zod";
 import { QueueFullError } from "./lib/queue-full-error";
 import { v7 as uuidv7 } from "uuid";
@@ -44,6 +39,8 @@ import responseTime from "response-time";
 import { shutdownWebhookQueue } from "./services/webhook";
 import { shutdownIndexerQueue } from "./services/indexing/indexer-queue";
 import { isKeylessConfigured } from "./lib/keyless";
+import { shutdownPubSubLogging } from "./services/logging/log_job";
+import { notFoundHandler } from "./lib/not-found";
 
 const { createBullBoard } = require("@bull-board/api");
 const { BullMQAdapter } = require("@bull-board/api/bullMQAdapter");
@@ -72,8 +69,6 @@ const ws = expressWs(expressApp);
 const app = ws.app;
 
 global.isProduction = config.IS_PRODUCTION;
-
-setSentryServiceTag("api");
 
 // Capture the exact request bytes so integrations that sign the raw payload
 // (e.g. Slack's X-Slack-Signature) can verify it after body parsing. Typed with
@@ -147,6 +142,7 @@ const DEFAULT_PORT = config.PORT;
 const HOST = config.HOST;
 
 async function startServer(port = DEFAULT_PORT) {
+  startNodeRuntimeMetrics();
   try {
     await initializeBlocklist();
     initializeEngineForcing();
@@ -183,7 +179,9 @@ async function startServer(port = DEFAULT_PORT) {
       logger.info("Server closed.");
       nuqShutdown().finally(() => {
         shutdownWebhookQueue().finally(() => {
-          shutdownIndexerQueue().finally(() => {
+          shutdownIndexerQueue().finally(async () => {
+            await shutdownPubSubLogging();
+            await shutdownTracing();
             logger.info("NUQ shutdown complete");
             process.exit(0);
           });
@@ -209,6 +207,10 @@ if (require.main === module) {
 app.get("/is-production", (req, res) => {
   res.send({ isProduction: global.isProduction });
 });
+
+// Terminal handler for unmatched paths. Must stay after every route and before
+// the error middleware below, or Express falls back to its default HTML page.
+app.use(notFoundHandler);
 
 app.use(
   (
@@ -258,13 +260,11 @@ app.use(
   },
 );
 
-Sentry.setupExpressErrorHandler(app);
-
 app.use(
   (
     err: unknown,
     req: RequestWithMaybeACUC<{}, ErrorResponse, undefined>,
-    res: ResponseWithSentry<ErrorResponse>,
+    res: Response<ErrorResponse>,
     next: NextFunction,
   ) => {
     if (
@@ -291,7 +291,7 @@ app.use(
       });
     }
 
-    const id = res.sentry ?? uuidv7();
+    const id = uuidv7();
 
     logger.error(
       "Error occurred in request! (" + req.path + ") -- ID " + id + " -- ",

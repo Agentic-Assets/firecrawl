@@ -23,6 +23,7 @@ import { fetchProduct } from "./product";
 import { fetchMenu } from "./menu";
 import { fetchVideo } from "./video";
 import { performRedactPII } from "./redactPII";
+import { performPromptInjectionGuard } from "./promptInjectionGuard";
 import { useIndex, useSearchIndex } from "../../../services/index";
 import { sendDocumentToIndex } from "../engines/index/index";
 import { sendDocumentToSearchIndex } from "./sendToSearchIndex";
@@ -99,6 +100,7 @@ async function deriveMarkdownFromHTML(
   // - summary format requires markdown (for summarization)
   // - question/highlights/query formats require markdown (for page-level answers)
   // - redactPII needs markdown as its source text (spans are markdown char offsets)
+  // - checkPromptInjection scans markdown
   const hasMarkdown = hasFormatOfType(meta.options.formats, "markdown");
   const hasChangeTracking = hasFormatOfType(
     meta.options.formats,
@@ -123,6 +125,7 @@ async function deriveMarkdownFromHTML(
     !hasHighlights &&
     !hasQuery &&
     !hasRedactPII &&
+    !meta.options.checkPromptInjection &&
     !meta.options.onlyCleanContent
   ) {
     return document;
@@ -339,33 +342,10 @@ async function deriveBrandingFromActions(
   return document;
 }
 
-async function performLLMExtractUnlessNativeJson(
-  meta: Meta,
-  document: Document,
-): Promise<Document> {
-  if (
-    document.json !== undefined &&
-    hasFormatOfType(meta.options.formats, "json")
-  ) {
-    if (
-      meta.internalOptions.v1OriginalFormat === "extract" &&
-      document.extract === undefined
-    ) {
-      document.extract = document.json;
-    }
-
-    meta.logger.debug(
-      "Skipping LLM JSON extraction - document already has native JSON",
-    );
-    return document;
-  }
-
-  return performLLMExtract(meta, document);
-}
-
 function coerceFieldsToFormats(meta: Meta, document: Document): Document {
   const hasMarkdown = hasFormatOfType(meta.options.formats, "markdown");
   const hasRawHtml = hasFormatOfType(meta.options.formats, "rawHtml");
+  const hasRawBase64 = hasFormatOfType(meta.options.formats, "rawBase64");
   const hasHtml = hasFormatOfType(meta.options.formats, "html");
   const hasLinks = hasFormatOfType(meta.options.formats, "links");
   const hasImages = hasFormatOfType(meta.options.formats, "images");
@@ -404,6 +384,14 @@ function coerceFieldsToFormats(meta: Meta, document: Document): Document {
   } else if (hasRawHtml && document.rawHtml === undefined) {
     meta.logger.warn(
       "Request had format: rawHtml, but there was no rawHtml field in the result.",
+    );
+  }
+
+  if (!hasRawBase64 && document.rawBase64 !== undefined) {
+    delete document.rawBase64;
+  } else if (hasRawBase64 && document.rawBase64 === undefined) {
+    meta.logger.warn(
+      "Request had format: rawBase64, but there was no rawBase64 field in the result.",
     );
   }
 
@@ -636,6 +624,7 @@ const transformerStack: Transformer[] = [
   deriveMarkdownFromHTML,
   performCleanContent,
   performRedactPII,
+  performPromptInjectionGuard,
   deriveLinksFromHTML,
   deriveImagesFromHTML,
   deriveBrandingFromActions,
@@ -644,7 +633,7 @@ const transformerStack: Transformer[] = [
   fetchMenu,
   ...(useIndex ? [sendDocumentToIndex] : []),
   ...(useSearchIndex ? [sendDocumentToSearchIndex] : []), // Add to search index for real-time search
-  performLLMExtractUnlessNativeJson,
+  performLLMExtract,
   performDeterministicJson,
   performSummary,
   performQuery,
@@ -661,6 +650,16 @@ export async function executeTransformers(
   meta: Meta,
   document: Document,
 ): Promise<Document> {
+  if (meta.internalOptions.teamId === "sitemap") {
+    document.metadata.scrapeId = meta.id;
+    if (useIndex) document = await sendDocumentToIndex(meta, document);
+    return coerceFieldsToFormats(meta, document);
+  }
+
+  if (hasFormatOfType(meta.options.formats, "rawBase64")) {
+    return coerceFieldsToFormats(meta, document);
+  }
+
   const executions: [string, number][] = [];
 
   for (const transformer of transformerStack) {

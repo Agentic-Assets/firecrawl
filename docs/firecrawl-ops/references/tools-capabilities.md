@@ -190,7 +190,7 @@ The benchmark now saves `fields/pages.jsonl`, `qa.json`, and `qa.md` per case wh
 
 ## Present but not configured locally
 
-- `POST /v2/browser`, `GET /v2/browser`, `POST /v2/browser/:sessionId/execute` need `BROWSER_SERVICE_URL`.
+- `POST /v2/browser`, `GET /v2/browser`, `POST /v2/browser/:sessionId/execute` need `HANGAR_URL` (upstream renamed `BROWSER_SERVICE_URL`).
 - `POST /v2/agent` needs `EXTRACT_V3_BETA_URL`; an unconfigured local stack returns HTTP 503 with that explicit prerequisite.
 - `POST /v1/deep-research` starts locally, but it is slower and may keep processing for several minutes.
 - CLI `agent` and `interact` need the corresponding backend services/model configuration.

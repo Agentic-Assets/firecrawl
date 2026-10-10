@@ -2,6 +2,8 @@ import axios, { type AxiosResponse, type AxiosRequestHeaders, AxiosError } from 
 import * as zt from "zod";
 import { zodSchemaToJsonSchema } from "../utils/zodSchemaToJson";
 import { TypedEventTarget } from "typescript-event-target";
+import type { RequiresAction } from "../v2/types";
+import { pinToApiOrigin } from "../utils/apiOrigin";
 
 /**
  * Configuration interface for FirecrawlApp.
@@ -181,6 +183,7 @@ export interface ScrapeParams<LLMSchema extends zt.ZodSchema = any, ActionsSchem
     prompt?: string;
     schema?: LLMSchema;
     systemPrompt?: string;
+    checkPromptInjection?: boolean;
   }
   changeTrackingOptions?: {
     prompt?: string;
@@ -438,6 +441,8 @@ export interface CrawlErrorsResponse {
     url: string,
     code?: string,
     error: string,
+    /** Present when the page needs provider terms accepted first. */
+    requiresAction?: RequiresAction,
   }[];
 
   /**
@@ -676,9 +681,7 @@ export default class FirecrawlApp {
       return packageJson.default.version;
     } catch (error) {
       // Suppress noisy logs under test environments
-      const isTest = typeof process !== 'undefined' && (
-        process.env.JEST_WORKER_ID != null || process.env.NODE_ENV === 'test'
-      );
+      const isTest = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
       if (!isTest) {
         // eslint-disable-next-line no-console
         console.error("Error getting version:", error);
@@ -721,7 +724,7 @@ export default class FirecrawlApp {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.apiKey}`,
     } as AxiosRequestHeaders;
-    let jsonData: any = { url, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { url, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
     if (jsonData?.extract?.schema) {
       jsonData = {
         ...jsonData,
@@ -788,7 +791,7 @@ export default class FirecrawlApp {
       lang: params?.lang ?? "en",
       country: params?.country ?? "us",
       location: params?.location,
-      origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}`,
+      origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}`,
       timeout: params?.timeout ?? 60000,
       scrapeOptions: params?.scrapeOptions ?? { formats: [] },
     };
@@ -852,7 +855,7 @@ export default class FirecrawlApp {
     idempotencyKey?: string
   ): Promise<CrawlStatusResponse | ErrorResponse> {
     const headers = this.prepareHeaders(idempotencyKey);
-    let jsonData: any = { url, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { url, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
     try {
       const response: AxiosResponse = await this.postRequest(
         this.apiUrl + `/v1/crawl`,
@@ -881,7 +884,7 @@ export default class FirecrawlApp {
     idempotencyKey?: string
   ): Promise<CrawlResponse | ErrorResponse> {
     const headers = this.prepareHeaders(idempotencyKey);
-    let jsonData: any = { url, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { url, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
     try {
       const response: AxiosResponse = await this.postRequest(
         this.apiUrl + `/v1/crawl`,
@@ -918,7 +921,7 @@ export default class FirecrawlApp {
     }
 
     const headers: AxiosRequestHeaders = this.prepareHeaders();
-    const targetURL = new URL(nextURL ?? `${this.apiUrl}/v1/crawl/${id}`);
+    const targetURL = new URL(nextURL ?? `${this.apiUrl}/v1/crawl/${id}`, this.apiUrl);
     if (skip !== undefined) {
       targetURL.searchParams.set("skip", skip.toString());
     }
@@ -1057,7 +1060,7 @@ export default class FirecrawlApp {
    */
   async mapUrl(url: string, params?: MapParams): Promise<MapResponse | ErrorResponse> {
     const headers = this.prepareHeaders();
-    let jsonData: any = { url, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { url, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
 
     try {
       const response: AxiosResponse = await this.postRequest(
@@ -1096,7 +1099,7 @@ export default class FirecrawlApp {
     maxConcurrency?: number,
   ): Promise<BatchScrapeStatusResponse | ErrorResponse> {
     const headers = this.prepareHeaders(idempotencyKey);
-    let jsonData: any = { urls, webhook, ignoreInvalidURLs, maxConcurrency, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { urls, webhook, ignoreInvalidURLs, maxConcurrency, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
     if (jsonData?.extract?.schema) {
       jsonData = {
         ...jsonData,
@@ -1123,7 +1126,7 @@ export default class FirecrawlApp {
       );
       if (response.status === 200) {
         const id: string = response.data.id;
-        return this.monitorJobStatus(id, headers, pollInterval);
+        return this.monitorJobStatus(id, headers, pollInterval, "batch");
       } else {
         this.handleError(response, "start batch scrape job");
       }
@@ -1145,7 +1148,7 @@ export default class FirecrawlApp {
     ignoreInvalidURLs?: boolean,
   ): Promise<BatchScrapeResponse | ErrorResponse> {
     const headers = this.prepareHeaders(idempotencyKey);
-    let jsonData: any = { urls, webhook, ignoreInvalidURLs, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { urls, webhook, ignoreInvalidURLs, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
     try {
       const response: AxiosResponse = await this.postRequest(
         this.apiUrl + `/v1/batch/scrape`,
@@ -1206,7 +1209,7 @@ export default class FirecrawlApp {
     }
 
     const headers: AxiosRequestHeaders = this.prepareHeaders();
-    const targetURL = new URL(nextURL ?? `${this.apiUrl}/v1/batch/scrape/${id}`);
+    const targetURL = new URL(nextURL ?? `${this.apiUrl}/v1/batch/scrape/${id}`, this.apiUrl);
     if (skip !== undefined) {
       targetURL.searchParams.set("skip", skip.toString());
     }
@@ -1309,7 +1312,7 @@ export default class FirecrawlApp {
     try {
       const response: AxiosResponse = await this.postRequest(
         this.apiUrl + `/v1/extract`,
-        { ...jsonData, schema: jsonSchema, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` },
+        { ...jsonData, schema: jsonSchema, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` },
         headers
       );
 
@@ -1369,7 +1372,7 @@ export default class FirecrawlApp {
     try {
       const response: AxiosResponse = await this.postRequest(
         this.apiUrl + `/v1/extract`,
-        { ...jsonData, schema: jsonSchema, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` },
+        { ...jsonData, schema: jsonSchema, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` },
         headers
       );
 
@@ -1447,7 +1450,7 @@ export default class FirecrawlApp {
     headers: AxiosRequestHeaders
   ): Promise<AxiosResponse> {
     try {
-      return await axios.get(url, { headers });
+      return await axios.get(pinToApiOrigin(this.apiUrl, url), { headers });
     } catch (error) {
       if (error instanceof AxiosError && error.response) {
         return error.response as AxiosResponse;
@@ -1479,18 +1482,21 @@ export default class FirecrawlApp {
   }
 
   /**
-   * Monitors the status of a crawl job until completion or failure.
-   * @param id - The ID of the crawl operation.
+   * Monitors the status of a crawl or batch scrape job until completion or failure.
+   * @param id - The ID of the crawl or batch scrape operation.
    * @param headers - The headers for the request.
    * @param checkInterval - Interval in seconds for job status checks.
-   * @param checkUrl - Optional URL to check the status (used for v1 API)
+   * @param jobType - Which status endpoint to poll. Defaults to `"crawl"`.
    * @returns The final job status or data.
    */
   async monitorJobStatus(
     id: string,
     headers: AxiosRequestHeaders,
-    checkInterval: number
+    checkInterval: number,
+    jobType: "crawl" | "batch" = "crawl"
   ): Promise<CrawlStatusResponse | ErrorResponse> {
+    const statusPath = jobType === "batch" ? "batch/scrape" : "crawl";
+    const jobLabel = jobType === "batch" ? "Batch scrape" : "Crawl";
     let failedTries = 0;
     let networkRetries = 0;
     const maxNetworkRetries = 3;
@@ -1498,7 +1504,7 @@ export default class FirecrawlApp {
     while (true) {
       try {
         let statusResponse: AxiosResponse = await this.getRequest(
-          `${this.apiUrl}/v1/crawl/${id}`,
+          `${this.apiUrl}/v1/${statusPath}/${id}`,
           headers
         );
         
@@ -1521,7 +1527,7 @@ export default class FirecrawlApp {
               statusData.data = data;
               return statusData;
             } else {
-              throw new FirecrawlError("Crawl job completed but no data was returned", 500);
+              throw new FirecrawlError(`${jobLabel} job completed but no data was returned`, 500);
             }
           } else if (
             ["active", "paused", "pending", "queued", "waiting", "scraping"].includes(statusData.status)
@@ -1532,14 +1538,14 @@ export default class FirecrawlApp {
             );
           } else {
             throw new FirecrawlError(
-              `Crawl job failed or was stopped. Status: ${statusData.status}`,
+              `${jobLabel} job failed or was stopped. Status: ${statusData.status}`,
               500
             );
           }
         } else {
           failedTries++;
           if (failedTries >= 3) {
-            this.handleError(statusResponse, "check crawl status");
+            this.handleError(statusResponse, `check ${jobLabel.toLowerCase()} status`);
           }
         }
       } catch (error: any) {
@@ -1642,7 +1648,7 @@ export default class FirecrawlApp {
    * @param onActivity - Optional callback to receive activity updates in real-time.
    * @param onSource - Optional callback to receive source updates in real-time.
    * @returns The final research results.
-   * @deprecated /v1/deep-research is deprecated. Use /v2/search instead.
+   * @deprecated /v1/deep-research is deprecated. Use /v2/search for web research, or research.searchPapers() for scientific literature.
    */
   async deepResearch(
     query: string, 
@@ -1730,11 +1736,11 @@ export default class FirecrawlApp {
    * Initiates a deep research operation on a given query without polling.
    * @param params - Parameters for the deep research operation.
    * @returns The response containing the research job ID.
-   * @deprecated /v1/deep-research is deprecated. Use /v2/search instead.
+   * @deprecated /v1/deep-research is deprecated. Use /v2/search for web research, or research.searchPapers() for scientific literature.
    */
   async asyncDeepResearch(query: string, params: DeepResearchParams<zt.ZodSchema>): Promise<DeepResearchResponse | ErrorResponse> {
     const headers = this.prepareHeaders();
-    let jsonData: any = { query, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { query, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
 
     if (jsonData?.jsonOptions?.schema) {
       jsonData = {
@@ -1772,7 +1778,7 @@ export default class FirecrawlApp {
    * Checks the status of a deep research operation.
    * @param id - The ID of the deep research operation.
    * @returns The current status and results of the research operation.
-   * @deprecated /v1/deep-research is deprecated. Use /v2/search instead.
+   * @deprecated /v1/deep-research is deprecated. Use /v2/search for web research, or research.searchPapers() for scientific literature.
    */
   async checkDeepResearchStatus(id: string): Promise<DeepResearchStatusResponse | ErrorResponse> {
     const headers = this.prepareHeaders();
@@ -1882,7 +1888,7 @@ export default class FirecrawlApp {
   async __asyncDeepResearch(topic: string, params: DeepResearchParams): Promise<DeepResearchResponse | ErrorResponse> {
     const headers = this.prepareHeaders();
     try {
-      let jsonData: any = { topic, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+      let jsonData: any = { topic, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
       const response: AxiosResponse = await this.postRequest(
         `${this.apiUrl}/v1/deep-research`,
         jsonData,
@@ -1997,7 +2003,7 @@ export default class FirecrawlApp {
    */
   async asyncGenerateLLMsText(url: string, params?: GenerateLLMsTextParams): Promise<GenerateLLMsTextResponse | ErrorResponse> {
     const headers = this.prepareHeaders();
-    let jsonData: any = { url, ...params, origin: typeof (params as any).origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
+    let jsonData: any = { url, ...params, origin: typeof (params as any)?.origin === "string" && (params as any).origin.includes("mcp") ? (params as any).origin : `js-sdk@${this.version}` };
     try {
       const response: AxiosResponse = await this.postRequest(
         `${this.apiUrl}/v1/llmstxt`,

@@ -10,6 +10,7 @@ import { Meta } from "..";
 import { logger } from "../../../lib/logger";
 import { modelPrices } from "../../../lib/extract/usage/model-prices";
 import {
+  AISDKError,
   generateObject,
   generateText,
   LanguageModel,
@@ -23,9 +24,12 @@ import fs from "fs/promises";
 import Ajv from "ajv";
 import { extractData } from "../lib/extractSmartScrape";
 import {
-  CostLimitExceededError,
-  CostTracking,
-} from "../../../lib/cost-tracking";
+  findStrictSchemaViolation,
+  toRootSchema,
+  typeIncludes,
+} from "../../../lib/openai-strict-schema";
+import { CostTracking } from "../../../lib/cost-tracking";
+import { isZeroDataRetentionActive } from "../../../lib/otel-tracer";
 import { isAgentExtractModelValid } from "../../../controllers/v1/types";
 import { hasFormatOfType } from "../../../lib/format-utils";
 
@@ -112,7 +116,10 @@ export class LLMRefusalError extends Error {
  * compatibility failure, not a provider request failure.
  */
 export function isInvalidStructuredOutputError(error: unknown): boolean {
-  return NoObjectGeneratedError.isInstance(error);
+  return (
+    NoObjectGeneratedError.isInstance(error) ||
+    error instanceof StructuredOutputLimitError
+  );
 }
 
 function hasUsableSummary(extract: unknown): extract is { summary: string } {
@@ -152,7 +159,7 @@ function normalizeSchema(x: any): any {
     x.not = normalizeSchema(x.not);
   }
 
-  if (x && x.type === "object") {
+  if (x && typeIncludes(x.type, "object")) {
     return {
       ...x,
       properties: Object.fromEntries(
@@ -164,13 +171,54 @@ function normalizeSchema(x: any): any {
       required: Object.keys(x.properties || {}),
       additionalProperties: false,
     };
-  } else if (x && x.type === "array") {
+  } else if (x && typeIncludes(x.type, "array")) {
     return {
       ...x,
       items: normalizeSchema(x.items),
     };
   } else {
     return x;
+  }
+}
+
+/**
+ * Whether text is JSON cut off before its end: an unclosed string, object or
+ * array. That only happens when the model ran out of output tokens, and no
+ * repair can recover the part that was never generated. A closing bracket that
+ * doesn't match the open one is malformed rather than cut off, so the repair
+ * still gets a chance at it.
+ */
+export function isTruncatedJson(text: string): boolean {
+  const open: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (const char of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+    } else if (char === '"') {
+      inString = true;
+    } else if (char === "{" || char === "[") {
+      open.push(char);
+    } else if (char === "}" || char === "]") {
+      if (open.pop() !== (char === "}" ? "{" : "[")) return false;
+    }
+  }
+  return inString || open.length > 0;
+}
+
+// Thrown when structured output hit the model's output token limit. The
+// partial JSON is not returned.
+const OUTPUT_LIMIT_MESSAGE =
+  "the extracted data exceeded the model's maximum output length, so nothing was returned. Try a schema or prompt that asks for fewer items.";
+
+// Fork: a typed output-limit failure, so a truncated (missing) structured
+// response still triggers the configured one-time structured-output fallback.
+class StructuredOutputLimitError extends Error {
+  constructor() {
+    super(OUTPUT_LIMIT_MESSAGE);
+    this.name = "StructuredOutputLimitError";
   }
 }
 
@@ -186,33 +234,21 @@ export function normalizeJsonSchemaForModel(schema: any): any {
     return schema;
   }
 
-  const originalSchema = schema;
-  schema = removeDefaultProperty(schema);
+  // Normalize the bad json schema users write (mogery)
+  schema = toRootSchema(removeDefaultProperty(schema));
 
-  if (schema.type === "array") {
+  // Structured outputs need a (non-nullable) object at the root.
+  if (schema && typeIncludes(schema.type, "array")) {
     schema = {
       type: "object",
       properties: {
-        // Preserve the existing array-path behavior: its item constraints were
-        // intentionally retained for model generation before this helper was
-        // factored out.
-        items: originalSchema,
+        items: schema,
       },
       required: ["items"],
       additionalProperties: false,
     };
-  } else if (typeof schema === "object" && !schema.type) {
-    schema = {
-      type: "object",
-      properties: Object.fromEntries(
-        Object.entries(schema).map(([key, value]) => [
-          key,
-          removeDefaultProperty(value),
-        ]),
-      ),
-      required: Object.keys(schema),
-      additionalProperties: false,
-    };
+  } else if (schema && typeIncludes(schema.type, "object")) {
+    schema = { ...schema, type: "object" };
   }
 
   return normalizeSchema(schema);
@@ -300,32 +336,64 @@ export function trimToTokenLimit(
   }
 }
 
-export function calculateCost(
-  model: string,
-  inputTokens: number,
-  outputTokens: number,
-) {
-  const modelCosts = {
-    "openai/o3-mini": { input_cost: 1.1, output_cost: 4.4 },
+// USD per million tokens. Takes precedence over modelPrices, which covers
+// everything else.
+const modelCosts: Record<string, { input_cost: number; output_cost: number }> =
+  {
     "gpt-4o-mini": { input_cost: 0.15, output_cost: 0.6 },
-    "openai/gpt-4o-mini": { input_cost: 0.15, output_cost: 0.6 },
-    "openai/gpt-4o": { input_cost: 2.5, output_cost: 10 },
+    "gpt-4o": { input_cost: 2.5, output_cost: 10 },
+    "gpt-4.1": { input_cost: 2, output_cost: 8 },
+    "gpt-4.1-mini": { input_cost: 0.4, output_cost: 1.6 },
+    "o3-mini": { input_cost: 1.1, output_cost: 4.4 },
     "gpt-5": { input_cost: 1.25, output_cost: 10 },
-    "openai/gpt-5": { input_cost: 1.25, output_cost: 10 },
     "gpt-5-mini": { input_cost: 0.25, output_cost: 2 },
-    "openai/gpt-5-mini": { input_cost: 0.25, output_cost: 2 },
     "gpt-5-nano": { input_cost: 0.05, output_cost: 0.4 },
-    "openai/gpt-5-nano": { input_cost: 0.05, output_cost: 0.4 },
     "google/gemini-2.0-flash-001": { input_cost: 0.15, output_cost: 0.6 },
     "gemini-2.0-flash": { input_cost: 0.15, output_cost: 0.6 },
+    "gemini-2.5-flash-lite": { input_cost: 0.1, output_cost: 0.4 },
+    "grok-4-1-fast-non-reasoning": { input_cost: 0.2, output_cost: 0.5 },
     "deepseek/deepseek-r1": { input_cost: 0.55, output_cost: 2.19 },
     "google/gemini-2.0-flash-thinking-exp:free": {
       input_cost: 0.55,
       output_cost: 2.19,
     },
-    "google/gemini-2.5-flash-lite": { input_cost: 0.1, output_cost: 0.4 },
   };
-  let modelCost = modelCosts[model] || { input_cost: 0, output_cost: 0 };
+
+const warnedUnpricedModels = new Set<string>();
+
+function lookupModelCost(
+  model: string,
+): { input_cost: number; output_cost: number } | undefined {
+  // Callers pass both bare ids ("gpt-4o") and provider-prefixed ones
+  // ("openai/gpt-4o", "google/gemini-2.5-flash-lite").
+  const candidates = [model];
+  const slash = model.indexOf("/");
+  if (slash !== -1) candidates.push(model.slice(slash + 1));
+
+  for (const id of candidates) {
+    if (modelCosts[id]) return modelCosts[id];
+  }
+  for (const id of candidates) {
+    const price = modelPrices[id];
+    if (
+      typeof price?.input_cost_per_token === "number" &&
+      typeof price?.output_cost_per_token === "number"
+    ) {
+      return {
+        input_cost: price.input_cost_per_token * 1_000_000,
+        output_cost: price.output_cost_per_token * 1_000_000,
+      };
+    }
+  }
+  return undefined;
+}
+
+export function calculateCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+) {
+  let modelCost = lookupModelCost(model);
   //gemini-2.5-pro-exp-03-25 pricing
   if (model.includes("gemini-2.5-pro")) {
     let inputCost = 0;
@@ -339,6 +407,21 @@ export function calculateCost(
     }
     modelCost = { input_cost: inputCost, output_cost: outputCost };
   }
+
+  if (!modelCost) {
+    // Once per model per process: an unpriced model is a table gap, and every
+    // call to it records $0.
+    if (!warnedUnpricedModels.has(model)) {
+      warnedUnpricedModels.add(model);
+      logger.warn("No price for model, recording LLM call cost as $0", {
+        module: "llmExtract",
+        method: "calculateCost",
+        model,
+      });
+    }
+    return 0;
+  }
+
   const totalCost =
     (inputTokens * modelCost.input_cost +
       outputTokens * modelCost.output_cost) /
@@ -382,8 +465,51 @@ export type GenerateCompletionsOptions = {
     scrapeId?: string;
     deepResearchId?: string;
     llmsTxtId?: string;
+    crawlId?: string;
+    /** Extra span metadata from the feature that requested the call. */
+    telemetry?: Record<string, string>;
   };
+  /**
+   * Turns off AI SDK telemetry for the call. Also on whenever the caller runs
+   * in a zero data retention context, so a caller that forgets to pass it
+   * cannot export prompts.
+   */
+  zeroDataRetention?: boolean;
 };
+
+// Span metadata that ties each call to the job that made it.
+function telemetryMetadata(metadata: GenerateCompletionsOptions["metadata"]) {
+  return {
+    ...metadata.telemetry,
+    teamId: metadata.teamId,
+    ...(metadata.extractId
+      ? {
+          langfuseTraceId: "extract:" + metadata.extractId,
+          extractId: metadata.extractId,
+        }
+      : {}),
+    ...(metadata.scrapeId
+      ? {
+          langfuseTraceId: "scrape:" + metadata.scrapeId,
+          scrapeId: metadata.scrapeId,
+        }
+      : {}),
+    ...(metadata.deepResearchId
+      ? {
+          langfuseTraceId: "deepResearch:" + metadata.deepResearchId,
+          deepResearchId: metadata.deepResearchId,
+        }
+      : {}),
+    ...(metadata.llmsTxtId
+      ? {
+          langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
+          llmsTxtId: metadata.llmsTxtId,
+        }
+      : {}),
+    ...(metadata.crawlId ? { crawlId: metadata.crawlId } : {}),
+  };
+}
+
 export async function generateCompletions({
   logger,
   options,
@@ -398,6 +524,7 @@ export async function generateCompletions({
   disableInternalObjectRepair = false,
   costTrackingOptions,
   metadata,
+  zeroDataRetention: zeroDataRetentionOption,
 }: GenerateCompletionsOptions): Promise<{
   extract: any;
   numTokens: number;
@@ -405,6 +532,8 @@ export async function generateCompletions({
   totalUsage: TokenUsage;
   model: string;
 }> {
+  const zeroDataRetention =
+    zeroDataRetentionOption === true || isZeroDataRetentionActive();
   let extract: any;
   let warning: string | undefined;
   let currentModel = model;
@@ -415,6 +544,20 @@ export async function generateCompletions({
 
   if (markdown === undefined) {
     throw new Error("document.markdown is undefined -- this is unexpected");
+  }
+
+  // Keep the content inside the model's context window, leaving the rest for
+  // the prompt, schema and output. Models without known limits are sent the
+  // content as-is. A BPE token is at least one byte, so content that fits in
+  // bytes skips the (synchronous) tokenizer entirely.
+  const maxInputTokens = modelPrices[modelId]?.max_input_tokens;
+  if (markdown && maxInputTokens) {
+    const maxContentTokens = Math.floor(maxInputTokens * 0.8);
+    if (Buffer.byteLength(markdown, "utf8") > maxContentTokens) {
+      const trimmed = trimToTokenLimit(markdown, maxContentTokens, modelId);
+      markdown = trimmed.text;
+      warning = trimmed.warning;
+    }
   }
 
   try {
@@ -448,37 +591,11 @@ export async function generateCompletions({
             },
           },
           experimental_telemetry: {
-            isEnabled: true,
+            isEnabled: !zeroDataRetention,
             functionId: metadata.functionId
               ? metadata.functionId + "/generateText"
               : "generateText",
-            metadata: {
-              teamId: metadata.teamId,
-              ...(metadata.extractId
-                ? {
-                    langfuseTraceId: "extract:" + metadata.extractId,
-                    extractId: metadata.extractId,
-                  }
-                : {}),
-              ...(metadata.scrapeId
-                ? {
-                    langfuseTraceId: "scrape:" + metadata.scrapeId,
-                    scrapeId: metadata.scrapeId,
-                  }
-                : {}),
-              ...(metadata.deepResearchId
-                ? {
-                    langfuseTraceId: "deepResearch:" + metadata.deepResearchId,
-                    deepResearchId: metadata.deepResearchId,
-                  }
-                : {}),
-              ...(metadata.llmsTxtId
-                ? {
-                    langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
-                    llmsTxtId: metadata.llmsTxtId,
-                  }
-                : {}),
-            },
+            metadata: telemetryMetadata(metadata),
           },
         });
 
@@ -510,8 +627,8 @@ export async function generateCompletions({
             promptTokens: result.usage?.inputTokens ?? 0,
             completionTokens: result.usage?.outputTokens ?? 0,
             totalTokens:
-              result.usage?.inputTokens ??
-              0 + (result.usage?.outputTokens ?? 0),
+              (result.usage?.inputTokens ?? 0) +
+              (result.usage?.outputTokens ?? 0),
           },
           model: modelId,
         };
@@ -555,38 +672,11 @@ export async function generateCompletions({
                 },
               },
               experimental_telemetry: {
-                isEnabled: true,
+                isEnabled: !zeroDataRetention,
                 functionId: metadata.functionId
                   ? metadata.functionId + "/generateText"
                   : "generateText",
-                metadata: {
-                  teamId: metadata.teamId,
-                  ...(metadata.extractId
-                    ? {
-                        langfuseTraceId: "extract:" + metadata.extractId,
-                        extractId: metadata.extractId,
-                      }
-                    : {}),
-                  ...(metadata.scrapeId
-                    ? {
-                        langfuseTraceId: "scrape:" + metadata.scrapeId,
-                        scrapeId: metadata.scrapeId,
-                      }
-                    : {}),
-                  ...(metadata.deepResearchId
-                    ? {
-                        langfuseTraceId:
-                          "deepResearch:" + metadata.deepResearchId,
-                        deepResearchId: metadata.deepResearchId,
-                      }
-                    : {}),
-                  ...(metadata.llmsTxtId
-                    ? {
-                        langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
-                        llmsTxtId: metadata.llmsTxtId,
-                      }
-                    : {}),
-                },
+                metadata: telemetryMetadata(metadata),
               },
             });
 
@@ -618,8 +708,8 @@ export async function generateCompletions({
                 promptTokens: result.usage?.inputTokens ?? 0,
                 completionTokens: result.usage?.outputTokens ?? 0,
                 totalTokens:
-                  result.usage?.inputTokens ??
-                  0 + (result.usage?.outputTokens ?? 0),
+                  (result.usage?.inputTokens ?? 0) +
+                  (result.usage?.outputTokens ?? 0),
               },
               model: modelId,
             };
@@ -642,6 +732,11 @@ export async function generateCompletions({
       ? {}
       : {
           experimental_repairText: async ({ text, error }) => {
+            // Output cut off at the token limit; see OUTPUT_LIMIT_MESSAGE.
+            if (typeof text === "string" && isTruncatedJson(text)) {
+              return null;
+            }
+
             // AI may output a markdown JSON code block. Remove it - mogery
             logger.debug("Repairing text", {
               textType: typeof text,
@@ -699,38 +794,11 @@ export async function generateCompletions({
                     },
                   },
                   experimental_telemetry: {
-                    isEnabled: true,
+                    isEnabled: !zeroDataRetention,
                     functionId: metadata.functionId
                       ? metadata.functionId + "/repairText"
                       : "repairText",
-                    metadata: {
-                      teamId: metadata.teamId,
-                      ...(metadata.extractId
-                        ? {
-                            langfuseTraceId: "extract:" + metadata.extractId,
-                            extractId: metadata.extractId,
-                          }
-                        : {}),
-                      ...(metadata.scrapeId
-                        ? {
-                            langfuseTraceId: "scrape:" + metadata.scrapeId,
-                            scrapeId: metadata.scrapeId,
-                          }
-                        : {}),
-                      ...(metadata.deepResearchId
-                        ? {
-                            langfuseTraceId:
-                              "deepResearch:" + metadata.deepResearchId,
-                            deepResearchId: metadata.deepResearchId,
-                          }
-                        : {}),
-                      ...(metadata.llmsTxtId
-                        ? {
-                            langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
-                            llmsTxtId: metadata.llmsTxtId,
-                          }
-                        : {}),
-                    },
+                    metadata: telemetryMetadata(metadata),
                   },
                 });
 
@@ -797,35 +865,9 @@ export async function generateCompletions({
         },
       }),
       experimental_telemetry: {
-        isEnabled: true,
+        isEnabled: !zeroDataRetention,
         functionId: metadata.functionId,
-        metadata: {
-          teamId: metadata.teamId,
-          ...(metadata.extractId
-            ? {
-                langfuseTraceId: "extract:" + metadata.extractId,
-                extractId: metadata.extractId,
-              }
-            : {}),
-          ...(metadata.scrapeId
-            ? {
-                langfuseTraceId: "scrape:" + metadata.scrapeId,
-                scrapeId: metadata.scrapeId,
-              }
-            : {}),
-          ...(metadata.deepResearchId
-            ? {
-                langfuseTraceId: "deepResearch:" + metadata.deepResearchId,
-                deepResearchId: metadata.deepResearchId,
-              }
-            : {}),
-          ...(metadata.llmsTxtId
-            ? {
-                langfuseTraceId: "llmsTxt:" + metadata.llmsTxtId,
-                llmsTxtId: metadata.llmsTxtId,
-              }
-            : {}),
-        },
+        metadata: telemetryMetadata(metadata),
       },
       ...(modelId.startsWith("gpt-5")
         ? {
@@ -930,6 +972,9 @@ export async function generateCompletions({
         }
       } else if (NoObjectGeneratedError.isInstance(error)) {
         logger.warn("No object generated", { error });
+        if (error.finishReason === "length") {
+          throw new StructuredOutputLimitError();
+        }
         if (
           error.text &&
           error.text.startsWith("```json") &&
@@ -952,7 +997,10 @@ export async function generateCompletions({
             logger.error("Failed to parse JSON from error text", {
               error: lastError.message,
             });
-            throw lastError;
+            // Fork: in a bounded compatibility transaction, report unparseable
+            // fenced output as invalid structured output so the caller's
+            // one-time fallback runs instead of failing on a SyntaxError.
+            throw disableInternalObjectRepair ? error : lastError;
           }
         } else {
           throw lastError;
@@ -1024,9 +1072,17 @@ export async function performLLMExtract(
   }
 
   if (jsonFormat) {
-    if (meta.internalOptions.zeroDataRetention) {
+    const useAgent = isAgentExtractModelValid(
+      meta.internalOptions.v1JSONAgent?.model,
+    );
+
+    // NOTE: ZDR deny policy on JSON mode has been lightened to only
+    // disallow agent/smart scrape (deprecated). This now binds us to
+    // only use model providers in JSON mode that we have ZDR agreements
+    // with. (openai certified yes.) WE MUST OBEY THIS! - Mogery
+    if (useAgent && meta.internalOptions.zeroDataRetention) {
       document.warning =
-        "JSON mode is not supported with zero data retention." +
+        "JSON mode with agent is not supported with zero data retention." +
         (document.warning ? " " + document.warning : "");
       return document;
     }
@@ -1036,6 +1092,8 @@ export async function performLLMExtract(
     // let generationOptions = { ...originalOptions }; // Start with original options
 
     const modelSelection = selectModelForSchema(jsonFormat.schema);
+    const llmFunctionId =
+      meta.internalOptions.llmTelemetry?.functionId ?? "performLLMExtract";
 
     const generationOptions: GenerateCompletionsOptions = {
       logger: meta.logger.child({
@@ -1055,22 +1113,23 @@ export async function performLLMExtract(
       },
       metadata: {
         teamId: meta.internalOptions.teamId,
-        functionId: "performLLMExtract",
+        functionId: llmFunctionId,
         scrapeId: meta.id,
+        telemetry: meta.internalOptions.llmTelemetry?.metadata,
       },
+      zeroDataRetention: meta.internalOptions.zeroDataRetention,
     };
 
     const { extractedDataArray, warning, costLimitExceededTokenUsage } =
       await extractData({
         extractOptions: generationOptions,
         urls: [meta.rewrittenUrl ?? meta.url],
-        useAgent: isAgentExtractModelValid(
-          meta.internalOptions.v1JSONAgent?.model,
-        ),
+        useAgent,
+        checkPromptInjection: meta.options.checkPromptInjection,
         scrapeId: meta.id,
         metadata: {
           teamId: meta.internalOptions.teamId,
-          functionId: "performLLMExtract",
+          functionId: llmFunctionId,
         },
       });
 
@@ -1561,11 +1620,15 @@ export async function generateSchemaFromPrompt(
     extractId?: string;
     scrapeId?: string;
   },
+  zeroDataRetention = false,
 ): Promise<{ extract: any }> {
   const model = getModel("gpt-4o-mini", "openai");
   const retryModel = getModel("gpt-4.1-mini", "openai");
   const temperatures = [0, 0.1, 0.3]; // Different temperatures to try
   let lastError: Error | null = null;
+  // The last schema strict mode would reject, used only if no attempt
+  // produces a supported one (extraction then fails with a warning as before).
+  let lastUnsupportedSchema: any = undefined;
 
   for (const temp of temperatures) {
     try {
@@ -1586,16 +1649,18 @@ Consider:
 
 Valid JSON schema, has to be simple. No crazy properties. OpenAI has to support it.
 Supported types
-The following types are supported for Structured Outputs:
+The following values of "type" are supported for Structured Outputs, written exactly like this (lowercase):
 
-String
-Number
-Boolean
-Integer
-Object
-Array
-Enum
-anyOf
+string
+number
+boolean
+integer
+object
+array
+
+Use "enum" as a keyword next to "type": "string" to restrict values; it is not a type. Use "anyOf" for alternatives.
+Every array must define "items" as a single schema object. Every property must be a schema object with a "type".
+allOf, oneOf, not, and if/then/else are not supported.
 
 Formats are not supported. Min/max are not supported. Anything beyond the above is not supported. Keep it simple with types and descriptions.
 Optionals are not supported.
@@ -1618,14 +1683,27 @@ Return a valid JSON schema object with properties that would capture the informa
             ? metadata.functionId + "/generateSchemaFromPrompt"
             : "generateSchemaFromPrompt",
         },
+        zeroDataRetention,
       });
 
-      return { extract };
+      const violation = findStrictSchemaViolation(extract);
+      if (violation === null) {
+        return { extract };
+      }
+      logger.warn("Generated schema is not supported by structured outputs", {
+        violation,
+        temperature: temp,
+      });
+      lastUnsupportedSchema = extract;
     } catch (error) {
       lastError = error as Error;
       logger.warn(`Failed attempt with temperature ${temp}: ${error.message}`);
       continue;
     }
+  }
+
+  if (lastUnsupportedSchema !== undefined) {
+    return { extract: lastUnsupportedSchema };
   }
 
   // If we get here, all attempts failed
@@ -1639,6 +1717,7 @@ export async function generateCrawlerOptionsFromPrompt(
   logger: Logger,
   costTracking: CostTracking,
   metadata: { teamId: string; crawlId?: string },
+  zeroDataRetention = false,
 ): Promise<{ extract: any }> {
   const model = getModel("gpt-4o-mini", "openai");
   const retryModel = getModel("gpt-4.1-mini", "openai");
@@ -1685,6 +1764,7 @@ Return a JSON object with only the relevant options for the user's request. Don'
           ...metadata,
           functionId: "generateCrawlerOptionsFromPrompt",
         },
+        zeroDataRetention,
       });
 
       return { extract };

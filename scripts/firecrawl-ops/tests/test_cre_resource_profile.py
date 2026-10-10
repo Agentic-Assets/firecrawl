@@ -42,15 +42,17 @@ class CreResourceProfileTests(unittest.TestCase):
             env=env,
         )
 
-    def test_compose_has_independent_playwright_cap_and_optional_pid_limit(
+    def test_compose_has_independent_playwright_cap_and_pid_limit(
         self,
     ) -> None:
+        # Governed baseline from 01791ad85 (2026-09-15): 4 pages and a
+        # 384-process backstop unless the operator overrides them.
         compose = COMPOSE.read_text(encoding="utf-8")
         self.assertIn(
-            "MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-${CRAWL_CONCURRENT_REQUESTS:-10}}",
+            "MAX_CONCURRENT_PAGES: ${PLAYWRIGHT_MAX_CONCURRENT_PAGES:-${CRAWL_CONCURRENT_REQUESTS:-4}}",
             compose,
         )
-        self.assertIn("pids_limit: ${PLAYWRIGHT_PIDS_LIMIT:-0}", compose)
+        self.assertIn("pids_limit: ${PLAYWRIGHT_PIDS_LIMIT:-384}", compose)
 
     def test_help_scopes_balanced_recreation_to_the_browser_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_str:

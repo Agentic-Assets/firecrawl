@@ -22,8 +22,8 @@ import { ScrapeJobData } from "../../types";
 import { teamConcurrencySemaphore } from "../../services/worker/team-semaphore";
 import { getJobPriority } from "../../lib/job-priority";
 import { logRequest } from "../../services/logging/log_job";
+import { externalRequestId } from "../../lib/external-request-id";
 import { getErrorContactMessage } from "../../lib/deployment";
-import { captureExceptionWithZdrCheck } from "../../services/sentry";
 import type { BillingMetadata } from "../../services/billing/types";
 import { getScrapeZDR } from "../../lib/zdr-helpers";
 import {
@@ -34,28 +34,51 @@ import {
 } from "../../lib/keyless";
 import { projectScrapeCredits } from "../../lib/keyless-credit-projection";
 import { applyAgentAuthDiscoveryHeader } from "../../lib/agent-auth-discovery";
-import { getEffectiveConcurrencyLimit } from "../../lib/concurrency-limit";
 import path from "node:path";
 import {
   DOCUMENT_EXTENSIONS,
   documentExtensionFromContentType,
 } from "../../lib/document-formats";
+import {
+  IMAGE_EXTENSIONS,
+  imageExtensionFromContentType,
+} from "../../lib/image-formats";
+import { isImageOcrEnabled } from "../../lib/image-ocr-gate";
+import { isAgentInteropSecretValid } from "../../lib/agent-interop";
+import {
+  HTML_CONTENT_TYPES,
+  HTML_EXTENSIONS,
+  listParseFormats,
+  PDF_CONTENT_TYPES,
+  PDF_EXTENSIONS,
+} from "../../lib/parse-formats";
+import { DEFAULT_TEAM_LIMITS } from "../../services/autumn/autumn.service";
 
 const AGENT_INTEROP_CONCURRENCY_BOOST = 3;
-export const SUPPORTED_PARSE_FILE_TYPES =
-  ".html, .htm, .xhtml, .pdf, .docx, .doc, .docm, .odt, .ods, .odp, .rtf, .xlsx, .xls, .xlsm, .xlsb, .pptx, .ppt, .pptm, .epub, .csv";
+
+/** Image uploads are OCR'd through FirePDF, so they are only advertised as
+ * supported for teams with image OCR enabled (matching
+ * detectUploadedFileKind). */
+export function getSupportedParseFileTypes(imageOcrEnabled: boolean): string {
+  return listParseFormats(imageOcrEnabled)
+    .filter(format => format.available)
+    .flatMap(format => format.extensions)
+    .join(", ");
+}
 
 export function detectUploadedFileKind(
   filename: string,
   contentType?: string | null,
+  imageOcrEnabled = false,
 ): UploadedParseFileKind | null {
   const extension = path.extname(filename).toLowerCase();
   const normalizedType = contentType?.toLowerCase() ?? "";
 
   const isPdf =
-    extension === ".pdf" ||
-    normalizedType === "application/pdf" ||
-    normalizedType.startsWith("application/pdf;");
+    PDF_EXTENSIONS.includes(extension) ||
+    PDF_CONTENT_TYPES.some(
+      type => normalizedType === type || normalizedType.startsWith(`${type};`),
+    );
 
   if (isPdf) {
     return "pdf";
@@ -69,12 +92,20 @@ export function detectUploadedFileKind(
     return "document";
   }
 
+  // Image uploads are OCR'd through FirePDF where the deployment has image
+  // OCR on (lib/image-ocr-gate.ts); otherwise they stay unsupported.
+  const isImage =
+    imageOcrEnabled &&
+    (IMAGE_EXTENSIONS.has(extension) ||
+      imageExtensionFromContentType(normalizedType) !== null);
+
+  if (isImage) {
+    return "image";
+  }
+
   const isHtml =
-    extension === ".html" ||
-    extension === ".htm" ||
-    extension === ".xhtml" ||
-    normalizedType.includes("text/html") ||
-    normalizedType.includes("application/xhtml+xml");
+    HTML_EXTENSIONS.includes(extension) ||
+    HTML_CONTENT_TYPES.some(type => normalizedType.includes(type));
 
   if (isHtml) {
     return "html";
@@ -97,18 +128,26 @@ function getSyntheticFilename(file: UploadedParseFile): string {
     return `${file.filename}.docx`;
   }
 
+  if (file.kind === "image") {
+    return `${file.filename}${imageExtensionFromContentType(file.contentType) ?? ".png"}`;
+  }
+
   return `${file.filename}.html`;
 }
 
 function getParseForceEngine(
   kind: UploadedParseFileKind,
-): "fetch" | "pdf" | "document" {
+): "fetch" | "pdf" | "document" | "image" {
   if (kind === "pdf") {
     return "pdf";
   }
 
   if (kind === "document") {
     return "document";
+  }
+
+  if (kind === "image") {
+    return "image";
   }
 
   return "fetch";
@@ -224,12 +263,17 @@ export function parseMultipartPayloadMiddleware(
     }
   }
 
-  const kind = detectUploadedFileKind(file.originalname || "", file.mimetype);
+  const imageOcrEnabled = isImageOcrEnabled();
+  const kind = detectUploadedFileKind(
+    file.originalname || "",
+    file.mimetype,
+    imageOcrEnabled,
+  );
   if (!kind) {
     res.status(400).json({
       success: false,
       code: "UNSUPPORTED_FILE_TYPE",
-      error: `Unsupported upload type. Supported file extensions: ${SUPPORTED_PARSE_FILE_TYPES}`,
+      error: `Unsupported upload type. Supported file extensions: ${getSupportedParseFileTypes(imageOcrEnabled)}`,
     });
     return;
   }
@@ -251,6 +295,12 @@ export async function parseController(
   req: RequestWithAuth<{}, ScrapeResponse, ParseRequest>,
   res: Response<ScrapeResponse>,
 ) {
+  // Resolved before the root span starts so the whole request trace stays
+  // unrecorded for zero-data-retention requests (see otel-tracer).
+  const zeroDataRetentionTrace =
+    getScrapeZDR(req.acuc?.flags) === "forced" ||
+    req.body?.zeroDataRetention === true;
+
   return withSpan(
     "api.parse.request",
     async span => {
@@ -311,6 +361,7 @@ export async function parseController(
         });
         return res.status(403).json({
           success: false,
+          code: permissions.code,
           error: permissions.error,
         });
       }
@@ -318,14 +369,17 @@ export async function parseController(
       const zeroDataRetention =
         getScrapeZDR(req.acuc?.flags) === "forced" ||
         (req.body.zeroDataRetention ?? false);
-      const billing: BillingMetadata = req.body.__agentInterop
-        ? { endpoint: "agent" as const, jobId }
-        : { endpoint: "parse" as const, jobId };
+      const billing: BillingMetadata = {
+        ...(req.body.__agentInterop
+          ? { endpoint: "agent" as const, jobId }
+          : { endpoint: "parse" as const, jobId }),
+        externalRequestId: externalRequestId(req),
+      };
 
       if (
         req.body.__agentInterop &&
         config.AGENT_INTEROP_SECRET &&
-        req.body.__agentInterop.auth !== config.AGENT_INTEROP_SECRET
+        !isAgentInteropSecretValid(req.body.__agentInterop.auth)
       ) {
         return res.status(403).json({
           success: false,
@@ -365,7 +419,7 @@ export async function parseController(
           applyAgentAuthDiscoveryHeader(res);
           return res
             .status(429)
-            .json(await keylessLimitBody(req.auth.team_id, "v2_parse"));
+            .json(await keylessLimitBody(req.auth.team_id, "v2_parse", req));
         }
         reservedKeylessCredits = projectedKeylessCredits;
       }
@@ -394,6 +448,7 @@ export async function parseController(
           id: jobId,
           kind: "parse",
           api_version: "v2",
+          external_request_id: externalRequestId(req),
           team_id: req.auth.team_id,
           origin: req.body.origin ?? "api",
           integration: req.body.integration,
@@ -433,10 +488,8 @@ export async function parseController(
         }
         req.on("close", () => aborter.abort());
 
-        const baseConcurrency = await getEffectiveConcurrencyLimit(
-          req.auth.team_id,
-          req.acuc?.org_id,
-        );
+        const baseConcurrency =
+          req.acuc?.concurrency_limit ?? DEFAULT_TEAM_LIMITS.concurrency_limit;
         const concurrency = boostConcurrency
           ? baseConcurrency * AGENT_INTEROP_CONCURRENCY_BOOST
           : baseConcurrency;
@@ -450,6 +503,7 @@ export async function parseController(
           async limited => {
             const jobPriority = await getJobPriority({
               team_id: req.auth.team_id,
+              acuc: req.acuc,
               basePriority: 10,
             });
 
@@ -542,7 +596,9 @@ export async function parseController(
         }
 
         const timeoutErr =
-          e instanceof TransportableError && e.code === "SCRAPE_TIMEOUT";
+          e instanceof TransportableError &&
+          (e.code === "SCRAPE_TIMEOUT" ||
+            e.code === "CONCURRENCY_QUEUE_TIMEOUT");
 
         setSpanAttributes(span, {
           "parse.error": e instanceof Error ? e.message : String(e),
@@ -593,16 +649,15 @@ export async function parseController(
             });
           }
 
-          const statusCode =
-            e.code === "SCRAPE_TIMEOUT"
-              ? 408
-              : e.code === "SCRAPE_PDF_OCR_BACKPRESSURE"
-                ? 429
-                : e.code === "SCRAPE_PDF_OCR_TIMEOUT"
-                  ? 504
-                  : e.code === "SCRAPE_PDF_LOW_QUALITY"
-                    ? 422
-                    : 500;
+          const statusCode = timeoutErr
+            ? 408
+            : e.code === "SCRAPE_PDF_OCR_BACKPRESSURE"
+              ? 429
+              : e.code === "SCRAPE_PDF_OCR_TIMEOUT"
+                ? 504
+                : e.code === "SCRAPE_PDF_LOW_QUALITY"
+                  ? 422
+                  : 500;
           setSpanAttributes(span, {
             "parse.status_code": statusCode,
           });
@@ -619,18 +674,6 @@ export async function parseController(
             errorId: id,
             path: req.path,
             teamId: req.auth.team_id,
-          });
-          captureExceptionWithZdrCheck(e, {
-            tags: {
-              errorId: id,
-              version: "v2",
-              teamId: req.auth.team_id,
-            },
-            extra: {
-              path: req.path,
-              fileName: req.body.file.filename,
-            },
-            zeroDataRetention,
           });
           setSpanAttributes(span, {
             "parse.status_code": 500,
@@ -685,7 +728,8 @@ export async function parseController(
         !!hasFormatOfType(req.body.formats, "summary") ||
         !!hasFormatOfType(req.body.formats, "question") ||
         !!hasFormatOfType(req.body.formats, "highlights") ||
-        !!hasFormatOfType(req.body.formats, "query");
+        !!hasFormatOfType(req.body.formats, "query") ||
+        req.body.checkPromptInjection;
 
       if (!usedLlm) {
         const ct = hasFormatOfType(req.body.formats, "changeTracking");
@@ -733,6 +777,7 @@ export async function parseController(
         "http.route": "/v2/parse",
       },
       kind: SpanKind.SERVER,
+      zeroDataRetention: zeroDataRetentionTrace,
     },
   );
 }

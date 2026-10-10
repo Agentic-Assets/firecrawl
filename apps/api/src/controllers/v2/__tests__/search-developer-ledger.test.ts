@@ -51,11 +51,6 @@ vi.mock("../../../lib/key-restriction", () => ({
   checkKeyEndpointRestriction: vi.fn().mockResolvedValue({ allowed: true }),
 }));
 
-vi.mock("../../../services/sentry", () => ({
-  applyZdrScope: vi.fn(),
-  captureExceptionWithZdrCheck: vi.fn(),
-}));
-
 vi.mock("../../../lib/logger", () => ({
   logger: {
     info: vi.fn(),
@@ -72,25 +67,26 @@ const TEAM_ID = "11111111-1111-1111-1111-111111111111";
 
 const developerResults = [
   {
+    id: "readme:example/repo",
     url: "https://github.com/example/repo",
     title: "example/repo",
     description: "a repo",
-    position: 1,
-    category: "developer",
+    passages: [{ text: "a repo" }],
   },
   {
+    id: "readme:example/other",
     url: "https://github.com/example/other",
     title: "example/other",
     description: "another repo",
-    position: 2,
-    category: "developer",
+    passages: [{ text: "another repo" }],
   },
 ];
 
 function executeResult(overrides: Record<string, any> = {}) {
   return {
-    response: { web: [], developer: developerResults },
+    response: { web: developerResults },
     totalResultsCount: 2,
+    indexResultsCount: 2,
     searchCredits: 2,
     scrapeCredits: 0,
     totalCredits: 2,
@@ -147,7 +143,12 @@ describe("developer category code_searches ledger", () => {
     await searchController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(429);
-    expect(mockKeylessLimitBody).toHaveBeenCalledWith(TEAM_ID, "v2_search");
+    // The request picks the utm_medium of the caller's signup link.
+    expect(mockKeylessLimitBody).toHaveBeenCalledWith(
+      TEAM_ID,
+      "v2_search",
+      req,
+    );
     expect(res.json).toHaveBeenCalledWith({
       success: false,
       error: "keyless limit reached",
@@ -175,7 +176,7 @@ describe("developer category code_searches ledger", () => {
     expect(row.team_id).toBe(TEAM_ID);
     expect(row.target).toBe("vector database client");
     expect(row.num_results).toBe(2);
-    expect(row.credits_cost).toBe(0);
+    expect(row.credits_cost).toBe(2);
     expect(row.is_successful).toBe(true);
     expect(row.options.origin).toBe("sdk");
     expect(row.options.integration).toBe("cli");
@@ -269,7 +270,11 @@ describe("developer category code_searches ledger", () => {
 
   it("records zero results when the developer arm returns nothing", async () => {
     mockExecuteSearch.mockResolvedValue(
-      executeResult({ response: { web: [] }, totalResultsCount: 0 }),
+      executeResult({
+        response: { web: [] },
+        totalResultsCount: 0,
+        indexResultsCount: 0,
+      }),
     );
     const req = makeReq({ query: "http client", categories: ["developer"] });
     const res = makeRes();
@@ -295,12 +300,15 @@ describe("developer category code_searches ledger", () => {
     expect(res.status).toHaveBeenCalledWith(200);
     const body = res.json.mock.calls[0][0];
     expect(body.success).toBe(true);
-    expect(body.data.developer).toEqual(developerResults);
+    expect(body.data.web).toEqual(developerResults);
+    expect(body.data).not.toHaveProperty("developer");
     expect(body.creditsUsed).toBe(2);
   });
 
   it("keeps the developer category for a team with no flags", async () => {
-    mockExecuteSearch.mockResolvedValue(executeResult({ response: { web: [] } }));
+    mockExecuteSearch.mockResolvedValue(
+      executeResult({ response: { web: [] } }),
+    );
     const req = makeReq({ query: "http client", categories: ["developer"] });
     req.acuc = { api_key_id: 7, flags: null }; // keyless-equivalent: no org flags
     const res = makeRes();
@@ -316,5 +324,36 @@ describe("developer category code_searches ledger", () => {
       { type: "developer" },
     ]);
     expect(res.status).not.toHaveBeenCalledWith(403);
+  });
+});
+
+describe("gov category gov_searches ledger", () => {
+  it("writes exactly one gov_searches row for a gov category search", async () => {
+    const req = makeReq({ query: "zoning variance", categories: ["gov"] });
+    const res = makeRes();
+
+    await searchController(req, res);
+    await flushAsync();
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mockLogResearchEndpoint).toHaveBeenCalledTimes(1);
+    const row = mockLogResearchEndpoint.mock.calls[0][0];
+    expect(row.table).toBe("gov_searches");
+    expect(row.target).toBe("zoning variance");
+    expect(row.num_results).toBe(2);
+    expect(row.options.categories).toEqual([{ type: "gov" }]);
+    expect(row.options.via).toBe("search_category");
+  });
+
+  it("reserves no keyless credits for a gov category search", async () => {
+    mockProjectSearchTotalCredits.mockReturnValue(2);
+    mockReserveKeylessCredits.mockResolvedValue({ ok: false });
+    const req = makeReq({ query: "zoning variance", categories: ["gov"] });
+    const res = makeRes();
+
+    await searchController(req, res);
+
+    expect(mockReserveKeylessCredits).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 });

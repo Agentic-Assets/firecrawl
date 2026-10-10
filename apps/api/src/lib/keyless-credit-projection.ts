@@ -27,6 +27,10 @@ export function projectScrapeCredits(
     credits = 10;
   }
 
+  if (options.checkPromptInjection) {
+    credits += 4;
+  }
+
   if (
     hasFormatOfType(options.formats, "question") ||
     hasFormatOfType(options.formats, "query")
@@ -51,14 +55,6 @@ export function projectScrapeCredits(
   }
 
   if (options.redactPII) {
-    credits += 4;
-  }
-
-  if (
-    options.proxy === "stealth" ||
-    options.proxy === "enhanced" ||
-    options.proxy === "auto"
-  ) {
     credits += 4;
   }
 

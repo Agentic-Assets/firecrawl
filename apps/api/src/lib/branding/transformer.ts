@@ -2,6 +2,7 @@ import { processRawBranding } from "./processor";
 import { config } from "../../config";
 import { BrandingProfile } from "../../types/branding";
 import { enhanceBrandingWithLLM } from "./llm";
+import { CostLimitExceededError } from "../cost-tracking";
 import { Meta } from "../../scraper/scrapeURL";
 import { Document } from "../../controllers/v2/types";
 import { BrandingScriptReturn, ButtonSnapshot } from "./types";
@@ -11,7 +12,12 @@ import {
   getTopCandidatesForLLM,
 } from "./logo-selector";
 import { extractHeaderHtmlChunk } from "./extractHeaderHtmlChunk";
-import { pickDeclaredLogo } from "./declared-logo";
+import { hasFormatOfType } from "../format-utils";
+import {
+  declaredLogoCandidate,
+  pickDeclaredLogo,
+  shouldAddDeclaredLogoCandidate,
+} from "./declared-logo";
 
 function isDebugBrandingEnabled(meta: Meta): boolean {
   return (
@@ -37,8 +43,17 @@ export async function brandingTransformer(
   const buttonSnapshots: ButtonSnapshot[] =
     (jsBranding as any).__button_snapshots || [];
   const inputSnapshots = (jsBranding as any).__input_snapshots || [];
-  const logoCandidates = rawBranding.logoCandidates || [];
-  const brandName = rawBranding.brandName;
+  const logoCandidates = [...(rawBranding.logoCandidates || [])];
+  const brandName = rawBranding.brandName?.trim() || undefined;
+  const declared = pickDeclaredLogo(rawBranding.images);
+  if (
+    declared &&
+    shouldAddDeclaredLogoCandidate(logoCandidates, declared.src)
+  ) {
+    logoCandidates.push(
+      declaredLogoCandidate(declared.src, declared.source, brandName),
+    );
+  }
   const backgroundCandidates = rawBranding.backgroundCandidates || [];
 
   // Initialize metadata tracking variables
@@ -197,6 +212,8 @@ export async function brandingTransformer(
       scrapeId: meta.id,
       zeroDataRetention: meta.internalOptions.zeroDataRetention,
       teamFlags: meta.internalOptions.teamFlags,
+      mode: hasFormatOfType(meta.options.formats, "branding")?.mode,
+      costTracking: meta.costTracking,
       logger: meta.logger,
     });
 
@@ -401,6 +418,10 @@ export async function brandingTransformer(
       types: inputSnapshots.map((i: any) => i.type).slice(0, 10),
     });
   } catch (error) {
+    if (error instanceof CostLimitExceededError) {
+      throw error;
+    }
+
     meta.logger.error(
       "LLM branding enhancement failed, using JS analysis only",
       { error },
@@ -426,24 +447,29 @@ export async function brandingTransformer(
   // Last-resort fallback: when the candidate → heuristic → LLM pipeline ended
   // with no logo (no candidates, LLM rejection, or LLM failure), use the
   // site-declared brand mark. Never overrides a selected logo.
-  if (!brandingProfile.images?.logo) {
-    const declared = pickDeclaredLogo(rawBranding.images);
-    if (declared) {
-      brandingProfile.images = {
-        ...(brandingProfile.images ?? {}),
-        logo: declared.src,
-      };
-      meta.logger.info("Using declared logo fallback", {
-        source: declared.source,
-      });
+  if (!brandingProfile.images?.logo && declared) {
+    brandingProfile.images = {
+      ...(brandingProfile.images ?? {}),
+      logo: declared.src,
+    };
+    meta.logger.info("Using declared logo fallback", {
+      source: declared.source,
+    });
+  }
+
+  // Every `__` key (page snapshots, logo candidates, LLM reasoning and
+  // metadata) is internal; only teams debugging branding get them back.
+  if (!isDebugBrandingEnabled(meta)) {
+    for (const key of Object.keys(brandingProfile)) {
+      if (key.startsWith("__")) delete (brandingProfile as any)[key];
     }
   }
 
-  if (!isDebugBrandingEnabled(meta)) {
-    delete (brandingProfile as any).__button_snapshots;
-    delete (brandingProfile as any).__input_snapshots;
-    delete (brandingProfile as any).__logo_candidates;
-    delete (brandingProfile as any).__framework_hints;
+  if (brandName) {
+    brandingProfile.brandName = brandName;
+  }
+  if (brandingProfile.images?.logo) {
+    brandingProfile.logo = brandingProfile.images.logo;
   }
 
   return brandingProfile;

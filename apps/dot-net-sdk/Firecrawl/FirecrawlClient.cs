@@ -82,6 +82,10 @@ public class FirecrawlClient
         var response = await _http.PostAsync<ApiResponse<Document>>(
             "/v2/scrape", body, cancellationToken: cancellationToken);
 
+        // Some scrape failures (e.g. SCRAPE_DNS_RESOLUTION_ERROR) arrive as HTTP 200 with success: false.
+        if (!response.Success && response.Error is not null)
+            throw new FirecrawlException(response.Error, 200, response.Code, response.Details);
+
         return response.Data ?? throw new FirecrawlException("Scrape response contained no data");
     }
 
@@ -297,6 +301,20 @@ public class FirecrawlClient
             cancellationToken: cancellationToken);
 
         return response.Data ?? throw new FirecrawlException("Parse response contained no data");
+    }
+
+    /// <summary>
+    /// Lists the file formats accepted by <c>/v2/parse</c>, including whether
+    /// each one is currently available on this deployment.
+    /// </summary>
+    public async Task<List<ParseFormat>> GetParseFormatsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var response = await _http.GetAsync<ApiResponse<ParseFormatsData>>(
+            "/v2/parse/formats", cancellationToken);
+
+        return response.Data?.Formats
+            ?? throw new FirecrawlException("Parse formats response contained no data");
     }
 
     // ================================================================
@@ -551,6 +569,7 @@ public class FirecrawlClient
     /// <summary>
     /// Searches GitHub research content.
     /// </summary>
+    [Obsolete("Stops responding after 2026-11-03. Use the developer index at GET or POST /v2/search/developer; this SDK does not wrap it yet, so call it directly. It does not carry over the score breakdown or the web fallback results.")]
     public async Task<GitHubSearchResponse> SearchGitHubAsync(
         string query,
         SearchGitHubOptions? options = null,
@@ -566,6 +585,32 @@ public class FirecrawlClient
                 ["k"] = options?.K
             }),
             cancellationToken);
+    }
+
+    // ================================================================
+    // AGENT
+    // ================================================================
+
+    /// <summary>
+    /// Lists agent runs, most recent first.
+    /// </summary>
+    /// <remarks>
+    /// Pages are fixed at 20 runs. To fetch the next page, pass the before
+    /// value from the previous page's next URL. This method does not
+    /// auto-paginate.
+    /// </remarks>
+    /// <param name="before">Only return agent runs created before this unix millisecond timestamp.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task<AgentListResponse> ListAgentsAsync(
+        long? before = null,
+        CancellationToken cancellationToken = default)
+    {
+        var query = before.HasValue
+            ? $"?before={Uri.EscapeDataString(before.Value.ToString())}"
+            : string.Empty;
+
+        return await _http.GetAsync<AgentListResponse>(
+            $"/v2/agent{query}", cancellationToken);
     }
 
     // ================================================================
@@ -714,7 +759,7 @@ public class FirecrawlClient
     // INTERNAL UTILITIES
     // ================================================================
 
-    private const string SdkOrigin = "dotnet-sdk@1.10.1";
+    private const string SdkOrigin = "dotnet-sdk@1.14.2";
 
     private static Dictionary<string, object> BuildBody(object? options)
     {

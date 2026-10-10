@@ -33,6 +33,7 @@ public class ScrapeOptions {
     private Long maxAge;
     private Boolean storeInCache;
     private Boolean lockdown;
+    private Boolean checkPromptInjection;
     @JsonProperty("redactPII")
     private Boolean redactPII;
     private AuditMetadata auditMetadata;
@@ -58,6 +59,7 @@ public class ScrapeOptions {
     public Long getMaxAge() { return maxAge; }
     public Boolean getStoreInCache() { return storeInCache; }
     public Boolean getLockdown() { return lockdown; }
+    public Boolean getCheckPromptInjection() { return checkPromptInjection; }
     @JsonProperty("redactPII")
     public Boolean getRedactPII() { return redactPII; }
     @JsonProperty("auditMetadata")
@@ -86,6 +88,7 @@ public class ScrapeOptions {
         b.maxAge = this.maxAge;
         b.storeInCache = this.storeInCache;
         b.lockdown = this.lockdown;
+        b.checkPromptInjection = this.checkPromptInjection;
         b.redactPII = this.redactPII;
         b.auditMetadata = this.auditMetadata;
         b.integration = this.integration;
@@ -111,6 +114,7 @@ public class ScrapeOptions {
         private Long maxAge;
         private Boolean storeInCache;
         private Boolean lockdown;
+        private Boolean checkPromptInjection;
         private Boolean redactPII;
         private AuditMetadata auditMetadata;
         private String integration;
@@ -145,7 +149,7 @@ public class ScrapeOptions {
         /** Scrape as a mobile device. */
         public Builder mobile(Boolean mobile) { this.mobile = mobile; return this; }
 
-        /** Parsers to use (e.g., "pdf" or {"type": "pdf", "maxPages": 10}). */
+        /** Parsers to use (e.g., "pdf" or PdfParser with maxPages, pages, blocks, pageMarkers). */
         public Builder parsers(List<Object> parsers) { this.parsers = parsers; return this; }
 
         /** Actions to execute before/during scraping. */
@@ -174,6 +178,12 @@ public class ScrapeOptions {
 
         /** Lockdown mode: serve only previously cached results, never make outbound requests. */
         public Builder lockdown(Boolean lockdown) { this.lockdown = lockdown; return this; }
+
+        /**
+         * Scans the page content for prompt injection with any format except rawBase64, before LLM-backed formats run.
+         * A detection fails the scrape with SCRAPE_PROMPT_INJECTION_DETECTED. Adds 4 credits when the check scans the whole page.
+         */
+        public Builder checkPromptInjection(Boolean checkPromptInjection) { this.checkPromptInjection = checkPromptInjection; return this; }
 
         /** Redact personally identifiable information from returned content. */
         public Builder redactPII(Boolean redactPII) { this.redactPII = redactPII; return this; }
@@ -204,6 +214,7 @@ public class ScrapeOptions {
             o.maxAge = this.maxAge;
             o.storeInCache = this.storeInCache;
             o.lockdown = this.lockdown;
+            o.checkPromptInjection = this.checkPromptInjection;
             o.redactPII = this.redactPII;
             o.auditMetadata = this.auditMetadata;
             o.integration = this.integration;

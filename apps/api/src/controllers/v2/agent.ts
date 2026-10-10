@@ -1,4 +1,5 @@
 import { v7 as uuidv7 } from "uuid";
+import { AGENT_REQUEST_CREDITS_SHARDS } from "../../lib/request-credits-store";
 import { Response } from "express";
 import {
   AgentRequest,
@@ -8,6 +9,7 @@ import {
 } from "./types";
 import { logger as _logger } from "../../lib/logger";
 import { logRequest } from "../../services/logging/log_job";
+import { externalRequestId } from "../../lib/external-request-id";
 import { config } from "../../config";
 import { agentConsumeFreeRequestIfLeft } from "../../db/rpc";
 import { getScrapeZDR } from "../../lib/zdr-helpers";
@@ -19,6 +21,7 @@ import { UnsafeDomainBlockedError } from "../../lib/threat-protection/error";
 import { calculateThreatScanCredits } from "../../lib/scrape-billing";
 import { billTeam } from "../../services/billing/credit_billing";
 import { emitRejectedScrapeActivityEvents } from "../../lib/siem-logging";
+import { fetchAgentThread, threadErrorFor } from "./agent-thread";
 
 export async function agentController(
   req: RequestWithAuth<{}, AgentResponse, AgentRequest>,
@@ -87,9 +90,10 @@ export async function agentController(
       if (threatScanCredits > 0) {
         billTeam(
           req.auth.team_id,
+          req.acuc?.org_id ?? null,
           threatScanCredits,
           req.acuc?.api_key_id ?? null,
-          { endpoint: "agent", jobId: agentId },
+          { endpoint: "agent", jobId: agentId, chargeId: `${agentId}:threat` },
         ).catch(error => {
           logger.error(
             `Failed to bill team ${req.auth.team_id} for ${threatScanCredits} threat scan credit(s): ${error}`,
@@ -133,6 +137,52 @@ export async function agentController(
     });
   }
 
+  // A follow-up is validated before the free request is consumed and before
+  // logRequest, so a rejected continuation leaves no orphan request row.
+  if (req.body.threadId) {
+    const thread = await fetchAgentThread(
+      req.body.threadId,
+      req.auth.team_id,
+    ).catch(error => {
+      logger.error("Failed to check agent thread.", { error });
+      return null;
+    });
+
+    if (thread === null) {
+      return res.status(500).json({
+        success: false,
+        error: "Failed to check agent thread.",
+      });
+    }
+
+    if (thread.status !== 200) {
+      const mapped = threadErrorFor(thread.status);
+
+      if (!mapped) {
+        logger.error("Failed to check agent thread.", {
+          status: thread.status,
+          text: await thread.text(),
+        });
+
+        return res.status(500).json({
+          success: false,
+          error: "Failed to check agent thread.",
+        });
+      }
+
+      const body = (await thread.json().catch(() => null)) as {
+        runId?: unknown;
+      } | null;
+
+      return res.status(thread.status).json({
+        success: false,
+        code: mapped.code,
+        error: mapped.error,
+        ...(typeof body?.runId === "string" ? { runId: body.runId } : {}),
+      });
+    }
+  }
+
   // If maxCredits > 2500, skip free request consumption — this is always a paid request
   const highCreditRequest =
     req.body.maxCredits !== undefined && req.body.maxCredits > 2500;
@@ -153,12 +203,14 @@ export async function agentController(
     id: agentId,
     kind: "agent",
     api_version: "v2",
+    external_request_id: externalRequestId(req),
     team_id: req.auth.team_id,
     origin: req.body.origin ?? "api",
     integration: req.body.integration,
     target_hint: req.body.urls?.[0] ?? req.body.prompt ?? "",
     zeroDataRetention: false, // not supported for agent
     api_key_id: req.acuc?.api_key_id ?? null,
+    creditsShards: AGENT_REQUEST_CREDITS_SHARDS,
   });
 
   const passthrough = await fetch(
@@ -182,7 +234,11 @@ export async function agentController(
         strictConstrainToURLs: req.body.strictConstrainToURLs ?? undefined,
         webhook: req.body.webhook ?? undefined,
         model: req.body.model,
+        effort: req.body.effort,
         auditMetadata: req.body.auditMetadata,
+        threadId: req.body.threadId,
+        mode: req.body.mode,
+        exchange: req.body.exchange,
       }),
     },
   );
@@ -194,14 +250,30 @@ export async function agentController(
       status: passthrough.status,
       text,
     });
+
+    // TODO: should we try to insert a failed agent row here, since a request is already created? - Mogery
+
     return res.status(500).json({
       success: false,
       error: "Failed to passthrough agent request.",
     });
   }
 
+  // The agent service mints the thread id, so the response body is the only
+  // place it exists at this point.
+  const result = (await passthrough.json().catch(() => null)) as {
+    threadId?: unknown;
+    threadTurn?: unknown;
+  } | null;
+
   return res.status(200).json({
     success: true,
     id: agentId,
+    ...(typeof result?.threadId === "string"
+      ? { threadId: result.threadId }
+      : {}),
+    ...(typeof result?.threadTurn === "number"
+      ? { threadTurn: result.threadTurn }
+      : {}),
   });
 }

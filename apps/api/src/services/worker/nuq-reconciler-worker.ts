@@ -1,11 +1,12 @@
 import "dotenv/config";
 import { config } from "../../config";
-import "../sentry";
-import { setSentryServiceTag } from "../sentry";
+import { shutdownTracing } from "../../otel";
 import { logger as _logger } from "../../lib/logger";
 import { reconcileConcurrencyQueue } from "../../lib/concurrency-queue-reconciler";
+import { repairCrawlJobDoneMarkers } from "../../lib/crawl-redis";
 import { Counter, register } from "prom-client";
 import Express from "express";
+import { startNodeRuntimeMetrics } from "../../lib/node-runtime-metrics";
 
 const RECONCILER_INTERVAL_MS = 60 * 1000;
 
@@ -25,12 +26,11 @@ const reconcilerJobsRecoveredTotal = new Counter({
 });
 
 (async () => {
-  setSentryServiceTag("nuq-reconciler-worker");
-
   let isShuttingDown = false;
   let reconcilerInFlight = false;
 
   const app = Express();
+  startNodeRuntimeMetrics();
 
   app.get("/metrics", async (_, res) => {
     try {
@@ -71,7 +71,8 @@ const reconcilerJobsRecoveredTotal = new Counter({
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    server.close(() => {
+    server.close(async () => {
+      await shutdownTracing();
       _logger.info("NuQ reconciler worker shut down");
       process.exit(0);
     });
@@ -85,6 +86,12 @@ const reconcilerJobsRecoveredTotal = new Counter({
   while (!isShuttingDown) {
     if (!reconcilerInFlight) {
       reconcilerInFlight = true;
+
+      try {
+        await repairCrawlJobDoneMarkers(_logger);
+      } catch (error) {
+        _logger.error("Crawl completion marker repair run failed", { error });
+      }
 
       try {
         const summary = await reconcileConcurrencyQueue({
