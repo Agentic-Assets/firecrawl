@@ -76,7 +76,7 @@ grace past the deadline, so an expiry during work is always reported as
 | `503` `TARGET_DNS_UNAVAILABLE` | Target DNS could not be resolved, so nothing was fetched (retryable) |
 | `503` `SCRAPE_ADMISSION_TIMEOUT` | Deadline passed during validation, queueing, or pacing; no browser context was allocated |
 | `504` `SCRAPE_WORK_TIMEOUT` | Deadline passed during context setup, navigation, or body reads |
-| `503` `SCRAPE_RESOURCE_LEAK` | A partial browser context could not be confirmed closed; its permit stays quarantined |
+| `503` `SCRAPE_RESOURCE_LEAK` | A partial browser context could not be confirmed closed; its page permit stays quarantined until the sidecar process is restarted |
 
 DNS failures stay fail closed: a host that cannot be classified is never
 fetched by the route guard or the SSRF proxy. `/browser-batch-fetch` also
@@ -99,8 +99,9 @@ for `/scrape`, `/browser-batch-fetch`, `/health`, and the C10 listener:
   admission slot is released, because it is not browser capacity.
 - `/health` probes with a context only when a page permit is free right now.
   When every permit is busy it opens nothing and reports the busy count, still
-  returning `503` if the browser is disconnected. The response shape is
-  unchanged.
+  returning `503` if the browser is disconnected. A probe that fails, times
+  out (10 s per step), or cannot confirm its context closed also returns
+  `503` `unhealthy`. The `200` response shape is unchanged.
 - The C10 listener stops browser work early enough to keep part of the card
   window (a quarter, at most 2 s) for cleanup, so a navigation that times out
   still closes its context and returns its permit and page slot.
