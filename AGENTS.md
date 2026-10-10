@@ -10,7 +10,8 @@ Firecrawl is a web scraper API. The directory you have access to is a monorepo:
 - `apps/playwright-service-ts` — headless browser sidecar used by the API
 - `apps/go-html-to-md-service` — Go microservice that converts HTML to Markdown
 - `apps/nuq-postgres` — Postgres-backed queue (`nuq`) used alongside Redis/RabbitMQ
-- `apps/redis`, `apps/test-site`, `apps/test-suite`, `apps/ui` — supporting infra and tests
+- `apps/redis`, `apps/test-site` — supporting infra and tests
+- `apps/test-suite` — legacy test data, index benchmark notebook, and saved load-test results (no runnable suite)
 
 For local self-hosted setup, see `LOCAL_DEVELOPMENT_GUIDE.md`, `SELF_HOST.md`, and the `firecrawl-ops` skill.
 

@@ -67,6 +67,9 @@ x-common-env: &common-env
   FIRE_PDF_PERCENT: ${FIRE_PDF_PERCENT:-10}
   FIRE_PDF_BASE_URL: ${FIRE_PDF_BASE_URL:-}
   FIRE_PDF_API_KEY: ${FIRE_PDF_API_KEY:-}
+  # Upstream defaults this to true (GCS by-reference upload for 30-50 MB
+  # PDFs). The local Docling adapter has no async jobs API, so keep it off.
+  FIRE_PDF_BY_REFERENCE_ENABLE: ${FIRE_PDF_BY_REFERENCE_ENABLE:-false}
   RUNPOD_MU_API_KEY: ${RUNPOD_MU_API_KEY:-}
   RUNPOD_MU_POD_ID: ${RUNPOD_MU_POD_ID:-}
   # Set NUQ_BACKEND=fdb to run the queue on FoundationDB instead of Postgres

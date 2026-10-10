@@ -86,3 +86,5 @@ test-runs/
 vitest.out
 
 tmp/
+# fork-local: upstream's unanchored tmp/ above must not hide this tracked dir
+!scripts/firecrawl-ops/cre_collector/tasks/tmp/
