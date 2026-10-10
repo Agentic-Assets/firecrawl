@@ -395,6 +395,52 @@ test("IPv6 literal URL hosts are classified without DNS", async () => {
   }
 });
 
+test("non-public IPv6 that ipaddr.js calls unicast is internal as a literal and a DNS answer", async () => {
+  const resolverMustNotRun = async () => {
+    throw new Error("IPv6 literals must not be resolved");
+  };
+  const internal = [
+    "::7f00:1", // IPv4-compatible 127.0.0.1
+    "::a9fe:a9fe", // IPv4-compatible 169.254.169.254
+    "::808:808", // IPv4-compatible public IPv4: deprecated form, still refused
+    "fec0::1", // deprecated site-local
+    "64:ff9b:1::7f00:1", // RFC 8215 local-use NAT64
+    "64:ff9b:1::a9fe:a9fe",
+    "3fff::1", // RFC 9637 documentation
+    "5f00::1", // outside 2000::/3 global unicast (RFC 9602 SRv6 SIDs)
+    "100:0:0:1::1", // outside 2000::/3 global unicast
+    // Already non-unicast in ipaddr.js; kept as regression coverage.
+    "2001:db8::1",
+    "100::1",
+    "2001::1",
+    "2002:7f00:1::",
+    "2002:808:808::",
+  ];
+  for (const address of internal) {
+    const host = new URL(`http://[${address}]/`).hostname;
+    assert.equal(await isInternalHost(host, resolverMustNotRun), true, host);
+    assert.equal(
+      await isInternalHost("property.example", async () => [{ address }]),
+      true,
+      `DNS answer ${address}`,
+    );
+  }
+  for (const address of [
+    "2606:4700:4700::1111",
+    "2001:4860:4860::8888",
+    "2620:fe::fe",
+    "2a00:1450:4001:80b::200e",
+  ]) {
+    const host = new URL(`https://[${address}]/`).hostname;
+    assert.equal(await isInternalHost(host, resolverMustNotRun), false, host);
+    assert.equal(
+      await isInternalHost("property.example", async () => [{ address }]),
+      false,
+      `DNS answer ${address}`,
+    );
+  }
+});
+
 test("a Playwright timeout with the deadline grace reports a work timeout", async () => {
   for (let attempt = 0; attempt < 10; attempt++) {
     const { options } = fixture();
