@@ -55,7 +55,7 @@ JLL_ADMISSION_QUARANTINE_NAME = "jll-admission-quarantine.json"
 JLL_MEMBER_COUNT = 16
 JLL_SELECTION_RULE = "jll-canonical-url-lexicographic-v1"
 JLL_ENUMERATION_BODY_SHA256 = (
-    "2f04bb146d4dcf85efb95a6e4d88f319029690fec804b7cc5379ff4d5930ad38"
+    "730f21dc6e04b0407faa7a6b2b39289c33b0c7a5cc76e584e07ee61695b18618"
 )
 _RECEIPT_NO_WRITE = {
     "database_writes": 0,
