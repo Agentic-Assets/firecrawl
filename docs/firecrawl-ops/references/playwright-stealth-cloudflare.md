@@ -41,9 +41,9 @@ these to `package.json` also requires a matching `pnpm-lock.yaml` update (both
 packages are in the checked-in lockfile today). Rebuild the container after
 editing either file.
 
-## Fix 2: Rewrite playwright-service api.ts to use stealth engine
+## Fix 2: Use the stealth engine in the playwright-service browser setup
 
-**File:** `apps/playwright-service-ts/api.ts`
+**File:** `apps/playwright-service-ts/browser_context.ts` (originally edited in `api.ts`, since split into modules)
 
 ### 2a — Import playwright-extra instead of playwright
 
@@ -108,7 +108,7 @@ const STEALTH_INIT_SCRIPT = `
 
     // 3. Realistic 3-plugin array
     // Chrome PDF Plugin, Chrome PDF Viewer, Native Client
-    // (details omitted — see full api.ts for the complete definition)
+    // (details omitted; see `browser_context.ts` for the complete definition)
 
     // 4. Navigator properties
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
@@ -153,7 +153,7 @@ the desktop `window.screen` dimensions.
 
 **File:** `apps/api/src/scraper/scrapeURL/engines/index.ts`
 
-This is the most important change. Find the `playwright` engine entry (around line 346)
+This is the most important change. Find the `playwright` engine entry in the engines map
 and change `stealthProxy` from `false` to `true`:
 
 ```typescript
@@ -236,8 +236,10 @@ registration errors.
 ## Notes on upstream divergence
 
 Fixes 1 and 2 modify `apps/playwright-service-ts/` — this is a service that upstream
-also maintains. On the next upstream sync, check whether `api.ts` has been updated and
-re-apply the stealth changes if the file is overwritten. The fork's own `/scrape`
+also maintains. The fork split upstream's single `api.ts` into modules; the stealth plugin, launch
+args, init script, and context options now live in `browser_context.ts`. On the next
+upstream sync, check whether upstream's `api.ts` changed browser setup and port that
+change by hand into the matching module. The fork's own `/scrape`
 deadline, DNS, and pacer behavior also lives in that directory (`scrape_lifecycle.ts`,
 `target_dns.ts`, `scrape_start_pacer.ts`) and is documented in its `README.md`. Fix 3 (`engines/index.ts`) is
 in `apps/api/` — same caution applies.
