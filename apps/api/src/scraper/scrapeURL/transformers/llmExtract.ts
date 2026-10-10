@@ -215,7 +215,7 @@ const OUTPUT_LIMIT_MESSAGE =
 
 // Fork: a typed output-limit failure, so a truncated (missing) structured
 // response still triggers the configured one-time structured-output fallback.
-export class StructuredOutputLimitError extends Error {
+class StructuredOutputLimitError extends Error {
   constructor() {
     super(OUTPUT_LIMIT_MESSAGE);
     this.name = "StructuredOutputLimitError";
