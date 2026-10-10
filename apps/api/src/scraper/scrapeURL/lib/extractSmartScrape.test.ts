@@ -1,17 +1,13 @@
 import { vi } from "vitest";
 
-vi.mock("../transformers/llmExtract", async importOriginal => {
-  // Fork: extractData also uses the real schema helpers for its
-  // structured-output fallback validation.
-  const actual =
-    await importOriginal<typeof import("../transformers/llmExtract")>();
-  return {
-    generateCompletions: vi.fn(),
-    generateSchemaFromPrompt: vi.fn(),
-    isInvalidStructuredOutputError: actual.isInvalidStructuredOutputError,
-    normalizeJsonSchemaForModel: actual.normalizeJsonSchemaForModel,
-  };
-});
+vi.mock("../transformers/llmExtract", async importOriginal => ({
+  generateCompletions: vi.fn(),
+  generateSchemaFromPrompt: vi.fn(),
+  // Fork: structuredOutputFallback.ts validates with the real schema helper.
+  normalizeJsonSchemaForModel: (
+    await importOriginal<typeof import("../transformers/llmExtract")>()
+  ).normalizeJsonSchemaForModel,
+}));
 
 vi.mock("./promptInjectionGuard", () => ({
   checkForPromptInjection: vi.fn(async () => true),
