@@ -50,42 +50,16 @@ _PER_SF_TEXT_RE = re.compile(
     re.I,
 )
 
-# Looser per-SF CONTEXT detector used by parse_lease_rate's trust gate. Matches
-# the existing cre_ingest.parse_lease_rates gate ("(/|per |\\s)s.?f|psf|square f")
-# so a value is only trusted as a per-SF lease rate when the text says so.
-_LEASE_PER_SF_CONTEXT_RE = re.compile(r"(/|per\s|\s)s\.?f|psf|square\s*f", re.I)
-
 # Size-in-SF and area-in-acres extractors (mirror cre_ingest._SF_RE / _ACRE_RE).
 _SF_RE = re.compile(
     r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sf\b|sq\.?\s*ft|square\s*feet)", re.I
 )
 _ACRE_RE = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*ac(?:res?)?\b", re.I)
 
-# Money RANGE ("$10 - 16", "$1.50 to 2.25"): the upper bound often has no $ of
-# its own. Anchored on a leading numeric so a parenthetical second per-SF value
-# (the Lee dual "$19 SF/yr ($10.00/SF NNN)") is NOT read as a range.
-_MONEY_RANGE_RE = re.compile(
-    r"\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:-|–|—|to)\s*\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?)",
-    re.I,
-)
-
 # Percent token and leading-currency-label strip.
 _PCT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
 _CURRENCY_PREFIX_RE = re.compile(r"^\s*(?:POUND|GBP|USD|EUR|£|€|\$)\s*", re.I)
 
-# Monthly / annual basis detectors (mirror cre_ingest.parse_lease_rates).
-_MONTHLY_RE = re.compile(r"/\s*mo|month", re.I)
-_ANNUAL_RE = re.compile(r"/\s*yr|year|annual|/\s*a\b", re.I)
-
-# Negative signal: a parenthesized "(Annual)" with NO per-SF qualifier marks an
-# absolute annual TOTAL, not a per-SF rate, so the value must not be trusted as a
-# lease rate. Verbatim mirror of lib/parse.ts hasNegativeSignal (golden row 2:
-# "$30.60 (Annual) USD" -> null). The bare "/yr" annual marker is unaffected.
-_NEGATIVE_SIGNAL_RE = re.compile(r"\(\s*annual\s*\)", re.I)
-
-# Max plausible annual $/SF/yr lease rate. Anything above is rejected (locks the
-# Avison-Young "$5000/SF/YR" anomaly, golden row 7).
-_MAX_LEASE_PSF_YR = 500
 
 
 def _to_num(s):
@@ -97,103 +71,14 @@ def _to_num(s):
 # Lease rate
 # ---------------------------------------------------------------------------
 
-# Lease-rate basis tokens allowed by the cre_listings.lease_rate_type CHECK.
-# Order matters: the more specific variants are tested before the bare "gross".
-def _lease_rate_type(low):
-    if "modified gross" in low or "mod gross" in low or "modified_gross" in low:
-        return "modified_gross"
-    if "full service" in low or "full-service" in low or "fsg" in low or "full_service" in low:
-        return "full_service"
-    if "nnn" in low or "triple net" in low or "triple-net" in low:
-        return "nnn"
-    # Industrial-gross ("IG") and bare "gross" both map to gross (golden row 13).
-    if re.search(r"\big\b", low) or "gross" in low:
-        return "gross"
-    return None
 
 
 def parse_lease_rate(text):
-    """Annualized $/SF/yr (min, max) plus a normalized basis type.
+    """USD/SF/year only when currency, denominator and period are explicit."""
+    from cre_rent_evidence import rent_evidence
 
-    Returns (min, max, type):
-      - min: $/SF/yr, annualized; None when not per-SF-trustable.
-      - max: range high, else None.
-      - type: one of nnn|modified_gross|gross|full_service, or None.
-
-    Mirrors and SUPERSEDES the inline cre_ingest.parse_lease_rates +
-    norm_lease_rate_type logic (contract C.1). Semantics:
-      - Trust a value only when the text is explicitly per-SF, OR a bare "$N"
-        with no disqualifier is present (the M&M / Cushman "Rent Per SF" forms,
-        golden rows 1-2).
-      - Annualize a per-month value (x12); reject a per-SF value > 500 $/SF/yr
-        (golden row 7 AY anomaly) and reject a per-SF-but-implausible >100 value
-        with no explicit annual marker (don't guess).
-      - For a money RANGE, reject when max > 100 and min < 100 (a suite-size
-        range mis-typed as a money range, the Buildout case, golden row 10).
-      - A dual "$19 SF/yr ($10.00/SF NNN)" keeps the FIRST per-SF value (19),
-        not the parenthetical (golden row 4).
-    """
-    if not isinstance(text, str):
-        return None, None, None
-    if not text.strip():
-        return None, None, None
-    low = text.lower()
-    rate_type = _lease_rate_type(low)
-
-    # Negative signal: "(Annual)" without a per-SF qualifier is an absolute annual
-    # total, not a per-SF rate (golden row 2). Mirror lib/parse.ts: return the
-    # type but no numeric. Checked before the trust gate so a bare "$N" form
-    # carrying "(Annual)" is not promoted.
-    if _NEGATIVE_SIGNAL_RE.search(low):
-        return None, None, rate_type
-
-    per_sf_context = bool(_LEASE_PER_SF_CONTEXT_RE.search(low))
-    has_dollar = bool(_MONEY_RE.search(text))
-    # No per-SF context and no bare $ value: nothing trustable as a lease rate.
-    if not per_sf_context and not has_dollar:
-        return None, None, None
-
-    monthly = bool(_MONTHLY_RE.search(low))
-    annual = bool(_ANNUAL_RE.search(low))
-
-    m = _MONEY_RANGE_RE.search(text)
-    if m:
-        nums = [_to_num(m.group(1)), _to_num(m.group(2))]
-        # Buildout sometimes formats a suite-size range as a money range, e.g.
-        # "$2.50 - 250 SF/month". A large upper bound paired with a tiny lower one
-        # is suite size, not an annual PSF range; reject rather than promote it.
-        if max(nums) > 100 and min(nums) < 100:
-            return None, None, None
-    else:
-        # Single value: prefer the FIRST $-prefixed money (ignores a parenthetical
-        # dual rate); fall back to the first bare number only when per-SF context
-        # is present (the "3.59 USD/SF/MO" no-$ form, golden row 6).
-        if has_dollar:
-            value = _to_num(_MONEY_RE.search(text).group(1))
-        else:
-            nm = _NUM_RE.search(text)
-            if not nm:
-                return None, None, None
-            value = _to_num(nm.group(1))
-        nums = [value]
-
-    nums = [n for n in nums if 0 < n <= _MAX_LEASE_PSF_YR]
-    if not nums:
-        return None, None, None
-
-    if monthly and not annual:
-        nums = [n * 12 for n in nums]
-    elif not annual and min(nums) > 100:
-        # Per-SF but implausibly large with no annual marker: don't guess.
-        return None, None, None
-
-    nums = [n for n in nums if 0 < n <= _MAX_LEASE_PSF_YR]
-    if not nums:
-        return None, None, None
-
-    lo, hi = min(nums), max(nums)
-    return round(lo, 2), (round(hi, 2) if hi > lo else None), rate_type
-
+    evidence = rent_evidence(text)
+    return evidence["annual_psf_min"], evidence["annual_psf_max"], evidence["lease_basis"]
 
 # ---------------------------------------------------------------------------
 # Money / acres / size

@@ -650,7 +650,7 @@ def test_to_row_redacts_withheld_jll_pricing_before_raw_data_staging():
             "salePriceUsd": 3250000,
             "salePriceText": "$3,250,000",
             "salePricePerSf": 325,
-            "leaseRateText": "$32/SF",
+            "leaseRateText": "USD 32/SF/year",
             "leaseRateMin": 32,
             "leaseRateMax": 32,
             "jllDetail": {
@@ -1445,7 +1445,7 @@ def test_merge_ignores_jll_marker_collision_on_dual_svn_rows():
             "url": "https://example.buildout.com/property?propertyId=marker-42",
             "id": "marker-42",
             "transactionMode": "lease",
-            "leaseRateText": "$32/SF",
+            "leaseRateText": "USD 32/SF/year",
             "jllPriceWithheld": True,
         }
     )
@@ -3617,7 +3617,7 @@ def test_merge_sale_plus_lease_modes_to_sale_or_lease():
     m = ci.merge_rows(a, b)
     assert m["transaction_type"] == "sale_or_lease"
     assert m["sale_price_usd"] == 500000.0  # a kept
-    assert m["lease_rate_min"] == 20.0  # filled from b
+    assert m["lease_rate_min"] is None  # Scalar alone cannot establish units.
 
 
 def test_merge_secondary_sale_or_lease_promotes():

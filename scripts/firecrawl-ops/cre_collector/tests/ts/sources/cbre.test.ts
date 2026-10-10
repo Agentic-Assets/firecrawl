@@ -310,7 +310,7 @@ test("cbreNewFieldsFromRawData: null input does not throw", () => {
 
 test("cbreNewFieldsFromRawData: NNN lease rate type is parsed", () => {
   const out = cbreNewFieldsFromRawData({
-    leaseRateText: "$22 - $26 PSF NNN",
+    leaseRateText: "USD 22 - $26 PSF/year NNN",
     url: null,
     headline: null,
   });

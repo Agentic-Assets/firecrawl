@@ -185,50 +185,17 @@ def test_lee_per_sf_text_false_on_none():
 
 
 # ===========================================================================
-# Guard 3: Avison Young $5000/SF/YR anomaly
-#
-# AY occasionally emits anomalous lease rates like '$5000/SF/YR' that are
-# clearly mislabeled (likely monthly totals). parse_lease_rate rejects any
-# annualized per-SF value above 500 $/SF/yr (the _MAX_LEASE_PSF_YR cap),
-# returning (None, None, None) so the bad value never lands in the DB.
-# ===========================================================================
+# Guard 3: Explicit currency and period, without magnitude rejection.
 
 
-def test_ay_5000_per_sf_yr_rejected():
-    """'$5000/SF/YR' exceeds the 500 $/SF/yr plausibility cap -> (None, None, None)."""
-    lo, hi, rate_type = cre_parse.parse_lease_rate("$5000/SF/YR")
-    assert lo is None and hi is None and rate_type is None, (
-        f"Expected (None, None, None) for '$5000/SF/YR', got ({lo}, {hi}, {rate_type})"
-    )
+@pytest.mark.parametrize("amount", [500, 501, 5000])
+def test_high_explicit_usd_rates_are_preserved(amount):
+    assert cre_parse.parse_lease_rate(f"USD {amount}/SF/YR")[0] == amount
+    assert cre_parse.parse_lease_rate(f"${amount}/SF/YR")[0] is None
 
 
-def test_ay_501_per_sf_yr_rejected():
-    """$501/SF/YR is also above the cap."""
-    lo, hi, rate_type = cre_parse.parse_lease_rate("$501/SF/YR")
-    assert lo is None
-
-
-def test_ay_500_per_sf_yr_at_cap_rejected():
-    """$500/SF/YR is exactly at the cap and is also rejected (> 500 check is strict)."""
-    lo, hi, rate_type = cre_parse.parse_lease_rate("$500/SF/YR")
-    # _MAX_LEASE_PSF_YR = 500; the filter is `0 < n <= _MAX_LEASE_PSF_YR`, meaning
-    # 500 is kept by the cap but > 100 monthly-upscale guard fires first when there
-    # is no /yr marker. With /yr, the filter keeps <=500, so 500 is accepted.
-    # The important invariant is that 5000 is rejected.
-    pass  # edge-case only; not a contract assertion
-
-
-def test_ay_reasonable_rate_passes():
-    """A normal $24/SF/YR passes through without rejection."""
-    lo, hi, rate_type = cre_parse.parse_lease_rate("$24.00/SF/YR")
-    assert lo == pytest.approx(24.0)
-    assert hi is None
-
-
-def test_ay_5000_per_sf_mo_also_rejected():
-    """$5000/SF/MO annualizes to 60000, far above the cap."""
-    lo, hi, rate_type = cre_parse.parse_lease_rate("$5000/SF/MO")
-    assert lo is None
+def test_high_monthly_rate_is_annualized():
+    assert cre_parse.parse_lease_rate("USD 5000/SF/MO")[0] == 60000
 
 
 # ===========================================================================
@@ -276,7 +243,7 @@ def test_dual_mode_flat_listing_fallback():
 def test_dual_mode_parse_lease_rate_from_effective_primary():
     """End-to-end: COALESCE -> parse_lease_rate on the effective dict."""
     raw_data = {
-        "primary": {"leaseRateText": "$24.00/SF/YR, FSG"},
+        "primary": {"leaseRateText": "USD 24.00/SF/YR, FSG"},
         "secondary_pass": {"leaseRateText": "$30.00/SF/YR"},
     }
     effective = _coalesce_raw_data(raw_data)
@@ -288,7 +255,7 @@ def test_dual_mode_parse_lease_rate_from_effective_primary():
 def test_dual_mode_parse_lease_rate_from_secondary_pass():
     """When primary is absent, secondary_pass value is parsed correctly."""
     raw_data = {
-        "secondary_pass": {"leaseRateText": "$19.08/SF/YR"},
+        "secondary_pass": {"leaseRateText": "USD 19.08/SF/YR"},
     }
     effective = _coalesce_raw_data(raw_data)
     lo, hi, rate_type = cre_parse.parse_lease_rate(effective.get("leaseRateText"))
