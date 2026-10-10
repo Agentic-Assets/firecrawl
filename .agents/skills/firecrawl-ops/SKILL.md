@@ -74,9 +74,9 @@ Model routing:
 
 Known local gaps:
 
-- `POST /v2/browser` and `/v2/browser/:sessionId/execute` are registered but need `HANGAR_URL` (upstream renamed `BROWSER_SERVICE_URL`).
+- `POST /v2/browser` and `/v2/browser/:sessionId/execute` (and their `/v2/interact` aliases) are registered but need `HANGAR_URL` (upstream replaced `BROWSER_SERVICE_*`). Compose does not pass `HANGAR_URL` to `api`, so root `.env` alone is not enough; it must also be added to `x-common-env`.
 - `POST /v2/agent` is registered but needs `EXTRACT_V3_BETA_URL`.
-- Scrape `actions`, screenshot formats, and scrape-browser interaction need Fire Engine or browser-service support.
+- Scrape `actions` and screenshot formats need Fire Engine (the bundled playwright engine does not support them); scrape interact and the browser routes need Hangar.
 - AI-backed parse/scrape summary and JSON fail until `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME` are valid.
 
 ## Local CLI
@@ -144,7 +144,7 @@ Keep Firecrawl tooling separate from any one agent runtime:
 - CLI entrypoint: `scripts/firecrawl-ops/firecrawl_cli.sh`
 - Direct HTTP helper: `scripts/firecrawl-ops/firecrawl_request.py`
 - Direct API: `http://localhost:3002`
-- Optional Cursor adapter: `.cursor/mcp.json` plus `.cursor/skills/firecrawl-local-api/SKILL.md`
+- Optional Cursor adapter: `.cursor/mcp.json`, plus `~/.cursor/skills/firecrawl-local-api` linked by `sync_agent_skills.sh`
 - Codex/Claude-style adapter: `.agents/skills/firecrawl-local-api/SKILL.md`
 - User-level installer: `scripts/firecrawl-ops/sync_agent_skills.sh`
 
@@ -225,7 +225,7 @@ Named profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. Use `scrip
 
 The local adapter now enforces OCR capacity and quality gates. Default `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` means a third simultaneous OCR call gets explicit backpressure instead of piling onto Docling; Firecrawl maps that to `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts map to `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR loops, such as one publisher/license page plus mostly empty pages, are rejected by default with `SCRAPE_PDF_LOW_QUALITY` / HTTP 422. Successful parses may expose stable `data.metadata.pdfOcr` metadata: adapter/profile/settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. Set `LOCAL_FIREPDF_FAIL_LOW_QUALITY=false` only when deliberately collecting bad-output diagnostics.
 
-OCR-mode FirePDF cache is intentionally bypassed so profile/env changes cannot reuse stale OCR. For end-to-end readiness checks, use `scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf`; it proves Firecrawl API -> adapter -> Docling without changing settings.
+OCR-mode FirePDF cache is intentionally bypassed (when `FIRE_PDF_BASE_URL` is the local adapter) so profile/env changes cannot reuse stale OCR. For end-to-end readiness checks, use `scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf`; it proves Firecrawl API -> adapter -> Docling without changing settings.
 
 `local_firepdf_ocr.sh settings` prints the historical adapter-tuning surface for inspection only. Agents must not export those values or use start/restart aliases to apply them. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf` for a one-command OCR parse check. For repeatable comparisons with saved fields, page artifacts, QA reports, accept/reject/manual-review guidance, and a per-PDF recommended mode/profile:
 
@@ -245,9 +245,9 @@ scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
 Profiles:
 
 - `budget`: OpenRouter `deepseek/deepseek-v4-flash`; primary cheap model for routine extraction and high-volume discovery. Local profile wiring verified on 2026-05-23.
-- `escalated`: OpenRouter `deepseek/deepseek-v4-pro`; smarter fallback for hard extraction, noisy pages, or budget failures.
-- `gateway`: Vercel AI Gateway `deepseek/deepseek-v4-flash-0731`; default model and requires a Vercel AI Gateway key.
-- `gateway-pro`: Vercel AI Gateway `deepseek/deepseek-v4-pro-0813`; stronger option for difficult extraction.
+- `escalated`: OpenRouter `deepseek/deepseek-v4-pro`; explicit operator-selected stronger profile for hard extraction or noisy pages, not an automatic retry.
+- `gateway`: Vercel AI Gateway `deepseek/deepseek-v4-flash-0731`; default model and requires a Vercel AI Gateway key. It also sets `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=deepseek/deepseek-v4-pro-0813`, a one-time retry for missing, schema-invalid, or truncated structured summary/JSON output.
+- `gateway-pro`: Vercel AI Gateway `deepseek/deepseek-v4-pro-0813`; stronger option for difficult extraction, with no fallback of its own.
 - `gateway-codex`: Vercel AI Gateway `openai/gpt-5.4-mini`; retained for explicit legacy use.
 - `openai-direct`: OpenAI Platform `gpt-5.4-mini`; requires a Platform `sk-...` key with credits.
 

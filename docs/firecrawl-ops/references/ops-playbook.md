@@ -55,6 +55,17 @@ docker compose logs api --tail 200
 docker compose logs playwright-service --tail 200
 ```
 
+## Playwright sidecar triage
+When a scrape fails through the `playwright` engine, check the sidecar status code before blaming the target:
+
+- `503 SCRAPE_ADMISSION_TIMEOUT`: the request waited for a browser-page permit (or the optional pacer) past its deadline and no browser context was allocated. Under saturation, untimed v2 scrape and crawl requests hit this after about 15 s. Check `docker compose logs playwright-service`, the `/health` `activePages` count, and `MAX_CONCURRENT_PAGES` (compose: `PLAYWRIGHT_MAX_CONCURRENT_PAGES`).
+- `504 SCRAPE_WORK_TIMEOUT`: the deadline passed during navigation or body reads.
+- `503 TARGET_DNS_UNAVAILABLE`: the target host did not resolve, so nothing was fetched; retry later.
+- `503 SCRAPE_RESOURCE_LEAK`: a partial browser context could not be confirmed closed and its permit is quarantined; restart `playwright-service`.
+- `200` with `pageStatusCode: 403`: the target resolved to a private or internal address and was blocked by design.
+
+The full table, the 24 h caps on `timeout` and `wait_after_load`, and the opt-in `SCRAPE_START_INTERVAL_MS` pacer are in `apps/playwright-service-ts/README.md`. A sidecar code change needs `docker compose build playwright-service` and a recreate to take effect.
+
 ## Local CLI
 Use the wrapper so the upstream Firecrawl CLI always targets the self-hosted API:
 ```bash
@@ -157,11 +168,15 @@ Set in the repo-root `.env` so `docker-compose.yaml` picks them up:
 - `OPENAI_API_KEY` — provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible model calls
 - `OPENAI_BASE_URL` — provider base URL, changed only by the guarded model handoff
 - `MODEL_NAME` — default LLM; the Gateway default is `deepseek/deepseek-v4-flash-0731` and `gateway-pro` is `deepseek/deepseek-v4-pro-0813`
+- `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`: optional one-time fallback model for missing, schema-invalid, or truncated structured summary/JSON output; the `gateway` profile sets `deepseek/deepseek-v4-pro-0813`, other profiles leave it empty (see `model-routing.md`)
 - `OPENROUTER_API_KEY` — optional direct OpenRouter provider path; not the default local profile route
 - `PDF_RUST_EXTRACT_ENABLE=true` — local Rust PDF text extraction; no cloud credits
 - `PDF_SHADOW_COMPARISON_ENABLE=false`, `MINERU_PERCENT=0`, `FIRE_PDF_PERCENT=10` — local PDF routing defaults
 - `FIRE_PDF_BASE_URL`, `FIRE_PDF_API_KEY`, `RUNPOD_MU_API_KEY`, `RUNPOD_MU_POD_ID` — optional OCR/layout services for harder PDFs; local Docling uses `FIRE_PDF_BASE_URL=http://host.docker.internal:31337` with an empty key
+- `FIRE_PDF_BY_REFERENCE_ENABLE=false`: compose default (upstream's is `true`); the local Docling adapter has no async jobs API, so leave it off
 - `SWARM_SUPABASE_URL`, `SWARM_SUPABASE_KEY` — optional, only if using `firecrawl_swarm_pipeline.py` telemetry
+
+Compose forwards only the variables it references. Upstream-optional `HANGAR_URL` (replaced `BROWSER_SERVICE_*`, which are no longer read), `IMAGE_OCR_ENABLED`, `PDF_EXTRACTION_CONCURRENCY`, `DB_POOL_PROFILE`, `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME`, and the sidecar's `SCRAPE_START_INTERVAL_MS` do nothing from root `.env` until added to the relevant service in `docker-compose.yaml` (`HANGAR_URL` and the API variables go in `x-common-env`; `SCRAPE_START_INTERVAL_MS` goes in `playwright-service.environment`). Sentry was removed upstream, so `SENTRY_DSN` is no longer read.
 
 Create a missing root `.env` with the minimal reversible model-key template in
 `LOCAL_DEVELOPMENT_GUIDE.md` through normal human-owned setup. Do not use
@@ -206,7 +221,7 @@ through the `ocr-adapter` handoff. `qa-debug`, raw Docling JSON capture, and
 profile/capture/output flags are deliberately unavailable through
 agent-facing helpers and lifecycle aliases.
 
-The adapter has guardrails for heavy agent runs. `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` by default; excess concurrent requests return `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR dominated by publisher/license boilerplate or empty pages returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 by default. Successful Firecrawl responses may include stable `data.metadata.pdfOcr` metadata: adapter/profile/settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. OCR-mode FirePDF cache is bypassed so local OCR canaries do not reuse stale profile output.
+The adapter has guardrails for heavy agent runs. `LOCAL_FIREPDF_MAX_CONCURRENT_OCR=2` by default; excess concurrent requests return `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429. Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504. Low-quality OCR dominated by publisher/license boilerplate or empty pages returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 by default. Successful Firecrawl responses may include stable `data.metadata.pdfOcr` metadata: adapter/profile/settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. OCR-mode FirePDF cache is bypassed when `FIRE_PDF_BASE_URL` points at a local adapter host (`localhost`, `127.0.0.1`, `[::1]`, `host.docker.internal`), so local OCR canaries do not reuse stale profile output.
 
 Useful Docling tuning env vars are historical diagnostic information only;
 agents must not export them or use start/restart aliases to apply them:
@@ -257,6 +272,9 @@ scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
 ```
 
 The benchmark preflights fake `.pdf` downloads, restarts the adapter between OCR profiles unless `--no-profile-restart` is passed, saves split markdown/html/metadata fields, writes `fields/pages.jsonl`, and adds per-case `qa.json` / `qa.md`. The root `summary.md` includes accept/reject/manual-review guidance plus a recommended mode/profile per PDF.
+
+## Local proof instead of CI
+Hosted GitHub Actions are disabled on this fork, and only five manual `workflow_dispatch` image deploy and cleanup workflows remain. A PR therefore has no automated checks; run the relevant local commands (see `AGENTS.md`, "Working in `apps/api`") and record them under `## Proof` in the PR body. For stack-level changes also run `scripts/firecrawl-ops/firecrawl_healthcheck.sh` and `scripts/firecrawl-ops/local_api_smoke_matrix.py`.
 
 ## Upstream sync
 Use a branch and merge commit so fork-specific ops assets remain easy to review:
