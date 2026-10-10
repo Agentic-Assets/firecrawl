@@ -7,7 +7,7 @@ import {
 } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "playwright";
 
-import { cleanupBrowserBatchResources } from "./browser_batch_fetch";
+import { cleanupBrowserResources } from "./browser_resources";
 import {
   C10_BROWSER_INTERNAL_PATH,
   C10_JLL_ADMISSION_LANE,
@@ -512,7 +512,7 @@ export function createC10BrowserListener(
     } finally {
       const remainingCleanupMs = deadlineAt - Date.now();
       if (remainingCleanupMs > 0) {
-        cleanupConfirmed = await cleanupBrowserBatchResources(
+        cleanupConfirmed = await cleanupBrowserResources(
           page ? () => page!.close() : null,
           requestContext ? () => requestContext!.close() : null,
           () => {
