@@ -11,8 +11,9 @@ The API's default model path uses OpenAI-compatible settings:
 - `OPENAI_API_KEY`: provider key for OpenRouter, Vercel AI Gateway, or OpenAI
 - `OPENAI_BASE_URL`: provider base URL
 - `MODEL_NAME`: provider model id
-- `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`: optional fallback model for invalid
-  structured summary or JSON output
+- `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`: optional fallback model for
+  missing, schema-invalid, or truncated (output-limit) structured summary or
+  JSON output; used for at most one extra call per request
 - `MODEL_EMBEDDING_NAME`: optional embedding model id
 
 Use the guarded operator handoff from the repo root to inspect the local default
@@ -39,8 +40,13 @@ Compose contract.
    - `deepseek/deepseek-v4-flash-0731`
    - Profile: `gateway`
    - Base URL: `https://ai-gateway.vercel.sh/v1`
-   - The live API uses this model directly. It has no automatic structured
-     output retry or model fallback.
+   - The live API uses this model directly. The profile sets
+     `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=deepseek/deepseek-v4-pro-0813`:
+     when the primary's structured summary or JSON output is missing,
+     schema-invalid, or truncated at the output limit, the API retries once
+     with that model. The fallback is bounded to one extra call, with no
+     internal repair or rate-limit retry, and never runs for provider, auth,
+     quota, or policy failures.
 
 2. **Explicit OpenRouter budget alternative**
    - `deepseek/deepseek-v4-flash`
@@ -72,11 +78,12 @@ Compose contract.
 
 ## Escalation rules
 
-The live API does not automatically retry a request with a stronger model. For
-noisy pages, malformed structured output, or low-confidence fields, inspect
-the provider and API logs first. A switch to `gateway-pro` or another profile
-requires the guarded operator procedure: queue check, exclusive window,
-provider-cost approval, bounded canary, and deliberate handoff.
+Apart from the bounded one-time structured-output fallback above, the live API
+does not automatically retry a request with a stronger model. For noisy pages,
+structured output that still fails after the fallback, or low-confidence
+fields, inspect the provider and API logs first. A switch to `gateway-pro` or
+another profile requires the guarded operator procedure: queue check, exclusive
+window, provider-cost approval, bounded canary, and deliberate handoff.
 
 ## Cost-control rules
 
