@@ -274,8 +274,10 @@ scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 
 After the dry-run is reviewed, a human operator may apply the matching
 attested transition. The gateway profile remains
-`deepseek/deepseek-v4-flash-0731`; `gateway-pro` remains
-`deepseek/deepseek-v4-pro-0813`.
+`deepseek/deepseek-v4-flash-0731` and sets
+`MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=deepseek/deepseek-v4-pro-0813` (one
+bounded retry for missing, schema-invalid, or truncated structured output);
+`gateway-pro` remains `deepseek/deepseek-v4-pro-0813` with no fallback.
 
 ## PDF OCR
 

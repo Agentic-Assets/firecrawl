@@ -73,7 +73,8 @@ writes, market-data objects, or EQUIRE product views.
 - **`./.env`** — **primary when present.** This is the root file Docker Compose reads. It is gitignored and optional for non-AI local calls. Never commit it.
 - **`apps/api/.env.example`** — upstream's canonical variable reference, not a drop-in Docker Compose contract. Do not copy it wholesale to root `.env`.
 - **`apps/api/.env.local`** — tracked upstream artifact with empty values; **not** the file Docker reads despite its `.local` suffix. Ignore unless running `apps/api` directly outside Docker.
-- **Fork-specific vars** (`FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, optional `OPENROUTER_API_KEY`, `PDF_RUST_EXTRACT_ENABLE`, optional local Docling/Fire PDF/RunPod OCR vars, `SWARM_SUPABASE_*`) — documented in `LOCAL_DEVELOPMENT_GUIDE.md`. The retired `set_model_profile.sh` never writes them; only a human-reviewed `firecrawl_operator_handoff.py` transition may change its allowlisted model/OCR keys.
+- **Fork-specific vars** (`FIRECRAWL_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `MODEL_NAME`, `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`, optional `OPENROUTER_API_KEY`, `PDF_RUST_EXTRACT_ENABLE`, optional local Docling/Fire PDF/RunPod OCR vars, `SWARM_SUPABASE_*`), documented in `LOCAL_DEVELOPMENT_GUIDE.md`. The retired `set_model_profile.sh` never writes them; only a human-reviewed `firecrawl_operator_handoff.py` transition may change its allowlisted model/OCR keys.
+- **Compose passthrough.** The root `.env` only reaches containers through variables that `docker-compose.yaml` references. Upstream-optional settings that compose does not pass (`HANGAR_URL` for `/v2/browser` and interact, `IMAGE_OCR_ENABLED`, `PDF_EXTRACTION_CONCURRENCY`, `DB_POOL_PROFILE`, `OTEL_*`, and the playwright sidecar's `SCRAPE_START_INTERVAL_MS`) have no effect from root `.env` until they are added to the matching service in compose. `FIRE_PDF_BY_REFERENCE_ENABLE` is passed and defaults to `false` here, because the local Docling adapter has no async jobs API. The Sentry SDK was removed upstream, so `SENTRY_DSN` and the sample-rate variables are no longer read; tracing is optional OpenTelemetry via `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 ## Working in `apps/api`
 
@@ -90,8 +91,8 @@ When making changes to the API:
 2. Write code to achieve your win conditions.
 3. Run tests via `pnpm harness vitest run <pattern>` from `apps/api` (or `pnpm harness pnpm test:snips` for the full snips suite).
    - `pnpm harness` boots the API + workers for the test run. Don't `pnpm start` manually.
-   - The full suite is slow — run only the relevant tests locally and let CI cover the rest.
-4. Push to a branch, open a PR, let CI verify.
+   - The full suite is slow, so run only the relevant tests locally and record exactly what you ran.
+4. Push to a branch and open a PR. Hosted GitHub Actions are disabled on this fork (the repo Actions setting is off, and only five manual `workflow_dispatch` image deploy and cleanup workflows remain), so no CI runs and there is no hosted signal. Local proof is required: `pnpm build` (tsc typecheck), `pnpm knip`, and the relevant `pnpm harness vitest run <pattern>` tests for `apps/api`; `npx tsc --noEmit -p .` and `pnpm test` for `apps/playwright-service-ts`; and `python3 -m unittest discover -s scripts/firecrawl-ops/tests` for `scripts/firecrawl-ops`. The `scripts/firecrawl-ops/cre_collector` suites (`npm test`, `python3 -m pytest tests/ -q`) must run only from a separate `git clone --no-hardlinks`, never a worktree, because their lock lookup resolves to the live checkout's `out/daily/.cre.lock`. Put the commands and results under `## Proof` in the PR body.
 
 Useful `apps/api` scripts (see `apps/api/package.json` for the full list):
 - `pnpm test:snips` — just the snips/E2E suite
@@ -128,6 +129,7 @@ in `docs/firecrawl-ops/references/model-routing.md`.
   - `supabase-schema-firecrawl-swarm.sql` — optional Supabase schema for swarm telemetry (apply, then set `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY`)
 - `scripts/firecrawl-ops/` — runnable ops tooling:
   - `firecrawl_healthcheck.sh` — verify the local stack is up (run this first)
+  - `local_api_smoke_matrix.py`, `pdf_parse_canary.py`, `local_agent_preflight.py`, `check_pnpm_docker_config.py`: local route smoke matrix, PDF parse canaries, read-only capability preflight, and the static pnpm/Docker guard; with hosted CI off these are the proof of record for ops-layer changes
   - `firecrawl_cli.sh` — wrapper for `npx firecrawl-cli` pinned to `http://localhost:3002`; preserves caller cwd so local parse file paths work
   - `firecrawl_request.py` — dependency-free direct HTTP helper for local agents when they need output/save controls or advanced `/v2/parse` PDF options not exposed by the CLI
   - `local_firepdf_ocr.sh` — start/stop/health/env/settings/profiles/doctor/smoke helper for the local Docling OCR adapter; includes local Docling profiles, `doctor --smoke-pdf`, 429 OCR backpressure, 504 timeout mapping, 422 low-quality rejection, and stable OCR metadata/fingerprints
@@ -143,7 +145,7 @@ in `docs/firecrawl-ops/references/model-routing.md`.
 - Cross-agent integration:
   - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` — separates the Firecrawl API/CLI/MCP tool layer from Cursor Composer or any other agent model
   - `.cursor/mcp.json` — optional Cursor adapter that registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`
-  - `.cursor/skills/firecrawl-local-api/SKILL.md` — optional Cursor-native guidance for Composer agents
+  - Cursor-native skill guidance comes from `~/.cursor/skills/firecrawl-local-api`, which `sync_agent_skills.sh` symlinks to the user-level copy of `.agents/skills/firecrawl-local-api`. The repo-level `.cursor/skills/` copy was removed in June 2026; only `.cursor/mcp.json` is tracked under `.cursor/`.
   - Cursor SDK agents should use local runtime for this Mac's `http://localhost:3002`, pass MCP inline or opt into project settings, and keep Composer 2.5 separate from Firecrawl-internal model routing.
   - `.githooks/post-commit` and `.githooks/pre-push` — advisory reminders to rerun `sync_agent_skills.sh`; enable per clone with `scripts/firecrawl-ops/install_git_hooks.sh`.
 
@@ -161,4 +163,4 @@ runtime, scheduler, data-write, status-activation, and soft-delete gates.
 - The API is queue-driven. Scrape requests land in `apps/api/src/controllers`, get enqueued (Redis/BullMQ for the legacy path, `nuq` Postgres queue for newer flows), and are picked up by workers under `apps/api/src/services/` (`queue-worker`, `nuq-worker`, `nuq-prefetch-worker`, `nuq-reconciler-worker`, `extract-worker`, `index-worker`).
 - Scraping itself lives in `apps/api/src/scraper/scrapeURL/engines/` — multiple engines (fire-engine, playwright, fetch, etc.) selected per request. Tests gated on `TEST_SUITE_SELF_HOSTED` are the ones that need the proprietary fire-engine.
 - E2E tests live in `apps/api/src/__tests__/snips/` — these are the canonical "did it work" check.
-- HTML→Markdown conversion goes through the Go sidecar (`apps/go-html-to-md-service`), and the browser actions go through `apps/playwright-service-ts`.
+- HTML→Markdown conversion goes through the Go sidecar (`apps/go-html-to-md-service`), and the playwright engine goes through `apps/playwright-service-ts` (its `/scrape` deadline, status codes, and pacer are documented in `apps/playwright-service-ts/README.md`). The `/v2/browser`, `/v2/interact`, and scrape-interact routes go to the separate Hangar service via `HANGAR_URL`, not to the sidecar.

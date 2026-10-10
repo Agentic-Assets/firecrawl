@@ -4,12 +4,14 @@
 
 Verified locally on 2026-08-13 after rebuilding the OrbStack Docker stack and testing the API, CLI/MCP wrappers, and parser canaries.
 
+Entries on per-page PDF parser options, image OCR, the Hangar routes and compose passthrough were added after the 2026-10-09 upstream sync from the code, not from a live run against the stack.
+
 ### `POST /v2/scrape`
 - Best for: current typed scrape surface
 - Typical output: markdown, html/rawHtml, links, images, summary, JSON, attributes/query
 - Works locally for markdown, links, and metadata without model env
 - Summary, JSON, query, and schema extraction need a valid model profile
-- `actions` and screenshot formats require Fire Engine or browser-service support
+- `actions` and screenshot formats require Fire Engine; the bundled playwright engine does not support them
 
 ### `POST /v2/parse`
 - Best for: local file upload parsing
@@ -22,7 +24,8 @@ Verified locally on 2026-08-13 after rebuilding the OrbStack Docker stack and te
 - `maxPages` constrains returned fallback text as well as metadata. Use a public fixture or the parser canary when verifying a page-boundary-sensitive workflow.
 - Figure-heavy, table-heavy, scanned, or multi-column PDFs may still flatten on the default path
 - Stronger local OCR/layout output is available through the fork's guarded Docling-backed Fire PDF adapter. Agents may request an `ocr-adapter` dry-run plan, while only a human operator may execute the attested apply before parsing with `mode:"ocr"`.
-- Upstream page-level PDF markdown is intentionally not exposed by the local helper yet. It requires a Fire PDF `pages:[{page,markdown}]` response, while the local Docling adapter currently returns document-level markdown and QA metadata; requests fail explicitly rather than silently approximating page output.
+- Upstream per-page PDF parser options are intentionally not exposed by the local helper yet: `pages` (physical page markdown in `document.pages`; `pageMarkdown` is a deprecated alias of it), `blocks` (typed layout blocks), and `pageMarkers` (`<!-- page N -->` separators). Each one forces the request through Fire PDF with no fallback and needs a matching Fire PDF response, while the local Docling adapter currently returns document-level markdown and QA metadata only; requests fail explicitly rather than silently approximating page output. `refresh` (skip the Fire PDF cache) is also an upstream parser option.
+- Raster image OCR in `/v2/parse` is off unless `IMAGE_OCR_ENABLED` and `FIRE_PDF_BASE_URL` are both set; compose does not pass `IMAGE_OCR_ENABLED`, so it stays off until added to `x-common-env`.
 - External Fire PDF or RunPod MinerU env can also be used, but those may spend that provider's budget
 
 ### `POST /v2/extract` + `GET /v2/extract/:id`
@@ -190,7 +193,7 @@ The benchmark now saves `fields/pages.jsonl`, `qa.json`, and `qa.md` per case wh
 
 ## Present but not configured locally
 
-- `POST /v2/browser`, `GET /v2/browser`, `POST /v2/browser/:sessionId/execute` need `HANGAR_URL` (upstream renamed `BROWSER_SERVICE_URL`).
+- `POST /v2/browser`, `GET /v2/browser`, `POST /v2/browser/:sessionId/execute`, their `/v2/interact` aliases, and `POST /v2/scrape/:jobId/interact` need the Hangar browser service via `HANGAR_URL`. Upstream replaced `BROWSER_SERVICE_URL`, `BROWSER_SERVICE_API_KEY`, and `BROWSER_SERVICE_WEBHOOK_SECRET` with it; the old names are no longer read. Unconfigured, the `/v2/browser` routes return HTTP 503 naming `HANGAR_URL`. `docker-compose.yaml` does not pass `HANGAR_URL` to `api`, so setting it only in root `.env` does nothing; add `HANGAR_URL: ${HANGAR_URL:-}` to `x-common-env` first.
 - `POST /v2/agent` needs `EXTRACT_V3_BETA_URL`; an unconfigured local stack returns HTTP 503 with that explicit prerequisite.
 - `POST /v1/deep-research` starts locally, but it is slower and may keep processing for several minutes.
 - CLI `agent` and `interact` need the corresponding backend services/model configuration.

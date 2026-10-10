@@ -168,7 +168,7 @@ Required response:
 }
 ```
 
-The first implementation can support only the sync `/ocr` endpoint. Firecrawl also has an async FirePDF path (`/jobs`, `/jobs/:id`, `/jobs/:id/result`), but that is not needed for a first local setup.
+The first implementation can support only the sync `/ocr` endpoint. Firecrawl also has an async FirePDF path (`/jobs`, `/jobs/:id`, `/jobs/:id/result`), but that is not needed for a first local setup. The adapter implements no `/jobs` routes, so compose defaults `FIRE_PDF_BY_REFERENCE_ENABLE=false` (upstream defaults it to `true`) to keep large PDFs off the by-reference async path.
 
 ## Chosen Engine: Docling Serve
 
