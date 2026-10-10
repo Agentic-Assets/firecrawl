@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   BROWSER_BATCH_FETCH_MAX_REQUESTS,
-  Semaphore,
-  cleanupBrowserBatchResources,
   parseBrowserBatchFetchInput,
-  withBrowserBatchHardTimeout,
 } from "./browser_batch_fetch";
+import {
+  Semaphore,
+  cleanupBrowserResources,
+  withHardTimeout,
+} from "./browser_resources";
 
 function validInput() {
   return {
@@ -120,7 +122,7 @@ test("rejects URL fragments and unsupported content types", () => {
 
 test("hard timeout rejects a renderer operation that never settles", async () => {
   await assert.rejects(
-    withBrowserBatchHardTimeout(new Promise(() => {}), 1, "hard deadline"),
+    withHardTimeout(new Promise(() => {}), 1, "hard deadline"),
     /hard deadline/,
   );
 });
@@ -132,7 +134,7 @@ test("hard timeout cleans up a resource that resolves after the caller timed out
   });
   const cleaned: string[] = [];
   await assert.rejects(
-    withBrowserBatchHardTimeout(operation, 1, "hard deadline", (value) => {
+    withHardTimeout(operation, 1, "hard deadline", (value) => {
       cleaned.push(value);
     }),
     /hard deadline/,
@@ -144,7 +146,7 @@ test("hard timeout cleans up a resource that resolves after the caller timed out
 
 test("bounded cleanup retains the shared permit after an unconfirmed context close", async () => {
   let releases = 0;
-  const closed = await cleanupBrowserBatchResources(
+  const closed = await cleanupBrowserResources(
     () => new Promise(() => {}),
     () => new Promise(() => {}),
     () => {
@@ -158,7 +160,7 @@ test("bounded cleanup retains the shared permit after an unconfirmed context clo
 
 test("bounded cleanup releases after context close confirms page teardown", async () => {
   let releases = 0;
-  const closed = await cleanupBrowserBatchResources(
+  const closed = await cleanupBrowserResources(
     () => Promise.reject(new Error("page close failed")),
     async () => {},
     () => {
