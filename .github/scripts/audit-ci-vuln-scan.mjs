@@ -20,6 +20,12 @@ const AUDITS = [
     outputName: "js-sdk-firecrawl",
   },
   { name: "Test Site", appPath: "apps/test-site", outputName: "test-site" },
+  // npm project (package-lock.json); its audit-ci.jsonc sets "package-manager": "npm".
+  {
+    name: "CRE Collector",
+    appPath: "scripts/firecrawl-ops/cre_collector",
+    outputName: "cre-collector",
+  },
 ];
 
 const GHSA_REGEX = /GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}/gi;

@@ -1,9 +1,10 @@
 import {
-  BrowserBatchHardTimeoutError,
+  HardTimeoutError,
   Semaphore,
-  cleanupBrowserBatchResources,
-  withBrowserBatchHardTimeout,
-} from "./browser_batch_fetch";
+  SemaphoreTimeoutError,
+  cleanupBrowserResources,
+  withHardTimeout,
+} from "./browser_resources";
 
 export type ScrapePhase = "admission" | "work";
 
@@ -100,9 +101,6 @@ export function parseScrapeTiming(
   return { ok: true, timeout, waitAfterLoad };
 }
 
-const SEMAPHORE_TIMEOUT_MESSAGE =
-  "Semaphore acquisition exceeded its hard deadline";
-
 /**
  * One budget covers validation, permit queueing, optional pacing, context and
  * page setup, navigation and body reads. Capacity accounting matches
@@ -140,10 +138,10 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     const ms = remaining();
     const message = `Browser scrape ${phase} deadline exceeded`;
     try {
-      return await withBrowserBatchHardTimeout(operation(), ms, message, late);
+      return await withHardTimeout(operation(), ms, message, late);
     } catch (error) {
       if (
-        error instanceof BrowserBatchHardTimeoutError &&
+        error instanceof HardTimeoutError &&
         error.message === message
       ) {
         throw new ScrapeDeadlineError(phase);
@@ -170,7 +168,7 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     // acquire against a timer would leak the permit it later grants.
     await options.semaphore.acquire(remaining());
   } catch (error) {
-    if (error instanceof Error && error.message === SEMAPHORE_TIMEOUT_MESSAGE) {
+    if (error instanceof SemaphoreTimeoutError) {
       throw new ScrapeDeadlineError("admission");
     }
     throw error;
@@ -208,7 +206,7 @@ export async function runScrapeLifecycle<C, P, R>(options: {
         permitOwnedByLateContext = true;
         pendingContext.then(
           (lateContext) =>
-            cleanupBrowserBatchResources(
+            cleanupBrowserResources(
               null,
               () => options.closeContext(lateContext),
               release,
@@ -234,7 +232,7 @@ export async function runScrapeLifecycle<C, P, R>(options: {
       async (latePage) => {
         // The owning context is closed by the finally block below; closing a
         // late page is best-effort and never touches the permit.
-        await cleanupBrowserBatchResources(
+        await cleanupBrowserResources(
           () => options.closePage(latePage),
           null,
           () => {},
@@ -253,7 +251,7 @@ export async function runScrapeLifecycle<C, P, R>(options: {
         "Browser context cleanup was not confirmed; retaining the capacity permit",
       );
     } else if (!permitOwnedByLateContext) {
-      await cleanupBrowserBatchResources(
+      await cleanupBrowserResources(
         page === undefined ? null : () => options.closePage(page!),
         context === undefined ? null : () => options.closeContext(context!),
         release,

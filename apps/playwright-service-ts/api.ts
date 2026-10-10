@@ -26,12 +26,14 @@ import {
   BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
   BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS,
   BROWSER_BATCH_FETCH_MAX_TOTAL_RESPONSE_BYTES,
-  BrowserBatchHardTimeoutError,
-  Semaphore,
-  cleanupBrowserBatchResources,
   parseBrowserBatchFetchInput,
-  withBrowserBatchHardTimeout,
 } from "./browser_batch_fetch";
+import {
+  HardTimeoutError,
+  Semaphore,
+  cleanupBrowserResources,
+  withHardTimeout,
+} from "./browser_resources";
 import {
   createC10BrowserListener,
   readC10BrowserListenerConfig,
@@ -356,13 +358,13 @@ const createContext = async (
       const remainingMs = deadlineAt - Date.now();
       if (remainingMs <= 0) throw new ScrapeDeadlineError("work");
       try {
-        await withBrowserBatchHardTimeout(
+        await withHardTimeout(
           setup(),
           remainingMs,
           "Browser scrape context setup exceeded its deadline",
         );
       } catch (error) {
-        if (error instanceof BrowserBatchHardTimeoutError) {
+        if (error instanceof HardTimeoutError) {
           throw new ScrapeDeadlineError("work");
         }
         throw error;
@@ -371,7 +373,7 @@ const createContext = async (
   } catch (error) {
     // Never hand back (or silently drop) a half-configured context, which
     // could lack the per-request SSRF route guard above.
-    const closed = await cleanupBrowserBatchResources(
+    const closed = await cleanupBrowserResources(
       null,
       () => newContext.close(),
       () => {},
@@ -505,7 +507,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
     // The parser already requires every request to share the bootstrap origin,
     // so resolve that one host once. This endpoint always rejects local/private
     // destinations, even when legacy /scrape local-webhook support is enabled.
-    await withBrowserBatchHardTimeout(
+    await withHardTimeout(
       assertSafeTargetUrl(input.bootstrapUrl, false),
       Math.max(1, batchDeadlineAt - Date.now()),
       "Browser batch target validation exceeded its hard deadline",
@@ -527,7 +529,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
 
   try {
     if (!browser) {
-      await withBrowserBatchHardTimeout(
+      await withHardTimeout(
         initializeBrowser(),
         Math.max(1, batchDeadlineAt - Date.now()),
         "Browser batch initialization exceeded its hard deadline",
@@ -562,12 +564,12 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
   try {
     let contextBundle;
     try {
-      contextBundle = await withBrowserBatchHardTimeout(
+      contextBundle = await withHardTimeout(
         createContext(false, undefined, false),
         Math.max(1, batchDeadlineAt - Date.now()),
         "Browser batch context creation exceeded its hard deadline",
         async (lateBundle) => {
-          await cleanupBrowserBatchResources(
+          await cleanupBrowserResources(
             null,
             () => lateBundle.context.close(),
             releaseBatchPermits,
@@ -575,7 +577,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
         },
       );
     } catch (error) {
-      if (error instanceof BrowserBatchHardTimeoutError) {
+      if (error instanceof HardTimeoutError) {
         // The context may still arrive. Its late cleanup owns the permits; if
         // it never arrives or cannot close, capacity remains quarantined until
         // the service is restarted.
@@ -584,7 +586,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
       throw error;
     }
     requestContext = contextBundle.context;
-    page = await withBrowserBatchHardTimeout(
+    page = await withHardTimeout(
       requestContext.newPage(),
       Math.max(1, batchDeadlineAt - Date.now()),
       "Browser batch page creation exceeded its hard deadline",
@@ -593,7 +595,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
       input.timeoutMs,
       Math.max(1, batchDeadlineAt - Date.now()),
     );
-    const bootstrapResponse = await withBrowserBatchHardTimeout(
+    const bootstrapResponse = await withHardTimeout(
       page.goto(input.bootstrapUrl, {
         waitUntil: "load",
         timeout: bootstrapTimeoutMs,
@@ -614,7 +616,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
       });
     }
     if (input.waitAfterLoadMs > 0) {
-      await withBrowserBatchHardTimeout(
+      await withHardTimeout(
         page.waitForTimeout(input.waitAfterLoadMs),
         Math.max(
           1,
@@ -714,7 +716,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
           maxResponseBytes: BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
         },
       );
-      const response = await withBrowserBatchHardTimeout(
+      const response = await withHardTimeout(
         evaluateOperation,
         Math.max(1, Math.min(remainingBatchMs, input.timeoutMs + 5_000)),
         "Browser batch page evaluation exceeded its hard deadline",
@@ -736,7 +738,7 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
     return res.status(502).json({ error: "Browser batch fetch failed" });
   } finally {
     if (!lateContextOwnsPermit) {
-      await cleanupBrowserBatchResources(
+      await cleanupBrowserResources(
         page ? () => page!.close() : null,
         requestContext ? () => requestContext!.close() : null,
         releaseBatchPermits,
