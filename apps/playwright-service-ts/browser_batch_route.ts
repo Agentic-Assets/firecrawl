@@ -16,7 +16,6 @@ import { type Semaphore, withHardTimeout } from "./browser_resources";
 import {
   PermitLease,
   awaitAllocation,
-  releaseAfterClose,
 } from "./permit_lease";
 import { TargetDnsUnavailableError } from "./target_dns";
 import { type AssertSafeTargetUrl, InsecureConnectionError } from "./target_guard";
@@ -251,12 +250,9 @@ export const createBrowserBatchFetchHandler =
       console.error("Browser batch fetch error:", error);
       return res.status(502).json({ error: "Browser batch fetch failed" });
     } finally {
-      if (lease.heldByRequest) {
-        await releaseAfterClose(
-          lease,
-          page ? () => page!.close() : null,
-          requestContext ? () => requestContext!.close() : null,
-        );
-      }
+      await lease.settleByRequest(
+        page ? () => page!.close() : null,
+        requestContext ? () => requestContext!.close() : null,
+      );
     }
   };

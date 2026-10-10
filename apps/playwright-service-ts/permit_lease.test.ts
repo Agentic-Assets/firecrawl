@@ -184,3 +184,74 @@ test("a late allocation that leaks or cannot be closed keeps its browser permit"
   assert.equal(unclosable.pages.getAvailablePermits(), 0);
   assert.equal(unclosable.slot.getAvailablePermits(), 1);
 });
+
+test("settleByRequest closes then releases while held, and does nothing after a hand-off", async () => {
+  const held = await batchLease();
+  const heldCalls: string[] = [];
+  assert.equal(
+    await held.lease.settleByRequest(
+      async () => void heldCalls.push("page"),
+      async () => void heldCalls.push("context"),
+    ),
+    true,
+  );
+  assert.deepEqual(heldCalls, ["page", "context"]);
+  assert.equal(held.slot.getAvailablePermits(), 1);
+  assert.equal(held.pages.getAvailablePermits(), 1);
+
+  // A late allocation owns the lease after hand-off: a caller that settles
+  // anyway must not close anything or return a permit early.
+  const handedOff = await batchLease();
+  handedOff.lease.handOff();
+  const lateCalls: string[] = [];
+  assert.equal(
+    await handedOff.lease.settleByRequest(
+      async () => void lateCalls.push("page"),
+      async () => void lateCalls.push("context"),
+    ),
+    false,
+  );
+  assert.deepEqual(lateCalls, []);
+  assert.equal(handedOff.slot.getAvailablePermits(), 0);
+  assert.equal(handedOff.pages.getAvailablePermits(), 0);
+
+  // An unconfirmed close quarantines through the same path.
+  const unclosable = await batchLease();
+  assert.equal(
+    await unclosable.lease.settleByRequest(null, () => new Promise(() => {}), 1),
+    false,
+  );
+  assert.equal(unclosable.slot.getAvailablePermits(), 1);
+  assert.equal(unclosable.pages.getAvailablePermits(), 0);
+});
+
+test("a permit whose release throws does not strand the others", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const returned: string[] = [];
+  const source = (name: string, throws = false) => ({
+    source: {
+      acquire: async () => {},
+      release: () => {
+        returned.push(name);
+        if (throws) throw new Error(`${name} release failed`);
+      },
+    },
+    countsBrowser: false,
+  });
+
+  const released = await PermitLease.acquire(
+    [source("a"), source("b", true), source("c")],
+    () => 1,
+  );
+  released.release();
+  assert.deepEqual(returned, ["c", "b", "a"]);
+
+  returned.length = 0;
+  const quarantined = await PermitLease.acquire(
+    [source("a"), source("b", true), source("c")],
+    () => 1,
+  );
+  quarantined.quarantine("test leak");
+  assert.deepEqual(returned, ["c", "b", "a"]);
+  assert.ok(errors.mock.callCount() >= 2);
+});

@@ -97,11 +97,39 @@ export class PermitLease {
     if (this.state === "held") this.state = "handedOff";
   }
 
-  /** Returns every permit, newest first, once. Later calls do nothing. */
+  /**
+   * Returns every permit, newest first, once. Later calls do nothing. Each
+   * permit is returned independently, so one that throws cannot strand the rest.
+   */
   release(): void {
     if (this.state === "released" || this.state === "quarantined") return;
     this.state = "released";
-    for (const permit of this.permits.splice(0).reverse()) permit.release();
+    for (const permit of this.permits.splice(0).reverse()) {
+      PermitLease.returnPermit(permit);
+    }
+  }
+
+  /**
+   * The request's own cleanup: closes its page and context, then releases or
+   * quarantines the lease (see releaseAfterClose). After a hand-off a late
+   * allocation owns the lease, so this does nothing and returns false, and a
+   * caller can never return a permit early.
+   */
+  async settleByRequest(
+    closePage: (() => Promise<unknown>) | null,
+    closeContext: (() => Promise<unknown>) | null,
+    timeoutMs?: number,
+  ): Promise<boolean> {
+    if (!this.heldByRequest) return false;
+    return releaseAfterClose(this, closePage, closeContext, timeoutMs);
+  }
+
+  private static returnPermit(permit: HeldPermit): void {
+    try {
+      permit.release();
+    } catch (error) {
+      console.error("Capacity permit release failed; continuing with the rest:", error);
+    }
   }
 
   /**
@@ -112,7 +140,7 @@ export class PermitLease {
     if (this.state === "released" || this.state === "quarantined") return;
     this.state = "quarantined";
     for (const permit of this.permits.splice(0).reverse()) {
-      if (!permit.countsBrowser) permit.release();
+      if (!permit.countsBrowser) PermitLease.returnPermit(permit);
     }
     console.error(`${reason}; retaining the capacity permit`);
   }

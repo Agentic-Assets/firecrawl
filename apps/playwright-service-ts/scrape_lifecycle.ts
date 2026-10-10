@@ -9,7 +9,6 @@ import {
   BrowserResourceLeakError,
   PermitLease,
   awaitAllocation,
-  releaseAfterClose,
 } from "./permit_lease";
 
 export type ScrapePhase = "admission" | "work";
@@ -214,13 +213,10 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     options.deliverResult?.(result);
     return result;
   } finally {
-    if (lease.heldByRequest) {
-      await releaseAfterClose(
-        lease,
-        page === undefined ? null : () => options.closePage(page!),
-        context === undefined ? null : () => options.closeContext(context!),
-        options.cleanupTimeoutMs,
-      );
-    }
+    await lease.settleByRequest(
+      page === undefined ? null : () => options.closePage(page!),
+      context === undefined ? null : () => options.closeContext(context!),
+      options.cleanupTimeoutMs,
+    );
   }
 }

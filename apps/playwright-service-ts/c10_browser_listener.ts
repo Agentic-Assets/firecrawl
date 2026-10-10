@@ -432,18 +432,17 @@ export function createC10BrowserListener(
       if (lease === null) {
         // Nothing was admitted or allocated.
         cleanupConfirmed = true;
-      } else if (lease.heldByRequest) {
+      } else {
         const remainingCleanupMs = deadlineAt - Date.now();
         const closePage = page ? () => page!.close() : null;
         const closeContext = requestContext ? () => requestContext!.close() : null;
         if (remainingCleanupMs > 0) {
-          cleanupConfirmed = await releaseAfterClose(
-            lease,
+          cleanupConfirmed = await lease.settleByRequest(
             closePage,
             closeContext,
             remainingCleanupMs,
           );
-        } else {
+        } else if (lease.heldByRequest) {
           // Answer by the deadline, but still close what can be closed: the
           // background close releases the capacity or quarantines it.
           console.error("C10 v3 deadline exhausted before cleanup; closing in the background");

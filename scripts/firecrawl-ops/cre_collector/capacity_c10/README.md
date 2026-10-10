@@ -48,7 +48,10 @@ narrow issued-capability child can perform only one host-issued card and cannot
 receive or create a lock, keypair, receipt store, Compose configuration, or an
 arbitrary card. The host accepts a terminal success only after it has verified
 signed cleanup-complete evidence and derived the exact 4/10 active-lease peak
-from sidecar lease intervals.
+from sidecar lease intervals. Within each card window the sidecar reserves
+min(2 s, a quarter of the window) before the hard deadline, so browser work
+stops early enough to close the context and return its capacity before the
+card is answered.
 
 The only production entrypoint is `python -m capacity_c10.production`. It
 defaults to a local-input-only dry run. `--execute --smoke` runs one sealed

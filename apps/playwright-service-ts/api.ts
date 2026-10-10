@@ -12,7 +12,6 @@ import {
 import {
   PermitLease,
   awaitAllocation,
-  releaseAfterClose,
 } from "./permit_lease";
 import { createScrapeHandler } from "./scrape_route";
 import { ScrapeStartPacer, scrapeStartIntervalMs } from "./scrape_start_pacer";
@@ -84,16 +83,14 @@ async function probeBrowserContext(
   lease: PermitLease,
 ): Promise<void> {
   let context: BrowserContext | undefined;
-  const settle = async (): Promise<boolean> => {
-    // A late context allocation already owns (or quarantined) the lease.
-    if (!lease.heldByRequest) return false;
-    return releaseAfterClose(
-      lease,
+  // A late context allocation may already own (or have quarantined) the
+  // lease; settleByRequest then does nothing and reports false.
+  const settle = (): Promise<boolean> =>
+    lease.settleByRequest(
       null,
       context ? () => context!.close() : null,
       HEALTH_PROBE_TIMEOUT_MS,
     );
-  };
   try {
     ({ context } = await awaitAllocation(
       lease,
