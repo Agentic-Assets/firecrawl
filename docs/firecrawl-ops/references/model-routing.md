@@ -13,7 +13,8 @@ The API's default model path uses OpenAI-compatible settings:
 - `MODEL_NAME`: provider model id
 - `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`: optional fallback model for
   missing, schema-invalid, or truncated (output-limit) structured summary or
-  JSON output; used for at most one extra call per request
+  JSON output; used for at most one extra call per structured generation (a
+  scrape requesting both summary and JSON can make up to two fallback calls)
 - `MODEL_EMBEDDING_NAME`: optional embedding model id
 
 Use the guarded operator handoff from the repo root to inspect the local default
@@ -44,8 +45,8 @@ Compose contract.
      `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=deepseek/deepseek-v4-pro-0813`:
      when the primary's structured summary or JSON output is missing,
      schema-invalid, or truncated at the output limit, the API retries once
-     with that model. The fallback is bounded to one extra call, with no
-     internal repair or rate-limit retry, and never runs for provider, auth,
+     with that model. The fallback is bounded to one extra call per structured
+     generation, with no internal repair or rate-limit retry, and never runs for provider, auth,
      quota, or policy failures.
 
 2. **Explicit OpenRouter budget alternative**

@@ -527,6 +527,9 @@ export async function extractData({
     structuredOutputFallback && resultSchema,
   );
   let primaryGenerationFailed = false;
+  // Fork: the retryable primary failure (for example the output-limit message)
+  // stays actionable if the one-time fallback then yields nothing usable.
+  let primaryRetryableWarning: string | undefined;
 
   try {
     const completion = await generateCompletions({
@@ -554,6 +557,9 @@ export async function extractData({
       logger.warn(
         "Structured JSON output was invalid; retrying with configured fallback model",
       );
+      const primaryReason =
+        error instanceof Error ? error.message : String(error);
+      primaryRetryableWarning = `JSON extraction failed: ${primaryReason.slice(0, 300)}`;
     } else {
       logger.error("failed during extractSmartScrape.ts:generateCompletions", {
         error,
@@ -623,7 +629,11 @@ export async function extractData({
           scrapeId,
         });
       } else if (fallbackWarning) {
-        warning = [warning, fallbackWarning].filter(Boolean).join(" ");
+        warning = [warning ?? primaryRetryableWarning, fallbackWarning]
+          .filter(Boolean)
+          .join(" ");
+      } else {
+        warning ??= primaryRetryableWarning;
       }
     } catch (error) {
       if (error instanceof CostLimitExceededError) {
@@ -632,7 +642,7 @@ export async function extractData({
 
       const reason = error instanceof Error ? error.message : String(error);
       warning = [
-        warning,
+        warning ?? primaryRetryableWarning,
         `JSON extraction fallback failed: ${reason.slice(0, 300)}`,
       ]
         .filter(Boolean)

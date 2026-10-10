@@ -136,4 +136,69 @@ describe("extractData fallback for errors raised inside generateCompletions", ()
       modelId: FALLBACK_MODEL,
     });
   });
+
+  it("keeps the output-limit reason when the fallback returns a schema-invalid object", async () => {
+    generateObjectMock
+      .mockRejectedValueOnce(noObjectError("length", '{"title": "Exam'))
+      .mockResolvedValueOnce(objectResult({ nope: 1 }));
+
+    const result = await runExtraction();
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toContain("JSON extraction failed");
+    expect(result.warning).toContain(
+      "exceeded the model's maximum output length",
+    );
+  });
+
+  it("reports both failures when code-fenced JSON is unparseable twice", async () => {
+    const fenced = '```json\n{"title": "Example\n```';
+    generateObjectMock
+      .mockRejectedValueOnce(noObjectError("stop", fenced))
+      .mockRejectedValueOnce(noObjectError("stop", fenced));
+
+    const result = await runExtraction();
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toContain("JSON extraction fallback failed");
+    expect(result.warning).toContain("No object generated");
+  });
+
+  describe("without a configured fallback", () => {
+    beforeEach(() => {
+      structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK = undefined;
+    });
+
+    it("keeps the upstream output-limit warning after a single call", async () => {
+      generateObjectMock.mockRejectedValueOnce(
+        noObjectError("length", '{"title": "Exam'),
+      );
+
+      const result = await runExtraction();
+
+      expect(generateObjectMock).toHaveBeenCalledTimes(1);
+      expect(getModelByNameMock).not.toHaveBeenCalled();
+      expect(result.extractedDataArray).toEqual([undefined]);
+      expect(result.warning).toContain("JSON extraction failed");
+      expect(result.warning).toContain(
+        "exceeded the model's maximum output length",
+      );
+    });
+
+    it("keeps the upstream parse failure for code-fenced but unparseable JSON", async () => {
+      generateObjectMock.mockRejectedValueOnce(
+        noObjectError("stop", '```json\n{"title": "Example\n```'),
+      );
+
+      const result = await runExtraction();
+
+      expect(generateObjectMock).toHaveBeenCalledTimes(1);
+      expect(getModelByNameMock).not.toHaveBeenCalled();
+      expect(result.extractedDataArray).toEqual([undefined]);
+      expect(result.warning).toContain("JSON extraction failed");
+      expect(result.warning).not.toContain("fallback");
+    });
+  });
 });

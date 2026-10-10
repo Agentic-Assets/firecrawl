@@ -60,6 +60,15 @@ function truncatedStructuredOutputError() {
   });
 }
 
+function fencedUnparseableOutputError() {
+  return new NoObjectGeneratedError({
+    response: {} as any,
+    usage: {} as any,
+    finishReason: "stop" as any,
+    text: '```json\n{"summary": "Example Domain is\n```',
+  });
+}
+
 function summaryMeta() {
   const childLogger = {
     debug: vi.fn(),
@@ -212,6 +221,70 @@ describe("performSummary structured-output compatibility", () => {
 
     expect(result.summary).toBeUndefined();
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a code-fenced but unparseable primary summary once with the configured fallback", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      "deepseek/deepseek-v4-pro-0813";
+    generateObjectMock
+      .mockRejectedValueOnce(fencedUnparseableOutputError())
+      .mockResolvedValueOnce(
+        completion({
+          summary: "Example Domain is for documentation examples.",
+        }),
+      );
+
+    const result = await performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    expect(result.summary).toBe(
+      "Example Domain is for documentation examples.",
+    );
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(generateObjectMock.mock.calls[1][0].model).toMatchObject({
+      modelId: "deepseek/deepseek-v4-pro-0813",
+    });
+  });
+
+  it("fails cleanly after one fallback when code-fenced output is unparseable twice", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      "deepseek/deepseek-v4-pro-0813";
+    generateObjectMock
+      .mockRejectedValueOnce(fencedUnparseableOutputError())
+      .mockRejectedValueOnce(fencedUnparseableOutputError());
+
+    await expect(
+      performSummary(summaryMeta(), { markdown: "# Example Domain" } as any),
+    ).rejects.toBeInstanceOf(NoObjectGeneratedError);
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the upstream output-limit error when no fallback is configured", async () => {
+    generateObjectMock.mockRejectedValueOnce(truncatedStructuredOutputError());
+
+    const rejection = performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    await expect(rejection).rejects.toBeInstanceOf(Error);
+    await expect(rejection).rejects.toThrow(
+      "exceeded the model's maximum output length",
+    );
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(getModelByNameMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the upstream SyntaxError for code-fenced output when no fallback is configured", async () => {
+    generateObjectMock.mockRejectedValueOnce(fencedUnparseableOutputError());
+
+    await expect(
+      performSummary(summaryMeta(), { markdown: "# Example Domain" } as any),
+    ).rejects.toBeInstanceOf(SyntaxError);
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+    expect(getModelByNameMock).not.toHaveBeenCalled();
   });
 
   it("does not retry a failed provider request with the structured-output fallback", async () => {
