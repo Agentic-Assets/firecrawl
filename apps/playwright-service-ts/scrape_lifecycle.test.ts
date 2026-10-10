@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Semaphore } from "./browser_batch_fetch";
 import {
+  MAX_SCRAPE_INPUT_MS,
+  parseScrapeTiming,
+  PLAYWRIGHT_DEADLINE_GRACE_MS,
   runScrapeLifecycle,
   ScrapeClientGoneError,
   ScrapeDeadlineError,
@@ -48,7 +51,7 @@ test("queued scrape expires without creating a context or stealing the next perm
   const semaphore = new Semaphore(1);
   await semaphore.acquire();
   const { options, calls } = fixture(semaphore);
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), isPhase("admission"));
   assert.equal(semaphore.getQueueLength(), 0);
   assert.deepEqual(calls, []);
@@ -63,7 +66,7 @@ test("queued scrape expires without creating a context or stealing the next perm
 for (const stage of ["newPage", "content"] as const) {
   test(`hung ${stage} releases its permit once the context is closed`, async () => {
     const { options, context, page, calls } = fixture();
-    options.deadlineAt = Date.now() + 10;
+    options.deadlineAt = Date.now() + 50;
     if (stage === "newPage") context.newPage = never;
     else page.content = never;
     await assert.rejects(runScrapeLifecycle(options), isPhase("work"));
@@ -84,7 +87,7 @@ test("a context resolving after the deadline owns the permit until it is closed"
     new Promise((resolve) => {
       resolveContext = resolve;
     });
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), isPhase("work"));
   // Capacity is not handed out while the late allocation is still in flight.
   assert.equal(options.semaphore.getAvailablePermits(), 0);
@@ -101,7 +104,7 @@ test("a context rejecting after the deadline releases the permit exactly once", 
     new Promise((_, reject) => {
       rejectContext = reject;
     });
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), isPhase("work"));
   assert.equal(options.semaphore.getAvailablePermits(), 0);
   rejectContext(new Error("browser closed"));
@@ -117,7 +120,7 @@ test("a late context whose close cannot be confirmed stays quarantined", async (
       resolveContext = resolve;
     });
   options.closeContext = never;
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), ScrapeDeadlineError);
   resolveContext(context);
   await tick(20);
@@ -131,7 +134,7 @@ test("a late context rejecting with an unconfirmed partial close stays quarantin
     new Promise((_, reject) => {
       rejectContext = reject;
     });
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), ScrapeDeadlineError);
   rejectContext(new ScrapeResourceLeakError(new Error("setup failed")));
   await tick();
@@ -182,7 +185,7 @@ test("delivers success once, before cleanup, while still holding the permit", as
       permitsAtDelivery = options.semaphore.getAvailablePermits();
     },
   });
-  await tick(5);
+  await tick(25);
   assert.equal(deliveryCount, 1);
   assert.equal(permitsAtDelivery, 0);
   assert.equal(options.semaphore.getAvailablePermits(), 0);
@@ -218,7 +221,7 @@ test("a late page is closed without a second permit release", async () => {
     new Promise((resolve) => {
       resolvePage = resolve;
     });
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), ScrapeDeadlineError);
   assert.equal(options.semaphore.getAvailablePermits(), 1);
   resolvePage(page);
@@ -230,7 +233,7 @@ test("a late page is closed without a second permit release", async () => {
 test("validation timeout does not enter browser admission", async () => {
   const { options, calls } = fixture();
   options.prepare = never;
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), isPhase("admission"));
   assert.deepEqual(calls, []);
   assert.equal(options.semaphore.getAvailablePermits(), 1);
@@ -281,12 +284,12 @@ test("queue time consumes the work budget", async () => {
   const semaphore = new Semaphore(1);
   await semaphore.acquire();
   const { options } = fixture(semaphore);
-  options.deadlineAt = Date.now() + 80;
+  options.deadlineAt = Date.now() + 200;
   options.work = async () => {
-    await tick(60);
+    await tick(300);
     return "late";
   };
-  setTimeout(() => semaphore.release(), 40);
+  setTimeout(() => semaphore.release(), 50);
   await assert.rejects(runScrapeLifecycle(options), isPhase("work"));
   assert.equal(semaphore.getAvailablePermits(), 1);
 });
@@ -296,7 +299,7 @@ test("concurrent mixed outcomes never over-release a shared semaphore", async ()
   const outcomes = await Promise.allSettled(
     Array.from({ length: 8 }, (_, index) => {
       const { options, page } = fixture(semaphore);
-      options.deadlineAt = Date.now() + 30;
+      options.deadlineAt = Date.now() + 60;
       if (index % 3 === 0) page.content = never;
       if (index % 3 === 1) {
         options.work = async () => {
@@ -307,7 +310,7 @@ test("concurrent mixed outcomes never over-release a shared semaphore", async ()
     }),
   );
   assert.ok(outcomes.some((outcome) => outcome.status === "rejected"));
-  await tick(10);
+  await tick(30);
   assert.equal(semaphore.getAvailablePermits(), 2);
   assert.equal(semaphore.getQueueLength(), 0);
 });
@@ -369,14 +372,125 @@ test("private, mapped, mixed and public answers keep SSRF classification", async
   );
 });
 
+test("IPv6 literal URL hosts are classified without DNS", async () => {
+  const resolverMustNotRun = async () => {
+    throw new Error("IPv6 literals must not be resolved");
+  };
+  const blocked = [
+    "http://[::1]/",
+    "http://[::ffff:7f00:1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://[fd00:ec2::254]/",
+  ];
+  for (const url of blocked) {
+    const host = new URL(url).hostname;
+    assert.ok(host.startsWith("["), `${url} keeps its brackets: ${host}`);
+    assert.equal(await isInternalHost(host, resolverMustNotRun), true, url);
+  }
+  const publicHost = new URL("https://[2606:4700:4700::1111]/").hostname;
+  assert.equal(await isInternalHost(publicHost, resolverMustNotRun), false);
+  // Exactly one pair is stripped; anything else bracketed is refused.
+  for (const host of ["[[::1]]", "[property.example]", "[127.0.0.1]", "[]"]) {
+    assert.equal(await isInternalHost(host, resolverMustNotRun), true, host);
+  }
+});
+
+test("a Playwright timeout with the deadline grace reports a work timeout", async () => {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const { options } = fixture();
+    options.deadlineAt = Date.now() + 30;
+    await assert.rejects(
+      runScrapeLifecycle({
+        ...options,
+        work: (_page, _context, remainingMs) =>
+          new Promise<string>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("page.goto: Timeout exceeded")),
+              remainingMs() + PLAYWRIGHT_DEADLINE_GRACE_MS,
+            ),
+          ),
+      }),
+      isPhase("work"),
+    );
+    assert.equal(options.semaphore.getAvailablePermits(), 1);
+  }
+});
+
+test("browser work failing at or after the deadline is a work timeout", async () => {
+  const { options } = fixture();
+  options.deadlineAt = Date.now() + 30;
+  await assert.rejects(
+    runScrapeLifecycle({
+      ...options,
+      work: async () => {
+        // Starve the lifecycle timer, then fail like a racing Playwright timeout.
+        while (Date.now() <= options.deadlineAt) {}
+        throw new Error("page.goto: Timeout exceeded");
+      },
+    }),
+    isPhase("work"),
+  );
+  assert.equal(options.semaphore.getAvailablePermits(), 1);
+});
+
+test("scrape timing caps timeout and wait_after_load below timer overflow", () => {
+  assert.ok(MAX_SCRAPE_INPUT_MS < 2 ** 31 - 1);
+  assert.deepEqual(parseScrapeTiming(undefined, undefined), {
+    ok: true,
+    timeout: 15000,
+    waitAfterLoad: 0,
+  });
+  assert.deepEqual(parseScrapeTiming(null, null), {
+    ok: true,
+    timeout: 15000,
+    waitAfterLoad: 0,
+  });
+  assert.deepEqual(parseScrapeTiming(undefined, 2000), {
+    ok: true,
+    timeout: 17000,
+    waitAfterLoad: 2000,
+  });
+  // The API sends its remaining budget and caps waitFor at 60 s.
+  assert.deepEqual(parseScrapeTiming(600000, 60000), {
+    ok: true,
+    timeout: 600000,
+    waitAfterLoad: 60000,
+  });
+  assert.deepEqual(
+    parseScrapeTiming(MAX_SCRAPE_INPUT_MS, MAX_SCRAPE_INPUT_MS),
+    {
+      ok: true,
+      timeout: MAX_SCRAPE_INPUT_MS,
+      waitAfterLoad: MAX_SCRAPE_INPUT_MS,
+    },
+  );
+  for (const timeout of [MAX_SCRAPE_INPUT_MS + 1, 2 ** 31, 2 ** 31 - 1]) {
+    const timing = parseScrapeTiming(timeout, 0);
+    assert.equal(timing.ok, false, String(timeout));
+    assert.match(!timing.ok ? timing.error : "", /Timeout must not exceed/);
+  }
+  const longWait = parseScrapeTiming(undefined, MAX_SCRAPE_INPUT_MS + 1);
+  assert.equal(longWait.ok, false);
+  assert.match(
+    !longWait.ok ? longWait.error : "",
+    /wait_after_load must not exceed/,
+  );
+  for (const timeout of [0, -1, "1000", Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(parseScrapeTiming(timeout, 0).ok, false, String(timeout));
+  }
+  for (const wait of [-1, "1000", Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(parseScrapeTiming(1000, wait).ok, false, String(wait));
+  }
+});
+
 test("global pacing spaces concurrent context allocations after admission", async () => {
   const semaphore = new Semaphore(4);
-  const pacer = new ScrapeStartPacer(15);
+  const pacer = new ScrapeStartPacer(40);
   const starts: number[] = [];
   await Promise.all(
     Array.from({ length: 4 }, () => {
       const { options, context } = fixture(semaphore);
-      options.deadlineAt = Date.now() + 500;
+      options.deadlineAt = Date.now() + 1000;
       return runScrapeLifecycle({
         ...options,
         paceStart: (remaining) => {
@@ -393,7 +507,7 @@ test("global pacing spaces concurrent context allocations after admission", asyn
   assert.equal(starts.length, 4);
   for (let index = 1; index < starts.length; index++) {
     assert.ok(
-      starts[index] - starts[index - 1] >= 14,
+      starts[index] - starts[index - 1] >= 38,
       `start gap ${starts[index] - starts[index - 1]}ms`,
     );
   }
@@ -401,10 +515,10 @@ test("global pacing spaces concurrent context allocations after admission", asyn
 });
 
 test("pacing deadline expires as admission without a late context", async () => {
-  const pacer = new ScrapeStartPacer(60);
-  await pacer.waitForStart(() => 100);
+  const pacer = new ScrapeStartPacer(200);
+  await pacer.waitForStart(() => 300);
   const { options, calls } = fixture();
-  options.deadlineAt = Date.now() + 10;
+  options.deadlineAt = Date.now() + 50;
   await assert.rejects(
     runScrapeLifecycle({
       ...options,
@@ -413,7 +527,7 @@ test("pacing deadline expires as admission without a late context", async () => 
     isPhase("admission"),
   );
   assert.equal(options.semaphore.getAvailablePermits(), 1);
-  await tick(70);
+  await tick(220);
   assert.deepEqual(calls, []);
   // An idle gate has no reserved backlog: it claims synchronously.
   let remainingChecks = 0;

@@ -28,8 +28,17 @@ export async function isInternalHost(
   hostname: string,
   resolve: TargetResolver = systemResolver,
 ): Promise<boolean> {
-  const host = hostname.toLowerCase().replace(/\.$/, "");
+  const lowered = hostname.toLowerCase();
+  // WHATWG URL (used by the route guard, /scrape and the SSRF proxy) keeps
+  // the brackets on IPv6 literals: new URL("http://[::1]/").hostname is
+  // "[::1]". Strip exactly one pair so the literal is classified, never
+  // resolved. A bracketed value that is not an IPv6 address is refused.
+  const bracketed = lowered.startsWith("[") && lowered.endsWith("]");
+  const host = bracketed
+    ? lowered.slice(1, -1)
+    : lowered.replace(/\.$/, "");
   if (!host) return true;
+  if (bracketed && !IPAddr.IPv6.isValid(host)) return true;
   let addresses: string[];
   if (IPAddr.isValid(host)) {
     addresses = [host];

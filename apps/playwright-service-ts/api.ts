@@ -13,6 +13,8 @@ import UserAgent from "user-agents";
 import { getError } from "./helpers/get_error";
 import { isInternalHost, TargetDnsUnavailableError } from "./target_dns";
 import {
+  parseScrapeTiming,
+  PLAYWRIGHT_DEADLINE_GRACE_MS,
   runScrapeLifecycle,
   ScrapeClientGoneError,
   ScrapeDeadlineError,
@@ -837,14 +839,11 @@ app.post("/scrape", async (req: Request, res: Response) => {
     check_selector,
     skip_tls_verification = false,
   }: UrlModel = req.body;
-  // null is treated like an omitted field, as before this deadline existed.
-  const wait_after_load = requestedWaitAfterLoad ?? 0;
-  // An explicit timeout is the whole request budget (the API sends its
-  // remaining scrape time). The legacy default keeps 15 s for navigation on
-  // top of wait_after_load.
-  const timeout =
-    requestedTimeout ??
-    15000 + (typeof wait_after_load === "number" ? wait_after_load : 0);
+  const timing = parseScrapeTiming(requestedTimeout, requestedWaitAfterLoad);
+  const timeout = timing.ok ? timing.timeout : requestedTimeout;
+  const wait_after_load = timing.ok
+    ? timing.waitAfterLoad
+    : requestedWaitAfterLoad;
 
   console.log(`================= Scrape Request =================`);
   console.log(`URL: ${url}`);
@@ -863,24 +862,8 @@ app.post("/scrape", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Invalid URL" });
   }
 
-  if (
-    typeof timeout !== "number" ||
-    !Number.isFinite(timeout) ||
-    timeout <= 0
-  ) {
-    return res
-      .status(400)
-      .json({ error: "Timeout must be a positive finite number" });
-  }
-
-  if (
-    typeof wait_after_load !== "number" ||
-    !Number.isFinite(wait_after_load) ||
-    wait_after_load < 0
-  ) {
-    return res
-      .status(400)
-      .json({ error: "wait_after_load must be a non-negative finite number" });
+  if (!timing.ok) {
+    return res.status(400).json({ error: timing.error });
   }
 
   if (!PROXY_SERVER) {
@@ -889,7 +872,7 @@ app.post("/scrape", async (req: Request, res: Response) => {
     );
   }
 
-  const deadlineAt = startedAt + timeout;
+  const deadlineAt = startedAt + timing.timeout;
   const clientGone = new AbortController();
   res.on("close", () => {
     if (!res.writableFinished) clientGone.abort();
@@ -933,12 +916,14 @@ app.post("/scrape", async (req: Request, res: Response) => {
         if (headers) {
           await applyScrapeHeaders(requestContext, page, url, headers);
         }
+        // Playwright's own timeouts get a short grace past the deadline so
+        // the lifecycle timer always reports the expiry (504).
         return scrapePage(
           page,
           url,
           "load",
-          wait_after_load,
-          remainingMs(),
+          timing.waitAfterLoad,
+          remainingMs() + PLAYWRIGHT_DEADLINE_GRACE_MS,
           check_selector,
           securityState,
         );

@@ -52,11 +52,16 @@ An explicit `timeout` is the whole request budget: target validation, waiting
 for a page permit (`MAX_CONCURRENT_PAGES`), optional pacing, browser context
 setup, navigation, `wait_after_load`, and body reads. When `timeout` is
 omitted, the budget is 15000 ms plus `wait_after_load`. Firecrawl's API
-already sends its remaining scrape time as `timeout`.
+already sends its remaining scrape time as `timeout`. `timeout` and
+`wait_after_load` are each capped at 86400000 ms (24 hours), well below the
+2^31-1 ms Node timer limit; larger, non-positive, or non-numeric values
+return `400`. Playwright's own navigation and selector timeouts get a 250 ms
+grace past the deadline, so an expiry during work is always reported as
+`504` `SCRAPE_WORK_TIMEOUT`, not as a generic `500`.
 
 | Response | Meaning |
 | --- | --- |
-| `200` with `pageStatusCode: 403` | Target resolves to a private/internal address (blocked, not retryable) |
+| `200` with `pageStatusCode: 403` | Target resolves to a private/internal address, including bracketed IPv6 literals such as `[::1]` (blocked, not retryable) |
 | `503` `TARGET_DNS_UNAVAILABLE` | Target DNS could not be resolved, so nothing was fetched (retryable) |
 | `503` `SCRAPE_ADMISSION_TIMEOUT` | Deadline passed during validation, queueing, or pacing; no browser context was allocated |
 | `504` `SCRAPE_WORK_TIMEOUT` | Deadline passed during context setup, navigation, or body reads |
@@ -69,6 +74,12 @@ its browser resources are confirmed closed, the same policy as
 keeps the permit until it is closed. `/browser-batch-fetch` also returns `503`
 `TARGET_DNS_UNAVAILABLE` (instead of `400`) when its bootstrap host cannot be
 resolved.
+
+`TARGET_DNS_UNAVAILABLE` covers only the requested URL. Playwright's route
+guard sees the first URL of a redirect chain, so a DNS failure on a later
+redirect hop is refused by the SSRF proxy (`502`) instead. That scrape fails
+as an ordinary navigation error, not as `TARGET_DNS_UNAVAILABLE`. The hop is
+still never fetched.
 
 ## Optional scrape pacing
 

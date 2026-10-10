@@ -33,6 +33,73 @@ export class ScrapeResourceLeakError extends Error {
   }
 }
 
+/**
+ * Extra time given to Playwright's own operation timeouts (goto,
+ * waitForSelector) beyond the lifecycle deadline, so the lifecycle timer
+ * fires first and a deadline is reported as a work timeout, not as a
+ * Playwright TimeoutError.
+ */
+export const PLAYWRIGHT_DEADLINE_GRACE_MS = 250;
+
+/**
+ * Upper bound, in ms, for an explicit timeout or wait_after_load. Values above
+ * 2^31-1 ms overflow Node timers and fire at once. apps/api sends its
+ * remaining scrape budget and caps waitFor at 60 s, so 24 hours never rejects
+ * a request the API can make in practice.
+ */
+export const MAX_SCRAPE_INPUT_MS = 24 * 60 * 60 * 1000;
+
+/** Default navigation budget when no explicit timeout is sent. */
+const DEFAULT_SCRAPE_NAVIGATION_MS = 15000;
+
+export type ScrapeTiming =
+  | { ok: true; timeout: number; waitAfterLoad: number }
+  | { ok: false; error: string };
+
+/**
+ * Validates /scrape timing input. null is treated like an omitted field. An
+ * explicit timeout is the whole request budget; without one the budget is
+ * 15 s of navigation on top of wait_after_load.
+ */
+export function parseScrapeTiming(
+  requestedTimeout: unknown,
+  requestedWaitAfterLoad: unknown,
+): ScrapeTiming {
+  const waitAfterLoad = requestedWaitAfterLoad ?? 0;
+  if (
+    typeof waitAfterLoad !== "number" ||
+    !Number.isFinite(waitAfterLoad) ||
+    waitAfterLoad < 0
+  ) {
+    return {
+      ok: false,
+      error: "wait_after_load must be a non-negative finite number",
+    };
+  }
+  if (waitAfterLoad > MAX_SCRAPE_INPUT_MS) {
+    return {
+      ok: false,
+      error: `wait_after_load must not exceed ${MAX_SCRAPE_INPUT_MS} ms`,
+    };
+  }
+  const timeout =
+    requestedTimeout ?? DEFAULT_SCRAPE_NAVIGATION_MS + waitAfterLoad;
+  if (
+    typeof timeout !== "number" ||
+    !Number.isFinite(timeout) ||
+    timeout <= 0
+  ) {
+    return { ok: false, error: "Timeout must be a positive finite number" };
+  }
+  if (timeout > MAX_SCRAPE_INPUT_MS) {
+    return {
+      ok: false,
+      error: `Timeout must not exceed ${MAX_SCRAPE_INPUT_MS} ms`,
+    };
+  }
+  return { ok: true, timeout, waitAfterLoad };
+}
+
 const SEMAPHORE_TIMEOUT_MESSAGE =
   "Semaphore acquisition exceeded its hard deadline";
 
@@ -78,6 +145,18 @@ export async function runScrapeLifecycle<C, P, R>(options: {
       if (
         error instanceof BrowserBatchHardTimeoutError &&
         error.message === message
+      ) {
+        throw new ScrapeDeadlineError(phase);
+      }
+      // The deadline wins: browser work that fails at or after the deadline
+      // (for example a Playwright timeout racing the lifecycle timer) is a
+      // work timeout. Lifecycle-owned errors keep their meaning.
+      if (
+        phase === "work" &&
+        Date.now() >= options.deadlineAt &&
+        !(error instanceof ScrapeDeadlineError) &&
+        !(error instanceof ScrapeClientGoneError) &&
+        !(error instanceof ScrapeResourceLeakError)
       ) {
         throw new ScrapeDeadlineError(phase);
       }
