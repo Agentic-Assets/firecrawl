@@ -12,12 +12,12 @@ import {
   parseBrowserBatchFetchInput,
 } from "./browser_batch_fetch";
 import type { BrowserPool } from "./browser_context";
+import { type Semaphore, withHardTimeout } from "./browser_resources";
 import {
-  HardTimeoutError,
-  type Semaphore,
-  cleanupBrowserResources,
-  withHardTimeout,
-} from "./browser_resources";
+  PermitLease,
+  awaitAllocation,
+  releaseAfterClose,
+} from "./permit_lease";
 import { TargetDnsUnavailableError } from "./target_dns";
 import { type AssertSafeTargetUrl, InsecureConnectionError } from "./target_guard";
 
@@ -34,8 +34,6 @@ export const createBrowserBatchFetchHandler =
     const batchDeadlineAt =
       Date.now() + BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS;
     let input;
-    let batchPermitAcquired = false;
-    let pagePermitAcquired = false;
     try {
       input = parseBrowserBatchFetchInput(req.body);
       // The parser already requires every request to share the bootstrap origin,
@@ -61,6 +59,7 @@ export const createBrowserBatchFetchHandler =
       });
     }
 
+    let lease: PermitLease;
     try {
       if (!browsers.getBrowser()) {
         await withHardTimeout(
@@ -69,16 +68,16 @@ export const createBrowserBatchFetchHandler =
           "Browser batch initialization exceeded its hard deadline",
         );
       }
-      await deps.browserBatchSemaphore.acquire(
-        Math.max(1, batchDeadlineAt - Date.now()),
+      // The batch slot only limits concurrent batches; the page permit is
+      // browser capacity and is the one a leaked context keeps.
+      lease = await PermitLease.acquire(
+        [
+          { source: deps.browserBatchSemaphore, countsBrowser: false },
+          { source: deps.pageSemaphore, countsBrowser: true },
+        ],
+        () => Math.max(1, batchDeadlineAt - Date.now()),
       );
-      batchPermitAcquired = true;
-      await deps.pageSemaphore.acquire(Math.max(1, batchDeadlineAt - Date.now()));
-      pagePermitAcquired = true;
     } catch (error) {
-      if (batchPermitAcquired && !pagePermitAcquired) {
-        deps.browserBatchSemaphore.release();
-      }
       console.error("Browser batch admission error:", error);
       return res
         .status(503)
@@ -87,38 +86,19 @@ export const createBrowserBatchFetchHandler =
 
     let requestContext: BrowserContext | null = null;
     let page: Page | null = null;
-    let lateContextOwnsPermit = false;
-    let permitsReleased = false;
-    const releaseBatchPermits = (): void => {
-      if (permitsReleased) return;
-      permitsReleased = true;
-      deps.pageSemaphore.release();
-      deps.browserBatchSemaphore.release();
-    };
     try {
-      let contextBundle;
-      try {
-        contextBundle = await withHardTimeout(
-          browsers.createContext({ allowLocalTargets: false }),
-          Math.max(1, batchDeadlineAt - Date.now()),
-          "Browser batch context creation exceeded its hard deadline",
-          async (lateBundle) => {
-            await cleanupBrowserResources(
-              null,
-              () => lateBundle.context.close(),
-              releaseBatchPermits,
-            );
-          },
-        );
-      } catch (error) {
-        if (error instanceof HardTimeoutError) {
-          // The context may still arrive. Its late cleanup owns the permits; if
-          // it never arrives or cannot close, capacity remains quarantined until
-          // the service is restarted.
-          lateContextOwnsPermit = true;
-        }
-        throw error;
-      }
+      // A context that outlives the batch deadline takes over the lease.
+      const contextBundle = await awaitAllocation(
+        lease,
+        () => browsers.createContext({ allowLocalTargets: false }),
+        (allocation) =>
+          withHardTimeout(
+            allocation,
+            Math.max(1, batchDeadlineAt - Date.now()),
+            "Browser batch context creation exceeded its hard deadline",
+          ),
+        (lateBundle) => lateBundle.context.close(),
+      );
       requestContext = contextBundle.context;
       page = await withHardTimeout(
         requestContext.newPage(),
@@ -271,11 +251,11 @@ export const createBrowserBatchFetchHandler =
       console.error("Browser batch fetch error:", error);
       return res.status(502).json({ error: "Browser batch fetch failed" });
     } finally {
-      if (!lateContextOwnsPermit) {
-        await cleanupBrowserResources(
+      if (lease.heldByRequest) {
+        await releaseAfterClose(
+          lease,
           page ? () => page!.close() : null,
           requestContext ? () => requestContext!.close() : null,
-          releaseBatchPermits,
         );
       }
     }

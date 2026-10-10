@@ -16,10 +16,11 @@ import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import UserAgent from "user-agents";
 import {
   HardTimeoutError,
-  cleanupBrowserResources,
+  closeBrowserResources,
   withHardTimeout,
 } from "./browser_resources";
-import { ScrapeDeadlineError, ScrapeResourceLeakError } from "./scrape_lifecycle";
+import { BrowserResourceLeakError } from "./permit_lease";
+import { ScrapeDeadlineError } from "./scrape_lifecycle";
 import { TargetDnsUnavailableError } from "./target_dns";
 import { type AssertSafeTargetUrl, InsecureConnectionError } from "./target_guard";
 
@@ -269,13 +270,10 @@ export function createBrowserPool(settings: {
       await runWithinDeadline(setup, deadlineAt);
     } catch (error) {
       // Never hand back (or silently drop) a half-configured context, which
-      // could lack the per-request SSRF route guard above.
-      const closed = await cleanupBrowserResources(
-        null,
-        () => newContext.close(),
-        () => {},
-      );
-      throw closed ? error : new ScrapeResourceLeakError(error);
+      // could lack the per-request SSRF route guard above. The caller's lease
+      // decides what an unconfirmed close means for its permit.
+      const closed = await closeBrowserResources(null, () => newContext.close());
+      throw closed ? error : new BrowserResourceLeakError(error);
     }
 
     return { context: newContext, securityState };

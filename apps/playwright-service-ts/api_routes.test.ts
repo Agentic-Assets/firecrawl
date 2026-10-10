@@ -4,7 +4,7 @@ import test from "node:test";
 import { createApp, readServiceConfig, type ServiceDeps } from "./api";
 import type { BrowserPool, ContextBundle } from "./browser_context";
 import { Semaphore } from "./browser_resources";
-import { ScrapeResourceLeakError } from "./scrape_lifecycle";
+import { BrowserResourceLeakError } from "./permit_lease";
 import { TargetDnsUnavailableError } from "./target_dns";
 import { InsecureConnectionError } from "./target_guard";
 
@@ -288,7 +288,7 @@ test("/scrape reports a navigation past the deadline as a work timeout", async (
 test("/scrape keeps a leaked context's permit and reports the leak", async () => {
   const browsers = fakeBrowsers([], {
     createContext: async () => {
-      throw new ScrapeResourceLeakError(new Error("close failed"));
+      throw new BrowserResourceLeakError(new Error("close failed"));
     },
   });
   await withApp({ browsers }, async (baseUrl, deps) => {

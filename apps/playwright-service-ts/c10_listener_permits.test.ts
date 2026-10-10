@@ -23,7 +23,7 @@ import {
   createC10BrowserListener,
   readC10BrowserListenerConfig,
 } from "./c10_browser_listener";
-import { ScrapeResourceLeakError } from "./scrape_lifecycle";
+import { BrowserResourceLeakError } from "./permit_lease";
 
 const CAPACITY = 2;
 const CARD_TIMEOUT_MS = 300;
@@ -206,7 +206,7 @@ test("C10 control: success signs evidence and returns lease and permit", async (
 
 test("bug 1 (C10): a createContext leak keeps the page permit and lease slot quarantined", async () => {
   const harness = await startListener(async () => {
-    throw new ScrapeResourceLeakError(new Error("addInitScript failed"));
+    throw new BrowserResourceLeakError(new Error("addInitScript failed"));
   });
   try {
     const result = await harness.execute();

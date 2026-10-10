@@ -7,13 +7,13 @@ import type { BrowserContext, Page } from "playwright";
 import type { BrowserPool, ContextSecurityState } from "./browser_context";
 import type { Semaphore } from "./browser_resources";
 import { getError } from "./helpers/get_error";
+import { BrowserResourceLeakError } from "./permit_lease";
 import {
   parseScrapeTiming,
   PLAYWRIGHT_DEADLINE_GRACE_MS,
   runScrapeLifecycle,
   ScrapeClientGoneError,
   ScrapeDeadlineError,
-  ScrapeResourceLeakError,
 } from "./scrape_lifecycle";
 import { TargetDnsUnavailableError } from "./target_dns";
 import { type AssertSafeTargetUrl, InsecureConnectionError } from "./target_guard";
@@ -40,7 +40,7 @@ export type ScrapeRouteDeps = Readonly<{
 type ScrapeFailureCode =
   | TargetDnsUnavailableError["code"]
   | ScrapeDeadlineError["code"]
-  | ScrapeResourceLeakError["code"];
+  | BrowserResourceLeakError["code"];
 
 /**
  * The README's /scrape failure table, as code. A blocked private target is
@@ -73,13 +73,13 @@ function scrapeFailureResponse(error: unknown): ScrapeFailureResponse {
   if (
     error instanceof TargetDnsUnavailableError ||
     error instanceof ScrapeDeadlineError ||
-    error instanceof ScrapeResourceLeakError
+    error instanceof BrowserResourceLeakError
   ) {
     return {
       status: SCRAPE_FAILURE_STATUS[error.code],
       body: { error: error.message, code: error.code },
       logAs:
-        error instanceof ScrapeResourceLeakError
+        error instanceof BrowserResourceLeakError
           ? "Scrape resource leak:"
           : undefined,
     };

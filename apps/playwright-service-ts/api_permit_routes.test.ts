@@ -5,7 +5,7 @@ import { createApp, readServiceConfig, type ServiceDeps } from "./api";
 import { BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS } from "./browser_batch_fetch";
 import type { BrowserPool, ContextBundle } from "./browser_context";
 import { Semaphore } from "./browser_resources";
-import { ScrapeResourceLeakError } from "./scrape_lifecycle";
+import { BrowserResourceLeakError } from "./permit_lease";
 
 // Route-level permit accounting (AGENTIC-3758). The invariant: a page permit
 // is held exactly as long as a browser context may be live, and a request
@@ -147,7 +147,7 @@ test("bug 1 (batch): a createContext leak keeps the page permit and frees the ba
   const browsers = scriptedBrowsers();
   const pageSemaphore = new Semaphore(2);
   browsers.next.push(async () => {
-    throw new ScrapeResourceLeakError(new Error("context.close failed"));
+    throw new BrowserResourceLeakError(new Error("context.close failed"));
   });
   await withApp(
     {
@@ -320,6 +320,31 @@ test("bug 4b: /health never opens a context beyond MAX_CONCURRENT_PAGES", async 
     );
   } finally {
     pageSemaphore.release();
+    pageSemaphore.release();
+  }
+});
+
+test("/health under saturation still reports a disconnected browser as unhealthy", async () => {
+  const browsers = scriptedBrowsers(false);
+  const pageSemaphore = new Semaphore(1);
+  await pageSemaphore.acquire();
+  try {
+    await withApp(
+      {
+        maxConcurrentPages: 1,
+        browsers: browsers.pool,
+        pageSemaphore,
+        assertSafeTargetUrl: async () => {},
+      },
+      async (baseUrl) => {
+        assert.deepEqual(await getHealth(baseUrl), {
+          status: 503,
+          body: { status: "unhealthy", error: "Browser is not connected" },
+        });
+        assert.equal(browsers.created(), 0);
+      },
+    );
+  } finally {
     pageSemaphore.release();
   }
 });
