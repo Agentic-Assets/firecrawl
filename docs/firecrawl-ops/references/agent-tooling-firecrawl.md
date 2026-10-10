@@ -16,7 +16,7 @@ This repo keeps the local Firecrawl tool layer separate from any one agent model
    - MCP: `scripts/firecrawl-ops/firecrawl_mcp.sh`.
 
 3. **Agent adapters**
-   - Cursor can read `.cursor/mcp.json` and `.cursor/skills/` when configured to use project settings.
+   - Cursor can read `.cursor/mcp.json` when configured to use project settings, and the user-level skills at `~/.cursor/skills` that `sync_agent_skills.sh` links.
    - Other MCP-capable agents can call `scripts/firecrawl-ops/firecrawl_mcp.sh` directly.
    - Codex/Claude-style agents can read `.agents/skills/firecrawl-local-api/SKILL.md`.
    - User-level installs are synced by `scripts/firecrawl-ops/sync_agent_skills.sh`.
@@ -153,7 +153,7 @@ If the client does not run from the repo root, use the absolute path:
 Cursor is just one consumer of the reusable wrapper:
 
 - `.cursor/mcp.json`: registers `firecrawl-local`.
-- `.cursor/skills/firecrawl-local-api/SKILL.md`: optional project guidance for Cursor agents.
+- `~/.cursor/skills/firecrawl-local-api`: Cursor-native guidance, a symlink created by `sync_agent_skills.sh` to the user-level copy of `.agents/skills/firecrawl-local-api`. The repo-level `.cursor/skills/` copy was removed in June 2026, so only `.cursor/mcp.json` is tracked.
 
 For the Cursor SDK, do not assume project settings are loaded. Local SDK agents default to no ambient setting sources. Use one of these explicit patterns:
 
@@ -206,7 +206,9 @@ scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 
 An apply requires the explicit approvals and confirmations shown by that
 command. Put the provider key in `OPENAI_API_KEY`. The `gateway` profile uses
-Vercel AI Gateway; `budget` and `escalated` use OpenRouter.
+Vercel AI Gateway and also sets `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` for the
+one bounded structured-output retry described in `model-routing.md`;
+`budget` and `escalated` use OpenRouter with no fallback.
 
 ## Good Agent Prompts
 

@@ -1,21 +1,26 @@
 import { NoObjectGeneratedError } from "ai";
 import { vi } from "vitest";
 
-const {
-  generateObjectMock,
-  getModelMock,
-  getModelByNameMock,
-  structuredOutputConfig,
-} = vi.hoisted(() => ({
-  generateObjectMock: vi.fn(),
-  getModelMock: vi.fn(() => ({
-    modelId: "deepseek/deepseek-v4-flash-0731",
-  })),
-  getModelByNameMock: vi.fn((modelName: string) => ({ modelId: modelName })),
-  structuredOutputConfig: {} as {
-    MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK?: string;
-  },
-}));
+const { generateObjectMock, getModelMock, structuredOutputConfig } = vi.hoisted(
+  () => ({
+    generateObjectMock: vi.fn(),
+    // The configured fallback is the only call that bypasses MODEL_NAME.
+    getModelMock: vi.fn(
+      (
+        modelName: string,
+        _provider?: string,
+        options?: { ignoreModelOverride?: boolean },
+      ) => ({
+        modelId: options?.ignoreModelOverride
+          ? modelName
+          : "deepseek/deepseek-v4-flash-0731",
+      }),
+    ),
+    structuredOutputConfig: {} as {
+      MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK?: string;
+    },
+  }),
+);
 
 vi.mock("ai", async importOriginal => ({
   ...(await importOriginal<typeof import("ai")>()),
@@ -30,7 +35,6 @@ vi.mock("../../../config", () => ({ config: structuredOutputConfig }));
 
 vi.mock("../../../lib/generic-ai", () => ({
   getModel: getModelMock,
-  getModelByName: getModelByNameMock,
 }));
 
 import { performSummary } from "./llmExtract";
@@ -114,7 +118,9 @@ describe("performSummary structured-output compatibility", () => {
       "Example Domain is for documentation examples.",
     );
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
   });
 
   it("retries an invalid primary result once with the configured explicit fallback", async () => {
@@ -136,9 +142,10 @@ describe("performSummary structured-output compatibility", () => {
       "Example Domain is for documentation examples.",
     );
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
-    expect(getModelByNameMock).toHaveBeenCalledWith(
+    expect(getModelMock).toHaveBeenCalledWith(
       "deepseek/deepseek-v4-pro-0813",
       "openai",
+      { ignoreModelOverride: true },
     );
     expect(generateObjectMock.mock.calls[1][0].model).toMatchObject({
       modelId: "deepseek/deepseek-v4-pro-0813",
@@ -164,9 +171,10 @@ describe("performSummary structured-output compatibility", () => {
       "Example Domain is for documentation examples.",
     );
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
-    expect(getModelByNameMock).toHaveBeenCalledWith(
+    expect(getModelMock).toHaveBeenCalledWith(
       "deepseek/deepseek-v4-pro-0813",
       "openai",
+      { ignoreModelOverride: true },
     );
   });
 
@@ -273,7 +281,9 @@ describe("performSummary structured-output compatibility", () => {
       "exceeded the model's maximum output length",
     );
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
   });
 
   it("keeps the upstream SyntaxError for code-fenced output when no fallback is configured", async () => {
@@ -284,7 +294,9 @@ describe("performSummary structured-output compatibility", () => {
     ).rejects.toBeInstanceOf(SyntaxError);
 
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
   });
 
   it("does not retry a failed provider request with the structured-output fallback", async () => {
@@ -298,7 +310,9 @@ describe("performSummary structured-output compatibility", () => {
     ).rejects.toThrow("rate limit");
 
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
   });
 
   it("propagates a configured fallback failure", async () => {
@@ -324,7 +338,9 @@ describe("performSummary structured-output compatibility", () => {
 
     expect(result.summary).toBeUndefined();
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
   });
 
   it("keeps the ordinary rate-limit retry when no fallback is configured", async () => {
@@ -344,6 +360,8 @@ describe("performSummary structured-output compatibility", () => {
       "Example Domain is for documentation examples.",
     );
     expect(generateObjectMock).toHaveBeenCalledTimes(2);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
   });
 });

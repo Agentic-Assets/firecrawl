@@ -13,7 +13,7 @@ import {
   createPromptInjectionGuardLimiter,
 } from "./promptInjectionGuard";
 import { parseMarkdown } from "../../../lib/html-to-markdown";
-import { getModel, getModelByName } from "../../../lib/generic-ai";
+import { getModel } from "../../../lib/generic-ai";
 import { config } from "../../../config";
 import { TokenUsage } from "../../../controllers/v1/types";
 import type { SmartScrapeResult } from "./smartScrape";
@@ -599,19 +599,17 @@ export async function extractData({
     });
 
     try {
-      const {
-        extract: fallbackExtract,
-        warning: fallbackWarning,
-        totalUsage: fallbackUsage,
-      } = await generateCompletions({
-        ...smartScrapeGenerationOptions,
-        model: getModelByName(fallbackModelName, "openai"),
-        retryModel: undefined,
-        // A compatibility transaction is bounded to the primary request plus
-        // this single explicit fallback request for invalid structured output.
-        disableInternalRateLimitRetry: true,
-        disableInternalObjectRepair: true,
-      });
+      const { extract: fallbackExtract, warning: fallbackWarning } =
+        await generateCompletions({
+          ...smartScrapeGenerationOptions,
+          model: getModel(fallbackModelName, "openai", {
+            ignoreModelOverride: true,
+          }),
+          // A compatibility transaction is bounded to the primary request plus
+          // this single explicit fallback request for invalid structured output.
+          disableInternalRateLimitRetry: true,
+          disableInternalObjectRepair: true,
+        });
       const fallbackResult = resolveStructuredResult(
         fallbackExtract,
         resultSchema,
@@ -620,7 +618,6 @@ export async function extractData({
       if (fallbackResult !== undefined) {
         extract = fallbackExtract;
         warning = fallbackWarning;
-        totalUsage = fallbackUsage;
         resolvedStructuredResult = fallbackResult;
         logger.info("Structured-output fallback succeeded", {
           fallbackModelName,

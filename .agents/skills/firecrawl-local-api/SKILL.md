@@ -27,7 +27,7 @@ Use this skill to call the local Firecrawl API directly or through the Firecrawl
 | `POST /v2/map` | works | URL discovery. |
 | `POST /v2/crawl` + `GET /v2/crawl/:id` | works | Async crawl with status polling. Use the helper's bounded `crawl --wait`, not CLI `--wait`. |
 | `POST /v2/batch/scrape` + `GET /v2/batch/scrape/:id` | works | Async scrape of many URLs. |
-| `POST /v2/parse` | works | Multipart upload for local HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS. PDF parser options include `mode` and `maxPages`. |
+| `POST /v2/parse` | works | Multipart upload for local HTML/PDF/DOCX/DOC/ODT/RTF/XLSX/XLS. PDF parser options include `mode` and `maxPages`; `pages` (deprecated alias `pageMarkdown`), `blocks`, and `pageMarkers` need a Fire PDF response the local Docling adapter does not return, so they fail explicitly. |
 | `POST /v2/extract` + `GET /v2/extract/:id` | legacy, works with schema | Async structured extraction. The API deprecates this route in favor of `/v2/scrape` with a `json` format object; do not start new workflows on it. |
 | `POST /v2/crawl/params-preview` | works | LLM-backed natural-language crawl options. |
 | `GET /v2/team/queue-status` | works | Local queue visibility. |
@@ -48,9 +48,9 @@ With the explicit output directory above, the smoke matrix writes JSON and Markd
 
 ## Not Configured Locally
 
-- `POST /v2/browser`, `GET /v2/browser`, and `POST /v2/browser/:sessionId/execute`: need `HANGAR_URL` (upstream renamed `BROWSER_SERVICE_URL`).
+- `POST /v2/browser`, `GET /v2/browser`, and `POST /v2/browser/:sessionId/execute` (and their `/v2/interact` aliases): need `HANGAR_URL` (upstream replaced `BROWSER_SERVICE_*`). Compose does not pass it to `api`, so root `.env` alone is not enough.
 - `POST /v2/agent`: needs `EXTRACT_V3_BETA_URL`; otherwise it returns an explicit HTTP 503 configuration gate.
-- Scrape `actions`, screenshot formats, and scrape-browser interaction: need Fire Engine or browser-service support.
+- Scrape `actions` and screenshot formats: need Fire Engine (the bundled playwright engine does not support them). Scrape interact and the browser routes need Hangar.
 - Prompt-only extract/schema generation may fail on weaker budget models; provide an explicit schema.
 - Summary, JSON extraction, query, params-preview, and other AI formats fail until model env is configured.
 
@@ -81,10 +81,10 @@ This human-only transition changes the running Firecrawl API container's model e
 For OpenRouter and Vercel AI Gateway, put the provider key in `OPENAI_API_KEY`. The profiles set:
 
 - `budget` and `escalated`: `OPENAI_BASE_URL=https://openrouter.ai/api/v1`.
-- `gateway`: `OPENAI_BASE_URL=https://ai-gateway.vercel.sh/v1` with `MODEL_NAME=deepseek/deepseek-v4-flash-0731`.
-- `gateway-pro`: the same Vercel base with `MODEL_NAME=deepseek/deepseek-v4-pro-0813`.
+- `gateway`: `OPENAI_BASE_URL=https://ai-gateway.vercel.sh/v1` with `MODEL_NAME=deepseek/deepseek-v4-flash-0731` and `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=deepseek/deepseek-v4-pro-0813`.
+- `gateway-pro`: the same Vercel base with `MODEL_NAME=deepseek/deepseek-v4-pro-0813` and no fallback.
 
-Use DeepSeek V4 Flash as the primary low-cost model. Escalate to `deepseek/deepseek-v4-pro-0813` for noisy pages, low-confidence fields, or repeated malformed output. If LLM-backed calls fail, check API logs for provider/model errors before blaming the endpoint.
+Use DeepSeek V4 Flash as the primary low-cost model. The API itself makes one bounded retry on the fallback model when structured summary or JSON output is missing, schema-invalid, or truncated, and never for provider, auth, quota, or policy failures. Beyond that, moving to `gateway-pro` for noisy pages, low-confidence fields, or repeated malformed output is an operator-handoff decision, not an automatic escalation. If LLM-backed calls fail, check API logs for provider/model errors before blaming the endpoint.
 
 ## CLI Patterns
 
@@ -158,7 +158,7 @@ It runs the upstream `firecrawl-mcp` package against `FIRECRAWL_API_URL=http://l
 Cursor is only one optional adapter:
 
 - `.cursor/mcp.json` registers `firecrawl-local` by calling `scripts/firecrawl-ops/firecrawl_mcp.sh`.
-- `.cursor/skills/firecrawl-local-api/SKILL.md` gives Cursor/Composer local API guidance.
+- `~/.cursor/skills/firecrawl-local-api` (symlinked by `sync_agent_skills.sh`) gives Cursor/Composer the same local API guidance; there is no repo-level `.cursor/skills/` copy.
 - `docs/firecrawl-ops/references/agent-tooling-firecrawl.md` explains the reusable MCP/CLI/API layer separately from Cursor Composer.
 - `scripts/firecrawl-ops/sync_agent_skills.sh` copies these repo skills into `~/.agents/skills` and symlinks them into user-level agent skill folders.
 
@@ -256,7 +256,7 @@ Named OCR profiles live in `scripts/firecrawl-ops/pdf_ocr_profiles.json`. List t
 
 For local agents, parse errors are now more meaningful: OCR capacity returns `SCRAPE_PDF_OCR_BACKPRESSURE` / HTTP 429, Docling timeouts return `SCRAPE_PDF_OCR_TIMEOUT` / HTTP 504, and publisher-boilerplate or mostly-empty OCR output returns `SCRAPE_PDF_LOW_QUALITY` / HTTP 422 instead of a normal-looking success. Successful responses may include stable `data.metadata.pdfOcr` with the active profile, settings fingerprint, resolved Docling options, page-boundary source, compact per-page summaries, boilerplate metrics/families, table/figure JSON signals, and low-quality gate settings.
 
-OCR-mode FirePDF cache is intentionally bypassed so local OCR canaries do not reuse output from an older profile/settings fingerprint.
+OCR-mode FirePDF cache is intentionally bypassed (when `FIRE_PDF_BASE_URL` is the local adapter) so local OCR canaries do not reuse output from an older profile/settings fingerprint.
 
 Run `scripts/firecrawl-ops/local_firepdf_ocr.sh settings` to inspect the historical tuning surface, but do not export those values or use start/restart aliases from an agent workflow. Use `scripts/firecrawl-ops/local_firepdf_ocr.sh doctor --smoke-pdf ./report.pdf` for an end-to-end route check. For a saved comparison matrix with per-PDF recommendations, page chunks, and QA reports:
 

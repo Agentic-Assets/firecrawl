@@ -17,23 +17,19 @@ The API's default model path uses OpenAI-compatible settings:
   scrape requesting both summary and JSON can make up to two fallback calls)
 - `MODEL_EMBEDDING_NAME`: optional embedding model id
 
-Use the guarded operator handoff from the repo root to inspect the local default
-Vercel AI Gateway profile:
-Agents may request a body-free plan from the repo root:
+Agents may request a body-free plan for the local default Vercel AI Gateway
+profile from the repo root:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 ```
 
-After reviewing the plan, only a human operator may use the attested `--apply`
-path. Agent surfaces must never apply it. If `.env` is missing, use the minimal
-human-owned root template in `LOCAL_DEVELOPMENT_GUIDE.md`; do not use
-`apps/api/.env.example` as a Docker Compose contract.
 The plan does not change configuration. After review, only a human operator
 may use the attested `--apply` path. Agent surfaces must never apply it. If
 `.env` is missing, use the minimal human-owned root template in
-`LOCAL_DEVELOPMENT_GUIDE.md`; do not use `apps/api/.env.example` as a Docker
-Compose contract.
+`LOCAL_DEVELOPMENT_GUIDE.md`, which must contain `OPENAI_BASE_URL`,
+`MODEL_NAME`, and `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` exactly once each; do
+not use `apps/api/.env.example` as a Docker Compose contract.
 
 ## Default routing policy
 

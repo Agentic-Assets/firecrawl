@@ -1,13 +1,13 @@
 import { NoObjectGeneratedError } from "ai";
 import { vi } from "vitest";
 
-const { structuredOutputConfig, generateCompletionsMock, getModelByNameMock } =
+const { structuredOutputConfig, generateCompletionsMock, getModelMock } =
   vi.hoisted(() => ({
     structuredOutputConfig: {} as {
       MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK?: string;
     },
     generateCompletionsMock: vi.fn(),
-    getModelByNameMock: vi.fn((modelName: string) => ({ modelId: modelName })),
+    getModelMock: vi.fn((modelName: string) => ({ modelId: modelName })),
   }));
 
 vi.mock("../../transformers/llmExtract", async importOriginal => ({
@@ -16,8 +16,7 @@ vi.mock("../../transformers/llmExtract", async importOriginal => ({
 }));
 
 vi.mock("../../../../lib/generic-ai", () => ({
-  getModel: vi.fn((modelName: string) => ({ modelId: modelName })),
-  getModelByName: getModelByNameMock,
+  getModel: getModelMock,
 }));
 
 vi.mock("../../../../config", () => ({ config: structuredOutputConfig }));
@@ -160,7 +159,9 @@ describe("extractData structured-output compatibility", () => {
     expect(result.extractedDataArray).toEqual([directResult]);
     expect(result.warning).toBeUndefined();
     expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
   });
 
   it("retries once with the configured explicit fallback after an invalid result", async () => {
@@ -180,13 +181,13 @@ describe("extractData structured-output compatibility", () => {
     expect(result.extractedDataArray).toEqual([directResult]);
     expect(result.warning).toBeUndefined();
     expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
-    expect(getModelByNameMock).toHaveBeenCalledWith(
+    expect(getModelMock).toHaveBeenCalledWith(
       "deepseek/deepseek-v4-pro-0813",
       "openai",
+      { ignoreModelOverride: true },
     );
     expect(generateCompletionsMock.mock.calls[1][0]).toMatchObject({
       model: { modelId: "deepseek/deepseek-v4-pro-0813" },
-      retryModel: undefined,
       disableInternalRateLimitRetry: true,
       disableInternalObjectRepair: true,
       options: { schema },
@@ -205,9 +206,10 @@ describe("extractData structured-output compatibility", () => {
     expect(result.extractedDataArray).toEqual([directResult]);
     expect(result.warning).toBeUndefined();
     expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
-    expect(getModelByNameMock).toHaveBeenCalledWith(
+    expect(getModelMock).toHaveBeenCalledWith(
       "deepseek/deepseek-v4-pro-0813",
       "openai",
+      { ignoreModelOverride: true },
     );
   });
 
@@ -299,7 +301,9 @@ describe("extractData structured-output compatibility", () => {
 
     expect(result.extractedDataArray).toEqual([undefined]);
     expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
-    expect(getModelByNameMock).not.toHaveBeenCalled();
+    expect(getModelMock).not.toHaveBeenCalledWith(expect.anything(), "openai", {
+      ignoreModelOverride: true,
+    });
     expect(generateCompletionsMock.mock.calls[0][0]).toMatchObject({
       disableInternalRateLimitRetry: true,
       disableInternalObjectRepair: true,
