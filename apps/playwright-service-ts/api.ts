@@ -1,1030 +1,209 @@
-import express, { Request, Response } from "express";
-import { chromium as stealthChromium } from "playwright-extra";
-import {
-  Browser,
-  BrowserContext,
-  Route,
-  Request as PlaywrightRequest,
-  Page,
-} from "playwright";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import express, { type Express, Request, Response } from "express";
 import dotenv from "dotenv";
-import UserAgent from "user-agents";
-import { getError } from "./helpers/get_error";
-import { isInternalHost, TargetDnsUnavailableError } from "./target_dns";
+import { createBrowserBatchFetchHandler } from "./browser_batch_route";
+import { type BrowserPool, createBrowserPool } from "./browser_context";
+import { Semaphore } from "./browser_resources";
 import {
-  parseScrapeTiming,
-  PLAYWRIGHT_DEADLINE_GRACE_MS,
-  runScrapeLifecycle,
-  ScrapeClientGoneError,
-  ScrapeDeadlineError,
-  ScrapeResourceLeakError,
-} from "./scrape_lifecycle";
-import { ScrapeStartPacer, scrapeStartIntervalMs } from "./scrape_start_pacer";
-import { Server, RequestError } from "proxy-chain";
-import {
-  BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
-  BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS,
-  BROWSER_BATCH_FETCH_MAX_TOTAL_RESPONSE_BYTES,
-  parseBrowserBatchFetchInput,
-} from "./browser_batch_fetch";
-import {
-  HardTimeoutError,
-  Semaphore,
-  cleanupBrowserResources,
-  withHardTimeout,
-} from "./browser_resources";
-import {
+  assertC10BrowserListenerConfiguration,
   createC10BrowserListener,
   readC10BrowserListenerConfig,
 } from "./c10_browser_listener";
-
-// Register stealth plugin before any launch call.
-stealthChromium.use(StealthPlugin());
+import { createScrapeHandler } from "./scrape_route";
+import { ScrapeStartPacer, scrapeStartIntervalMs } from "./scrape_start_pacer";
+import {
+  type AssertSafeTargetUrl,
+  assertSafeTargetUrl,
+  startSsrfProxy,
+} from "./target_guard";
 
 dotenv.config();
-// Opt-in global spacing of /scrape context allocations (default 0 = off).
-const SCRAPE_START_INTERVAL_MS = scrapeStartIntervalMs();
-const scrapeStartPacer = new ScrapeStartPacer(SCRAPE_START_INTERVAL_MS);
 
-const app = express();
-const port = process.env.PORT || 3003;
+const readFlag = (value: string | undefined): boolean =>
+  (value || "False").toUpperCase() === "TRUE";
+const readPositiveInt = (value: string | undefined, fallback: number): number =>
+  Math.max(1, Number.parseInt(value ?? String(fallback), 10) || fallback);
 
-app.use("/browser-batch-fetch", express.json({ limit: "600kb" }));
-app.use(express.json());
+export type ServiceConfig = Readonly<{
+  port: string | number;
+  blockMedia: boolean;
+  maxConcurrentPages: number;
+  maxConcurrentBrowserBatches: number;
+  allowLocalWebhooks: boolean;
+  proxy: Readonly<{
+    server: string | null;
+    username: string | null;
+    password: string | null;
+    country: string | undefined;
+  }>;
+  /** Opt-in global spacing of /scrape context allocations (default 0 = off). */
+  scrapeStartIntervalMs: number;
+}>;
 
-const BLOCK_MEDIA =
-  (process.env.BLOCK_MEDIA || "False").toUpperCase() === "TRUE";
-const MAX_CONCURRENT_PAGES = Math.max(
-  1,
-  Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? "10", 10) || 10,
-);
-const MAX_CONCURRENT_BROWSER_BATCHES = Math.max(
-  1,
-  Number.parseInt(process.env.MAX_CONCURRENT_BROWSER_BATCHES ?? "1", 10) || 1,
-);
-const ALLOW_LOCAL_WEBHOOKS =
-  (process.env.ALLOW_LOCAL_WEBHOOKS || "False").toUpperCase() === "TRUE";
-
-const PROXY_SERVER = process.env.PROXY_SERVER || null;
-const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
-const c10ListenerConfig = readC10BrowserListenerConfig(process.env);
-
-class InsecureConnectionError extends Error {
-  constructor(
-    public readonly blockedUrl: string,
-    reason: string,
-  ) {
-    super(`Blocked insecure target URL "${blockedUrl}": ${reason}`);
-    this.name = "InsecureConnectionError";
-  }
-}
-
-const assertSafeTargetUrl = async (
-  urlString: string,
-  allowLocalWebhooks = ALLOW_LOCAL_WEBHOOKS,
-): Promise<void> => {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(urlString);
-  } catch {
-    throw new InsecureConnectionError(urlString, "URL is invalid");
-  }
-  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-    throw new InsecureConnectionError(
-      urlString,
-      `unsupported protocol "${parsedUrl.protocol}"`,
-    );
-  }
-  if (!allowLocalWebhooks && (await isInternalHost(parsedUrl.hostname))) {
-    throw new InsecureConnectionError(
-      urlString,
-      "resolves to a private/internal address",
-    );
-  }
-};
-
-const buildUpstreamProxyUrl = (): string | undefined => {
-  if (!PROXY_SERVER) return undefined;
-  const server = PROXY_SERVER.includes("://")
-    ? PROXY_SERVER
-    : `http://${PROXY_SERVER}`;
-  const url = new URL(server);
-  if (PROXY_USERNAME) url.username = PROXY_USERNAME;
-  if (PROXY_PASSWORD) url.password = PROXY_PASSWORD;
-  return url.toString();
-};
-
-const startSSRFProxy = async (): Promise<number> => {
-  const server = new Server({
-    port: 0,
-    host: "127.0.0.1",
-    prepareRequestFunction: async ({ hostname }) => {
-      if (!ALLOW_LOCAL_WEBHOOKS) {
-        let internal: boolean;
-        try {
-          internal = await isInternalHost(hostname);
-        } catch (error) {
-          if (error instanceof TargetDnsUnavailableError) {
-            // Unclassifiable targets are never forwarded.
-            throw new RequestError(
-              "Blocked: target DNS validation is unavailable",
-              502,
-            );
-          }
-          throw error;
-        }
-        if (internal) {
-          throw new RequestError(
-            "Blocked: target resolves to a private/internal address",
-            403,
-          );
-        }
-      }
-      return { upstreamProxyUrl: buildUpstreamProxyUrl() };
-    },
-  });
-  await server.listen();
-  return server.port;
-};
-
-let ssrfProxyPort: number;
-
-type ContextSecurityState = {
-  blockedNavigationRequestUrl: string | null;
-  navigationDnsUnavailable: boolean;
-};
-const pageSemaphore = new Semaphore(MAX_CONCURRENT_PAGES);
-const browserBatchSemaphore = new Semaphore(
-  Math.min(MAX_CONCURRENT_BROWSER_BATCHES, MAX_CONCURRENT_PAGES),
-);
-
-const AD_SERVING_DOMAINS = [
-  "doubleclick.net",
-  "adservice.google.com",
-  "googlesyndication.com",
-  "googletagservices.com",
-  "googletagmanager.com",
-  "google-analytics.com",
-  "adsystem.com",
-  "adservice.com",
-  "adnxs.com",
-  "ads-twitter.com",
-  "facebook.net",
-  "fbcdn.net",
-  "amazon-adsystem.com",
-];
-
-interface UrlModel {
-  url: string;
-  wait_after_load?: number;
-  timeout?: number;
-  headers?: { [key: string]: string };
-  check_selector?: string;
-  skip_tls_verification?: boolean;
-}
-
-let browser: Browser;
-
-const initializeBrowser = async () => {
-  browser = await (stealthChromium.launch({
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--no-first-run",
-      "--no-zygote",
-      "--disable-gpu",
-      // Hide automation indicators
-      "--disable-blink-features=AutomationControlled",
-      "--disable-features=IsolateOrigins,site-per-process",
-      "--disable-site-isolation-trials",
-      // More realistic fingerprint
-      "--enable-features=NetworkService,NetworkServiceLogging",
-      "--lang=en-US,en",
-    ],
-  }) as unknown as Promise<Browser>);
-};
-
-// Belt-and-suspenders JS patches injected into every page context before
-// any site script runs. These cover vectors the stealth plugin may miss.
-const STEALTH_INIT_SCRIPT = `
-  (() => {
-    // webdriver flag
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-
-    // Chrome object expected by CF bot checks
-    if (!window.chrome) {
-      Object.defineProperty(window, 'chrome', {
-        writable: true, enumerable: true, configurable: false,
-        value: {
-          app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' } },
-          runtime: {},
-          loadTimes: () => {},
-          csi: () => {},
-        }
-      });
-    }
-
-    // Realistic plugin list
-    const pluginData = [
-      { name: 'Chrome PDF Plugin',  description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{ type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }] },
-      { name: 'Chrome PDF Viewer',  description: '',                          filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: '' }] },
-      { name: 'Native Client',      description: '',                          filename: 'internal-nacl-plugin',  mimeTypes: [{ type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' }, { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' }] },
-    ];
-    const fakePlugins = pluginData.map(p => {
-      const mimes = p.mimeTypes.map(m => ({ type: m.type, suffixes: m.suffixes, description: m.description, enabledPlugin: null }));
-      return { name: p.name, description: p.description, filename: p.filename, length: mimes.length, item: (i) => mimes[i], namedItem: (n) => mimes.find(m => m.type === n) || null, [Symbol.iterator]: function*() { yield* mimes; } };
-    });
-    Object.defineProperty(navigator, 'plugins', { get: () => Object.assign(fakePlugins, { item: (i) => fakePlugins[i], namedItem: (n) => fakePlugins.find(p => p.name === n) || null, refresh: () => {}, length: fakePlugins.length, [Symbol.iterator]: function*() { yield* fakePlugins; } }) });
-
-    // Languages
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-
-    // Hardware concurrency and device memory (match a standard laptop)
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-    Object.defineProperty(navigator, 'deviceMemory',        { get: () => 8 });
-
-    // Permissions — notifications must return the real permission state
-    const _origPermQuery = window.navigator.permissions.query.bind(navigator.permissions);
-    window.navigator.permissions.query = (params) =>
-      (params.name === 'notifications')
-        ? Promise.resolve({ state: Notification.permission, onchange: null })
-        : _origPermQuery(params);
-  })();
-`;
-
-const isMainFrameNavigation = (request: PlaywrightRequest): boolean => {
-  if (!request.isNavigationRequest()) return false;
-  try {
-    return request.frame().parentFrame() === null;
-  } catch {
-    return false;
-  }
-};
-
-const createContext = async (
-  skipTlsVerification: boolean = false,
-  userAgentOverride?: string,
-  allowLocalWebhooks = ALLOW_LOCAL_WEBHOOKS,
-  deadlineAt?: number,
-): Promise<{
-  context: BrowserContext;
-  securityState: ContextSecurityState;
-}> => {
-  const userAgent =
-    userAgentOverride ||
-    new UserAgent({ deviceCategory: "desktop" }).toString();
-  const viewport = { width: 1280, height: 800 };
-  const securityState: ContextSecurityState = {
-    blockedNavigationRequestUrl: null,
-    navigationDnsUnavailable: false,
-  };
-
-  const contextOptions: any = {
-    userAgent,
-    viewport,
-    ignoreHTTPSErrors: skipTlsVerification,
-    serviceWorkers: "block",
-    locale: "en-US",
-    timezoneId: "America/New_York",
-  };
-
-  contextOptions.proxy = {
-    server: `http://127.0.0.1:${ssrfProxyPort}`,
-  };
-
-  const newContext = await browser.newContext(contextOptions);
-
-  const setup = async () => {
-    // Inject stealth patches before any page script runs.
-    await newContext.addInitScript(STEALTH_INIT_SCRIPT);
-
-    if (BLOCK_MEDIA) {
-      await newContext.route(
-        "**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}",
-        async (route: Route, request: PlaywrightRequest) => {
-          await route.abort();
-        },
-      );
-    }
-
-    // Intercept all requests to avoid loading ads
-    await newContext.route(
-      "**/*",
-      async (route: Route, request: PlaywrightRequest) => {
-        const requestUrlString = request.url();
-        try {
-          await assertSafeTargetUrl(requestUrlString, allowLocalWebhooks);
-        } catch (error) {
-          if (error instanceof TargetDnsUnavailableError) {
-            // Fail closed: an unclassifiable host is never fetched. Only a
-            // main-frame navigation makes the whole scrape retryable.
-            if (isMainFrameNavigation(request)) {
-              securityState.navigationDnsUnavailable = true;
-            }
-            console.warn(
-              `Blocked request (DNS unavailable): ${requestUrlString}`,
-            );
-            return route.abort("namenotresolved");
-          }
-          if (error instanceof InsecureConnectionError) {
-            if (request.isNavigationRequest()) {
-              securityState.blockedNavigationRequestUrl = requestUrlString;
-            }
-            console.warn(`Blocked request: ${requestUrlString}`);
-            return route.abort("blockedbyclient");
-          }
-          throw error;
-        }
-
-        const hostname = new URL(requestUrlString).hostname.toLowerCase();
-
-        if (AD_SERVING_DOMAINS.some((domain) => hostname.includes(domain))) {
-          console.log(hostname);
-          return route.abort();
-        }
-        return route.continue();
-      },
-    );
-  };
-
-  try {
-    if (deadlineAt === undefined) {
-      await setup();
-    } else {
-      const remainingMs = deadlineAt - Date.now();
-      if (remainingMs <= 0) throw new ScrapeDeadlineError("work");
-      try {
-        await withHardTimeout(
-          setup(),
-          remainingMs,
-          "Browser scrape context setup exceeded its deadline",
-        );
-      } catch (error) {
-        if (error instanceof HardTimeoutError) {
-          throw new ScrapeDeadlineError("work");
-        }
-        throw error;
-      }
-    }
-  } catch (error) {
-    // Never hand back (or silently drop) a half-configured context, which
-    // could lack the per-request SSRF route guard above.
-    const closed = await cleanupBrowserResources(
-      null,
-      () => newContext.close(),
-      () => {},
-    );
-    throw closed ? error : new ScrapeResourceLeakError(error);
-  }
-
-  return { context: newContext, securityState };
-};
-
-const shutdownBrowser = async () => {
-  if (browser) {
-    await browser.close();
-  }
-};
-
-const isValidUrl = (urlString: string): boolean => {
-  try {
-    new URL(urlString);
-    return true;
-  } catch (_) {
-    return false;
-  }
-};
-
-const scrapePage = async (
-  page: Page,
-  url: string,
-  waitUntil: "load" | "networkidle",
-  waitAfterLoad: number,
-  timeout: number,
-  checkSelector: string | undefined,
-  securityState: ContextSecurityState,
-) => {
-  console.log(
-    `Navigating to ${url} with waitUntil: ${waitUntil} and timeout: ${timeout}ms`,
-  );
-  let response;
-  try {
-    response = await page.goto(url, { waitUntil, timeout });
-  } catch (error) {
-    // A blocked private destination wins over a DNS outage in the same chain.
-    if (securityState.blockedNavigationRequestUrl) {
-      throw new InsecureConnectionError(
-        securityState.blockedNavigationRequestUrl,
-        "navigation to private/internal resource is not allowed",
-      );
-    }
-    if (securityState.navigationDnsUnavailable) {
-      throw new TargetDnsUnavailableError();
-    }
-    throw error;
-  }
-
-  if (waitAfterLoad > 0) {
-    await page.waitForTimeout(waitAfterLoad);
-  }
-
-  if (checkSelector) {
-    try {
-      await page.waitForSelector(checkSelector, { timeout });
-    } catch (error) {
-      throw new Error("Required selector not found");
-    }
-  }
-
-  let headers = null,
-    content = await page.content(),
-    landedUrl = page.url();
-  let ct: string | undefined = undefined;
-  if (response) {
-    headers = await response.allHeaders();
-    ct = Object.entries(headers).find(
-      ([key]) => key.toLowerCase() === "content-type",
-    )?.[1];
-    if (
-      ct &&
-      (ct.toLowerCase().includes("application/json") ||
-        ct.toLowerCase().includes("text/plain"))
-    ) {
-      content = (await response.body()).toString("utf8"); // TODO: determine real encoding
-      landedUrl = response.url();
-    }
-  }
-
+/** Reads the service environment once. Throws on an invalid start interval. */
+export function readServiceConfig(env: NodeJS.ProcessEnv): ServiceConfig {
   return {
-    content,
-    // Where the returned content came from: page.url() for rendered HTML
-    // (covers HTTP 3xx and client-side redirects), response.url() for raw
-    // JSON/text bodies, which come from the page.goto response.
-    url: landedUrl,
-    status: response ? response.status() : null,
-    headers,
-    contentType: ct,
+    port: env.PORT || 3003,
+    blockMedia: readFlag(env.BLOCK_MEDIA),
+    maxConcurrentPages: readPositiveInt(env.MAX_CONCURRENT_PAGES, 10),
+    maxConcurrentBrowserBatches: readPositiveInt(
+      env.MAX_CONCURRENT_BROWSER_BATCHES,
+      1,
+    ),
+    allowLocalWebhooks: readFlag(env.ALLOW_LOCAL_WEBHOOKS),
+    proxy: {
+      server: env.PROXY_SERVER || null,
+      username: env.PROXY_USERNAME || null,
+      password: env.PROXY_PASSWORD || null,
+      country: env.PROXY_COUNTRY,
+    },
+    // "" keeps the default (0) without falling back to ambient process.env.
+    scrapeStartIntervalMs: scrapeStartIntervalMs(
+      env.SCRAPE_START_INTERVAL_MS ?? "",
+    ),
   };
-};
+}
 
-app.get("/health", async (req: Request, res: Response) => {
-  try {
-    if (!browser) {
-      await initializeBrowser();
-    }
+export type ServiceDeps = Readonly<{
+  config: ServiceConfig;
+  browsers: BrowserPool;
+  /** Shared with the C10 listener, so it is created by the caller. */
+  pageSemaphore: Semaphore;
+  assertSafeTargetUrl: AssertSafeTargetUrl;
+}>;
 
-    const { context: testContext } = await createContext();
-    const testPage = await testContext.newPage();
-    await testPage.close();
-    await testContext.close();
+/** Builds the public app without starting the browser, proxy, or listeners. */
+export function createApp(deps: ServiceDeps): Express {
+  const { config, browsers, pageSemaphore } = deps;
+  const app = express();
+  app.use("/browser-batch-fetch", express.json({ limit: "600kb" }));
+  app.use(express.json());
 
-    res.status(200).json({
-      status: "healthy",
-      maxConcurrentPages: MAX_CONCURRENT_PAGES,
-      activePages: MAX_CONCURRENT_PAGES - pageSemaphore.getAvailablePermits(),
-    });
-  } catch (error) {
-    console.error("Health check failed:", error);
-    res.status(503).json({
-      status: "unhealthy",
-      error: error instanceof Error ? error.message : "Unknown error occurred",
-    });
-  }
-});
-
-app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
-  const batchDeadlineAt =
-    Date.now() + BROWSER_BATCH_FETCH_MAX_TOTAL_DURATION_MS;
-  let input;
-  let batchPermitAcquired = false;
-  let pagePermitAcquired = false;
-  try {
-    input = parseBrowserBatchFetchInput(req.body);
-    // The parser already requires every request to share the bootstrap origin,
-    // so resolve that one host once. This endpoint always rejects local/private
-    // destinations, even when legacy /scrape local-webhook support is enabled.
-    await withHardTimeout(
-      assertSafeTargetUrl(input.bootstrapUrl, false),
-      Math.max(1, batchDeadlineAt - Date.now()),
-      "Browser batch target validation exceeded its hard deadline",
-    );
-  } catch (error) {
-    if (error instanceof TargetDnsUnavailableError) {
-      // Still refused, but retryable rather than a malformed request.
-      return res
-        .status(503)
-        .json({ error: error.message, code: "TARGET_DNS_UNAVAILABLE" });
-    }
-    return res.status(400).json({
-      error:
-        error instanceof Error
-          ? error.message
-          : "Invalid browser batch request",
-    });
-  }
-
-  try {
-    if (!browser) {
-      await withHardTimeout(
-        initializeBrowser(),
-        Math.max(1, batchDeadlineAt - Date.now()),
-        "Browser batch initialization exceeded its hard deadline",
-      );
-    }
-    await browserBatchSemaphore.acquire(
-      Math.max(1, batchDeadlineAt - Date.now()),
-    );
-    batchPermitAcquired = true;
-    await pageSemaphore.acquire(Math.max(1, batchDeadlineAt - Date.now()));
-    pagePermitAcquired = true;
-  } catch (error) {
-    if (batchPermitAcquired && !pagePermitAcquired) {
-      browserBatchSemaphore.release();
-    }
-    console.error("Browser batch admission error:", error);
-    return res
-      .status(503)
-      .json({ error: "Browser batch service is busy or unavailable" });
-  }
-
-  let requestContext: BrowserContext | null = null;
-  let page: Page | null = null;
-  let lateContextOwnsPermit = false;
-  let permitsReleased = false;
-  const releaseBatchPermits = (): void => {
-    if (permitsReleased) return;
-    permitsReleased = true;
-    pageSemaphore.release();
-    browserBatchSemaphore.release();
-  };
-  try {
-    let contextBundle;
+  app.get("/health", async (req: Request, res: Response) => {
     try {
-      contextBundle = await withHardTimeout(
-        createContext(false, undefined, false),
-        Math.max(1, batchDeadlineAt - Date.now()),
-        "Browser batch context creation exceeded its hard deadline",
-        async (lateBundle) => {
-          await cleanupBrowserResources(
-            null,
-            () => lateBundle.context.close(),
-            releaseBatchPermits,
-          );
-        },
-      );
+      if (!browsers.getBrowser()) {
+        await browsers.initializeBrowser();
+      }
+
+      const { context: testContext } = await browsers.createContext({
+        allowLocalTargets: config.allowLocalWebhooks,
+      });
+      const testPage = await testContext.newPage();
+      await testPage.close();
+      await testContext.close();
+
+      res.status(200).json({
+        status: "healthy",
+        maxConcurrentPages: config.maxConcurrentPages,
+        activePages:
+          config.maxConcurrentPages - pageSemaphore.getAvailablePermits(),
+      });
     } catch (error) {
-      if (error instanceof HardTimeoutError) {
-        // The context may still arrive. Its late cleanup owns the permits; if
-        // it never arrives or cannot close, capacity remains quarantined until
-        // the service is restarted.
-        lateContextOwnsPermit = true;
-      }
-      throw error;
-    }
-    requestContext = contextBundle.context;
-    page = await withHardTimeout(
-      requestContext.newPage(),
-      Math.max(1, batchDeadlineAt - Date.now()),
-      "Browser batch page creation exceeded its hard deadline",
-    );
-    const bootstrapTimeoutMs = Math.min(
-      input.timeoutMs,
-      Math.max(1, batchDeadlineAt - Date.now()),
-    );
-    const bootstrapResponse = await withHardTimeout(
-      page.goto(input.bootstrapUrl, {
-        waitUntil: "load",
-        timeout: bootstrapTimeoutMs,
-      }),
-      Math.max(
-        1,
-        Math.min(batchDeadlineAt - Date.now(), bootstrapTimeoutMs + 5_000),
-      ),
-      "Browser batch bootstrap navigation exceeded its hard deadline",
-    );
-    const bootstrapStatus = bootstrapResponse?.status() ?? 0;
-    const requestedOrigin = new URL(input.bootstrapUrl).origin;
-    const finalOrigin = new URL(page.url()).origin;
-    if (finalOrigin !== requestedOrigin) {
-      return res.status(502).json({
-        error: "Bootstrap redirected outside its requested origin",
-        bootstrapStatus,
+      console.error("Health check failed:", error);
+      res.status(503).json({
+        status: "unhealthy",
+        error: error instanceof Error ? error.message : "Unknown error occurred",
       });
     }
-    if (input.waitAfterLoadMs > 0) {
-      await withHardTimeout(
-        page.waitForTimeout(input.waitAfterLoadMs),
-        Math.max(
-          1,
-          Math.min(batchDeadlineAt - Date.now(), input.waitAfterLoadMs + 5_000),
-        ),
-        "Browser batch post-load wait exceeded its hard deadline",
-      );
-    }
-    if (bootstrapStatus < 200 || bootstrapStatus >= 400) {
-      return res.status(502).json({
-        error: `Bootstrap returned HTTP ${bootstrapStatus}`,
-        bootstrapStatus,
-      });
-    }
-
-    const responses: Array<{
-      status: number;
-      contentType: string | null;
-      body: string;
-    }> = [];
-    let totalResponseBytes = 0;
-    for (const request of input.requests) {
-      const remainingBatchMs = batchDeadlineAt - Date.now();
-      if (remainingBatchMs <= 0) {
-        throw new Error("Browser batch fetch exceeded its aggregate deadline");
-      }
-      const evaluateOperation = page.evaluate(
-        ({ request, timeoutMs, maxResponseBytes }) => {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), timeoutMs);
-          return fetch(request.url, {
-            method: request.method,
-            headers: request.headers,
-            body: request.body,
-            credentials: "same-origin",
-            cache: "no-store",
-            redirect: "manual",
-            signal: controller.signal,
-          })
-            .then((fetched) => {
-              const declaredLength = Number(
-                fetched.headers.get("content-length"),
-              );
-              if (
-                Number.isFinite(declaredLength) &&
-                declaredLength > maxResponseBytes
-              ) {
-                throw new Error(
-                  "Browser batch response exceeds the per-response byte limit",
-                );
-              }
-              if (!fetched.body) {
-                return {
-                  status: fetched.status,
-                  contentType: fetched.headers.get("content-type"),
-                  body: "",
-                };
-              }
-              const reader = fetched.body.getReader();
-              const decoder = new TextDecoder();
-              let bytes = 0;
-              let body = "";
-              const readNext = (): Promise<{
-                status: number;
-                contentType: string | null;
-                body: string;
-              }> =>
-                reader.read().then((chunk) => {
-                  if (chunk.done) {
-                    body += decoder.decode();
-                    return {
-                      status: fetched.status,
-                      contentType: fetched.headers.get("content-type"),
-                      body,
-                    };
-                  }
-                  bytes += chunk.value.byteLength;
-                  if (bytes > maxResponseBytes) {
-                    return reader.cancel().then(() => {
-                      throw new Error(
-                        "Browser batch response exceeds the per-response byte limit",
-                      );
-                    });
-                  }
-                  body += decoder.decode(chunk.value, { stream: true });
-                  return readNext();
-                });
-              return readNext();
-            })
-            .finally(() => {
-              clearTimeout(timer);
-            });
-        },
-        {
-          request,
-          timeoutMs: Math.min(input.timeoutMs, remainingBatchMs),
-          maxResponseBytes: BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
-        },
-      );
-      const response = await withHardTimeout(
-        evaluateOperation,
-        Math.max(1, Math.min(remainingBatchMs, input.timeoutMs + 5_000)),
-        "Browser batch page evaluation exceeded its hard deadline",
-      );
-      totalResponseBytes += Buffer.byteLength(response.body, "utf8");
-      if (totalResponseBytes > BROWSER_BATCH_FETCH_MAX_TOTAL_RESPONSE_BYTES) {
-        throw new Error(
-          "Browser batch responses exceed the aggregate byte limit",
-        );
-      }
-      responses.push(response);
-    }
-    return res.json({ bootstrapStatus, responses });
-  } catch (error) {
-    if (error instanceof InsecureConnectionError) {
-      return res.status(403).json({ error: error.message });
-    }
-    console.error("Browser batch fetch error:", error);
-    return res.status(502).json({ error: "Browser batch fetch failed" });
-  } finally {
-    if (!lateContextOwnsPermit) {
-      await cleanupBrowserResources(
-        page ? () => page!.close() : null,
-        requestContext ? () => requestContext!.close() : null,
-        releaseBatchPermits,
-      );
-    }
-  }
-});
-
-const createC10Listener = () =>
-  createC10BrowserListener({
-    config: c10ListenerConfig,
-    maxConcurrentPages: MAX_CONCURRENT_PAGES,
-    proxyServer: PROXY_SERVER,
-    proxyCountry: process.env.PROXY_COUNTRY,
-    pageSemaphore,
-    getBrowser: () => browser,
-    initializeBrowser,
-    createContext,
-    assertSafeTargetUrl,
   });
 
-// Applies caller headers to a fresh context/page before navigation.
-const applyScrapeHeaders = async (
-  requestContext: BrowserContext,
-  page: Page,
-  url: string,
-  headers: { [key: string]: string },
-): Promise<void> => {
-  // A Cookie header passed through setExtraHTTPHeaders is sent on the first
-  // request but DROPPED on any redirect hop (the browser regenerates the
-  // redirected request from its cookie jar, which is empty). Authenticated
-  // sites that 302 (e.g. to /signin when the session looks absent) then
-  // land on the login page. Seed the cookie jar instead so Chromium re-sends
-  // it on every request, including redirects — matching what a raw HTTP
-  // client does.
-  const cookieHeader = Object.entries(headers).find(
-    ([k]) => k.toLowerCase() === "cookie",
-  )?.[1];
-  if (cookieHeader) {
-    // Scope cookies to the registrable domain (e.g. ".example.com"), not
-    // host-only. Authenticated pages often 302 across sibling subdomains
-    // (example.com -> app.example.com); a host-only cookie set for the
-    // original host would not be sent to the redirect target, leaving the
-    // request unauthenticated. The Cookie header carries no domain info, so
-    // we apply the eTLD+1 — broad enough to follow the redirect, and these
-    // are first-party cookies being returned to their own origin anyway.
-    let cookieDomain: string | undefined;
-    try {
-      const host = new URL(url).hostname;
-      const labels = host.split(".");
-      cookieDomain = labels.length > 2 ? labels.slice(-2).join(".") : host;
-    } catch {
-      cookieDomain = undefined;
-    }
-    type SeedCookie = {
-      name: string;
-      value: string;
-      url?: string;
-      domain?: string;
-      path?: string;
-    };
-    const cookies = cookieHeader
-      .split(";")
-      .map((pair) => pair.trim())
-      .filter(Boolean)
-      .map((pair): SeedCookie | null => {
-        const eq = pair.indexOf("=");
-        if (eq === -1) return null;
-        const name = pair.slice(0, eq).trim();
-        const value = pair.slice(eq + 1).trim();
-        return cookieDomain
-          ? { name, value, domain: `.${cookieDomain}`, path: "/" }
-          : { name, value, url };
-      })
-      .filter((c): c is SeedCookie => c !== null);
-    if (cookies.length > 0) {
-      try {
-        await requestContext.addCookies(cookies);
-      } catch (error) {
-        console.warn("Failed to seed cookies from Cookie header:", error);
-      }
-    }
-  }
-
-  // Remove user-agent (already applied at the context level) and cookie
-  // (now seeded into the jar) before forwarding the rest verbatim.
-  const filteredHeaders = Object.fromEntries(
-    Object.entries(headers).filter(([k]) => {
-      const lower = k.toLowerCase();
-      return lower !== "user-agent" && lower !== "cookie";
+  app.post(
+    "/browser-batch-fetch",
+    createBrowserBatchFetchHandler({
+      browsers,
+      pageSemaphore,
+      browserBatchSemaphore: new Semaphore(
+        Math.min(config.maxConcurrentBrowserBatches, config.maxConcurrentPages),
+      ),
+      assertSafeTargetUrl: deps.assertSafeTargetUrl,
     }),
   );
-  if (Object.keys(filteredHeaders).length > 0) {
-    await page.setExtraHTTPHeaders(filteredHeaders);
-  }
-};
 
-app.post("/scrape", async (req: Request, res: Response) => {
-  // One deadline covers validation, queueing, pacing, setup and the scrape.
-  const startedAt = Date.now();
-  const {
-    url,
-    wait_after_load: requestedWaitAfterLoad,
-    timeout: requestedTimeout,
-    headers,
-    check_selector,
-    skip_tls_verification = false,
-  }: UrlModel = req.body;
-  const timing = parseScrapeTiming(requestedTimeout, requestedWaitAfterLoad);
-  const timeout = timing.ok ? timing.timeout : requestedTimeout;
-  const wait_after_load = timing.ok
-    ? timing.waitAfterLoad
-    : requestedWaitAfterLoad;
-
-  console.log(`================= Scrape Request =================`);
-  console.log(`URL: ${url}`);
-  console.log(`Wait After Load: ${wait_after_load}`);
-  console.log(`Timeout: ${timeout}`);
-  console.log(`Headers: ${headers ? JSON.stringify(headers) : "None"}`);
-  console.log(`Check Selector: ${check_selector ? check_selector : "None"}`);
-  console.log(`Skip TLS Verification: ${skip_tls_verification}`);
-  console.log(`==================================================`);
-
-  if (!url) {
-    return res.status(400).json({ error: "URL is required" });
-  }
-
-  if (!isValidUrl(url)) {
-    return res.status(400).json({ error: "Invalid URL" });
-  }
-
-  if (!timing.ok) {
-    return res.status(400).json({ error: timing.error });
-  }
-
-  if (!PROXY_SERVER) {
-    console.warn(
-      "⚠️ WARNING: No proxy server provided. Your IP address may be blocked.",
-    );
-  }
-
-  const deadlineAt = startedAt + timing.timeout;
-  const clientGone = new AbortController();
-  res.on("close", () => {
-    if (!res.writableFinished) clientGone.abort();
-  });
-
-  try {
-    const userAgentOverride = headers
-      ? Object.entries(headers).find(
-          ([k]) => k.toLowerCase() === "user-agent",
-        )?.[1]
-      : undefined;
-
-    await runScrapeLifecycle({
-      deadlineAt,
-      semaphore: pageSemaphore,
-      signal: clientGone.signal,
-      prepare: async (remainingMs) => {
-        await assertSafeTargetUrl(url);
-        remainingMs();
-        if (!browser) await initializeBrowser();
-      },
+  const scrapeStartPacer = new ScrapeStartPacer(config.scrapeStartIntervalMs);
+  app.post(
+    "/scrape",
+    createScrapeHandler({
+      browsers,
+      pageSemaphore,
       paceStart:
-        SCRAPE_START_INTERVAL_MS > 0
+        config.scrapeStartIntervalMs > 0
           ? (remainingMs) => scrapeStartPacer.waitForStart(remainingMs)
           : undefined,
-      createContext: () =>
-        createContext(
-          skip_tls_verification,
-          userAgentOverride,
-          ALLOW_LOCAL_WEBHOOKS,
-          deadlineAt,
-        ),
-      createPage: (bundle) => bundle.context.newPage(),
-      closeContext: (bundle) => bundle.context.close(),
-      closePage: (page) => page.close(),
-      work: async (
-        page,
-        { context: requestContext, securityState },
-        remainingMs,
-      ) => {
-        if (headers) {
-          await applyScrapeHeaders(requestContext, page, url, headers);
-        }
-        // Playwright's own timeouts get a short grace past the deadline so
-        // the lifecycle timer always reports the expiry (504).
-        return scrapePage(
-          page,
-          url,
-          "load",
-          timing.waitAfterLoad,
-          remainingMs() + PLAYWRIGHT_DEADLINE_GRACE_MS,
-          check_selector,
-          securityState,
-        );
-      },
-      deliverResult: (result) => {
-        const pageError =
-          result.status !== 200 ? getError(result.status) : undefined;
+      allowLocalTargets: config.allowLocalWebhooks,
+      proxyConfigured: Boolean(config.proxy.server),
+      assertSafeTargetUrl: deps.assertSafeTargetUrl,
+    }),
+  );
 
-        if (!pageError) {
-          console.log(`✅ Scrape successful!`);
-        } else {
-          console.log(
-            `🚨 Scrape failed with status code: ${result.status} ${pageError}`,
-          );
-        }
+  return app;
+}
 
-        res.json({
-          content: result.content,
-          pageStatusCode: result.status,
-          contentType: result.contentType,
-          url: result.url,
-          ...(pageError && { pageError }),
-        });
-      },
+/** Production entrypoint: SSRF proxy, then Chromium, then the listeners. */
+function runService(): void {
+  // Read synchronously so an invalid SCRAPE_START_INTERVAL_MS still fails
+  // while the entry module loads, as it did when these were module constants.
+  const config = readServiceConfig(process.env);
+  const c10ListenerConfig = readC10BrowserListenerConfig(process.env);
+  let browsers: BrowserPool | undefined;
+
+  const start = async () => {
+    // The C10 listener's only failure mode is its configuration check, so a
+    // partial C10 configuration still fails before the proxy or browser starts.
+    assertC10BrowserListenerConfiguration(c10ListenerConfig);
+    const ssrfProxyPort = await startSsrfProxy({
+      allowLocalTargets: config.allowLocalWebhooks,
+      upstream: config.proxy,
     });
-  } catch (error) {
-    if (res.headersSent) {
-      console.error("Scrape error after response delivery:", error);
-      return;
-    }
-    if (error instanceof ScrapeClientGoneError) {
-      console.warn("Scrape abandoned: client disconnected");
-      return;
-    }
-    if (error instanceof InsecureConnectionError) {
-      return res.json({
-        content: "",
-        pageStatusCode: 403,
-        pageError: error.message,
+    const pool = createBrowserPool({
+      blockMedia: config.blockMedia,
+      ssrfProxyPort,
+      assertSafeTargetUrl,
+    });
+    browsers = pool;
+    const pageSemaphore = new Semaphore(config.maxConcurrentPages);
+    const c10Listener = createC10BrowserListener({
+      config: c10ListenerConfig,
+      maxConcurrentPages: config.maxConcurrentPages,
+      proxyServer: config.proxy.server,
+      proxyCountry: config.proxy.country,
+      pageSemaphore,
+      getBrowser: pool.getBrowser,
+      initializeBrowser: pool.initializeBrowser,
+      createContext: pool.createContext,
+      assertSafeTargetUrl,
+    });
+    await pool.initializeBrowser();
+    const app = createApp({
+      config,
+      browsers: pool,
+      pageSemaphore,
+      assertSafeTargetUrl,
+    });
+    app.listen(config.port, () => {
+      console.log(`Server is running on port ${config.port}`);
+    });
+    if (c10Listener.enabled && c10Listener.port) {
+      // Docker publishes this listener only as 127.0.0.1:<host-port>; binding
+      // all interfaces is required for the container port-forwarder, while the
+      // signed capability and host key protect sibling-container access.
+      c10Listener.app.listen(c10Listener.port, "0.0.0.0", () => {
+        console.log("C10 v3 browser listener is running behind Docker loopback publication");
       });
     }
-    if (error instanceof TargetDnsUnavailableError) {
-      // Retryable: the target could not be classified, so nothing was fetched.
-      return res
-        .status(503)
-        .json({ error: error.message, code: "TARGET_DNS_UNAVAILABLE" });
-    }
-    if (error instanceof ScrapeDeadlineError) {
-      const admission = error.phase === "admission";
-      return res.status(admission ? 503 : 504).json({
-        error: error.message,
-        code: admission ? "SCRAPE_ADMISSION_TIMEOUT" : "SCRAPE_WORK_TIMEOUT",
-      });
-    }
-    if (error instanceof ScrapeResourceLeakError) {
-      console.error("Scrape resource leak:", error);
-      return res
-        .status(503)
-        .json({ error: error.message, code: "SCRAPE_RESOURCE_LEAK" });
-    }
-    console.error("Scrape error:", error);
-    res
-      .status(500)
-      .json({ error: "An error occurred while fetching the page." });
-  }
-});
-
-const start = async () => {
-  const c10Listener = createC10Listener();
-  ssrfProxyPort = await startSSRFProxy();
-  await initializeBrowser();
-  app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
+  };
+  start().catch((error) => {
+    console.error("Failed to start server:", error);
+    process.exit(1);
   });
-  if (c10Listener.enabled && c10Listener.port) {
-    // Docker publishes this listener only as 127.0.0.1:<host-port>; binding
-    // all interfaces is required for the container port-forwarder, while the
-    // signed capability and host key protect sibling-container access.
-    c10Listener.app.listen(c10Listener.port, "0.0.0.0", () => {
-      console.log("C10 v3 browser listener is running behind Docker loopback publication");
-    });
-  }
-};
-start().catch((error) => {
-  console.error("Failed to start server:", error);
-  process.exit(1);
-});
 
-if (require.main === module) {
   process.on("SIGINT", () => {
-    shutdownBrowser().then(() => {
+    (browsers ? browsers.close() : Promise.resolve()).then(() => {
       console.log("Browser closed");
       process.exit(0);
     });
   });
+}
+
+// Importing this module (tests, tooling) builds nothing and binds no ports.
+if (require.main === module) {
+  runService();
 }

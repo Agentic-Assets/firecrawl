@@ -13,6 +13,13 @@ export class ScrapeDeadlineError extends Error {
     super(`Browser scrape ${phase} deadline exceeded`);
     this.name = "ScrapeDeadlineError";
   }
+
+  // Prototype getters, not own fields, so logged errors print unchanged.
+  get code(): "SCRAPE_ADMISSION_TIMEOUT" | "SCRAPE_WORK_TIMEOUT" {
+    return this.phase === "admission"
+      ? "SCRAPE_ADMISSION_TIMEOUT"
+      : "SCRAPE_WORK_TIMEOUT";
+  }
 }
 
 /** The caller disconnected; no response can be delivered. */
@@ -31,6 +38,10 @@ export class ScrapeResourceLeakError extends Error {
   constructor(public readonly cause: unknown) {
     super("Browser scrape resource cleanup was not confirmed");
     this.name = "ScrapeResourceLeakError";
+  }
+
+  get code(): "SCRAPE_RESOURCE_LEAK" {
+    return "SCRAPE_RESOURCE_LEAK";
   }
 }
 

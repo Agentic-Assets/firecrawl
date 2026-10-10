@@ -30,9 +30,7 @@ type C10PageSemaphore = Readonly<{
 }>;
 
 type C10ContextFactory = (
-  skipTlsVerification?: boolean,
-  userAgentOverride?: string,
-  allowLocalWebhooks?: boolean,
+  options: Readonly<{ allowLocalTargets: boolean; skipTlsVerification?: boolean }>,
 ) => Promise<Readonly<{ context: BrowserContext }>>;
 
 export type C10BrowserListenerConfig = Readonly<{
@@ -419,11 +417,10 @@ export function createC10BrowserListener(
       const leaseStartMonotonicNs = process.hrtime.bigint().toString();
       const queueMs = Date.now() - queuedAt;
       const startedAt = Date.now();
-      const contextBundle = await dependencies.createContext(
-        config.allowTestLocalTargets,
-        undefined,
-        config.allowTestLocalTargets,
-      );
+      const contextBundle = await dependencies.createContext({
+        allowLocalTargets: config.allowTestLocalTargets,
+        skipTlsVerification: config.allowTestLocalTargets,
+      });
       requestContext = contextBundle.context;
       page = await requestContext.newPage();
       const cdp = await requestContext.newCDPSession(page);
