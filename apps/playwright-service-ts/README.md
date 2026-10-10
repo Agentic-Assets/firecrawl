@@ -46,6 +46,13 @@ curl -X POST http://localhost:3000/scrape \
 
 Add `PLAYWRIGHT_MICROSERVICE_URL=http://localhost:3003/scrape` to `/apps/api/.env` to configure the API to use this Playwright microservice for scraping operations.
 
+## `/scrape` response
+
+A successful `/scrape` reply includes `content`, `pageStatusCode`, and
+`contentType`, plus `url`: the final landed URL after HTTP and client-side
+redirects (the response URL for raw JSON or text bodies). Firecrawl's API
+treats `url` as optional, so an older sidecar image still works.
+
 ## `/scrape` deadline and failure codes
 
 An explicit `timeout` is the whole request budget: target validation, waiting
@@ -93,6 +100,8 @@ unpaced. Pacing occurs after acquiring a browser-page permit and before
 allocating a context. Its waiting time consumes the request deadline; a
 request that expires while paced returns `503` `SCRAPE_ADMISSION_TIMEOUT` and
 releases its permit without starting a browser context. Invalid values stop
-the service at startup. The batch endpoint and the C10 listener are
+the service at startup. In this fork's `docker-compose.yaml` the variable is
+not forwarded to `playwright-service`; add it under that service's
+`environment` to use it. The batch endpoint and the C10 listener are
 unaffected. Choose any nonzero interval from measured provider behavior and
 resource limits before deploying it.

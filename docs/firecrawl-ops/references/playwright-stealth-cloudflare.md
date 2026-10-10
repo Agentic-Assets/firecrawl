@@ -36,9 +36,10 @@ Add to `"dependencies"`:
 `puppeteer-extra-plugin-stealth` patches the most common automation detection vectors
 at the V8 level before any page JavaScript runs.
 
-The Dockerfile for this service uses plain `npm install`, so adding these to
-`package.json` is sufficient — no lockfile update, no Dockerfile change. Rebuild
-the container after editing `package.json`.
+The Dockerfile for this service runs `pnpm install --frozen-lockfile`, so adding
+these to `package.json` also requires a matching `pnpm-lock.yaml` update (both
+packages are in the checked-in lockfile today). Rebuild the container after
+editing either file.
 
 ## Fix 2: Rewrite playwright-service api.ts to use stealth engine
 
@@ -201,7 +202,8 @@ bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
 The playwright-service rebuild takes the longest (~2-3 minutes) because it installs
-`playwright-extra` and the stealth plugin via `npm install`.
+dependencies with pnpm, including `playwright-extra` and the stealth plugin, and
+downloads Chromium.
 
 ## Testing
 
@@ -235,7 +237,9 @@ registration errors.
 
 Fixes 1 and 2 modify `apps/playwright-service-ts/` — this is a service that upstream
 also maintains. On the next upstream sync, check whether `api.ts` has been updated and
-re-apply the stealth changes if the file is overwritten. Fix 3 (`engines/index.ts`) is
+re-apply the stealth changes if the file is overwritten. The fork's own `/scrape`
+deadline, DNS, and pacer behavior also lives in that directory (`scrape_lifecycle.ts`,
+`target_dns.ts`, `scrape_start_pacer.ts`) and is documented in its `README.md`. Fix 3 (`engines/index.ts`) is
 in `apps/api/` — same caution applies.
 
 A future upstream PR to make playwright stealth-capable would make these patches
