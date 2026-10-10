@@ -51,6 +51,15 @@ function invalidStructuredOutputError() {
   });
 }
 
+function truncatedStructuredOutputError() {
+  return new NoObjectGeneratedError({
+    response: {} as any,
+    usage: {} as any,
+    finishReason: "length" as any,
+    text: '{"summary": "Example Domain is',
+  });
+}
+
 function summaryMeta() {
   const childLogger = {
     debug: vi.fn(),
@@ -78,6 +87,8 @@ function summaryMeta() {
 describe("performSummary structured-output compatibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drop queued once-responses a failing test may leave behind.
+    generateObjectMock.mockReset();
     structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK = undefined;
   });
 
@@ -148,6 +159,44 @@ describe("performSummary structured-output compatibility", () => {
       "deepseek/deepseek-v4-pro-0813",
       "openai",
     );
+  });
+
+  it("retries a truncated (output-limit) primary once with the configured fallback", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      "deepseek/deepseek-v4-pro-0813";
+    generateObjectMock
+      .mockRejectedValueOnce(truncatedStructuredOutputError())
+      .mockResolvedValueOnce(
+        completion({
+          summary: "Example Domain is for documentation examples.",
+        }),
+      );
+
+    const result = await performSummary(summaryMeta(), {
+      markdown: "# Example Domain",
+    } as any);
+
+    expect(result.summary).toBe(
+      "Example Domain is for documentation examples.",
+    );
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(generateObjectMock.mock.calls[1][0].model).toMatchObject({
+      modelId: "deepseek/deepseek-v4-pro-0813",
+    });
+  });
+
+  it("fails cleanly after one fallback when primary and fallback both truncate", async () => {
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      "deepseek/deepseek-v4-pro-0813";
+    generateObjectMock
+      .mockRejectedValueOnce(truncatedStructuredOutputError())
+      .mockRejectedValueOnce(truncatedStructuredOutputError());
+
+    await expect(
+      performSummary(summaryMeta(), { markdown: "# Example Domain" } as any),
+    ).rejects.toThrow("exceeded the model's maximum output length");
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not fabricate a summary when the fallback is also invalid", async () => {

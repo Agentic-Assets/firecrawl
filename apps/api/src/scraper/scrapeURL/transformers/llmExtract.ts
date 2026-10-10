@@ -116,7 +116,10 @@ export class LLMRefusalError extends Error {
  * compatibility failure, not a provider request failure.
  */
 export function isInvalidStructuredOutputError(error: unknown): boolean {
-  return NoObjectGeneratedError.isInstance(error);
+  return (
+    NoObjectGeneratedError.isInstance(error) ||
+    error instanceof StructuredOutputLimitError
+  );
 }
 
 function hasUsableSummary(extract: unknown): extract is { summary: string } {
@@ -209,6 +212,15 @@ export function isTruncatedJson(text: string): boolean {
 // partial JSON is not returned.
 const OUTPUT_LIMIT_MESSAGE =
   "the extracted data exceeded the model's maximum output length, so nothing was returned. Try a schema or prompt that asks for fewer items.";
+
+// Fork: a typed output-limit failure, so a truncated (missing) structured
+// response still triggers the configured one-time structured-output fallback.
+export class StructuredOutputLimitError extends Error {
+  constructor() {
+    super(OUTPUT_LIMIT_MESSAGE);
+    this.name = "StructuredOutputLimitError";
+  }
+}
 
 /**
  * Produce the JSON Schema that is actually supplied to an LLM provider.
@@ -961,7 +973,7 @@ export async function generateCompletions({
       } else if (NoObjectGeneratedError.isInstance(error)) {
         logger.warn("No object generated", { error });
         if (error.finishReason === "length") {
-          throw new Error(OUTPUT_LIMIT_MESSAGE);
+          throw new StructuredOutputLimitError();
         }
         if (
           error.text &&
@@ -985,7 +997,10 @@ export async function generateCompletions({
             logger.error("Failed to parse JSON from error text", {
               error: lastError.message,
             });
-            throw lastError;
+            // Fork: in a bounded compatibility transaction, report unparseable
+            // fenced output as invalid structured output so the caller's
+            // one-time fallback runs instead of failing on a SyntaxError.
+            throw disableInternalObjectRepair ? error : lastError;
           }
         } else {
           throw lastError;
