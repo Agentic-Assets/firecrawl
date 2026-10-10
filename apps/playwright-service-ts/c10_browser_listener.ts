@@ -7,7 +7,7 @@ import {
 } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "playwright";
 
-import { cleanupBrowserResources } from "./browser_resources";
+import { withHardTimeout } from "./browser_resources";
 import {
   C10_BROWSER_INTERNAL_PATH,
   C10_JLL_ADMISSION_LANE,
@@ -16,18 +16,25 @@ import {
   type C10AdmissionLane,
   publicKeyId,
   signC10Evidence,
-  type C10SidecarCard,
 } from "./c10_browser_internal";
-import { c10TerminalEvidence } from "./c10_browser_response";
 import {
-  executeC10BrowserPageFetch,
-  type C10BrowserPageResponse,
-} from "./c10_browser_execution";
+  c10TerminalEvidence,
+  isC10SuccessfulBrowserResponse,
+} from "./c10_browser_response";
+import { executeC10BrowserPageFetch } from "./c10_browser_execution";
+import {
+  PermitLease,
+  type PermitSource,
+  awaitAllocation,
+  releaseAfterClose,
+} from "./permit_lease";
 
-type C10PageSemaphore = Readonly<{
-  acquire(timeoutMs?: number): Promise<void>;
-  release(): void;
-}>;
+/**
+ * Part of every card's window kept for closing its page and context, so a
+ * navigation that times out at the work deadline is still cleaned up (and
+ * its capacity returned) before the hard deadline.
+ */
+const C10_CLEANUP_RESERVE_MAX_MS = 2_000;
 
 type C10ContextFactory = (
   options: Readonly<{ allowLocalTargets: boolean; skipTlsVerification?: boolean }>,
@@ -52,7 +59,7 @@ export type C10BrowserListenerDependencies = Readonly<{
   maxConcurrentPages: number;
   proxyServer: string | null;
   proxyCountry: string | undefined;
-  pageSemaphore: C10PageSemaphore;
+  pageSemaphore: PermitSource;
   getBrowser(): Browser | undefined;
   initializeBrowser(): Promise<void>;
   createContext: C10ContextFactory;
@@ -183,120 +190,6 @@ function validC10HostTransportKey(
   );
 }
 
-function expectedC10ResponseContentType(card: C10SidecarCard): string {
-  return card.stage === "enumeration" ? "application/json" : "text/html";
-}
-
-function normalizedContentType(value: string | null): string | null {
-  if (!value) return null;
-  return value.split(";", 1)[0]?.trim().toLowerCase() || null;
-}
-
-function normalizedC10MemberRoute(value: unknown, card: C10SidecarCard): string | null {
-  if (typeof value !== "string") return null;
-  try {
-    const route = new URL(value, `https://${card.allowedHost}`);
-    if (
-      route.protocol !== "https:" ||
-      route.host !== card.allowedHost ||
-      route.search ||
-      route.hash
-    ) return null;
-    return route.toString().replace(/\/$/, "");
-  } catch {
-    return null;
-  }
-}
-
-/**
- * An absent or empty GraphQL `errors` array means no errors; any other value
- * (non-empty, null, or a non-array) is a failure.  Python `_verify_evidence`
- * and the JLL selection rule share this contract via golden vectors.
- */
-export function hasNoC10GraphqlErrors(payload: object): boolean {
-  if (!Object.prototype.hasOwnProperty.call(payload, "errors")) return true;
-  const errors = (payload as { errors?: unknown }).errors;
-  return Array.isArray(errors) && errors.length === 0;
-}
-
-/** Reject GraphQL transport successes that do not prove the sealed cohort is current. */
-export function hasC10EnumerationMembership(
-  card: C10SidecarCard,
-  bodyBase64: string,
-): boolean {
-  if (card.stage !== "enumeration" || !Array.isArray(card.expectedMemberRoutes)) {
-    return false;
-  }
-  try {
-    const payload: unknown = JSON.parse(Buffer.from(bodyBase64, "base64").toString("utf8"));
-    if (!payload || typeof payload !== "object" || Array.isArray(payload) || !hasNoC10GraphqlErrors(payload)) {
-      return false;
-    }
-    const data = (payload as { data?: unknown }).data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
-    const properties = (data as { properties?: unknown }).properties;
-    if (!properties || typeof properties !== "object" || Array.isArray(properties)) return false;
-    const items = (properties as { items?: unknown }).items;
-    if (!Array.isArray(items) || items.length === 0) return false;
-    const observed = new Set(
-      items.map((item) => (
-        item && typeof item === "object"
-          ? normalizedC10MemberRoute((item as { pageUrl?: unknown }).pageUrl, card)
-          : null
-      )),
-    );
-    return card.expectedMemberRoutes.every((route) => observed.has(route));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Admission-lane enumeration success: a well-formed native GraphQL envelope
- * with at least sixteen candidates.  Membership is recomputed and enforced by
- * the coordinator from this signed body before any member capability exists.
- */
-export function hasC10AdmissionEnumerationCandidates(bodyBase64: string): boolean {
-  try {
-    const payload: unknown = JSON.parse(Buffer.from(bodyBase64, "base64").toString("utf8"));
-    if (!payload || typeof payload !== "object" || Array.isArray(payload) || !hasNoC10GraphqlErrors(payload)) {
-      return false;
-    }
-    const data = (payload as { data?: unknown }).data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
-    const properties = (data as { properties?: unknown }).properties;
-    if (!properties || typeof properties !== "object" || Array.isArray(properties)) return false;
-    const items = (properties as { items?: unknown }).items;
-    return Array.isArray(items) && items.length >= 16;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Success evidence is intentionally stricter than transport completion. A
- * result has to be the reviewed route, status, response representation, and
- * challenge-free before the listener signs it.
- */
-export function isC10SuccessfulBrowserResponse(
-  card: C10SidecarCard,
-  response: C10BrowserPageResponse,
-  challengeDetected: boolean,
-): boolean {
-  return (
-    response.status >= 200 &&
-    response.status < 300 &&
-    response.finalUrl === card.url &&
-    normalizedContentType(response.contentType) ===
-      expectedC10ResponseContentType(card) &&
-    !challengeDetected &&
-    (card.stage !== "enumeration" ||
-      (card.expectedMemberRoutes === null
-        ? hasC10AdmissionEnumerationCandidates(response.bodyBase64)
-        : hasC10EnumerationMembership(card, response.bodyBase64)))
-  );
-}
-
 export function createC10BrowserListener(
   dependencies: C10BrowserListenerDependencies,
 ): C10BrowserListener {
@@ -385,13 +278,27 @@ export function createC10BrowserListener(
       input.capability.expiresAtMs,
       input.capability.hostDeadlineAtMs,
     );
+    const workDeadlineAt =
+      deadlineAt -
+      Math.min(C10_CLEANUP_RESERVE_MAX_MS, Math.floor((deadlineAt - queuedAt) / 4));
     const remaining = () => {
-      const value = deadlineAt - Date.now();
+      const value = workDeadlineAt - Date.now();
       if (value < 1) throw new Error("C10 browser hard deadline expired");
       return value;
     };
-    let permitAcquired = false;
-    let lease: { leaseId: string; slot: number } | null = null;
+    const bounded = <T>(
+      operation: () => Promise<T>,
+      closeLate?: (value: T) => Promise<unknown>,
+    ): Promise<T> => {
+      const timeoutMs = remaining();
+      return withHardTimeout(
+        operation(),
+        timeoutMs,
+        "C10 browser hard deadline expired",
+        closeLate,
+      );
+    };
+    let lease: PermitLease | null = null;
     let requestContext: BrowserContext | null = null;
     let page: Page | null = null;
     let evidence: Record<string, unknown> | null = null;
@@ -404,26 +311,41 @@ export function createC10BrowserListener(
       );
       await dependencies.assertSafeTargetUrl(input.card.url, config.allowTestLocalTargets);
       remaining();
-      if (!dependencies.getBrowser()) await dependencies.initializeBrowser();
-      await dependencies.pageSemaphore.acquire(remaining());
-      permitAcquired = true;
+      if (!dependencies.getBrowser()) {
+        await bounded(() => dependencies.initializeBrowser());
+      }
+      lease = await PermitLease.acquire(
+        [{ source: dependencies.pageSemaphore, countsBrowser: true }],
+        remaining,
+      );
       if (
         input.capability.expiresAtMs <= Date.now() ||
         input.capability.hostDeadlineAtMs <= Date.now()
       ) {
         throw new Error("C10 capability expired while queued");
       }
-      lease = pageLeasePool.acquire();
+      const pageLease = pageLeasePool.acquire();
+      lease.add(() => pageLeasePool.release(pageLease.slot), true);
       const leaseStartMonotonicNs = process.hrtime.bigint().toString();
       const queueMs = Date.now() - queuedAt;
       const startedAt = Date.now();
-      const contextBundle = await dependencies.createContext({
-        allowLocalTargets: config.allowTestLocalTargets,
-        skipTlsVerification: config.allowTestLocalTargets,
-      });
+      // A context that outlives the work deadline takes over the lease.
+      const contextBundle = await awaitAllocation(
+        lease,
+        () =>
+          dependencies.createContext({
+            allowLocalTargets: config.allowTestLocalTargets,
+            skipTlsVerification: config.allowTestLocalTargets,
+          }),
+        (allocation) => bounded(() => allocation),
+        (lateBundle) => lateBundle.context.close(),
+      );
       requestContext = contextBundle.context;
-      page = await requestContext.newPage();
-      const cdp = await requestContext.newCDPSession(page);
+      const context = requestContext;
+      // A late page belongs to the context, which the finally block closes.
+      page = await bounded(() => context.newPage(), (latePage) => latePage.close());
+      const requestPage = page;
+      const cdp = await bounded(() => context.newCDPSession(requestPage));
       const network = { observed: false, cacheRead: false };
       cdp.on(
         "Network.responseReceived",
@@ -439,12 +361,12 @@ export function createC10BrowserListener(
             event.response?.fromServiceWorker === true;
         },
       );
-      await cdp.send("Network.enable");
-      await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
-      const browserResponse = await executeC10BrowserPageFetch(
-        page,
-        input.card,
-        deadlineAt,
+      await bounded(() => cdp.send("Network.enable"));
+      await bounded(() =>
+        cdp.send("Network.setCacheDisabled", { cacheDisabled: true }),
+      );
+      const browserResponse = await bounded(() =>
+        executeC10BrowserPageFetch(requestPage, input.card, workDeadlineAt),
       );
       if (!network.observed || network.cacheRead) {
         throw new Error("C10 browser cache evidence is unavailable or contradictory");
@@ -477,7 +399,7 @@ export function createC10BrowserListener(
         contentType: browserResponse.contentType,
         bodyBase64: browserResponse.bodyBase64,
         jobId: randomUUID(),
-        pageLease: lease,
+        pageLease,
         leaseStartMonotonicNs,
         leaseEndMonotonicNs,
         observedActivePages:
@@ -507,19 +429,26 @@ export function createC10BrowserListener(
       console.error("C10 internal browser execution failed");
       executionFailed = true;
     } finally {
-      const remainingCleanupMs = deadlineAt - Date.now();
-      if (remainingCleanupMs > 0) {
-        cleanupConfirmed = await cleanupBrowserResources(
-          page ? () => page!.close() : null,
-          requestContext ? () => requestContext!.close() : null,
-          () => {
-            if (lease) pageLeasePool.release(lease.slot);
-            if (permitAcquired) dependencies.pageSemaphore.release();
-          },
-          remainingCleanupMs,
-        );
+      if (lease === null) {
+        // Nothing was admitted or allocated.
+        cleanupConfirmed = true;
       } else {
-        console.error("C10 v3 deadline exhausted before cleanup; capacity quarantined");
+        const remainingCleanupMs = deadlineAt - Date.now();
+        const closePage = page ? () => page!.close() : null;
+        const closeContext = requestContext ? () => requestContext!.close() : null;
+        if (remainingCleanupMs > 0) {
+          cleanupConfirmed = await lease.settleByRequest(
+            closePage,
+            closeContext,
+            remainingCleanupMs,
+          );
+        } else if (lease.heldByRequest) {
+          // Answer by the deadline, but still close what can be closed: the
+          // background close releases the capacity or quarantines it.
+          console.error("C10 v3 deadline exhausted before cleanup; closing in the background");
+          lease.handOff();
+          void releaseAfterClose(lease, closePage, closeContext);
+        }
       }
     }
     const terminalEvidence = c10TerminalEvidence(

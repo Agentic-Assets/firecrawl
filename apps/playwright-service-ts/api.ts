@@ -1,13 +1,18 @@
 import express, { type Express, Request, Response } from "express";
 import dotenv from "dotenv";
+import type { BrowserContext } from "playwright";
 import { createBrowserBatchFetchHandler } from "./browser_batch_route";
 import { type BrowserPool, createBrowserPool } from "./browser_context";
-import { Semaphore } from "./browser_resources";
+import { Semaphore, withHardTimeout } from "./browser_resources";
 import {
   assertC10BrowserListenerConfiguration,
   createC10BrowserListener,
   readC10BrowserListenerConfig,
 } from "./c10_browser_listener";
+import {
+  PermitLease,
+  awaitAllocation,
+} from "./permit_lease";
 import { createScrapeHandler } from "./scrape_route";
 import { ScrapeStartPacer, scrapeStartIntervalMs } from "./scrape_start_pacer";
 import {
@@ -63,6 +68,80 @@ export function readServiceConfig(env: NodeJS.ProcessEnv): ServiceConfig {
   };
 }
 
+/** Bounds each /health probe step, so a hung probe cannot pin its permit. */
+const HEALTH_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Opens and closes one context and page under a page permit the caller
+ * already holds, so the probe counts against MAX_CONCURRENT_PAGES. The
+ * context is closed even when newPage or page.close fails, and a close that
+ * cannot be confirmed quarantines the permit and fails the probe.
+ */
+async function probeBrowserContext(
+  browsers: BrowserPool,
+  allowLocalTargets: boolean,
+  lease: PermitLease,
+): Promise<void> {
+  let context: BrowserContext | undefined;
+  // A late context allocation may already own (or have quarantined) the
+  // lease; settleByRequest then does nothing and reports false.
+  const settle = (): Promise<boolean> =>
+    lease.settleByRequest(
+      null,
+      context ? () => context!.close() : null,
+      HEALTH_PROBE_TIMEOUT_MS,
+    );
+  try {
+    ({ context } = await awaitAllocation(
+      lease,
+      () => browsers.createContext({ allowLocalTargets }),
+      (allocation) =>
+        withHardTimeout(
+          allocation,
+          HEALTH_PROBE_TIMEOUT_MS,
+          "Health probe context creation timed out",
+        ),
+      (late) => late.context.close(),
+    ));
+    const page = await withHardTimeout(
+      context.newPage(),
+      HEALTH_PROBE_TIMEOUT_MS,
+      "Health probe page creation timed out",
+      (latePage) => latePage.close(),
+    );
+    await withHardTimeout(
+      page.close(),
+      HEALTH_PROBE_TIMEOUT_MS,
+      "Health probe page close timed out",
+    );
+  } catch (error) {
+    await settle();
+    throw error;
+  }
+  if (!(await settle())) {
+    throw new Error("Health probe context close was not confirmed");
+  }
+}
+
+const CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed";
+
+/**
+ * Process policy for unhandled rejections. Node 15+ exits on one by default.
+ * playwright-extra's stealth shim issues CDP calls it never awaits, so a page
+ * closed mid-call (a /health probe, a timed-out navigation) rejects with
+ * Playwright's closed-target error and used to take the whole sidecar down.
+ * That class is benign by construction (the target is already gone): log it
+ * and keep serving. Anything else is rethrown, which keeps Node's default
+ * crash (uncaught exception, exit code 1).
+ */
+export function onUnhandledRejection(reason: unknown): void {
+  if (reason instanceof Error && reason.message.includes(CLOSED_TARGET_MESSAGE)) {
+    console.error("Unhandled closed-target rejection (stealth shim CDP call); continuing:", reason);
+    return;
+  }
+  throw reason;
+}
+
 export type ServiceDeps = Readonly<{
   config: ServiceConfig;
   browsers: BrowserPool;
@@ -84,12 +163,15 @@ export function createApp(deps: ServiceDeps): Express {
         await browsers.initializeBrowser();
       }
 
-      const { context: testContext } = await browsers.createContext({
-        allowLocalTargets: config.allowLocalWebhooks,
-      });
-      const testPage = await testContext.newPage();
-      await testPage.close();
-      await testContext.close();
+      // Probe only with a free page permit, never by waiting: when every
+      // permit is busy, those pages are the live load and the probe would push
+      // the browser past MAX_CONCURRENT_PAGES.
+      const lease = PermitLease.tryAcquire(pageSemaphore);
+      if (lease) {
+        await probeBrowserContext(browsers, config.allowLocalWebhooks, lease);
+      } else if (!browsers.getBrowser()?.isConnected()) {
+        throw new Error("Browser is not connected");
+      }
 
       res.status(200).json({
         status: "healthy",
@@ -139,6 +221,7 @@ export function createApp(deps: ServiceDeps): Express {
 
 /** Production entrypoint: SSRF proxy, then Chromium, then the listeners. */
 function runService(): void {
+  process.on("unhandledRejection", onUnhandledRejection);
   // Read synchronously so an invalid SCRAPE_START_INTERVAL_MS still fails
   // while the entry module loads, as it did when these were module constants.
   const config = readServiceConfig(process.env);

@@ -8,9 +8,9 @@ import {
   runScrapeLifecycle,
   ScrapeClientGoneError,
   ScrapeDeadlineError,
-  ScrapeResourceLeakError,
 } from "./scrape_lifecycle";
 import { fixture, isPhase, tick } from "./helpers/lifecycle_fixture";
+import { BrowserResourceLeakError } from "./permit_lease";
 import { TargetDnsUnavailableError } from "./target_dns";
 
 const never = () => new Promise<never>(() => {});
@@ -104,7 +104,7 @@ test("a late context rejecting with an unconfirmed partial close stays quarantin
     });
   options.deadlineAt = Date.now() + 50;
   await assert.rejects(runScrapeLifecycle(options), ScrapeDeadlineError);
-  rejectContext(new ScrapeResourceLeakError(new Error("setup failed")));
+  rejectContext(new BrowserResourceLeakError(new Error("setup failed")));
   await tick();
   assert.equal(options.semaphore.getAvailablePermits(), 0);
 });
@@ -119,11 +119,11 @@ test("an in-time context failure releases the permit; an unconfirmed partial clo
 
   const leaked = fixture();
   leaked.options.createContext = async () => {
-    throw new ScrapeResourceLeakError(new Error("setup failed"));
+    throw new BrowserResourceLeakError(new Error("setup failed"));
   };
   await assert.rejects(
     runScrapeLifecycle(leaked.options),
-    ScrapeResourceLeakError,
+    BrowserResourceLeakError,
   );
   assert.equal(leaked.options.semaphore.getAvailablePermits(), 0);
 });

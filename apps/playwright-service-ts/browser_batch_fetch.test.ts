@@ -4,11 +4,8 @@ import {
   BROWSER_BATCH_FETCH_MAX_REQUESTS,
   parseBrowserBatchFetchInput,
 } from "./browser_batch_fetch";
-import {
-  Semaphore,
-  cleanupBrowserResources,
-  withHardTimeout,
-} from "./browser_resources";
+import { Semaphore, withHardTimeout } from "./browser_resources";
+import { PermitLease, releaseAfterClose } from "./permit_lease";
 
 function validInput() {
   return {
@@ -145,31 +142,35 @@ test("hard timeout cleans up a resource that resolves after the caller timed out
 });
 
 test("bounded cleanup retains the shared permit after an unconfirmed context close", async () => {
-  let releases = 0;
-  const closed = await cleanupBrowserResources(
+  const semaphore = new Semaphore(1);
+  const lease = await PermitLease.acquire(
+    [{ source: semaphore, countsBrowser: true }],
+    () => 1,
+  );
+  const closed = await releaseAfterClose(
+    lease,
     () => new Promise(() => {}),
     () => new Promise(() => {}),
-    () => {
-      releases += 1;
-    },
     1,
   );
   assert.equal(closed, false);
-  assert.equal(releases, 0);
+  assert.equal(semaphore.getAvailablePermits(), 0);
 });
 
 test("bounded cleanup releases after context close confirms page teardown", async () => {
-  let releases = 0;
-  const closed = await cleanupBrowserResources(
+  const semaphore = new Semaphore(1);
+  const lease = await PermitLease.acquire(
+    [{ source: semaphore, countsBrowser: true }],
+    () => 1,
+  );
+  const closed = await releaseAfterClose(
+    lease,
     () => Promise.reject(new Error("page close failed")),
     async () => {},
-    () => {
-      releases += 1;
-    },
     1,
   );
   assert.equal(closed, true);
-  assert.equal(releases, 1);
+  assert.equal(semaphore.getAvailablePermits(), 1);
 });
 
 test("timed-out semaphore waiter is removed and cannot consume a later permit", async () => {

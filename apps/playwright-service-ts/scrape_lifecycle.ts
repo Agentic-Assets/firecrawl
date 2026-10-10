@@ -2,9 +2,14 @@ import {
   HardTimeoutError,
   Semaphore,
   SemaphoreTimeoutError,
-  cleanupBrowserResources,
+  closeBrowserResources,
   withHardTimeout,
 } from "./browser_resources";
+import {
+  BrowserResourceLeakError,
+  PermitLease,
+  awaitAllocation,
+} from "./permit_lease";
 
 export type ScrapePhase = "admission" | "work";
 
@@ -27,21 +32,6 @@ export class ScrapeClientGoneError extends Error {
   constructor() {
     super("Browser scrape client disconnected");
     this.name = "ScrapeClientGoneError";
-  }
-}
-
-/**
- * A browser resource allocation failed and its partial resource could not be
- * confirmed closed. The lifecycle keeps the page permit quarantined.
- */
-export class ScrapeResourceLeakError extends Error {
-  constructor(public readonly cause: unknown) {
-    super("Browser scrape resource cleanup was not confirmed");
-    this.name = "ScrapeResourceLeakError";
-  }
-
-  get code(): "SCRAPE_RESOURCE_LEAK" {
-    return "SCRAPE_RESOURCE_LEAK";
   }
 }
 
@@ -114,9 +104,9 @@ export function parseScrapeTiming(
 
 /**
  * One budget covers validation, permit queueing, optional pacing, context and
- * page setup, navigation and body reads. Capacity accounting matches
- * /browser-batch-fetch: a permit is released only once its browser resources
- * are confirmed closed (or were never allocated), exactly once.
+ * page setup, navigation and body reads. The page permit is a PermitLease: it
+ * is released only once its browser resources are confirmed closed (or were
+ * never allocated), exactly once, and quarantined on a leak.
  */
 export async function runScrapeLifecycle<C, P, R>(options: {
   deadlineAt: number;
@@ -165,7 +155,7 @@ export async function runScrapeLifecycle<C, P, R>(options: {
         Date.now() >= options.deadlineAt &&
         !(error instanceof ScrapeDeadlineError) &&
         !(error instanceof ScrapeClientGoneError) &&
-        !(error instanceof ScrapeResourceLeakError)
+        !(error instanceof BrowserResourceLeakError)
       ) {
         throw new ScrapeDeadlineError(phase);
       }
@@ -174,10 +164,14 @@ export async function runScrapeLifecycle<C, P, R>(options: {
   };
 
   await bounded(() => options.prepare(remaining));
+  let lease: PermitLease;
   try {
     // The semaphore removes expired waiters itself. Racing an unbounded
     // acquire against a timer would leak the permit it later grants.
-    await options.semaphore.acquire(remaining());
+    lease = await PermitLease.acquire(
+      [{ source: options.semaphore, countsBrowser: true }],
+      remaining,
+    );
   } catch (error) {
     if (error instanceof SemaphoreTimeoutError) {
       throw new ScrapeDeadlineError("admission");
@@ -185,16 +179,6 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     throw error;
   }
 
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    options.semaphore.release();
-  };
-  // Set when a context allocation outlives the deadline: its settlement, not
-  // this request's finally block, decides when the permit is released.
-  let permitOwnedByLateContext = false;
-  let permitQuarantined = false;
   let context: C | undefined;
   let page: P | undefined;
   try {
@@ -203,50 +187,22 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     // the permit is granted but before any context exists is admission.
     remaining();
     phase = "work";
-    const pendingContext = (async () => options.createContext())();
-    let contextSettled = false;
-    const markContextSettled = () => {
-      contextSettled = true;
-    };
-    // Attached first, so it runs before the bounded race observes settlement.
-    pendingContext.then(markContextSettled, markContextSettled);
-    try {
-      context = await bounded(() => pendingContext);
-    } catch (error) {
-      if (!contextSettled) {
-        permitOwnedByLateContext = true;
-        pendingContext.then(
-          (lateContext) =>
-            cleanupBrowserResources(
-              null,
-              () => options.closeContext(lateContext),
-              release,
-              options.cleanupTimeoutMs,
-            ),
-          (lateError) => {
-            if (lateError instanceof ScrapeResourceLeakError) {
-              console.error(
-                "Late browser context cleanup was not confirmed; retaining the capacity permit",
-              );
-            } else {
-              release();
-            }
-          },
-        );
-      } else if (error instanceof ScrapeResourceLeakError) {
-        permitQuarantined = true;
-      }
-      throw error;
-    }
+    // A context that outlives the deadline takes over the lease.
+    context = await awaitAllocation(
+      lease,
+      options.createContext,
+      (allocation) => bounded(() => allocation),
+      options.closeContext,
+      options.cleanupTimeoutMs,
+    );
     page = await bounded(
       () => options.createPage(context!),
       async (latePage) => {
         // The owning context is closed by the finally block below; closing a
         // late page is best-effort and never touches the permit.
-        await cleanupBrowserResources(
+        await closeBrowserResources(
           () => options.closePage(latePage),
           null,
-          () => {},
           options.cleanupTimeoutMs,
         );
       },
@@ -257,17 +213,10 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     options.deliverResult?.(result);
     return result;
   } finally {
-    if (permitQuarantined) {
-      console.error(
-        "Browser context cleanup was not confirmed; retaining the capacity permit",
-      );
-    } else if (!permitOwnedByLateContext) {
-      await cleanupBrowserResources(
-        page === undefined ? null : () => options.closePage(page!),
-        context === undefined ? null : () => options.closeContext(context!),
-        release,
-        options.cleanupTimeoutMs,
-      );
-    }
+    await lease.settleByRequest(
+      page === undefined ? null : () => options.closePage(page!),
+      context === undefined ? null : () => options.closeContext(context!),
+      options.cleanupTimeoutMs,
+    );
   }
 }
