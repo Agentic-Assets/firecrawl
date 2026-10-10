@@ -106,6 +106,13 @@ the reported unused exports or files before committing.
 
 This fork adds a self-hosted operations layer on top of upstream Firecrawl. It is fork-only — do not push it upstream. Keep local ops work out of upstream product, API, and SDK paths unless an explicit requirement makes that change necessary.
 
+**Stay easy to sync with upstream.** Cayman wants `firecrawl/firecrawl:main` to merge in cheaply and often; the 2026-10-09 sync of 461 commits hit 41 conflicts, mostly where fork code was woven through upstream files.
+- When a fork behavior must touch an upstream-owned file (most of `apps/api`, the SDKs, upstream's tests), put the logic in a fork-owned module and leave only a small hook (an import plus a few lines) in the upstream file. Example: the structured-output fallback.
+- Never reformat, re-indent, rename, or reorder upstream code to make room for a fork change; wrap or spread instead, so the upstream hunk stays byte-identical.
+- Put fork-only tests in fork-owned test files, not inside upstream test files.
+- Measure the fork delta in a review: `git diff --stat upstream/main -- <file>` and the hunk count. A PR that grows it in an upstream-owned file needs a stated reason.
+- Sync in small, frequent steps with `scripts/firecrawl-ops/sync_upstream_main.sh` rather than letting hundreds of commits pile up. `apps/playwright-service-ts` is effectively fork-owned (upstream rarely touches it); port upstream's occasional changes there by hand.
+
 **Agent skills** (canonical in `.agents/skills/`):
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
