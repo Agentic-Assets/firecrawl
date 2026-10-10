@@ -11,8 +11,16 @@ import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import dotenv from "dotenv";
 import UserAgent from "user-agents";
 import { getError } from "./helpers/get_error";
-import { lookup } from "dns/promises";
-import IPAddr from "ipaddr.js";
+import { isInternalHost, TargetDnsUnavailableError } from "./target_dns";
+import {
+  parseScrapeTiming,
+  PLAYWRIGHT_DEADLINE_GRACE_MS,
+  runScrapeLifecycle,
+  ScrapeClientGoneError,
+  ScrapeDeadlineError,
+  ScrapeResourceLeakError,
+} from "./scrape_lifecycle";
+import { ScrapeStartPacer, scrapeStartIntervalMs } from "./scrape_start_pacer";
 import { Server, RequestError } from "proxy-chain";
 import {
   BROWSER_BATCH_FETCH_MAX_RESPONSE_BYTES,
@@ -33,6 +41,9 @@ import {
 stealthChromium.use(StealthPlugin());
 
 dotenv.config();
+// Opt-in global spacing of /scrape context allocations (default 0 = off).
+const SCRAPE_START_INTERVAL_MS = scrapeStartIntervalMs();
+const scrapeStartPacer = new ScrapeStartPacer(SCRAPE_START_INTERVAL_MS);
 
 const app = express();
 const port = process.env.PORT || 3003;
@@ -67,26 +78,6 @@ class InsecureConnectionError extends Error {
     this.name = "InsecureConnectionError";
   }
 }
-
-const isInternalHost = async (hostname: string): Promise<boolean> => {
-  const host = hostname.toLowerCase().replace(/\.$/, "");
-  if (!host) return true;
-
-  let addresses: string[];
-  if (IPAddr.isValid(host)) {
-    addresses = [host];
-  } else {
-    try {
-      addresses = (await lookup(host, { all: true })).map((a) => a.address);
-    } catch {
-      return true;
-    }
-  }
-  return (
-    addresses.length === 0 ||
-    addresses.some((a) => IPAddr.parse(a).range() !== "unicast")
-  );
-};
 
 const assertSafeTargetUrl = async (
   urlString: string,
@@ -128,11 +119,26 @@ const startSSRFProxy = async (): Promise<number> => {
     port: 0,
     host: "127.0.0.1",
     prepareRequestFunction: async ({ hostname }) => {
-      if (!ALLOW_LOCAL_WEBHOOKS && (await isInternalHost(hostname))) {
-        throw new RequestError(
-          "Blocked: target resolves to a private/internal address",
-          403,
-        );
+      if (!ALLOW_LOCAL_WEBHOOKS) {
+        let internal: boolean;
+        try {
+          internal = await isInternalHost(hostname);
+        } catch (error) {
+          if (error instanceof TargetDnsUnavailableError) {
+            // Unclassifiable targets are never forwarded.
+            throw new RequestError(
+              "Blocked: target DNS validation is unavailable",
+              502,
+            );
+          }
+          throw error;
+        }
+        if (internal) {
+          throw new RequestError(
+            "Blocked: target resolves to a private/internal address",
+            403,
+          );
+        }
       }
       return { upstreamProxyUrl: buildUpstreamProxyUrl() };
     },
@@ -145,6 +151,7 @@ let ssrfProxyPort: number;
 
 type ContextSecurityState = {
   blockedNavigationRequestUrl: string | null;
+  navigationDnsUnavailable: boolean;
 };
 const pageSemaphore = new Semaphore(MAX_CONCURRENT_PAGES);
 const browserBatchSemaphore = new Semaphore(
@@ -247,10 +254,20 @@ const STEALTH_INIT_SCRIPT = `
   })();
 `;
 
+const isMainFrameNavigation = (request: PlaywrightRequest): boolean => {
+  if (!request.isNavigationRequest()) return false;
+  try {
+    return request.frame().parentFrame() === null;
+  } catch {
+    return false;
+  }
+};
+
 const createContext = async (
   skipTlsVerification: boolean = false,
   userAgentOverride?: string,
   allowLocalWebhooks = ALLOW_LOCAL_WEBHOOKS,
+  deadlineAt?: number,
 ): Promise<{
   context: BrowserContext;
   securityState: ContextSecurityState;
@@ -261,6 +278,7 @@ const createContext = async (
   const viewport = { width: 1280, height: 800 };
   const securityState: ContextSecurityState = {
     blockedNavigationRequestUrl: null,
+    navigationDnsUnavailable: false,
   };
 
   const contextOptions: any = {
@@ -278,45 +296,88 @@ const createContext = async (
 
   const newContext = await browser.newContext(contextOptions);
 
-  // Inject stealth patches before any page script runs.
-  await newContext.addInitScript(STEALTH_INIT_SCRIPT);
+  const setup = async () => {
+    // Inject stealth patches before any page script runs.
+    await newContext.addInitScript(STEALTH_INIT_SCRIPT);
 
-  if (BLOCK_MEDIA) {
+    if (BLOCK_MEDIA) {
+      await newContext.route(
+        "**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}",
+        async (route: Route, request: PlaywrightRequest) => {
+          await route.abort();
+        },
+      );
+    }
+
+    // Intercept all requests to avoid loading ads
     await newContext.route(
-      "**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}",
+      "**/*",
       async (route: Route, request: PlaywrightRequest) => {
-        await route.abort();
+        const requestUrlString = request.url();
+        try {
+          await assertSafeTargetUrl(requestUrlString, allowLocalWebhooks);
+        } catch (error) {
+          if (error instanceof TargetDnsUnavailableError) {
+            // Fail closed: an unclassifiable host is never fetched. Only a
+            // main-frame navigation makes the whole scrape retryable.
+            if (isMainFrameNavigation(request)) {
+              securityState.navigationDnsUnavailable = true;
+            }
+            console.warn(
+              `Blocked request (DNS unavailable): ${requestUrlString}`,
+            );
+            return route.abort("namenotresolved");
+          }
+          if (error instanceof InsecureConnectionError) {
+            if (request.isNavigationRequest()) {
+              securityState.blockedNavigationRequestUrl = requestUrlString;
+            }
+            console.warn(`Blocked request: ${requestUrlString}`);
+            return route.abort("blockedbyclient");
+          }
+          throw error;
+        }
+
+        const hostname = new URL(requestUrlString).hostname.toLowerCase();
+
+        if (AD_SERVING_DOMAINS.some((domain) => hostname.includes(domain))) {
+          console.log(hostname);
+          return route.abort();
+        }
+        return route.continue();
       },
     );
-  }
+  };
 
-  // Intercept all requests to avoid loading ads
-  await newContext.route(
-    "**/*",
-    async (route: Route, request: PlaywrightRequest) => {
-      const requestUrlString = request.url();
+  try {
+    if (deadlineAt === undefined) {
+      await setup();
+    } else {
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) throw new ScrapeDeadlineError("work");
       try {
-        await assertSafeTargetUrl(requestUrlString, allowLocalWebhooks);
+        await withBrowserBatchHardTimeout(
+          setup(),
+          remainingMs,
+          "Browser scrape context setup exceeded its deadline",
+        );
       } catch (error) {
-        if (error instanceof InsecureConnectionError) {
-          if (request.isNavigationRequest()) {
-            securityState.blockedNavigationRequestUrl = requestUrlString;
-          }
-          console.warn(`Blocked request: ${requestUrlString}`);
-          return route.abort("blockedbyclient");
+        if (error instanceof BrowserBatchHardTimeoutError) {
+          throw new ScrapeDeadlineError("work");
         }
         throw error;
       }
-
-      const hostname = new URL(requestUrlString).hostname.toLowerCase();
-
-      if (AD_SERVING_DOMAINS.some((domain) => hostname.includes(domain))) {
-        console.log(hostname);
-        return route.abort();
-      }
-      return route.continue();
-    },
-  );
+    }
+  } catch (error) {
+    // Never hand back (or silently drop) a half-configured context, which
+    // could lack the per-request SSRF route guard above.
+    const closed = await cleanupBrowserBatchResources(
+      null,
+      () => newContext.close(),
+      () => {},
+    );
+    throw closed ? error : new ScrapeResourceLeakError(error);
+  }
 
   return { context: newContext, securityState };
 };
@@ -352,11 +413,15 @@ const scrapePage = async (
   try {
     response = await page.goto(url, { waitUntil, timeout });
   } catch (error) {
+    // A blocked private destination wins over a DNS outage in the same chain.
     if (securityState.blockedNavigationRequestUrl) {
       throw new InsecureConnectionError(
         securityState.blockedNavigationRequestUrl,
         "navigation to private/internal resource is not allowed",
       );
+    }
+    if (securityState.navigationDnsUnavailable) {
+      throw new TargetDnsUnavailableError();
     }
     throw error;
   }
@@ -446,6 +511,12 @@ app.post("/browser-batch-fetch", async (req: Request, res: Response) => {
       "Browser batch target validation exceeded its hard deadline",
     );
   } catch (error) {
+    if (error instanceof TargetDnsUnavailableError) {
+      // Still refused, but retryable rather than a malformed request.
+      return res
+        .status(503)
+        .json({ error: error.message, code: "TARGET_DNS_UNAVAILABLE" });
+    }
     return res.status(400).json({
       error:
         error instanceof Error
@@ -687,15 +758,98 @@ const createC10Listener = () =>
     assertSafeTargetUrl,
   });
 
+// Applies caller headers to a fresh context/page before navigation.
+const applyScrapeHeaders = async (
+  requestContext: BrowserContext,
+  page: Page,
+  url: string,
+  headers: { [key: string]: string },
+): Promise<void> => {
+  // A Cookie header passed through setExtraHTTPHeaders is sent on the first
+  // request but DROPPED on any redirect hop (the browser regenerates the
+  // redirected request from its cookie jar, which is empty). Authenticated
+  // sites that 302 (e.g. to /signin when the session looks absent) then
+  // land on the login page. Seed the cookie jar instead so Chromium re-sends
+  // it on every request, including redirects — matching what a raw HTTP
+  // client does.
+  const cookieHeader = Object.entries(headers).find(
+    ([k]) => k.toLowerCase() === "cookie",
+  )?.[1];
+  if (cookieHeader) {
+    // Scope cookies to the registrable domain (e.g. ".example.com"), not
+    // host-only. Authenticated pages often 302 across sibling subdomains
+    // (example.com -> app.example.com); a host-only cookie set for the
+    // original host would not be sent to the redirect target, leaving the
+    // request unauthenticated. The Cookie header carries no domain info, so
+    // we apply the eTLD+1 — broad enough to follow the redirect, and these
+    // are first-party cookies being returned to their own origin anyway.
+    let cookieDomain: string | undefined;
+    try {
+      const host = new URL(url).hostname;
+      const labels = host.split(".");
+      cookieDomain = labels.length > 2 ? labels.slice(-2).join(".") : host;
+    } catch {
+      cookieDomain = undefined;
+    }
+    type SeedCookie = {
+      name: string;
+      value: string;
+      url?: string;
+      domain?: string;
+      path?: string;
+    };
+    const cookies = cookieHeader
+      .split(";")
+      .map((pair) => pair.trim())
+      .filter(Boolean)
+      .map((pair): SeedCookie | null => {
+        const eq = pair.indexOf("=");
+        if (eq === -1) return null;
+        const name = pair.slice(0, eq).trim();
+        const value = pair.slice(eq + 1).trim();
+        return cookieDomain
+          ? { name, value, domain: `.${cookieDomain}`, path: "/" }
+          : { name, value, url };
+      })
+      .filter((c): c is SeedCookie => c !== null);
+    if (cookies.length > 0) {
+      try {
+        await requestContext.addCookies(cookies);
+      } catch (error) {
+        console.warn("Failed to seed cookies from Cookie header:", error);
+      }
+    }
+  }
+
+  // Remove user-agent (already applied at the context level) and cookie
+  // (now seeded into the jar) before forwarding the rest verbatim.
+  const filteredHeaders = Object.fromEntries(
+    Object.entries(headers).filter(([k]) => {
+      const lower = k.toLowerCase();
+      return lower !== "user-agent" && lower !== "cookie";
+    }),
+  );
+  if (Object.keys(filteredHeaders).length > 0) {
+    await page.setExtraHTTPHeaders(filteredHeaders);
+  }
+};
+
 app.post("/scrape", async (req: Request, res: Response) => {
+  // One deadline covers validation, queueing, pacing, setup and the scrape.
+  const startedAt = Date.now();
   const {
     url,
-    wait_after_load = 0,
-    timeout = 15000,
+    wait_after_load: requestedWaitAfterLoad,
+    timeout: requestedTimeout,
     headers,
     check_selector,
     skip_tls_verification = false,
   }: UrlModel = req.body;
+  const timing = parseScrapeTiming(requestedTimeout, requestedWaitAfterLoad);
+  const timeout = timing.ok ? timing.timeout : requestedTimeout;
+  const wait_after_load = timing.ok
+    ? timing.waitAfterLoad
+    : requestedWaitAfterLoad;
 
   console.log(`================= Scrape Request =================`);
   console.log(`URL: ${url}`);
@@ -714,17 +868,8 @@ app.post("/scrape", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Invalid URL" });
   }
 
-  try {
-    await assertSafeTargetUrl(url);
-  } catch (error) {
-    if (error instanceof InsecureConnectionError) {
-      return res.json({
-        content: "",
-        pageStatusCode: 403,
-        pageError: error.message,
-      });
-    }
-    throw error;
+  if (!timing.ok) {
+    return res.status(400).json({ error: timing.error });
   }
 
   if (!PROXY_SERVER) {
@@ -733,15 +878,11 @@ app.post("/scrape", async (req: Request, res: Response) => {
     );
   }
 
-  if (!browser) {
-    await initializeBrowser();
-  }
-
-  await pageSemaphore.acquire();
-
-  let requestContext: BrowserContext | null = null;
-  let securityState: ContextSecurityState | null = null;
-  let page: Page | null = null;
+  const deadlineAt = startedAt + timing.timeout;
+  const clientGone = new AbortController();
+  res.on("close", () => {
+    if (!res.writableFinished) clientGone.abort();
+  });
 
   try {
     const userAgentOverride = headers
@@ -750,112 +891,79 @@ app.post("/scrape", async (req: Request, res: Response) => {
         )?.[1]
       : undefined;
 
-    const contextBundle = await createContext(
-      skip_tls_verification,
-      userAgentOverride,
-    );
-    requestContext = contextBundle.context;
-    securityState = contextBundle.securityState;
-    page = await requestContext.newPage();
-
-    if (headers) {
-      // A Cookie header passed through setExtraHTTPHeaders is sent on the first
-      // request but DROPPED on any redirect hop (the browser regenerates the
-      // redirected request from its cookie jar, which is empty). Authenticated
-      // sites that 302 (e.g. to /signin when the session looks absent) then
-      // land on the login page. Seed the cookie jar instead so Chromium re-sends
-      // it on every request, including redirects — matching what a raw HTTP
-      // client does.
-      const cookieHeader = Object.entries(headers).find(
-        ([k]) => k.toLowerCase() === "cookie",
-      )?.[1];
-      if (cookieHeader) {
-        // Scope cookies to the registrable domain (e.g. ".example.com"), not
-        // host-only. Authenticated pages often 302 across sibling subdomains
-        // (example.com -> app.example.com); a host-only cookie set for the
-        // original host would not be sent to the redirect target, leaving the
-        // request unauthenticated. The Cookie header carries no domain info, so
-        // we apply the eTLD+1 — broad enough to follow the redirect, and these
-        // are first-party cookies being returned to their own origin anyway.
-        let cookieDomain: string | undefined;
-        try {
-          const host = new URL(url).hostname;
-          const labels = host.split(".");
-          cookieDomain = labels.length > 2 ? labels.slice(-2).join(".") : host;
-        } catch {
-          cookieDomain = undefined;
+    await runScrapeLifecycle({
+      deadlineAt,
+      semaphore: pageSemaphore,
+      signal: clientGone.signal,
+      prepare: async (remainingMs) => {
+        await assertSafeTargetUrl(url);
+        remainingMs();
+        if (!browser) await initializeBrowser();
+      },
+      paceStart:
+        SCRAPE_START_INTERVAL_MS > 0
+          ? (remainingMs) => scrapeStartPacer.waitForStart(remainingMs)
+          : undefined,
+      createContext: () =>
+        createContext(
+          skip_tls_verification,
+          userAgentOverride,
+          ALLOW_LOCAL_WEBHOOKS,
+          deadlineAt,
+        ),
+      createPage: (bundle) => bundle.context.newPage(),
+      closeContext: (bundle) => bundle.context.close(),
+      closePage: (page) => page.close(),
+      work: async (
+        page,
+        { context: requestContext, securityState },
+        remainingMs,
+      ) => {
+        if (headers) {
+          await applyScrapeHeaders(requestContext, page, url, headers);
         }
-        type SeedCookie = {
-          name: string;
-          value: string;
-          url?: string;
-          domain?: string;
-          path?: string;
-        };
-        const cookies = cookieHeader
-          .split(";")
-          .map((pair) => pair.trim())
-          .filter(Boolean)
-          .map((pair): SeedCookie | null => {
-            const eq = pair.indexOf("=");
-            if (eq === -1) return null;
-            const name = pair.slice(0, eq).trim();
-            const value = pair.slice(eq + 1).trim();
-            return cookieDomain
-              ? { name, value, domain: `.${cookieDomain}`, path: "/" }
-              : { name, value, url };
-          })
-          .filter((c): c is SeedCookie => c !== null);
-        if (cookies.length > 0) {
-          try {
-            await requestContext.addCookies(cookies);
-          } catch (error) {
-            console.warn("Failed to seed cookies from Cookie header:", error);
-          }
+        // Playwright's own timeouts get a short grace past the deadline so
+        // the lifecycle timer always reports the expiry (504).
+        return scrapePage(
+          page,
+          url,
+          "load",
+          timing.waitAfterLoad,
+          remainingMs() + PLAYWRIGHT_DEADLINE_GRACE_MS,
+          check_selector,
+          securityState,
+        );
+      },
+      deliverResult: (result) => {
+        const pageError =
+          result.status !== 200 ? getError(result.status) : undefined;
+
+        if (!pageError) {
+          console.log(`✅ Scrape successful!`);
+        } else {
+          console.log(
+            `🚨 Scrape failed with status code: ${result.status} ${pageError}`,
+          );
         }
-      }
 
-      // Remove user-agent (already applied at the context level) and cookie
-      // (now seeded into the jar) before forwarding the rest verbatim.
-      const filteredHeaders = Object.fromEntries(
-        Object.entries(headers).filter(([k]) => {
-          const lower = k.toLowerCase();
-          return lower !== "user-agent" && lower !== "cookie";
-        }),
-      );
-      if (Object.keys(filteredHeaders).length > 0) {
-        await page.setExtraHTTPHeaders(filteredHeaders);
-      }
-    }
-
-    const result = await scrapePage(
-      page,
-      url,
-      "load",
-      wait_after_load,
-      timeout,
-      check_selector,
-      securityState,
-    );
-    const pageError =
-      result.status !== 200 ? getError(result.status) : undefined;
-
-    if (!pageError) {
-      console.log(`✅ Scrape successful!`);
-    } else {
-      console.log(
-        `🚨 Scrape failed with status code: ${result.status} ${pageError}`,
-      );
-    }
-
-    res.json({
-      content: result.content,
-      pageStatusCode: result.status,
-      contentType: result.contentType,
-      url: result.url,
-      ...(pageError && { pageError }),
+        res.json({
+          content: result.content,
+          pageStatusCode: result.status,
+          contentType: result.contentType,
+          url: result.url,
+          ...(pageError && { pageError }),
+        });
+      },
     });
   } catch (error) {
+    if (res.headersSent) {
+      console.error("Scrape error after response delivery:", error);
+      return;
+    }
+    if (error instanceof ScrapeClientGoneError) {
+      console.warn("Scrape abandoned: client disconnected");
+      return;
+    }
     if (error instanceof InsecureConnectionError) {
       return res.json({
         content: "",
@@ -863,16 +971,29 @@ app.post("/scrape", async (req: Request, res: Response) => {
         pageError: error.message,
       });
     }
+    if (error instanceof TargetDnsUnavailableError) {
+      // Retryable: the target could not be classified, so nothing was fetched.
+      return res
+        .status(503)
+        .json({ error: error.message, code: "TARGET_DNS_UNAVAILABLE" });
+    }
+    if (error instanceof ScrapeDeadlineError) {
+      const admission = error.phase === "admission";
+      return res.status(admission ? 503 : 504).json({
+        error: error.message,
+        code: admission ? "SCRAPE_ADMISSION_TIMEOUT" : "SCRAPE_WORK_TIMEOUT",
+      });
+    }
+    if (error instanceof ScrapeResourceLeakError) {
+      console.error("Scrape resource leak:", error);
+      return res
+        .status(503)
+        .json({ error: error.message, code: "SCRAPE_RESOURCE_LEAK" });
+    }
     console.error("Scrape error:", error);
     res
       .status(500)
       .json({ error: "An error occurred while fetching the page." });
-  } finally {
-    await cleanupBrowserBatchResources(
-      page ? () => page!.close() : null,
-      requestContext ? () => requestContext!.close() : null,
-      () => pageSemaphore.release(),
-    );
   }
 });
 
