@@ -74,12 +74,13 @@ docker compose down
 - `apps/api/.env.example` is upstream's reference list of available variables. It is not a drop-in Docker Compose contract.
 - `apps/api/.env.local` is tracked upstream scaffolding and is not the Docker compose env file.
 
-For an AI-backed local setup, a human operator creates a minimal root `.env` with the provider key from the approved secret workflow and the three reversible model keys below. Do not copy `apps/api/.env.example` wholesale and do not commit this file:
+For an AI-backed local setup, a human operator creates a minimal root `.env` with the provider key from the approved secret workflow and the three reversible model keys below. The handoff requires `OPENAI_BASE_URL`, `MODEL_NAME`, and `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` to each appear exactly once in the file, so include all three (empty values are fine). Do not copy `apps/api/.env.example` wholesale and do not commit this file:
 
 ```dotenv
 OPENAI_API_KEY=<provider key>
 OPENAI_BASE_URL=
 MODEL_NAME=
+MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=
 ```
 
 An agent may request the body-free dry-run plan after the API is healthy:
@@ -90,9 +91,15 @@ scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway
 
 Only a human operator may perform the attested `--apply` step after reviewing
 that plan. The default Gateway profile uses
-`deepseek/deepseek-v4-flash-0731`. `gateway-pro` is a separate human-selected
-profile using `deepseek/deepseek-v4-pro-0813`; the live API does not
-automatically fall back between them.
+`deepseek/deepseek-v4-flash-0731` and also sets
+`MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK=deepseek/deepseek-v4-pro-0813`. When the
+primary model's structured summary or JSON output is missing, schema-invalid, or
+truncated at the output limit, the API retries once with that fallback (at most
+one extra call per structured generation; never for provider, auth, quota, or
+policy failures). `gateway-pro` is a separate human-selected profile using
+`deepseek/deepseek-v4-pro-0813` as the primary model with no fallback. Beyond
+that one bounded retry the live API does not escalate between models; see
+`docs/firecrawl-ops/references/model-routing.md`.
 
 Important fork/local vars:
 
@@ -102,19 +109,33 @@ Important fork/local vars:
 | `OPENAI_API_KEY` | Provider key for OpenRouter, Vercel AI Gateway, or OpenAI-compatible providers |
 | `OPENAI_BASE_URL` | Provider base URL written only by the guarded operator handoff |
 | `MODEL_NAME` | Firecrawl's internal LLM model id |
+| `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` | Optional one-time fallback model for missing, schema-invalid, or truncated structured summary/JSON output; set by the `gateway` profile, empty for the others |
 | `OPENROUTER_API_KEY` | Optional direct OpenRouter path; not the default local profile route |
 | `PDF_RUST_EXTRACT_ENABLE` | Local PDF text extraction; compose defaults it to `true` |
 | `FIRE_PDF_BASE_URL` / `FIRE_PDF_API_KEY` | Optional Fire PDF-compatible OCR/layout service. For the local Docling adapter, use `FIRE_PDF_BASE_URL=http://host.docker.internal:31337` and leave `FIRE_PDF_API_KEY` empty |
+| `FIRE_PDF_BY_REFERENCE_ENABLE` | Upstream defaults this to `true` (GCS by-reference upload for large PDFs). Compose defaults it to `false` because the local Docling adapter has no async jobs API; leave it off |
 | `RUNPOD_MU_API_KEY` / `RUNPOD_MU_POD_ID` | Optional external MinerU-style OCR/layout service |
 | `SWARM_SUPABASE_URL` / `SWARM_SUPABASE_KEY` | Optional swarm telemetry destination |
+
+Optional upstream variables that compose does not pass to the `api` service, so setting them in root `.env` does nothing until they are added to `x-common-env` in `docker-compose.yaml`:
+
+| Var | Purpose |
+| :--- | :--- |
+| `HANGAR_URL` | Hangar browser service for `/v2/browser`, `/v2/interact`, and scrape interact. It replaced `BROWSER_SERVICE_URL`, `BROWSER_SERVICE_API_KEY`, and `BROWSER_SERVICE_WEBHOOK_SECRET`, which are no longer read. Unset, those routes return a 503 naming `HANGAR_URL` |
+| `IMAGE_OCR_ENABLED` | Off by default. Image OCR also needs `FIRE_PDF_BASE_URL` |
+| `PDF_EXTRACTION_CONCURRENCY` | Native PDF extraction concurrency (default 3) |
+| `DB_POOL_PROFILE` | Postgres pool preset: `api`, `worker`, or `utility` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` | Optional OpenTelemetry trace export. Sentry was removed upstream, so `SENTRY_DSN` is no longer read |
+
+The playwright sidecar's `SCRAPE_START_INTERVAL_MS` pacer (opt-in, 0 to 5000 ms) is likewise not passed by compose; see `apps/playwright-service-ts/README.md`.
 
 Available profiles for the guarded operator handoff:
 
 ```bash
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile budget        # OpenRouter DeepSeek V4 Flash
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile escalated     # OpenRouter DeepSeek V4 Pro
-scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway       # Vercel AI Gateway DeepSeek V4 Flash 0731 (default)
-scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway-pro   # Vercel AI Gateway DeepSeek V4 Pro 0813
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway       # Vercel AI Gateway DeepSeek V4 Flash 0731 (default), Pro 0813 structured-output fallback
+scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway-pro   # Vercel AI Gateway DeepSeek V4 Pro 0813, no fallback
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile gateway-codex # Vercel AI Gateway OpenAI model
 scripts/firecrawl-ops/firecrawl_operator_handoff.py model --profile openai-direct # OpenAI Platform
 ```
@@ -131,6 +152,10 @@ scripts/firecrawl-ops/firecrawl_request.py parse ./report.pdf \
 ```
 
 The provider settings matter for summary, query, JSON extraction, and `/v2/extract`. Plain PDF markdown extraction uses the local PDF parser and does not call the LLM model.
+
+### Playwright sidecar behavior
+
+The `playwright-service` container is the engine behind the API's `playwright` scrape engine. Its `/scrape` route has one bounded deadline (the request `timeout`, or 15 s plus `wait_after_load` when omitted) and reports failures with distinct codes: `503 SCRAPE_ADMISSION_TIMEOUT` (queued or paced past the deadline, no browser context allocated), `504 SCRAPE_WORK_TIMEOUT` (deadline passed during navigation or reads), and a retryable `503 TARGET_DNS_UNAVAILABLE` (the target host could not be resolved). Targets that resolve to private or internal addresses, including IPv6 forms such as `[::7f00:1]`, return `200` with `pageStatusCode: 403`. The response includes the final landed `url`. Full table and limits: `apps/playwright-service-ts/README.md`. These changes need a `playwright-service` image rebuild (`docker compose build playwright-service`) to take effect.
 
 ## 3. Local API Quick Use
 
@@ -238,6 +263,8 @@ Modes:
 
 The fully local path is strongest for text PDFs. Tables, figures, scans, and complex multi-column layouts can still flatten into markdown.
 
+Upstream PDF parser options beyond `mode` and `maxPages` are `pages` (per-page markdown in `document.pages`), `blocks` (typed layout blocks), `pageMarkers` (`<!-- page N -->` separators), and `refresh`. `pageMarkdown` was renamed to `pages`; the API still accepts it as a deprecated alias, so prefer `pages`. The local helper does not expose these, and a request for `pages`, `blocks`, or `pageMarkers` is forced through Fire PDF with no fallback, so with the local Docling adapter it fails explicitly because the adapter does not return those top-level fields (its per-page data is nested under `data.metadata.pdfOcr`). Raster image OCR (PNG, JPEG, and similar) is off unless `IMAGE_OCR_ENABLED` and `FIRE_PDF_BASE_URL` are both set, and compose does not pass `IMAGE_OCR_ENABLED`.
+
 ### Local Docling OCR adapter
 
 This fork can run a local Fire PDF-compatible adapter backed by Docling Serve. It is local and does not spend Firecrawl cloud credits.
@@ -287,7 +314,7 @@ Operational notes:
 - Print the full tunable settings surface with `scripts/firecrawl-ops/local_firepdf_ocr.sh settings`.
 - Quick OCR verification: `scripts/firecrawl-ops/local_firepdf_ocr.sh smoke ./report.pdf`.
 - Repeatable PDF checks can use `scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf --modes fast,auto,ocr --profiles default,research-page-aware,tables-accurate --max-pages 40 --out-dir /tmp/firecrawl-pdf-ocr-benchmark --strict`. The saved `summary.md` includes accept/reject/manual-review guidance plus a recommended mode/profile per PDF, and each case saves `fields/pages.jsonl`, `qa.json`, and `qa.md` when output is available.
-- Successful local OCR responses expose stable `data.metadata.pdfOcr` fields: active profile, settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. OCR-mode FirePDF cache is bypassed so profile/env changes cannot reuse stale OCR output.
+- Successful local OCR responses expose stable `data.metadata.pdfOcr` fields: active profile, settings fingerprint, resolved Docling options, page-boundary source, compact per-page quality summaries, boilerplate families/scores, table/figure JSON signals, and low-quality gate settings. OCR-mode FirePDF cache is bypassed when `FIRE_PDF_BASE_URL` points at a local adapter host (`localhost`, `127.0.0.1`, `[::1]`, `host.docker.internal`), so profile/env changes cannot reuse stale OCR output.
 - Direct adapter tests may include a `docling_options` object in `POST /ocr`; Firecrawl API calls use the adapter container env.
 - A human operator may plan a controlled shutdown with `scripts/firecrawl-ops/firecrawl_operator_handoff.py ocr-lifecycle --action stop`.
 
@@ -297,7 +324,7 @@ Keep these layers separate:
 
 1. Firecrawl local runtime: OrbStack + Docker compose, API at `http://localhost:3002`.
 2. Reusable tool interfaces: direct HTTP API, `firecrawl_cli.sh`, `firecrawl_request.py`, and `firecrawl_mcp.sh`.
-3. Agent adapters: `.cursor/mcp.json`, `.cursor/skills/`, `.agents/skills/`, or any MCP-capable client config.
+3. Agent adapters: `.cursor/mcp.json`, `.agents/skills/` (Cursor reads the synced copy at `~/.cursor/skills`), or any MCP-capable client config.
 4. Agent model runtime: Cursor Composer, Codex, Claude, or another model.
 
 For MCP-capable agents:
@@ -335,6 +362,10 @@ scripts/firecrawl-ops/sync_upstream_main.sh
 ```
 
 Prefer upstream for product/API/SDK/security files. Prefer this fork for local ops, skills, model-routing docs, and self-hosted workflow docs.
+
+### Local proof instead of CI
+
+Hosted GitHub Actions are disabled on this fork, so a green PR does not mean anything was run. Run the relevant checks locally before review and list them in the PR body: `pnpm knip` and a typecheck in `apps/api`, `pnpm harness vitest run <pattern>` for the touched snips, `pnpm test` in `apps/playwright-service-ts`, and the Python tests under `scripts/firecrawl-ops/tests` for ops-layer changes.
 
 ### Post-sync API testing (Vitest)
 

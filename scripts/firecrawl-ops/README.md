@@ -313,7 +313,10 @@ Compose contract or commit provider keys or local env files.
 
 Plain scrape, map, search, and parse can work without model keys. AI-backed
 summary, JSON extraction, query, and extract flows require valid provider
-settings.
+settings. The `gateway` profile also sets `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK`
+(`deepseek/deepseek-v4-pro-0813`) for one bounded retry on missing,
+schema-invalid, or truncated structured output; see
+`docs/firecrawl-ops/references/model-routing.md`.
 
 ## CRE Resource Safety Profile
 
