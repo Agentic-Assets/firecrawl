@@ -22,7 +22,8 @@ vi.mock("../../../../lib/generic-ai", () => ({
 
 vi.mock("../../../../config", () => ({ config: structuredOutputConfig }));
 
-import { extractData, resolveStructuredResult } from "../extractSmartScrape";
+import { extractData } from "../extractSmartScrape";
+import { resolveStructuredResult } from "../structuredOutputFallback";
 
 const schema = {
   type: "object",
@@ -189,8 +190,7 @@ describe("extractData structured-output compatibility", () => {
     );
     expect(generateCompletionsMock.mock.calls[1][0]).toMatchObject({
       model: { modelId: "deepseek/deepseek-v4-pro-0813" },
-      disableInternalRateLimitRetry: true,
-      disableInternalObjectRepair: true,
+      boundedStructuredOutput: true,
       options: { schema },
     });
   });
@@ -286,9 +286,7 @@ describe("extractData structured-output compatibility", () => {
     expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
     expect(
       generateCompletionsMock.mock.calls.every(
-        ([options]) =>
-          options.disableInternalRateLimitRetry === true &&
-          options.disableInternalObjectRepair === true,
+        ([options]) => options.boundedStructuredOutput === true,
       ),
     ).toBe(true);
   });
@@ -306,8 +304,7 @@ describe("extractData structured-output compatibility", () => {
       ignoreModelOverride: true,
     });
     expect(generateCompletionsMock.mock.calls[0][0]).toMatchObject({
-      disableInternalRateLimitRetry: true,
-      disableInternalObjectRepair: true,
+      boundedStructuredOutput: true,
     });
   });
 });
