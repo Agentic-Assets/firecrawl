@@ -266,6 +266,20 @@ test("a disconnected client that wins a permit never allocates a context", async
   assert.equal(semaphore.getAvailablePermits(), 1);
 });
 
+test("a deadline passing right after the permit is granted is an admission timeout", async () => {
+  const semaphore = new Semaphore(1);
+  const { options, calls } = fixture(semaphore);
+  options.deadlineAt = Date.now() + 30;
+  const acquire = semaphore.acquire.bind(semaphore);
+  semaphore.acquire = async (timeoutMs?: number) => {
+    await acquire(timeoutMs);
+    while (Date.now() <= options.deadlineAt) await tick(5);
+  };
+  await assert.rejects(runScrapeLifecycle(options), isPhase("admission"));
+  assert.deepEqual(calls, []);
+  assert.equal(semaphore.getAvailablePermits(), 1);
+});
+
 test("successful lifecycle returns the complete result unchanged", async () => {
   const { options } = fixture();
   const result = {

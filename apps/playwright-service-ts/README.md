@@ -52,7 +52,11 @@ An explicit `timeout` is the whole request budget: target validation, waiting
 for a page permit (`MAX_CONCURRENT_PAGES`), optional pacing, browser context
 setup, navigation, `wait_after_load`, and body reads. When `timeout` is
 omitted, the budget is 15000 ms plus `wait_after_load`. Firecrawl's API
-already sends its remaining scrape time as `timeout`. `timeout` and
+sends its remaining scrape time as `timeout` only when the scrape has its
+own timeout; v2 `/scrape` and crawl requests without one omit it, so the
+default applies and includes the permit queue. Under saturation those
+requests get `503` `SCRAPE_ADMISSION_TIMEOUT` after about 15 s of queueing,
+and the API falls through to its next engine. `timeout` and
 `wait_after_load` are each capped at 86400000 ms (24 hours), well below the
 2^31-1 ms Node timer limit; larger, non-positive, or non-numeric values
 return `400`. Playwright's own navigation and selector timeouts get a 250 ms

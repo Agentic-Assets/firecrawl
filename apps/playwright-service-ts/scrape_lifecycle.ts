@@ -190,8 +190,10 @@ export async function runScrapeLifecycle<C, P, R>(options: {
   let page: P | undefined;
   try {
     if (options.paceStart) await bounded(() => options.paceStart!(remaining));
-    phase = "work";
+    // Checked before entering the work phase: a deadline that passes after
+    // the permit is granted but before any context exists is admission.
     remaining();
+    phase = "work";
     const pendingContext = (async () => options.createContext())();
     let contextSettled = false;
     const markContextSettled = () => {
