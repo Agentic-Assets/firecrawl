@@ -156,6 +156,7 @@ function runService(): void {
     const pool = createBrowserPool({
       blockMedia: config.blockMedia,
       ssrfProxyPort,
+      assertSafeTargetUrl,
     });
     browsers = pool;
     const pageSemaphore = new Semaphore(config.maxConcurrentPages);

@@ -21,7 +21,7 @@ import {
 } from "./browser_resources";
 import { ScrapeDeadlineError, ScrapeResourceLeakError } from "./scrape_lifecycle";
 import { TargetDnsUnavailableError } from "./target_dns";
-import { assertSafeTargetUrl, InsecureConnectionError } from "./target_guard";
+import { type AssertSafeTargetUrl, InsecureConnectionError } from "./target_guard";
 
 // Register stealth plugin before any launch call.
 stealthChromium.use(StealthPlugin());
@@ -128,7 +128,11 @@ const isMainFrameNavigation = (request: PlaywrightRequest): boolean => {
 
 /** Per-request SSRF guard plus ad blocking; records why a navigation failed. */
 const routeGuard =
-  (securityState: ContextSecurityState, allowLocalTargets: boolean) =>
+  (
+    assertSafeTargetUrl: AssertSafeTargetUrl,
+    securityState: ContextSecurityState,
+    allowLocalTargets: boolean,
+  ) =>
   async (route: Route, request: PlaywrightRequest) => {
     const requestUrlString = request.url();
     try {
@@ -188,6 +192,8 @@ const runWithinDeadline = async (
 export function createBrowserPool(settings: {
   blockMedia: boolean;
   ssrfProxyPort: number;
+  /** The one SSRF check; the app and C10 routes receive the same function. */
+  assertSafeTargetUrl: AssertSafeTargetUrl;
 }): BrowserPool {
   let browser: Browser | undefined;
 
@@ -251,7 +257,11 @@ export function createBrowserPool(settings: {
       // Intercept all requests to avoid loading ads
       await newContext.route(
         "**/*",
-        routeGuard(securityState, allowLocalTargets),
+        routeGuard(
+          settings.assertSafeTargetUrl,
+          securityState,
+          allowLocalTargets,
+        ),
       );
     };
 

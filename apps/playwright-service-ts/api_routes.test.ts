@@ -193,9 +193,11 @@ test("/scrape maps blocked and unresolvable targets to the documented contract",
       );
     },
   );
+  const seen: Array<[string, boolean | undefined]> = [];
   await withApp(
     {
-      assertSafeTargetUrl: async (url) => {
+      assertSafeTargetUrl: async (url, allowLocalTargets) => {
+        seen.push([url, allowLocalTargets]);
         throw new InsecureConnectionError(
           url,
           "resolves to a private/internal address",
@@ -217,6 +219,27 @@ test("/scrape maps blocked and unresolvable targets to the documented contract",
       );
     },
   );
+  // The prepare phase checks the URL with the configured local-target policy.
+  assert.deepEqual(seen, [["http://127.0.0.1/", false]]);
+});
+
+test("/scrape passes ALLOW_LOCAL_WEBHOOKS to the target check", async () => {
+  const seen: Array<[string, boolean | undefined]> = [];
+  await withApp(
+    {
+      config: readServiceConfig({ ALLOW_LOCAL_WEBHOOKS: "true" }),
+      assertSafeTargetUrl: async (url, allowLocalTargets) => {
+        seen.push([url, allowLocalTargets]);
+      },
+    },
+    async (baseUrl) => {
+      const response = await post(baseUrl, "/scrape", {
+        url: "http://127.0.0.1/",
+      });
+      assert.equal(response.status, 200);
+    },
+  );
+  assert.deepEqual(seen, [["http://127.0.0.1/", true]]);
 });
 
 test("/scrape reports a saturated queue as an admission timeout", async () => {
