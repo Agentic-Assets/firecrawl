@@ -5,15 +5,21 @@ import { vi } from "vitest";
 // AI SDK's generateObject mocked, so the errors generateCompletions itself
 // raises (output limit, fenced-but-unparseable JSON) reach the one-time
 // structured-output fallback exactly as in production.
-const { generateObjectMock, structuredOutputConfig, getModelMock } = vi.hoisted(
-  () => ({
-    generateObjectMock: vi.fn(),
-    structuredOutputConfig: {} as {
-      MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK?: string;
-    },
-    getModelMock: vi.fn((modelName: string) => ({ modelId: modelName })),
-  }),
-);
+const {
+  generateObjectMock,
+  structuredOutputConfig,
+  getModelMock,
+  smartScrapeMock,
+} = vi.hoisted(() => ({
+  generateObjectMock: vi.fn(),
+  structuredOutputConfig: {} as {
+    MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK?: string;
+  },
+  getModelMock: vi.fn((modelName: string) => ({ modelId: modelName })),
+  smartScrapeMock: vi.fn(async (_options: { prompt?: string }) => ({
+    scrapedPages: [],
+  })),
+}));
 
 vi.mock("ai", async importOriginal => ({
   ...(await importOriginal<typeof import("ai")>()),
@@ -25,6 +31,8 @@ vi.mock("../../../../lib/generic-ai", () => ({
 }));
 
 vi.mock("../../../../config", () => ({ config: structuredOutputConfig }));
+
+vi.mock("../smartScrape", () => ({ smartScrape: smartScrapeMock }));
 
 import { extractData } from "../extractSmartScrape";
 import { CostLimitExceededError } from "../../../../lib/cost-tracking";
@@ -56,7 +64,7 @@ function noObjectError(finishReason: "length" | "stop", text: string) {
   });
 }
 
-function runExtraction(addCall: () => void = vi.fn()) {
+function runExtraction(addCall: () => void = vi.fn(), useAgent = false) {
   const logger = {
     child: vi.fn(function () {
       return this;
@@ -80,7 +88,7 @@ function runExtraction(addCall: () => void = vi.fn()) {
       metadata: { teamId: "test-team", scrapeId: "test-scrape" },
     } as any,
     urls: ["https://example.com"],
-    useAgent: false,
+    useAgent,
     scrapeId: "test-scrape",
     metadata: { teamId: "test-team", functionId: "test" },
   });
@@ -357,5 +365,36 @@ describe("extractData structured-output fallback bounds through generateCompleti
       expect(generateObjectMock).toHaveBeenCalledTimes(1);
       expect(result.warning).toBe(`JSON extraction failed: ${OUTPUT_LIMIT}`);
     });
+  });
+});
+
+describe("extractData SmartScrape with a rejected agent envelope", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    generateObjectMock.mockReset();
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      FALLBACK_MODEL;
+  });
+
+  // Pins current behavior, not a product decision: SmartScrape still acts on
+  // the primary's envelope after both attempts fail the user's schema.
+  it("still runs SmartScrape with the primary's prompt when neither attempt validates", async () => {
+    const envelope = (extractedData: unknown, prompt: string) =>
+      objectResult({
+        extractedData,
+        shouldUseSmartscrape: true,
+        smartscrape_reasoning: "needs more pages",
+        smartscrape_prompt: prompt,
+      });
+    generateObjectMock
+      .mockResolvedValueOnce(envelope({ nope: 1 }, "PRIMARY-PROMPT"))
+      .mockResolvedValueOnce(envelope({ nope: 2 }, "FALLBACK-PROMPT"));
+
+    const result = await runExtraction(vi.fn(), true);
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(smartScrapeMock).toHaveBeenCalledTimes(1);
+    expect(smartScrapeMock.mock.calls[0][0].prompt).toBe("PRIMARY-PROMPT");
+    expect(result.extractedDataArray).toEqual([]);
   });
 });

@@ -10,8 +10,11 @@
  * was missing, truncated, unparseable, or schema-invalid. Provider, auth,
  * policy, quota, and cost failures are never retried here.
  *
- * Callers pass generateCompletions in. llmExtract.ts imports this module, so a
- * static import back would be circular and would bypass test mocks of it.
+ * Callers pass generateCompletions in, so the caller (and its test mocks)
+ * controls which implementation runs. This module still imports
+ * normalizeJsonSchemaForModel from llmExtract.ts, which imports this module
+ * back. That cycle is safe: each side only uses the other at call time, never
+ * while the modules load.
  */
 import { NoObjectGeneratedError } from "ai";
 import Ajv from "ajv";
@@ -247,22 +250,14 @@ function failureWarning(prefix: string, error: unknown): string {
 }
 
 /**
- * Returns a drop-in for extractData's generateCompletions. With a schema, the
+ * Drop-in for extractData's generateCompletions call. With a schema, the
  * returned extract carries only schema-valid data: the SmartScrape envelope
  * with a validated `extractedData` when `wrapForSmartScrape`, otherwise the
  * validated user data itself; undefined data when no attempt validated.
  * Errors that extractData's catch already handles (cost limit, a primary
  * failure that is not retried) are rethrown unchanged.
  */
-export function validatedGenerate(
-  generate: Generate,
-  wrapForSmartScrape: boolean,
-) {
-  return (options: GenerateCompletionsOptions) =>
-    generateValidated(generate, wrapForSmartScrape, options);
-}
-
-async function generateValidated(
+export async function generateValidated(
   generate: Generate,
   wrapForSmartScrape: boolean,
   options: GenerateCompletionsOptions,

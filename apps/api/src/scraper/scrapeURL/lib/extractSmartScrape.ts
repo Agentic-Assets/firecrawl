@@ -6,7 +6,7 @@ import {
   generateSchemaFromPrompt,
 } from "../transformers/llmExtract";
 import { smartScrape } from "./smartScrape";
-import { validatedGenerate } from "./structuredOutputFallback";
+import { generateValidated } from "./structuredOutputFallback";
 import {
   checkForPromptInjection,
   createPromptInjectionGuardLimiter,
@@ -401,19 +401,22 @@ export async function extractData({
     totalUsage: TokenUsage | undefined;
 
   // Fork: schema validation and the one-time structured-output fallback.
-  const generate = validatedGenerate(generateCompletions, wrapForSmartScrape);
   try {
-    const completion = await generate({
-      ...extractOptionsNewSchema,
-      costTrackingOptions: {
-        costTracking: extractOptions.costTrackingOptions.costTracking,
-        metadata: {
-          module: "scrapeURL",
-          method: "extractData",
-          description: "Check if using smartScrape is needed for this case",
+    const completion = await generateValidated(
+      generateCompletions,
+      wrapForSmartScrape,
+      {
+        ...extractOptionsNewSchema,
+        costTrackingOptions: {
+          costTracking: extractOptions.costTrackingOptions.costTracking,
+          metadata: {
+            module: "scrapeURL",
+            method: "extractData",
+            description: "Check if using smartScrape is needed for this case",
+          },
         },
       },
-    });
+    );
     extract = completion.extract;
     warning = completion.warning;
     totalUsage = completion.totalUsage;
