@@ -4,6 +4,8 @@
 
 Verified locally on 2026-08-13 after rebuilding the OrbStack Docker stack and testing the API, CLI/MCP wrappers, and parser canaries.
 
+Entries on per-page PDF parser options, image OCR, the Hangar routes and compose passthrough were added after the 2026-10-09 upstream sync from the code, not from a live run against the stack.
+
 ### `POST /v2/scrape`
 - Best for: current typed scrape surface
 - Typical output: markdown, html/rawHtml, links, images, summary, JSON, attributes/query

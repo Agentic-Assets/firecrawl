@@ -155,7 +155,7 @@ The provider settings matter for summary, query, JSON extraction, and `/v2/extra
 
 ### Playwright sidecar behavior
 
-The `playwright-service` container is the engine behind the API's `playwright` scrape engine. Its `/scrape` route has one bounded deadline (the request `timeout`, or 15 s plus `wait_after_load` when omitted) and reports failures with distinct codes: `503 SCRAPE_ADMISSION_TIMEOUT` (queued or paced past the deadline, no browser context allocated), `504 SCRAPE_WORK_TIMEOUT` (deadline passed during navigation or reads), and a retryable `503 TARGET_DNS_UNAVAILABLE` (the target host could not be resolved). Targets that resolve to private or internal addresses, including IPv6 forms such as `[::7f00:1]`, return `200` with `pageStatusCode: 403`. The response includes the final landed `url`. Full table and limits: `apps/playwright-service-ts/README.md`. These changes need a `playwright-service` image rebuild (`docker compose build playwright-service`) to take effect.
+The `playwright-service` container is the engine behind the API's `playwright` scrape engine. Its `/scrape` route has one bounded deadline (the request `timeout`, or 15 s plus `wait_after_load` when omitted) and reports failures with distinct codes: `503 SCRAPE_ADMISSION_TIMEOUT` (queued or paced past the deadline, no browser context allocated), `504 SCRAPE_WORK_TIMEOUT` (deadline passed during navigation or reads), and a retryable `503 TARGET_DNS_UNAVAILABLE` (the target host could not be resolved). Targets that resolve to private or internal addresses, including IPv6 forms such as `[::7f00:1]`, return `200` with `pageStatusCode: 403`. The response includes the final landed `url`. Full table and limits: `apps/playwright-service-ts/README.md`. These changes take effect only after a human operator (Cayman, in a maintenance window) rebuilds the `playwright-service` image (`docker compose build playwright-service`) and recreates the service; agents must not rebuild or recreate the live :3002 stack.
 
 ## 3. Local API Quick Use
 
@@ -365,7 +365,7 @@ Prefer upstream for product/API/SDK/security files. Prefer this fork for local o
 
 ### Local proof instead of CI
 
-Hosted GitHub Actions are disabled on this fork, so a green PR does not mean anything was run. Run the relevant checks locally before review and list them in the PR body: `pnpm knip` and a typecheck in `apps/api`, `pnpm harness vitest run <pattern>` for the touched snips, `pnpm test` in `apps/playwright-service-ts`, and the Python tests under `scripts/firecrawl-ops/tests` for ops-layer changes.
+Hosted GitHub Actions are disabled on this fork, so a green PR does not mean anything was run. Run the relevant checks locally before review and list them in the PR body: `pnpm build` (tsc typecheck) and `pnpm knip` in `apps/api`, `pnpm harness vitest run <pattern>` for the touched snips, `npx tsc --noEmit -p .` and `pnpm test` in `apps/playwright-service-ts`, and `python3 -m unittest discover -s scripts/firecrawl-ops/tests` for ops-layer changes. The `scripts/firecrawl-ops/cre_collector` suites (`npm test` and `python3 -m pytest tests/ -q`, run from that directory) must run only from a separate `git clone --no-hardlinks`, never a worktree, because their lock lookup resolves to the live checkout's `out/daily/.cre.lock`.
 
 ### Post-sync API testing (Vitest)
 

@@ -61,10 +61,10 @@ When a scrape fails through the `playwright` engine, check the sidecar status co
 - `503 SCRAPE_ADMISSION_TIMEOUT`: the request waited for a browser-page permit (or the optional pacer) past its deadline and no browser context was allocated. Under saturation, untimed v2 scrape and crawl requests hit this after about 15 s. Check `docker compose logs playwright-service`, the `/health` `activePages` count, and `MAX_CONCURRENT_PAGES` (compose: `PLAYWRIGHT_MAX_CONCURRENT_PAGES`).
 - `504 SCRAPE_WORK_TIMEOUT`: the deadline passed during navigation or body reads.
 - `503 TARGET_DNS_UNAVAILABLE`: the target host did not resolve, so nothing was fetched; retry later.
-- `503 SCRAPE_RESOURCE_LEAK`: a partial browser context could not be confirmed closed and its permit is quarantined; restart `playwright-service`.
+- `503 SCRAPE_RESOURCE_LEAK`: a partial browser context could not be confirmed closed and its permit is quarantined. A human operator (Cayman, in a maintenance window) may restart `playwright-service` once no CRE refresh is running; agents must not restart or recreate the live :3002 stack.
 - `200` with `pageStatusCode: 403`: the target resolved to a private or internal address and was blocked by design.
 
-The full table, the 24 h caps on `timeout` and `wait_after_load`, and the opt-in `SCRAPE_START_INTERVAL_MS` pacer are in `apps/playwright-service-ts/README.md`. A sidecar code change needs `docker compose build playwright-service` and a recreate to take effect.
+The full table, the 24 h caps on `timeout` and `wait_after_load`, and the opt-in `SCRAPE_START_INTERVAL_MS` pacer are in `apps/playwright-service-ts/README.md`. A sidecar code change takes effect only after a human operator (Cayman, in a maintenance window) rebuilds (`docker compose build playwright-service`) and recreates the service; agents must not do either on the live :3002 stack.
 
 ## Local CLI
 Use the wrapper so the upstream Firecrawl CLI always targets the self-hosted API:
@@ -274,7 +274,7 @@ scripts/firecrawl-ops/pdf_ocr_benchmark.py ./report.pdf \
 The benchmark preflights fake `.pdf` downloads, restarts the adapter between OCR profiles unless `--no-profile-restart` is passed, saves split markdown/html/metadata fields, writes `fields/pages.jsonl`, and adds per-case `qa.json` / `qa.md`. The root `summary.md` includes accept/reject/manual-review guidance plus a recommended mode/profile per PDF.
 
 ## Local proof instead of CI
-Hosted GitHub Actions are disabled on this fork, and only five manual `workflow_dispatch` image deploy and cleanup workflows remain. A PR therefore has no automated checks; run the relevant local commands (see `AGENTS.md`, "Working in `apps/api`") and record them under `## Proof` in the PR body. For stack-level changes also run `scripts/firecrawl-ops/firecrawl_healthcheck.sh` and `scripts/firecrawl-ops/local_api_smoke_matrix.py`.
+Hosted GitHub Actions are disabled on this fork, and only five manual `workflow_dispatch` image deploy and cleanup workflows remain. A PR therefore has no automated checks; run the relevant local commands (see `AGENTS.md`, "Working in `apps/api`") and record them under `## Proof` in the PR body. For stack-level changes also run `scripts/firecrawl-ops/firecrawl_healthcheck.sh --evidence-dir .scratch/firecrawl-healthcheck` and `scripts/firecrawl-ops/local_api_smoke_matrix.py --out-dir .scratch/local-api-smoke` so output lands in ignored `.scratch/`.
 
 ## Upstream sync
 Use a branch and merge commit so fork-specific ops assets remain easy to review:
