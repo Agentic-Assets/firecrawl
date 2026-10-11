@@ -68,14 +68,16 @@ python3 cre_checkpoint_refresh.py \
 ```
 
 `--source-workers` defaults to `1`, preserving serial source preparation. It
-is an explicit, opt-in collection-only pool, capped at `2`; it does not change
+is an explicit, opt-in collection-only pool, capped at `4`; it does not change
 the per-source `--concurrency` setting and it never permits concurrent ingest.
 The checkpoint coordinator remains the only manifest writer, waits until every
 selected artifact is collected and validated, then runs each gate and dry-run,
 one aggregate gate, and deterministic serial additive ingests. Colliers Main
 is exclusive; the JLL, CBRE, and Buildout source families each share a provider
-lane. Use the default until a specific two-source pairing has its own
-no-write calibration evidence. A source failure, rejected artifact, gate, or
+lane. Four workers are available for explicitly authorized supervised
+calibration; use the default until the selected cohort has its own no-write
+calibration evidence. `cre_checkpoint_series.py` remains serial and does not
+expose this option. A source failure, rejected artifact, gate, or
 dry-run failure prevents aggregate admission and every database write.
 
 ### CPU safety and evidence
