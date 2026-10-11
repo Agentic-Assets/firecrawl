@@ -40,6 +40,7 @@ from cre_checkpoint_refresh import (
     validate_run_id,
 )
 from cre_inventory_generation import publish_series_health
+from cre_performance_report import save_report
 from cre_resource_recovery import (
     DEFAULT_LOW_CPU_PERCENT,
     DEFAULT_LOW_CPU_SECONDS,
@@ -1755,6 +1756,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             finally:
                 signal.signal(signal.SIGTERM, previous_sigterm)
+                save_report(series_dir)
     except RecoveryOwnershipError as exc:
         raise SeriesError(str(exc)) from exc
 

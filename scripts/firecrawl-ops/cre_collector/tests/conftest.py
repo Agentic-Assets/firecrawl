@@ -30,6 +30,7 @@ import stat
 import subprocess
 import sys
 import warnings
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,16 @@ if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
 import cre_checkpoint_refresh as _refresh
+import cre_checkpoint_series as _series
+
+
+@pytest.fixture(autouse=True)
+def _offline_refresh_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Main-path tests inject diagnostics; never inspect the operator's host."""
+    monkeypatch.setattr(_refresh, "observe_resource_usage", lambda *_a, **_kw: nullcontext())
+    monkeypatch.setattr(_refresh, "capture_runtime_configuration", lambda *_a, **_kw: None)
+    monkeypatch.setattr(_refresh, "save_report", lambda *_a, **_kw: None)
+    monkeypatch.setattr(_series, "save_report", lambda *_a, **_kw: None)
 
 # `canonical_shared_lock_dir()` resolves the real lock dir via
 # `git rev-parse --path-format=absolute --git-common-dir` (with `check=True`,

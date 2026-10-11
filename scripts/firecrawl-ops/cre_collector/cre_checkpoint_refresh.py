@@ -57,6 +57,8 @@ from cre_ingest import (
     to_row,
 )
 from cre_performance import capture_runtime_configuration, run_observed_command
+from cre_performance_report import save_report
+from cre_resource_usage import observe_resource_usage
 from cre_runtime_observability import append_incident
 from cre_source_policy import load_source_policy
 from cre_validate import LIFECYCLE_SCHEMA_CONTRACT_ITEMS
@@ -6179,7 +6181,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
-        with lock:
+        with lock, observe_resource_usage(
+            run_dir,
+            env=safe_process_env(),
+            cpu_sampler=DarwinCpuSampler(),
+            context_provider=lambda: dict(cpu_guard.incident_context),
+        ):
             if not args.resume:
                 capture_runtime_configuration(run_dir)
             initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
@@ -6384,6 +6391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cpu_guard.stop()
         _clear_cpu_guard_trip()
         signal.signal(signal.SIGTERM, previous_sigterm)
+        save_report(run_dir)
 
 
 if __name__ == "__main__":

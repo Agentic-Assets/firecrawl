@@ -281,8 +281,11 @@ process liveness, scans unbound child runs, prints raw provider errors, calls
 the database or alters the running series. Recorded state and manifest age
 remain visible so a stopped viewer cannot imply that a process is alive.
 
-For optimization data, the checkpoint runner also saves body-free command
-journals and per-invocation scraper snapshots automatically. Read their
+For optimization data, the checkpoint runner saves body-free command journals,
+per-invocation scraper snapshots and a five-second resource timeline automatically.
+Checkpoint and series exits also save `performance-report.json` and
+`performance-report.md`, including interrupted and failed runs when their
+manifest is available. Read their
 performance report without calling the database or the scraper:
 
 ```bash
@@ -290,10 +293,13 @@ python3 cre_performance_report.py
 python3 cre_performance_report.py out/checkpoint-series/SERIES_ID --json
 ```
 
-The compact Terminal report shows staged rows and the slowest measured command
-phase. JSON adds invocation identity, retry/backoff, approximate request latency,
-locally awaited concurrency, accepted JLL cache hits, sampled Node resources,
-and bounded host-CPU evidence. Unmeasured or stale evidence is explicit, not zero.
+The report separates source outcomes and staged rows from shared coordinator
+phases and machine usage. Resource evidence includes host CPU, load, memory
+pressure, compressed memory, swap and disk space; owned process RSS; and the
+selected API/browser containers with their configured limits. It labels sample
+coverage, gaps and sampled maxima. JSON also includes invocation identity,
+retry/backoff, approximate request latency, locally awaited concurrency, accepted
+JLL cache hits and sampled Node resources. Unmeasured or stale evidence is explicit, not zero.
 Old runs do not gain historical timings retroactively. Request success and field
 presence are not proof of accurate, complete listings or successful ingestion.
 Definitions, saved file names, retention and interpretation:

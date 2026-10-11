@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from cre_ingest import SOURCE_TO_BROKERAGE
 
@@ -35,13 +36,14 @@ MAX_JOURNAL_BYTES = 1024 * 1024
 MAX_RUNTIME_BYTES = 64 * 1024
 MAX_RUNTIME_OUTPUT_BYTES = 64 * 1024
 
-_RUNTIME_CONTAINER_NAMES = (
-    "firecrawl-api-1",
-    "firecrawl-playwright-service-1",
-)
+_RUNTIME_SERVICES = frozenset({"api", "playwright-service"})
 _RUNTIME_INSPECT_FORMAT = (
     '{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Image}},'
     '"started_at":{{json .State.StartedAt}},'
+    '"running":{{json .State.Running}},'
+    '"oom_killed":{{json .State.OOMKilled}},"restart_count":{{json .RestartCount}},'
+    '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
+    '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
     '"nano_cpus":{{json .HostConfig.NanoCpus}},'
     '"memory":{{json .HostConfig.Memory}},'
     '"memory_swap":{{json .HostConfig.MemorySwap}},'
@@ -364,7 +366,7 @@ def _runtime_container(value: object) -> dict[str, object] | None:
     shm_size = _positive_bounded_int(value.get("shm_size"), maximum=2**63 - 1)
     ports = _runtime_ports(value.get("ports"))
     if (
-        name not in _RUNTIME_CONTAINER_NAMES
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", name) is None
         or not isinstance(container_id, str)
         or _CONTAINER_ID_PATTERN.fullmatch(container_id) is None
         or not isinstance(image, str)
@@ -413,12 +415,177 @@ def _parse_runtime_inspect(output: str) -> list[dict[str, object]] | None:
         row = _runtime_container(parsed)
         if row is None:
             return None
+        project = parsed.get("project")
+        service = parsed.get("service")
+        if (
+            not isinstance(project, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", project) is None
+            or service not in _RUNTIME_SERVICES
+            or type(parsed.get("running")) is not bool
+            or type(parsed.get("oom_killed")) is not bool
+            or _positive_bounded_int(parsed.get("restart_count"), maximum=1_000_000_000)
+            is None
+        ):
+            return None
+        row.update(
+            project=project,
+            service=service,
+            running=parsed["running"],
+            oom_killed=parsed["oom_killed"],
+            restart_count=parsed["restart_count"],
+        )
         rows.append(row)
-    if len(rows) != len(_RUNTIME_CONTAINER_NAMES) or {
-        row["name"] for row in rows
-    } != set(_RUNTIME_CONTAINER_NAMES):
+    if (
+        len(rows) != 2
+        or {row["service"] for row in rows} != _RUNTIME_SERVICES
+        or len({row["project"] for row in rows}) != 1
+        or len({row["id"] for row in rows}) != 2
+    ):
         return None
     return sorted(rows, key=lambda row: str(row["name"]))
+
+
+def runtime_api_endpoint(env: Mapping[str, str] | None = None) -> str | None:
+    """Return only a credential-free loopback API origin, never caller text."""
+    environment = os.environ if env is None else env
+    # Match lib/config.ts: FIRECRAWL_API_URL ?? default. API_URL is not read
+    # by the collector, and an explicitly empty override is invalid.
+    raw = environment.get("FIRECRAWL_API_URL", "http://localhost:3002")
+    try:
+        value = urlsplit(raw)
+        port = 80 if value.port is None else value.port
+        if (
+            not 1 <= port <= 65535
+            or value.scheme != "http"
+            or value.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or value.username is not None
+            or value.password is not None
+            or value.path not in {"", "/"}
+            or value.query
+            or value.fragment
+        ):
+            return None
+    except (TypeError, ValueError):
+        return None
+    host = f"[{value.hostname}]" if value.hostname == "::1" else value.hostname
+    return f"http://{host}:{port}"
+
+
+def resolve_runtime_target(
+    env: Mapping[str, str] | None = None, *, deadline: float | None = None
+) -> dict[str, object]:
+    """Bind read-only diagnostics to selected Compose IDs and the API port.
+
+    Compose selection honors the caller's COMPOSE_FILE/COMPOSE_PROJECT_NAME.
+    A custom endpoint without a matching selection is unavailable, never a
+    reason to fall back to a different stack's familiar container names.
+    """
+    environment = dict(os.environ if env is None else env)
+    endpoint = runtime_api_endpoint(environment)
+    base: dict[str, object] = {
+        "availability": "unavailable",
+        "unavailable_code": None,
+        "api_endpoint": endpoint,
+        "project": None,
+        "containers": [],
+    }
+    if endpoint is None:
+        return {**base, "unavailable_code": "invalid_api_endpoint"}
+
+    def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        remaining = 2.0 if deadline is None else min(2.0, deadline - time.monotonic())
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(argv, 0)
+        return subprocess.run(
+            argv,
+            cwd=Path(__file__).resolve().parents[3],
+            env=environment,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=remaining,
+        )
+
+    try:
+        selected = run(
+            ["docker", "compose", "ps", "--all", "--quiet", "api", "playwright-service"]
+        )
+        if selected.returncode != 0:
+            return {**base, "unavailable_code": "compose_selection_failed"}
+        if len(selected.stdout.encode()) > MAX_RUNTIME_OUTPUT_BYTES:
+            return {**base, "unavailable_code": "invalid_container_selection"}
+        ids = selected.stdout.splitlines()
+        if (
+            len(ids) != 2
+            or len(set(ids)) != 2
+            or any(_CONTAINER_ID_PATTERN.fullmatch(item) is None for item in ids)
+        ):
+            return {**base, "unavailable_code": "invalid_container_selection"}
+        inspected = run(
+            [
+                "docker",
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                _RUNTIME_INSPECT_FORMAT,
+                *ids,
+            ]
+        )
+        if inspected.returncode != 0:
+            return {**base, "unavailable_code": "inspect_failed"}
+        containers = _parse_runtime_inspect(inspected.stdout)
+        if (
+            containers is None
+            or any(
+                sum(str(row["id"]).startswith(item) for row in containers) != 1
+                for item in ids
+            )
+            or any(
+                sum(str(row["id"]).startswith(item) for item in ids) != 1
+                for row in containers
+            )
+        ):
+            return {**base, "unavailable_code": "invalid_output"}
+        project = containers[0]["project"]
+        if environment.get("COMPOSE_PROJECT_NAME") not in {None, "", project}:
+            return {**base, "unavailable_code": "project_mismatch"}
+        base.update(project=project, containers=containers)
+        if not all(row["running"] for row in containers):
+            return {**base, "unavailable_code": "container_not_running"}
+        api = next(row for row in containers if row["service"] == "api")
+        origin = urlsplit(endpoint)
+        port = origin.port
+        api_raw = next(
+            json.loads(line)
+            for line in inspected.stdout.splitlines()
+            if json.loads(line)["id"] == api["id"]
+        )
+        published_hosts = {
+            binding.get("HostIp")
+            for key, bindings in api_raw["ports"].items()
+            if key == "3002/tcp" and isinstance(bindings, list)
+            for binding in bindings
+            if binding.get("HostPort") == str(port)
+        }
+        ipv4_bound = bool(published_hosts & {"", "127.0.0.1", "0.0.0.0"})
+        ipv6_bound = bool(published_hosts & {"::", "::1"})
+        # localhost may resolve to either family. A single-family selection
+        # cannot exclude a second stack owning the other loopback on this port.
+        bound = (
+            ipv4_bound and ipv6_bound
+            if origin.hostname == "localhost"
+            else ipv4_bound
+            if origin.hostname == "127.0.0.1"
+            else ipv6_bound
+        )
+        if not bound:
+            return {**base, "unavailable_code": "api_port_mismatch"}
+        return {**base, "availability": "available"}
+    except subprocess.TimeoutExpired:
+        return {**base, "unavailable_code": "inspect_timeout"}
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return {**base, "unavailable_code": "docker_unavailable"}
 
 
 def _hardware_configuration() -> dict[str, int | None]:
@@ -436,6 +603,26 @@ def _hardware_configuration() -> dict[str, int | None]:
         memory_bytes = None
     if type(memory_bytes) is not int or not 1 <= memory_bytes <= 2**63 - 1:
         memory_bytes = None
+        if sys.platform == "darwin":
+            try:
+                result = subprocess.run(
+                    ["/usr/sbin/sysctl", "-n", "hw.memsize"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=1.0,
+                )
+                raw_memory = result.stdout.strip()
+                if (
+                    result.returncode == 0
+                    and raw_memory.isascii()
+                    and raw_memory.isdigit()
+                    and len(raw_memory) <= 19
+                    and 1 <= int(raw_memory) <= 2**63 - 1
+                ):
+                    memory_bytes = int(raw_memory)
+            except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+                pass
     return {
         "logical_cpu_count": logical_cpu_count,
         "memory_bytes": memory_bytes,
@@ -483,7 +670,9 @@ def _atomic_write_runtime(path: Path, value: Mapping[str, object]) -> None:
         temp.unlink(missing_ok=True)
 
 
-def capture_runtime_configuration(run_dir: Path) -> dict[str, object] | None:
+def capture_runtime_configuration(
+    run_dir: Path, *, env: Mapping[str, str] | None = None
+) -> dict[str, object] | None:
     """Write one bounded configuration snapshot without affecting workflow."""
     warning_emitted = False
 
@@ -503,43 +692,7 @@ def capture_runtime_configuration(run_dir: Path) -> dict[str, object] | None:
         warn_once()
         return None
 
-    containers: list[dict[str, object]] = []
-    availability = "available"
-    unavailable_code: str | None = None
-    inspect_argv = [
-        "docker",
-        "inspect",
-        "--type",
-        "container",
-        "--format",
-        _RUNTIME_INSPECT_FORMAT,
-        *_RUNTIME_CONTAINER_NAMES,
-    ]
-    try:
-        completed = subprocess.run(
-            inspect_argv,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=2.0,
-        )
-    except subprocess.TimeoutExpired:
-        availability = "unavailable"
-        unavailable_code = "inspect_timeout"
-    except (OSError, RuntimeError, ValueError):
-        availability = "unavailable"
-        unavailable_code = "docker_unavailable"
-    else:
-        if completed.returncode != 0:
-            availability = "unavailable"
-            unavailable_code = "inspect_failed"
-        else:
-            parsed = _parse_runtime_inspect(completed.stdout)
-            if parsed is None:
-                availability = "unavailable"
-                unavailable_code = "invalid_output"
-            else:
-                containers = parsed
+    target = resolve_runtime_target(env, deadline=time.monotonic() + 2.0)
 
     record: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
@@ -547,11 +700,9 @@ def capture_runtime_configuration(run_dir: Path) -> dict[str, object] | None:
         "run_id": run_id,
         "observed_at": utc_now(),
         "hardware": _hardware_configuration(),
-        "containers": containers,
-        "availability": availability,
-        "unavailable_code": unavailable_code,
+        **target,
     }
-    if unavailable_code is not None:
+    if target["unavailable_code"] is not None:
         warn_once()
     try:
         _atomic_write_runtime(run_dir / "runtime-performance.json", record)

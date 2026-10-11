@@ -17,7 +17,10 @@ python3 cre_performance_report.py out/checkpoint-series/SERIES_ID --json
 
 The first command watches progress. The performance report is a read-only,
 one-shot Terminal table or JSON object; omit its path to select the newest
-series. It also accepts a single-source checkpoint directory. No server,
+series. It also accepts a single-source or multi-source checkpoint directory.
+Checkpoint and series coordinators save `performance-report.json` and
+`performance-report.md` on exit, including ordinary failure and interrupt paths.
+To save an offline report explicitly, append `--out-dir REPORT_DIRECTORY`. No server,
 browser dashboard, tracing vendor, database connection or scheduler is added.
 
 ## Saved evidence and meanings
@@ -28,13 +31,14 @@ browser dashboard, tracing vendor, database connection or scheduler is added.
 | Validation query timings | `pre-validation.json` and `validation.json` under top-level `query_timings` | Per-query psql client elapsed milliseconds, keyed by the existing validation query name. This includes client-side result handling and is not pure server execution time. |
 | Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, client attempts, retry/backoff, latency histogram, locally awaited concurrency, JLL detail cache, source outcomes and sampled Node resources. |
 | Initial runtime configuration | `runtime-performance.json` | Known API/browser container IDs, image IDs and configured CPU/memory/PID/shared-memory/port limits, plus available host CPU/RAM configuration. One narrow read before the guard starts; not current usage. |
+| Resource timeline | `resource-usage.jsonl` | Five-second observations of host CPU/load, macOS memory categories/pressure/swap, filesystem capacity, owned process RSS and selected Compose API/browser container usage, limits and OOM/restart snapshots. Each resume has a distinct session ID and monotonic clock. |
 | Host guard | `logs/host-cpu-guard.jsonl` | Existing sampled host CPU and guard decisions, including unrelated applications. |
 | Incident evidence | `logs/cpu-incidents.jsonl` | Existing resource-stop context. This remains separate from optional performance diagnostics. |
 | Business evidence | Manifest-linked source JSON, gate, dry-run and readback artifacts | Source observations, retained structured detail and admission/ingestion proof. Never substitute request counts for these artifacts. |
 
 Snapshots are atomic replacements at most every 10 seconds as events occur,
-plus a final flush on normal completion/error unwinding. There is no new timer
-or signal handler. A stalled request can leave an older snapshot; abrupt process
+plus a final flush on normal completion/error unwinding. Scrape snapshots use their existing event-driven writer. Resource observations
+use a separate diagnostic thread; no signal handler is added. A stalled request can leave an older snapshot; abrupt process
 termination may leave no terminal record. The reader labels that uncertainty.
 Terminal means that snapshot was finalized, not that collection succeeded.
 
@@ -44,8 +48,13 @@ page bodies, broker/contact records, exception messages, command-line secrets
 or environment values. Sensitive raw business artifacts stay in their existing
 governed artifact locations, not in the optimization log.
 
-Runtime configuration uses one two-second read-only Docker inspect of the two
-known containers, never environment or secret fields. An unavailable sample
+Runtime configuration resolves the selected Compose project and services,
+checks the API loopback endpoint binding and reads narrow Docker inspect fields,
+never environment or secret fields. A stopped or unbound stack is unavailable,
+not evidence from a different default stack. Endpoint selection follows the
+collector's `FIRECRAWL_API_URL` setting; `API_URL` alone does not redirect the
+collector. A `localhost` endpoint requires compatible bindings for both address
+families; a single-family stack can be measured with its explicit loopback IP. An unavailable sample
 does not stop collection. Resuming a generation preserves its initial sample;
 the report explicitly does not claim that it describes the resumed runtime.
 The 64 KiB inspect limit validates output after subprocess capture; it is not a
@@ -81,6 +90,54 @@ Node RSS is a current sample and the maximum of those samples, not a true peak
 and not browser/API container memory. Process CPU is cumulative Node user/system
 microseconds. The report's CPU distribution uses at most the final 4 MiB of the
 guard log. A count of high samples is not a contiguous high-CPU duration.
+
+
+## Resource interpretation and older trials
+
+The resource sampler runs only while the foreground checkpoint owns its lock.
+It uses bounded read-only commands and an owner-only, no-follow journal capped
+at 16 MiB. Optional diagnostics never change a workflow return code or the
+existing CPU guard. Sampling stops before ownership is released. The standalone
+read-only check does not start Docker, collectors, database work or a scheduler:
+
+```bash
+python3 cre_resource_usage.py --out-dir /tmp/cre-resource-check --duration-seconds 20
+```
+
+Host CPU includes every application. Owned process CPU from `ps` is a lifetime
+average, not interval CPU; RSS aggregates can count shared pages more than once.
+macOS free, inactive, wired and compressed page categories are reported directly.
+Free pages alone do not establish usable RAM, and host RAM is not Docker VM RAM.
+Swap usage can predate a run. Pressure levels and swap counter changes provide
+additional context. Missing platform metrics remain unknown.
+
+Docker CPU percentage uses 100% per core; normalize against the measured CPU
+quota when available. Container memory limits and host RAM are separate limits.
+Network, block I/O, restart and process CPU counters are cumulative, not per-second rates. OOM-killed state and restart counts describe the observed container lifetime; they do not by themselves attribute an incident to this run.
+Sampled maxima can miss short spikes. Summaries show available sample counts,
+session bounds and gaps, and use duration weighting only across adjacent valid
+observations within the same session. They do not bridge resumes or cooldowns. Coverage describes the first-to-last
+observation window, without extrapolating the unsampled start or end. Series
+reports show the currently bound checkpoint for each source; earlier failed or
+recovery attempts remain in their own artifact directories and are not summed
+into a full-series resource total.
+Series-level machine data belongs to the coordinator; parallel source reports
+do not each claim all shared CPU or wall time.
+
+A bounded historical trial can be inspected without treating it as a canonical
+checkpoint generation:
+
+```bash
+python3 cre_performance_report.py --trial-dir /path/to/canary --out-dir /tmp/cre-trial-report
+```
+
+The importer reads only numeric and enum projections of the existing artifacts.
+It separates trial wall time, collector artifact timing and process polling
+completion times; reports sampled concurrency overlap; and distinguishes raw,
+staged, rejected and ingested counts. Missing historical host memory, request
+latency or instrumentation cannot be recovered. An exit code of zero is not
+quality or ingestion proof. A speedup requires a matched baseline with the same
+scope, cache policy, code and quality outcome; otherwise it remains unknown.
 
 ## Compare improvements without sacrificing data
 

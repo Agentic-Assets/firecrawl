@@ -590,6 +590,11 @@ def _runtime_inspect_output(*, extra: list[dict[str, object]] | None = None) -> 
         {
             "id": "a" * 64,
             "name": "/firecrawl-api-1",
+            "project": "firecrawl",
+            "service": "api",
+            "running": True,
+            "oom_killed": False,
+            "restart_count": 0,
             "image": f"sha256:{'b' * 64}",
             "started_at": "2026-09-13T12:00:00.123456789Z",
             "nano_cpus": 2_000_000_000,
@@ -600,15 +605,21 @@ def _runtime_inspect_output(*, extra: list[dict[str, object]] | None = None) -> 
             "ports": {
                 "3002/tcp": [
                     {
-                        "HostIp": "private-host-value-must-not-survive",
+                        "HostIp": "127.0.0.1",
                         "HostPort": "3002",
-                    }
+                    },
+                    {"HostIp": "::", "HostPort": "3002"},
                 ]
             },
         },
         {
             "id": "c" * 64,
             "name": "/firecrawl-playwright-service-1",
+            "project": "firecrawl",
+            "service": "playwright-service",
+            "running": True,
+            "oom_killed": False,
+            "restart_count": 0,
             "image": f"sha256:{'d' * 64}",
             "started_at": "not-a-timestamp",
             "nano_cpus": 1_500_000_000,
@@ -633,6 +644,10 @@ def test_runtime_configuration_uses_narrow_inspect_and_writes_safe_atomic_snapsh
     captured: dict[str, object] = {}
 
     def fake_run(argv, **kwargs):
+        if argv[1] == "compose":
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="a" * 64 + "\n" + "c" * 64 + "\n"
+            )
         captured.update(argv=argv, kwargs=kwargs)
         return subprocess.CompletedProcess(
             argv,
@@ -662,19 +677,19 @@ def test_runtime_configuration_uses_narrow_inspect_and_writes_safe_atomic_snapsh
     command = captured["argv"]
     assert command[:5] == ["docker", "inspect", "--type", "container", "--format"]
     assert command[-2:] == [
-        "firecrawl-api-1",
-        "firecrawl-playwright-service-1",
+        "a" * 64,
+        "c" * 64,
     ]
     serialized_command = " ".join(command)
     assert "Config.Env" not in serialized_command
     assert "Config.Image" not in serialized_command
     assert "docker stats" not in serialized_command
-    assert captured["kwargs"] == {
-        "capture_output": True,
-        "check": False,
-        "text": True,
-        "timeout": 2.0,
-    }
+    assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["check"] is False
+    assert captured["kwargs"]["text"] is True
+    assert 0 < captured["kwargs"]["timeout"] <= 2.0
+    assert captured["kwargs"]["cwd"] == Path(performance.__file__).resolve().parents[3]
+    assert isinstance(captured["kwargs"]["env"], dict)
 
     path = run_dir / "runtime-performance.json"
     written = json.loads(path.read_text(encoding="utf-8"))
@@ -685,6 +700,11 @@ def test_runtime_configuration_uses_narrow_inspect_and_writes_safe_atomic_snapsh
         {
             "id": "a" * 64,
             "name": "firecrawl-api-1",
+            "project": "firecrawl",
+            "service": "api",
+            "running": True,
+            "oom_killed": False,
+            "restart_count": 0,
             "image": f"sha256:{'b' * 64}",
             "started_at": "2026-09-13T12:00:00.123456Z",
             "cpu_limit": 2.0,
@@ -697,6 +717,11 @@ def test_runtime_configuration_uses_narrow_inspect_and_writes_safe_atomic_snapsh
         {
             "id": "c" * 64,
             "name": "firecrawl-playwright-service-1",
+            "project": "firecrawl",
+            "service": "playwright-service",
+            "running": True,
+            "oom_killed": False,
+            "restart_count": 0,
             "image": f"sha256:{'d' * 64}",
             "started_at": None,
             "cpu_limit": 1.5,
@@ -765,7 +790,11 @@ def test_runtime_configuration_records_only_bounded_unavailable_codes(
     run_dir = tmp_path / RUN_ID
     run_dir.mkdir()
 
-    def fake_run(*_args, **_kwargs):
+    def fake_run(argv, **_kwargs):
+        if argv[1] == "compose":
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="a" * 64 + "\n" + "c" * 64 + "\n"
+            )
         if side_effect is not None:
             raise side_effect
         return completed
@@ -806,7 +835,9 @@ def test_runtime_configuration_rejects_unapproved_container_inventory(
         lambda argv, **_kwargs: subprocess.CompletedProcess(
             argv,
             0,
-            stdout=_runtime_inspect_output(extra=[extra]),
+            stdout=("a" * 64 + "\n" + "c" * 64 + "\n")
+            if argv[1] == "compose"
+            else _runtime_inspect_output(extra=[extra]),
             stderr="",
         ),
     )
@@ -833,7 +864,9 @@ def test_runtime_configuration_refuses_symlink_target_and_preserves_data(
         lambda argv, **_kwargs: subprocess.CompletedProcess(
             argv,
             0,
-            stdout=_runtime_inspect_output(),
+            stdout=("a" * 64 + "\n" + "c" * 64 + "\n")
+            if argv[1] == "compose"
+            else _runtime_inspect_output(),
             stderr="",
         ),
     )
@@ -867,3 +900,202 @@ def test_runtime_configuration_invalid_run_id_never_invokes_docker(
     assert called is False
     assert not (run_dir / "runtime-performance.json").exists()
     assert capsys.readouterr().err == f"{performance.PERFORMANCE_WARNING}\n"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "host_ip", "backend", "expected"),
+    [
+        ("http://127.0.0.1:3302", "127.0.0.1", "3002/tcp", "available"),
+        ("http://127.0.0.1:3302", "0.0.0.0", "3002/tcp", "available"),
+        ("http://[::1]:3302", "::1", "3002/tcp", "available"),
+        ("http://localhost:3302", "::", "3002/tcp", "unavailable"),
+        ("http://localhost:3302", "127.0.0.1", "3002/tcp", "unavailable"),
+        ("http://localhost:3302", "dual", "3002/tcp", "available"),
+        ("http://127.0.0.1:3302", "::1", "3002/tcp", "unavailable"),
+        ("http://[::1]:3302", "127.0.0.1", "3002/tcp", "unavailable"),
+        ("http://127.0.0.1:3302", "127.0.0.2", "3002/tcp", "unavailable"),
+        ("http://127.0.0.1:3302", "127.0.0.1", "3000/tcp", "unavailable"),
+        ("http://127.0.0.1:3002", "127.0.0.1", "3002/tcp", "unavailable"),
+    ],
+)
+def test_custom_runtime_target_binds_project_api_backend_and_address_family(
+    monkeypatch, endpoint, host_ip, backend, expected
+):
+    rows = [json.loads(line) for line in _runtime_inspect_output().splitlines()]
+    for row in rows:
+        row["project"] = "capacity-trial"
+        row["name"] = row["name"].replace("firecrawl", "capacity-trial")
+    rows[0]["ports"] = {
+        backend: [
+            {"HostIp": host, "HostPort": "3302"}
+            for host in (["0.0.0.0", "::"] if host_ip == "dual" else [host_ip])
+        ]
+    }
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=(
+                "a" * 64 + "\n" + "c" * 64 + "\n"
+                if argv[1] == "compose"
+                else "\n".join(json.dumps(row) for row in rows)
+            ),
+        )
+
+    monkeypatch.setattr(performance.subprocess, "run", fake_run)
+    env = {
+        "FIRECRAWL_API_URL": endpoint,
+        "COMPOSE_PROJECT_NAME": "capacity-trial",
+        "COMPOSE_FILE": "/private/selected-compose.yaml",
+    }
+    result = performance.resolve_runtime_target(env)
+    assert result["availability"] == expected
+    assert result["api_endpoint"] == endpoint
+    assert result["project"] == "capacity-trial"
+    assert {row["id"] for row in result["containers"]} == {"a" * 64, "c" * 64}
+    assert calls[0][0] == [
+        "docker",
+        "compose",
+        "ps",
+        "--all",
+        "--quiet",
+        "api",
+        "playwright-service",
+    ]
+    assert calls[1][0][-2:] == ["a" * 64, "c" * 64]
+    assert calls[0][1]["env"] == env
+    assert "/private/" not in json.dumps(result)
+    if expected == "unavailable":
+        assert result["unavailable_code"] == "api_port_mismatch"
+
+
+@pytest.mark.parametrize(
+    "mutation,code",
+    [
+        ("stopped", "container_not_running"),
+        ("stopped_api", "container_not_running"),
+        ("project", "project_mismatch"),
+        ("foreign_id", "invalid_output"),
+        ("duplicate_role", "invalid_output"),
+        ("ambiguous_id", "invalid_output"),
+    ],
+)
+def test_runtime_selection_rejects_stopped_foreign_or_ambiguous_inventory(
+    monkeypatch, mutation, code
+):
+    rows = [json.loads(line) for line in _runtime_inspect_output().splitlines()]
+    selected = ["a" * 64, "c" * 64]
+    if mutation == "stopped":
+        rows[1]["running"] = False
+    elif mutation == "stopped_api":
+        rows[0]["running"] = False
+        rows[0]["ports"] = {"3002/tcp": None}
+    elif mutation == "project":
+        for row in rows:
+            row["project"] = "other-project"
+    elif mutation == "foreign_id":
+        rows[1]["id"] = "e" * 64
+    elif mutation == "duplicate_role":
+        rows[1]["service"] = "api"
+    else:
+        selected = ["a" * 12, "a" * 13]
+    monkeypatch.setattr(
+        performance.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout="\n".join(selected)
+            if argv[1] == "compose"
+            else "\n".join(json.dumps(row) for row in rows),
+        ),
+    )
+    result = performance.resolve_runtime_target({"COMPOSE_PROJECT_NAME": "firecrawl"})
+    assert result["availability"] == "unavailable"
+    assert result["unavailable_code"] == code
+    if mutation == "stopped":
+        assert result["containers"][1]["running"] is False
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "",
+        "http://user:secret@localhost:3002",
+        "https://localhost:3002",
+        "http://example.com:3002",
+        "http://127.0.0.1:0",
+        "http://localhost:3002/private?token=secret",
+    ],
+)
+def test_invalid_runtime_endpoint_never_inspects_default_stack(monkeypatch, endpoint):
+    monkeypatch.setattr(
+        performance.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("must not call Docker"),
+    )
+    result = performance.resolve_runtime_target({"FIRECRAWL_API_URL": endpoint})
+    assert result["unavailable_code"] == "invalid_api_endpoint"
+    assert result["api_endpoint"] is None
+    assert "secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("raw", [str(128 * 1024**3), "private-error", "-1", "9" * 100])
+def test_darwin_hardware_uses_bounded_sysctl_fallback(monkeypatch, raw):
+    monkeypatch.setattr(performance.sys, "platform", "darwin")
+
+    def unsupported(name):
+        raise ValueError("unrecognized configuration name")
+
+    monkeypatch.setattr(performance.os, "sysconf", unsupported)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout=raw)
+
+    monkeypatch.setattr(performance.subprocess, "run", fake_run)
+    result = performance._hardware_configuration()
+    assert result["memory_bytes"] == (
+        128 * 1024**3 if raw.isdigit() and len(raw) < 20 else None
+    )
+    assert calls[0][0] == ["/usr/sbin/sysctl", "-n", "hw.memsize"]
+    assert calls[0][1]["timeout"] == 1.0
+
+
+def test_runtime_api_url_only_never_attributes_custom_stack(monkeypatch):
+    rows = [json.loads(line) for line in _runtime_inspect_output().splitlines()]
+    rows[0]["ports"] = {
+        "3002/tcp": [
+            {"HostIp": "0.0.0.0", "HostPort": "3302"},
+            {"HostIp": "::", "HostPort": "3302"},
+        ]
+    }
+    monkeypatch.setattr(
+        performance.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout="a" * 64 + "\n" + "c" * 64
+            if argv[1] == "compose"
+            else "\n".join(json.dumps(row) for row in rows),
+        ),
+    )
+    result = performance.resolve_runtime_target({"API_URL": "http://localhost:3302"})
+    assert result["api_endpoint"] == "http://localhost:3002"
+    assert result["availability"] == "unavailable"
+    assert result["unavailable_code"] == "api_port_mismatch"
+    assert (
+        performance.runtime_api_endpoint({"API_URL": "private-ignored-value"})
+        == "http://localhost:3002"
+    )
+    assert (
+        performance.runtime_api_endpoint(
+            {"FIRECRAWL_API_URL": "", "API_URL": "http://localhost:3302"}
+        )
+        is None
+    )
