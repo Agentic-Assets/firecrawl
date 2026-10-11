@@ -2,7 +2,7 @@
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
-import { dedupeStrings, titleFromFilename } from "../lib/html.js";
+import { decodeHtmlEntities, dedupeStrings, titleFromFilename } from "../lib/html.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { detailObservation, refreshGenerationId } from "../lib/freshness.js";
@@ -513,8 +513,11 @@ export function transwesternDetailPageIsUsable(doc: ScrapedDoc, row: any): boole
     return false;
   }
   const $ = cheerio.load(doc.rawHtml);
+  // Public property pages without availability use this template instead of
+  // #tblAvailability. Require its property body as well as the outer shell.
   const structure =
-    $("#tblAvailability, .property-facts, .property-description, .property-detail").length > 0;
+    $("#tblAvailability, .property-facts, .property-description, .property-detail").length > 0 ||
+    $(".property-dtl .property-dscptn, .property-dtl #tblAttachments").length > 0;
   const heading = clean(
     $("h1").first().text() ||
       $('meta[property="og:title"]').attr("content") ||
@@ -527,6 +530,8 @@ export function transwesternDetailPageIsUsable(doc: ScrapedDoc, row: any): boole
     clean(row?.Address),
     clean(row?.StreetAddress),
   ]
+    .filter((value): value is string => !!value)
+    .map((value) => clean(decodeHtmlEntities(value)))
     .filter((value): value is string => !!value)
     .map((value) => value.toLowerCase());
   return Boolean(
