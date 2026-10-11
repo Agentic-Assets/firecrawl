@@ -8,8 +8,9 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import cre_checkpoint_refresh as refresh
 import pytest
+
+import cre_checkpoint_refresh as refresh
 
 SOURCES = (
     "transwestern",
@@ -73,7 +74,9 @@ class WriteFailingLog(io.StringIO):
         raise OSError("synthetic evidence write failure")
 
 
-def _new_manifest(run_dir: Path, *, sources: tuple[str, ...]) -> dict[str, Any]:
+def _new_manifest(
+    run_dir: Path, *, sources: tuple[str, ...], source_workers: int = 2
+) -> dict[str, Any]:
     run_dir.mkdir(parents=True)
     return refresh.new_manifest(
         run_dir,
@@ -82,7 +85,7 @@ def _new_manifest(run_dir: Path, *, sources: tuple[str, ...]) -> dict[str, Any]:
         sources=sources,
         page_cap=400,
         concurrency=2,
-        source_workers=2,
+        source_workers=source_workers,
     )
 
 
@@ -113,7 +116,7 @@ def _run_virtual_schedule(
     """Run the production coordinator against deterministic worker doubles."""
     run_dir = tmp_path / name
     sources = tuple(schedules)
-    manifest = _new_manifest(run_dir, sources=sources)
+    manifest = _new_manifest(run_dir, sources=sources, source_workers=source_workers)
     for source, count in (prior_attempts or {}).items():
         manifest["sources"][source]["attempts"] = [
             {
@@ -232,6 +235,12 @@ def _run_virtual_schedule(
             current_manifest["sources"][source]["state"] = "validated"
             existing = (canonical, {"staged_unique": 1})
         artifact_path, _stats = existing
+        if source_workers > 1:
+            assert not running, "admission overlapped an active collector"
+            assert all(
+                _valid_artifact(current_run_dir, current_manifest, key)
+                for key in sources
+            )
         admitted.append(source)
         outputs[source] = artifact_path.read_text(encoding="utf-8")
         return True
@@ -245,6 +254,7 @@ def _run_virtual_schedule(
 
     with monkeypatch.context() as patcher:
         patcher.setattr(refresh, "_start_cohort_collection", start)
+        patcher.setattr(refresh, "collector_runtime_dependency_error", lambda: None)
         patcher.setattr(refresh, "_finalize_cohort_collection", finalize)
         patcher.setattr(
             refresh,
@@ -304,6 +314,102 @@ def test_selector_excludes_active_identity_and_duplicate_pending_entries():
             ("transwestern", "transwestern"),
             source_workers=2,
         )
+
+
+@pytest.mark.parametrize("source_workers", [0, 5])
+def test_cli_rejects_pool_outside_one_to_four_before_preflight(
+    monkeypatch, capsys, source_workers
+):
+    monkeypatch.setattr(
+        refresh,
+        "checkpoint_lock_dir",
+        lambda _override: pytest.fail("invalid pool reached preflight"),
+    )
+    with pytest.raises(SystemExit) as stopped:
+        refresh.main(["--source-workers", str(source_workers)])
+    assert stopped.value.code == 2
+    assert "source-workers must be between 1 and 4" in capsys.readouterr().err
+
+
+def test_cli_admits_four_workers_to_preflight_without_starting_runtime(monkeypatch):
+    class PreflightReached(Exception):
+        pass
+
+    def stop_before_runtime(_override):
+        raise PreflightReached
+
+    monkeypatch.setattr(refresh, "checkpoint_lock_dir", stop_before_runtime)
+    with pytest.raises(PreflightReached):
+        refresh.main(["--source-workers", "4"])
+
+
+def test_four_workers_preserve_provider_lanes_and_exclusive_source(
+    tmp_path, monkeypatch
+):
+    schedules = {
+        "jll": [(4.0, 0)],
+        "jll-investor": [(1.0, 0)],
+        "cbre": [(3.0, 0)],
+        "cbre-dealflow": [(1.0, 0)],
+        "svn": [(2.0, 0)],
+        "lee-associates": [(1.0, 0)],
+        "transwestern": [(5.0, 0)],
+        "colliers-main": [(2.0, 0)],
+        "savills": [(1.0, 0)],
+    }
+    result = _run_virtual_schedule(
+        tmp_path,
+        monkeypatch,
+        name="four-provider-lanes",
+        source_workers=4,
+        schedules=schedules,
+    )
+    assert result["failures"] == []
+    assert result["max_running"] == 4
+    assert result["manifest"]["config"]["source_workers"] == 4
+    assert result["admitted"] == list(schedules)
+    assert set(result["outputs"]) == set(schedules)
+    launches = {item["source"]: item for item in result["launches"]}
+    for first, second in (
+        ("jll", "jll-investor"),
+        ("cbre", "cbre-dealflow"),
+        ("svn", "lee-associates"),
+    ):
+        assert launches[second]["started_at"] >= launches[first]["ready_at"]
+    exclusive = launches["colliers-main"]
+    for source, item in launches.items():
+        if source != "colliers-main":
+            assert (
+                item["ready_at"] <= exclusive["started_at"]
+                or item["started_at"] >= exclusive["ready_at"]
+            )
+
+
+def test_four_workers_reject_one_failed_artifact_before_any_admission(
+    tmp_path, monkeypatch
+):
+    result = _run_virtual_schedule(
+        tmp_path,
+        monkeypatch,
+        name="four-source-failure",
+        source_workers=4,
+        schedules={
+            "transwestern": [(4.0, 0)],
+            "savills": [(1.0, 1)],
+            "nai-global": [(2.0, 0)],
+            "marcus-millichap": [(3.0, 0)],
+        },
+    )
+    assert result["max_running"] == 4
+    assert result["failures"] == ["savills"]
+    assert len(result["finalized"]) == 4
+    assert result["admitted"] == []
+    assert result["outputs"] == {}
+    assert result["manifest"]["sources"]["savills"]["state"] == "collect_failed"
+    assert all(
+        result["manifest"]["sources"][source]["state"] == "validated"
+        for source in ("transwestern", "nai-global", "marcus-millichap")
+    )
 
 
 def test_collection_eligibility_uses_only_this_invocation_budget(
@@ -458,12 +564,14 @@ def test_valid_interrupted_ingest_uses_exact_recovery_before_collection(
     assert checkpoint["state"] == "ingested"
 
 
+@pytest.mark.parametrize("source_workers", [2, 4])
 def test_cleanup_reports_log_failure_after_every_child_is_reaped(
     tmp_path,
     monkeypatch,
+    source_workers,
 ):
-    processes = [CleanupProcess(9201), CleanupProcess(9202)]
-    logs = [WriteFailingLog(), io.StringIO()]
+    processes = [CleanupProcess(9201 + index) for index in range(source_workers)]
+    logs = [WriteFailingLog(), *(io.StringIO() for _ in range(source_workers - 1))]
     items = [
         refresh.CohortCollectionProcess(
             source=source,
@@ -474,7 +582,7 @@ def test_cleanup_reports_log_failure_after_every_child_is_reaped(
             attempt_started_at="2026-09-13T12:00:00+00:00",
         )
         for source, process, log in zip(
-            ("transwestern", "savills"), processes, logs, strict=True
+            SOURCES[:source_workers], processes, logs, strict=True
         )
     ]
     signals: list[tuple[int, signal.Signals]] = []
@@ -487,8 +595,9 @@ def test_cleanup_reports_log_failure_after_every_child_is_reaped(
     with pytest.raises(refresh.RefreshError, match="failed process or log evidence"):
         refresh._terminate_cohort_processes(items)
 
-    assert {pid for pid, sent in signals if sent == signal.SIGINT} == {9201, 9202}
-    assert {pid for pid, sent in signals if sent == signal.SIGKILL} == {9201, 9202}
+    expected_pids = {process.pid for process in processes}
+    assert {pid for pid, sent in signals if sent == signal.SIGINT} == expected_pids
+    assert {pid for pid, sent in signals if sent == signal.SIGKILL} == expected_pids
     assert all(process.reaped for process in processes)
     assert all(log.closed for log in logs)
 
@@ -536,22 +645,27 @@ def test_attempt_paths_are_isolated_and_stale_completion_is_rejected(tmp_path):
     assert not (run_dir / "sources" / "transwestern.json").exists()
 
 
-def test_uneven_workers_retry_without_duplicate_active_source(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source_workers", [2, 4])
+def test_uneven_workers_retry_without_duplicate_active_source(
+    tmp_path, monkeypatch, source_workers
+):
     result = _run_virtual_schedule(
         tmp_path,
         monkeypatch,
         name="uneven-retry",
-        source_workers=2,
+        source_workers=source_workers,
         schedules={
             "transwestern": [(3.0, 1), (2.0, 0)],
             "savills": [(1.0, 0)],
             "nai-global": [(4.0, 0)],
+            "marcus-millichap": [(2.0, 0)],
+            "matthews": [(1.0, 0)],
         },
     )
 
     assert result["failures"] == []
-    assert result["max_running"] == 2
-    assert result["admitted"] == ["transwestern", "savills", "nai-global"]
+    assert result["max_running"] == source_workers
+    assert result["admitted"] == list(SOURCES[:5])
     transwestern = [
         item for item in result["launches"] if item["source"] == "transwestern"
     ]
@@ -559,8 +673,7 @@ def test_uneven_workers_retry_without_duplicate_active_source(tmp_path, monkeypa
     assert transwestern[1]["started_at"] >= transwestern[0]["ready_at"]
     assert len({item["temporary_artifact"] for item in transwestern}) == 2
     assert result["outputs"] == {
-        source: f"canonical:{source}\n"
-        for source in ("transwestern", "savills", "nai-global")
+        source: f"canonical:{source}\n" for source in SOURCES[:5]
     }
 
 
@@ -586,9 +699,14 @@ def test_resume_receives_a_fresh_per_invocation_retry_budget(tmp_path, monkeypat
     assert result["manifest"]["sources"]["transwestern"]["state"] == "validated"
 
 
-def test_interrupt_reaps_distinct_active_attempts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source_workers", [2, 4])
+@pytest.mark.parametrize("stop_type", [KeyboardInterrupt, refresh.CpuGuardTrip])
+def test_interrupt_reaps_distinct_active_attempts(
+    tmp_path, monkeypatch, source_workers, stop_type
+):
     run_dir = tmp_path / "interrupt"
-    manifest = _new_manifest(run_dir, sources=("transwestern", "savills"))
+    sources = SOURCES[:source_workers]
+    manifest = _new_manifest(run_dir, sources=sources, source_workers=source_workers)
     clock = {"now": 0.0}
     signals: list[tuple[int, signal.Signals]] = []
     paths: list[Path] = []
@@ -625,7 +743,7 @@ def test_interrupt_reaps_distinct_active_attempts(tmp_path, monkeypatch):
     monkeypatch.setattr(
         refresh.time,
         "sleep",
-        lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt()),
+        lambda _seconds: (_ for _ in ()).throw(stop_type()),
     )
     monkeypatch.setattr(
         refresh.os,
@@ -633,22 +751,22 @@ def test_interrupt_reaps_distinct_active_attempts(tmp_path, monkeypatch):
         lambda pid, sent_signal: signals.append((pid, sent_signal)),
     )
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(stop_type):
         refresh.prepare_sources_cohort(
             run_dir,
             manifest,
-            ("transwestern", "savills"),
+            sources,
             page_cap=400,
             concurrency=2,
             attempts_this_run=2,
             env_file=None,
-            source_workers=2,
+            source_workers=source_workers,
         )
 
-    assert len(paths) == 2
-    assert len(set(paths)) == 2
+    assert len(paths) == source_workers
+    assert len(set(paths)) == source_workers
     assert all(path.exists() for path in paths)
-    assert len(signals) == 2
+    assert len(signals) == source_workers
     assert {sent_signal for _pid, sent_signal in signals} == {signal.SIGINT}
 
 

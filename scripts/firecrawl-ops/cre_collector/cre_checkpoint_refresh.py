@@ -5962,7 +5962,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=1,
         help=(
-            "opt-in bounded source collection workers (default: 1 serial). "
+            "opt-in bounded source collection workers (default: 1 serial, maximum: 4). "
             "Provider lanes and coordinator-only checkpoint finalization apply."
         ),
     )
@@ -6079,12 +6079,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "page-cap must be positive and concurrency must be between 1 and 6"
         )
-    # This is intentionally lower than the number of independent provider
-    # lanes.  Two workers lets a direct/API source overlap one heavy detail
-    # source without turning the first operational rollout into an unmeasured
-    # provider or local-queue stress test.
-    if not 1 <= args.source_workers <= 2:
-        parser.error("source-workers must be between 1 and 2")
+    # Wider pools are opt-in for supervised calibration. Provider lanes,
+    # exclusive sources, and coordinator-only admission still constrain them.
+    if not 1 <= args.source_workers <= 4:
+        parser.error("source-workers must be between 1 and 4")
     if args.attempts_per_source < 1:
         parser.error("attempts-per-source must be positive")
     if (

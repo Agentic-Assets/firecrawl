@@ -74,6 +74,15 @@ docker compose down
 - `apps/api/.env.example` is upstream's reference list of available variables. It is not a drop-in Docker Compose contract.
 - `apps/api/.env.local` is tracked upstream scaffolding and is not the Docker compose env file.
 
+For local scrape capacity, `SELF_HOSTED_CONCURRENCY_LIMIT` optionally sets the
+shared no-auth team's simultaneous scrape limit to an integer from 1 through
+32. It requires explicit `USE_DB_AUTHENTICATION=false`; absent or invalid values
+retain the upstream limit of 2. Hosted and preview limits are unaffected.
+Compose passes this setting with a default of 2. Increasing it requires measured
+browser and worker capacity; `PLAYWRIGHT_MAX_CONCURRENT_PAGES` is a separate
+limit. The CRE checkpoint refresh accepts an opt-in `--source-workers 4` for
+supervised collection calibration, with provider lanes and serial ingest.
+
 For an AI-backed local setup, a human operator creates a minimal root `.env` with the provider key from the approved secret workflow and the three reversible model keys below. The handoff requires `OPENAI_BASE_URL`, `MODEL_NAME`, and `MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK` to each appear exactly once in the file, so include all three (empty values are fine). Do not copy `apps/api/.env.example` wholesale and do not commit this file:
 
 ```dotenv

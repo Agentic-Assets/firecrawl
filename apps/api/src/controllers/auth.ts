@@ -1,5 +1,6 @@
 import { RateLimiterRedis } from "rate-limiter-flexible";
 import { isValidUuid } from "../lib/owner-id";
+import { selfHostedConcurrencyLimit } from "../lib/self-hosted-concurrency";
 import { config } from "../config";
 import { logger } from "../lib/logger";
 import { parseApi } from "../lib/parseApi";
@@ -167,6 +168,10 @@ const mockACUC: () => AuthCreditUsageChunk = () => ({
   is_banned: false,
   is_extract: false,
   ...DEFAULT_TEAM_LIMITS,
+  concurrency_limit: selfHostedConcurrencyLimit(
+    config.USE_DB_AUTHENTICATION,
+    DEFAULT_TEAM_LIMITS.concurrency_limit,
+  ),
 });
 
 /**
