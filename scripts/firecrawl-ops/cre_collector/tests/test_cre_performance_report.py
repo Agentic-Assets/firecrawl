@@ -487,3 +487,252 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
     assert scrape["requests"]["other_valid_statuses"] == 0
     assert scrape["successful_client_attempts_per_second"] == 2
     assert scrape["collector_process"]["rss_bytes"] == 200_000_000
+
+
+def test_multi_source_coordinator_filters_commands_and_labels_shared_resources(
+    tmp_path,
+):
+    run = checkpoint(tmp_path)
+    path = run / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["config"]["sources"] = ["jll", "cbre"]
+    manifest["sources"]["cbre"] = {
+        "state": "dry_run_failed",
+        "artifact": {"staged_unique": 4, "flat_listings": 6, "rejected_by_ingest": 2},
+    }
+    manifest["sources"]["jll"]["state"] = "complete"
+    write = journal(run)
+    records = [json.loads(line) for line in write.read_text().splitlines()]
+    for item in records:
+        item["source"] = "jll"
+    write.write_text("\n".join(json.dumps(item) for item in records))
+    path.write_text(json.dumps(manifest))
+    snapshot(run)
+    result = report.build_report(run, now=NOW)
+    jll, cbre = result["sources"]
+    assert jll["timed_command_seconds"] == {"collection": 20}
+    assert cbre["timed_command_seconds"] == {}
+    assert cbre["commands"] == []
+    assert cbre["source_elapsed_seconds"] is None
+    assert cbre["host_cpu"]["scope"] == "shared_coordinator"
+    assert cbre["resources"]["scope"] == "shared_coordinator"
+    assert cbre["status"] == "dry_run_failed"
+    rendered = report.render(result)
+    assert "Rejected" in rendered and "Readback" in rendered
+    assert "dry_run_failed" in rendered
+    assert result["comparison"]["speedup_percent"] is None
+
+
+def test_shared_coordinator_gate_is_reported_once(tmp_path):
+    run = checkpoint(tmp_path)
+    path = run / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["config"]["sources"] = ["jll", "cbre"]
+    manifest["sources"]["cbre"] = {}
+    path.write_text(json.dumps(manifest))
+    log = journal(run)
+    records = [json.loads(line) for line in log.read_text().splitlines()]
+    for item in records:
+        item["phase"] = "aggregate_gate"
+    log.write_text("\n".join(json.dumps(item) for item in records))
+    result = report.build_report(run, now=NOW)
+    assert len(result["shared_commands"]) == 1
+    assert all(row["commands"] == [] for row in result["sources"])
+
+
+def test_save_report_is_best_effort_and_writes_only_sanitized_projection(
+    tmp_path, monkeypatch, capsys
+):
+    run = checkpoint(tmp_path)
+    assert report.save_report(run) is True
+    saved = json.loads((run / "performance-report.json").read_text())
+    assert saved["collector_git_sha"] == SHA
+    assert "do-not-publish" not in json.dumps(saved)
+    assert (
+        "No matched quality-valid baseline"
+        in (run / "performance-report.md").read_text()
+    )
+
+    def broken(_path):
+        raise RuntimeError("private-token")
+
+    monkeypatch.setattr(report, "build_report", broken)
+    assert report.save_report(run) is False
+    assert "private-token" not in capsys.readouterr().err
+
+
+def test_output_replaces_file_symlink_without_following_it(tmp_path):
+    run = checkpoint(tmp_path)
+    secret = tmp_path / "private.txt"
+    secret.write_text("private-secret")
+    (run / "performance-report.json").symlink_to(secret)
+    report.write_report(report.build_report(run, now=NOW), run)
+    assert secret.read_text() == "private-secret"
+    assert not (run / "performance-report.json").is_symlink()
+
+
+def test_series_includes_child_resource_sessions_without_assuming_parent_usage(
+    tmp_path,
+):
+    root = tmp_path / SERIES
+    run = checkpoint(root / "runs")
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "series_id": SERIES,
+                "collector_git_sha": SHA,
+                "sources": {"jll": {"checkpoint_run": f"runs/{RUN}"}},
+            }
+        )
+    )
+    records = [
+        {
+            "schema_version": 1,
+            "kind": "cre_resource_usage",
+            "run_id": RUN,
+            "session_id": "a" * 32,
+            "observed_at": "2026-09-13T12:00:00Z",
+            "elapsed_seconds": 0,
+            "host": {"cpu_percent": 20},
+        },
+        {
+            "schema_version": 1,
+            "kind": "cre_resource_usage",
+            "run_id": RUN,
+            "session_id": "a" * 32,
+            "observed_at": "2026-09-13T12:00:05Z",
+            "elapsed_seconds": 5,
+            "host": {"cpu_percent": 30},
+        },
+    ]
+    (run / "resource-usage.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in records)
+    )
+    result = report.build_report(root, now=NOW)
+    assert result["resources"]["state"] == "unavailable"
+    assert (
+        result["sources"][0]["resources"]["sessions"][0]["metrics"]["cpu_percent"][
+            "mean"
+        ]
+        == 25
+    )
+    assert "Checkpoint resource evidence for jll" in report.render(result)
+    assert "prior failed/recovery attempts are not aggregated" in report.render(result)
+
+
+def test_custom_project_runtime_configuration_is_bound_to_project_and_service(tmp_path):
+    run = checkpoint(tmp_path)
+    value = {
+        "schema_version": 1,
+        "kind": "cre_runtime_performance",
+        "run_id": RUN,
+        "observed_at": "2026-09-13T12:00:00Z",
+        "availability": "available",
+        "project": "cre-trial",
+        "containers": [
+            {
+                "name": "cre-trial-api-1",
+                "project": "cre-trial",
+                "service": "api",
+                "running": True,
+                "id": "c" * 64,
+                "image": "sha256:" + "d" * 64,
+                "cpu_limit": 2,
+            }
+        ],
+    }
+    path = run / "runtime-performance.json"
+    path.write_text(json.dumps(value))
+    runtime = report.build_report(run, now=NOW)["sources"][0]["runtime_configuration"]
+    assert runtime["state"] == "available"
+    assert runtime["containers"][0]["project"] == "cre-trial"
+    value["containers"][0]["name"] = "canary-api"
+    path.write_text(json.dumps(value))
+    runtime = report.build_report(run, now=NOW)["sources"][0]["runtime_configuration"]
+    assert runtime["state"] == "available"
+    assert runtime["containers"][0]["name"] == "canary-api"
+    value["containers"][0]["name"] = "private/secret"
+    path.write_text(json.dumps(value))
+    runtime = report.build_report(run, now=NOW)["sources"][0]["runtime_configuration"]
+    assert runtime["state"] == "invalid"
+    assert "private/secret" not in json.dumps(runtime)
+
+
+def test_save_report_suppresses_writer_and_broken_stderr_failures(
+    tmp_path, monkeypatch
+):
+    run = checkpoint(tmp_path)
+
+    def broken_write(*_args):
+        raise OSError("private-secret")
+
+    class BrokenStream:
+        def write(self, _value):
+            raise RuntimeError("private-secret")
+
+    monkeypatch.setattr(report, "write_report", broken_write)
+    monkeypatch.setattr(report.sys, "stderr", BrokenStream())
+    assert report.save_report(run) is False
+
+
+def test_report_writer_creates_private_output_directory(tmp_path):
+    import stat
+
+    run = checkpoint(tmp_path)
+    out = tmp_path / "reports"
+    report.write_report(report.build_report(run, now=NOW), out)
+    assert stat.S_IMODE(out.stat().st_mode) == 0o700
+    assert (out / "performance-report.json").is_file()
+
+
+def test_coordinator_overlap_counts_duration_and_ignores_nonterminal_commands(tmp_path):
+    run = checkpoint(tmp_path)
+    path = run / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["config"]["sources"] = ["jll", "cbre", "svn"]
+    manifest["sources"].update(cbre={}, svn={})
+    path.write_text(json.dumps(manifest))
+    for source, offset, terminal in (
+        ("jll", 0, True),
+        ("cbre", 10, True),
+        ("svn", 15, False),
+    ):
+        log = f"{source}-collect.log"
+        base = {
+            "schema_version": 1,
+            "kind": "cre_command_performance",
+            "run_id": RUN,
+            "command_id": {"jll": "a", "cbre": "b", "svn": "c"}[source] * 32,
+            "command_log": log,
+            "phase": "collection",
+            "source": source,
+        }
+        records = [
+            {
+                **base,
+                "event": "started",
+                "outcome": "running",
+                "observed_at": f"2026-09-13T12:00:{offset:02d}Z",
+                "elapsed_seconds": 0,
+            }
+        ]
+        if terminal:
+            records.append(
+                {
+                    **base,
+                    "event": "finished",
+                    "outcome": "success",
+                    "observed_at": f"2026-09-13T12:00:{offset + 20:02d}Z",
+                    "elapsed_seconds": 20,
+                }
+            )
+        (run / "logs" / Path(log).with_suffix(".performance.jsonl")).write_text(
+            "\n".join(json.dumps(item) for item in records)
+        )
+    result = report.build_report(run, now=NOW)
+    measured = result["collection_overlap"]
+    assert measured["peak_overlapping_source_collections"] == 2
+    assert measured["seconds_by_active_sources"] == {"1": 20, "2": 10}
+    assert measured["summed_source_collection_seconds"] == 40
+    assert "subprocess wall-time overlap" in report.render(result)

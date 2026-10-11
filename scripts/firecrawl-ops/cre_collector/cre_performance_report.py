@@ -8,6 +8,8 @@ import json
 import math
 import os
 import re
+import sys
+import tempfile
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -16,7 +18,13 @@ from pathlib import Path
 from typing import Any
 
 from cre_ingest import SOURCE_TO_BROKERAGE
-from cre_series_status import _contained_path, _read_regular_file, resolve_series_path
+from cre_run_insights import build_trial_report, overlap, resource_report
+from cre_series_status import (
+    CHILD_STATES,
+    _contained_path,
+    _read_regular_file,
+    resolve_series_path,
+)
 
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_JOURNAL_BYTES = 1024 * 1024
@@ -352,6 +360,10 @@ def _commands(
                 "command_log": command_log,
                 "metrics_file": _safe_filename(value.get("metrics_file")),
                 "phase": value["phase"],
+                "source": value.get("source")
+                if isinstance(value.get("source"), str)
+                and value["source"] in SOURCE_TO_BROKERAGE
+                else None,
                 "event": value["event"],
                 "outcome": value["outcome"],
                 "observed_at": observed.isoformat(),
@@ -499,11 +511,27 @@ def _runtime(run_dir: Path, *, now: datetime) -> dict[str, Any]:
         return result
     for item in containers:
         record = _object(item)
+        project, service, name = (
+            record.get("project"),
+            record.get("service"),
+            record.get("name"),
+        )
+        legacy_name = (
+            _member(name, {"firecrawl-api-1", "firecrawl-playwright-service-1"})
+            and project is None
+            and service is None
+        )
+        bound_name = (
+            isinstance(project, str)
+            and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", project) is not None
+            and project == value.get("project")
+            and service in ("api", "playwright-service")
+            and isinstance(name, str)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}", name) is not None
+            and type(record.get("running")) is bool
+        )
         if (
-            not _member(
-                record.get("name"),
-                {"firecrawl-api-1", "firecrawl-playwright-service-1"},
-            )
+            not (legacy_name or bound_name)
             or not isinstance(record.get("id"), str)
             or not re.fullmatch(r"[0-9a-f]{12,64}", record["id"])
             or not isinstance(record.get("image"), str)
@@ -537,6 +565,10 @@ def _runtime(run_dir: Path, *, now: datetime) -> dict[str, Any]:
             if isinstance(ports, list) and len(ports) <= 256
             else [],
         }
+        if bound_name:
+            projected.update(
+                project=project, service=service, running=record["running"]
+            )
         if (
             type(record.get("memory_swap_limit_bytes")) is int
             and record["memory_swap_limit_bytes"] == -1
@@ -550,6 +582,9 @@ def _source_report(
     run_dir: Path, manifest: Mapping[str, Any], source: str, *, now: datetime
 ) -> dict[str, Any]:
     commands, warnings = _commands(run_dir, now=now)
+    multi_source = len(_object(manifest.get("config")).get("sources", [])) > 1
+    if multi_source:
+        commands = [command for command in commands if command["source"] == source]
     checkpoint = _object(_object(manifest.get("sources")).get(source))
     artifact = _object(checkpoint.get("artifact"))
     timing: dict[str, float] = {}
@@ -561,14 +596,38 @@ def _source_report(
     return {
         "source": source,
         "run_id": run_dir.name,
-        "status": manifest.get("status")
-        if _member(manifest.get("status"), STATUSES)
-        else "unknown",
-        "source_elapsed_seconds": _duration(
-            manifest.get("started_at"), manifest.get("finished_at")
+        "status": (
+            checkpoint.get("state")
+            if _member(checkpoint.get("state"), CHILD_STATES)
+            else "unknown"
+        )
+        if multi_source
+        else (
+            manifest.get("status")
+            if _member(manifest.get("status"), STATUSES)
+            else "unknown"
         ),
+        "source_elapsed_seconds": None
+        if multi_source
+        else _duration(manifest.get("started_at"), manifest.get("finished_at")),
         "timed_command_seconds": timing,
+        "collection_seconds": timing.get("collection"),
+        "raw_emitted_per_minute": round(
+            artifact["flat_listings"] * 60 / timing["collection"], 3
+        )
+        if _number(artifact.get("flat_listings")) is not None
+        and timing.get("collection", 0) > 0
+        else None,
+        "staged_unique_per_minute": round(
+            artifact["staged_unique"] * 60 / timing["collection"], 3
+        )
+        if _number(artifact.get("staged_unique")) is not None
+        and timing.get("collection", 0) > 0
+        else None,
         "staged_unique": _number(artifact.get("staged_unique")),
+        "raw_emitted_rows": _number(artifact.get("flat_listings")),
+        "fresh_qualified_unique": None,
+        "ingested_rows": None,
         "rejected_by_ingest": _number(artifact.get("rejected_by_ingest")),
         "acquisition_quality_signals": _numeric_fields(
             artifact,
@@ -586,8 +645,18 @@ def _source_report(
             else None
         ),
         "settings": _settings(manifest, source),
-        "host_cpu": _cpu(run_dir),
-        "runtime_configuration": _runtime(run_dir, now=now),
+        "host_cpu": {"scope": "shared_coordinator", "state": "see_run_resources"}
+        if multi_source
+        else _cpu(run_dir),
+        "runtime_configuration": {
+            "scope": "shared_coordinator",
+            "state": "see_run_resources",
+        }
+        if multi_source
+        else _runtime(run_dir, now=now),
+        "resources": {"scope": "shared_coordinator", "state": "see_run_resources"}
+        if multi_source
+        else resource_report(run_dir, now=now),
         "commands": commands,
         "warnings": warnings,
         "coverage": "command_subprocesses_not_all_inline_python_work",
@@ -664,46 +733,99 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
         if (
             not _schema(manifest.get("schema_version"), 2)
             or not isinstance(sources, list)
-            or len(sources) != 1
-            or not isinstance(sources[0], str)
-            or sources[0] not in SOURCE_TO_BROKERAGE
+            or not 1 <= len(sources) <= len(SOURCE_TO_BROKERAGE)
+            or any(
+                not isinstance(source, str) or source not in SOURCE_TO_BROKERAGE
+                for source in sources
+            )
+            or len(set(sources)) != len(sources)
             or generation != root.name
         ):
-            raise ValueError("expected a single-source checkpoint generation")
-        rows.append(_source_report(root, manifest, sources[0], now=now))
+            raise ValueError("expected a checkpoint generation")
+        rows.extend(
+            _source_report(root, manifest, source, now=now) for source in sources
+        )
     if not isinstance(generation, str) or not RUN_ID.fullmatch(generation):
         raise ValueError("invalid generation identity")
+    collection_intervals = []
+    for row in rows:
+        for command in row.get("commands", []):
+            start, end = (
+                _timestamp(command.get("started_at")),
+                _timestamp(command.get("observed_at")),
+            )
+            if (
+                command.get("phase") == "collection"
+                and command.get("event") in {"finished", "interrupted"}
+                and start is not None
+                and end is not None
+                and end >= start
+            ):
+                collection_intervals.append((start.timestamp(), end.timestamp()))
+    collection_overlap = overlap(collection_intervals)
+    collection_overlap["basis"] = (
+        "terminal_collection_subprocess_wall_timestamps_not_request_or_server_concurrency"
+    )
     return {
         "schema_version": 1,
         "kind": "cre_performance_report",
+        "resource_coverage": "current_bound_checkpoint_per_source_prior_failed_or_recovery_attempts_not_aggregated"
+        if "series_id" in manifest
+        else "current_checkpoint_sessions",
         "generation_id": generation,
         "collector_git_sha": sha,
         "computed_at": now.isoformat(),
         "sources": rows,
+        "run_elapsed_seconds": _duration(
+            manifest.get("started_at"), manifest.get("finished_at")
+        ),
+        "resources": resource_report(root, now=now),
+        "collection_overlap": collection_overlap,
+        "shared_commands": [
+            command
+            for command in _commands(root, now=now)[0]
+            if command["source"] is None
+        ]
+        if "series_id" not in manifest
+        else [],
+        "shared_host_cpu": _cpu(root) if "series_id" not in manifest else None,
+        "shared_runtime_configuration": _runtime(root, now=now)
+        if "series_id" not in manifest
+        else None,
+        "comparison": {
+            "state": "unavailable",
+            "speedup_percent": None,
+            "reason": "no_matched_quality_valid_baseline",
+        },
         "completeness_is_not_established_by_performance_metrics": True,
     }
 
 
 def render(report: Mapping[str, Any]) -> str:
+    if report.get("kind") == "cre_saved_trial_performance_report":
+        return _render_trial(report)
     lines = [
         f"CRE performance  {report['generation_id']}",
         f"Collector SHA    {report['collector_git_sha']}",
         "",
-        "Source                Staged   Timed commands   Slowest measured command phase",
+        "Source                Status                     Raw  Staged  Rejected  Readback   Timed commands",
     ]
     pending = 0
+    if report.get("resource_coverage", "").startswith("current_bound_checkpoint"):
+        lines.append(
+            "Coverage: current bound checkpoint per source; prior failed/recovery attempts are not aggregated. No full-series resource total is claimed."
+        )
     for row in report["sources"]:
         if row.get("coverage") == "not_started":
             pending += 1
             continue
         timings = row["timed_command_seconds"]
-        slowest = max(timings, key=timings.get) if timings else None
         staged = row.get("staged_unique")
         timed = f"{sum(timings.values()):.1f}s" if timings else "unknown"
         lines.append(
-            f"{row['source']:<21} {int(staged) if staged is not None else '?':>6}"
-            f"   {timed:>11}   "
-            + (f"{slowest}: {timings[slowest]:.1f}s" if slowest else "unknown")
+            f"{row['source']:<21} {row.get('status', 'unknown'):<26} "
+            f"{_display(row.get('raw_emitted_rows')):>4} {_display(staged):>7} "
+            f"{_display(row.get('rejected_by_ingest')):>9} {_display(row.get('database_readback_ok')):>9} {timed:>15}"
         )
         collection = [item for item in row["commands"] if item.get("scrape")]
         if collection:
@@ -712,7 +834,7 @@ def render(report: Mapping[str, Any]) -> str:
             lines.append(
                 f"  Latest scrape snapshot: {scrape['state']}; "
                 f"successful attempts/s={scrape['successful_client_attempts_per_second'] if scrape['successful_client_attempts_per_second'] is not None else '?'}; "
-                f"p95 upper-bound ms={requests['approximate_p95_ms'] if requests['approximate_p95_ms'] is not None else '?'}; "
+                f"per-command histogram p95 upper-bound ms={requests['approximate_p95_ms'] if requests['approximate_p95_ms'] is not None else '?'}; "
                 f"max locally awaited={requests['max_active_locally_awaited'] if requests['max_active_locally_awaited'] is not None else '?'}"
             )
         if row.get("warnings"):
@@ -724,6 +846,26 @@ def render(report: Mapping[str, Any]) -> str:
                 f"{pending} pending sources have not started; no performance measurements yet.",
             ]
         )
+    measured_overlap = _object(report.get("collection_overlap"))
+    if measured_overlap.get("peak_overlapping_source_collections") is not None:
+        lines.append(
+            "Collection subprocess overlap: peak="
+            + _display(measured_overlap["peak_overlapping_source_collections"])
+            + "; seconds by active subprocesses="
+            + ", ".join(
+                f"{width}={seconds}s"
+                for width, seconds in measured_overlap.get(
+                    "seconds_by_active_sources", {}
+                ).items()
+            )
+            + ". This is subprocess wall-time overlap, not request concurrency."
+        )
+    lines.extend(_render_resources(_object(report.get("resources"))))
+    if _object(report.get("resources")).get("state") != "observed":
+        for row in report["sources"]:
+            if _object(row.get("resources")).get("state") == "observed":
+                lines.append(f"Checkpoint resource evidence for {row['source']}:")
+                lines.extend(_render_resources(row["resources"]))
     lines.extend(
         [
             "",
@@ -731,9 +873,207 @@ def render(report: Mapping[str, Any]) -> str:
             "Latency is approximate; queue wait and direct-provider/cache coverage may be unknown.",
             "CPU is from bounded guard evidence; Node RSS is sampled, not a true peak.",
             "Use --json for command IDs, settings, retries/cache counters and evidence gaps.",
+            "No matched quality-valid baseline: speedup is unknown. Shared coordinator metrics are not source costs.",
         ]
     )
     return "\n".join(lines)
+
+
+def _display(value: object) -> str:
+    return "unknown" if value is None else str(value)
+
+
+def _gib(value: object) -> str:
+    numeric = _number(value)
+    return f"{numeric / 1024**3:.2f} GiB" if numeric is not None else "unknown"
+
+
+def _cpu_line(label: str, summary: Mapping[str, Any]) -> str:
+    return f"  {label}: mean/p50/p95={_display(summary.get('mean'))}/{_display(summary.get('p50'))}/{_display(summary.get('p95'))}%; sampled peak={_display(summary.get('sampled_max'))}%; duration-weighted estimate={_display(summary.get('duration_weighted_estimate'))}%; samples={_display(summary.get('sample_count'))}, window={_display(summary.get('window_seconds'))}s, covered={_display(summary.get('covered_seconds'))}s, gaps={_display(summary.get('uncovered_gap_seconds'))}s."
+
+
+def _render_resources(resources: Mapping[str, Any]) -> list[str]:
+    lines = ["", "Shared resources (sampled; no inferred speedup)"]
+    if resources.get("state") != "observed":
+        return lines + ["  Resource usage unknown: saved telemetry unavailable."]
+    sessions = resources.get("sessions", [])
+    groups = []
+    for index, session in enumerate(sessions):
+        label = f"session {index + 1}"
+        metrics = _object(session.get("metrics"))
+        groups.append((label, metrics))
+        lines.append(
+            f"  {label}: {session['sample_count']} observations; memory pressure samples={session.get('memory_pressure_samples', {})}; runtime availability samples={session.get('runtime_availability_samples', {})}; runtime gap codes={session.get('runtime_gap_code_samples', {})}."
+        )
+        lines.append(
+            f"  Host RAM={_gib(_object(metrics.get('memory_total_bytes')).get('last_observed'))}; Docker VM capacity={_gib(_object(metrics.get('docker_vm_memory_total_bytes')).get('last_observed'))}; compressed memory sampled peak={_gib(_object(metrics.get('vm_compressor_bytes')).get('sampled_max'))}."
+        )
+        swap = _object(metrics.get("swap_used_bytes"))
+        first, last = (
+            _number(swap.get("first_observed")),
+            _number(swap.get("last_observed")),
+        )
+        change = (
+            f"{(last - first) / 1024**3:+.2f} GiB"
+            if first is not None and last is not None
+            else "unknown"
+        )
+        lines.append(
+            f"  Swap used {_gib(first)} -> {_gib(last)} (observed change {change}; not attributed to this run); owned-process RSS sampled peak={_gib(_object(metrics.get('owned_processes_rss_bytes')).get('sampled_max'))}."
+        )
+        for container in session.get("containers", []):
+            restarts = _object(_object(container.get("metrics")).get("restart_count"))
+            lines.append(
+                f"  {label} {container['role']}: OOMKilled true snapshots={_display(container.get('oom_killed_true_snapshots'))} of {_display(container.get('oom_killed_observed_bool_snapshots'))} observed bool fields; restart counter {_display(restarts.get('first_observed'))} -> {_display(restarts.get('last_observed'))} (container-lifetime snapshots, not run-caused event counts)."
+            )
+            groups.append(
+                (
+                    f"session {index + 1} {container['role']}",
+                    _object(container.get("metrics")),
+                )
+            )
+    if not sessions:
+        groups.append(("trial", _object(resources.get("metrics"))))
+    for label, metrics in groups:
+        for key in (
+            "cpu_percent",
+            "host_cpu_percent",
+            "browser_cpu_percent",
+            "api_cpu_percent",
+            "cpu_percent_of_verified_quota",
+        ):
+            if key in metrics:
+                basis = (
+                    "total-machine CPU"
+                    if key == "host_cpu_percent"
+                    or (
+                        key == "cpu_percent"
+                        and not label.endswith((" api", " browser"))
+                    )
+                    else "verified-quota utilization"
+                    if key == "cpu_percent_of_verified_quota"
+                    else "Docker CPU (100%=one core)"
+                )
+                role = (
+                    key.split("_", 1)[0]
+                    if key in ("browser_cpu_percent", "api_cpu_percent")
+                    else ""
+                )
+                lines.append(
+                    _cpu_line(
+                        f"{label} {role + ' ' if role else ''}{basis}", metrics[key]
+                    )
+                )
+        for prefix in ("", "browser_", "api_"):
+            memory = _object(metrics.get(prefix + "memory_current_bytes"))
+            limit = _object(metrics.get(prefix + "memory_limit_bytes"))
+            utilization = _object(metrics.get(prefix + "memory_percent_of_limit"))
+            if memory or limit:
+                lines.append(
+                    f"  {label} {prefix}memory sampled peak={_gib(memory.get('sampled_max'))} / observed limit={_gib(limit.get('last_observed'))}; mean/p50/p95/peak limit utilization={_display(utilization.get('mean'))}/{_display(utilization.get('p50'))}/{_display(utilization.get('p95'))}/{_display(utilization.get('sampled_max'))}%; PID sampled peak={_display(_object(metrics.get(prefix + 'pids')).get('sampled_max'))}."
+                )
+        pages = _object(metrics.get("browser_active_pages"))
+        if pages:
+            lines.append(
+                f"  Browser pages: duration-weighted estimate={_display(pages.get('duration_weighted_estimate'))}; sampled peak={_display(pages.get('sampled_max'))}; observed capacity={_display(_object(metrics.get('browser_page_capacity')).get('last_observed'))}. Queue active/waiting sampled peaks={_display(_object(metrics.get('api_active_jobs')).get('sampled_max'))}/{_display(_object(metrics.get('api_waiting_jobs')).get('sampled_max'))}."
+            )
+    lines.append(
+        "  Duration weighting covers measured intervals within each session, excludes long gaps and does not span resume downtime."
+    )
+    lines.append(
+        "  Host CPU is total-machine 0–100%; Docker CPU uses 100%=one core; quota utilization is explicit. Owned-process CPU is a ps lifetime average. Sampled headroom does not establish a bottleneck."
+    )
+    return lines
+
+
+def _render_trial(report: Mapping[str, Any]) -> str:
+    lines = [
+        "CRE saved trial performance",
+        f"Recorded collector SHA {report['collector_git_sha']}",
+        f"Trial wall (includes bootstrap/polling/settlement): {_display(report.get('trial_wall_seconds'))}s",
+        "",
+        "Source                Quality              Raw  Staged  Collection s  Poll-observed process s",
+    ]
+    for row in report["sources"]:
+        lines.append(
+            f"{row['source']:<21} {row['status']:<20} {_display(row.get('raw_emitted_rows')):>4} {_display(row.get('staged_unique')):>7} {_display(row.get('collection_seconds')):>13} {_display(row.get('observed_process_seconds')):>24}"
+        )
+        if row.get("status") == "failed":
+            lines.append(
+                f"  Collector rc={_display(row.get('collector_returncode'))}; dry-run rc={_display(row.get('dry_run_returncode'))}; detail errors={_display(row.get('detail_errors'))}; failed transactions={','.join(row.get('failed_transactions', [])) or 'none recorded'}."
+            )
+    shared = report["overlap"]
+    lines.append(
+        f"Collection overlap: peak={_display(shared.get('peak_overlapping_source_collections'))}; window={_display(shared.get('collection_window_seconds'))}s; summed source time={_display(shared.get('summed_source_collection_seconds'))}s (not trial wall)."
+    )
+    lines.append(
+        "Observed collection overlap seconds by active sources: "
+        + ", ".join(
+            f"{width}={seconds}s"
+            for width, seconds in shared.get("seconds_by_active_sources", {}).items()
+        )
+    )
+    lines.extend(_render_resources(report["resources"]))
+    lines.extend(
+        [
+            "",
+            "Historical host memory, request latency and verified CPU quotas: unknown.",
+            "Collector exit 0 is not quality proof. Raw/staged rows are not proof of ingestion.",
+            "No matched quality-valid baseline: speedup is unknown.",
+        ]
+    )
+    if report.get("warnings"):
+        lines.append("Evidence: " + ", ".join(report["warnings"]))
+    return "\n".join(lines)
+
+
+def write_report(report: Mapping[str, Any], out_dir: Path) -> None:
+    """Atomically publish only the bounded, sanitized projection."""
+    if any(parent.is_symlink() for parent in (out_dir, *out_dir.parents)):
+        raise ValueError("report directory alias rejected")
+    out_dir.mkdir(mode=0o700, exist_ok=True)
+    if not out_dir.is_dir():
+        raise ValueError("report directory unavailable")
+    for name, payload in (
+        (
+            "performance-report.json",
+            json.dumps(report, sort_keys=True, allow_nan=False) + "\n",
+        ),
+        ("performance-report.md", render(report) + "\n"),
+    ):
+        data = payload.encode()
+        if len(data) > 16 * 1024 * 1024:
+            raise ValueError("report exceeds size bound")
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".performance-report-", dir=out_dir
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, out_dir / name)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def save_report(run_dir: Path) -> bool:
+    """Best-effort refresh finalizer; reporting never changes acquisition outcome."""
+    try:
+        write_report(build_report(Path(run_dir)), Path(run_dir))
+        return True
+    except Exception:  # noqa: BLE001 - diagnostic finalizer must preserve acquisition outcomes
+        try:
+            print(
+                "warning: CRE performance report unavailable; acquisition outcome unchanged",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001 - even a broken diagnostic stream must not change outcomes
+            return False
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -742,12 +1082,29 @@ def main(argv: list[str] | None = None) -> int:
         "run", nargs="?", help="series/checkpoint directory; default newest series"
     )
     parser.add_argument(
+        "--trial-dir", type=Path, help="read saved bounded trial evidence offline"
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        help="save sanitized JSON and Markdown; create a private output directory if absent",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="print a structured one-shot report"
     )
     args = parser.parse_args(argv)
     try:
-        path = Path(args.run).expanduser() if args.run else resolve_series_path(None)
-        report = build_report(path)
+        if args.trial_dir is not None:
+            if args.run:
+                raise ValueError("choose trial or checkpoint evidence")
+            report = build_trial_report(args.trial_dir.expanduser())
+        else:
+            path = (
+                Path(args.run).expanduser() if args.run else resolve_series_path(None)
+            )
+            report = build_report(path)
+        if args.out_dir is not None:
+            write_report(report, args.out_dir.expanduser())
     except (OSError, ValueError, UnicodeError, TypeError, RecursionError):
         print(
             "Performance evidence is unavailable or invalid; no database was queried."
