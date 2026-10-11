@@ -15,6 +15,7 @@ import {
   transwesternStructured,
   liftTranswesternScalars,
   transwesternCapTruncated,
+  transwesternDetailPageIsUsable,
   srcTranswestern,
 } from "../../../sources/transwestern.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -99,6 +100,80 @@ test("transwesternDetailUrl builds property slug URLs", () => {
   );
   assert.equal(transwesternDetailUrl("-"), null);
   assert.equal(transwesternDetailUrl(null), null);
+});
+
+// Minimized public property template observed at
+// https://transwestern.com/property/hollowell-english on 2026-10-11.
+// This template has no availability table; feed identity text is HTML encoded.
+const currentPropertyHtml = `
+  <main class="property-dtl">
+    <h1>Hollowell &amp; English</h1>
+    <section class="property-dscptn">Property overview</section>
+    <table id="tblAttachments"><tr><td>Property documents</td></tr></table>
+  </main>
+`;
+const currentPropertyRow = { BuildingName: "Hollowell &amp; English" };
+
+test("Transwestern recognizes the public property template without availability", () => {
+  const variants = [
+    currentPropertyHtml,
+    currentPropertyHtml.replace(/<table[\s\S]*?<\/table>/, ""),
+    currentPropertyHtml.replace(/<section[\s\S]*?<\/section>/, ""),
+  ];
+  for (const rawHtml of variants) {
+    assert.equal(transwesternDetailPageIsUsable({
+      rawHtml: rawHtml.replace(/Hollowell &amp; English/g, "Sample Property"),
+      markdown: "Sample Property",
+      links: [],
+    }, { BuildingName: "Sample Property" }), true);
+  }
+});
+
+test("Transwestern compares HTML encoded feed identities with decoded headings", () => {
+  assert.equal(transwesternDetailPageIsUsable({
+    rawHtml: currentPropertyHtml,
+    markdown: "Hollowell & English",
+    links: [],
+  }, currentPropertyRow), true);
+});
+
+test("Transwestern rejects wrong identity, challenges, and incomplete property pages", () => {
+  const rejected = [
+    ["wrong identity", currentPropertyHtml.replace(/Hollowell &amp; English/g, "Other Property")],
+    ["challenge", `${currentPropertyHtml}<p>Verify you are human</p>`],
+    ["not found", `${currentPropertyHtml}<p>Page not found</p>`],
+    ["empty", ""],
+    ["heading only", "<h1>Hollowell &amp; English</h1>"],
+    ["property shell only", '<main class="property-dtl"><h1>Hollowell &amp; English</h1></main>'],
+    ["attachment table outside property template", '<h1>Hollowell &amp; English</h1><table id="tblAttachments"></table>'],
+    ["body outside property shell", '<main class="property-dtl"><h1>Hollowell &amp; English</h1></main><section class="property-dscptn">Overview</section><table id="tblAttachments"></table>'],
+    ["missing identity", '<main class="property-dtl"><section class="property-dscptn">Overview</section></main>'],
+  ];
+  for (const [reason, rawHtml] of rejected) {
+    assert.equal(transwesternDetailPageIsUsable({
+      rawHtml,
+      markdown: "",
+      links: [],
+    }, currentPropertyRow), false, reason);
+  }
+});
+
+test("Transwestern lease feed remains fail-closed when a row has no provider identity", async () => {
+  const original = firecrawl.scrape;
+  (firecrawl as any).scrape = async () => ({
+    rawHtml: JSON.stringify([
+      { PageUrl: "sample-property", BuildingName: "Sample Property" },
+      { PageUrl: "-", BuildingName: "Unlinked Property" },
+    ]),
+  });
+  try {
+    await assert.rejects(
+      srcTranswestern("lease", 1, false),
+      /Transwestern lease\/Lease feed row lacks a valid PageUrl identity/
+    );
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
 });
 
 test("transwesternTransactionType maps bucket labels", () => {
