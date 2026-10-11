@@ -1165,7 +1165,7 @@ test("parseColliersMainDetail: leaseRateMin/Max from fixture Modified Gross text
   const listing = parseColliersMainDetail(e, docx);
   // leaseRateText was captured from the regex; leaseRateMin must be 18.5.
   if (listing.leaseRateText) {
-    assert.ok(typeof listing.leaseRateMin === "number" && listing.leaseRateMin > 0);
+    assert.ok(listing.leaseRateMin == null, "Missing explicit currency/period remains unresolved");
     assert.equal(listing.leaseRateType, "modified_gross");
   }
 });
@@ -1189,7 +1189,7 @@ test("parseColliersMainDetail: NNN lease rate yields type=nnn, positive leaseRat
   const listing = parseColliersMainDetail(e, docx);
   if (listing.leaseRateText) {
     assert.equal(listing.leaseRateType, "nnn");
-    assert.equal(listing.leaseRateMin, 12);
+    assert.ok(listing.leaseRateMin == null);
     // leaseRateMax is null when no range; prune() drops it so check == null.
     assert.ok(listing.leaseRateMax == null, "leaseRateMax should be absent for a single-value rate");
   }

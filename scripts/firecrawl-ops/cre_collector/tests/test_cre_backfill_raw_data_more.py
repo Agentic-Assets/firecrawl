@@ -208,8 +208,8 @@ def test_derive_nai_global_lease_mode_price_staged():
         },
     }
     cols, _ = bf.derive_columns("nai-global", raw)
-    assert cols.get("lease_rate_min") == pytest.approx(18.0)
-    assert cols.get("lease_rate_max") == pytest.approx(18.0)
+    assert "lease_rate_min" not in cols
+    assert "lease_rate_max" not in cols
     # sale price must not be staged for a lease mode row
     assert "sale_price_usd" not in cols
 
