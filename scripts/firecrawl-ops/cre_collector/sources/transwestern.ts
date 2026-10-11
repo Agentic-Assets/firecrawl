@@ -740,6 +740,6 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
     truncated: transwesternCapTruncated(max, listings.length, total),
     note: `Bucket counts before slug de-dupe: ${Object.entries(bucketCounts)
       .map(([bucket, count]) => `${bucket}=${count}`)
-      .join(", ")}. Rows with invalid PageUrl are skipped.`,
+      .join(", ")}. Rows with invalid PageUrl reject the source.`,
   };
 }
