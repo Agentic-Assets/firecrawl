@@ -82,13 +82,17 @@ dry-run failure prevents aggregate admission and every database write.
 
 ### CPU and memory safety and evidence
 
-Every checkpoint run has a fail-closed Darwin host-CPU watchdog. The code
+Every checkpoint run has a fail-closed platform-selected CPU watchdog: Darwin
+Mach counters on macOS and aggregate `/proc/stat` counters on Linux. The code
 defaults are 90% for 30 seconds, sampled every 2 seconds. It rejects a start
 already at the ceiling and, on sustained pressure or telemetry failure,
 terminates its owned collector process group, releases the canonical lock,
 writes `resource_guard_interrupted`, and exits `75`.
 
-Every checkpoint also requires Darwin host memory-pressure telemetry. A start
+Every checkpoint also requires memory-pressure telemetry. macOS continues to
+use the Darwin userspace dispatch pressure level. Linux requires kernel memory
+PSI, `MemAvailable`, swap totals, and unified cgroup v2 memory-controller
+evidence. A start
 requires normal pressure. Warning pressure sustained for 20 seconds or any
 critical sample stops the checkpoint through the same owned-process cleanup
 path. Missing, malformed, timed-out or stale pressure readings and failed
@@ -97,6 +101,31 @@ required evidence also stop it. `--memory-sustain-seconds` (maximum 30) and
 series to children. `logs/host-memory-guard.jsonl` stores compact bounded samples;
 policy and the terminal reason are saved in the manifest. Memory stops never
 qualify for automatic CPU-only recovery. Resume only after host pressure clears.
+
+On Linux, warning pressure means PSI `some avg10 >= 10%`, available memory
+at or below 10%, a visible cgroup at or above 90% of `memory.max`, or new
+cgroup `high`/`max` events. Exhausted swap (at most 10% free) warns only when
+available memory is also at most 20%; historical swap use alone is not pressure.
+Critical pressure means PSI `full avg10 >= 2%`, available memory at or below
+5%, a visible cgroup at or above 95% of its limit, or new OOM/OOM-kill events.
+All visible ancestor limits are checked. Cgroup usage includes page cache;
+this deliberately conservative guard may stop before an OOM. Missing or
+malformed PSI/controller evidence, changing cgroup membership, and decreasing
+counters fail closed. Cgroup v1 is unsupported. These Linux policy values and
+the measured scope are bound into the manifest; do not resume a Darwin run on
+Linux or hand-edit a manifest to cross platforms.
+
+Under WSL2 or Docker Desktop these CPU and memory samples measure the Linux
+VM, plus the collector's visible cgroups. They do **not** measure Windows host
+CPU/RAM or unrelated Windows applications, and cgroup namespaces may hide
+ancestors. Keep the bounded `.wslconfig` and container hard limits, use an ext4
+checkout, and supervise foreground collection. This guard port does not
+authorize production cutover, simultaneous Mac/Windows writers, or scheduling.
+AGENTIC-3746 requires founder review of the safety PR before merge.
+
+Linux telemetry definitions follow the kernel's [proc filesystem](https://docs.kernel.org/filesystems/proc.html),
+[PSI](https://docs.kernel.org/accounting/psi.html), and
+[cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) documentation.
 
 These thresholds govern the decision to begin cleanup, not a guarantee that
 CPU, memory or previously queued server work ends at that instant. For a tighter

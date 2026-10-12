@@ -298,7 +298,7 @@ gate. All configured artifacts must pass their source gates and the aggregate
 gate before any live ingest begins. `first_seen` requires an explicit reviewed
 baseline seed and readback before resuming the same immutable run.
 
-The checkpoint runner has a fail-closed Darwin CPU guard and writes resumable
+The checkpoint runner has fail-closed Darwin/Linux CPU and memory guards and writes resumable
 evidence. For exact thresholds, resource-profile setup, guard and incident
 logs, full-registry commands, and stale-parent recovery, follow
 `START_HERE.md` rather than duplicating operational settings here. Keep

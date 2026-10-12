@@ -3451,7 +3451,9 @@ def test_checkpoint_sigterm_handler_uses_interrupt_cleanup_path():
         refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)
 
 
-def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
+def test_host_cpu_guard_requires_sustained_saturation(tmp_path, monkeypatch):
+    # Keep the original Darwin policy contract exact on every test host.
+    monkeypatch.setattr(refresh.sys, "platform", "darwin")
     guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
 
     assert guard.config() == {

@@ -7,6 +7,12 @@ import pytest
 from cre_memory_guard import HostMemoryGuard
 
 
+@pytest.fixture(autouse=True)
+def mach_platform(monkeypatch):
+    """This file exercises Mach's four-counter contract on every test host."""
+    monkeypatch.setattr(refresh.sys, "platform", "darwin")
+
+
 class DelayedTickSource:
     def __init__(self):
         self.elapsed = 0.0
