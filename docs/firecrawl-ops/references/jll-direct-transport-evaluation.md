@@ -37,6 +37,20 @@ alternates transport order. Each cell has a total deadline. Failed, retried,
 cached, wrong-identity or challenged captures stop the matrix before higher
 concurrency. Late/uncertain backend work remains the foreground owner's
 cleanup responsibility; an aborted promise is not a runtime-stop certificate.
+Each returned capture is snapshotted before validation/storage; later callback
+object reuse cannot rewrite evidence from an earlier arm.
+
+`auditJllCapturedPair` allows the shared capacity coordinator to compare its
+original rendered capture against a separately acquired direct capture without
+another rendered request. Both records retain their original arm start/end,
+generation and full cohort digest inside the same recorded calibration window.
+Each observation must fall inside its own original arm, with the expected
+transport method and matching projection/document/source-row binding. The
+result retains those original clocks and returns fidelity diagnostics only;
+it does not calculate throughput or restamp cached evidence as fresh. Actual
+rendered/direct elapsed and resource measurements stay in their separate
+coordinator records. The standalone matrix cannot consume a prior rendered
+capture under a new arm start time.
 
 Paired audits compare the complete native property and broker payloads, all
 four real `harvestDetail` asset channels and ordered visible text from the

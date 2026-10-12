@@ -171,28 +171,9 @@ export function auditJllPairedDocs(
   };
 }
 
-/** All cells use identical members, no retries/cache, and stop at first regression.
- * C means client concurrency. Caller must report actual browser/queue capacity,
- * CPU/memory telemetry and other host workloads; this does not infer capacity.
- */
-export async function runJllTransportMatrix(options: {
-  cohort: JllBenchmarkCohort;
-  capture: (
-    transport: JllBenchmarkTransport,
-    member: JllBenchmarkMember,
-    signal: AbortSignal,
-    context: JllArmContext,
-  ) => Promise<JllBenchmarkCapture>;
-  signal: AbortSignal;
-  cellTimeoutMs?: number;
-}) {
-  // Snapshot the complete source rows once. Capture callbacks cannot mutate
-  // source controls or identities used by later cells.
-  const cohort = structuredClone(options.cohort);
+/** Hash the complete immutable source inventory, including controls/clocks. */
+export function jllCohortSha256(cohort: JllBenchmarkCohort): string {
   const members = cohort.members;
-  const { capture, signal } = options;
-  const cohortSha256 = digest(canonical(cohort));
-  const cellTimeoutMs = options.cellTimeoutMs ?? 180000;
   if (
     cohort.source !== "jll" ||
     !Number.isFinite(Date.parse(cohort.inventoryStartedAt)) ||
@@ -200,9 +181,6 @@ export async function runJllTransportMatrix(options: {
     Date.parse(cohort.inventoryFinishedAt) <
       Date.parse(cohort.inventoryStartedAt) ||
     !/^[a-f0-9]{64}$/.test(cohort.inventorySha256) ||
-    !Number.isInteger(cellTimeoutMs) ||
-    cellTimeoutMs < 1000 ||
-    cellTimeoutMs > 300000 ||
     members.length < 1 ||
     members.length > 24
   )
@@ -236,6 +214,128 @@ export async function runJllTransportMatrix(options: {
     ids.add(member.providerId);
     urls.add(member.canonicalUrl);
   }
+  return digest(canonical(cohort));
+}
+
+export type JllCapturedArm = JllBenchmarkCapture & {
+  arm: {
+    cohortSha256: string;
+    startedAt: string;
+    finishedAt: string;
+    generationId: string;
+  };
+};
+
+/** Reconcile captures from their ORIGINAL arms without acquiring or retiming
+ * either document. The coordinator owns calibration and each elapsed/resource
+ * measurement. This returns fidelity evidence only, never throughput/admission.
+ */
+export function auditJllCapturedPair(input: {
+  cohort: JllBenchmarkCohort;
+  sampleId: string;
+  calibration: { startedAt: string; finishedAt: string };
+  direct: JllCapturedArm;
+  rendered: JllCapturedArm;
+}) {
+  const options = structuredClone(input);
+  const cohortSha256 = jllCohortSha256(options.cohort);
+  const member = options.cohort.members.find(
+    (row) => row.sampleId === options.sampleId,
+  );
+  const start = Date.parse(options.calibration.startedAt),
+    end = Date.parse(options.calibration.finishedAt);
+  if (
+    !member ||
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    end < start ||
+    end > Date.now() + 1000
+  )
+    throw new Error("invalid_pair_calibration");
+  for (const transport of ["direct", "rendered"] as const) {
+    const capture = options[transport];
+    const observation = capture.doc.detailObservation;
+    const armStart = Date.parse(capture.arm.startedAt),
+      armEnd = Date.parse(capture.arm.finishedAt);
+    const observed = Date.parse(observation?.observedAt ?? "");
+    if (
+      !Number.isFinite(armStart) ||
+      !Number.isFinite(armEnd) ||
+      armEnd < armStart ||
+      armStart < start ||
+      armEnd > end ||
+      capture.arm.cohortSha256 !== cohortSha256 ||
+      !capture.arm.generationId.trim() ||
+      capture.attempts !== 1 ||
+      capture.cacheDisposition !== "live" ||
+      !observation ||
+      observation.cacheDisposition !== "live" ||
+      observation.generationId !== capture.arm.generationId ||
+      observation.method !==
+        (transport === "direct" ? "jll_direct_candidate" : "jll_detail") ||
+      !Number.isFinite(observed) ||
+      observed < armStart ||
+      observed > armEnd ||
+      !capture.projection ||
+      canonical(capture.projection.acquisition) !== canonical(observation) ||
+      capture.projection.documentSha256 !== jllDocumentSha256(capture.doc) ||
+      capture.projection.baseRowSha256 !== jllSourceRowSha256(member.baseRow) ||
+      String(capture.projection.listing.id) !== member.providerId ||
+      capture.projection.listing.url !== member.canonicalUrl
+    )
+      throw new Error("pair_capture_binding_failed");
+  }
+  if (options.direct.arm.generationId === options.rendered.arm.generationId)
+    throw new Error("pair_generation_reused");
+  const documents = auditJllPairedDocs(
+    member,
+    options.direct.doc,
+    options.rendered.doc,
+  );
+  const sourceProjection = auditOfflineJllProjections(
+    options.direct.projection!,
+    options.rendered.projection!,
+  );
+  return {
+    kind: "jll_paired_transport_observation_not_admission",
+    cohortSha256,
+    sampleId: member.sampleId,
+    calibration: options.calibration,
+    arms: { direct: options.direct.arm, rendered: options.rendered.arm },
+    documents,
+    sourceProjection,
+    equivalent: documents.equivalent && sourceProjection.normalizedFactsEqual,
+  };
+}
+
+/** All cells use identical members, no retries/cache, and stop at first regression.
+ * C means client concurrency. Caller must report actual browser/queue capacity,
+ * CPU/memory telemetry and other host workloads; this does not infer capacity.
+ */
+export async function runJllTransportMatrix(options: {
+  cohort: JllBenchmarkCohort;
+  capture: (
+    transport: JllBenchmarkTransport,
+    member: JllBenchmarkMember,
+    signal: AbortSignal,
+    context: JllArmContext,
+  ) => Promise<JllBenchmarkCapture>;
+  signal: AbortSignal;
+  cellTimeoutMs?: number;
+}) {
+  // Snapshot the complete source rows once. Capture callbacks cannot mutate
+  // source controls or identities used by later cells.
+  const cohort = structuredClone(options.cohort);
+  const members = cohort.members;
+  const { capture, signal } = options;
+  const cohortSha256 = jllCohortSha256(cohort);
+  const cellTimeoutMs = options.cellTimeoutMs ?? 180000;
+  if (
+    !Number.isInteger(cellTimeoutMs) ||
+    cellTimeoutMs < 1000 ||
+    cellTimeoutMs > 300000
+  )
+    throw new Error("invalid_bounded_matrix");
   const cells = [];
   const usedGenerations = new Set<string>();
   for (const concurrency of [1, 2, 4, 8]) {
@@ -280,11 +380,13 @@ export async function runJllTransportMatrix(options: {
                   while (next < members.length) {
                     controller.signal.throwIfAborted();
                     const index = next++;
-                    const row = await capture(
-                      transport,
-                      structuredClone(members[index]!),
-                      controller.signal,
-                      { ...context },
+                    const row = structuredClone(
+                      await capture(
+                        transport,
+                        structuredClone(members[index]!),
+                        controller.signal,
+                        { ...context },
+                      ),
                     );
                     controller.signal.throwIfAborted();
                     if (row.attempts !== 1 || row.cacheDisposition !== "live")

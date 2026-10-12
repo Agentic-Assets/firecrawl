@@ -6,6 +6,8 @@ import {
   type JllArmContext,
   jllDocumentSha256,
   jllSourceRowSha256,
+  jllCohortSha256,
+  auditJllCapturedPair,
   auditJllPairedDocs,
   runJllTransportMatrix,
 } from "../../../sources/jll-direct-benchmark.js";
@@ -458,5 +460,118 @@ test("invalid or duplicate cohort rejects before any transport", async () => {
         },
       }),
     );
+  }
+});
+
+test("review: capture results must remain immutable across the opposite arm", async () => {
+  const prior = new Map<number, ReturnType<typeof captureFixture>>();
+  const result = await runJllTransportMatrix({
+    cohort: cohort([members[0]!]),
+    signal: new AbortController().signal,
+    capture: async (transport, member, _signal, context) => {
+      const row = captureFixture(transport, member, context);
+      Object.assign(row.projection.listing, { markdown: row.doc.markdown });
+      if (transport === "direct") {
+        row.doc.markdown = "Missing all useful property text";
+        Object.assign(row.projection.listing, { markdown: row.doc.markdown });
+        row.projection.documentSha256 = jllDocumentSha256(row.doc);
+      }
+      const previous = prior.get(context.clientConcurrency);
+      if (previous) {
+        previous.doc.markdown = row.doc.markdown;
+        Object.assign(previous.projection.listing, {
+          markdown: row.doc.markdown,
+        });
+      } else prior.set(context.clientConcurrency, row);
+      return row;
+    },
+  });
+  assert.equal(
+    result.complete,
+    false,
+    "mutating earlier direct output must not hide the missing Markdown",
+  );
+});
+
+function completedPair() {
+  const now = Date.now(),
+    fixed = cohort([members[0]!]);
+  const make = (transport: JllBenchmarkTransport) => {
+    const offset = transport === "rendered" ? 80 : 20;
+    const row = captureFixture(transport, members[0]!, {
+      armId: `original-${transport}`,
+      clientConcurrency: 1,
+      startedAt: new Date(now - offset).toISOString(),
+    });
+    row.doc.detailObservation!.observedAt = new Date(
+      now - offset + 5,
+    ).toISOString();
+    row.projection.acquisition = {
+      ...row.doc.detailObservation!,
+      generationId: `original-${transport}`,
+      cacheDisposition: "live",
+    };
+    row.projection.documentSha256 = jllDocumentSha256(row.doc);
+    return {
+      ...row,
+      arm: {
+        cohortSha256: jllCohortSha256(fixed),
+        startedAt: new Date(now - offset).toISOString(),
+        finishedAt: new Date(now - offset + 10).toISOString(),
+        generationId: `original-${transport}`,
+      },
+    };
+  };
+  return {
+    cohort: fixed,
+    sampleId: members[0]!.sampleId,
+    calibration: {
+      startedAt: new Date(now - 100).toISOString(),
+      finishedAt: new Date(now).toISOString(),
+    },
+    direct: make("direct"),
+    rendered: make("rendered"),
+  };
+}
+test("paired audit reuses original rendered arm evidence without retiming or another acquisition", () => {
+  const input = completedPair(),
+    before = structuredClone(input);
+  const result = auditJllCapturedPair(input);
+  assert.equal(result.equivalent, true);
+  assert.deepEqual(result.arms.rendered, before.rendered.arm);
+  assert.equal(
+    result.sourceProjection.acquisition.rendered.observedAt,
+    before.rendered.doc.detailObservation!.observedAt,
+  );
+  assert.equal("freshPagesPerMinute" in result, false);
+  assert.deepEqual(input, before);
+});
+test("paired original-arm audit rejects mismatched clocks, generation, cohort and projection", () => {
+  for (const fault of [
+    "arm_start",
+    "arm_end",
+    "calibration",
+    "generation",
+    "cohort",
+    "source_controls",
+    "document",
+    "projection",
+  ] as const) {
+    const input = completedPair();
+    if (fault === "arm_start")
+      input.rendered.arm.startedAt = input.direct.arm.finishedAt;
+    if (fault === "arm_end")
+      input.rendered.arm.finishedAt = input.rendered.arm.startedAt;
+    if (fault === "calibration")
+      input.calibration.startedAt = input.direct.arm.startedAt;
+    if (fault === "generation") input.rendered.arm.generationId = "wrong";
+    if (fault === "cohort") input.rendered.arm.cohortSha256 = "0".repeat(64);
+    if (fault === "source_controls")
+      input.cohort.members[0]!.baseRow.hidePrice = true;
+    if (fault === "document") input.rendered.doc.markdown = "Different";
+    if (fault === "projection")
+      input.rendered.projection.acquisition.observedAt =
+        "2000-01-01T00:00:00.000Z";
+    assert.throws(() => auditJllCapturedPair(input), /pair_/, fault);
   }
 });
