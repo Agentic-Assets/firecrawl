@@ -32,7 +32,7 @@ browser dashboard, tracing vendor, database connection or scheduler is added.
 | Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, client attempts, retry/backoff, latency histogram, locally awaited concurrency, JLL detail cache, source outcomes and sampled Node resources. |
 | Initial runtime configuration | `runtime-performance.json` | Known API/browser container IDs, image IDs and configured CPU/memory/PID/shared-memory/port limits, plus available host CPU/RAM configuration. One narrow read before the guard starts; not current usage. |
 | Resource timeline | `resource-usage.jsonl` | Five-second observations of host CPU/load, macOS memory categories/pressure/swap, filesystem capacity, owned process RSS and selected Compose API/browser container usage, limits and OOM/restart snapshots. Each resume has a distinct session ID and monotonic clock. |
-| Host guard | `logs/host-cpu-guard.jsonl` | Existing sampled host CPU and guard decisions, including unrelated applications. |
+| Required guards | `logs/host-cpu-guard.jsonl`, `logs/host-memory-guard.jsonl` | Host CPU and Darwin memory-pressure stop decisions, including unrelated applications. Memory warning defaults to 20 seconds; critical stops immediately; missing/stale required telemetry fails closed. |
 | Incident evidence | `logs/cpu-incidents.jsonl` | Existing resource-stop context. This remains separate from optional performance diagnostics. |
 | Business evidence | Manifest-linked source JSON, gate, dry-run and readback artifacts | Source observations, retained structured detail and admission/ingestion proof. Never substitute request counts for these artifacts. |
 
@@ -93,6 +93,20 @@ guard log. A count of high samples is not a contiguous high-CPU duration.
 
 
 ## Resource interpretation and older trials
+
+The required memory guard is independent of optional diagnostics. It uses the
+Darwin userspace pressure levels (1 normal, 2 warning, 4 critical), requires a
+normal preflight, and shares only the existing first-trip signal/owned-process
+cleanup protocol with the CPU watchdog. Required guard decisions begin cleanup;
+they do not prove queued server work has stopped. Only the first watchdog
+signals, preventing a simultaneous second trip from interrupting child reaping.
+Both guards drain before terminal status is saved; a later memory trip retains
+its recovery veto even when CPU sent the first signal. The memory policy and terminal reason are persisted; CPU-only automatic
+recovery cannot resume a memory stop. Existing container hard limits and memory
+usage remain separate diagnostics, not a predictive per-container memory stop.
+The level mapping follows Apple's [XNU sysctl conversion](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_memorystatus_notify.c),
+which emits dispatch pressure flags. This masked Darwin sysctl is not a promised
+stable public API; a missing or changed response blocks the run.
 
 The resource sampler runs only while the foreground checkpoint owns its lock.
 It uses bounded read-only commands and an owner-only, no-follow journal capped

@@ -119,7 +119,11 @@ def test_resource_observer_and_report_follow_checkpoint_lifecycle(
             refresh.main(argv)
             == {"complete": 0, "cpu_stop": 75, "interrupt": 130}[outcome]
         )
-    assert events[-4:] == ["observer_exit", "lock_exit", "guard_stop", "report_saved"]
+    assert events[-3:] == ["lock_exit", "guard_stop", "report_saved"]
+    assert events.index("observer_exit") < events.index("lock_exit")
+    # In-flight safety decisions now drain inside the protected boundary before
+    # ownership is released; finally performs only idempotent guard teardown.
+    assert events.index("guard_stop") < events.index("lock_exit")
 
 
 @pytest.mark.parametrize("outcome", ["complete", "failure", "interrupt"])

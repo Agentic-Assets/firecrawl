@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,6 +56,12 @@ from cre_ingest import (
     merge_rows,
     to_inventory_only_row,
     to_row,
+)
+from cre_memory_guard import (
+    DEFAULT_MEMORY_SAMPLE_SECONDS,
+    DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    HostMemoryGuard,
+    memory_guard_config,
 )
 from cre_performance import capture_runtime_configuration, run_observed_command
 from cre_performance_report import save_report
@@ -146,11 +153,15 @@ class CpuGuardTripDetails:
     occurred_at: str
     context: dict[str, Any]
     owned_processes_reaped: bool = True
+    host_memory_pressure_level: int | None = None
 
 
 _CPU_GUARD_TRIP_REASON: str | None = None
 _CPU_GUARD_TRIP_DETAILS: CpuGuardTripDetails | None = None
 _CPU_GUARD_TRIP_LOCK = threading.Lock()
+_RESOURCE_GUARD_SIGNAL_CLAIMED = False
+_RESOURCE_GUARD_SIGNALS_FROZEN = False
+_RESOURCE_GUARD_SIGNAL_LOCK = threading.Lock()
 _HOST_CPU_LOAD_INFO = 3
 _HOST_CPU_LOAD_INFO_COUNT = 4
 _CPU_STATE_MAX = 4
@@ -165,9 +176,27 @@ def _set_cpu_guard_trip(
     host_cpu_percent: float | None = None,
     context: Mapping[str, Any] | None = None,
     owned_processes_reaped: bool = True,
+    host_memory_pressure_level: int | None = None,
 ) -> None:
     global _CPU_GUARD_TRIP_DETAILS, _CPU_GUARD_TRIP_REASON
     with _CPU_GUARD_TRIP_LOCK:
+        existing = _CPU_GUARD_TRIP_DETAILS
+        if existing is not None:
+            evidence_valid = evidence_valid and existing.evidence_valid
+            owned_processes_reaped = (
+                owned_processes_reaped and existing.owned_processes_reaped
+            )
+        if (
+            existing is not None
+            and existing.reason_code.startswith("host_memory_")
+            and not reason_code.startswith("host_memory_")
+        ):
+            _CPU_GUARD_TRIP_DETAILS = replace(
+                existing,
+                evidence_valid=evidence_valid,
+                owned_processes_reaped=owned_processes_reaped,
+            )
+            return
         _CPU_GUARD_TRIP_REASON = reason
         _CPU_GUARD_TRIP_DETAILS = CpuGuardTripDetails(
             reason_code=reason_code,
@@ -178,6 +207,7 @@ def _set_cpu_guard_trip(
             occurred_at=utc_now(),
             context=dict(context or {}),
             owned_processes_reaped=owned_processes_reaped,
+            host_memory_pressure_level=host_memory_pressure_level,
         )
 
 
@@ -191,11 +221,101 @@ def _peek_cpu_guard_trip_details() -> CpuGuardTripDetails | None:
         return _CPU_GUARD_TRIP_DETAILS
 
 
-def _clear_cpu_guard_trip() -> None:
-    global _CPU_GUARD_TRIP_DETAILS, _CPU_GUARD_TRIP_REASON
+def _clear_cpu_guard_trip(*, reset_signals: bool = True) -> None:
+    global \
+        _CPU_GUARD_TRIP_DETAILS, \
+        _CPU_GUARD_TRIP_REASON, \
+        _RESOURCE_GUARD_SIGNAL_CLAIMED
+    global _RESOURCE_GUARD_SIGNALS_FROZEN
     with _CPU_GUARD_TRIP_LOCK:
         _CPU_GUARD_TRIP_REASON = None
+        _RESOURCE_GUARD_SIGNAL_CLAIMED = False
         _CPU_GUARD_TRIP_DETAILS = None
+    if reset_signals:
+        with _RESOURCE_GUARD_SIGNAL_LOCK:
+            _RESOURCE_GUARD_SIGNALS_FROZEN = False
+
+
+def _claim_resource_guard_signal() -> bool:
+    """Only the first watchdog signals, so a second trip cannot interrupt reaping."""
+    global _RESOURCE_GUARD_SIGNAL_CLAIMED
+    with _CPU_GUARD_TRIP_LOCK:
+        if _RESOURCE_GUARD_SIGNAL_CLAIMED:
+            return False
+        _RESOURCE_GUARD_SIGNAL_CLAIMED = True
+        return True
+
+
+def _trip_host_memory_guard(
+    *,
+    reason_code: str,
+    pressure: int | None,
+    telemetry_valid: bool,
+    evidence_valid: bool,
+    context: Mapping[str, Any] | None = None,
+) -> None:
+    should_signal = _claim_resource_guard_signal()
+    _set_cpu_guard_trip(
+        "host memory pressure guard stopped the checkpoint run",
+        reason_code=reason_code,
+        telemetry_valid=telemetry_valid,
+        evidence_valid=evidence_valid,
+        context=context,
+        host_memory_pressure_level=pressure,
+    )
+    if should_signal:
+        _signal_resource_guard_if_active(os.getpid())
+
+
+def _signal_resource_guard_if_active(pid: int) -> None:
+    with _RESOURCE_GUARD_SIGNAL_LOCK:
+        if not _RESOURCE_GUARD_SIGNALS_FROZEN:
+            os.kill(pid, signal.SIGTERM)
+
+
+def quiesce_resource_guards(
+    memory_guard: HostMemoryGuard, cpu_guard: HostCpuGuard
+) -> None:
+    """Drain in-flight safety decisions before any terminal manifest is saved."""
+    global _RESOURCE_GUARD_SIGNALS_FROZEN
+    deferred_signal = False
+
+    def defer_sigterm(_signum: int, _frame: Any) -> None:
+        nonlocal deferred_signal
+        deferred_signal = True
+
+    previous = signal.signal(signal.SIGTERM, defer_sigterm)
+    try:
+        with _RESOURCE_GUARD_SIGNAL_LOCK:
+            _RESOURCE_GUARD_SIGNALS_FROZEN = True
+        memory_guard.stop_event.set()
+        cpu_guard.stop_event.set()
+        memory_guard.stop()
+        cpu_guard.stop()
+        if any(
+            guard.thread is not None and guard.thread.is_alive()
+            for guard in (memory_guard, cpu_guard)
+        ):
+            _set_cpu_guard_trip(
+                "resource guard did not stop within its bounded join",
+                reason_code="host_memory_telemetry_failed",
+                telemetry_valid=False,
+                evidence_valid=False,
+            )
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    if _peek_cpu_guard_trip() is not None:
+        raise CpuGuardTrip(_peek_cpu_guard_trip())
+    if deferred_signal:
+        raise KeyboardInterrupt("operator interruption during resource guard shutdown")
+
+
+@contextmanager
+def resource_guard_boundary(memory_guard: HostMemoryGuard, cpu_guard: HostCpuGuard):
+    try:
+        yield
+    finally:
+        quiesce_resource_guards(memory_guard, cpu_guard)
 
 
 class _HostCpuLoadInfo(ctypes.Structure):
@@ -385,6 +505,7 @@ class HostCpuGuard:
         reason_code: str = "host_cpu_sustained",
         telemetry_valid: bool = True,
     ) -> None:
+        should_signal = _claim_resource_guard_signal()
         _set_cpu_guard_trip(
             reason,
             reason_code=reason_code,
@@ -409,7 +530,8 @@ class HostCpuGuard:
             # same disk-pressure conditions in which fail-closed behavior is
             # most important.
             try:
-                os.kill(self.coordinator_pid, signal.SIGTERM)
+                if should_signal:
+                    _signal_resource_guard_if_active(self.coordinator_pid)
             except ProcessLookupError:
                 pass
 
@@ -535,7 +657,7 @@ def resource_stop_record(
 ) -> dict[str, Any]:
     """Build the child-to-series typed stop contract after owned cleanup."""
     phase, active_operation, source = _resource_stop_phase(manifest, details.context)
-    return {
+    record = {
         "schema_version": 1,
         "reason_code": details.reason_code,
         "phase": phase,
@@ -553,6 +675,9 @@ def resource_stop_record(
         "recorded_at": utc_now(),
         "owned_processes_reaped": details.owned_processes_reaped,
     }
+    if details.reason_code.startswith("host_memory_"):
+        record["host_memory_pressure_level"] = details.host_memory_pressure_level
+    return record
 
 
 def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
@@ -2849,12 +2974,19 @@ def _mark_cpu_interrupt_evidence_failed(*, reaped: bool) -> None:
             if details is not None
             else "host CPU guard interruption evidence failed"
         ),
-        reason_code="host_cpu_evidence_failed",
+        reason_code=(
+            "host_memory_evidence_failed"
+            if details and details.reason_code.startswith("host_memory_")
+            else "host_cpu_evidence_failed"
+        ),
         telemetry_valid=(details.telemetry_valid if details is not None else False),
         evidence_valid=False,
         host_cpu_percent=(details.host_cpu_percent if details is not None else None),
         context=(details.context if details is not None else None),
         owned_processes_reaped=reaped,
+        host_memory_pressure_level=(
+            details.host_memory_pressure_level if details else None
+        ),
     )
 
 
@@ -3421,6 +3553,8 @@ def new_manifest(
     max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
     cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
     cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
+    memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
@@ -3458,6 +3592,9 @@ def new_manifest(
                 "action": "interrupt_and_checkpoint",
                 "telemetry_failure_action": "interrupt_and_checkpoint",
             },
+            "host_memory_guard": memory_guard_config(
+                memory_sustain_seconds, memory_sample_seconds
+            ),
             "additive": True,
             "status_activation": False,
             "mark_missing": False,
@@ -3496,6 +3633,8 @@ def load_resume_manifest(
     max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
     cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
     cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
+    memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     database_target: Mapping[str, str] | None = None,
@@ -3521,6 +3660,9 @@ def load_resume_manifest(
             "action": "interrupt_and_checkpoint",
             "telemetry_failure_action": "interrupt_and_checkpoint",
         },
+        "host_memory_guard": memory_guard_config(
+            memory_sustain_seconds, memory_sample_seconds
+        ),
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
@@ -3544,6 +3686,7 @@ def load_resume_manifest(
             "telemetry_failure_action": "interrupt_and_checkpoint",
         },
     )
+    recorded_config.setdefault("host_memory_guard", memory_guard_config())
     if recorded_config != expected:
         raise RefreshError("resume configuration differs from the manifest")
     value["config"] = recorded_config
@@ -5992,6 +6135,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_CPU_SAMPLE_SECONDS,
         help=(f"host CPU sampling interval (default: {DEFAULT_CPU_SAMPLE_SECONDS:g}s)"),
     )
+    parser.add_argument(
+        "--memory-sustain-seconds", type=float, default=DEFAULT_MEMORY_SUSTAIN_SECONDS
+    )
+    parser.add_argument(
+        "--memory-sample-seconds", type=float, default=DEFAULT_MEMORY_SAMPLE_SECONDS
+    )
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(
         "--_cohort-collect-source",
@@ -6103,6 +6252,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "cpu-sample-seconds must be finite, positive, and no greater than "
             "cpu-sustain-seconds"
         )
+    try:
+        memory_guard_config(args.memory_sustain_seconds, args.memory_sample_seconds)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not math.isfinite(args.max_resume_age_hours) or args.max_resume_age_hours <= 0:
         parser.error("max-resume-age-hours must be finite and positive")
     try:
@@ -6136,6 +6289,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_host_cpu_percent=args.max_host_cpu_percent,
             cpu_sustain_seconds=args.cpu_sustain_seconds,
             cpu_sample_seconds=args.cpu_sample_seconds,
+            memory_sustain_seconds=args.memory_sustain_seconds,
+            memory_sample_seconds=args.memory_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
@@ -6158,6 +6313,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_host_cpu_percent=args.max_host_cpu_percent,
             cpu_sustain_seconds=args.cpu_sustain_seconds,
             cpu_sample_seconds=args.cpu_sample_seconds,
+            memory_sustain_seconds=args.memory_sustain_seconds,
+            memory_sample_seconds=args.memory_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
@@ -6172,6 +6329,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         sample_seconds=args.cpu_sample_seconds,
         incident_log_path=run_dir / "logs" / "cpu-incidents.jsonl",
     )
+    memory_guard = HostMemoryGuard(
+        log_path=run_dir / "logs" / "host-memory-guard.jsonl",
+        sustain_seconds=args.memory_sustain_seconds,
+        sample_seconds=args.memory_sample_seconds,
+        context_provider=lambda: dict(cpu_guard.incident_context),
+        on_trip=lambda **values: _trip_host_memory_guard(
+            **values, context=cpu_guard.incident_context
+        ),
+    )
     set_cpu_guard_context(
         cpu_guard,
         phase="preflight",
@@ -6181,14 +6347,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
-        with lock, observe_resource_usage(
-            run_dir,
-            env=safe_process_env(),
-            cpu_sampler=DarwinCpuSampler(),
-            context_provider=lambda: dict(cpu_guard.incident_context),
+        with (
+            lock,
+            resource_guard_boundary(memory_guard, cpu_guard),
+            observe_resource_usage(
+                run_dir,
+                env=safe_process_env(),
+                cpu_sampler=DarwinCpuSampler(),
+                context_provider=lambda: dict(cpu_guard.incident_context),
+            ),
         ):
             if not args.resume:
                 capture_runtime_configuration(run_dir)
+            memory_pressure = memory_guard.preflight()
+            if memory_guard.tripped:
+                raise CpuGuardTrip("host memory pressure prevented admission")
+            manifest["preflight"]["host_memory_guard"] = {
+                **memory_guard.config(),
+                "pressure_level": memory_pressure,
+                "log": "logs/host-memory-guard.jsonl",
+            }
             initial_host_cpu_percent = run_cpu_guard_preflight(cpu_guard)
             manifest["preflight"]["host_cpu_guard"] = {
                 **cpu_guard.config(),
@@ -6225,6 +6403,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         context=cpu_guard.incident_context,
                     )
                 raise CpuGuardTrip(reason)
+            memory_guard.start()
             cpu_guard.start()
             set_cpu_guard_context(
                 cpu_guard,
@@ -6336,6 +6515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 active_operation="generation_exact_readback",
             )
             run_final_validation(run_dir, manifest, args.env_file)
+            quiesce_resource_guards(memory_guard, cpu_guard)
             manifest["status"] = (
                 "selected_transaction_scope_complete"
                 if transactions != TRANSACTIONS
@@ -6368,7 +6548,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         manifest["status"] = "resource_guard_interrupted"
         manifest["resource_stop"] = resource_stop_record(manifest, details)
-        manifest["error"] = "host CPU guard stopped the checkpoint run"
+        manifest["error"] = (
+            "host memory pressure guard stopped the checkpoint run"
+            if details.reason_code.startswith("host_memory_")
+            else "host CPU guard stopped the checkpoint run"
+        )
         manifest["finished_at"] = utc_now()
         save_manifest(run_dir, manifest)
         atomic_write_text(run_dir / "report.md", render_report(manifest))
@@ -6388,8 +6572,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         atomic_write_text(run_dir / "report.md", render_report(manifest))
         raise
     finally:
+        memory_guard.stop()
         cpu_guard.stop()
-        _clear_cpu_guard_trip()
+        _clear_cpu_guard_trip(reset_signals=False)
         signal.signal(signal.SIGTERM, previous_sigterm)
         save_report(run_dir)
 

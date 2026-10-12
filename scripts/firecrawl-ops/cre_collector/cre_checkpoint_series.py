@@ -40,6 +40,11 @@ from cre_checkpoint_refresh import (
     validate_run_id,
 )
 from cre_inventory_generation import publish_series_health
+from cre_memory_guard import (
+    DEFAULT_MEMORY_SAMPLE_SECONDS,
+    DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    memory_guard_config,
+)
 from cre_performance_report import save_report
 from cre_resource_recovery import (
     DEFAULT_LOW_CPU_PERCENT,
@@ -153,6 +158,8 @@ def series_config(
     cpu_sample_seconds: float,
     nice: int,
     recovery: RecoveryConfig | None = None,
+    memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
+    memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
 ) -> dict[str, Any]:
     recovery_config = recovery or RecoveryConfig()
     recovery_config.validate()
@@ -176,6 +183,9 @@ def series_config(
             "sustain_seconds": cpu_sustain_seconds,
             "sample_seconds": cpu_sample_seconds,
         },
+        "host_memory_guard": memory_guard_config(
+            memory_sustain_seconds, memory_sample_seconds
+        ),
         "resource_recovery": recovery_config.as_dict(),
         "nice": nice,
         "continue_source_local_failures": True,
@@ -510,6 +520,10 @@ def build_checkpoint_argv(
         str(guard["sustain_seconds"]),
         "--cpu-sample-seconds",
         str(guard["sample_seconds"]),
+        "--memory-sustain-seconds",
+        str(config["host_memory_guard"]["warning_sustain_seconds"]),
+        "--memory-sample-seconds",
+        str(config["host_memory_guard"]["sample_seconds"]),
     ]
     if resume_run is not None:
         argv.extend(["--resume", str(resume_run)])
@@ -542,6 +556,7 @@ def _expected_child_config(
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
+        "host_memory_guard": dict(config["host_memory_guard"]),
         "admit_baseline_hold_additively": False,
     }
 
@@ -1482,7 +1497,14 @@ def run_series(
             if rc == 75 or child_manifest.get("status") == RESOURCE_GUARD_STATUS:
                 checkpoint["state"] = "resource_guard_interrupted"
                 manifest["status"] = RESOURCE_GUARD_STATUS
-                manifest["error"] = "host CPU guard interrupted a checkpoint child"
+                stop_code = (child_manifest.get("resource_stop") or {}).get(
+                    "reason_code", ""
+                )
+                manifest["error"] = (
+                    "host memory pressure guard interrupted a checkpoint child"
+                    if str(stop_code).startswith("host_memory_")
+                    else "host CPU guard interrupted a checkpoint child"
+                )
                 manifest["finished_at"] = utc_now()
                 save_manifest(series_dir, manifest)
                 recovery_config = RecoveryConfig.from_mapping(
@@ -1574,6 +1596,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
     parser.add_argument(
+        "--memory-sustain-seconds", type=float, default=DEFAULT_MEMORY_SUSTAIN_SECONDS
+    )
+    parser.add_argument(
+        "--memory-sample-seconds", type=float, default=DEFAULT_MEMORY_SAMPLE_SECONDS
+    )
+    parser.add_argument(
         "--max-resume-age-hours",
         type=float,
         default=DEFAULT_MAX_RESUME_AGE_HOURS,
@@ -1662,6 +1690,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "cpu-sample-seconds must be positive and no greater than cpu-sustain-seconds"
         )
+    try:
+        memory_guard_config(args.memory_sustain_seconds, args.memory_sample_seconds)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 0 <= args.nice <= 20:
         parser.error("nice must be between 0 and 20")
     recovery_config = RecoveryConfig(
@@ -1697,6 +1729,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_host_cpu_percent=args.max_host_cpu_percent,
         cpu_sustain_seconds=args.cpu_sustain_seconds,
         cpu_sample_seconds=args.cpu_sample_seconds,
+        memory_sustain_seconds=args.memory_sustain_seconds,
+        memory_sample_seconds=args.memory_sample_seconds,
         nice=args.nice,
         recovery=recovery_config,
     )
