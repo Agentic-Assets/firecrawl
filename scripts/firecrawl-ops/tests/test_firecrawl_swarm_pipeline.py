@@ -90,8 +90,9 @@ class FirecrawlSwarmPipelineHelperTests(unittest.TestCase):
         self.assertEqual(result, (True, "markdown", 13, 2, None))
 
     def test_scrape_converts_http_and_url_errors_to_failed_results(self) -> None:
-        http_error = HTTPError("http://local/v2/scrape", 403, "forbidden", {}, None)
-        http_error.fp = io.BytesIO(b"nope")
+        http_error = HTTPError(
+            "http://local/v2/scrape", 403, "forbidden", {}, io.BytesIO(b"nope")
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", ResourceWarning)
             with patch.object(pipeline, "post_json", side_effect=http_error):

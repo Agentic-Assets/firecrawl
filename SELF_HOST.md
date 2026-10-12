@@ -12,6 +12,8 @@ the services and configuration match the revision you checked out.
 | If you need to decide or do this | Start here |
 | --- | --- |
 | Decide whether self-hosting fits and run the first scrape | [Public self-hosting guide](https://docs.firecrawl.dev/contributing/self-host) |
+| Set up this fork on Windows with Docker Desktop | [Windows Docker Desktop onboarding](./docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md) |
+| Set up this fork on macOS with OrbStack | [Local development guide](./LOCAL_DEVELOPMENT_GUIDE.md) |
 | Check which variables and services exist at this revision | [Root Compose configuration](./docker-compose.yaml) |
 | Adapt a Kubernetes deployment | [Kubernetes manifests](./examples/kubernetes/cluster-install/) or [Helm chart](./examples/kubernetes/firecrawl-helm/) |
 | Change Firecrawl product code | [Running Locally](https://docs.firecrawl.dev/contributing/guide), then the [contribution guide](./CONTRIBUTING.md) |
