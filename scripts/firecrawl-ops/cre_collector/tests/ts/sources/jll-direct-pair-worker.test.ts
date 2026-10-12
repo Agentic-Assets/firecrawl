@@ -238,6 +238,15 @@ test("runnable paired cell uses original rendered arm, fresh direct acquisition 
     assert.equal(result.renderedArm.startedAt, f.cell.startedAt);
     assert.equal(result.renderedArm.elapsedMs, 1000);
     assert.equal(result.directArm.clientAttempts, 2);
+    assert.ok(result.directArm.peakActiveAcquisitions > 0);
+    assert.ok(
+      result.directArm.peakActiveAcquisitions <= f.request.requestedConcurrency,
+    );
+    assert.equal("peakActiveRequests" in result.directArm, false);
+    assert.match(
+      result.directArm.concurrencyBasis,
+      /DNS, pacing.*HTTP\/socket inflight concurrency unmeasured/,
+    );
     assert.ok(
       result.directArm.acceptedNormalizedElapsedMs >
         result.directArm.acquisitionElapsedMs,

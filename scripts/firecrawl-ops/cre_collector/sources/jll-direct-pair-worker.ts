@@ -349,7 +349,9 @@ export async function executeJllPairWorker(
           acceptedNormalizedElapsedMs,
           acceptedNormalizedRowsPerMinute:
             (pairs.length * 60000) / acceptedNormalizedElapsedMs,
-          peakActiveRequests: peak,
+          peakActiveAcquisitions: peak,
+          concurrencyBasis:
+            "awaited acquisition operations including DNS, pacing, body processing and immediate document validation; HTTP/socket inflight concurrency unmeasured",
           providerSocketAttempts: [...direct.values()].reduce(
             (n, doc) => n + Number(doc.metadata?.providerAttempts ?? 0),
             0,

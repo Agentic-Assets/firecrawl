@@ -144,7 +144,11 @@ compared immediately with its original rendered document; the first detectable
 loss stops new dispatch before the next member. Normalized source projections
 follow acquisition because their global fetch-denial scope must not interfere
 with active acquisition. Actual redirect socket attempts remain separate from
-client attempts. `acquisitionElapsedMs` and `acquisitionFreshPagesPerMinute`
+client attempts. `peakActiveAcquisitions` counts awaited acquisition operations,
+including DNS, pacing, body processing and immediate document validation, bounded
+by the requested worker fanout. It does not measure HTTP/socket inflight
+concurrency. `providerSocketAttempts` is a dispatch count, not concurrent sockets.
+`acquisitionElapsedMs` and `acquisitionFreshPagesPerMinute`
 measure direct acquisition plus immediate document validation only;
 `acceptedNormalizedElapsedMs` and `acceptedNormalizedRowsPerMinute` additionally
 include real-parser offline projection, final audits and private capture writes.
