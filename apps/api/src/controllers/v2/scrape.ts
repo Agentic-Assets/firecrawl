@@ -53,6 +53,7 @@ import { emitRejectedScrapeActivityEvent } from "../../lib/siem-logging";
 import { isAgentInteropSecretValid } from "../../lib/agent-interop";
 import { markAlexandriaActivity } from "../../lib/alexandria-activity";
 import { DEFAULT_TEAM_LIMITS } from "../../services/autumn/autumn.service";
+import { observeScrapeRequestCancellation } from "../../lib/scrape-request-cancellation";
 
 const AGENT_INTEROP_CONCURRENCY_BOOST = 3;
 
@@ -340,6 +341,7 @@ export async function scrapeController(
 
       let timeoutHandle: NodeJS.Timeout | null = null;
       let doc: Document | null = null;
+      const cancellation = observeScrapeRequestCancellation(req, res);
 
       try {
         const lockStart = Date.now();
@@ -350,7 +352,7 @@ export async function scrapeController(
             aborter.abort();
           }, timeout * 0.667);
         }
-        req.on("close", () => aborter.abort());
+        cancellation.bindAdmission(aborter);
 
         const baseConcurrency =
           req.acuc?.concurrency_limit ?? DEFAULT_TEAM_LIMITS.concurrency_limit;
@@ -409,6 +411,7 @@ export async function scrapeController(
                         : {}),
                     },
                     internalOptions: {
+                      externalAbort: cancellation.externalAbort,
                       teamId: req.auth.team_id,
                       saveScrapeResultToGCS: process.env
                         .GCS_FIRE_ENGINE_BUCKET_NAME
@@ -686,6 +689,7 @@ export async function scrapeController(
           });
         }
       } finally {
+        cancellation.dispose();
         if (timeoutHandle) {
           clearTimeout(timeoutHandle);
         }

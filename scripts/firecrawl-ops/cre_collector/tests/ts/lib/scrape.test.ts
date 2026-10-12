@@ -3,6 +3,8 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   configuredScrapeMaxAttempts,
   createScrapeClient,
@@ -46,30 +48,29 @@ describe("scrape retry controls", () => {
     ["default", {}, 3],
     ["benchmark", { CRE_SCRAPE_MAX_ATTEMPTS: "1" }, 1],
   ] as const) {
-    it(`bounds ${name} SDK HTTP attempts even when the gateway returns 502`, async () => {
-      const client = createScrapeClient(environment);
-      // Stub only the pinned SDK's HTTP boundary; its real retry loop still runs.
-      const transport = (client as unknown as {
-        http: {
-          instance: { request: () => Promise<never> };
-          sleep: () => Promise<void>;
-        };
-      }).http;
-      const failure = Object.assign(new Error("synthetic gateway failure"), {
-        response: { status: 502 },
-      });
+    it(`bounds ${name} HTTP attempts when the gateway returns 502`, async () => {
       let attempts = 0;
-      transport.instance.request = async () => {
+      const server = createServer((_req, res) => {
         attempts += 1;
-        throw failure;
-      };
-      transport.sleep = async () => undefined;
-
-      await assert.rejects(
-        () => client.scrape("https://example.com/sdk-attempt-bound"),
-        /synthetic gateway failure/
-      );
-      assert.equal(attempts, expectedAttempts);
+        res.writeHead(502, { "content-type": "application/json" });
+        res.end(JSON.stringify({ success: false }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      const client = createScrapeClient({
+        ...environment,
+        FIRECRAWL_API_URL: `http://127.0.0.1:${port}`,
+      });
+      try {
+        await assert.rejects(
+          () => client.scrape("https://example.com/attempt-bound"),
+          { status: 502, name: "FirecrawlSdkError" }
+        );
+        assert.equal(attempts, expectedAttempts);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     });
   }
 });

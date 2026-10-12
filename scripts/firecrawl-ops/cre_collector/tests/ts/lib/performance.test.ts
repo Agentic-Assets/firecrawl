@@ -563,7 +563,7 @@ test("diagnostic clock failures do not turn a successful scrape into a retry", a
   }
 });
 
-test("scrape timeout telemetry records only backoffs before real retries", async () => {
+test("client deadline keeps remote settlement unknown and prevents automatic retry", async () => {
   const fixture = recorderFixture();
   const originalScrape = firecrawl.scrape;
   const originalSetTimeout = globalThis.setTimeout;
@@ -592,22 +592,22 @@ test("scrape timeout telemetry records only backoffs before real retries", async
         remote_unknown: requests.timed_out_remote_settlement_unknown,
       },
       {
-        attempts_started: 3,
-        attempts_completed: 3,
+        attempts_started: 1,
+        attempts_completed: 1,
         succeeded: 0,
-        failed: 3,
-        fresh_requested: 3,
-        timeout: 3,
-        remote_unknown: 3,
+        failed: 1,
+        fresh_requested: 1,
+        timeout: 1,
+        remote_unknown: 1,
       }
     );
     assert.deepEqual(requests.retry.http_helper, {
-      retry_attempts: 2,
-      backoff_ms: 7_500,
+      retry_attempts: 0,
+      backoff_ms: 0,
       terminal_backoff_ms: 0,
     });
     assert.equal(fixture.fs.snapshot().metrics.logical_scrape_calls.raw, 1);
-    assert.equal(existingLogs.length, 3, "telemetry does not change existing retry logging");
+    assert.equal(existingLogs.length, 1, "the terminal unknown attempt is logged once");
     assert.doesNotMatch(JSON.stringify(fixture.fs.snapshot()), /private\.example|token-super-secret/);
   } finally {
     console.error = originalConsoleError;

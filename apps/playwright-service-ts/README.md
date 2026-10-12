@@ -83,6 +83,15 @@ fetched by the route guard or the SSRF proxy. `/browser-batch-fetch` also
 returns `503` `TARGET_DNS_UNAVAILABLE` (instead of `400`) when its bootstrap
 host cannot be resolved.
 
+A caller disconnect removes its queued waiter or interrupts the active phase
+wait and closes the owning browser context. A late context allocation keeps
+its permit until closure is confirmed; uncertain closure stays quarantined.
+Completed HTTP responses are not cancellation. The synchronous API forwards
+client disconnects through its in-process `externalAbort` to the Playwright
+HTTP engine. HTTP abort is cooperative and does not establish remote
+settlement; the collector records a client deadline as settlement unknown
+and does not automatically retry that logical scrape.
+
 ## Page permit accounting
 
 Every browser context this service opens counts against
