@@ -2114,9 +2114,22 @@ class SharedLock:
         self.acquire()
         return self
 
+    @_defer_cleanup_signals()
     def __exit__(self, _exc_type, _exc, _tb) -> None:
         details = _peek_cpu_guard_trip_details()
-        if isinstance(_exc, ProcessCleanupUnknown) or (
+        # Finally blocks can replace an unknown-cleanup exception with an
+        # operator interrupt. Retain its uncertainty across that entire chain.
+        pending = [_exc]
+        seen = set()
+        cleanup_unknown = False
+        while pending:
+            error = pending.pop()
+            if error is None or id(error) in seen:
+                continue
+            seen.add(id(error))
+            cleanup_unknown |= isinstance(error, ProcessCleanupUnknown)
+            pending.extend((error.__context__, error.__cause__))
+        if cleanup_unknown or (
             isinstance(_exc, CpuGuardTrip)
             and details is not None
             and not details.owned_processes_reaped
@@ -3114,18 +3127,21 @@ def _run_logged_command(
         log.write(f"[{utc_now()}] rc={rc}\n")
         return rc
     finally:
-        active_error = sys.exception()
-        try:
-            log.close()
-        except (OSError, ValueError) as close_exc:
-            if isinstance(active_error, CpuGuardTrip):
-                _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
-                raise active_error from close_exc
-            if isinstance(active_error, KeyboardInterrupt):
-                raise RefreshError(
-                    "interrupt cleanup or required evidence failed"
-                ) from close_exc
-            raise
+        with _defer_cleanup_signals():
+            active_error = sys.exception()
+            try:
+                log.close()
+            except (Exception, KeyboardInterrupt) as close_exc:  # noqa: BLE001
+                if isinstance(active_error, ProcessCleanupUnknown):
+                    raise active_error from close_exc
+                if isinstance(active_error, CpuGuardTrip):
+                    _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
+                    raise active_error from close_exc
+                if isinstance(active_error, KeyboardInterrupt):
+                    raise RefreshError(
+                        "interrupt cleanup or required evidence failed"
+                    ) from close_exc
+                raise
 
 
 def run_cohort_collection_worker(

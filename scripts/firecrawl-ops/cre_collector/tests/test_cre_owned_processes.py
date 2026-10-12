@@ -273,6 +273,77 @@ def test_unknown_cleanup_preserves_operator_recovery_lease(tmp_path):
         pytest.fail("uncertain owned work admitted another owner")
 
 
+@pytest.mark.parametrize("failure", ["signal", "exception"])
+def test_terminal_close_cannot_hide_unknown_cleanup(tmp_path, monkeypatch, failure):
+    import io
+
+    import cre_checkpoint_refresh as refresh
+
+    class InterruptedProcess:
+        pid = 987654
+
+        def wait(self):
+            raise KeyboardInterrupt
+
+    class InterruptedClose(io.StringIO):
+        def close(self):
+            if failure == "signal":
+                os.kill(os.getpid(), signal.SIGTERM)
+            else:
+                raise KeyboardInterrupt
+
+    log = InterruptedClose()
+    path = tmp_path / "command.log"
+    original_open = type(path).open
+    monkeypatch.setattr(
+        type(path),
+        "open",
+        lambda self, *args, **kwargs: (
+            log if self == path else original_open(self, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        refresh.subprocess, "Popen", lambda *_a, **_kw: InterruptedProcess()
+    )
+    monkeypatch.setattr(
+        refresh,
+        "settle_owned_groups",
+        lambda *_a, **_kw: owned.Settlement(False, (), ()),
+    )
+    refresh._clear_cpu_guard_trip()
+    lock = tmp_path / ".cre.lock"
+    with pytest.raises(refresh.ProcessCleanupUnknown), refresh.SharedLock(lock):
+        refresh._run_logged_command(["fixture"], path)
+    with pytest.raises(refresh.LockHeldError), refresh.SharedLock(lock):
+        pytest.fail("terminal close lost uncertainty")
+
+
+def test_guard_quiescence_interrupt_cannot_release_unknown_cleanup(
+    tmp_path, monkeypatch
+):
+    import threading
+    from types import SimpleNamespace
+
+    import cre_checkpoint_refresh as refresh
+
+    refresh._clear_cpu_guard_trip()
+    guard = SimpleNamespace(
+        stop_event=threading.Event(),
+        thread=None,
+        stop=lambda: os.kill(os.getpid(), signal.SIGTERM),
+    )
+    lock = tmp_path / ".cre.lock"
+    with (
+        pytest.raises(KeyboardInterrupt),
+        refresh.SharedLock(lock),
+        refresh.resource_guard_boundary(guard, guard),
+    ):
+        raise refresh.ProcessCleanupUnknown("owned process cleanup_unknown")
+    with pytest.raises(refresh.LockHeldError), refresh.SharedLock(lock):
+        pytest.fail("guard quiescence lost uncertainty")
+    refresh._clear_cpu_guard_trip()
+
+
 def test_unknown_cleanup_manifest_cannot_resume(tmp_path):
     import json
 

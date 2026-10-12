@@ -372,6 +372,8 @@ from pathlib import Path
 import cre_checkpoint_refresh as refresh
 from cre_memory_guard import HostMemoryGuard
 root = Path(sys.argv[1])
+# Short fixture grace; production cleanup retains its documented bound.
+refresh.COMMAND_INTERRUPT_GRACE_SECONDS = 0.1
 samples = iter([1, 4])
 guard = HostMemoryGuard(root / "memory.jsonl", on_trip=refresh._trip_host_memory_guard,
     sampler=lambda: next(samples), sample_seconds=0.25, sustain_seconds=1)
