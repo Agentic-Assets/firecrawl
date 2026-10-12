@@ -20,15 +20,22 @@ def test_resource_observer_and_report_follow_checkpoint_lifecycle(
     events: list[str] = []
 
     class OwnedLock:
-        def __init__(self, _path):
-            pass
+        def __init__(self, _path, *, recovery_required):
+            assert recovery_required is True
+            self.held = False
 
         def __enter__(self):
             events.append("lock_enter")
+            self.held = True
             return self
+
+        def clear_recovery_requirement(self):
+            assert events[-1] == "report_saved"
+            events.append("fence_clear")
 
         def __exit__(self, *_exc):
             events.append("lock_exit")
+            self.held = False
 
     @contextmanager
     def observe(run_dir, **kwargs):
@@ -119,10 +126,10 @@ def test_resource_observer_and_report_follow_checkpoint_lifecycle(
             refresh.main(argv)
             == {"complete": 0, "cpu_stop": 75, "interrupt": 130}[outcome]
         )
-    assert events[-3:] == ["lock_exit", "guard_stop", "report_saved"]
+    assert events[-4:] == ["guard_stop", "report_saved", "fence_clear", "lock_exit"]
     assert events.index("observer_exit") < events.index("lock_exit")
-    # In-flight safety decisions now drain inside the protected boundary before
-    # ownership is released; finally performs only idempotent guard teardown.
+    # Guard decisions and terminal evidence both settle before the exact owner
+    # clears its durable crash fence and releases ownership.
     assert events.index("guard_stop") < events.index("lock_exit")
 
 
