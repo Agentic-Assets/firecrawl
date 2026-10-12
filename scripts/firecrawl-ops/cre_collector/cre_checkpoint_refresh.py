@@ -405,7 +405,10 @@ class HostCpuGuard:
     max_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT
     sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS
     sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS
-    sampler: Callable[[], float] = field(default_factory=DarwinCpuSampler)
+    # Required admission must allow Mach counters to advance before its first read.
+    sampler: Callable[[], float] = field(
+        default_factory=lambda: DarwinCpuSampler(initial_interval_seconds=2.0)
+    )
     coordinator_pid: int = field(default_factory=os.getpid)
     incident_log_path: Path | None = None
     incident_context: dict[str, Any] = field(default_factory=dict)
@@ -6362,6 +6365,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             memory_pressure = memory_guard.preflight()
             if memory_guard.tripped:
                 raise CpuGuardTrip("host memory pressure prevented admission")
+            memory_guard.start()
             manifest["preflight"]["host_memory_guard"] = {
                 **memory_guard.config(),
                 "pressure_level": memory_pressure,
@@ -6403,7 +6407,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         context=cpu_guard.incident_context,
                     )
                 raise CpuGuardTrip(reason)
-            memory_guard.start()
             cpu_guard.start()
             set_cpu_guard_context(
                 cpu_guard,
