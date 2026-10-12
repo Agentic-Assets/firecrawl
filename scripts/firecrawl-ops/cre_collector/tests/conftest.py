@@ -44,14 +44,20 @@ if _PARENT not in sys.path:
 
 from cre_platform import UNSUPPORTED_MESSAGE
 
-if sys.platform not in {"linux", "darwin"}:
-    # Initial conftest imports happen before pytest's session exit handler.
-    # UsageError reports a clean actionable refusal without importing POSIX code.
-    raise pytest.UsageError(UNSUPPORTED_MESSAGE)
+_SUPPORTED_PLATFORM = sys.platform in {"linux", "darwin"}
 
-import cre_checkpoint_refresh as _refresh
-import cre_checkpoint_series as _series
-import cre_memory_guard as _memory_guard
+
+def pytest_configure(config):
+    if not _SUPPORTED_PLATFORM:
+        # Initial conftest imports precede pytest's session exit handler.
+        # Exit here, before collection, without importing any POSIX runtime.
+        pytest.exit(UNSUPPORTED_MESSAGE, returncode=0)
+
+
+if _SUPPORTED_PLATFORM:
+    import cre_checkpoint_refresh as _refresh
+    import cre_checkpoint_series as _series
+    import cre_memory_guard as _memory_guard
 
 
 @pytest.fixture(autouse=True)
@@ -71,8 +77,12 @@ def _offline_refresh_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
 # `canonical_shared_lock_dir` binding discovered below is compared against
 # this exact function object by identity, and every resolution funnelled
 # back through it is checked against the real result.
-_REAL_CANONICAL_SHARED_LOCK_DIR = _refresh.canonical_shared_lock_dir
+_REAL_CANONICAL_SHARED_LOCK_DIR = (
+    _refresh.canonical_shared_lock_dir if _SUPPORTED_PLATFORM else None
+)
 try:
+    if not _SUPPORTED_PLATFORM:
+        raise OSError("Unsupported platform; no canonical lock inspection")
     _REAL_CANONICAL_LOCK_DIR = _REAL_CANONICAL_SHARED_LOCK_DIR(Path(_PARENT)).resolve()
 except (OSError, subprocess.CalledProcessError):
     # git is unavailable or this checkout has no `.git` (e.g. a tarball
