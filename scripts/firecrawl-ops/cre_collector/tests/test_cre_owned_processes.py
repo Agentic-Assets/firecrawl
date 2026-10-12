@@ -287,6 +287,9 @@ def test_terminal_close_cannot_hide_unknown_cleanup(tmp_path, monkeypatch, failu
 
     class InterruptedClose(io.StringIO):
         def close(self):
+            if self.closed:
+                return
+            super().close()
             if failure == "signal":
                 os.kill(os.getpid(), signal.SIGTERM)
             else:
