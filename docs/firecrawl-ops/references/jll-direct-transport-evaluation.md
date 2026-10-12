@@ -111,3 +111,56 @@ adapter after the live JLL provider window is coordinated. No provider or
 stack action should overlap the active JLL collection. Fresh successful paired
 results are required before changing fallback, cache methods, ingest method
 admission or C10 contracts.
+
+### Opt-in concrete paired worker
+
+The AGENTIC-2900 foreground coordinator can opt into `--paired-jll`. After a
+completed rendered cell and its strict SQL dry-run, it invokes
+`sources/jll-direct-pair-worker.ts` in a separate owned child before advancing
+client concurrency. The coordinator retains the canonical lock, CPU/RAM guards,
+remaining wall deadline, exact runtime binding and final settlement ownership.
+This worker does not launch a runtime, acquire a separate lock, ingest, or admit
+a transport. Its sibling `matched-capacity-worker.ts` supplies the bounded
+owner-only file I/O and native inventory replay verifier.
+
+`CRE_JLL_PAIR_INPUT` names an owner-only JSON request with schemaVersion `1`,
+kind `cre_jll_captured_pair_request`, `renderedCellDirectory`,
+`inventoryArtifact`, `cohortSha256`, `requestedConcurrency`,
+`directGenerationId` and `maxInventoryAgeHours`. `CRE_JLL_PAIR_OUTPUT` names a
+new empty owner-only directory. The environment must bind
+`CRE_REFRESH_GENERATION` to the direct generation,
+`CRE_REFRESH_STARTED_AT` to the original frozen inventory start, and
+`CRE_REQUIRE_FRESH_DETAILS=1`. The rendered directory contains the original
+`input.json`, `cell.json` and private `capture-<sha256(sampleId)>.json` records.
+The worker revalidates the raw inventory and exact selected rows, original
+rendered clocks/generation, one successful maxAge-zero client dispatch per
+member, and each real listing against its cell fidelity digest before direct
+load. It never stamps old rendered evidence newly fresh.
+
+Direct captures use the same IDs at the cell's client C1/2/4/8, one client attempt
+with a 15-second transport bound, and cooperative cancellation. All sibling
+acquisitions are aborted and settled on failure. Each returned document is
+compared immediately with its original rendered document; the first detectable
+loss stops new dispatch before the next member. Normalized source projections
+follow acquisition because their global fetch-denial scope must not interfere
+with active acquisition. Actual redirect socket attempts remain separate from
+client attempts. `acquisitionElapsedMs` and `acquisitionFreshPagesPerMinute`
+measure direct acquisition plus immediate document validation only;
+`acceptedNormalizedElapsedMs` and `acceptedNormalizedRowsPerMinute` additionally
+include real-parser offline projection, final audits and private capture writes.
+`finishedAt` remains the acquisition finish, while `normalizedFinishedAt` records
+the later normalized finish. Original rendered elapsed/rate include its real
+enricher and are copied as originally measured; they do not include direct or
+audit work. Do not infer a listing speedup by comparing rendered end-to-end rate
+with the direct acquisition-only rate. The original real rendered source output is explicitly
+`live_real_source_capture`; only the direct parser replay is
+`offline_generation_cache_projection`. Neither changes acquisition provenance.
+
+Private direct captures and `pair.json` use exclusive owner-only writes. The
+body-free summary contains separate arm measurements and per-member document,
+source-fact and original-arm audits. Failed binding, acquisition, cancellation,
+projection or fidelity cannot emit `paired_equivalent`; the process exits
+nonzero with a sanitized failure. The coordinator must validate the result's
+cohort, concurrency, generation and exact member set, then stop before higher
+concurrency on any failure. Synthetic worker tests are not live equivalence or
+performance acceptance, and this worker adds no production source hook.
