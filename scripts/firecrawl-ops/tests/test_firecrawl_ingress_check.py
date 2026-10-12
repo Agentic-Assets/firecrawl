@@ -198,6 +198,23 @@ class FirecrawlIngressTests(unittest.TestCase):
         self.assertIn("no API container ports are published", result.stdout)
         self.assertNotIn("WARNING", result.stdout)
 
+    def test_shared_network_namespace_never_claims_unpublished_or_loopback_only(self):
+        for mode in ("container:" + API_ID, "service:peer"):
+            for ports in (None, {}, publication("127.0.0.1")["ports"]):
+                with self.subTest(mode=mode, ports=ports):
+                    result = self.run_diagnostic(
+                        INSPECTION=json.dumps({"network_mode": mode, "ports": ports})
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(
+                        "shares another container's network namespace", result.stdout
+                    )
+                    self.assertIn("ingress exposure is unknown", result.stdout)
+                    self.assertNotIn("loopback-only", result.stdout)
+                    self.assertNotIn(
+                        "no API container ports are published", result.stdout
+                    )
+
     def test_healthcheck_still_passes_four_stages_and_records_exposure_warning(self):
         for host in ("127.0.0.1", "0.0.0.0", "unknown"):
             with self.subTest(host=host):

@@ -68,6 +68,13 @@ def publication_messages(records: list[dict]) -> list[str]:
             )
             unknown = True
             continue
+        if record["network_mode"].startswith(("container:", "service:")):
+            messages.append(
+                "WARNING: API container shares another container's network namespace; "
+                "its own published ports cannot establish ingress exposure."
+            )
+            unknown = True
+            continue
         ports = record.get("ports")
         if ports is None:
             continue
