@@ -325,7 +325,7 @@ def validate_inputs(cohort: dict | None, profile: dict, identity: dict) -> None:
     if cohort is not None and (
         body.get("source") not in {"jll", "marcus-millichap"}
         or not isinstance(body.get("members"), list)
-        or not 8 <= len(body["members"]) <= 128
+        or not 8 <= len(body["members"]) <= (24 if body.get("source") == "jll" else 128)
         or not isinstance(cohort.get("cohortSha256"), str)
         or len(cohort["cohortSha256"]) != 64
     ):

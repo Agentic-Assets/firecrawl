@@ -985,3 +985,11 @@ def test_coordinator_paired_worker_uses_empty_output_child_and_checks_both_measu
         not cell["resource_measurements"]["measurement_complete_for_qualification"]
         for cell in cells
     )
+
+
+def test_supplied_jll_cohort_cannot_bypass_twenty_four_member_bound(inputs):
+    _, cohort, profile, identity = inputs
+    cohort["cohort"]["source"] = "jll"
+    cohort["cohort"]["members"] = [{} for _ in range(25)]
+    with pytest.raises(matched.CalibrationRejected):
+        matched.validate_inputs(cohort, profile, identity)

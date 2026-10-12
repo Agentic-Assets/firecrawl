@@ -527,3 +527,12 @@ for (const fault of ["none", "map_failure", "missing_identity"] as const) {
     });
   });
 }
+
+
+
+test("supplied JLL cohort cannot bypass the shared twenty-four member bound", () => {
+  const value = cohort("jll");
+  value.members = Array.from({ length: 25 }, (_, index) => ({ ...value.members[0]!, sampleId: `s-${index}`, providerId: String(index),
+    canonicalUrl: `https://property.jll.com/listings/s-${index}`, baseRow: { ...value.members[0]!.baseRow, id: String(index), url: `https://property.jll.com/listings/s-${index}` } }));
+  assert.throws(() => matchedCohortSha256(value), /cohort_shape/);
+});

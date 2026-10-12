@@ -75,7 +75,7 @@ export function matchedCohortSha256(cohort: MatchedCohort): string {
       || !["jll", "marcus-millichap"].includes(cohort.source)
       || !Number.isFinite(inventoryStart) || !Number.isFinite(inventoryEnd)
       || inventoryEnd < inventoryStart || inventoryEnd > Date.now() + 1000
-      || cohort.members.length < 8 || cohort.members.length > 128) reject("cohort_shape");
+      || cohort.members.length < 8 || cohort.members.length > (cohort.source === "jll" ? 24 : 128)) reject("cohort_shape");
   const ids = new Set<string>();
   const urls = new Set<string>();
   const samples = new Set<string>();
