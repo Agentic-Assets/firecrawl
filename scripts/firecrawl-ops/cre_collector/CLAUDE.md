@@ -182,7 +182,8 @@ Key behavior:
   `COALESCE` so a null new cap rate keeps the existing DB value. Price columns
   (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`, `lease_rate_max`)
   also COALESCE-keep: a transient parse miss does not blank a previously-good
-  numeric price.
+  numeric price. Prior price/SF must remain in `(0, 10000]` and prior lease
+  rates in `(0, 500]`, matching their existing forward-normalization bounds.
 - Upsert sets `status='active'`, resurrects soft-deleted rows (`deleted_at=NULL`),
   but only resets status to `'active'` when the prior status was `'inactive'` (a
   mark-missing soft-delete); a real terminal (`sold`/`leased`/`off_market`) that

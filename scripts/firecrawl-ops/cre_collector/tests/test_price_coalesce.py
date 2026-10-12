@@ -9,8 +9,8 @@ transient parse miss (regex miss, "Call for offer") would null a previously-good
 numeric price.
 
 Post-fix: price columns use COALESCE so a NULL in EXCLUDED preserves the prior
-good value. Price/SF retains only a positive prior value; legacy zero/negative
-values become NULL. A real new numeric value still overwrites because COALESCE
+good value. Price/SF and lease rates retain prior values only inside their existing
+forward-normalization bounds; legacy out-of-range values become NULL. A real new numeric value still overwrites because COALESCE
 picks the first non-NULL.
 
 Pure Python, no DB connection. Asserts against build_sql([], [], scraped_at, set()).
@@ -42,20 +42,25 @@ def test_sale_price_per_sf_coalesce_present():
     sql = " ".join(_sql().split())
     assert (
         "ELSE COALESCE(EXCLUDED.sale_price_per_sf, "
-        "CASE WHEN t.sale_price_per_sf > 0 THEN t.sale_price_per_sf END) END" in sql
-    ), "Expected positive-prior COALESCE-keep for sale_price_per_sf."
+        "CASE WHEN t.sale_price_per_sf > 0 AND t.sale_price_per_sf <= 10000 "
+        "THEN t.sale_price_per_sf END) END" in sql
+    ), "Expected bounded-prior COALESCE-keep for sale_price_per_sf."
 
 
 def test_lease_rate_min_coalesce_present():
-    assert "ELSE COALESCE(EXCLUDED.lease_rate_min, t.lease_rate_min) END" in _sql(), (
-        "Expected COALESCE-keep for lease_rate_min in DO UPDATE SET block."
-    )
+    assert (
+        "ELSE COALESCE(EXCLUDED.lease_rate_min, "
+        "CASE WHEN t.lease_rate_min > 0 AND t.lease_rate_min <= 500 "
+        "THEN t.lease_rate_min END) END" in " ".join(_sql().split())
+    ), "Expected COALESCE-keep for lease_rate_min in DO UPDATE SET block."
 
 
 def test_lease_rate_max_coalesce_present():
-    assert "ELSE COALESCE(EXCLUDED.lease_rate_max, t.lease_rate_max) END" in _sql(), (
-        "Expected COALESCE-keep for lease_rate_max in DO UPDATE SET block."
-    )
+    assert (
+        "ELSE COALESCE(EXCLUDED.lease_rate_max, "
+        "CASE WHEN t.lease_rate_max > 0 AND t.lease_rate_max <= 500 "
+        "THEN t.lease_rate_max END) END" in " ".join(_sql().split())
+    ), "Expected COALESCE-keep for lease_rate_max in DO UPDATE SET block."
 
 
 def test_jll_withheld_visibility_clears_previously_visible_price_columns():
