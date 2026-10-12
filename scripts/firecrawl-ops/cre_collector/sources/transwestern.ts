@@ -10,6 +10,8 @@ import { ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 import { parseLeaseRate, normBuildingClass, acresToSf } from "../lib/parse.js";
 import { canonicalTranswesternUrl, TRANSWESTERN_HOST, transwesternDetailUrl } from "./pure/transwestern-identity.js";
+import { requireUniqueTranswesternPlaceholderIdentity, transwesternIdentityTuple, transwesternPrimaryIdentityMatches } from "./pure/transwestern-published-identity.js";
+import { proveTranswesternPublishedIdentity, requireCurrentTranswesternPublishedProof, TranswesternPublishedIdentityProof } from "./transwestern-published-identity.js";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
@@ -547,9 +549,11 @@ export async function enrichTranswesternListing(
   bucket: string,
   tx: Tx,
   monitor: boolean,
-  inventoryObservedAt = new Date().toISOString()
+  inventoryObservedAt = new Date().toISOString(),
+  publishedProof?: TranswesternPublishedIdentityProof
 ): Promise<any> {
-  const detailUrl = transwesternDetailUrl(row.PageUrl);
+  if (publishedProof) requireCurrentTranswesternPublishedProof(publishedProof, row, inventoryObservedAt);
+  const detailUrl = publishedProof?.url ?? transwesternDetailUrl(row.PageUrl);
   const feedImage = canonicalTranswesternUrl(clean(row.PropertyImage));
   const base = {
     id: clean(String(row.PageUrl ?? "")),
@@ -579,6 +583,7 @@ export async function enrichTranswesternListing(
       method: "transwestern_ajax_feed",
       cacheDisposition: "live",
     },
+    ...(publishedProof ? { transwesternPublishedIdentity: publishedProof } : {}),
   };
   // Monitor mode: emit the freely-available feed fields only (id/url/price/size)
   // and skip the detail scrape. Status has no feed field, so it stays absent
@@ -587,7 +592,8 @@ export async function enrichTranswesternListing(
   if (!detailUrl) return prune({ ...base, detailError: "missing or invalid PageUrl" });
   try {
     const doc = await scrapeDoc(detailUrl, { waitFor: 1500, timeout: 60000, maxAge: 0 });
-    if (!transwesternDetailPageIsUsable(doc, row)) {
+    if (!transwesternDetailPageIsUsable(doc, row) ||
+      (publishedProof && !transwesternPrimaryIdentityMatches(doc.rawHtml, row))) {
       throw new Error("detail response did not contain the expected Transwestern property identity");
     }
     const observed = detailObservation("transwestern_detail_page", "live");
@@ -693,6 +699,7 @@ export async function enrichTranswesternListing(
 export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
   const buckets = TRANSWESTERN_BUCKETS[tx];
   const rowsBySlug = new Map<string, { row: any; bucket: string; observedAt: string }>();
+  const acquired: Array<{ row: any; bucket: string; observedAt: string }> = [];
   const bucketCounts: Record<string, number> = {};
   for (const bucket of buckets) {
     const data = await scrapeJson(transwesternFeedUrl(bucket), {
@@ -708,13 +715,28 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
     console.error(`  transwestern/${tx}/${bucket}: ${rows.length} feed rows`);
     for (const row of rows) {
       const slug = clean(String(row.PageUrl ?? ""));
-      if (!slug || slug === "-" || !transwesternDetailUrl(slug)) {
+      if (!slug || (slug !== "-" && !transwesternDetailUrl(slug))) {
         throw new Error(
           `Transwestern ${tx}/${bucket} feed row lacks a valid PageUrl identity`
         );
       }
-      if (!rowsBySlug.has(slug)) rowsBySlug.set(slug, { row, bucket, observedAt });
+      if (slug === "-") {
+        try { transwesternIdentityTuple(row); } catch {
+          throw new Error(`Transwestern ${tx}/${bucket} feed row lacks a valid PageUrl identity`);
+        }
+      }
+      acquired.push({ row, bucket, observedAt });
     }
+  }
+  const placeholders = acquired.filter(({ row }) => clean(String(row.PageUrl ?? "")) === "-");
+  let publishedProof: TranswesternPublishedIdentityProof | undefined;
+  if (placeholders.length) {
+    requireUniqueTranswesternPlaceholderIdentity(placeholders.map(({ row }) => row));
+    publishedProof = await proveTranswesternPublishedIdentity(placeholders[0].row, transwesternDetailPageIsUsable);
+  }
+  for (const entry of acquired) {
+    const slug = clean(String(entry.row.PageUrl))!;
+    if (!rowsBySlug.has(slug)) rowsBySlug.set(slug, entry);
   }
   const selected = [...rowsBySlug.values()].slice(0, Math.min(max, Number.MAX_SAFE_INTEGER));
   let done = 0;
@@ -723,7 +745,8 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
   // detail enrichment that only the full path performs.
   const progressVerb = monitor ? "enumerated" : "detail enriched";
   const listings = await pmap(selected, CONCURRENCY, async ({ row, bucket, observedAt }) => {
-    const listing = await enrichTranswesternListing(row, bucket, tx, monitor, observedAt);
+    const listing = await enrichTranswesternListing(row, bucket, tx, monitor, observedAt,
+      clean(String(row.PageUrl ?? "")) === "-" ? publishedProof : undefined);
     done++;
     if (done % 25 === 0 || done === selected.length) {
       console.error(`  transwestern/${tx}: ${progressVerb} ${done}/${selected.length}`);
@@ -740,6 +763,6 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
     truncated: transwesternCapTruncated(max, listings.length, total),
     note: `Bucket counts before slug de-dupe: ${Object.entries(bucketCounts)
       .map(([bucket, count]) => `${bucket}=${count}`)
-      .join(", ")}. Rows with invalid PageUrl reject the source.`,
+      .join(", ")}. Invalid PageUrl rows reject the source unless a unique provider-published URL and complete current identity are verified.`,
   };
 }
