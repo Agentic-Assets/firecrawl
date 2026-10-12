@@ -130,7 +130,7 @@ if [ -n "$CRE_ALERT_WEBHOOK_FILE_ARG" ]; then
     echo "error: alert webhook file must be an owned, readable regular file" >&2
     exit 2
   fi
-  alert_mode="$(stat -f '%Lp' "$CRE_ALERT_WEBHOOK_FILE_ARG" 2>/dev/null || stat -c '%a' "$CRE_ALERT_WEBHOOK_FILE_ARG" 2>/dev/null || true)"
+  alert_mode="$(stat -f '%Lp' "$CRE_ALERT_WEBHOOK_FILE_ARG" 2>/dev/null)" || alert_mode="$(stat -c '%a' "$CRE_ALERT_WEBHOOK_FILE_ARG" 2>/dev/null)" || alert_mode=""
   case "$alert_mode" in
     400|600) ;;
     *) echo "error: alert webhook file permissions must be 400 or 600" >&2; exit 2 ;;

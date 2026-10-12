@@ -1,6 +1,6 @@
 # Firecrawl Local Development Guide
 
-This guide describes this fork's local self-hosted setup. It is intentionally focused on the current Mac workflow: OrbStack, Docker compose, the v2 API, local agent skills, and guarded operator handoffs for model or OCR changes.
+This guide describes this fork's local self-hosted setup: Docker Compose, the v2 API, local agent skills, and guarded operator handoffs for model or OCR changes. The Mac quickstart below uses OrbStack. For Windows, use the [Docker Desktop onboarding guide](docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md); its host settings and PowerShell commands are separate from the Mac workflow.
 
 ## Fresh Clone Quickstart
 
@@ -24,9 +24,9 @@ docker compose version
 scripts/firecrawl-ops/install_git_hooks.sh
 scripts/firecrawl-ops/sync_agent_skills.sh
 
-# Build and start the self-hosted stack.
-docker compose build
-docker compose up -d
+# Build and start the five-service core stack with the PostgreSQL queue.
+docker compose build api playwright-service nuq-postgres
+docker compose up -d api
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
@@ -48,15 +48,17 @@ The root `.env` is optional for the core stack, local-only, and gitignored. Non-
 Start from the repo root:
 
 ```bash
-docker compose up -d
+docker compose up -d api
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
 Expected baseline:
-- OrbStack is running and `docker context show` is `orbstack`.
+- On macOS, OrbStack is running and `docker context show` is `orbstack`. On Windows, Docker Desktop is running with Linux containers and the `desktop-linux` context.
 - API is reachable at `http://localhost:3002`.
 - Core services include `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`.
 - Local auth is usually disabled with `USE_DB_AUTHENTICATION=false`.
+
+Selecting `api` also starts its four core dependencies. Plain `docker compose up -d` starts all defined services, including the optional FoundationDB backend. Keep existing root `.env` values intact; a fresh non-AI setup does not require that file.
 
 Useful commands:
 

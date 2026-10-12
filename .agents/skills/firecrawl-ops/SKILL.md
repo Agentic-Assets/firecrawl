@@ -1,6 +1,6 @@
 ---
 name: firecrawl-ops
-description: Operate, verify, sync, and troubleshoot the self-hosted Firecrawl stack in this fork. Use when the user asks about OrbStack/Docker compose runtime health, local API startup/rebuilds/logs, Firecrawl CLI local setup, upstream sync from firecrawl/firecrawl:main, endpoint capability checks, model routing, OpenRouter/Vercel AI Gateway/OpenAI profile changes, or which Firecrawl methods work locally.
+description: Operate, verify, sync, and troubleshoot the self-hosted Firecrawl stack in this fork. Use when the user asks about OrbStack or Windows Docker Desktop/Compose runtime health, local API startup/rebuilds/logs, Firecrawl CLI local setup, upstream sync from firecrawl/firecrawl:main, endpoint capability checks, model routing, OpenRouter/Vercel AI Gateway/OpenAI profile changes, or which Firecrawl methods work locally.
 ---
 
 # Firecrawl Ops
@@ -10,6 +10,8 @@ Use this skill for runtime, sync, and platform work around this fork's self-host
 ## First Checks
 
 Run from the repo root unless `FC_DIR` is set:
+
+On Windows, use the [Docker Desktop onboarding guide](references/windows-docker-desktop-onboarding.md). Run `.sh` helpers with Git Bash explicitly, and verify that `python3` resolves there. Docker and Python helpers can also run directly from PowerShell. The compatibility doctor's `--run` stdio probe currently assumes POSIX pipe polling; use its static diagnostic on native Windows and verify CLI/MCP separately.
 
 ```bash
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
@@ -32,6 +34,8 @@ scripts/firecrawl-ops/check_pnpm_docker_config.py
 operator guide. For a high-volume listing refresh, do not use raw
 `collect.ts --source=all` or `cre_daily_update.sh` as the normal path.
 
+The supervised host guard currently requires Darwin/macOS. A working Windows Docker Desktop stack does not make the CRE production refresh runner Windows-compatible. Do not bypass that guard or run production collection to verify onboarding. CRE offline tests require a separate clone; Linux-container verification is distinct from native Windows support.
+
 1. Apply `set_cre_resource_profile.sh apply --with-pids`, review `show`, then
    recreate `api` and `playwright-service`.
 2. Run `cre_checkpoint_series.py --sources all` with serial collection,
@@ -45,7 +49,7 @@ The supervised path never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. GetCREdata remains the only
 production OM-extraction writer.
 
-This Mac uses OrbStack, not Docker Desktop. If Docker commands fail, open OrbStack and confirm `docker context show` is `orbstack`. The expected local API is `http://localhost:3002`.
+On the Mac, use OrbStack. If Docker commands fail there, open OrbStack and confirm `docker context show` is `orbstack`. On Windows, use Docker Desktop with Linux containers and the `desktop-linux` context; do not switch Windows to `orbstack`. The expected local API on either host is `http://localhost:3002`.
 
 For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, start and verify the core stack without a root `.env`, then have a human create the minimal root `.env` described in the local guide if AI-backed calls are needed. Obtain an operator dry-run plan for the selected model, optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then complete the human-owned transition.
 
