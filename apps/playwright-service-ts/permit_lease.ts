@@ -25,7 +25,7 @@ export class BrowserResourceLeakError extends Error {
 
 /** Anything that grants one permit at a time (a Semaphore, or a test double). */
 export type PermitSource = Readonly<{
-  acquire(timeoutMs?: number): Promise<void>;
+  acquire(timeoutMs?: number, signal?: AbortSignal): Promise<void>;
   release(): void;
 }>;
 
@@ -57,11 +57,12 @@ export class PermitLease {
   static async acquire(
     gates: readonly LeaseGate[],
     timeoutMs: () => number,
+    signal?: AbortSignal,
   ): Promise<PermitLease> {
     const lease = new PermitLease();
     try {
       for (const { source, countsBrowser } of gates) {
-        await source.acquire(timeoutMs());
+        await source.acquire(timeoutMs(), signal);
         lease.add(() => source.release(), countsBrowser);
       }
     } catch (error) {

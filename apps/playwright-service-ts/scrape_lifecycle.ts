@@ -111,7 +111,7 @@ export function parseScrapeTiming(
 export async function runScrapeLifecycle<C, P, R>(options: {
   deadlineAt: number;
   semaphore: Semaphore;
-  /** Aborted when the caller disconnects; checked at every phase boundary. */
+  /** Aborted when the caller disconnects; interrupts queue and phase waits. */
   signal?: AbortSignal;
   prepare: (remainingMs: () => number) => Promise<void>;
   /** Runs while holding the permit, before any browser allocation. */
@@ -139,8 +139,15 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     const ms = remaining();
     const message = `Browser scrape ${phase} deadline exceeded`;
     try {
-      return await withHardTimeout(operation(), ms, message, late);
+      return await withHardTimeout(
+        operation(),
+        ms,
+        message,
+        late,
+        options.signal,
+      );
     } catch (error) {
+      if (options.signal?.aborted) throw new ScrapeClientGoneError();
       if (
         error instanceof HardTimeoutError &&
         error.message === message
@@ -171,8 +178,10 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     lease = await PermitLease.acquire(
       [{ source: options.semaphore, countsBrowser: true }],
       remaining,
+      options.signal,
     );
   } catch (error) {
+    if (options.signal?.aborted) throw new ScrapeClientGoneError();
     if (error instanceof SemaphoreTimeoutError) {
       throw new ScrapeDeadlineError("admission");
     }
@@ -210,6 +219,7 @@ export async function runScrapeLifecycle<C, P, R>(options: {
     const result = await bounded(() =>
       options.work(page!, context!, remaining),
     );
+    remaining();
     options.deliverResult?.(result);
     return result;
   } finally {

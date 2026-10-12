@@ -1,9 +1,10 @@
 // lib/scrape.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
-import Firecrawl from "@mendable/firecrawl-js";
+import { CancellableScrapeClient } from "./scrape_transport.js";
 import { API_URL } from "./config.js";
 import { ScrapeOpts, ScrapedDoc } from "../types.js";
 import {
   createClientRequestDeadlineError,
+  classifyPerformanceError,
   recordClientAttemptCompleted,
   recordClientAttemptStarted,
   recordLogicalScrapeCall,
@@ -45,13 +46,12 @@ export function scrapeRetryDelayMs(
 
 export function createScrapeClient(
   environment: NodeJS.ProcessEnv = process.env
-): Firecrawl {
-  return new Firecrawl({
+): CancellableScrapeClient {
+  return new CancellableScrapeClient({
     // Self-hosted with USE_DB_AUTHENTICATION=false accepts any non-empty key.
     apiKey: environment.FIRECRAWL_API_KEY || "local-self-hosted",
-    apiUrl: API_URL,
-    // The pinned SDK calls this maxRetries, but it counts total HTTP attempts.
-    maxRetries: configuredScrapeMaxAttempts(environment),
+    apiUrl: environment.FIRECRAWL_API_URL || API_URL,
+    maxAttempts: configuredScrapeMaxAttempts(environment),
   });
 }
 
@@ -62,16 +62,27 @@ export const firecrawl = createScrapeClient();
  * client promise settles. Keep source workers from being stranded behind a
  * stalled local API connection after that budget has elapsed.
  */
-export async function withRequestDeadline<T>(request: Promise<T>, timeoutMs: number): Promise<T> {
+export async function withRequestDeadline<T>(
+  request: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+  timeoutMs: number
+): Promise<T> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(createClientRequestDeadlineError(timeoutMs)),
+      () => {
+        const error = createClientRequestDeadlineError(timeoutMs);
+        controller.abort(error);
+        reject(error);
+      },
       timeoutMs
     );
   });
   try {
-    return await Promise.race([request, deadline]);
+    return await Promise.race([
+      typeof request === "function" ? request(controller.signal) : request,
+      deadline,
+    ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -87,13 +98,13 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
     });
     try {
       const timeout = opts.timeout ?? 90000;
-      const doc = await withRequestDeadline(firecrawl.scrape(url, {
+      const doc = await withRequestDeadline((signal) => firecrawl.scrape(url, {
         formats: ["rawHtml"],
         ...(opts.waitFor ? { waitFor: opts.waitFor } : {}),
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
         ...(opts.maxAge !== undefined ? { maxAge: opts.maxAge } : {}),
         timeout,
-      } as any), timeout);
+      }, { signal }), timeout);
       const body = (doc as any).rawHtml ?? "";
       if (!body) throw new Error("empty response body");
       recordClientAttemptCompleted(performanceAttempt, { outcome: "succeeded" });
@@ -102,6 +113,7 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
       recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
       console.error(`scrape attempt ${attempt} failed for ${url}: ${err}`);
+      if (classifyPerformanceError(err).remoteSettlementUnknown) break;
       const delayMs = scrapeRetryDelayMs(attempt, maxAttempts);
       if (delayMs !== null) {
         recordRetry("http_helper", delayMs, true);
@@ -122,7 +134,7 @@ export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Pr
     });
     try {
       const timeout = opts.timeout ?? 90000;
-      const doc = await withRequestDeadline(firecrawl.scrape(url, {
+      const doc = await withRequestDeadline((signal) => firecrawl.scrape(url, {
         // Capture-everything format set: markdown (full page text), links + images
         // (full gallery, no truncation), rawHtml (regex fallback source), and an
         // `attributes` block that harvests video/iframe/anchor/source URLs for
@@ -151,7 +163,7 @@ export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Pr
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
         ...(opts.maxAge !== undefined ? { maxAge: opts.maxAge } : {}),
         timeout,
-      } as any), timeout);
+      }, { signal }), timeout);
       const anyDoc = doc as any;
       const data = anyDoc.data ?? anyDoc;
       const rawHtml = data.rawHtml ?? "";
@@ -169,6 +181,7 @@ export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Pr
       recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
       console.error(`scrape-doc attempt ${attempt} failed for ${url}: ${err}`);
+      if (classifyPerformanceError(err).remoteSettlementUnknown) break;
       const delayMs = scrapeRetryDelayMs(attempt, maxAttempts);
       if (delayMs !== null) {
         recordRetry("http_helper", delayMs, true);
