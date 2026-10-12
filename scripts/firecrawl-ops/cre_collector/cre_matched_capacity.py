@@ -317,6 +317,11 @@ def write_bytes(path: Path, raw: bytes, limit=MAX_BYTES) -> None:
         stream.write(raw)
         stream.flush()
         os.fsync(stream.fileno())
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def validate_inputs(cohort: dict | None, profile: dict, identity: dict) -> None:

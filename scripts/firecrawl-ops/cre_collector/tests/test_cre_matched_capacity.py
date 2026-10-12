@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -1004,3 +1005,19 @@ def test_supplied_jll_cohort_cannot_bypass_twenty_four_member_bound(inputs):
     cohort["cohort"]["members"] = [{} for _ in range(25)]
     with pytest.raises(matched.CalibrationRejected):
         matched.validate_inputs(cohort, profile, identity)
+
+
+def test_private_terminal_evidence_cannot_succeed_when_directory_sync_fails(
+    tmp_path, monkeypatch
+):
+    tmp_path.chmod(0o700)
+    original_sync = os.fsync
+
+    def sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("synthetic directory durability failure")
+        original_sync(fd)
+
+    monkeypatch.setattr(matched.os, "fsync", sync)
+    with pytest.raises(OSError, match="directory durability"):
+        matched.write_json(tmp_path / "result.json", {"status": "synthetic"})
