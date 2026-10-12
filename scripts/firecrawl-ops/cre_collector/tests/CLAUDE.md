@@ -20,6 +20,7 @@ python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable
 bash tests/run_om_facts_postgres_contract.sh  # opt-in disposable PostgreSQL 17 contract
 bash tests/run_listing_lifecycle_postgres_contract.sh  # opt-in local PostgreSQL 14+ contract
 bash tests/run_cre_validate_timing_postgres_contract.sh  # opt-in native psql timing contract
+bash tests/run_ingest_institutional_postgres_contract.sh  # opt-in disposable institutional UPDATE contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
@@ -41,6 +42,10 @@ loopback-only disposable PostgreSQL container. It proves subsecond and
 greater-than-one-second timing grammar, isolated result/timing channels, and
 preservation of result rows that resemble timing output. It never accepts an
 external database URL and never pulls a missing image.
+The institutional UPDATE contract executes the generated optional Phase-2
+statement against synthetic CBRE, JLL and marker-collision rows in an isolated
+PostgreSQL 17 container. It uses a cached image, publishes no ports, and removes
+only its recorded owned container.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing

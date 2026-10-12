@@ -4273,6 +4273,7 @@ DO $$ BEGIN
                                   ELSE COALESCE(t.extra_facts, '{}'::jsonb) || s.extra_facts
                                 END
     FROM _src s
+    JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
     WHERE t.brokerage_id = s.brokerage_id
       AND t.external_id = s.external_id;
   END IF;
