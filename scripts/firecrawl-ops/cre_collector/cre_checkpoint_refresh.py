@@ -32,7 +32,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -68,6 +68,7 @@ from cre_linux_telemetry import read_cpu_ticks as read_linux_cpu_ticks
 from cre_owned_processes import (
     OwnedProcessGroup,
     _defer_cleanup_signals,
+    _group_alive,
     settle_owned_groups,
 )
 from cre_performance import capture_runtime_configuration, run_observed_command
@@ -130,6 +131,61 @@ class RefreshError(RuntimeError):
 
 class ProcessCleanupUnknown(RefreshError):
     """Owned local work could not be proven stopped; require manual recovery."""
+
+
+# Only the internal worker's known-settled return paths emit these codes.
+COHORT_SETTLED_FAILURE_EXIT = 80
+COHORT_SETTLED_INTERRUPT_EXIT = 81
+COHORT_SETTLED_EXIT_CODES = frozenset(
+    {0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT}
+)
+
+
+def _cleanup_unknown_in_chain(error: BaseException | None) -> bool:
+    """A later guard or evidence failure must not erase uncertain settlement."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ProcessCleanupUnknown):
+            return True
+        pending.extend((current.__context__, current.__cause__))
+    return False
+
+
+def _require_completed_group_settlement(group: OwnedProcessGroup) -> None:
+    """After leader reap, only observe disappearance; never signal its PGID."""
+    try:
+        if (
+            type(group.pgid) is not int
+            or group.pgid <= 1
+            or group.pgid != group.process.pid
+            or group.pgid == os.getpgrp()
+        ):
+            raise ProcessCleanupUnknown("completed command group identity changed")
+        if group.process.returncode is None:
+            raise ProcessCleanupUnknown("completed command leader is not reaped")
+        group.reaped = True
+        group.gone = not _group_alive(group.pgid)
+    except (Exception, KeyboardInterrupt) as exc:
+        raise ProcessCleanupUnknown(
+            "owned process cleanup_unknown after command completion"
+        ) from exc
+    if not group.gone:
+        raise ProcessCleanupUnknown(
+            "owned process cleanup_unknown: group remains after leader reap"
+        )
+
+
+def _raise_unsettled_dispatch(error: BaseException) -> None:
+    """Preserve interrupt classification while retaining unregistered work."""
+    unknown = ProcessCleanupUnknown("child dispatch or settlement is cleanup_unknown")
+    if isinstance(error, KeyboardInterrupt):
+        raise error from unknown
+    raise unknown from error
 
 
 class ArtifactValidationError(RefreshError):
@@ -1880,6 +1936,13 @@ class SharedLock:
                 shutil.rmtree(self.path, ignore_errors=True)
             raise
         self.directory_identity = _lock_directory_identity(self.path)
+        # Persist newly created authority/lock pathnames before admission.
+        # A failed acknowledgement leaves held=False and the crash fence armed.
+        parent_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
         self.partial_directory_identity = None
         self.retain_on_exit = False
         self.held = True
@@ -2224,16 +2287,7 @@ class SharedLock:
         details = _peek_cpu_guard_trip_details()
         # Finally blocks can replace an unknown-cleanup exception with an
         # operator interrupt. Retain its uncertainty across that entire chain.
-        pending = [_exc]
-        seen = set()
-        cleanup_unknown = False
-        while pending:
-            error = pending.pop()
-            if error is None or id(error) in seen:
-                continue
-            seen.add(id(error))
-            cleanup_unknown |= isinstance(error, ProcessCleanupUnknown)
-            pending.extend((error.__context__, error.__cause__))
+        cleanup_unknown = _cleanup_unknown_in_chain(_exc)
         if cleanup_unknown or (
             details is not None and not details.owned_processes_reaped
         ):
@@ -3177,6 +3231,7 @@ def _run_logged_command(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("a", encoding="utf-8")
     reaped_after_interrupt = False
+    local_settlement_proved = False
     try:
         log.write(f"[{utc_now()}] command: {' '.join(argv)}\n")
         log.flush()
@@ -3220,6 +3275,7 @@ def _run_logged_command(
                     [owned_group], grace_seconds=COMMAND_INTERRUPT_GRACE_SECONDS
                 )
                 reaped_after_interrupt = settlement.settled
+                local_settlement_proved = settlement.settled
                 record_interrupt(
                     f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n"
                 )
@@ -3249,8 +3305,16 @@ def _run_logged_command(
                             )
                         ) from cleanup_errors[0]
                 raise cleanup_interrupt
+        _require_completed_group_settlement(owned_group)
+        local_settlement_proved = True
         log.write(f"[{utc_now()}] rc={rc}\n")
         return rc
+    except (Exception, KeyboardInterrupt) as exc:
+        # This includes interruption inside Popen or before group registration,
+        # and unexpected wait failures. No child-ID reconstruction is safe.
+        if not local_settlement_proved and not _cleanup_unknown_in_chain(exc):
+            _raise_unsettled_dispatch(exc)
+        raise
     finally:
         with _defer_cleanup_signals():
             active_error = sys.exception()
@@ -3422,6 +3486,14 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
         ],
         grace_seconds=COHORT_INTERRUPT_GRACE_SECONDS,
     )
+    nested_settlement_known = True
+    for item in processes:
+        try:
+            nested_settlement_known &= (
+                item.process.returncode in COHORT_SETTLED_EXIT_CODES
+            )
+        except (Exception, KeyboardInterrupt):  # noqa: BLE001 - missing proof stays unknown
+            nested_settlement_known = False
     for item in processes:
         record_log(
             item,
@@ -3431,14 +3503,21 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
             item.log_handle.close()
         except Exception as exc:  # noqa: BLE001
             cleanup_errors.append(exc)
-    if not settlement.settled:
+    if not settlement.settled or not nested_settlement_known:
         _mark_cpu_interrupt_evidence_failed(reaped=False)
         cleanup_errors.append(
-            ProcessCleanupUnknown(f"owned process cleanup_unknown: {settlement.errors}")
+            ProcessCleanupUnknown(
+                f"owned process cleanup_unknown: {settlement.errors}; "
+                f"nested settlement known={nested_settlement_known}"
+            )
         )
     if cleanup_errors:
         first_error = cleanup_errors[0]
-        error_type = ProcessCleanupUnknown if not settlement.settled else RefreshError
+        error_type = (
+            ProcessCleanupUnknown
+            if not settlement.settled or not nested_settlement_known
+            else RefreshError
+        )
         raise error_type(
             "cohort cleanup completed with failed process or log evidence: "
             f"{first_error}"
@@ -3573,6 +3652,13 @@ def _finalize_cohort_collection(
     rc = item.process.poll()
     if rc is None:
         raise RuntimeError("cannot finalize a running cohort source worker")
+    _require_completed_group_settlement(
+        item.owned_group or OwnedProcessGroup.from_spawn(item.process)
+    )
+    if rc not in COHORT_SETTLED_EXIT_CODES:
+        raise ProcessCleanupUnknown(
+            f"cohort worker exit {rc} does not prove nested command settlement"
+        )
     recorded_attempts = checkpoint.get("attempts") or []
     recorded_attempt = recorded_attempts[-1] if recorded_attempts else None
     owns_completion = (
@@ -4698,6 +4784,7 @@ def prepare_sources_cohort(
         source: len(manifest["sources"][source].get("attempts") or [])
         for source in sources
     }
+    dispatch_pending = False
     try:
         while True:
             completed = [item for item in active if item.process.poll() is not None]
@@ -4723,6 +4810,9 @@ def prepare_sources_cohort(
                 [item.source for item in active],
                 source_workers=source_workers,
             ):
+                # Keep the admission fence if interruption lands between the
+                # spawn helper returning and enrollment in this existing list.
+                dispatch_pending = True
                 started = _start_cohort_collection(
                     run_dir,
                     manifest,
@@ -4732,6 +4822,7 @@ def prepare_sources_cohort(
                 )
                 if started is not None:
                     active.append(started)
+                dispatch_pending = False
 
             if active:
                 # Keep the coordinator responsive to operator interrupt while
@@ -4747,8 +4838,12 @@ def prepare_sources_cohort(
             )
             if not selectable:
                 break
-    except BaseException:
-        _terminate_cohort_processes(active)
+    except BaseException as exc:
+        try:
+            _terminate_cohort_processes(active)
+        finally:
+            if dispatch_pending and not _cleanup_unknown_in_chain(exc):
+                _raise_unsettled_dispatch(exc)
         raise
 
     collection_failures = [
@@ -6379,7 +6474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("incomplete internal cohort collection worker arguments")
         try:
             worker_transactions = parse_transactions(args.transactions)
-            return run_cohort_collection_worker(
+            worker_rc = run_cohort_collection_worker(
                 args._cohort_collect_source,
                 Path(args._cohort_output),
                 run_dir=Path(args._cohort_run_dir),
@@ -6390,6 +6485,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 transactions=worker_transactions,
             )
+            return 0 if worker_rc == 0 else COHORT_SETTLED_FAILURE_EXIT
+        except KeyboardInterrupt as exc:
+            if _cleanup_unknown_in_chain(exc):
+                raise
+            return COHORT_SETTLED_INTERRUPT_EXIT
         except ValueError as exc:
             parser.error(str(exc))
 
@@ -6486,9 +6586,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             database_target=database_target,
         )
-    save_manifest(run_dir, manifest)
+    # Publish the existing durable recovery barrier before any native child can
+    # escape an uncatchable coordinator exit. Only this exact held owner may
+    # clear it after local settlement, guard quiescence and terminal evidence.
+    lock = SharedLock(lock_dir, recovery_required=True)
+    ownership = ExitStack()
+    terminal_evidence_saved = False
+    terminal_publication_failed = False
+    settlement_unknown = False
 
-    lock = SharedLock(lock_dir)
+    def persist_terminal() -> None:
+        nonlocal terminal_evidence_saved, terminal_publication_failed
+        terminal_evidence_saved = False
+        try:
+            save_manifest(run_dir, manifest)
+            atomic_write_text(run_dir / "report.md", render_report(manifest))
+        except BaseException:
+            terminal_publication_failed = True
+            raise
+        terminal_evidence_saved = True
+
     cpu_guard = HostCpuGuard(
         log_path=run_dir / "logs" / "host-cpu-guard.jsonl",
         max_percent=args.max_host_cpu_percent,
@@ -6514,8 +6631,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
+        ownership.enter_context(lock)
+        save_manifest(run_dir, manifest)
         with (
-            lock,
             resource_guard_boundary(memory_guard, cpu_guard),
             observe_resource_usage(
                 run_dir,
@@ -6697,11 +6815,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest["finished_at"] = utc_now()
             manifest["resource_stop"] = None
             manifest["error"] = None
-            save_manifest(run_dir, manifest)
-            atomic_write_text(run_dir / "report.md", render_report(manifest))
+            persist_terminal()
             print(run_dir)
             return 0
     except CpuGuardTrip as exc:
+        if not lock.held:
+            raise
+        settlement_unknown = _cleanup_unknown_in_chain(exc)
         details = _peek_cpu_guard_trip_details()
         if details is None:
             details = CpuGuardTripDetails(
@@ -6721,29 +6841,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             else "host CPU guard stopped the checkpoint run"
         )
         manifest["finished_at"] = utc_now()
-        save_manifest(run_dir, manifest)
-        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        persist_terminal()
         return 75
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        if not lock.held:
+            raise
+        settlement_unknown = _cleanup_unknown_in_chain(exc)
         manifest["status"] = "interrupted"
         manifest["resource_stop"] = None
         manifest["error"] = "operator interruption"
-        save_manifest(run_dir, manifest)
-        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        persist_terminal()
         return 130
     except Exception as exc:
+        if not lock.held:
+            raise
+        settlement_unknown = _cleanup_unknown_in_chain(exc)
         manifest["status"] = "failed"
         manifest["resource_stop"] = None
         manifest["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
-        save_manifest(run_dir, manifest)
-        atomic_write_text(run_dir / "report.md", render_report(manifest))
+        persist_terminal()
         raise
     finally:
-        memory_guard.stop()
-        cpu_guard.stop()
-        _clear_cpu_guard_trip(reset_signals=False)
-        signal.signal(signal.SIGTERM, previous_sigterm)
-        save_report(run_dir)
+        try:
+            memory_guard.stop()
+            cpu_guard.stop()
+            details = _peek_cpu_guard_trip_details()
+            guards_stopped = all(
+                guard.thread is None or not guard.thread.is_alive()
+                for guard in (memory_guard, cpu_guard)
+            )
+            settlement_unknown |= _cleanup_unknown_in_chain(sys.exception())
+            _clear_cpu_guard_trip(reset_signals=False)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            if lock.held:
+                save_report(run_dir)
+            if (
+                lock.held
+                and terminal_evidence_saved
+                and not terminal_publication_failed
+                and guards_stopped
+                and not settlement_unknown
+                and (details is None or details.owned_processes_reaped)
+            ):
+                lock.clear_recovery_requirement()
+        finally:
+            # This runs even if final evidence, guard teardown or fence clearing
+            # fails. A still-armed authority/lease is preserved by SharedLock.
+            ownership.__exit__(*sys.exc_info())
 
 
 if __name__ == "__main__":

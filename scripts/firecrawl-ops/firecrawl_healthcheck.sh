@@ -68,7 +68,7 @@ resolve_fc_dir() {
 }
 
 FC_DIR="$(resolve_fc_dir)"
-API_URL="${API_URL:-http://localhost:3002}"
+API_URL="${FIRECRAWL_API_URL:-${API_URL:-http://localhost:3002}}"
 CURL_CONNECT_TIMEOUT="${FIRECRAWL_HEALTHCHECK_CONNECT_TIMEOUT:-10}"
 CURL_MAX_TIME="${FIRECRAWL_HEALTHCHECK_MAX_TIME:-90}"
 CURL_RETRIES="${FIRECRAWL_HEALTHCHECK_RETRIES:-12}"
@@ -91,6 +91,10 @@ if ! DOCKER_PS="$(docker compose ps --no-trunc 2>&1)"; then
 else
   echo "$DOCKER_PS"
 fi
+
+INGRESS_DIAGNOSTIC="$(python3 "$SCRIPT_DIR/firecrawl_ingress_check.py" --api-url "$API_URL" 2>/dev/null)" || \
+  INGRESS_DIAGNOSTIC="WARNING: API ingress diagnostic failed; exposure is unknown."
+printf '%s\n' "$INGRESS_DIAGNOSTIC"
 
 IMAGE_ID="$(docker image inspect firecrawl-api:latest --format '{{.Id}}' 2>/dev/null || true)"
 if [[ -z "$IMAGE_ID" ]]; then
@@ -149,7 +153,7 @@ if [[ -n "$EVIDENCE_DIR" ]]; then
   STAMP="$(date +%Y%m%d-%H%M%S)"
   JSON_PATH="$EVIDENCE_DIR/${STAMP}-firecrawl-healthcheck.json"
   MD_PATH="$EVIDENCE_DIR/${STAMP}-firecrawl-healthcheck.md"
-  export STATUS API_URL FC_DIR DOCKER_PS ROOT_RESP RESP SCRAPE_SUMMARY IMAGE_ID JSON_PATH MD_PATH
+  export STATUS API_URL FC_DIR DOCKER_PS ROOT_RESP RESP SCRAPE_SUMMARY IMAGE_ID JSON_PATH MD_PATH INGRESS_DIAGNOSTIC
   ERRORS_JSON="$(printf '%s\n' "${ERRORS[@]}" | python3 -c 'import json,sys; print(json.dumps([line for line in sys.stdin.read().splitlines() if line]))')"
   export ERRORS_JSON
   python3 "$SCRIPT_DIR/firecrawl_healthcheck_evidence.py"

@@ -4821,8 +4821,9 @@ def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(
     ]
 
 
+@pytest.mark.parametrize("worker_exit", [refresh.COHORT_SETTLED_INTERRUPT_EXIT, -2, None])
 def test_cohort_interrupt_terminates_every_active_child_before_returning(
-    tmp_path, monkeypatch, owned_group_fixture
+    tmp_path, monkeypatch, owned_group_fixture, worker_exit
 ):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
@@ -4841,13 +4842,15 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
         def __init__(self, pid):
             self.pid = pid
             self.done = False
+            self.returncode = None
 
         def poll(self):
             return 0 if self.done else None
 
         def wait(self, timeout=None):
             self.done = True
-            return -2
+            self.returncode = worker_exit
+            return worker_exit
 
     def start(_run_dir, _manifest, source, **_kwargs):
         process = RunningProcess(6000 + len(signals) + (1 if source == "cbre" else 0))
@@ -4872,7 +4875,12 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
         refresh.os, "killpg", lambda pid, sig: signals.append((pid, sig))
     )
 
-    with pytest.raises(KeyboardInterrupt):
+    expected = (
+        KeyboardInterrupt
+        if worker_exit == refresh.COHORT_SETTLED_INTERRUPT_EXIT
+        else refresh.ProcessCleanupUnknown
+    )
+    with pytest.raises(expected):
         refresh.prepare_sources_cohort(
             run_dir,
             manifest,

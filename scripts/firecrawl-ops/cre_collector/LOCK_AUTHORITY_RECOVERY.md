@@ -71,6 +71,52 @@ with direct filesystem access who can replace paths outside the protocol. In
 that case, or after any authority mismatch, stop the collector and perform
 manual recovery. Never delete the sidecar as an automated repair step.
 
+## Ordinary checkpoint crash fence
+
+The ordinary `cre_checkpoint_refresh.py execute` owner arms the existing
+recovery-required authority before publishing its directory lease or dispatching
+any child. Its lease also carries the existing operator-recovery prefix. A
+containing-directory fsync acknowledges the new authority/lock pathnames before
+admission. A refused acquisition does not publish a manifest or report, including
+when the caller requested `--resume`; the original run evidence stays intact. A
+SIGKILL, `os._exit`, or host termination can release the advisory flock while
+detached children continue running; the durable recovery state still rejects
+a successor. A dead coordinator PID alone never authorizes reclaiming that run.
+
+The exact held owner clears the fence only after local command/cohort groups
+have settled, both watchdog threads have stopped, and its terminal manifest and
+`report.md` have been persisted. This includes a known, settled failure,
+operator interruption, or CPU stop; automatic CPU recovery still has its
+separate manifest and generation checks. Optional performance reporting remains
+best effort. A completed leader with a still-visible process group is uncertain
+and retains the fence. The post-reap check only observes group disappearance:
+it never signals a numeric PGID after the leader has been reaped.
+
+Concurrent cohort workers own a second boundary: their commands start separate
+sessions. The outer worker group's disappearance alone cannot prove those
+nested groups settled. Internal worker success remains exit 0; a known-settled
+collection failure exits 80 and a known-settled operator interruption exits 81.
+Both normal finalization and interrupted outer-worker cleanup reject every
+other exit as cleanup-unknown. Known failure retries remain available; an
+unhandled worker error or signal death requires operator investigation even
+when the outer group is gone. Original collector exit codes remain in command
+logs; the attempt's `rc` records the worker completion code.
+This is a trusted internal-worker contract, not an attestation against hostile
+worker code deliberately forging a completion exit.
+
+Publication, terminal evidence, shutdown, or recovery-clear failures retain a
+fail-closed authority/lease state. Complete storage failure cannot guarantee
+durability. Existing exact-owner partial-acquire recovery and clear operations
+remain descriptor, inode, token, and generation bound. They do not authorize a
+different process to clear an abruptly terminated owner's fence.
+
+After abrupt owner death, retain the original manifests, logs, authority and
+lease for operator investigation. Establish local descendant settlement and
+any outstanding remote or database outcome before a separately reviewed
+operator recovery. The historic `recover-quarantine` command below deliberately
+rejects this recovery-required state; it is not a crash-fence reset command.
+There is no automatic dead-PID waiver or shell-removal recovery procedure.
+
 ## Interrupted process settlement
 
 The foreground checkpoint owner records each new-session process group at
