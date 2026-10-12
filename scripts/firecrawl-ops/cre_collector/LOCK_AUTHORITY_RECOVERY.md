@@ -39,32 +39,6 @@ never a new generation that claims an old directory. Sidecar creation and
 generation writes are fault-tested; a failed fsync is not represented as a
 durability success.
 
-## Interrupted process settlement
-
-The foreground checkpoint owner records each new-session process group at
-spawn. During interrupted cleanup it reserves the unreaped leader's PID through
-the last group signal. A reaped leader with a still-present group has ambiguous
-ownership and is never signalled. Repeated SIGINT/SIGTERM signals are deferred
-through bounded cleanup and required logging; the original interruption and
-resource classification remain available afterwards.
-
-Command, cohort, and series cleanup share their groups' grace deadline, followed
-by at most five seconds of bounded reaping and disappearance checks. Their
-respective grace periods remain 15, 30, and 45 seconds. On Darwin an exited,
-unreaped leader can keep its group observable for the full grace period. A
-permission-denied signal never proves settlement: fresh group disappearance
-and leader reaping are both required. Signal warnings are saved with settlement
-details. These bounds assume native calls return.
-
-Unknown settlement retains the existing operator-recovery lease and authority
-state, even when a later interrupt replaces the original exception during
-terminal logging or watchdog quiescence. The affected checkpoint or series
-cannot resume automatically. Inspect the recorded group IDs and live processes,
-establish that all owned work has stopped, and use the governed operator
-recovery procedure. Never delete the authority sidecar or remove an uncertain
-lease to admit another run. Detached sessions, remote API/browser work, and
-database rollback are outside local process-group settlement.
-
 Stale reclamation itself is a versioned, fsynced `v1 reclaiming` sidecar state,
 not a best-effort recursive deletion. The record binds the old authority and
 the stale directory's device/inode before the canonical directory is renamed
@@ -96,6 +70,32 @@ not a distributed lock and does not defend against a malicious same-UID actor
 with direct filesystem access who can replace paths outside the protocol. In
 that case, or after any authority mismatch, stop the collector and perform
 manual recovery. Never delete the sidecar as an automated repair step.
+
+## Interrupted process settlement
+
+The foreground checkpoint owner records each new-session process group at
+spawn. During interrupted cleanup it reserves the unreaped leader's PID through
+the last group signal. A reaped leader with a still-present group has ambiguous
+ownership and is never signalled. Repeated SIGINT/SIGTERM signals are deferred
+through bounded cleanup and required logging; the original interruption and
+resource classification remain available afterwards.
+
+Command, cohort, and series cleanup share their groups' grace deadline, followed
+by at most five seconds of bounded reaping and disappearance checks. Their
+respective grace periods remain 15, 30, and 45 seconds. On Darwin an exited,
+unreaped leader can keep its group observable for the full grace period. A
+permission-denied signal never proves settlement: fresh group disappearance
+and leader reaping are both required. Signal warnings are saved with settlement
+details. These bounds assume native calls return.
+
+Unknown settlement retains the existing operator-recovery lease and authority
+state, even when a later interrupt replaces the original exception during
+terminal logging or watchdog quiescence. The affected checkpoint or series
+cannot resume automatically. Inspect the recorded group IDs and live processes,
+establish that all owned work has stopped, and use the governed operator
+recovery procedure. Never delete the authority sidecar or remove an uncertain
+lease to admit another run. Detached sessions, remote API/browser work, and
+database rollback are outside local process-group settlement.
 
 ## Historic pytest quarantine residue
 
