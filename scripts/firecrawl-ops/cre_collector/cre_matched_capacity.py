@@ -833,6 +833,30 @@ def run_cells(
     return cells
 
 
+def disarm_interlock(shared_lock, directory: Path) -> None:
+    """Preserve uncertainty if durable interlock finalization cannot complete."""
+    try:
+        shared_lock.disarm_benchmark()
+    except (Exception, KeyboardInterrupt) as failure:
+        unknown = refresh.ProcessCleanupUnknown(
+            "calibration interlock finalization unknown"
+        )
+        try:
+            write_json(
+                directory / "finalization-failure.json",
+                {
+                    "status": "terminal_finalization_failed",
+                    "code": "cleanup_unknown",
+                    "recovery_fence_required": True,
+                    "supersedes": ["result.json", "failure.json"],
+                    "database_writes": False,
+                },
+            )
+        except (Exception, KeyboardInterrupt) as evidence:
+            raise unknown from evidence
+        raise unknown from failure
+
+
 def execute(args, cohort: dict | None, profile: dict, identity: dict) -> None:
     deadline = time.monotonic() + args.total_seconds
     env = no_write_env(args.api_url)
@@ -1010,7 +1034,7 @@ def execute(args, cohort: dict | None, profile: dict, identity: dict) -> None:
                     },
                 )
                 with _defer_cleanup_signals():
-                    shared_lock.disarm_benchmark()
+                    disarm_interlock(shared_lock, args.out)
                     armed = False
             except BaseException as error:
                 with _defer_cleanup_signals():
@@ -1097,7 +1121,7 @@ def execute(args, cohort: dict | None, profile: dict, identity: dict) -> None:
                             "calibration requires operator recovery"
                         ) from error
                     if armed:
-                        shared_lock.disarm_benchmark()
+                        disarm_interlock(shared_lock, args.out)
                         armed = False
                 raise
     finally:

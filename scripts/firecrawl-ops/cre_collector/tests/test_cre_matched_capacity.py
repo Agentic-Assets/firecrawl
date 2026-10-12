@@ -1021,3 +1021,80 @@ def test_private_terminal_evidence_cannot_succeed_when_directory_sync_fails(
     monkeypatch.setattr(matched.os, "fsync", sync)
     with pytest.raises(OSError, match="directory durability"):
         matched.write_json(tmp_path / "result.json", {"status": "synthetic"})
+
+
+@pytest.mark.parametrize(
+    "ordinary_rejection,missing_finalization",
+    [(False, False), (True, False), (True, True)],
+)
+def test_disarm_quarantine_preserves_unknown_and_terminal_correction(
+    inputs, monkeypatch, ordinary_rejection, missing_finalization
+):
+    args, cohort, profile, identity = inputs
+    lock = args.out / ".disarm.lock"
+
+    class Guard:
+        def __init__(self, *_a, **_k):
+            self.incident_context = {}
+
+        def preflight(self):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(matched.refresh, "checkpoint_lock_dir", lambda _: lock)
+    monkeypatch.setattr(matched.refresh, "HostCpuGuard", Guard)
+    monkeypatch.setattr(matched, "HostMemoryGuard", Guard)
+    monkeypatch.setattr(matched.refresh, "run_cpu_guard_preflight", lambda _: 20)
+    monkeypatch.setattr(
+        matched.refresh, "resource_guard_boundary", lambda *_a: nullcontext()
+    )
+    monkeypatch.setattr(
+        matched, "observe_resource_usage", lambda *_a, **_k: nullcontext()
+    )
+    monkeypatch.setattr(matched.owned, "runtime_lease", lambda _: nullcontext())
+    monkeypatch.setattr(matched, "check_runtime", lambda *_a: {})
+    monkeypatch.setattr(matched.owned, "stop_runtime", lambda *_a, **_k: {"ok": True})
+
+    def cells(*_a, **_k):
+        if ordinary_rejection:
+            raise matched.CalibrationRejected("synthetic ordinary rejection")
+        return []
+
+    monkeypatch.setattr(matched, "run_cells", cells)
+    original_disarm = matched.refresh.SharedLock.disarm_benchmark
+
+    def quarantine(self):
+        path = self.path / matched.refresh.BENCHMARK_QUARANTINE_MARKER
+        path.write_text("synthetic quarantine")
+        path.chmod(0o600)
+        original_disarm(self)  # real SharedLock must reject quarantine
+
+    monkeypatch.setattr(matched.refresh.SharedLock, "disarm_benchmark", quarantine)
+    original_write = matched.write_json
+
+    def write(path, value):
+        if missing_finalization and path.name == "finalization-failure.json":
+            raise OSError("synthetic terminal disk failure")
+        original_write(path, value)
+
+    monkeypatch.setattr(matched, "write_json", write)
+    with pytest.raises(matched.refresh.ProcessCleanupUnknown) as caught:
+        matched.execute(args, cohort, profile, identity)
+    assert "interlock finalization" in str(caught.value)
+    if not ordinary_rejection:
+        assert (
+            matched.read_json(args.out / "failure.json")["recovery_fence_required"]
+            is True
+        )
+    if not missing_finalization:
+        terminal = matched.read_json(args.out / "finalization-failure.json")
+        assert (
+            terminal["code"] == "cleanup_unknown"
+            and terminal["recovery_fence_required"] is True
+        )
+    else:
+        assert isinstance(caught.value.__cause__, OSError)
+    with pytest.raises(matched.refresh.LockHeldError), matched.refresh.SharedLock(lock):
+        pytest.fail("quarantine/unknown must veto a successor")
