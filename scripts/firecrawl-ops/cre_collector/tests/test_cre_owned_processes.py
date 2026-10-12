@@ -273,6 +273,52 @@ def test_unknown_cleanup_preserves_operator_recovery_lease(tmp_path):
         pytest.fail("uncertain owned work admitted another owner")
 
 
+@pytest.mark.parametrize(
+    "boundary", ["lease", "authority", "directory", "after_barrier"]
+)
+def test_recovery_fence_survives_publication_failure_and_owner_death(
+    tmp_path, boundary
+):
+    import cre_checkpoint_refresh as refresh
+
+    code = r"""
+import sys
+from pathlib import Path
+import cre_checkpoint_refresh as refresh
+lock = refresh.SharedLock(Path(sys.argv[1]))
+boundary = sys.argv[2]
+def fail(*a, **kw):
+    raise OSError("injected pre-publication failure")
+if boundary == "lease":
+    lock._replace_owned_lease = fail
+elif boundary == "authority":
+    lock._update_authority_generation = fail
+elif boundary == "directory":
+    lock._owned_directory_fd = fail
+else:
+    original = lock._replace_owned_lease
+    def terminate_after_barrier(*a, **kw):
+        import os
+        os._exit(17)
+    lock._replace_owned_lease = terminate_after_barrier
+try:
+    with lock:
+        raise refresh.ProcessCleanupUnknown("owned process cleanup_unknown")
+except refresh.ProcessCleanupUnknown:
+    raise SystemExit(19)
+"""
+    path = tmp_path / ".cre.lock"
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(path), boundary],
+        cwd=os.path.dirname(refresh.__file__),
+        timeout=3,
+        check=False,
+    )
+    assert result.returncode == (17 if boundary == "after_barrier" else 19)
+    with pytest.raises(refresh.LockHeldError), refresh.SharedLock(path):
+        pytest.fail("dead uncertain owner became reclaimable")
+
+
 @pytest.mark.parametrize("failure", ["signal", "exception"])
 def test_terminal_close_cannot_hide_unknown_cleanup(tmp_path, monkeypatch, failure):
     import io

@@ -88,10 +88,12 @@ permission-denied signal never proves settlement: fresh group disappearance
 and leader reaping are both required. Signal warnings are saved with settlement
 details. These bounds assume native calls return.
 
-Unknown settlement retains the existing operator-recovery lease and authority
-state, even when a later interrupt replaces the original exception during
-terminal logging or watchdog quiescence. The affected checkpoint or series
-cannot resume automatically. Inspect the recorded group IDs and live processes,
+Unknown settlement fences the authority as recovery-required before replacing
+its lease. The lease fence is attempted independently if authority writing fails;
+required recovery evidence failures are reported as cleanup-unknown. Complete
+local storage failure prevents a durability guarantee. A later interrupt during
+terminal logging or watchdog quiescence cannot erase recorded uncertainty.
+The affected checkpoint or series cannot resume automatically. Inspect the recorded group IDs and live processes,
 establish that all owned work has stopped, and use the governed operator
 recovery procedure. Never delete the authority sidecar or remove an uncertain
 lease to admit another run. Detached sessions, remote API/browser work, and

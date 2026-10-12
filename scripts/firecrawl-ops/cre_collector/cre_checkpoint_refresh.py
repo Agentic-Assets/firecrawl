@@ -2151,7 +2151,7 @@ class SharedLock:
     def release(self) -> None:
         try:
             directory_fd = self._owned_directory_fd()
-        except LockHeldError:
+        except (LockHeldError, OSError):
             directory_fd = -1
         try:
             try:
@@ -2203,16 +2203,38 @@ class SharedLock:
             # Preserve the existing fail-closed operator recovery lease. A new
             # foreground owner must not overlap a possibly surviving group.
             self.retain_on_exit = True
-            directory_fd = self._owned_directory_fd()
+            directory_fd = -1
+            recovery_errors = []
             try:
-                token = OPERATOR_RECOVERY_LEASE_PREFIX + secrets.token_urlsafe(32)
-                self._replace_owned_lease(directory_fd, token)
-                self.lease_token = token
-                self.recovery_required = True
-                self._update_authority_generation(token, recovery_required=True)
+                try:
+                    directory_fd = self._owned_directory_fd()
+                except Exception as exc:  # noqa: BLE001
+                    recovery_errors.append(exc)
+                # Fence stale reclaim before the atomic lease rename. Failure
+                # of either independent record must not skip the other fence.
+                try:
+                    self._update_authority_generation(
+                        self.lease_token, recovery_required=True
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    recovery_errors.append(exc)
+                if directory_fd >= 0:
+                    token = OPERATOR_RECOVERY_LEASE_PREFIX + secrets.token_urlsafe(32)
+                    try:
+                        self._replace_owned_lease(directory_fd, token)
+                        self.lease_token = token
+                        self.recovery_required = True
+                        self._update_authority_generation(token, recovery_required=True)
+                    except Exception as exc:  # noqa: BLE001
+                        recovery_errors.append(exc)
             finally:
-                os.close(directory_fd)
+                if directory_fd >= 0:
+                    os.close(directory_fd)
                 self.release()
+            if recovery_errors:
+                raise ProcessCleanupUnknown(
+                    "owned process cleanup_unknown; operator recovery evidence failed"
+                ) from recovery_errors[0]
             return
         self.release()
 
