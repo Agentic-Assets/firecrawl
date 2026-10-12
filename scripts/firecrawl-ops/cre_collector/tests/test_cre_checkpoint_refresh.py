@@ -3545,11 +3545,13 @@ def test_host_cpu_guard_recovery_resets_saturation_window(tmp_path):
     assert guard.observe(90.0, observed_monotonic=170.0) is not None
 
 
-def test_checkpoint_sigterm_handler_surfaces_cpu_guard_trip():
+def test_checkpoint_sigterm_handler_leaves_resource_classification_to_cleanup():
     refresh._set_cpu_guard_trip("host CPU stayed above the limit")
     try:
-        with pytest.raises(refresh.CpuGuardTrip, match="above the limit"):
+        with pytest.raises(KeyboardInterrupt) as caught:
             refresh.checkpoint_sigterm_handler(refresh.signal.SIGTERM, None)
+        assert type(caught.value) is KeyboardInterrupt
+        assert refresh._peek_cpu_guard_trip() == "host CPU stayed above the limit"
     finally:
         refresh._clear_cpu_guard_trip()
 
@@ -3670,10 +3672,13 @@ guard = refresh.HostCpuGuard(
     sample_seconds=0.01,
     sampler=lambda: 99.0,
 )
+memory = refresh.HostMemoryGuard(
+    log_path=Path(sys.argv[2]).with_name("memory.jsonl"), on_trip=lambda **_: None,
+)
 previous = signal.getsignal(signal.SIGTERM)
 signal.signal(signal.SIGTERM, refresh.checkpoint_sigterm_handler)
 try:
-    with lock:
+    with refresh.resource_guard_boundary(memory, guard), lock:
         guard.sample_once()
         guard.start()
         while True:
