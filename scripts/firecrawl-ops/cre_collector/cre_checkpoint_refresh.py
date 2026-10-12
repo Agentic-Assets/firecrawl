@@ -691,9 +691,8 @@ def checkpoint_sigterm_handler(_signum: int, _frame: Any) -> None:
     reap any owned collector process group, then lets main persist an
     interrupted manifest before its lock context exits.
     """
-    cpu_guard_reason = _peek_cpu_guard_trip()
-    if cpu_guard_reason is not None:
-        raise CpuGuardTrip(cpu_guard_reason)
+    # A signal can interrupt the main thread while it owns the trip lock.
+    # Inspect recorded resource state only after ordinary stack unwinding.
     raise KeyboardInterrupt
 
 
@@ -3030,6 +3029,12 @@ def _run_logged_command(
         try:
             rc = proc.wait()
         except KeyboardInterrupt as interrupted:
+            resource_reason = _peek_cpu_guard_trip()
+            cleanup_interrupt = (
+                CpuGuardTrip(resource_reason)
+                if resource_reason is not None
+                else interrupted
+            )
             cleanup_errors: list[Exception] = []
 
             def record_interrupt(message: str) -> None:
@@ -3069,13 +3074,13 @@ def _run_logged_command(
             except (ChildProcessError, OSError) as exc:
                 cleanup_errors.append(exc)
             if cleanup_errors:
-                if isinstance(interrupted, CpuGuardTrip):
+                if isinstance(cleanup_interrupt, CpuGuardTrip):
                     _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
                 else:
                     raise RefreshError(
                         "interrupt cleanup or required evidence failed"
                     ) from cleanup_errors[0]
-            raise
+            raise cleanup_interrupt
         log.write(f"[{utc_now()}] rc={rc}\n")
         return rc
     finally:
