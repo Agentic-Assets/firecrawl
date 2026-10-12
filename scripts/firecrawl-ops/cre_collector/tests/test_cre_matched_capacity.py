@@ -11,8 +11,9 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import cre_matched_capacity as matched
 import pytest
+
+import cre_matched_capacity as matched
 
 ActivitySampler = matched.RuntimeActivitySampler
 ResourceEvidence = matched.resource_evidence
