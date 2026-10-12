@@ -217,7 +217,11 @@ export function jllCohortSha256(cohort: JllBenchmarkCohort): string {
   return digest(canonical(cohort));
 }
 
-export type JllCapturedArm = JllBenchmarkCapture & {
+export type LiveJllProjection = Omit<OfflineJllProjection, "kind"> & {
+  kind: "live_real_source_capture";
+};
+export type JllCapturedArm = Omit<JllBenchmarkCapture, "projection"> & {
+  projection?: OfflineJllProjection | LiveJllProjection;
   arm: {
     cohortSha256: string;
     startedAt: string;
@@ -292,7 +296,7 @@ export function auditJllCapturedPair(input: {
     options.direct.doc,
     options.rendered.doc,
   );
-  const sourceProjection = auditOfflineJllProjections(
+  const sourceProjection = auditJllSourceProjections(
     options.direct.projection!,
     options.rendered.projection!,
   );
@@ -552,11 +556,37 @@ export function auditOfflineJllProjections(
   direct: OfflineJllProjection,
   rendered: OfflineJllProjection,
 ) {
-  const project = (capture: OfflineJllProjection) => {
+  if (
+    direct.kind !== "offline_generation_cache_projection" ||
+    rendered.kind !== "offline_generation_cache_projection"
+  )
+    throw new Error("not_offline_projection");
+  return auditJllSourceProjections(direct, rendered);
+}
+
+/** Compare an honest live real-enricher capture with offline parser replay. */
+export function auditJllSourceProjections(
+  direct: OfflineJllProjection | LiveJllProjection,
+  rendered: OfflineJllProjection | LiveJllProjection,
+) {
+  const project = (capture: OfflineJllProjection | LiveJllProjection) => {
+    const provenance = capture.listing.freshnessProvenance;
+    const expected =
+      capture.kind === "offline_generation_cache_projection"
+        ? "generation_cache"
+        : "live";
     if (
-      capture.kind !== "offline_generation_cache_projection" ||
-      capture.listing.freshnessProvenance?.cacheDisposition !==
-        "generation_cache"
+      ![
+        "offline_generation_cache_projection",
+        "live_real_source_capture",
+      ].includes(capture.kind) ||
+      provenance?.cacheDisposition !== expected ||
+      (capture.kind === "live_real_source_capture" &&
+        (provenance?.generationId !== capture.acquisition.generationId ||
+          capture.listing.detailObservedAt !== capture.acquisition.observedAt ||
+          capture.acquisition.cacheDisposition !== "live" ||
+          capture.acquisition.method !== "jll_detail" ||
+          provenance?.method !== "jll_detail"))
     )
       throw new Error("not_offline_projection");
     const row = structuredClone(capture.listing);
