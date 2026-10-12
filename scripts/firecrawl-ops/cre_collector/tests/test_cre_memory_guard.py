@@ -289,6 +289,15 @@ def test_series_passes_memory_policy_and_cpu_recovery_does_not_admit_ram_stop(tm
     )
     assert argv[argv.index("--memory-sustain-seconds") + 1] == "12"
     assert argv[argv.index("--memory-sample-seconds") + 1] == "1"
+    legacy_parent = series.new_manifest(tmp_path, git_sha="a" * 40, config=config)
+    del legacy_parent["config"]["host_memory_guard"]
+    # Historical reconciliation support cannot admit a new runnable series
+    # whose recorded policy omits the mandatory guard.
+    series.save_manifest(tmp_path, legacy_parent)
+    with pytest.raises(series.SeriesError, match="configuration differs"):
+        series.load_resume_manifest(
+            tmp_path / "manifest.json", git_sha="a" * 40, config=config
+        )
     manifest = series.new_manifest(
         tmp_path, git_sha="a" * 40, config=config, database_target={"value": "b" * 64}
     )

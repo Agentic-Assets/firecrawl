@@ -539,7 +539,7 @@ def _expected_child_config(
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
     guard = config["host_cpu_guard"]
-    return {
+    expected = {
         "sources": [source],
         "transactions": ["sale", "lease"],
         "max_items": 0,
@@ -556,9 +556,26 @@ def _expected_child_config(
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
-        "host_memory_guard": dict(config["host_memory_guard"]),
         "admit_baseline_hold_additively": False,
     }
+    # Reconciliation also inspects completed historical parent/child pairs.
+    # Preserve their recorded policy shape rather than inventing a guard that
+    # did not run. New series creation/resume still requires today's full config.
+    if "host_memory_guard" in config:
+        memory_policy = config["host_memory_guard"]
+        if not isinstance(memory_policy, Mapping):
+            raise TypeError("host memory guard policy must be an object")
+        try:
+            canonical = memory_guard_config(
+                memory_policy["warning_sustain_seconds"],
+                memory_policy["sample_seconds"],
+            )
+        except (KeyError, ValueError) as exc:
+            raise TypeError("host memory guard policy is malformed") from exc
+        if not _exact_json_equal(dict(memory_policy), canonical):
+            raise TypeError("host memory guard policy is not canonical")
+        expected["host_memory_guard"] = canonical
+    return expected
 
 
 def _parse_utc_timestamp(value: Any, *, field: str) -> datetime:

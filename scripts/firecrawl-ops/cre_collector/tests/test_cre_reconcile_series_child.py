@@ -217,7 +217,7 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             rc = main()
         return rc, stderr.getvalue()
 
-    def test_current_series_parent_config_is_admitted(self) -> None:
+    def _use_current_parent_config(self) -> None:
         self.parent["config"] = series_config(
             sources=["jll"],
             page_cap=400,
@@ -228,10 +228,59 @@ class ReconcileSeriesChildTests(unittest.TestCase):
             cpu_sustain_seconds=30.0,
             cpu_sample_seconds=5.0,
             nice=10,
+            memory_sustain_seconds=12,
+            memory_sample_seconds=1,
+        )
+        self.child["config"]["host_memory_guard"] = copy.deepcopy(
+            self.parent["config"]["host_memory_guard"]
         )
         self.parent["database_target"] = dict(DATABASE_TARGET)
         self._write()
+
+    def test_current_series_parent_config_is_admitted(self) -> None:
+        self._use_current_parent_config()
         self._validate()
+
+    def test_current_memory_policy_must_match_child_exactly(self) -> None:
+        self._use_current_parent_config()
+        policy = copy.deepcopy(self.child["config"]["host_memory_guard"])
+        for field, value in (
+            ("warning_sustain_seconds", 14),
+            ("sample_seconds", 2),
+        ):
+            with self.subTest(field=field):
+                self.child["config"]["host_memory_guard"] = {
+                    **policy,
+                    field: value,
+                }
+                self._refused("child configuration differs")
+        del self.child["config"]["host_memory_guard"]
+        self._refused("child configuration differs")
+
+    def test_historical_parent_cannot_claim_a_child_memory_policy(self) -> None:
+        self.child["config"]["host_memory_guard"] = {"sample_seconds": 2}
+        self._refused("child configuration differs")
+
+    def test_explicit_malformed_parent_memory_policy_is_refused(self) -> None:
+        self._use_current_parent_config()
+        canonical = copy.deepcopy(self.parent["config"]["host_memory_guard"])
+        for policy in (
+            None,
+            [],
+            "missing",
+            True,
+            {},
+            {**canonical, "warning_sustain_seconds": 0},
+            {**canonical, "sample_seconds": 6},
+            {**canonical, "sample_seconds": True},
+            {**canonical, "action": "continue"},
+            {**canonical, "critical_action": "wait"},
+            {**canonical, "telemetry_failure_action": "continue"},
+        ):
+            with self.subTest(policy=policy):
+                self.parent["config"]["host_memory_guard"] = policy
+                self.child["config"]["host_memory_guard"] = policy
+                self._refused("parent manifest is malformed")
 
     def test_child_config_drift_from_series_is_refused(self) -> None:
         for key, value in (
