@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
 import signal
 import subprocess
 import sys
@@ -265,11 +264,16 @@ def test_nested_dummy_process_is_reaped_before_cohort_worker_shutdown(tmp_path, 
     )
     worker_code = (
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
-        "import cre_checkpoint_refresh as r; r.COMMAND_INTERRUPT_GRACE_SECONDS=0.2; "
-        "r.run_command([sys.executable,'-u','-c',sys.argv[2]],Path(sys.argv[3]),env={})"
+        "import cre_checkpoint_refresh as r; r.COMMAND_INTERRUPT_GRACE_SECONDS=0.2\n"
+        "try:\n"
+        " r.run_command([sys.executable,'-u','-c',sys.argv[2]],Path(sys.argv[3]),env={})\n"
+        "except KeyboardInterrupt as exc:\n"
+        " if r._cleanup_unknown_in_chain(exc): raise\n"
+        " sys.exit(r.COHORT_SETTLED_INTERRUPT_EXIT)\n"
     )
     worker = None
     inner_pid = None
+    inner_reaped = False
     try:
         worker = subprocess.Popen(
             [sys.executable, "-u", "-c", worker_code, str(refresh.COLLECTOR_DIR),
@@ -301,20 +305,17 @@ def test_nested_dummy_process_is_reaped_before_cohort_worker_shutdown(tmp_path, 
             text=True,
             check=False,
         ).stdout.strip()
-        assert worker.poll() != -signal.SIGKILL, "outer grace cut off worker cleanup"
+        assert worker.poll() == refresh.COHORT_SETTLED_INTERRUPT_EXIT
         assert not status, "nested child must be reaped, including any zombie"
+        inner_reaped = True
     finally:
-        if inner_pid is not None:
-            try:
-                os.killpg(inner_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
         if worker is not None and worker.poll() is None:
-            try:
-                os.killpg(worker.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            worker.wait()
+            worker.kill()
+            worker.wait(timeout=2)
+        if inner_pid is not None and not inner_reaped:
+            # Only the worker owned the inner leader. Never signal that numeric
+            # PGID after worker reap; the inert fixture exits naturally in 5s.
+            time.sleep(5.1)
 
 
 def test_series_reaps_child_that_exits_between_poll_and_signal(monkeypatch):
