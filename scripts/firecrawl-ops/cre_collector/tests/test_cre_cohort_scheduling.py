@@ -773,8 +773,8 @@ def test_interrupt_reaps_distinct_active_attempts(
     assert len(paths) == source_workers
     assert len(set(paths)) == source_workers
     assert all(path.exists() for path in paths)
-    assert len(signals) == source_workers
-    assert {sent_signal for _pid, sent_signal in signals} == {signal.SIGINT}
+    assert len(signals) == source_workers * 2
+    assert {sent_signal for _pid, sent_signal in signals} == {signal.SIGINT, signal.SIGKILL}
 
 
 @pytest.mark.parametrize(

@@ -3078,11 +3078,13 @@ def _run_logged_command(
             )
             reaped_after_interrupt = settlement.settled
             record_interrupt(
-                f"[{utc_now()}] process settlement: {json.dumps(settlement.groups)}\n"
+                f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n"
             )
             if not settlement.settled:
                 cleanup_errors.append(
-                    ProcessCleanupUnknown("owned process cleanup_unknown")
+                    ProcessCleanupUnknown(
+                        f"owned process cleanup_unknown: {settlement.errors}"
+                    )
                 )
             if cleanup_errors:
                 if isinstance(cleanup_interrupt, CpuGuardTrip):
@@ -3273,7 +3275,8 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
     )
     for item in processes:
         record_log(
-            item, f"[{utc_now()}] process settlement: {json.dumps(settlement.groups)}\n"
+            item,
+            f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n",
         )
         try:
             item.log_handle.close()
@@ -3281,7 +3284,9 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
             cleanup_errors.append(exc)
     if not settlement.settled:
         _mark_cpu_interrupt_evidence_failed(reaped=False)
-        cleanup_errors.append(ProcessCleanupUnknown("owned process cleanup_unknown"))
+        cleanup_errors.append(
+            ProcessCleanupUnknown(f"owned process cleanup_unknown: {settlement.errors}")
+        )
     if cleanup_errors:
         first_error = cleanup_errors[0]
         error_type = ProcessCleanupUnknown if not settlement.settled else RefreshError

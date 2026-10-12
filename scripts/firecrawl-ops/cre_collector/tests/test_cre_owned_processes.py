@@ -35,7 +35,8 @@ def clock(monkeypatch):
     return now
 
 
-def test_leader_exit_does_not_certify_group_settlement(monkeypatch, clock):
+def test_unreaped_leader_exit_does_not_certify_group_settlement(monkeypatch, clock):
+    monkeypatch.setattr(owned, "_leader_owned", lambda _group: True)
     proc = Process()
     proc.returncode = 0
     live = [True]
@@ -58,6 +59,7 @@ def test_leader_exit_does_not_certify_group_settlement(monkeypatch, clock):
 
 
 def test_all_groups_share_one_deadline_and_final_wait_is_bounded(monkeypatch, clock):
+    monkeypatch.setattr(owned, "_leader_owned", lambda _group: True)
     processes = [Process(), Process()]
     processes[1].pid += 1
     monkeypatch.setattr(owned, "_group_alive", lambda pgid: True)
@@ -87,7 +89,7 @@ def test_already_gone_group_is_never_signalled_again(monkeypatch, clock):
         [owned.OwnedProcessGroup.from_spawn(proc)], grace_seconds=0.2
     )
     assert result.settled
-    assert signals == [signal.SIGINT]
+    assert signals == [0]
 
 
 def test_identity_change_stays_unknown_and_never_signals(monkeypatch, clock):
@@ -102,6 +104,98 @@ def test_identity_change_stays_unknown_and_never_signals(monkeypatch, clock):
     result = owned.settle_owned_groups([group], grace_seconds=0.2)
     assert not result.settled
     assert result.errors == ("group_identity_changed",)
+
+
+def test_reaped_leader_with_live_group_is_never_signalled(monkeypatch, clock):
+    proc = Process()
+    proc.returncode = 0
+    monkeypatch.setattr(owned, "_group_alive", lambda _pgid: True)
+    monkeypatch.setattr(
+        owned.os, "killpg", lambda *_args: pytest.fail("ambiguous reused ID")
+    )
+    result = owned.settle_owned_groups(
+        [owned.OwnedProcessGroup.from_spawn(proc)], grace_seconds=0.1
+    )
+    assert not result.settled
+    assert result.errors == ("group_ownership_unknown",)
+    assert not proc.waits
+
+
+def test_no_reaping_until_after_last_signal(monkeypatch, clock):
+    proc = Process()
+    live = [True]
+    calls = []
+    monkeypatch.setattr(owned, "_group_alive", lambda _pgid: live[0])
+
+    def kill(_pgid, sent):
+        assert not proc.waits
+        assert proc.returncode is None
+        calls.append(sent)
+        if sent == signal.SIGKILL:
+            proc.returncode = -signal.SIGKILL
+            live[0] = False
+
+    monkeypatch.setattr(owned.os, "killpg", kill)
+    result = owned.settle_owned_groups(
+        [owned.OwnedProcessGroup.from_spawn(proc)], grace_seconds=0.1
+    )
+    assert result.settled
+    assert calls == [signal.SIGINT, signal.SIGKILL]
+    assert proc.waits == [0]
+
+
+@pytest.mark.parametrize("vanishes", [True, False])
+def test_permission_denial_requires_fresh_disappearance(monkeypatch, clock, vanishes):
+    proc = Process()
+    live = [True]
+    monkeypatch.setattr(owned, "_group_alive", lambda _pgid: live[0])
+
+    def denied(_pgid, sent):
+        if sent == signal.SIGKILL and vanishes:
+            live[0] = False
+            proc.returncode = 0
+        raise PermissionError
+
+    monkeypatch.setattr(owned.os, "killpg", denied)
+    result = owned.settle_owned_groups(
+        [owned.OwnedProcessGroup.from_spawn(proc)], grace_seconds=0, kill_seconds=0
+    )
+    assert result.settled is vanishes
+    assert result.errors == ("group_signal_denied",)
+
+
+@pytest.mark.parametrize("boundary", ["probe", "signal", "reap", "sleep"])
+def test_second_interrupt_cannot_escape_cleanup(monkeypatch, clock, boundary):
+    proc = Process()
+    monkeypatch.setattr(owned, "_group_alive", lambda _pgid: True)
+    monkeypatch.setattr(owned.os, "killpg", lambda *_args: None)
+
+    def interrupted(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    if boundary == "probe":
+        monkeypatch.setattr(owned, "_group_alive", interrupted)
+    elif boundary == "signal":
+        monkeypatch.setattr(owned.os, "killpg", interrupted)
+    elif boundary == "reap":
+        proc.wait = interrupted
+    else:
+        monkeypatch.setattr(owned.time, "sleep", interrupted)
+    result = owned.settle_owned_groups(
+        [owned.OwnedProcessGroup.from_spawn(proc)],
+        grace_seconds=0.1,
+        kill_seconds=0.1,
+    )
+    assert not result.settled
+    assert result.errors
+
+
+def test_real_operator_signals_deferred_and_handlers_restored():
+    previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    with owned._defer_cleanup_signals():
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGTERM)
+    assert {s: signal.getsignal(s) for s in previous} == previous
 
 
 def test_reap_exception_cannot_skip_remaining_owned_group(monkeypatch, clock):
@@ -137,8 +231,12 @@ def test_real_leader_first_stubborn_grandchild_and_unrelated_sentinel(tmp_path):
     )
     group = owned.OwnedProcessGroup.from_spawn(leader)
     try:
-        leader.wait(timeout=3)
+        end = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < end:
+            time.sleep(0.01)
         assert marker.exists()
+        time.sleep(0.05)
+        assert leader.returncode is None
         start = time.monotonic()
         result = owned.settle_owned_groups([group], grace_seconds=0.15, kill_seconds=2)
         assert time.monotonic() - start < 2.5
@@ -204,8 +302,12 @@ def test_real_series_cleanup_probes_descendants_after_leader_exits(
     leader = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
     leader._cre_owned_group = owned.OwnedProcessGroup.from_spawn(leader)
     try:
-        leader.wait(timeout=3)
+        end = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < end:
+            time.sleep(0.01)
         assert marker.exists()
+        time.sleep(0.05)
+        assert leader.returncode is None
         series._terminate_child(leader)
         with pytest.raises(ProcessLookupError):
             os.killpg(leader.pid, 0)

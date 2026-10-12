@@ -345,6 +345,7 @@ def owned_group_fixture(monkeypatch):
     import cre_owned_processes as owned
 
     def install(processes, is_reaped=None):
+        monkeypatch.setattr(owned, "_leader_owned", lambda _group: True)
         by_pid = {process.pid: process for process in processes}
         previous = owned.os.killpg
         killed = set()

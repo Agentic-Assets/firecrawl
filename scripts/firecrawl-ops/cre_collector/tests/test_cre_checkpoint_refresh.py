@@ -660,7 +660,7 @@ def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatc
         refresh.run_command(["node", "collect.ts"], tmp_path / "command.log", env={})
 
     assert spawned["kwargs"]["start_new_session"] is True
-    assert signals == [(4321, refresh.signal.SIGINT)]
+    assert signals == [(4321, refresh.signal.SIGINT), (4321, refresh.signal.SIGKILL)]
     assert process.wait_calls == 2
     assert "terminating process group 4321" in (tmp_path / "command.log").read_text()
 
@@ -4878,7 +4878,7 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
             source_workers=2,
         )
     assert {pid for pid, _signal in signals} == {6000, 6001}
-    assert {signal for _pid, signal in signals} == {refresh.signal.SIGINT}
+    assert {signal for _pid, signal in signals} == {refresh.signal.SIGINT, refresh.signal.SIGKILL}
 
 
 def test_two_resumes_preserve_ingest_then_refresh_first_seen_without_reingest(
