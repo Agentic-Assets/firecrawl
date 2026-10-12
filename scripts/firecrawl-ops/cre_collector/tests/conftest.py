@@ -44,6 +44,7 @@ if _PARENT not in sys.path:
 
 import cre_checkpoint_refresh as _refresh
 import cre_checkpoint_series as _series
+import cre_memory_guard as _memory_guard
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +54,7 @@ def _offline_refresh_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_refresh, "capture_runtime_configuration", lambda *_a, **_kw: None)
     monkeypatch.setattr(_refresh, "save_report", lambda *_a, **_kw: None)
     monkeypatch.setattr(_series, "save_report", lambda *_a, **_kw: None)
+    monkeypatch.setattr(_memory_guard, "read_memory_pressure", lambda **_kw: 1)
 
 # `canonical_shared_lock_dir()` resolves the real lock dir via
 # `git rev-parse --path-format=absolute --git-common-dir` (with `check=True`,

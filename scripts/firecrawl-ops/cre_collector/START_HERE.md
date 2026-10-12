@@ -80,13 +80,34 @@ calibration evidence. `cre_checkpoint_series.py` remains serial and does not
 expose this option. A source failure, rejected artifact, gate, or
 dry-run failure prevents aggregate admission and every database write.
 
-### CPU safety and evidence
+### CPU and memory safety and evidence
 
 Every checkpoint run has a fail-closed Darwin host-CPU watchdog. The code
 defaults are 90% for 30 seconds, sampled every 2 seconds. It rejects a start
 already at the ceiling and, on sustained pressure or telemetry failure,
 terminates its owned collector process group, releases the canonical lock,
 writes `resource_guard_interrupted`, and exits `75`.
+
+Every checkpoint also requires Darwin host memory-pressure telemetry. A start
+requires normal pressure. Warning pressure sustained for 20 seconds or any
+critical sample stops the checkpoint through the same owned-process cleanup
+path. Missing, malformed, timed-out or stale pressure readings and failed
+required evidence also stop it. `--memory-sustain-seconds` (maximum 30) and
+`--memory-sample-seconds` (default 2, maximum 5) are recorded and passed from
+series to children. `logs/host-memory-guard.jsonl` stores compact bounded samples;
+policy and the terminal reason are saved in the manifest. Memory stops never
+qualify for automatic CPU-only recovery. Resume only after host pressure clears.
+
+These thresholds govern the decision to begin cleanup, not a guarantee that
+CPU, memory or previously queued server work ends at that instant. For a tighter
+foreground run, `--max-host-cpu-percent 90 --cpu-sustain-seconds 10
+--cpu-sample-seconds 2` leaves more room for owned-process cleanup. Docker jobs
+may continue after a client interrupt; verify backend settlement separately.
+
+Memory protection uses the whole-host pressure level, not free RAM percentage
+or old swap occupancy. Per-container usage remains diagnostic, alongside any
+verified configured hard limits. It does not predict a container OOM or Docker
+VM exhaustion while host pressure remains normal.
 
 This is a safe stop with an exact resume point, not a background monitor or an
 automatic pause/resume service. `logs/host-cpu-guard.jsonl` records samples;
@@ -377,7 +398,7 @@ These receipts report state only. This change did not enable launchd, ingest,
 status activation, lifecycle deletion, a scheduler, or a production canary.
 
 Exit `0` means every selected source completed. Exit `2` means the series
-finished with recorded source-local failures. Exit `75` means the CPU guard
+finished with recorded source-local failures. Exit `75` means a required CPU or memory guard
 stopped it; inspect the guard and incident evidence, let host pressure clear,
 then resume the exact series:
 
