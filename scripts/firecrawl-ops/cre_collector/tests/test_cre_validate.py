@@ -1240,3 +1240,18 @@ def test_main_warnings_deduped(monkeypatch, capsys):
     # All queries emit the same (normalized) warning but it appears only once.
     warnings = parsed["psql_warnings"]
     assert len(warnings) == len(set(warnings))
+
+
+def test_main_separates_historical_conflicts_from_operational_queries(
+    monkeypatch, capsys
+):
+    _patch_main(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["cre_validate.py", "--format", "json"])
+    cre_validate.main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["historical_primary_child_conflicts"] == _DUMMY_ROWS
+    assert "historical_primary_child_conflicts" not in report["queries"]
+    assert (
+        "Historical Primary Child Conflicts (Soft-Deleted Listings)"
+        in render_markdown(report)
+    )

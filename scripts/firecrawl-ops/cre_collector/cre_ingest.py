@@ -3975,11 +3975,13 @@ WITH ins AS (
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.sale_price_usd, t.sale_price_usd) END,
+        -- Sparse updates preserve a positive prior PSF, never a legacy zero/negative.
         sale_price_per_sf = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  WHEN {colliers_transition_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END,
+                                 ELSE COALESCE(EXCLUDED.sale_price_per_sf,
+                                   CASE WHEN t.sale_price_per_sf > 0 THEN t.sale_price_per_sf END) END,
         cap_rate          = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
                                  ELSE COALESCE(EXCLUDED.cap_rate, t.cap_rate) END,

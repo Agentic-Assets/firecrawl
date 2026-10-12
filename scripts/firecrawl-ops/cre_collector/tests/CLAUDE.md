@@ -21,6 +21,7 @@ bash tests/run_om_facts_postgres_contract.sh  # opt-in disposable PostgreSQL 17 
 bash tests/run_listing_lifecycle_postgres_contract.sh  # opt-in local PostgreSQL 14+ contract
 bash tests/run_cre_validate_timing_postgres_contract.sh  # opt-in native psql timing contract
 bash tests/run_ingest_institutional_postgres_contract.sh  # opt-in disposable institutional UPDATE contract
+bash tests/run_cre_quality_postgres_contract.sh  # opt-in active/historical scope + sparse PSF contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
@@ -170,3 +171,11 @@ Overlap across `test_gate.py`, `test_cre_gate.py`, and `test_monitor.py` is inte
 - `../cre_ingest.py`, `../cre_gate.py`, `../cre_monitor.py`
 - `../../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`
 - `../../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` (especially sections 6, 8, 9, 12, 14.4)
+
+The quality consistency PostgreSQL runner executes the generated active and
+historical primary-child conflict queries and the exact generated price/SF
+upsert expression against synthetic rows. It preserves historical child rows,
+checks zero/negative/null/positive fallback and valid replacement behavior, and
+retains JLL withheld-price handling. It accepts no external database URL, uses
+only a cached image with no network or published ports, and removes only its
+created container ID.

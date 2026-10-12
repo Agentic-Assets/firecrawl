@@ -835,16 +835,18 @@ ORDER BY check_name;
     "primary_child_conflicts": """
 SELECT child_type, count(*)::text AS listings
 FROM (
-  SELECT 'contacts' AS child_type, listing_id
-  FROM credeals.cre_listing_contacts
-  WHERE is_primary
-  GROUP BY listing_id
+  SELECT 'contacts' AS child_type, c.listing_id
+  FROM credeals.cre_listing_contacts c
+  JOIN credeals.cre_listings l ON l.id = c.listing_id
+  WHERE c.is_primary AND l.deleted_at IS NULL
+  GROUP BY c.listing_id
   HAVING count(*) > 1
   UNION ALL
-  SELECT 'images' AS child_type, listing_id
-  FROM credeals.cre_listing_images
-  WHERE is_primary
-  GROUP BY listing_id
+  SELECT 'images' AS child_type, c.listing_id
+  FROM credeals.cre_listing_images c
+  JOIN credeals.cre_listings l ON l.id = c.listing_id
+  WHERE c.is_primary AND l.deleted_at IS NULL
+  GROUP BY c.listing_id
   HAVING count(*) > 1
 ) conflicts
 GROUP BY child_type
@@ -892,6 +894,13 @@ FROM credeals.search_cre_listings('National Avenue', NULL, NULL, NULL, NULL)
 ORDER BY smoke;
 """,
 }
+
+
+# Historical child conflicts remain visible but do not describe active inventory.
+# Keep this diagnostic outside QUERIES, whose rows feed operational quality gates.
+HISTORICAL_PRIMARY_CHILD_CONFLICTS_QUERY = QUERIES["primary_child_conflicts"].replace(
+    "l.deleted_at IS NULL", "l.deleted_at IS NOT NULL"
+)
 
 
 def parse_tsv(output):
@@ -1346,6 +1355,17 @@ def render_markdown(report):
     }
     for key in report["queries"]:
         parts.extend([f"## {labels[key]}", "", markdown_table(report["queries"][key]), ""])
+    if "historical_primary_child_conflicts" in report:
+        parts.extend(
+            [
+                "## Historical Primary Child Conflicts (Soft-Deleted Listings)",
+                "",
+                "Diagnostic only; historical child rows are preserved.",
+                "",
+                markdown_table(report["historical_primary_child_conflicts"]),
+                "",
+            ]
+        )
     return "\n".join(parts)
 
 
@@ -1378,6 +1398,9 @@ def main():
         "psql_warnings": [],
     }
     queries = dict(QUERIES)
+    queries["historical_primary_child_conflicts"] = (
+        HISTORICAL_PRIMARY_CHILD_CONFLICTS_QUERY
+    )
     if args.expected_artifact_run_key:
         try:
             queries["artifact_run_jobs"] = artifact_run_jobs_query(
@@ -1387,6 +1410,9 @@ def main():
             parser.error(str(exc))
     report["queries"], report["query_timings"], stderr = run_queries_with_timings(
         psql, db_url, queries
+    )
+    report["historical_primary_child_conflicts"] = report["queries"].pop(
+        "historical_primary_child_conflicts", []
     )
     warning = normalize_warning(stderr)
     if warning:

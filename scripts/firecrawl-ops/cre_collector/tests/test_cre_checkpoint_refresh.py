@@ -6489,3 +6489,17 @@ def test_additive_coverage_hold_report_retains_lifecycle_warning(tmp_path):
     report = refresh.render_report(manifest)
     assert "retained historical coverage hold" in report
     assert "no lifecycle deletion or whole-source freshness claim" in report
+
+
+def test_historical_primary_conflicts_are_diagnostic_while_active_conflicts_block():
+    report = absolute_quality_report()
+    report["historical_primary_child_conflicts"] = [
+        {"child_type": "images", "listings": "3"}
+    ]
+    assert refresh.verify_absolute_validation_quality(report)["ok"] is True
+    report["queries"]["primary_child_conflicts"] = [
+        {"child_type": "images", "listings": "1"}
+    ]
+    result = refresh.verify_absolute_validation_quality(report)
+    assert result["ok"] is False
+    assert any("primary_child_conflicts" in failure for failure in result["failures"])
