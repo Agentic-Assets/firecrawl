@@ -3462,6 +3462,8 @@ def test_host_cpu_guard_requires_sustained_saturation(tmp_path):
     }
 
     assert guard.observe(95.0, observed_monotonic=100.0) is None
+    for observed in range(102, 130, 2):
+        assert guard.observe(99.0, observed_monotonic=float(observed)) is None
     assert guard.observe(99.0, observed_monotonic=129.9) is None
     reason = guard.observe(91.0, observed_monotonic=130.0)
 
@@ -3539,10 +3541,12 @@ def test_host_cpu_guard_recovery_resets_saturation_window(tmp_path):
     guard = refresh.HostCpuGuard(log_path=tmp_path / "cpu-guard.jsonl")
 
     assert guard.observe(95.0, observed_monotonic=100.0) is None
-    assert guard.observe(20.0, observed_monotonic=120.0) is None
-    assert guard.observe(95.0, observed_monotonic=140.0) is None
-    assert guard.observe(95.0, observed_monotonic=169.9) is None
-    assert guard.observe(90.0, observed_monotonic=170.0) is not None
+    assert guard.observe(20.0, observed_monotonic=102.0) is None
+    assert guard.observe(95.0, observed_monotonic=104.0) is None
+    for observed in range(106, 134, 2):
+        assert guard.observe(95.0, observed_monotonic=float(observed)) is None
+    assert guard.observe(95.0, observed_monotonic=133.9) is None
+    assert guard.observe(90.0, observed_monotonic=134.0) is not None
 
 
 def test_checkpoint_sigterm_handler_leaves_resource_classification_to_cleanup():
