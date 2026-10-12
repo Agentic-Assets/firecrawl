@@ -37,7 +37,7 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 | jll | detail `property.id` (numeric) | URL slug ≠ id; monitor disabled |
 | jll-investor | `investor:` + Salesforce `listing.id` | Sitemap slug ≠ id; US filter post-detail; no coords |
 | cushman-wakefield | API `row.id` | Monitor omits real prices (detail-only) |
-| transwestern | `PageUrl` slug | Invalid `PageUrl` rows dropped at feed stage |
+| transwestern | `PageUrl` slug | Invalid rows fail closed. The provider-published `-` slug requires fresh unique official-sitemap membership and an exact primary name/full-address match, including in monitor mode. |
 | newmark | Algolia `slug` | Algolia 1000-hit cap per query; state+type sub-split |
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
 | avison-young | SharpLaunch `row.id` | **Full runs skip detail** unless `AVISON_YOUNG_DETAIL_LIMIT` set |
