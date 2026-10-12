@@ -6,6 +6,7 @@ import type { ScrapedDoc, DetailObservation } from "../types.js";
 import {
   auditJllPairedDocs,
   jllDocumentSha256,
+  jllSourceRowSha256,
 } from "./jll-direct-benchmark.js";
 
 type Member = {
@@ -20,6 +21,7 @@ export type OfflineJllProjection = {
   brokers: unknown[];
   acquisition: DetailObservation;
   documentSha256: string;
+  baseRowSha256: string;
 };
 let active = false;
 
@@ -111,6 +113,7 @@ export async function withOfflineJllProjection<T>(
           brokers: structuredClone(broker.brokers),
           acquisition: structuredClone(observation),
           documentSha256: jllDocumentSha256(doc),
+          baseRowSha256: jllSourceRowSha256(member.baseRow),
         };
       } finally {
         inFlight.delete(member.canonicalUrl);

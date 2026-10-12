@@ -70,7 +70,9 @@ one client attempt with a live document observation made at/after that start.
 The observation must use the expected transport method, a nonempty generation
 consistent within the arm and distinct across arms, and cannot be over one
 second in the future. The offline projection's original acquisition observation
-and full input-document digest must match that actual captured document.
+and full input-document digest must match that actual captured document. Its
+source-index row digest must match the original full cohort row, preserving
+withholding and transaction controls passed to the parser.
 These checks bind reported fresh-capture rates to the arm; immutable inventory
 clocks remain separate and are never restamped.
 The rendered request must explicitly request `maxAge: 0`, with the SDK retry

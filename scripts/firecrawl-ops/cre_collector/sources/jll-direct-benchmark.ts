@@ -50,6 +50,8 @@ function canonical(value: unknown): string {
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 export const jllDocumentSha256 = (doc: ScrapedDoc) => digest(canonical(doc));
+export const jllSourceRowSha256 = (row: Record<string, unknown>) =>
+  digest(canonical(row));
 function propertyData(member: JllBenchmarkMember, doc: ScrapedDoc) {
   if (
     doc.metadata?.statusCode !== 200 ||
@@ -316,7 +318,9 @@ export async function runJllTransportMatrix(options: {
                         canonical(row.projection.acquisition) !==
                           canonical(observation) ||
                         row.projection.documentSha256 !==
-                          jllDocumentSha256(row.doc)
+                          jllDocumentSha256(row.doc) ||
+                        row.projection.baseRowSha256 !==
+                          jllSourceRowSha256(members[index]!.baseRow)
                       )
                         throw new Error("projection_acquisition_mismatch");
                       if (

@@ -5,6 +5,7 @@ import {
   type JllBenchmarkTransport,
   type JllArmContext,
   jllDocumentSha256,
+  jllSourceRowSha256,
   auditJllPairedDocs,
   runJllTransportMatrix,
 } from "../../../sources/jll-direct-benchmark.js";
@@ -86,6 +87,7 @@ function captureFixture(
       ...projection(member),
       acquisition: observation,
       documentSha256: jllDocumentSha256(captured),
+      baseRowSha256: jllSourceRowSha256(member.baseRow),
     },
     attempts: 1,
     cacheDisposition: "live" as const,
@@ -233,9 +235,10 @@ test("cohort hash covers original inventory controls and callbacks cannot mutate
         member.baseRow.inventoryObservedAt,
         "2026-10-12T10:00:01.000Z",
       );
+      const row = captureFixture(transport, member, context);
       member.baseRow.hidePrice = true;
       captures++;
-      return captureFixture(transport, member, context);
+      return row;
     },
   });
   assert.equal(result.complete, true);
@@ -366,6 +369,7 @@ test("arm acquisition rejects stale/future/method/generation and swapped project
     "reused_generation",
     "projection_observation",
     "projection_body",
+    "projection_source_controls",
   ] as const) {
     let calls = 0;
     const result = await runJllTransportMatrix({
@@ -402,6 +406,11 @@ test("arm acquisition rejects stale/future/method/generation and swapped project
           row.projection.acquisition.observedAt = "2000-01-01T00:00:00.000Z";
         if (fault === "projection_body")
           row.projection.documentSha256 = "0".repeat(64);
+        if (fault === "projection_source_controls")
+          row.projection.baseRowSha256 = jllSourceRowSha256({
+            ...member.baseRow,
+            hidePrice: true,
+          });
         return row;
       },
     });
