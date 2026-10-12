@@ -42,8 +42,7 @@ def test_sale_price_per_sf_coalesce_present():
     sql = " ".join(_sql().split())
     assert (
         "ELSE COALESCE(EXCLUDED.sale_price_per_sf, "
-        "CASE WHEN t.sale_price_per_sf > 0 THEN t.sale_price_per_sf END) END"
-        in sql
+        "CASE WHEN t.sale_price_per_sf > 0 THEN t.sale_price_per_sf END) END" in sql
     ), "Expected positive-prior COALESCE-keep for sale_price_per_sf."
 
 
