@@ -45,7 +45,9 @@ if _PARENT not in sys.path:
 from cre_platform import UNSUPPORTED_MESSAGE
 
 if sys.platform not in {"linux", "darwin"}:
-    pytest.exit(UNSUPPORTED_MESSAGE, returncode=0)
+    # Initial conftest imports happen before pytest's session exit handler.
+    # UsageError reports a clean actionable refusal without importing POSIX code.
+    raise pytest.UsageError(UNSUPPORTED_MESSAGE)
 
 import cre_checkpoint_refresh as _refresh
 import cre_checkpoint_series as _series
