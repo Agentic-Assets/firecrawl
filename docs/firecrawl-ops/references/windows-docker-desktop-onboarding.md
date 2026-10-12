@@ -84,11 +84,40 @@ Also verify a scrape through the Playwright sidecar explicitly, including its he
 
 The static compatibility doctor checks the exact CLI/MCP declarations without resolving packages or calling the host. Its optional `--run` MCP probe uses POSIX pipe polling and does not work with native Windows pipes; do not report it as passed on Windows. Verify MCP initialization and tool listing separately with a Windows-compatible stdio client and bounded timeouts. The wrapper pins remain authoritative; do not replace them with `latest`. Smoke artifacts belong under ignored `.scratch/`; record command results in the issue or PR rather than committing raw captures.
 
-## Install local agent skills
+## Install repository and user agent skills
 
-The Mac installer `sync_agent_skills.sh` retains its Unix symlink/copy workflow. Do not assume it works unchanged on Windows. A local Windows installation can copy each canonical `SKILL.md` into `~/.agents/skills/firecrawl-ops` and `~/.agents/skills/firecrawl-local-api`, then create directory junctions named `scripts` and `references` pointing to this clone's `scripts/firecrawl-ops` and `docs/firecrawl-ops/references`. Client skill directories can use junctions to those installed skill folders.
+Repo skills live under `.agents/skills`; `.claude/skills` is a relative symlink to that directory. The two Docker skills (`multi-stage-dockerfile` and `docker-patterns`) include pinned source commits, hashes and original MIT licenses in their directories. They add guidance and do not install Docker services or change the runtime.
 
-Inspect existing destinations before creating junctions; preserve unrelated installed skills. This approach needs the clone to stay at its verified path. Refresh the standalone installed `SKILL.md` copies after changing the canonical skills. The shared repository's symlink entries should remain intact for Mac checkouts.
+On native Windows, Git can materialize tracked symlinks as text placeholders. Enable Windows Developer Mode, or run this narrow repair from an elevated terminal:
+
+```powershell
+python scripts/firecrawl-ops/ensure_skill_links.py --apply
+git config --local core.symlinks true
+python scripts/firecrawl-ops/local_agent_preflight.py --skill-links-only
+```
+
+The helper restores only the five canonical relative symlinks, refuses unknown content and preserves Git's mode-120000 link blobs. No copy or junction fallback is silently substituted. On macOS/Linux, intact links are a no-op. For user-level installation on macOS/Linux, `sync_agent_skills.sh` uses rsync when available and a staged, rollback-safe `cp -RL` fallback otherwise. Existing user-level Windows junctions from a previous installation are separate from repository symlinks; preserve unrelated client configuration.
+
+## Ubuntu workspace for the CRE runtime
+
+The container API can run directly from PowerShell. The CRE runtime needs Linux/macOS POSIX locks and process groups. Install a user WSL distribution, then enable **Settings > Resources > WSL Integration > Ubuntu-24.04** in Docker Desktop. Verify Docker access inside that distro before starting another stack.
+
+```powershell
+wsl --install Ubuntu-24.04 --web-download --no-launch --version 2
+wsl -d Ubuntu-24.04
+```
+
+Inside Ubuntu, use a regular Linux user and install `git ca-certificates curl jq rsync postgresql-client python3 python3-venv procps xz-utils` through apt. Install Node 24 for Linux from the official Node distribution with its published SHA-256 verified. Keep the clone under `~/code/firecrawl`, not `/mnt/c`, and run the collector's `npm ci`. Use a dedicated virtual environment for pytest; do not share Windows `node_modules` or install test packages into system Python. No PostgreSQL server or host Go/Rust/Chromium toolchain is required.
+
+```bash
+docker info
+curl --fail http://localhost:3002/
+cd ~/code/firecrawl/scripts/firecrawl-ops/cre_collector
+bash cre_setup.sh --check
+bash cre_status.sh --scheduler external
+```
+
+Missing production credentials and empty run history are honest status warnings. `external` mode retains lock and staleness checks and creates no scheduler. Provision secrets separately through the approved operator workflow. A Linux context bootstrap can reference the existing canonical company context and a Linux `local/machine.md`; it does not require installing unrelated agent clients or copying Windows credentials. Use a separate `git clone --no-hardlinks` for the full offline suites.
 
 ## Daily use and limitations
 

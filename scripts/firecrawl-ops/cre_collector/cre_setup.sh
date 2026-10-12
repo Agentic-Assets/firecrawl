@@ -40,6 +40,8 @@ for arg in "$@"; do
   esac
 done
 
+python3 "$DIR/cre_platform.py" || exit $?
+
 PASS=0; WARN=0; FAIL=0
 declare -a TODOS=()
 ok()      { printf '  OK   %s\n' "$1"; PASS=$((PASS+1)); }
@@ -57,22 +59,22 @@ for bin in node npm npx python3 git; do
     ok "$bin ($("$bin" --version 2>&1 | head -1))"
   else
     fail "$bin not found on PATH"
-    [ "$bin" = "node" ] && todo "Install Node (brew install node), then re-run."
-    [ "$bin" = "python3" ] && todo "Install Python 3 (preinstalled on macOS, or brew install python)."
+    [ "$bin" = "node" ] && todo "Install Node 24 for this execution environment (nodejs.org; brew install node on macOS)."
+    [ "$bin" = "python3" ] && todo "Install Python 3 (apt install python3 python3-venv on Ubuntu; brew install python on macOS)."
   fi
 done
 
 # psql: the ingestor finds it via PSQL_BIN or the libpq kegs, so PATH is optional.
 PSQL_FOUND=""
-for cand in "${PSQL_BIN:-}" /opt/homebrew/opt/libpq/bin/psql /usr/local/opt/libpq/bin/psql; do
+for cand in "${PSQL_BIN:-}" /opt/homebrew/opt/libpq/bin/psql /usr/local/opt/libpq/bin/psql /usr/bin/psql /usr/lib/postgresql/*/bin/psql; do
   [ -n "$cand" ] && [ -x "$cand" ] && PSQL_FOUND="$cand" && break
 done
 [ -z "$PSQL_FOUND" ] && command -v psql >/dev/null 2>&1 && PSQL_FOUND="$(command -v psql)"
 if [ -n "$PSQL_FOUND" ]; then
   ok "psql ($PSQL_FOUND)"
 else
-  fail "psql not found (Homebrew libpq)"
-  todo "Install libpq: brew install libpq  (the ingestor auto-detects /opt/homebrew/opt/libpq/bin/psql)."
+  fail "psql not found (PostgreSQL client)"
+  todo "Install a PostgreSQL client: apt install postgresql-client on Ubuntu, or brew install libpq on macOS; alternatively set PSQL_BIN."
 fi
 
 # ---------------------------------------------------------------------------
@@ -81,23 +83,21 @@ section "2. Container stack (Firecrawl)"
 if command -v docker >/dev/null 2>&1; then
   ok "docker present"
   ctx="$(docker context show 2>/dev/null || true)"
-  if [ "$ctx" = "orbstack" ]; then
-    ok "docker context = orbstack"
-  else
-    warn "docker context = '${ctx:-unknown}' (expected orbstack on these Macs)"
-    note "Open OrbStack, or: docker context use orbstack"
-  fi
+  case "$ctx" in
+    orbstack|desktop-linux|default) ok "docker context = $ctx" ;;
+    *) warn "docker context = '${ctx:-unknown}' (verify the intended local engine)" ;;
+  esac
 else
   fail "docker not found"
-  todo "Install OrbStack (https://orbstack.dev) and start it."
+  todo "Start your local container engine: Docker Desktop on Windows/WSL2, or OrbStack on macOS."
 fi
 
 if bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >/dev/null 2>&1; then
   ok "Firecrawl API healthy at the configured URL"
 else
   warn "Firecrawl stack not healthy (collect/monitor cannot run until it is up)"
-  note "Start it: (cd \"$FC_DIR\" && docker compose up -d) then re-run this check."
-  todo "Bring up the Firecrawl stack: cd \"$FC_DIR\" && docker compose up -d"
+  note "Start it: (cd \"$FC_DIR\" && docker compose up -d api) then re-run this check."
+  todo "Bring up the Firecrawl core: cd \"$FC_DIR\" && docker compose up -d api"
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,8 +167,9 @@ case "$ENV_STATUS" in
 esac
 
 # ---------------------------------------------------------------------------
-section "6. Scheduling readiness (launchd)"
+section "6. Scheduling readiness"
 # ---------------------------------------------------------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
 case "$DIR" in
   "$HOME"/Documents/*)
     warn "Clone is under ~/Documents (macOS TCC): scheduled launchd runs exit 126"
@@ -183,6 +184,10 @@ if [ -f launchd/install_launchd.sh ]; then
   note "Render + install (gated, no auto-load): bash launchd/install_launchd.sh all"
 else
   warn "launchd/install_launchd.sh missing"
+fi
+else
+  note "Linux/WSL2: no launchd or TCC checks; use cre_status.sh --scheduler external."
+  note "No scheduler is installed by this setup; visible-surface approval and sole-writer cutover are separate."
 fi
 # The tier dispatcher uses the collector's stdlib Python SharedLock authority
 # and recovery-sync protocol, so there is no external lock tool to install.
@@ -228,7 +233,7 @@ if [ "${#TODOS[@]}" -gt 0 ]; then
   printf '\n  Remaining steps:\n'
   for t in "${TODOS[@]}"; do printf '    - %s\n' "$t"; done
 fi
-printf '\n  Runbook: SETUP.md   Daily command: bash cre_daily_update.sh --no-mark-missing\n'
+printf '\n  Runbook: SETUP.md   Supervised refresh contract: START_HERE.md\n'
 
 if [ "$FAIL" -gt 0 ]; then
   printf '\n  Hard prerequisites failed. Resolve the FAIL items above before running the pipeline.\n'

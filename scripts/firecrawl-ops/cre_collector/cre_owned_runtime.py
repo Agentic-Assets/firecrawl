@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
+from cre_posix import fcntl
 import hashlib
 import json
 import math

@@ -28,10 +28,55 @@ bash launchd/install_launchd.sh --load monitor enrich     # only after recorded 
 bash launchd/cre_run_tier.sh {monitor|enrich|weekly|daily} # manual; same governed Python authority as plists (daily = retired rollback case)
 bash cre_status.sh                                        # read-only run-health heartbeat (preferred)
 bash cre_status.sh --expected-sha <merged-sha>             # exact clean deployment identity
+bash cre_status.sh --scheduler external                   # Linux/WSL: artifacts, lock, API and checkout
 launchctl list | grep ai.agentic.cre                      # PID col 1 = running; col 2 = last exit (ephemeral)
 ```
 
 Install/unload: `README.md`. `install_launchd.sh` renders `*.plist.template` per-machine, validates with `plutil`, installs to `~/Library/LaunchAgents/`; `--load` to load, `--uninstall` to remove.
+
+## External visible-surface contract (Linux/WSL)
+
+`cre_status.sh --scheduler external` is read-only. It skips launchctl, installed
+plists, macOS TCC and launchd stderr checks, while retaining checkout identity,
+environment discovery, API readiness, lock ownership, run verdicts and artifact
+staleness. It checks monitor, enrich and weekly against their existing freshness
+thresholds; daily remains retired. A fresh clone with no artifacts is reported as
+never run, not as proof of an active schedule. External activation and scheduler
+exit status must be inspected in the approved visible surface. Status exits `0`
+when no problems are observed, `1` for WARN/FAIL findings, and `2` for invalid
+arguments. Pass `CRE_ENV_FILE` explicitly; external mode never discovers it from
+an installed Mac plist.
+
+The existing scheduler-independent tier entrypoint is:
+
+```powershell
+# Invocation contract only. Do not schedule or run until the gates below pass.
+wsl.exe -d Ubuntu-24.04 --cd /home/<user>/code/firecrawl/scripts/firecrawl-ops/cre_collector -- env CRE_ENV_FILE=/home/<user>/.config/cre/equire.env python3 cre_tier_dispatch.py monitor
+```
+
+Use the approved tier (`monitor`, `enrich` or `weekly`); never the retired daily
+tier for a new schedule. This is an execution command, **not a dry run**. The
+dispatcher has no dry-run CLI. `python3 cre_tier_dispatch.py --help` is a safe
+syntax check; isolated tests with a synthetic worker and private lock verify
+dispatch behavior without collection or database access.
+
+The dispatcher holds the canonical `SharedLock` authority and recovery-sync
+flocks until its owned worker and descendants finish. A competing lock holder
+causes a documented skip with exit `0`, so exit `0` alone does not prove a run or
+freshness. Otherwise the dispatcher propagates the worker exit code; an owned
+termination signal is represented as `128 + signal`, argument errors exit `2`,
+and dispatcher authority errors exit `1`. Inspect run markers and artifacts
+alongside the visible task result. Never remove the canonical lock manually.
+
+The lock is local and cannot serialize two computers. Freeze and verify the Mac
+writer before any Windows production execution, then record the sole writer on
+the live refresh issue. Production canary, generation-exact readback, credentials,
+host approval, telemetry protection and rollback gates remain mandatory. These
+legacy tiers still lack the checkpoint-series resource protection, so implementing
+Linux telemetry alone does not make a scheduled tier eligible to run. A named
+visible surface and its registry approval are required before recurring execution.
+This contract creates no Codex automation, Task Scheduler entry, cron job, systemd
+timer or launchd job.
 
 ## Naming Patterns
 

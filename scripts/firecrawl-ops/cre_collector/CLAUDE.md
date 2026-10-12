@@ -349,3 +349,12 @@ fingerprint digest, so an exact retry reuses it and any changed tuple does not.
 3. Probe: `npx tsx collect.ts --source=<key> --transaction=both --max-items=6`,
    then `cre_ingest.py --dry-run`. Adapter contract, monitor support, env vars:
    `sources/CLAUDE.md`.
+
+## Supported execution environments
+
+CRE runtime: macOS or Linux (including Ubuntu WSL2); native Windows Python is
+unsupported because lock/process-group semantics are required. Use the separate
+ext4 WSL clone, never Windows node_modules or a worktree sharing a live lock.
+Firecrawl API helpers can run from native Windows. Linux telemetry support does
+not grant scheduler, production-write or sole-writer cutover approval. Follow
+START_HERE.md for the current guard contract and SETUP.md for installation.

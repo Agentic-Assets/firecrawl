@@ -59,3 +59,8 @@ def test_shell_script_parses(script):
         text=True,
     )
     assert result.returncode == 0, f"bash -n failed for {script}:\n{result.stderr}"
+
+
+@pytest.mark.parametrize("script", _SCRIPTS, ids=[str(p.relative_to(_COLLECTOR)) for p in _SCRIPTS])
+def test_shell_script_has_lf_line_endings(script):
+    assert b"\r" not in script.read_bytes(), f"CR byte in shell script: {script}"

@@ -1,9 +1,9 @@
 # CRE Collector Setup
 
-How to stand up the CRE listing pipeline on a fresh clone, on any Mac. This is
-the runbook the coding agent on the Mac mini follows, and it is fully testable
-here on the MacBook Pro first. One command (`cre_setup.sh`) does the checks and
-the bootstrap; everything else is gated and explicit.
+How to prepare the CRE listing pipeline on macOS or Ubuntu in WSL2. Linux
+checkouts and dependencies belong on ext4, separate from the native Windows
+checkout. `cre_setup.sh --check` checks prerequisites; setup success does not
+authorize production collection, database writes, scheduling or writer cutover.
 
 The pipeline has two halves:
 
@@ -202,3 +202,15 @@ approved target host.
 - `cre_status.sh` - read-only run-health heartbeat (schedules, staleness, last-run verdict, stack/env/TCC)
 - `../../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` - where to run the pipeline (decision aid)
 - `firecrawl-ops` skill / `references/partner-orbstack-onboarding.md` - Firecrawl stack onboarding
+
+## Supported execution environments
+
+Run the CRE runtime with Linux Python/Node in Ubuntu WSL2, or on macOS.
+Native Windows Python/Git Bash cannot provide the required POSIX file locks
+and process groups. Runtime entrypoints refuse that platform with an actionable
+message; the Python suite exits cleanly before importing POSIX-only modules.
+Firecrawl's container API and agent helpers remain usable from PowerShell.
+
+For WSL2, keep a separate clone and Linux dependencies under `~/code/firecrawl`
+on ext4. Do not reuse Windows `node_modules`, copy production secrets or run a
+second writer. See [Windows onboarding](../../../docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md).

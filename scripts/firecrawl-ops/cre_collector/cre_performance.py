@@ -7,7 +7,7 @@ underlying command outcome.
 
 from __future__ import annotations
 
-import fcntl
+from cre_posix import fcntl
 import json
 import math
 import os
