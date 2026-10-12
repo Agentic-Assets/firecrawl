@@ -141,7 +141,6 @@ def runtime_lease(identity: dict):
             key = hashlib.sha256(
                 json.dumps(
                     [
-                        identity["daemon"]["endpoint"],
                         identity["daemon"]["id"],
                         row["id"],
                     ]

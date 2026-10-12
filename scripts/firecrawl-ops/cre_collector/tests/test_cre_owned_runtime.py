@@ -424,6 +424,7 @@ def test_overlapping_selections_and_context_aliases_share_container_lease(fake):
     overlap = copy.deepcopy(identity)
     overlap["containers"] = overlap["containers"][:2]
     overlap["daemon"]["context"] = "alias"
+    overlap["daemon"]["endpoint"] = "unix:///tmp/alternate-socket.sock"
     with (
         owned.runtime_lease(identity),
         pytest.raises(BlockingIOError),
