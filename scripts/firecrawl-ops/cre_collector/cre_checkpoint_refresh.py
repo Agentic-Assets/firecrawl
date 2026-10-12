@@ -3131,7 +3131,7 @@ def _run_logged_command(
             active_error = sys.exception()
             try:
                 log.close()
-            except (Exception, KeyboardInterrupt) as close_exc:  # noqa: BLE001
+            except (Exception, KeyboardInterrupt) as close_exc:
                 if isinstance(active_error, ProcessCleanupUnknown):
                     raise active_error from close_exc
                 if isinstance(active_error, CpuGuardTrip):
