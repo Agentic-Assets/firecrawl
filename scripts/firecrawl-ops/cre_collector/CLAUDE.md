@@ -60,7 +60,7 @@ checkpoint-manifest readback. Dated docs are operational history.
 | `cre_enrich.py` | Tier-B queue worker: claims a batch from `cre_enrichment_queue`, runs `collect.ts --enrich-input` (targeted detail), re-ingests additively (`cre_ingest.py --in`), deletes done rows. Additive by construction (never `--mark-missing`/`--activate-status`); URL-matched, id-keyed completion; pure builders + thin `run()`. Manual recovery may use `--source SOURCE_KEY` for an exact queue-claim filter: only that source can be claimed, retried, or have attempts incremented. |
 | `cre_daily_update.sh` | healthcheck → full collect → gate [3/4] → ingest → prune `out/daily/` artifacts |
 | `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, checkout branch/HEAD/dirty state, per-tier rendered-plist drift, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck; `--expected-sha <commit>` enforces the clean deployment identity gate |
-| `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, offline smoke); run first. See `SETUP.md` |
+| `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, optional network smoke); run first. See `SETUP.md` |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
 | `cre_repair_colliers_derived_psf.py` | One-row, exact-generation repair for the 2026-09-10 Colliers derived-PSF regression. Read-only by default; apply requires the canonical filesystem and database lifecycle locks, a rollback-proved transaction, and owner-only pre/post/rollback evidence. |
 | `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated on go-ahead; `011` DDL now applied 2026-06-15 (only the media backfill RUN remains gated). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
@@ -74,7 +74,7 @@ checkpoint-manifest readback. Dated docs are operational history.
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
 | `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
-| `SETUP.md` | Fresh-clone setup runbook (Mac mini production + dev): `cre_setup.sh`, env, launchd generator |
+| `SETUP.md` | Fresh-clone setup runbook for macOS and Ubuntu/WSL2: `cre_setup.sh`, env, macOS launchd generator |
 | `START_HERE.md` | Current procedures and new-session runbook |
 | `BROKERAGE_STATUS_2026-06-12.md` | Historical per-broker coverage snapshot |
 | `HANDOFF_COLLIERS_MAIN_2026-06-13.md` | colliers-main full detail run handoff |

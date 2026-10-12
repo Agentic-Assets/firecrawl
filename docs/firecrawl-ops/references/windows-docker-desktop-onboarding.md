@@ -144,6 +144,21 @@ This provisions context for the Linux workspace. It is not a completed
 company `verify-install` run or proof that every global Linux agent client is
 installed. It copies no Windows credentials and enables no scheduler.
 
+### Supabase validation and database transport
+
+An authenticated Supabase CLI is an alternative when the Codex Supabase connector needs reauthentication. Their login states are independent. Verify the current CLI help, signed-in identity and intended project before querying:
+
+```powershell
+supabase --version
+supabase whoami --output-format json
+supabase projects list --output-format json
+supabase db query --help
+```
+
+CLI 2.120.0 supports `db query --linked --project-ref <verified-project-ref> --file <sql-file> --output-format json --workdir <ignored-scratch-directory>`. Both `--linked` and the explicit project ref are required for this Management API path. The scratch working directory contains CLI cache files; no persistent repository link or database password is needed for this path. Keep credentials and connection strings out of command logs. Wrap validation SQL in `BEGIN READ ONLY`, set a bounded local `statement_timeout`, and finish with `ROLLBACK`. Use the existing aggregate queries in `cre_validate.py`; do not infer provider freshness from ingestion timestamps. Report timed-out checks as unverified rather than raising limits until everything appears green.
+
+Management API access does not prove that Ubuntu can open the collector's PostgreSQL connection. Check DNS, routing and the actual approved database transport separately. Supabase's [connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres) explains that the default direct endpoint uses IPv6, while its shared session pooler supports IPv4. If the direct endpoint is unreachable from WSL, an operator-approved session-pooler endpoint or IPv4 add-on can provide an alternative. Preserve target-binding and credential checks; do not silently rewrite connection strings or change Windows network policy. Transaction pooling has different connection semantics and must be checked against the caller's contract before substitution. A CLI readback alone is not a full refresh or an authorization to change the live writer.
+
 ## Daily use and limitations
 
 ```powershell
