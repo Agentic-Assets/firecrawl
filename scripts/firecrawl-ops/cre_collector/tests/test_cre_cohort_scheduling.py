@@ -8,9 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 import cre_checkpoint_refresh as refresh
+import pytest
 
 SOURCES = (
     "transwestern",
@@ -36,20 +35,24 @@ class VirtualProcess:
     ) -> None:
         self.clock = clock
         self.ready_at = clock["now"] + duration
-        self.rc = rc
+        self.rc = 0 if rc == 0 else refresh.COHORT_SETTLED_FAILURE_EXIT
+        self.returncode = None
         self.terminated = False
         self.pid = self._next_pid
         type(self)._next_pid += 1
 
     def poll(self) -> int | None:
         if self.terminated:
-            return -signal.SIGINT
-        return self.rc if self.clock["now"] >= self.ready_at else None
+            self.returncode = refresh.COHORT_SETTLED_INTERRUPT_EXIT
+        elif self.clock["now"] >= self.ready_at:
+            self.returncode = self.rc
+        return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
         del timeout
         self.terminated = True
-        return -signal.SIGINT
+        self.returncode = refresh.COHORT_SETTLED_INTERRUPT_EXIT
+        return self.returncode
 
 
 class CleanupProcess:
@@ -59,6 +62,7 @@ class CleanupProcess:
         self.pid = pid
         self.reaped = False
         self.stubborn = True
+        self.returncode = None
 
     def poll(self) -> int | None:
         return -signal.SIGINT if self.reaped else None
@@ -67,7 +71,8 @@ class CleanupProcess:
         if self.stubborn:
             raise subprocess.TimeoutExpired("offline cohort worker", timeout)
         self.reaped = True
-        return -signal.SIGKILL
+        self.returncode = -signal.SIGKILL
+        return self.returncode
 
 
 class WriteFailingLog(io.StringIO):
