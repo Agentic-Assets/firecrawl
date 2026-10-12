@@ -67,7 +67,7 @@ def test_sigterm_handler_does_not_classify_or_access_trip_lock(monkeypatch):
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 @pytest.mark.parametrize("reason_code", ["host_cpu_sustained", "host_memory_critical"])
 def test_logged_command_classifies_recorded_trip_before_cleanup(
-    tmp_path, monkeypatch, cleanup_fails, reason_code
+    tmp_path, monkeypatch, cleanup_fails, reason_code, owned_group_fixture
 ):
     class Command:
         pid = 424242
@@ -92,13 +92,14 @@ def test_logged_command_classifies_recorded_trip_before_cleanup(
 
     monkeypatch.setattr(refresh.subprocess, "Popen", lambda *_a, **_kw: command)
     monkeypatch.setattr(refresh.os, "killpg", terminate)
+    owned_group_fixture([command], is_reaped=lambda p: len(p.waits) > 1)
     try:
         with pytest.raises(refresh.CpuGuardTrip, match="synthetic resource stop"):
             refresh._run_logged_command(["synthetic"], tmp_path / "command.log")
-        assert signals == [(command.pid, signal.SIGINT)]
-        assert command.waits == [None, refresh.COMMAND_INTERRUPT_GRACE_SECONDS]
+        assert signals == [(command.pid, signal.SIGINT), (command.pid, signal.SIGKILL)]
+        assert command.waits == [None, 0]
         details = refresh._peek_cpu_guard_trip_details()
-        assert details.owned_processes_reaped
+        assert details.owned_processes_reaped is not cleanup_fails
         assert details.evidence_valid is not cleanup_fails
         assert details.reason_code == (
             reason_code

@@ -58,12 +58,13 @@ class CleanupProcess:
     def __init__(self, pid: int) -> None:
         self.pid = pid
         self.reaped = False
+        self.stubborn = True
 
     def poll(self) -> int | None:
         return -signal.SIGINT if self.reaped else None
 
     def wait(self, timeout: float | None = None) -> int:
-        if timeout is not None:
+        if self.stubborn:
             raise subprocess.TimeoutExpired("offline cohort worker", timeout)
         self.reaped = True
         return -signal.SIGKILL
@@ -569,6 +570,7 @@ def test_cleanup_reports_log_failure_after_every_child_is_reaped(
     tmp_path,
     monkeypatch,
     source_workers,
+    owned_group_fixture,
 ):
     processes = [CleanupProcess(9201 + index) for index in range(source_workers)]
     logs = [WriteFailingLog(), *(io.StringIO() for _ in range(source_workers - 1))]
@@ -592,6 +594,7 @@ def test_cleanup_reports_log_failure_after_every_child_is_reaped(
         lambda pid, sent_signal: signals.append((pid, sent_signal)),
     )
 
+    owned_group_fixture(processes)
     with pytest.raises(refresh.RefreshError, match="failed process or log evidence"):
         refresh._terminate_cohort_processes(items)
 
@@ -702,7 +705,7 @@ def test_resume_receives_a_fresh_per_invocation_retry_budget(tmp_path, monkeypat
 @pytest.mark.parametrize("source_workers", [2, 4])
 @pytest.mark.parametrize("stop_type", [KeyboardInterrupt, refresh.CpuGuardTrip])
 def test_interrupt_reaps_distinct_active_attempts(
-    tmp_path, monkeypatch, source_workers, stop_type
+    tmp_path, monkeypatch, source_workers, stop_type, owned_group_fixture
 ):
     run_dir = tmp_path / "interrupt"
     sources = SOURCES[:source_workers]
@@ -710,6 +713,7 @@ def test_interrupt_reaps_distinct_active_attempts(
     clock = {"now": 0.0}
     signals: list[tuple[int, signal.Signals]] = []
     paths: list[Path] = []
+    processes = []
 
     def start(
         current_run_dir: Path,
@@ -730,9 +734,12 @@ def test_interrupt_reaps_distinct_active_attempts(
         attempt, path, _log, started_at = created
         path.write_text(f"partial:{source}", encoding="utf-8")
         paths.append(path)
+        process = VirtualProcess(clock, duration=100.0, rc=0)
+        processes.append(process)
+        owned_group_fixture(processes, lambda p: p.terminated)
         return refresh.CohortCollectionProcess(
             source=source,
-            process=VirtualProcess(clock, duration=100.0, rc=0),
+            process=process,
             log_handle=io.StringIO(),
             tmp_artifact=path,
             attempt=attempt,
@@ -766,8 +773,8 @@ def test_interrupt_reaps_distinct_active_attempts(
     assert len(paths) == source_workers
     assert len(set(paths)) == source_workers
     assert all(path.exists() for path in paths)
-    assert len(signals) == source_workers
-    assert {sent_signal for _pid, sent_signal in signals} == {signal.SIGINT}
+    assert len(signals) == source_workers * 2
+    assert {sent_signal for _pid, sent_signal in signals} == {signal.SIGINT, signal.SIGKILL}
 
 
 @pytest.mark.parametrize(

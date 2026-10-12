@@ -156,7 +156,7 @@ class OwnedProcess:
 @pytest.mark.parametrize("failing_operation", ["write", "flush", "close"])
 @pytest.mark.parametrize("stubborn", [False, True])
 def test_cohort_cleanup_reaps_every_child_despite_log_failure(
-    tmp_path, monkeypatch, failing_operation, stubborn
+    tmp_path, monkeypatch, failing_operation, stubborn, owned_group_fixture
 ):
     processes = [OwnedProcess(99101 + index, stubborn=stubborn) for index in range(2)]
     logs = [FailingLog(failing_operation), io.StringIO()]
@@ -178,6 +178,7 @@ def test_cohort_cleanup_reaps_every_child_despite_log_failure(
         refresh.os, "killpg", lambda pid, sent_signal: signals.append((pid, sent_signal))
     )
 
+    owned_group_fixture(processes)
     # Failing evidence may remain fatal, but only after every owned child has
     # been signaled and reaped. The canonical lock must remain held until then.
     try:
@@ -196,7 +197,7 @@ def test_cohort_cleanup_reaps_every_child_despite_log_failure(
 @pytest.mark.parametrize("failing_operation", [None, "write", "flush", "close"])
 @pytest.mark.parametrize("stubborn", [False, True])
 def test_serial_cleanup_reaps_child_before_reporting_evidence_failure(
-    tmp_path, monkeypatch, stop_type, failing_operation, stubborn
+    tmp_path, monkeypatch, stop_type, failing_operation, stubborn, owned_group_fixture
 ):
     class ArmedLog(FailingLog):
         def __init__(self):
@@ -223,6 +224,7 @@ def test_serial_cleanup_reaps_child_before_reporting_evidence_failure(
     monkeypatch.setattr(
         refresh.os, "killpg", lambda pid, sent_signal: signals.append((pid, sent_signal))
     )
+    owned_group_fixture([process])
     refresh._clear_cpu_guard_trip()
     if stop_type is refresh.CpuGuardTrip:
         refresh._set_cpu_guard_trip(
@@ -321,6 +323,6 @@ def test_series_reaps_child_that_exits_between_poll_and_signal(monkeypatch):
     def vanished(*_args):
         raise ProcessLookupError
 
-    monkeypatch.setattr(series.os, "killpg", vanished)
+    monkeypatch.setattr(refresh.os, "killpg", vanished)
     series._terminate_child(process)
     assert process.reaped

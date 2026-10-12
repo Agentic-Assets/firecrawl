@@ -63,6 +63,11 @@ from cre_memory_guard import (
     HostMemoryGuard,
     memory_guard_config,
 )
+from cre_owned_processes import (
+    OwnedProcessGroup,
+    _defer_cleanup_signals,
+    settle_owned_groups,
+)
 from cre_performance import capture_runtime_configuration, run_observed_command
 from cre_performance_report import save_report
 from cre_resource_usage import observe_resource_usage
@@ -119,6 +124,10 @@ FORBIDDEN_INGEST_FLAGS = {
 
 class RefreshError(RuntimeError):
     """Base runner error."""
+
+
+class ProcessCleanupUnknown(RefreshError):
+    """Owned local work could not be proven stopped; require manual recovery."""
 
 
 class ArtifactValidationError(RefreshError):
@@ -2142,7 +2151,7 @@ class SharedLock:
     def release(self) -> None:
         try:
             directory_fd = self._owned_directory_fd()
-        except LockHeldError:
+        except (LockHeldError, OSError):
             directory_fd = -1
         try:
             try:
@@ -2173,7 +2182,60 @@ class SharedLock:
         self.acquire()
         return self
 
+    @_defer_cleanup_signals()
     def __exit__(self, _exc_type, _exc, _tb) -> None:
+        details = _peek_cpu_guard_trip_details()
+        # Finally blocks can replace an unknown-cleanup exception with an
+        # operator interrupt. Retain its uncertainty across that entire chain.
+        pending = [_exc]
+        seen = set()
+        cleanup_unknown = False
+        while pending:
+            error = pending.pop()
+            if error is None or id(error) in seen:
+                continue
+            seen.add(id(error))
+            cleanup_unknown |= isinstance(error, ProcessCleanupUnknown)
+            pending.extend((error.__context__, error.__cause__))
+        if cleanup_unknown or (
+            details is not None and not details.owned_processes_reaped
+        ):
+            # Preserve the existing fail-closed operator recovery lease. A new
+            # foreground owner must not overlap a possibly surviving group.
+            self.retain_on_exit = True
+            directory_fd = -1
+            recovery_errors = []
+            try:
+                try:
+                    directory_fd = self._owned_directory_fd()
+                except Exception as exc:  # noqa: BLE001
+                    recovery_errors.append(exc)
+                # Fence stale reclaim before the atomic lease rename. Failure
+                # of either independent record must not skip the other fence.
+                try:
+                    self._update_authority_generation(
+                        self.lease_token, recovery_required=True
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    recovery_errors.append(exc)
+                if directory_fd >= 0:
+                    token = OPERATOR_RECOVERY_LEASE_PREFIX + secrets.token_urlsafe(32)
+                    try:
+                        self._replace_owned_lease(directory_fd, token)
+                        self.lease_token = token
+                        self.recovery_required = True
+                        self._update_authority_generation(token, recovery_required=True)
+                    except Exception as exc:  # noqa: BLE001
+                        recovery_errors.append(exc)
+            finally:
+                if directory_fd >= 0:
+                    os.close(directory_fd)
+                self.release()
+            if recovery_errors:
+                raise ProcessCleanupUnknown(
+                    "owned process cleanup_unknown; operator recovery evidence failed"
+                ) from recovery_errors[0]
+            return
         self.release()
 
 
@@ -3094,76 +3156,80 @@ def _run_logged_command(
             text=True,
             start_new_session=True,
         )
+        owned_group = OwnedProcessGroup.from_spawn(proc)
         try:
             rc = proc.wait()
         except KeyboardInterrupt as interrupted:
-            resource_reason = _peek_cpu_guard_trip()
-            cleanup_interrupt = (
-                CpuGuardTrip(resource_reason)
-                if resource_reason is not None
-                else interrupted
-            )
-            cleanup_errors: list[Exception] = []
-
-            def record_interrupt(message: str) -> None:
-                try:
-                    log.write(message)
-                    log.flush()
-                except (OSError, ValueError) as exc:
-                    cleanup_errors.append(exc)
-
-            record_interrupt(
-                f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n"
-            )
-            try:
-                os.killpg(proc.pid, signal.SIGINT)
-            except ProcessLookupError:
-                pass
-            except OSError as exc:
-                cleanup_errors.append(exc)
-            try:
-                proc.wait(timeout=COMMAND_INTERRUPT_GRACE_SECONDS)
-                reaped_after_interrupt = True
-            except subprocess.TimeoutExpired:
-                record_interrupt(
-                    f"[{utc_now()}] interrupt: killing process group {proc.pid}\n"
+            with _defer_cleanup_signals():
+                resource_reason = _peek_cpu_guard_trip()
+                cleanup_interrupt = (
+                    CpuGuardTrip(resource_reason)
+                    if resource_reason is not None
+                    else interrupted
                 )
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError as exc:
-                    cleanup_errors.append(exc)
-                try:
-                    proc.wait()
-                    reaped_after_interrupt = True
-                except (ChildProcessError, OSError) as exc:
-                    cleanup_errors.append(exc)
-            except (ChildProcessError, OSError) as exc:
-                cleanup_errors.append(exc)
-            if cleanup_errors:
-                if isinstance(cleanup_interrupt, CpuGuardTrip):
-                    _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
-                else:
-                    raise RefreshError(
-                        "interrupt cleanup or required evidence failed"
-                    ) from cleanup_errors[0]
-            raise cleanup_interrupt
+                cleanup_errors: list[Exception] = []
+
+                def record_interrupt(message: str) -> None:
+                    try:
+                        log.write(message)
+                        log.flush()
+                    except (OSError, ValueError) as exc:
+                        cleanup_errors.append(exc)
+
+                record_interrupt(
+                    f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n"
+                )
+                settlement = settle_owned_groups(
+                    [owned_group], grace_seconds=COMMAND_INTERRUPT_GRACE_SECONDS
+                )
+                reaped_after_interrupt = settlement.settled
+                record_interrupt(
+                    f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n"
+                )
+                if not settlement.settled:
+                    cleanup_errors.append(
+                        ProcessCleanupUnknown(
+                            f"owned process cleanup_unknown: {settlement.errors}"
+                        )
+                    )
+                if cleanup_errors:
+                    if isinstance(cleanup_interrupt, CpuGuardTrip):
+                        _mark_cpu_interrupt_evidence_failed(
+                            reaped=reaped_after_interrupt
+                        )
+                    else:
+                        error_type = (
+                            ProcessCleanupUnknown
+                            if not settlement.settled
+                            else RefreshError
+                        )
+                        raise error_type(
+                            "interrupt cleanup or required evidence failed; "
+                            + (
+                                "cleanup_unknown"
+                                if not settlement.settled
+                                else "local settlement proved"
+                            )
+                        ) from cleanup_errors[0]
+                raise cleanup_interrupt
         log.write(f"[{utc_now()}] rc={rc}\n")
         return rc
     finally:
-        active_error = sys.exception()
-        try:
-            log.close()
-        except (OSError, ValueError) as close_exc:
-            if isinstance(active_error, CpuGuardTrip):
-                _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
-                raise active_error from close_exc
-            if isinstance(active_error, KeyboardInterrupt):
-                raise RefreshError(
-                    "interrupt cleanup or required evidence failed"
-                ) from close_exc
-            raise
+        with _defer_cleanup_signals():
+            active_error = sys.exception()
+            try:
+                log.close()
+            except (Exception, KeyboardInterrupt) as close_exc:
+                if isinstance(active_error, ProcessCleanupUnknown):
+                    raise active_error from close_exc
+                if isinstance(active_error, CpuGuardTrip):
+                    _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
+                    raise active_error from close_exc
+                if isinstance(active_error, KeyboardInterrupt):
+                    raise RefreshError(
+                        "interrupt cleanup or required evidence failed"
+                    ) from close_exc
+                raise
 
 
 def run_cohort_collection_worker(
@@ -3233,6 +3299,7 @@ class CohortCollectionProcess:
     tmp_artifact: Path
     attempt: dict[str, Any]
     attempt_started_at: str
+    owned_group: OwnedProcessGroup | None = None
 
 
 def source_worker_lanes(source: str) -> frozenset[str]:
@@ -3291,6 +3358,7 @@ def select_cohort_sources(
     return selected
 
 
+@_defer_cleanup_signals()
 def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> None:
     """Terminate every active source process group before releasing the lock."""
     processes = list(active)
@@ -3305,57 +3373,36 @@ def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> No
         except Exception as exc:  # noqa: BLE001
             cleanup_errors.append(exc)
 
-    def process_is_running(item: CohortCollectionProcess) -> bool:
-        try:
-            return item.process.poll() is None
-        except Exception as exc:  # noqa: BLE001
-            cleanup_errors.append(exc)
-            return True
-
     for item in processes:
-        if not process_is_running(item):
-            continue
         record_log(
             item,
             f"[{utc_now()}] interrupt: terminating process group {item.process.pid}\n",
         )
+    settlement = settle_owned_groups(
+        [
+            item.owned_group or OwnedProcessGroup.from_spawn(item.process)
+            for item in processes
+        ],
+        grace_seconds=COHORT_INTERRUPT_GRACE_SECONDS,
+    )
+    for item in processes:
+        record_log(
+            item,
+            f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n",
+        )
         try:
-            os.killpg(item.process.pid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
+            item.log_handle.close()
         except Exception as exc:  # noqa: BLE001
             cleanup_errors.append(exc)
-    for item in processes:
-        try:
-            if process_is_running(item):
-                try:
-                    item.process.wait(timeout=COHORT_INTERRUPT_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
-                    record_log(
-                        item,
-                        f"[{utc_now()}] interrupt: killing process group "
-                        f"{item.process.pid}\n",
-                    )
-                    try:
-                        os.killpg(item.process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    except Exception as exc:  # noqa: BLE001
-                        cleanup_errors.append(exc)
-                    try:
-                        item.process.wait()
-                    except Exception as exc:  # noqa: BLE001
-                        cleanup_errors.append(exc)
-                except Exception as exc:  # noqa: BLE001
-                    cleanup_errors.append(exc)
-        finally:
-            try:
-                item.log_handle.close()
-            except Exception as exc:  # noqa: BLE001
-                cleanup_errors.append(exc)
+    if not settlement.settled:
+        _mark_cpu_interrupt_evidence_failed(reaped=False)
+        cleanup_errors.append(
+            ProcessCleanupUnknown(f"owned process cleanup_unknown: {settlement.errors}")
+        )
     if cleanup_errors:
         first_error = cleanup_errors[0]
-        raise RefreshError(
+        error_type = ProcessCleanupUnknown if not settlement.settled else RefreshError
+        raise error_type(
             "cohort cleanup completed with failed process or log evidence: "
             f"{first_error}"
         ) from first_error
@@ -3475,6 +3522,7 @@ def _start_cohort_collection(
         tmp_artifact=tmp_artifact,
         attempt=attempt,
         attempt_started_at=attempt_started,
+        owned_group=OwnedProcessGroup.from_spawn(process),
     )
 
 
@@ -3718,6 +3766,12 @@ def load_resume_manifest(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     value = _load_json(manifest_path)
+    if "cleanup_unknown" in str(value.get("error", "")) or (
+        (value.get("resource_stop") or {}).get("owned_processes_reaped") is False
+    ):
+        raise ProcessCleanupUnknown(
+            "manual owned-process settlement required before resume"
+        )
     if value.get("schema_version") != SCHEMA_VERSION:
         raise RefreshError("unsupported checkpoint manifest schema")
     if value.get("collector_git_sha") != git_sha:
