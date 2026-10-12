@@ -146,6 +146,10 @@ class CpuTelemetryError(GlobalStageError):
     """Host CPU usage cannot be measured safely."""
 
 
+class CpuEvidenceError(CpuTelemetryError):
+    """A valid required CPU observation could not be recorded."""
+
+
 class CpuGuardTrip(KeyboardInterrupt):
     """The host CPU guard interrupted the refresh before sustained saturation."""
 
@@ -422,6 +426,8 @@ class HostCpuGuard:
     incident_log_path: Path | None = None
     incident_context: dict[str, Any] = field(default_factory=dict)
     high_since: float | None = field(default=None, init=False)
+    previous_observed: float | None = field(default=None, init=False)
+    diagnostic_allowance_seconds: float = field(default=0.0, init=False)
     last_incident_snapshot: dict[str, Any] | None = field(default=None, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
@@ -436,6 +442,13 @@ class HostCpuGuard:
         }
 
     def observe(self, percent: float, *, observed_monotonic: float) -> str | None:
+        self._validate_clock(observed_monotonic)
+        if self.previous_observed is not None and (
+            observed_monotonic <= self.previous_observed
+            or observed_monotonic - self.previous_observed
+            > self.sample_seconds * 1.5 + self.diagnostic_allowance_seconds
+        ):
+            raise CpuTelemetryError("host CPU observation time stale")
         try:
             valid = (
                 not isinstance(percent, bool)
@@ -446,6 +459,8 @@ class HostCpuGuard:
             valid = False
         if not valid:
             raise CpuTelemetryError(f"invalid host CPU percentage: {percent!r}")
+        self.previous_observed = observed_monotonic
+        self.diagnostic_allowance_seconds = 0.0
         if percent < self.max_percent:
             self.high_since = None
             return None
@@ -459,6 +474,19 @@ class HostCpuGuard:
             f"host CPU remained at or above {self.max_percent:.1f}% for "
             f"{self.sustain_seconds:.1f} seconds; latest sample {percent:.1f}%"
         )
+
+    @staticmethod
+    def _validate_clock(value: float) -> None:
+        try:
+            valid = (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(value)
+            )
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            raise CpuTelemetryError("host CPU observation clock invalid")
 
     def _write_record(
         self,
@@ -478,6 +506,14 @@ class HostCpuGuard:
                 record["host_cpu_percent"] = round(percent, 2)
             if reason is not None:
                 record["reason"] = reason
+            if state == "tripped":
+                details = _peek_cpu_guard_trip_details()
+                if details is not None:
+                    record.update(
+                        reason_code=details.reason_code,
+                        telemetry_valid=details.telemetry_valid,
+                        evidence_valid=details.evidence_valid,
+                    )
             if self.incident_context:
                 record["context"] = dict(self.incident_context)
             if self.last_incident_snapshot is not None:
@@ -485,13 +521,26 @@ class HostCpuGuard:
             with self.log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
                 handle.flush()
-        except OSError as exc:
-            raise CpuTelemetryError(f"host CPU guard log unavailable: {exc}") from exc
+        except Exception as exc:  # Required evidence must fail closed.
+            raise CpuEvidenceError("host CPU guard log unavailable") from exc
 
     def sample_once(self) -> float:
         was_high = self.high_since is not None
+        started = time.monotonic()
+        self._validate_clock(started)
+        if self.previous_observed is not None and started < self.previous_observed:
+            raise CpuTelemetryError("host CPU read clock moved backward")
         percent = self.sampler()
-        reason = self.observe(percent, observed_monotonic=time.monotonic())
+        observed = time.monotonic()
+        self._validate_clock(observed)
+        # The required sampler deliberately waits two seconds only on its first
+        # read. These are after-return checks, not a native-call hard deadline.
+        read_budget = min(1.0, self.sample_seconds)
+        if self.previous_observed is None:
+            read_budget += 2.0
+        if not 0.0 <= observed - started <= read_budget:
+            raise CpuTelemetryError("host CPU read time stale")
+        reason = self.observe(percent, observed_monotonic=observed)
         if (
             not was_high
             and self.high_since is not None
@@ -503,8 +552,18 @@ class HostCpuGuard:
                 max_host_cpu_percent=self.max_percent,
                 context=self.incident_context,
             )
+            finished = time.monotonic()
+            self._validate_clock(finished)
+            if finished < observed:
+                raise CpuTelemetryError("host CPU diagnostic clock moved backward")
+            # Incident capture permits two one-second subprocesses. Allow only
+            # its measured time (capped with small overhead), for the next gap.
+            self.diagnostic_allowance_seconds = min(2.5, finished - observed)
         state = "high" if self.high_since is not None else "ok"
-        self._write_record(state=state, percent=percent, reason=reason)
+        try:
+            self._write_record(state=state, percent=percent, reason=reason)
+        except Exception as exc:  # Adapters must not silently end monitoring.
+            raise CpuEvidenceError("host CPU guard log unavailable") from exc
         if reason is not None:
             self._trip(reason, percent=percent)
         return percent
@@ -516,19 +575,25 @@ class HostCpuGuard:
         percent: float | None = None,
         reason_code: str = "host_cpu_sustained",
         telemetry_valid: bool = True,
+        evidence_valid: bool = True,
+        signal_coordinator: bool = True,
     ) -> None:
-        should_signal = _claim_resource_guard_signal()
+        should_signal = signal_coordinator and _claim_resource_guard_signal()
         _set_cpu_guard_trip(
             reason,
             reason_code=reason_code,
             telemetry_valid=telemetry_valid,
+            evidence_valid=evidence_valid,
             host_cpu_percent=percent,
             context=self.incident_context,
         )
         try:
             self._write_record(state="tripped", percent=percent, reason=reason)
-        except CpuTelemetryError as exc:
-            reason = f"{reason}; {exc}"
+        except Exception as exc:  # noqa: BLE001 - stopping must survive required-log failure
+            detail = (
+                str(exc) if isinstance(exc, CpuTelemetryError) else type(exc).__name__
+            )
+            reason = f"{reason}; {detail}"
             _set_cpu_guard_trip(
                 reason,
                 reason_code="host_cpu_evidence_failed",
@@ -551,11 +616,20 @@ class HostCpuGuard:
         while not self.stop_event.wait(self.sample_seconds):
             try:
                 self.sample_once()
-            except CpuTelemetryError as exc:
+            except Exception as exc:  # noqa: BLE001 - every required sampler failure stops work
+                evidence_failure = isinstance(exc, CpuEvidenceError)
+                detail = (
+                    str(exc)
+                    if isinstance(exc, CpuTelemetryError)
+                    else type(exc).__name__
+                )
                 self._trip(
-                    f"host CPU telemetry failed closed: {exc}",
-                    reason_code="host_cpu_telemetry_failed",
-                    telemetry_valid=False,
+                    f"host CPU telemetry failed closed: {detail}",
+                    reason_code="host_cpu_evidence_failed"
+                    if evidence_failure
+                    else "host_cpu_telemetry_failed",
+                    telemetry_valid=evidence_failure,
+                    evidence_valid=not evidence_failure,
                 )
                 return
             if _peek_cpu_guard_trip() is not None:
@@ -582,25 +656,19 @@ def run_cpu_guard_preflight(cpu_guard: HostCpuGuard) -> float:
     """Take the admission sample and preserve resource-guard exit semantics."""
     try:
         return cpu_guard.sample_once()
-    except CpuTelemetryError as exc:
-        reason = f"host CPU guard preflight failed closed: {exc}"
-        _set_cpu_guard_trip(
+    except Exception as exc:  # Admission has the same fail-closed contract.
+        evidence_failure = isinstance(exc, CpuEvidenceError)
+        detail = str(exc) if isinstance(exc, CpuTelemetryError) else type(exc).__name__
+        reason = f"host CPU guard preflight failed closed: {detail}"
+        cpu_guard._trip(
             reason,
-            reason_code="host_cpu_telemetry_failed",
-            telemetry_valid=False,
-            context=cpu_guard.incident_context,
+            reason_code="host_cpu_evidence_failed"
+            if evidence_failure
+            else "host_cpu_telemetry_failed",
+            telemetry_valid=evidence_failure,
+            evidence_valid=not evidence_failure,
+            signal_coordinator=False,
         )
-        try:
-            cpu_guard._write_record(state="tripped", reason=reason)
-        except CpuTelemetryError as log_exc:
-            reason = f"{reason}; {log_exc}"
-            _set_cpu_guard_trip(
-                reason,
-                reason_code="host_cpu_evidence_failed",
-                telemetry_valid=False,
-                evidence_valid=False,
-                context=cpu_guard.incident_context,
-            )
         raise CpuGuardTrip(reason) from exc
 
 
