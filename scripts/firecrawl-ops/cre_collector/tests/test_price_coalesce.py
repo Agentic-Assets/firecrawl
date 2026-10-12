@@ -8,9 +8,10 @@ were overwritten unconditionally with EXCLUDED.* in the DO UPDATE SET block. A
 transient parse miss (regex miss, "Call for offer") would null a previously-good
 numeric price.
 
-Post-fix: all four price columns use COALESCE(EXCLUDED.x, t.x) so a NULL in
-EXCLUDED preserves the prior good value. A real new numeric value still overwrites
-because COALESCE picks the first non-NULL.
+Post-fix: price columns use COALESCE so a NULL in EXCLUDED preserves the prior
+good value. Price/SF retains only a positive prior value; legacy zero/negative
+values become NULL. A real new numeric value still overwrites because COALESCE
+picks the first non-NULL.
 
 Pure Python, no DB connection. Asserts against build_sql([], [], scraped_at, set()).
 """
@@ -38,9 +39,12 @@ def test_sale_price_usd_coalesce_present():
 
 
 def test_sale_price_per_sf_coalesce_present():
+    sql = " ".join(_sql().split())
     assert (
-        "ELSE COALESCE(EXCLUDED.sale_price_per_sf, t.sale_price_per_sf) END" in _sql()
-    ), "Expected COALESCE-keep for sale_price_per_sf in DO UPDATE SET block."
+        "ELSE COALESCE(EXCLUDED.sale_price_per_sf, "
+        "CASE WHEN t.sale_price_per_sf > 0 THEN t.sale_price_per_sf END) END"
+        in sql
+    ), "Expected positive-prior COALESCE-keep for sale_price_per_sf."
 
 
 def test_lease_rate_min_coalesce_present():
