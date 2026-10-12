@@ -25,22 +25,22 @@ The pipeline has two halves:
 ## TL;DR (fresh clone)
 
 ```bash
-# 1. Clone OUTSIDE ~/Documents (recommended on macOS; see "Scheduling" for why)
+# 1. Clone on WSL ext4, or outside ~/Documents on macOS (see "Scheduling")
 git clone <repo-url> ~/code/firecrawl
 cd ~/code/firecrawl
 
-# 2. Start the Firecrawl stack (OrbStack must be running)
-docker compose up -d
-bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
+# 2. Start the core stack (Docker Desktop WSL integration, or OrbStack on macOS)
+# Target api so optional services, including FoundationDB, stay stopped.
+docker compose up -d api
 
 # 3. Point the ingestor at the EQUIRE database env (holds POSTGRES_URL*)
 export CRE_ENV_FILE=/path/to/EQUIRE/.env.local
 
-# 4. Bootstrap + verify the collector (installs deps, runs checks + smoke test)
+# 4. Bootstrap + verify (installs deps; public brokerage network smoke, no DB writes)
 cd scripts/firecrawl-ops/cre_collector
 bash cre_setup.sh
 
-# 5. (Optional, gated) render + install the launchd schedules (does NOT load)
+# 5. macOS only, optional and gated: render + install launchd schedules (NO load)
 bash launchd/install_launchd.sh all
 ```
 
@@ -53,12 +53,12 @@ tells you how to close.
 
 | Need | How | Notes |
 |------|-----|-------|
-| OrbStack (Docker) | https://orbstack.dev | `docker context show` must be `orbstack` |
-| Node + npm | `brew install node` | `collect.ts` runs via `npx tsx` |
-| libpq / psql | `brew install libpq` | ingestor auto-detects `/opt/homebrew/opt/libpq/bin/psql`; no PATH edit needed |
-| python3 | preinstalled on macOS | stdlib only, zero pip deps |
-| pytest (dev/CI only) | `python3 -m pip install pytest` | only to run `tests/`; the pipeline itself never needs it. `cre_setup.sh` reports it as a soft WARN, not a FAIL |
-| Firecrawl stack | `docker compose up -d` from repo root | see `scripts/firecrawl-ops` `firecrawl-ops` skill or `references/partner-orbstack-onboarding.md` |
+| Docker engine | Docker Desktop WSL2 integration on Windows; https://orbstack.dev on macOS | `default`, `desktop-linux` and `orbstack` contexts are accepted; verify the intended local engine |
+| Node 24 + npm | Linux Node installation in WSL; Node 24 installer or Homebrew on macOS | `collect.ts` runs via `npx tsx`; do not share Windows `node_modules` with Linux |
+| PostgreSQL client / psql | `sudo apt install postgresql-client` on Ubuntu; `brew install libpq` on macOS | Ubuntu and Homebrew paths are auto-detected; `PSQL_BIN` overrides discovery |
+| python3 + curl | `sudo apt install python3 python3-venv curl` on Ubuntu; install Python 3 on macOS | runtime Python uses stdlib; curl checks API readiness |
+| pytest (dev/CI only) | virtual environment in a separate `git clone --no-hardlinks` (commands below) | never run CRE tests from a worktree or runtime checkout; missing pytest is a soft WARN |
+| Firecrawl core | `docker compose up -d api` from repo root | see the `firecrawl-ops` skill and platform onboarding docs below |
 | EQUIRE `.env.local` | from the EQUIRE repo | holds `POSTGRES_URL_NON_POOLING` or `POSTGRES_URL`; never committed here |
 
 ---
@@ -72,16 +72,48 @@ bash cre_setup.sh --no-smoke   # install + checks, skip the network smoke test
 bash cre_setup.sh --reinstall  # force npm install even if node_modules exists
 ```
 
-It verifies the toolchain, OrbStack context, Firecrawl health, Node deps
-(installing them if missing), TypeScript typecheck + Python compile, and
-`POSTGRES_URL` discovery, then runs an offline smoke test (a tiny 3-item collect
-through the stack, then `cre_ingest.py --dry-run`, which builds SQL and prints
-stats without connecting to the database). It never writes to the live database
-and never prints the database URL. Exit code is nonzero only if a hard
-prerequisite (toolchain, deps, code health) fails.
+It verifies the toolchain, local Docker context, Node deps (installing them if
+missing), TypeScript typecheck + Python syntax, and `POSTGRES_URL` discovery.
+API readiness uses only `GET /`, with a 2-second connection timeout and a
+5-second total timeout; it checks the Firecrawl service identity. Override the
+base URL with `FIRECRAWL_API_URL`, or the older `API_URL` (the former wins).
+Readiness does not prove that workers or scraping work. `--check` never invokes
+the full healthcheck, dependency installation, collection or ingest, and does
+not create Python bytecode; typecheck diagnostics may write temporary logs.
 
-Override the smoke source with `CRE_SMOKE_SOURCE=<key>` if a site's layout has
-drifted (valid keys are listed in `collect.ts`).
+Ordinary setup also runs a **network** smoke test: one public Interra Realty
+inventory GET (bounded to 32 MiB and 60 seconds), selects at most 3 sale
+listings, then runs `cre_ingest.py --dry-run`. This source makes no detail
+requests and does not exercise Firecrawl's scraping engine. The dry-run builds
+SQL and prints stats without connecting to the database. The smoke artifact is
+removed afterward. Neither mode writes to the live database or prints its URL.
+Exit code is nonzero only for hard prerequisites (toolchain, deps, code health);
+API readiness, database-env and smoke failures are warnings, so `0 FAIL` alone
+does not prove full system health.
+
+Override the smoke source with `CRE_SMOKE_SOURCE=<key>` if needed (valid keys
+are listed in `collect.ts`). For other sources, `--max-items=3` caps output
+only; it does not bound the number of inventory requests. For a separate,
+explicit Firecrawl scrape smoke (which POSTs a scrape request and accesses
+example.com), run `bash scripts/firecrawl-ops/firecrawl_healthcheck.sh` from the
+repo root. Do not treat that command as a read-only doctor.
+
+For Python tests, create an isolated clone so lock discovery cannot reach a
+runtime checkout, then use a venv (also avoids Ubuntu's system-pip restriction):
+
+```bash
+# From the repository root; choose a new destination outside the runtime clone.
+git clone --no-hardlinks . ~/code/firecrawl-tests
+cd ~/code/firecrawl-tests/scripts/firecrawl-ops/cre_collector
+python3 -m venv .venv
+.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest tests/ -q
+```
+
+On WSL, load `~/.agentic-assets/env` when canonical agent context has been
+installed. Use `bash cre_status.sh --scheduler external` for artifacts and API
+readiness; this mode does not verify an external scheduler. macOS retains the
+default launchd checks with `bash cre_status.sh`.
 
 ---
 
@@ -149,7 +181,9 @@ Two ways to avoid this:
 ## Mac mini production checklist
 
 1. Clone outside `~/Documents`.
-2. `docker compose up -d` from the repo root, then `firecrawl_healthcheck.sh`.
+2. After runtime-recovery approval, `docker compose up -d api` from the repo
+   root; `cre_setup.sh --check` uses only API readiness GETs. Run the separate
+   `firecrawl_healthcheck.sh` only when a network scrape smoke is intended.
 3. `export CRE_ENV_FILE=/path/to/EQUIRE/.env.local` (or place it at a default path).
 4. `bash cre_setup.sh` and confirm `0 FAIL`.
 5. Install schedules (gated, no load): `bash launchd/install_launchd.sh all`.
@@ -162,14 +196,15 @@ Two ways to avoid this:
 
 ---
 
-## Testing here on the MacBook Pro (dev)
+## Development smoke on macOS or WSL2
 
-Steps 1-4 work identically. Use a bounded, no-write probe for development:
+Steps 1-4 work on both platforms. Ordinary setup already includes the default
+bounded, no-database-write Interra probe. To run it separately after setup:
 
 ```bash
-bash cre_setup.sh
-npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/svn-probe.json
-python3 cre_ingest.py --in /tmp/svn-probe.json --dry-run
+bash cre_setup.sh --check
+npx tsx collect.ts --source=interra-realty --transaction=sale --max-items=3 --out=/tmp/interra-probe.json
+python3 cre_ingest.py --in /tmp/interra-probe.json --dry-run
 ```
 
 For a supervised high-volume refresh, do not invoke `cre_daily_update.sh`
@@ -186,11 +221,11 @@ approved target host.
 |---------|-------|-----|
 | `exit 126`, `Operation not permitted` in `cre-*.err.log` | macOS TCC | relocate clone outside `~/Documents`, or grant `/bin/bash` Full Disk Access |
 | `No POSTGRES_URL ... found` | env file not discovered | set `CRE_ENV_FILE` to the EQUIRE `.env.local` |
-| `Firecrawl stack not healthy` | stack down | `docker compose up -d` from repo root |
+| `Firecrawl API readiness failed` | stack down, wrong service or port | verify `FIRECRAWL_API_URL` / `API_URL`; start the core with `docker compose up -d api` from repo root |
 | smoke collect fails for one source | site layout drift | `CRE_SMOKE_SOURCE=<other> bash cre_setup.sh` |
-| `docker context` not `orbstack` | wrong Docker backend | open OrbStack, `docker context use orbstack` |
+| unexpected `docker context` | possibly wrong Docker backend | verify Docker Desktop WSL integration on Windows, or OrbStack on macOS; `default`, `desktop-linux` and `orbstack` are supported |
 | a scheduled run was missed or failed | scheduler has not been approved or recovered | record the read-only preflight and follow the operator runbook |
-| `cre_status.sh` flags a hung or stale lock | crashed/stuck prior run left `out/daily/.cre.lock` | after named approval and no-live-process confirmation, quarantine it with a timestamped move. See `START_HERE.md` Operational Recovery |
+| `cre_status.sh` flags a hung or stale lock | prior run or lock authority needs investigation | follow `START_HERE.md` Operational Recovery and its governed recovery tool; do not manually move or delete the lock or authority sidecar |
 
 ---
 

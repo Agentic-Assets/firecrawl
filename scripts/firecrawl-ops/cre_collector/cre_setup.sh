@@ -2,9 +2,9 @@
 # =============================================================================
 # cre_setup.sh - one-command preflight + bootstrap for the CRE collector.
 #
-# Run this FIRST on any fresh clone (Mac mini production, or this MacBook Pro
-# for testing). It verifies the toolchain, installs Node deps, checks the
-# Firecrawl stack and the database env, and runs an optional offline smoke test
+# Run this FIRST on a fresh macOS or Ubuntu/WSL2 clone. It verifies the
+# toolchain, installs Node deps, checks API readiness and the database env,
+# and runs an optional network smoke test
 # of the collect -> ingest plumbing. It never writes to the live database and
 # never prints secrets.
 #
@@ -15,7 +15,8 @@
 #   bash cre_setup.sh --no-install # checks (+ smoke if deps present), skip install
 #   bash cre_setup.sh --reinstall  # force npm install even if node_modules exists
 #
-# Smoke source override:  CRE_SMOKE_SOURCE=avison-young (default)
+# Smoke source override:  CRE_SMOKE_SOURCE=interra-realty (default)
+# API URL override:       FIRECRAWL_API_URL (preferred), or API_URL
 # Env-file override:      CRE_ENV_FILE=/path/to/.env.local (else ~/Documents defaults)
 #
 # Exit code: nonzero only if a HARD prerequisite fails (tooling, deps, code
@@ -26,7 +27,11 @@ set -uo pipefail   # deliberately NOT -e: run every check and tally results.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 FC_DIR="${FC_DIR:-$(cd "$DIR/../../.." && pwd)}"
-SMOKE_SOURCE="${CRE_SMOKE_SOURCE:-avison-young}"
+SMOKE_SOURCE="${CRE_SMOKE_SOURCE:-interra-realty}"
+API_URL="${FIRECRAWL_API_URL:-${API_URL:-http://localhost:3002}}"
+API_URL="${API_URL%/}"
+# Doctor imports must not create __pycache__ in the checkout.
+export PYTHONDONTWRITEBYTECODE=1
 
 DO_INSTALL=1; DO_SMOKE=1; FORCE_INSTALL=0
 for arg in "$@"; do
@@ -54,7 +59,7 @@ todo()    { TODOS+=("$1"); }
 # ---------------------------------------------------------------------------
 section "1. Toolchain"
 # ---------------------------------------------------------------------------
-for bin in node npm npx python3 git; do
+for bin in node npm npx python3 git curl; do
   if command -v "$bin" >/dev/null 2>&1; then
     ok "$bin ($("$bin" --version 2>&1 | head -1))"
   else
@@ -92,10 +97,33 @@ else
   todo "Start your local container engine: Docker Desktop on Windows/WSL2, or OrbStack on macOS."
 fi
 
-if bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >/dev/null 2>&1; then
-  ok "Firecrawl API healthy at the configured URL"
+firecrawl_api_ready() {
+  local response
+  # Ignore ~/.curlrc so it cannot turn this doctor into a POST or add retries.
+  response="$(curl --disable -fsS --request GET --connect-timeout 2 --max-time 5 "$API_URL/" 2>/dev/null)" || return 1
+  printf '%s' "$response" | python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except (json.JSONDecodeError, UnicodeDecodeError):
+    raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+if payload.get("message") != "Firecrawl API":
+    raise SystemExit(1)
+if payload.get("documentation_url") != "https://docs.firecrawl.dev":
+    raise SystemExit(1)
+' >/dev/null 2>&1
+}
+
+API_READY=0
+if firecrawl_api_ready; then
+  API_READY=1
+  ok "Firecrawl API ready (GET only; does not prove scrape/worker health)"
 else
-  warn "Firecrawl stack not healthy (collect/monitor cannot run until it is up)"
+  warn "Firecrawl API readiness failed (unavailable or wrong service; full stack health unverified)"
   note "Start it: (cd \"$FC_DIR\" && docker compose up -d api) then re-run this check."
   todo "Bring up the Firecrawl core: cd \"$FC_DIR\" && docker compose up -d api"
 fi
@@ -126,18 +154,24 @@ if [ -d node_modules ] && command -v npm >/dev/null 2>&1; then
 else
   warn "skipped typecheck (node_modules not installed)"
 fi
-if python3 -m py_compile cre_ingest.py cre_monitor.py cre_gate.py 2>/tmp/cre_setup_py.log; then
+if python3 - <<'PY' 2>/tmp/cre_setup_py.log
+from pathlib import Path
+
+for name in ("cre_ingest.py", "cre_monitor.py", "cre_gate.py"):
+    compile(Path(name).read_bytes(), name, "exec")
+PY
+then
   ok "Python modules compile (ingest, monitor, gate)"
 else
-  fail "py_compile failed (see /tmp/cre_setup_py.log)"
+  fail "Python syntax check failed (see /tmp/cre_setup_py.log)"
 fi
 # pytest is dev/CI only: the pipeline never needs it, so this is a soft check.
 if python3 -c 'import pytest' >/dev/null 2>&1; then
   ok "pytest available ($(python3 -m pytest --version 2>&1 | head -1))"
-  note "Run the suite any time: python3 -m pytest tests/ -q"
+  note "Run tests only in a separate git clone --no-hardlinks (never a worktree or runtime checkout)."
 else
   warn "pytest not installed (test suite cannot run; the pipeline itself does not need it)"
-  todo "Optional, dev/CI only: python3 -m pip install pytest  (then python3 -m pytest tests/ -q)."
+  todo "Optional tests: in a separate git clone --no-hardlinks, python3 -m venv .venv && .venv/bin/python -m pip install pytest; run .venv/bin/python -m pytest tests/ -q there."
 fi
 
 # ---------------------------------------------------------------------------
@@ -187,29 +221,38 @@ else
 fi
 else
   note "Linux/WSL2: no launchd or TCC checks; use cre_status.sh --scheduler external."
+  note "If canonical agent context is installed, load it with: source ~/.agentic-assets/env"
   note "No scheduler is installed by this setup; visible-surface approval and sole-writer cutover are separate."
 fi
 # The tier dispatcher uses the collector's stdlib Python SharedLock authority
 # and recovery-sync protocol, so there is no external lock tool to install.
 if [ -x cre_status.sh ] || [ -f cre_status.sh ]; then
   ok "run-health command present (cre_status.sh)"
-  note "Check scheduled-run health any time: bash cre_status.sh"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    note "Check scheduled-run health: bash cre_status.sh"
+  else
+    note "Check artifacts and API readiness: bash cre_status.sh --scheduler external (does not verify an external scheduler)."
+  fi
 else
   warn "cre_status.sh missing (no run-health heartbeat available)"
 fi
 
 # ---------------------------------------------------------------------------
-section "7. Smoke test (offline collect -> dry-run ingest)"
+section "7. Network smoke test (public brokerage collect -> dry-run ingest)"
 # ---------------------------------------------------------------------------
 if [ "$DO_SMOKE" -eq 0 ]; then
   note "skipped (--check / --no-smoke)"
 elif [ ! -d node_modules ]; then
   warn "smoke skipped: node_modules not installed"
-elif ! bash "$FC_DIR/scripts/firecrawl-ops/firecrawl_healthcheck.sh" >/dev/null 2>&1; then
-  warn "smoke skipped: Firecrawl stack not healthy"
+elif [ "$API_READY" -ne 1 ]; then
+  warn "smoke skipped: Firecrawl API readiness failed"
 else
   SMOKE_OUT="out/setup_smoke.json"
   mkdir -p out
+  note "This contacts the public brokerage site; max-items limits output, not inventory fetches."
+  if [ "$SMOKE_SOURCE" = "interra-realty" ]; then
+    note "Default Interra transport: one inventory GET, at most 32 MiB / 60 seconds; no detail requests."
+  fi
   note "collect: $SMOKE_SOURCE (sale, max 3 items) -> $SMOKE_OUT"
   if npx tsx collect.ts --source="$SMOKE_SOURCE" --transaction=sale --max-items=3 --out="$SMOKE_OUT" >/tmp/cre_setup_smoke.log 2>&1; then
     ok "collect.ts produced an artifact"
