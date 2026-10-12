@@ -60,6 +60,74 @@ Expected baseline:
 
 Selecting `api` also starts its four core dependencies. Plain `docker compose up -d` starts all defined services, including the optional FoundationDB backend. Keep existing root `.env` values intact; a fresh non-AI setup does not require that file.
 
+### Optional loopback-only API publication
+
+The upstream Compose file publishes the API on every host interface by default,
+while local authentication is usually disabled. A successful localhost request
+does not establish isolation from the LAN. The fork-owned
+`docker-compose.loopback.yaml` replaces that publication with
+`127.0.0.1:${PORT:-3002}:${INTERNAL_PORT:-3002}` and leaves the existing browser
+sidecar publication unchanged. `PORT` customizes the host port and
+`INTERNAL_PORT` customizes the container port, as in the base file.
+
+This overlay is **opt-in** and requires Docker Compose **2.24.4 or newer** for
+`!override`. An ordinary merged `ports` list can retain the wildcard binding;
+do not remove the tag or use this overlay with an older Compose version. The
+upstream `docker-compose.yaml` remains unchanged. See Docker's
+[merge rules](https://docs.docker.com/reference/compose-file/merge/) and
+[port publication guidance](https://docs.docker.com/engine/network/port-publishing/).
+
+For an existing runtime, [AGENTIC-2284](https://linear.app/agenticassets/issue/AGENTIC-2284)
+owns the founder ingress decision, application and rollback approval.
+Preparing or reviewing this file under
+[AGENTIC-3754](https://linear.app/agenticassets/issue/AGENTIC-3754) authorizes no
+container recreation, firewall change or writer cutover. Preserve any existing
+untracked `docker-compose.override.yaml`, including its resource settings and
+current loopback binding. Explicit `-f` flags do not automatically include it;
+review the intended file order and include the local overlay before the
+loopback overlay when applicable.
+
+Review the merged configuration without starting containers. Full resolved
+Compose output can contain secrets; print only API ports:
+
+```bash
+docker compose version
+docker compose -f docker-compose.yaml -f docker-compose.loopback.yaml config --format json \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["services"]["api"]["ports"], indent=2))'
+# If a local overlay exists, include it explicitly before the loopback overlay:
+# -f docker-compose.yaml -f docker-compose.override.yaml -f docker-compose.loopback.yaml
+```
+
+For a new or existing runtime **after the separate ingress approval**, use that
+same reviewed file list with `up -d api`. Keep the file list consistent on
+later `up`/recreate commands so a default invocation cannot restore the wildcard
+publication. Local clients still use `http://localhost:3002` at the default
+port; set `FIRECRAWL_API_URL` to match a custom host port. This overlay publishes
+IPv4 loopback only, so use `127.0.0.1` explicitly if a client insists on IPv6
+`::1` without IPv4 fallback.
+
+The full healthcheck now inspects actual API service publications from the
+selected Docker Compose project, even when its API URL is localhost. It warns
+on non-loopback IPv4/IPv6 bindings, a remote API endpoint, or unknown/malformed
+Docker inspection. These warnings are recorded in evidence and do not change
+the existing 4/4 functional-health result. The healthcheck still performs a
+network scrape; the standalone read-only publication diagnostic is:
+
+```bash
+python3 scripts/firecrawl-ops/firecrawl_ingress_check.py --api-url http://localhost:3002
+```
+
+Docker publication is only one part of ingress posture. After an approved
+application, verify the localhost request and inspect listeners (`ss -ltn` on
+Linux, or `Get-NetTCPConnection -LocalPort 3002 -State Listen` in PowerShell).
+On Windows, inspect active firewall profiles with
+`Get-NetFirewallProfile | Select-Object Name,Enabled,DefaultInboundAction`
+and have the responsible operator review applicable inbound rules; a profile
+listing alone does not prove isolation. Verify refusal from a separately
+authorized non-host network context as well. This guide changes no firewall
+rules. Docker documents a localhost-publication caveat for Engine versions
+older than 28.0.0, so record the engine version with reachability evidence.
+
 Useful commands:
 
 ```bash
