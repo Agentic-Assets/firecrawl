@@ -24,6 +24,15 @@ def setup_clone(tmp_path: Path):
     collector.mkdir(parents=True)
     for name in ("cre_setup.sh", "cre_platform.py"):
         shutil.copy2(COLLECTOR / name, collector / name)
+    diagnostics = collector / "private-tmp"
+    diagnostics.mkdir()
+    # Confine any regression to the former fixed /tmp log paths to this fixture.
+    # TMPDIR alone cannot redirect a hardcoded /tmp path. Never create
+    # sentinels in the operator's /tmp; the script otherwise runs unchanged.
+    setup = collector / "cre_setup.sh"
+    setup.write_text(
+        setup.read_text().replace("/tmp/cre_setup_", str(diagnostics / "cre_setup_"))
+    )
     (collector / "node_modules").mkdir()
     (collector / "launchd").mkdir()
     (collector / "launchd/install_launchd.sh").touch()
@@ -62,7 +71,13 @@ def setup_clone(tmp_path: Path):
         "elif name == 'curl':\n"
         "    print(os.environ['READY_JSON'])\n"
         "    sys.exit(int(os.environ.get('CURL_EXIT', '0')))\n"
+        "elif name == 'npm' and args == ['run', 'typecheck']:\n"
+        "    if os.environ.get('TYPECHECK_FAIL'):\n"
+        "        print('x' * 32768 + '\\nsynthetic typecheck failure', file=sys.stderr)\n"
+        "        sys.exit(2)\n"
         "elif name == 'npx':\n"
+        "    with open(os.environ['TOOL_LOG'], 'a') as log:\n"
+        "        log.write(json.dumps(['collector-api-url', os.environ.get('FIRECRAWL_API_URL')]) + '\\n')\n"
         "    if os.environ.get('COLLECT_FAIL'):\n"
         "        sys.exit(7)\n"
         "    output = next(a.removeprefix('--out=') for a in args if a.startswith('--out='))\n"
@@ -84,6 +99,7 @@ def setup_clone(tmp_path: Path):
         "PSQL_BIN": str(tools / "psql"),
         "TOOL_LOG": str(log),
         "READY_JSON": json.dumps(READY),
+        "TMPDIR": str(diagnostics),
     }
     # The operator's runtime settings must never steer this synthetic fixture.
     for name in ("FIRECRAWL_API_URL", "API_URL", "CRE_SMOKE_SOURCE", "CRE_ENV_FILE"):
@@ -106,6 +122,70 @@ def setup_clone(tmp_path: Path):
         return result, calls
 
     return collector, run
+
+
+@pytest.mark.parametrize("failure", [None, "typecheck", "syntax"])
+def test_check_preserves_diagnostic_files_and_reports_code_failures(
+    setup_clone, failure
+):
+    collector, run = setup_clone
+    diagnostics = collector / "private-tmp"
+    sentinel = diagnostics / "cre_setup_tsc.log"
+    sentinel.write_bytes(b"existing diagnostics must survive\n")
+    victim = diagnostics / "private-symlink-target"
+    victim.write_bytes(b"symlink target must survive\n")
+    (diagnostics / "cre_setup_py.log").symlink_to(victim)
+    before = {path.name: path.read_bytes() for path in diagnostics.iterdir()}
+    if failure == "syntax":
+        (collector / "cre_gate.py").write_text("def invalid syntax\n")
+    result, _ = run(
+        "--check", **({"TYPECHECK_FAIL": "1"} if failure == "typecheck" else {})
+    )
+    assert {path.name: path.read_bytes() for path in diagnostics.iterdir()} == before
+    assert not list(collector.rglob("__pycache__"))
+    if failure is None:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "TypeScript typecheck passes" in result.stdout
+        assert "Python modules compile" in result.stdout
+    elif failure == "typecheck":
+        assert result.returncode == 1
+        assert "FAIL TypeScript typecheck failed" in result.stdout
+        assert "synthetic typecheck failure" in result.stdout
+        assert len(result.stdout) < 24_000
+    else:
+        assert result.returncode == 1
+        assert "FAIL Python syntax check failed" in result.stdout
+        assert "SyntaxError" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"API_URL": "http://legacy.invalid:4000/"}, "http://legacy.invalid:4000"),
+        (
+            {
+                "API_URL": "http://ignored.invalid",
+                "FIRECRAWL_API_URL": "http://preferred.invalid/",
+            },
+            "http://preferred.invalid",
+        ),
+        (
+            {"API_URL": "http://legacy.invalid", "FIRECRAWL_API_URL": ""},
+            "http://legacy.invalid",
+        ),
+    ],
+)
+def test_smoke_uses_the_same_resolved_endpoint_as_readiness(
+    setup_clone, overrides, expected
+):
+    _, run = setup_clone
+    result, calls = run("--no-install", CRE_SMOKE_SOURCE="avison-young", **overrides)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ["collector-api-url", expected] in calls
+    requests = [
+        call for call in calls if call[0] == "curl" and call[1:] != ["--version"]
+    ]
+    assert len(requests) == 1 and requests[0][-1] == expected + "/"
 
 
 @pytest.mark.parametrize("dependencies_present", [False, True])

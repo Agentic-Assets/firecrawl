@@ -30,6 +30,7 @@ FC_DIR="${FC_DIR:-$(cd "$DIR/../../.." && pwd)}"
 SMOKE_SOURCE="${CRE_SMOKE_SOURCE:-interra-realty}"
 API_URL="${FIRECRAWL_API_URL:-${API_URL:-http://localhost:3002}}"
 API_URL="${API_URL%/}"
+export FIRECRAWL_API_URL="$API_URL"
 # Doctor imports must not create __pycache__ in the checkout.
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -150,20 +151,28 @@ fi
 section "4. Code health"
 # ---------------------------------------------------------------------------
 if [ -d node_modules ] && command -v npm >/dev/null 2>&1; then
-  if npm run typecheck >/tmp/cre_setup_tsc.log 2>&1; then ok "TypeScript typecheck passes"; else fail "typecheck failed (see /tmp/cre_setup_tsc.log)"; fi
+  # Keep only the final 16 KiB of diagnostics in memory; pipefail preserves
+  # the check's status without creating or truncating a shared temporary file.
+  if TYPECHECK_OUTPUT="$(npm run typecheck 2>&1 | tail -c 16384)"; then
+    ok "TypeScript typecheck passes"
+  else
+    fail "TypeScript typecheck failed (last 16 KiB of diagnostics below)"
+    note "$TYPECHECK_OUTPUT"
+  fi
 else
   warn "skipped typecheck (node_modules not installed)"
 fi
-if python3 - <<'PY' 2>/tmp/cre_setup_py.log
+if PYTHON_OUTPUT="$(python3 - <<'PY' 2>&1 | tail -c 16384
 from pathlib import Path
 
 for name in ("cre_ingest.py", "cre_monitor.py", "cre_gate.py"):
     compile(Path(name).read_bytes(), name, "exec")
 PY
-then
+)"; then
   ok "Python modules compile (ingest, monitor, gate)"
 else
-  fail "Python syntax check failed (see /tmp/cre_setup_py.log)"
+  fail "Python syntax check failed (last 16 KiB of diagnostics below)"
+  note "$PYTHON_OUTPUT"
 fi
 # pytest is dev/CI only: the pipeline never needs it, so this is a soft check.
 if python3 -c 'import pytest' >/dev/null 2>&1; then

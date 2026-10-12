@@ -79,7 +79,9 @@ API readiness uses only `GET /`, with a 2-second connection timeout and a
 base URL with `FIRECRAWL_API_URL`, or the older `API_URL` (the former wins).
 Readiness does not prove that workers or scraping work. `--check` never invokes
 the full healthcheck, dependency installation, collection or ingest, and does
-not create Python bytecode; typecheck diagnostics may write temporary logs.
+not create Python bytecode or diagnostic files. Failed typecheck and syntax
+checks print their final 16 KiB of diagnostics inline. The resolved API URL is
+also passed to collector subprocesses, without changing any env file.
 
 Ordinary setup also runs a **network** smoke test: one public Interra Realty
 inventory GET (bounded to 32 MiB and 60 seconds), selects at most 3 sale
