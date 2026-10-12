@@ -63,7 +63,11 @@ from cre_memory_guard import (
     HostMemoryGuard,
     memory_guard_config,
 )
-from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
+from cre_owned_processes import (
+    OwnedProcessGroup,
+    _defer_cleanup_signals,
+    settle_owned_groups,
+)
 from cre_performance import capture_runtime_configuration, run_observed_command
 from cre_performance_report import save_report
 from cre_resource_usage import observe_resource_usage
@@ -3055,55 +3059,58 @@ def _run_logged_command(
         try:
             rc = proc.wait()
         except KeyboardInterrupt as interrupted:
-            resource_reason = _peek_cpu_guard_trip()
-            cleanup_interrupt = (
-                CpuGuardTrip(resource_reason)
-                if resource_reason is not None
-                else interrupted
-            )
-            cleanup_errors: list[Exception] = []
-
-            def record_interrupt(message: str) -> None:
-                try:
-                    log.write(message)
-                    log.flush()
-                except (OSError, ValueError) as exc:
-                    cleanup_errors.append(exc)
-
-            record_interrupt(
-                f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n"
-            )
-            settlement = settle_owned_groups(
-                [owned_group], grace_seconds=COMMAND_INTERRUPT_GRACE_SECONDS
-            )
-            reaped_after_interrupt = settlement.settled
-            record_interrupt(
-                f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n"
-            )
-            if not settlement.settled:
-                cleanup_errors.append(
-                    ProcessCleanupUnknown(
-                        f"owned process cleanup_unknown: {settlement.errors}"
-                    )
+            with _defer_cleanup_signals():
+                resource_reason = _peek_cpu_guard_trip()
+                cleanup_interrupt = (
+                    CpuGuardTrip(resource_reason)
+                    if resource_reason is not None
+                    else interrupted
                 )
-            if cleanup_errors:
-                if isinstance(cleanup_interrupt, CpuGuardTrip):
-                    _mark_cpu_interrupt_evidence_failed(reaped=reaped_after_interrupt)
-                else:
-                    error_type = (
-                        ProcessCleanupUnknown
-                        if not settlement.settled
-                        else RefreshError
-                    )
-                    raise error_type(
-                        "interrupt cleanup or required evidence failed; "
-                        + (
-                            "cleanup_unknown"
-                            if not settlement.settled
-                            else "local settlement proved"
+                cleanup_errors: list[Exception] = []
+
+                def record_interrupt(message: str) -> None:
+                    try:
+                        log.write(message)
+                        log.flush()
+                    except (OSError, ValueError) as exc:
+                        cleanup_errors.append(exc)
+
+                record_interrupt(
+                    f"[{utc_now()}] interrupt: terminating process group {proc.pid}\n"
+                )
+                settlement = settle_owned_groups(
+                    [owned_group], grace_seconds=COMMAND_INTERRUPT_GRACE_SECONDS
+                )
+                reaped_after_interrupt = settlement.settled
+                record_interrupt(
+                    f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n"
+                )
+                if not settlement.settled:
+                    cleanup_errors.append(
+                        ProcessCleanupUnknown(
+                            f"owned process cleanup_unknown: {settlement.errors}"
                         )
-                    ) from cleanup_errors[0]
-            raise cleanup_interrupt
+                    )
+                if cleanup_errors:
+                    if isinstance(cleanup_interrupt, CpuGuardTrip):
+                        _mark_cpu_interrupt_evidence_failed(
+                            reaped=reaped_after_interrupt
+                        )
+                    else:
+                        error_type = (
+                            ProcessCleanupUnknown
+                            if not settlement.settled
+                            else RefreshError
+                        )
+                        raise error_type(
+                            "interrupt cleanup or required evidence failed; "
+                            + (
+                                "cleanup_unknown"
+                                if not settlement.settled
+                                else "local settlement proved"
+                            )
+                        ) from cleanup_errors[0]
+                raise cleanup_interrupt
         log.write(f"[{utc_now()}] rc={rc}\n")
         return rc
     finally:
@@ -3247,6 +3254,7 @@ def select_cohort_sources(
     return selected
 
 
+@_defer_cleanup_signals()
 def _terminate_cohort_processes(active: Iterable[CohortCollectionProcess]) -> None:
     """Terminate every active source process group before releasing the lock."""
     processes = list(active)
