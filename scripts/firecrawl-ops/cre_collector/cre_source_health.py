@@ -9,7 +9,7 @@ never erases or moves backward the last complete successful observation.
 
 from __future__ import annotations
 
-import fcntl
+from cre_posix import fcntl
 import json
 import os
 import re

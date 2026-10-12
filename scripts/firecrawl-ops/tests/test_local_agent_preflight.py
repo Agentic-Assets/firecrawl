@@ -45,6 +45,25 @@ class Response:
 
 
 class LocalAgentPreflightTests(unittest.TestCase):
+    def test_skill_link_doctor_fails_closed_without_network_or_environment_read(self) -> None:
+        with (
+            patch.object(MODULE, "inspect_skill_links", return_value={".claude/skills": "placeholder"}),
+            patch.object(MODULE, "build_document") as build,
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(MODULE.main(["--skill-links-only"]), 1)
+        build.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue()), {
+            "ready": False, "links": {".claude/skills": "placeholder"},
+        })
+
+    def test_skill_link_doctor_accepts_verified_links(self) -> None:
+        with (
+            patch.object(MODULE, "inspect_skill_links", return_value={".claude/skills": "ready"}),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(MODULE.main(["--skill-links-only"]), 0)
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)

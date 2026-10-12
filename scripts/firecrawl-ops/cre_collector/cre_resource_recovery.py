@@ -8,7 +8,7 @@ visible to the operator in production.
 
 from __future__ import annotations
 
-import fcntl
+from cre_posix import fcntl
 import math
 import os
 from collections.abc import Callable, Mapping

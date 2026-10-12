@@ -29,8 +29,8 @@ def test_shell_status_never_emits_raw_stderr(tmp_path, known_signature):
     script = Path(__file__).resolve().parents[1] / "cre_status.sh"
     block = (
         script.read_text(encoding="utf-8")
-        .split('section "recent launchd stderr (redacted summary)"', 1)[1]
-        .split('section "disappearance-only signal staleness"', 1)[0]
+        .split("# BEGIN launchd stderr summary", 1)[1]
+        .split("# END launchd stderr summary", 1)[0]
     )
     secret = "https://user:do-not-print@example.invalid/path?token=private-value"
     content = secret + "\n\x1b]2;spoofed\x07\n"

@@ -1,2 +1,14 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Linux containers and WSL must receive runnable LF files on Windows clones.
+*.sh text eol=lf
+*.py text eol=lf
+*.ts text eol=lf
+*.sql text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+Dockerfile* text eol=lf
+*.Dockerfile text eol=lf
+*.template text eol=lf
+*.plist.template text eol=lf

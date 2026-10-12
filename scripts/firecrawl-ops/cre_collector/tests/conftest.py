@@ -42,6 +42,11 @@ _PARENT = os.path.dirname(_HERE)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
+from cre_platform import UNSUPPORTED_MESSAGE
+
+if sys.platform not in {"linux", "darwin"}:
+    pytest.exit(UNSUPPORTED_MESSAGE, returncode=0)
+
 import cre_checkpoint_refresh as _refresh
 import cre_checkpoint_series as _series
 import cre_memory_guard as _memory_guard

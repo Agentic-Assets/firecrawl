@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -21,21 +22,54 @@ class SyncAgentSkillsTests(unittest.TestCase):
         (skill_dir / "nested.txt").write_text("canonical\n", encoding="utf-8")
         return source
 
-    def run_sync(self, root: Path, source: Path, target: Path, links: Path) -> subprocess.CompletedProcess[str]:
+    def run_sync(
+        self, root: Path, source: Path, target: Path, links: Path,
+        *, path: str | None = None, args: tuple[str, ...] = (), skill: str = "firecrawl-ops",
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ | {
             "FC_DIR": str(REPO_ROOT),
             "SOURCE_ROOT": str(source),
             "FIRECRAWL_USER_SKILLS_ROOT": str(target),
             "FIRECRAWL_SKILL_LINK_ROOTS": str(links),
         }
+        if path is not None:
+            env["PATH"] = path
         return subprocess.run(
-            ["bash", str(SYNC_SCRIPT), "firecrawl-ops"],
+            [shutil.which("bash"), str(SYNC_SCRIPT), *args, skill],
             cwd=root,
             env=env,
             text=True,
             capture_output=True,
             check=False,
         )
+
+    def test_invalid_skill_names_refuse_before_mutation(self) -> None:
+        for skill in ("../outside", "..\\outside", "name:stream", "", "name/child"):
+            with self.subTest(skill=skill), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                source = self.make_source(root)
+                target = root / "installed"
+                outside = root / "outside"
+                outside.mkdir()
+                sentinel = outside / "keep"
+                sentinel.write_text("preserve", encoding="utf-8")
+                result = self.run_sync(root, source, target, root / "links", skill=skill)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "preserve")
+                self.assertFalse(target.exists())
+
+    def tools_without_rsync(self, root: Path, *, fail_copy: bool = False) -> str:
+        tools = root / "bin"
+        tools.mkdir()
+        for name in ("bash", "dirname", "mkdir", "mktemp", "cp", "mv", "rm", "ln"):
+            if name == "cp" and fail_copy:
+                (tools / name).write_text("#!/bin/bash\nexit 23\n", encoding="utf-8")
+                (tools / name).chmod(0o755)
+            else:
+                executable = shutil.which(name)
+                self.assertIsNotNone(executable, name)
+                (tools / name).symlink_to(executable)
+        return str(tools)
 
     def test_replaces_canonical_destination_symlink_without_touching_its_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -73,6 +107,82 @@ class SyncAgentSkillsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((destination / "stale.txt").exists())
             self.assertEqual((destination / "nested.txt").read_text(encoding="utf-8"), "canonical\n")
+
+    def test_cp_fallback_replaces_stale_files_and_dereferences_source_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = self.make_source(root)
+            (source / "firecrawl-ops" / "alias.txt").symlink_to("nested.txt")
+            target = root / "installed with spaces"
+            destination = target / "firecrawl-ops"
+            destination.mkdir(parents=True)
+            (destination / "stale.txt").write_text("stale", encoding="utf-8")
+
+            result = self.run_sync(root, source, target, root / "links", path=self.tools_without_rsync(root))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("cp fallback", result.stdout)
+            self.assertFalse((destination / "stale.txt").exists())
+            self.assertFalse((destination / "alias.txt").is_symlink())
+            self.assertEqual((destination / "alias.txt").read_text(encoding="utf-8"), "canonical\n")
+            self.assertEqual(list(target.glob(".firecrawl-skill.*")), [])
+
+    def test_cp_fallback_replaces_destination_link_without_external_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = self.make_source(root)
+            target = root / "installed"
+            target.mkdir()
+            external = root / "external"
+            external.mkdir()
+            (external / "keep.txt").write_text("private", encoding="utf-8")
+            destination = target / "firecrawl-ops"
+            destination.symlink_to(external, target_is_directory=True)
+
+            result = self.run_sync(root, source, target, root / "links", path=self.tools_without_rsync(root))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(destination.is_symlink())
+            self.assertEqual((external / "keep.txt").read_text(encoding="utf-8"), "private")
+            self.assertEqual(list(external.iterdir()), [external / "keep.txt"])
+
+    def test_cp_failure_preserves_existing_installation_and_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = self.make_source(root)
+            target = root / "installed"
+            destination = target / "firecrawl-ops"
+            destination.mkdir(parents=True)
+            (destination / "keep.txt").write_text("previous", encoding="utf-8")
+            links = root / "links"
+
+            result = self.run_sync(
+                root, source, target, links,
+                path=self.tools_without_rsync(root, fail_copy=True),
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("existing installation preserved", result.stderr)
+            self.assertEqual((destination / "keep.txt").read_text(encoding="utf-8"), "previous")
+            self.assertFalse(links.exists())
+            self.assertEqual(list(target.glob(".firecrawl-skill.*")), [])
+
+    def test_cp_dry_run_creates_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = self.make_source(root)
+            target = root / "installed"
+            links = root / "links"
+
+            result = self.run_sync(
+                root, source, target, links,
+                path=self.tools_without_rsync(root), args=("--dry-run",),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("stage cp -RL", result.stdout)
+            self.assertFalse(target.exists())
+            self.assertFalse(links.exists())
 
 
 if __name__ == "__main__":

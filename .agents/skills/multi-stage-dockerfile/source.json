@@ -1,0 +1,9 @@
+{
+  "repository": "github/awesome-copilot",
+  "commit": "70ddff7fab9d4d49743d221b56d761cff58048d0",
+  "path": "skills/multi-stage-dockerfile",
+  "license": "MIT",
+  "skill_sha256": "7dfea7d31f3744930cb07869e15a79f90dbd47d2ddc56d165715fbd257db9ba7",
+  "reviewed_at": "2026-10-12",
+  "local_changes": false
+}

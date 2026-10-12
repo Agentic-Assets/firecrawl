@@ -31,6 +31,7 @@ requires the savills seed row in credeals.cre_brokerages
 
 import argparse
 import csv
+import glob
 import hashlib
 import io
 import json
@@ -71,6 +72,8 @@ PSQL_CANDIDATES = [
     os.environ.get("PSQL_BIN") or "",
     "/opt/homebrew/opt/libpq/bin/psql",
     "/usr/local/opt/libpq/bin/psql",
+    "/usr/bin/psql",
+    *sorted(glob.glob("/usr/lib/postgresql/*/bin/psql"), reverse=True),
 ]
 
 _RUN_UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
@@ -5459,7 +5462,8 @@ def find_psql():
     p = shutil.which("psql")
     if p:
         return p
-    sys.exit("psql not found. brew install libpq, or set PSQL_BIN.")
+    sys.exit("psql not found. Install a PostgreSQL client (apt install postgresql-client on Ubuntu; "
+             "brew install libpq on macOS), or set PSQL_BIN.")
 
 
 PSQL_QUERY_ENV = {
