@@ -718,6 +718,8 @@ def test_disk_full_settlement_and_log_close_preserve_unknown(tmp_path, monkeypat
         "degraded",
         "gap",
         "future",
+        "late_start",
+        "stale_end",
         "idle_exploratory",
         "idle_qualifying",
     ],
@@ -727,14 +729,22 @@ def test_required_resource_evidence_distinguishes_load_from_idle(
 ):
     args, _, _, identity = inputs
     now = datetime.now(timezone.utc)
-    start = now - timedelta(seconds=30)
-    sample_at = now - timedelta(seconds=15)
+    start = now - timedelta(seconds=5)
+    sample_at = now - timedelta(seconds=4)
     result = {
-        "startedAt": (now - timedelta(seconds=16)).isoformat(),
-        "finishedAt": (now - timedelta(seconds=14)).isoformat(),
+        "startedAt": (now - timedelta(seconds=4)).isoformat(),
+        "finishedAt": (now - timedelta(seconds=3)).isoformat(),
     }
     if fault.startswith("idle"):
-        sample_at = now - timedelta(seconds=3)
+        sample_at = now - timedelta(seconds=1)
+    if fault == "late_start":
+        start = now - timedelta(seconds=20)
+    if fault == "stale_end":
+        start = now - timedelta(seconds=30)
+        sample_at = now - timedelta(seconds=25)
+    if fault == "gap":
+        start = now - timedelta(seconds=20)
+        sample_at = now - timedelta(seconds=15)
     record = {
         "kind": "cre_resource_usage",
         "observed_at": sample_at.isoformat(),

@@ -446,7 +446,12 @@ def resource_evidence(
                 overlapping.append(observed)
         if valid:
             gaps = [later - earlier for earlier, later in pairwise(valid)]
-            if any(gap > 10 for gap in gaps):
+            if (
+                valid[0] - started > 10
+                or time.time() - (valid[-1] + rows[-1][1]["sample_duration_seconds"])
+                > 10
+                or any(gap < 0 or gap > 10 for gap in gaps)
+            ):
                 raise CalibrationRejected("required cell resource coverage gap")
             if overlapping or not qualifying or time.monotonic() >= deadline:
                 summary = {
