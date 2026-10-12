@@ -34,16 +34,27 @@ scripts/firecrawl-ops/check_pnpm_docker_config.py
 operator guide. For a high-volume listing refresh, do not use raw
 `collect.ts --source=all` or `cre_daily_update.sh` as the normal path.
 
-The supervised host guard currently requires Darwin/macOS. A working Windows Docker Desktop stack does not make the CRE production refresh runner Windows-compatible. Do not bypass that guard or run production collection to verify onboarding. CRE offline tests require a separate clone; Linux-container verification is distinct from native Windows support.
+The supervised runner supports Darwin Mach/sysctl safety telemetry and Linux
+CPU, memory PSI, available memory/swap and visible cgroup v2 limits/events.
+Unknown platforms or missing evidence fail closed. Under WSL2/Docker Desktop,
+the guards measure the Linux VM and visible cgroups, not aggregate Windows host
+CPU or RAM. Keep the WSL/container ceilings and use Ubuntu with an ext4 checkout
+for the POSIX runner. CRE offline tests require a separate no-hardlinks clone;
+Linux verification does not prove native Windows or native Mac runtime parity.
+The Windows setup did not rerun the native Mac runtime. Follow the founder
+review gate on AGENTIC-3746 and the separate production cutover gates; do not
+bypass guards, enable a scheduler or perform production writes for onboarding.
 
 1. Apply `set_cre_resource_profile.sh apply --with-pids`, review `show`, then
    recreate `api` and `playwright-service`.
 2. Run `cre_checkpoint_series.py --sources all` with serial collection,
    explicit CPU settings, and `nice`; use the exact command in `START_HERE.md`.
-3. The checkpoint guard stops and checkpoints a sustained host-CPU breach. It
-   is not a permanent monitor or auto-resume service. Inspect
-   `host-cpu-guard.jsonl` and, when present, `cpu-incidents.jsonl` before
-   resuming exit `75`.
+3. The checkpoint guards stop and checkpoint sustained CPU or warning memory
+   pressure, critical memory pressure, or missing required telemetry/evidence.
+   They are not a permanent monitor or auto-resume service. Inspect
+   `host-cpu-guard.jsonl`, `host-memory-guard.jsonl` and, when present,
+   `cpu-incidents.jsonl` before resuming exit `75`. Memory stops never qualify
+   for automatic CPU-only recovery.
 
 The supervised path never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. GetCREdata remains the only
