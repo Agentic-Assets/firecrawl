@@ -627,7 +627,7 @@ def test_safe_process_env_maps_collector_endpoint_to_healthcheck_alias():
     assert env["API_URL"] == "http://localhost:3102"
 
 
-def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatch):
+def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatch, owned_group_fixture):
     spawned = {}
     signals = []
 
@@ -655,6 +655,7 @@ def test_run_command_interrupt_terminates_its_process_group(tmp_path, monkeypatc
         refresh.os, "killpg", lambda pid, sig: signals.append((pid, sig))
     )
 
+    owned_group_fixture([process], lambda p: p.wait_calls >= 2)
     with pytest.raises(KeyboardInterrupt):
         refresh.run_command(["node", "collect.ts"], tmp_path / "command.log", env={})
 
@@ -4815,7 +4816,7 @@ def test_cohort_prepares_all_artifacts_before_any_gate_or_dry_run(
 
 
 def test_cohort_interrupt_terminates_every_active_child_before_returning(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, owned_group_fixture
 ):
     run_dir = tmp_path / "run"
     manifest = refresh.new_manifest(
@@ -4828,6 +4829,7 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
         source_workers=2,
     )
     signals = []
+    processes = []
 
     class RunningProcess:
         def __init__(self, pid):
@@ -4842,11 +4844,12 @@ def test_cohort_interrupt_terminates_every_active_child_before_returning(
             return -2
 
     def start(_run_dir, _manifest, source, **_kwargs):
+        process = RunningProcess(6000 + len(signals) + (1 if source == "cbre" else 0))
+        processes.append(process)
+        owned_group_fixture(processes, lambda p: p.done)
         return refresh.CohortCollectionProcess(
             source=source,
-            process=RunningProcess(
-                6000 + len(signals) + (1 if source == "cbre" else 0)
-            ),
+            process=process,
             log_handle=io.StringIO(),
             tmp_artifact=run_dir / "sources" / f"{source}.tmp",
             attempt={"number": 1},

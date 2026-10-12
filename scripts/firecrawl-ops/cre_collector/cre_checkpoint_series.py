@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import signal
 import subprocess
 import sys
@@ -45,6 +44,7 @@ from cre_memory_guard import (
     DEFAULT_MEMORY_SUSTAIN_SECONDS,
     memory_guard_config,
 )
+from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
 from cre_performance_report import save_report
 from cre_resource_recovery import (
     DEFAULT_LOW_CPU_PERCENT,
@@ -451,6 +451,10 @@ def load_resume_manifest(
         value = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SeriesError(f"cannot read series manifest: {exc}") from exc
+    if isinstance(value, dict) and "cleanup_unknown" in str(value.get("error", "")):
+        raise SeriesError(
+            "manual owned-process settlement required before series resume"
+        )
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION:
         raise SeriesError("unsupported checkpoint-series manifest")
     if value.get("collector_git_sha") != git_sha:
@@ -941,20 +945,16 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
 
 
 def _terminate_child(proc: subprocess.Popen[Any]) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=SERIES_INTERRUPT_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
+    owned = getattr(proc, "_cre_owned_group", None) or OwnedProcessGroup.from_spawn(
+        proc
+    )
+    settlement = settle_owned_groups(
+        [owned],
+        grace_seconds=SERIES_INTERRUPT_GRACE_SECONDS,
+        initial_signal=signal.SIGTERM,
+    )
+    if not settlement.settled:
+        raise RefreshError("owned checkpoint process cleanup_unknown")
 
 
 def checkpoint_series_sigterm_handler(_signum: int, _frame: Any) -> None:
@@ -1465,10 +1465,24 @@ def run_series(
                     manifest["finished_at"] = utc_now()
                     save_manifest(series_dir, manifest)
                     return 1
+                proc._cre_owned_group = OwnedProcessGroup.from_spawn(proc)
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
-                    _terminate_child(proc)
+                    try:
+                        _terminate_child(proc)
+                    except RefreshError:
+                        attempt["finished_at"] = utc_now()
+                        attempt["rc"] = 130
+                        checkpoint["state"] = "failed_global"
+                        checkpoint["error"] = "owned process cleanup_unknown"
+                        manifest["status"] = "failed"
+                        manifest["error"] = (
+                            "owned process cleanup_unknown; manual settlement required"
+                        )
+                        manifest["finished_at"] = utc_now()
+                        save_manifest(series_dir, manifest)
+                        return 1
                     attempt["finished_at"] = utc_now()
                     attempt["rc"] = 130
                     checkpoint["state"] = "interrupted"

@@ -335,3 +335,50 @@ def _c10_structural_fixture(
         monkeypatch.setattr(
             contracts, "_require_repository_plan_authority", lambda _plan: None
         )
+
+
+@pytest.fixture
+def owned_group_fixture(monkeypatch):
+    """Explicit process-double adapter; real group tests use actual kernel probes."""
+    import cre_checkpoint_refresh as refresh
+    import cre_checkpoint_series as series
+    import cre_owned_processes as owned
+
+    def install(processes, is_reaped=None):
+        by_pid = {process.pid: process for process in processes}
+        previous = owned.os.killpg
+        killed = set()
+
+        def signal_group(pgid, sent):
+            previous(pgid, sent)
+            if sent == signal.SIGKILL:
+                killed.add(pgid)
+
+        import signal
+
+        monkeypatch.setattr(owned.os, "killpg", signal_group)
+        monkeypatch.setattr(
+            owned,
+            "_group_alive",
+            lambda pgid: (
+                not (
+                    is_reaped(by_pid[pgid])
+                    if is_reaped
+                    else getattr(by_pid[pgid], "reaped", False)
+                )
+            ),
+        )
+        monkeypatch.setattr(refresh, "COMMAND_INTERRUPT_GRACE_SECONDS", 0)
+        monkeypatch.setattr(refresh, "COHORT_INTERRUPT_GRACE_SECONDS", 0)
+        monkeypatch.setattr(series, "SERIES_INTERRUPT_GRACE_SECONDS", 0)
+        for process in processes:
+            original = process.wait
+
+            def wait(timeout=None, *, target=process, original_wait=original):
+                if target.pid in killed and hasattr(target, "stubborn"):
+                    target.stubborn = False
+                return original_wait(timeout=timeout)
+
+            monkeypatch.setattr(process, "wait", wait)
+
+    return install
