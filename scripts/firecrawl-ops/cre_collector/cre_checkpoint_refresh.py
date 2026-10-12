@@ -2198,9 +2198,7 @@ class SharedLock:
             cleanup_unknown |= isinstance(error, ProcessCleanupUnknown)
             pending.extend((error.__context__, error.__cause__))
         if cleanup_unknown or (
-            isinstance(_exc, CpuGuardTrip)
-            and details is not None
-            and not details.owned_processes_reaped
+            details is not None and not details.owned_processes_reaped
         ):
             # Preserve the existing fail-closed operator recovery lease. A new
             # foreground owner must not overlap a possibly surviving group.

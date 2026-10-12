@@ -321,19 +321,24 @@ def test_terminal_close_cannot_hide_unknown_cleanup(tmp_path, monkeypatch, failu
         pytest.fail("terminal close lost uncertainty")
 
 
-def test_guard_quiescence_interrupt_cannot_release_unknown_cleanup(
-    tmp_path, monkeypatch
-):
+@pytest.mark.parametrize("reason", [None, "host_cpu_sustained", "host_memory_critical"])
+def test_guard_quiescence_interrupt_cannot_release_unknown_cleanup(tmp_path, reason):
     import threading
     from types import SimpleNamespace
 
     import cre_checkpoint_refresh as refresh
 
     refresh._clear_cpu_guard_trip()
+    if reason is not None:
+        refresh._set_cpu_guard_trip(
+            "uncertain resource cleanup",
+            reason_code=reason,
+            owned_processes_reaped=False,
+        )
     guard = SimpleNamespace(
         stop_event=threading.Event(),
         thread=None,
-        stop=lambda: os.kill(os.getpid(), signal.SIGTERM),
+        stop=lambda: os.kill(os.getpid(), signal.SIGINT if reason else signal.SIGTERM),
     )
     lock = tmp_path / ".cre.lock"
     with (
@@ -341,6 +346,8 @@ def test_guard_quiescence_interrupt_cannot_release_unknown_cleanup(
         refresh.SharedLock(lock),
         refresh.resource_guard_boundary(guard, guard),
     ):
+        if reason:
+            raise refresh.CpuGuardTrip("uncertain resource cleanup")
         raise refresh.ProcessCleanupUnknown("owned process cleanup_unknown")
     with pytest.raises(refresh.LockHeldError), refresh.SharedLock(lock):
         pytest.fail("guard quiescence lost uncertainty")
