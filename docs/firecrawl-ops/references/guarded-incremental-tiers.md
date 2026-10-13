@@ -55,6 +55,8 @@ The defaults select `Ubuntu-24.04`, Linux user `cayman`,
 `/home/cayman/code/firecrawl`, and the private
 `/home/cayman/.config/cre/equire.env`. Override the explicit parameters on
 another host. Never pass a database URL or password on the command line.
+The Windows launcher explicitly pins Firecrawl to `http://127.0.0.1:3002`
+inside Ubuntu; it does not inherit a hosted Firecrawl endpoint.
 
 Linux operators can invoke the same foreground entrypoint directly:
 
