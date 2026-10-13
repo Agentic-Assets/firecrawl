@@ -9,6 +9,7 @@ from pathlib import Path
 import cre_checkpoint_refresh as refresh
 import cre_checkpoint_series as series
 import pytest
+from cre_validate import CHECKPOINT_PREFLIGHT_QUERY_NAMES
 
 
 @pytest.mark.parametrize(
@@ -73,12 +74,18 @@ def test_resource_observer_and_report_follow_checkpoint_lifecycle(
             target.write_text(
                 json.dumps(
                     {
+                        "ok": True,
+                        "validation_profile": refresh.CHECKPOINT_PREFLIGHT_PROFILE,
+                        "audit_scope": refresh.VALIDATION_AUDIT_SCOPES[
+                            refresh.CHECKPOINT_PREFLIGHT_PROFILE
+                        ],
                         "queries": {
+                            **{name: [] for name in CHECKPOINT_PREFLIGHT_QUERY_NAMES},
                             "lifecycle_schema_contract": [
                                 {"contract_item": name, "status": "ok"}
                                 for name in refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS
-                            ]
-                        }
+                            ],
+                        },
                     }
                 )
             )

@@ -353,6 +353,11 @@ process liveness, scans unbound child runs, prints raw provider errors, calls
 the database or alters the running series. Recorded state and manifest age
 remain visible so a stopped viewer cannot imply that a process is alive.
 
+The before-collection database audit uses the eight consumed query families.
+Standalone, post-ingest and recovery validation retain the full audit. See
+[validation profiles](../../../docs/firecrawl-ops/references/cre-validation-profiles.md)
+for report scope, completeness checks and timing interpretation.
+
 For optimization data, the checkpoint runner saves body-free command journals,
 per-invocation scraper snapshots and a five-second resource timeline automatically.
 Checkpoint and series exits also save `performance-report.json` and
@@ -542,9 +547,19 @@ to make progress.
 
 ### Colliers Main runtime calibration
 
-`colliers-main` has a large sitemap and renders every current detail page. Do
-not change its detail concurrency based on a short or cached collection. Use
-the no-write calibration harness first. It only reads the public sitemap and
+`colliers-main` has a large sitemap. The supervised checkpoint profile
+enables its first-party Coveo bulk-detail path with
+`COLLIERS_MAIN_COVEO_ENABLE=1`; it does not render every listing individually.
+The per-page renderer is the fallback when that path is not selected. Its
+detail concurrency, start interval and challenge cooldown do not tune the
+bulk-detail path. Confirm the selected transport before estimating run time.
+An enabled bulk-path error fails collection; it does not silently retry through
+the renderer. Targeted `--enrich-input` work still uses per-item rendered reads
+and global collection concurrency, so bulk-path admission and provider-specific
+detail knobs do not establish that incremental path's capacity.
+
+For the rendered fallback, do not change detail concurrency based on a short
+or cached collection. Use the no-write calibration harness first. It only reads the public sitemap and
 rendered detail pages, writes a local evidence JSON file, clears database
 environment variables before importing collector code, and never invokes the
 collector, a gate, or ingest.

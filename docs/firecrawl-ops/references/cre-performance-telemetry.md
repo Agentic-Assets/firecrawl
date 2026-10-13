@@ -31,8 +31,8 @@ browser dashboard, tracing vendor, database connection or scheduler is added.
 | Validation query timings | `pre-validation.json` and `validation.json` under top-level `query_timings` | Per-query psql client elapsed milliseconds, keyed by the existing validation query name. This includes client-side result handling and is not pure server execution time. |
 | Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, client attempts, retry/backoff, latency histogram, locally awaited concurrency, JLL detail cache, source outcomes and sampled Node resources. |
 | Initial runtime configuration | `runtime-performance.json` | Known API/browser container IDs, image IDs and configured CPU/memory/PID/shared-memory/port limits, plus available host CPU/RAM configuration. One narrow read before the guard starts; not current usage. |
-| Resource timeline | `resource-usage.jsonl` | Five-second observations of host CPU/load, macOS memory categories/pressure/swap, filesystem capacity, owned process RSS and selected Compose API/browser container usage, limits and OOM/restart snapshots. Each resume has a distinct session ID and monotonic clock. |
-| Required guards | `logs/host-cpu-guard.jsonl`, `logs/host-memory-guard.jsonl` | Host CPU and Darwin memory-pressure stop decisions, including unrelated applications. Memory warning defaults to 20 seconds; critical stops immediately; missing/stale required telemetry fails closed. |
+| Resource timeline | `resource-usage.jsonl` | Five-second platform-specific CPU/load, memory/pressure/swap, filesystem capacity, owned process RSS and selected Compose API/browser container usage, limits and OOM/restart snapshots. Each resume has a distinct session ID and monotonic clock. |
+| Required guards | `logs/host-cpu-guard.jsonl`, `logs/host-memory-guard.jsonl` | Platform-selected CPU and memory-pressure stop decisions. Darwin uses Mach/sysctl; Linux uses `/proc`, PSI and visible cgroup evidence. Under WSL these cover the Linux VM, not aggregate Windows load. Memory warning defaults to 20 seconds; critical stops immediately; missing/stale required telemetry fails closed. |
 | Incident evidence | `logs/cpu-incidents.jsonl` | Existing resource-stop context. This remains separate from optional performance diagnostics. |
 | Business evidence | Manifest-linked source JSON, gate, dry-run and readback artifacts | Source observations, retained structured detail and admission/ingestion proof. Never substitute request counts for these artifacts. |
 
@@ -94,8 +94,28 @@ guard log. A count of high samples is not a contiguous high-CPU duration.
 
 ## Resource interpretation and older trials
 
+A phase manifest changes when the coordinator records a phase transition; it
+is not a continuous process heartbeat. During a long detail pass, compare fresh
+scrape counters, command/process evidence and required guard timestamps before
+calling a run stuck. A detail counter includes cache and error outcomes and
+does not establish completed or ingested listings.
+
+`CRE resource usage diagnostics degraded` means an optional observation missed
+one or more fields or its sampling deadline. Inspect `unavailable_fields` and
+later samples in `resource-usage.jsonl`, independently of the required CPU and
+memory guard journals. Missing optional Docker VM statistics do not mean that
+the required guards failed or that a healthy collection should be restarted.
+
+When successful request latency dominates and client concurrency is one,
+additional RAM alone will not shorten the pass. Evaluate a small concurrency
+increase on a new immutable run, retaining the rendered-page path, cancellation
+and provider admission checks. JLL's `JLL_DETAIL_WAIT_MS=0` omits `waitFor` and
+can change engine selection; it is not simply a faster equivalent rendering
+setting. Direct-provider transport remains a separately admitted experiment
+under [AGENTIC-2898](https://linear.app/agenticassets/issue/AGENTIC-2898).
+
 The required memory guard is independent of optional diagnostics. It uses the
-Darwin userspace pressure levels (1 normal, 2 warning, 4 critical), requires a
+normalized pressure levels (1 normal, 2 warning, 4 critical), requires a
 normal preflight, and shares only the existing first-trip signal/owned-process
 cleanup protocol with the CPU watchdog. Required guard decisions begin cleanup;
 they do not prove queued server work has stopped. Only the first watchdog
@@ -106,7 +126,11 @@ recovery cannot resume a memory stop. Existing container hard limits and memory
 usage remain separate diagnostics, not a predictive per-container memory stop.
 The level mapping follows Apple's [XNU sysctl conversion](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_memorystatus_notify.c),
 which emits dispatch pressure flags. This masked Darwin sysctl is not a promised
-stable public API; a missing or changed response blocks the run.
+stable public API; a missing or changed response blocks the Darwin run. Linux
+instead checks PSI, available memory/swap and visible cgroup limits/events;
+missing required platform evidence also blocks the run. See
+[the checkpoint safety contract](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#cpu-and-memory-safety-and-evidence)
+for the platform-specific thresholds and scope.
 
 The resource sampler runs only while the foreground checkpoint owns its lock.
 It uses bounded read-only commands and an owner-only, no-follow journal capped
@@ -118,7 +142,8 @@ read-only check does not start Docker, collectors, database work or a scheduler:
 python3 cre_resource_usage.py --out-dir /tmp/cre-resource-check --duration-seconds 20
 ```
 
-Host CPU includes every application. Owned process CPU from `ps` is a lifetime
+CPU includes every application visible to the measured host; under WSL this
+is the Linux VM, excluding unrelated Windows applications. Owned process CPU from `ps` is a lifetime
 average, not interval CPU; RSS aggregates can count shared pages more than once.
 macOS free, inactive, wired and compressed page categories are reported directly.
 Free pages alone do not establish usable RAM, and host RAM is not Docker VM RAM.

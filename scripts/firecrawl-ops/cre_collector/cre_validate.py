@@ -28,6 +28,23 @@ from cre_ingest import (
 )
 from cre_source_policy import load_source_policy
 
+FULL_VALIDATION_PROFILE = "full"
+CHECKPOINT_PREFLIGHT_PROFILE = "checkpoint-preflight"
+VALIDATION_AUDIT_SCOPES = {
+    FULL_VALIDATION_PROFILE: "full_standalone_post_ingest_or_recovery",
+    CHECKPOINT_PREFLIGHT_PROFILE: "checkpoint_before_collection_only",
+}
+CHECKPOINT_PREFLIGHT_QUERY_NAMES = (
+    "lifecycle_schema_contract",
+    "source_counts",
+    "duplicates",
+    "bad_child_urls",
+    "primary_child_conflicts",
+    "orphans",
+    "quality_by_source",
+    "child_counts",
+)
+
 SOURCE_KEY_SQL = source_key_sql()
 
 # Raw payloads may be stored flat, as a merged sale/lease pass, or beneath the
@@ -919,6 +936,98 @@ def parse_tsv(output):
     return rows
 
 
+def queries_for_profile(
+    profile=FULL_VALIDATION_PROFILE, *, expected_artifact_run_key=None
+):
+    """Select unchanged SQL; reduced preflight never substitutes for readback."""
+    if not isinstance(profile, str) or profile not in VALIDATION_AUDIT_SCOPES:
+        raise ValueError("unknown validation profile")
+    if profile == CHECKPOINT_PREFLIGHT_PROFILE:
+        if expected_artifact_run_key is not None:
+            raise ValueError("artifact recovery requires the full validation profile")
+        if not set(CHECKPOINT_PREFLIGHT_QUERY_NAMES).issubset(QUERIES):
+            raise ValueError("checkpoint preflight query definitions are incomplete")
+        return {
+            name: sql
+            for name, sql in QUERIES.items()
+            if name in CHECKPOINT_PREFLIGHT_QUERY_NAMES
+        }
+    queries = dict(QUERIES)
+    queries["historical_primary_child_conflicts"] = (
+        HISTORICAL_PRIMARY_CHILD_CONFLICTS_QUERY
+    )
+    if expected_artifact_run_key:
+        queries["artifact_run_jobs"] = artifact_run_jobs_query(
+            expected_artifact_run_key
+        )
+    return queries
+
+
+def _require_query_families(rows, expected):
+    if (
+        not isinstance(rows, dict)
+        or set(rows) != set(expected)
+        or any(
+            not isinstance(value, list)
+            or any(not isinstance(row, dict) for row in value)
+            for value in rows.values()
+        )
+    ):
+        raise ValueError("validation query families are incomplete or malformed")
+
+
+def _report_profile(report):
+    # Existing full reports predate profile metadata and remain readable.
+    if not isinstance(report, dict):
+        raise TypeError("validation report must be an object")
+    profile = report.get("validation_profile", FULL_VALIDATION_PROFILE)
+    if not isinstance(profile, str) or profile not in VALIDATION_AUDIT_SCOPES:
+        raise ValueError("unknown validation report profile")
+    if ("validation_profile" in report or "audit_scope" in report) and report.get(
+        "audit_scope"
+    ) != VALIDATION_AUDIT_SCOPES[profile]:
+        raise ValueError("validation report audit scope does not match its profile")
+    return profile
+
+
+def require_checkpoint_preflight_report(report, *, expected_profile=None):
+    """Fail closed on every before-report family consumed by checkpoints."""
+    profile = _report_profile(report)
+    if expected_profile is not None and profile != expected_profile:
+        raise ValueError("validation report does not match the requested profile")
+    queries = report.get("queries")
+    if report.get("ok") is not True or not isinstance(queries, dict):
+        raise ValueError("checkpoint preflight report is unavailable")
+    required = set(CHECKPOINT_PREFLIGHT_QUERY_NAMES)
+    if not required.issubset(queries):
+        raise ValueError(
+            "checkpoint preflight report is missing required query families"
+        )
+    _require_query_families({name: queries[name] for name in required}, required)
+    if profile == CHECKPOINT_PREFLIGHT_PROFILE and set(queries) != required:
+        raise ValueError("checkpoint preflight report has an unexpected query scope")
+    if profile == FULL_VALIDATION_PROFILE:
+        require_full_validation_report(report)
+    return profile
+
+
+def require_full_validation_report(report):
+    """A declared reduced report cannot serve as full or recovery evidence."""
+    if _report_profile(report) != FULL_VALIDATION_PROFILE:
+        raise ValueError("a full validation report is required")
+    if "validation_profile" in report or "audit_scope" in report:
+        queries = report.get("queries")
+        expected = set(QUERIES)
+        if isinstance(queries, dict) and "artifact_run_jobs" in queries:
+            expected.add("artifact_run_jobs")
+        _require_query_families(queries, expected)
+        historical = report.get("historical_primary_child_conflicts")
+        if not isinstance(historical, list) or any(
+            not isinstance(row, dict) for row in historical
+        ):
+            raise ValueError("full validation historical diagnostic is incomplete")
+
+
 def _run_psql_script(psql, db_url, script, *, variables=None):
     """Run a closed SQL script without a parent-to-psql stdin pipe."""
     script_path = None
@@ -1306,6 +1415,13 @@ def render_markdown(report):
         f"Credentials source file: `{env_path}`. Values were not printed.",
         "",
     ]
+    if report.get("validation_profile") == CHECKPOINT_PREFLIGHT_PROFILE:
+        parts.extend(
+            [
+                "Reduced checkpoint before-collection audit only. This is not full validation or freshness proof.",
+                "",
+            ]
+        )
     if report.get("psql_warnings"):
         parts.extend(["## psql Warnings", ""])
         for warning in report["psql_warnings"]:
@@ -1354,7 +1470,9 @@ def render_markdown(report):
         "artifact_run_jobs": "Artifact Run Jobs",
     }
     for key in report["queries"]:
-        parts.extend([f"## {labels[key]}", "", markdown_table(report["queries"][key]), ""])
+        parts.extend(
+            [f"## {labels[key]}", "", markdown_table(report["queries"][key]), ""]
+        )
     if "historical_primary_child_conflicts" in report:
         parts.extend(
             [
@@ -1371,7 +1489,9 @@ def render_markdown(report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    parser.add_argument(
+        "--env-file", default=None, help="env file holding POSTGRES_URL*"
+    )
     parser.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -1384,36 +1504,41 @@ def main():
     )
     parser.add_argument("--out", default=None, help="optional output path")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    parser.add_argument(
+        "--profile",
+        choices=tuple(VALIDATION_AUDIT_SCOPES),
+        default=FULL_VALIDATION_PROFILE,
+        help="full by default; checkpoint-preflight is a reduced before-collection audit only",
+    )
     args = parser.parse_args()
+    try:
+        queries = queries_for_profile(
+            args.profile, expected_artifact_run_key=args.expected_artifact_run_key
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     db_url, env_path = load_db_url(args.env_file)
     assert_expected_database_target(db_url, args.expected_db_target_sha256)
     psql = find_psql()
     report = {
         "ok": True,
+        "validation_profile": args.profile,
+        "audit_scope": VALIDATION_AUDIT_SCOPES[args.profile],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "env_file": env_path,
         "queries": {},
         "query_timings": {},
         "psql_warnings": [],
     }
-    queries = dict(QUERIES)
-    queries["historical_primary_child_conflicts"] = (
-        HISTORICAL_PRIMARY_CHILD_CONFLICTS_QUERY
-    )
-    if args.expected_artifact_run_key:
-        try:
-            queries["artifact_run_jobs"] = artifact_run_jobs_query(
-                args.expected_artifact_run_key
-            )
-        except ValueError as exc:
-            parser.error(str(exc))
     report["queries"], report["query_timings"], stderr = run_queries_with_timings(
         psql, db_url, queries
     )
-    report["historical_primary_child_conflicts"] = report["queries"].pop(
-        "historical_primary_child_conflicts", []
-    )
+    _require_query_families(report["queries"], queries)
+    if args.profile == FULL_VALIDATION_PROFILE:
+        report["historical_primary_child_conflicts"] = report["queries"].pop(
+            "historical_primary_child_conflicts"
+        )
     warning = normalize_warning(stderr)
     if warning:
         report["psql_warnings"].append(warning)
