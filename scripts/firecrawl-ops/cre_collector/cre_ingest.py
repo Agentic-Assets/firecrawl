@@ -5395,6 +5395,36 @@ def parse_postgres_uri_query(query):
     return pairs
 
 
+def _supabase_pooler_tenant(parsed, query_pairs):
+    """Bind the project selected by Supavisor, independently of role/password."""
+    # Supavisor can route through startup options.reference or .cluster. users.
+    # These alternate routes are outside this single-project checkpoint contract.
+    if any(key.lower() == "options" and value for key, value in query_pairs):
+        raise ValueError("Supabase pooler startup options may override project routing")
+    users = []
+    if parsed.username is not None:
+        users.append(strict_uri_unquote(parsed.username, label="PostgreSQL URL username"))
+    query_users = [value for key, value in query_pairs if key.lower() == "user"]
+    if len(query_users) > 1:
+        raise ValueError("Supabase pooler URL has repeated user routing parameters")
+    users.extend(query_users)
+    if not users:
+        raise ValueError("Supabase pooler URL requires an explicit project-qualified user")
+    tenants = set()
+    for user in users:
+        if ".cluster." in user.lower():
+            raise ValueError("Supabase pooler cluster routing is not supported")
+        role, separator, tenant = user.rpartition(".")
+        if not role or not separator or not re.fullmatch(r"[a-z]{20}", tenant):
+            raise ValueError("Supabase pooler user must end with a valid project reference")
+        if any(ord(character) < 32 or ord(character) == 127 for character in user):
+            raise ValueError("Supabase pooler user contains a control character")
+        tenants.add(tenant)
+    if len(tenants) != 1:
+        raise ValueError("Supabase pooler URL contains conflicting project routing")
+    return tenants.pop()
+
+
 def database_target_fingerprint_from_url(db_url):
     """Return a credential-free hash for one unambiguous PostgreSQL URI target."""
     parsed = urlsplit(db_url)
@@ -5404,9 +5434,10 @@ def database_target_fingerprint_from_url(db_url):
     decoded_hostname = strict_uri_unquote(parsed.hostname, label="PostgreSQL URL host")
     if "," in authority or "," in decoded_hostname:
         raise ValueError("multi-host PostgreSQL URLs are not supported")
+    query_pairs = parse_postgres_uri_query(parsed.query)
     override_keys = {
         key.lower()
-        for key, _value in parse_postgres_uri_query(parsed.query)
+        for key, _value in query_pairs
         if key.lower() in DATABASE_TARGET_OVERRIDE_QUERY_KEYS
     }
     if override_keys:
@@ -5428,6 +5459,18 @@ def database_target_fingerprint_from_url(db_url):
     else:
         fingerprint_host = decoded_hostname.lower().rstrip(".")
     target = f"{fingerprint_host}:{port}/{database}"
+    if (
+        not fingerprint_host.startswith(("/", "@"))
+        and ":" not in fingerprint_host
+        and fingerprint_host.endswith(".pooler.supabase.com")
+    ):
+        # A shared host/database does not identify a project: Supavisor routes
+        # role.PROJECT_REF to the tenant. Keep legacy direct-target hashes intact.
+        tenant = _supabase_pooler_tenant(parsed, query_pairs)
+        target = json.dumps(
+            ["supabase-pooler-v1", fingerprint_host, port, database, tenant],
+            separators=(",", ":"),
+        )
     return {
         "algorithm": "sha256",
         "value": hashlib.sha256(target.encode("utf-8")).hexdigest(),
