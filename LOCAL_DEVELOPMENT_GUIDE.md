@@ -2,6 +2,11 @@
 
 This guide describes this fork's local self-hosted setup: Docker Compose, the v2 API, local agent skills, and guarded operator handoffs for model or OCR changes. The Mac quickstart below uses OrbStack. For Windows, use the [Docker Desktop onboarding guide](docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md); its host settings and PowerShell commands are separate from the Mac workflow.
 
+For CRE PostgreSQL failures from Ubuntu/WSL, use the
+[Supabase connection troubleshooting guide](docs/firecrawl-ops/references/wsl-supabase-connection-troubleshooting.md):
+IPv6 routing, IPv4 session pooling, verified TLS and checkpoint target identity
+are separate from local Firecrawl health.
+
 ## Fresh Clone Quickstart
 
 Use this path on a new Mac or for a business partner joining the project.
@@ -134,9 +139,14 @@ Useful commands:
 docker compose ps
 docker compose logs api --tail 200
 docker compose logs playwright-service --tail 200
-docker compose up -d --force-recreate api
-docker compose down
+# Stop only after active work/queues have settled; preserves containers.
+docker compose stop
 ```
+
+The core queue/database containers have no durable data volumes. `down`
+removes containers, and recreation can discard their state. Existing live-stack
+rebuilds/recreation and model/OCR changes require their operator maintenance
+procedure; a docs-only pull does not require them.
 
 ## 2. Env Files
 

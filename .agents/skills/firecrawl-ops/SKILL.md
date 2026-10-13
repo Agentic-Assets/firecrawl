@@ -41,9 +41,15 @@ the guards measure the Linux VM and visible cgroups, not aggregate Windows host
 CPU or RAM. Keep the WSL/container ceilings and use Ubuntu with an ext4 checkout
 for the POSIX runner. CRE offline tests require a separate no-hardlinks clone;
 Linux verification does not prove native Windows or native Mac runtime parity.
-The Windows setup did not rerun the native Mac runtime. Follow the founder
-review gate on AGENTIC-3746 and the separate production cutover gates; do not
+The Windows setup did not rerun the native Mac runtime. The Linux safety port
+merged after founder approval in PR108. Follow the separate production cutover
+gates; do not
 bypass guards, enable a scheduler or perform production writes for onboarding.
+
+For CRE database transport failures, use
+[WSL Supabase connection troubleshooting](references/wsl-supabase-connection-troubleshooting.md).
+It distinguishes IPv6 routing, approved IPv4 session pooling, verified TLS,
+CLI API access and checkpoint tenant identity from full-refresh acceptance.
 
 1. Apply `set_cre_resource_profile.sh apply --with-pids`, review `show`, then
    recreate `api` and `playwright-service`.

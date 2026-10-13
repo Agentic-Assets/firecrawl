@@ -6,8 +6,9 @@
 > historical records, not authorization to reactivate that writer.
 >
 > **Current operational handoff:** For supervised listing refreshes, use the
-> strict-refresh procedure below and the dated status ledger at
-> `../../../tasks/2026-07-29-cre-complete-freshness-refresh/refresh-summary.md`.
+> strict-refresh procedure below and the current execution evidence on
+> [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
+> Dated files under `tasks/` are historical evidence, not a live status ledger.
 > The July 11 operator runbook remains historical scheduler-recovery and
 > OM-canary context only. Always obtain live scheduler, lock, manifest, and
 > database readback evidence before acting.
@@ -27,9 +28,13 @@ its date. Never treat a historical launchd statement as live proof.
 ```bash
 cd scripts/firecrawl-ops/cre_collector
 bash cre_status.sh                    # read-only scheduler and marker preflight
-python3 -m pytest tests/ -q           # obtain the current pytest count
-npm run test:unit                     # obtain the current TypeScript count
+# Ubuntu/WSL uses external scheduler mode instead of the macOS command above:
+# bash cre_status.sh --scheduler external
 ```
+
+Obtain test counts only from a genuine standalone `git clone --no-hardlinks`,
+never the runtime checkout or its worktrees. Follow the dependency-complete
+[isolated verification recipe in SETUP.md](SETUP.md#isolated-verification).
 
 ## Strict listing refresh
 
@@ -121,7 +126,9 @@ CPU/RAM or unrelated Windows applications, and cgroup namespaces may hide
 ancestors. Keep the bounded `.wslconfig` and container hard limits, use an ext4
 checkout, and supervise foreground collection. This guard port does not
 authorize production cutover, simultaneous Mac/Windows writers, or scheduling.
-AGENTIC-3746 requires founder review of the safety PR before merge.
+The Linux safety port merged after founder approval in
+[PR108](https://github.com/Agentic-Assets/firecrawl/pull/108); the production
+handoff and scheduler gates remain separate.
 
 Linux telemetry definitions follow the kernel's [proc filesystem](https://docs.kernel.org/filesystems/proc.html),
 [PSI](https://docs.kernel.org/accounting/psi.html), and
@@ -133,10 +140,12 @@ foreground run, `--max-host-cpu-percent 90 --cpu-sustain-seconds 10
 --cpu-sample-seconds 2` leaves more room for owned-process cleanup. Docker jobs
 may continue after a client interrupt; verify backend settlement separately.
 
-Memory protection uses the whole-host pressure level, not free RAM percentage
-or old swap occupancy. Per-container usage remains diagnostic, alongside any
-verified configured hard limits. It does not predict a container OOM or Docker
-VM exhaustion while host pressure remains normal.
+On macOS, memory protection uses whole-host pressure rather than free RAM
+percentage or old swap occupancy. Container usage remains diagnostic on that
+path; normal Mac host pressure does not predict a Docker VM/container OOM.
+Linux instead uses the PSI, available-memory/swap and visible cgroup policy
+above, including percentage thresholds. Under WSL those samples cover the
+Linux VM and visible cgroups, not aggregate Windows memory.
 
 This is a safe stop with an exact resume point, not a background monitor or an
 automatic pause/resume service. `logs/host-cpu-guard.jsonl` records samples;
@@ -1169,7 +1178,7 @@ Read these in order:
 2. `scripts/firecrawl-ops/CLAUDE.md`
 3. `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
 4. This file
-5. `BROKERAGE_STATUS_2026-06-12.md` (live per-broker coverage and counts)
+5. `BROKERAGE_STATUS_2026-06-12.md` (historical per-broker snapshot; obtain current coverage/counts from live readback)
 6. `docs/firecrawl-ops/references/cre-intelligence-system-design.md` (canonical architecture + go-forward monitoring plan, section 14)
 7. `docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data: views, SQL, env, quick start)
 8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` (reusable per-source completion process)
@@ -1182,10 +1191,11 @@ Historical buildout/validation detail (handoff log, lessons, validation
 snapshots, egress and security audits) lives in `archive/`; see
 `archive/README.md` for the index and the durable nuggets each file still holds.
 
-**Fresh machine (new clone, Mac mini, or this MacBook Pro)?** Start with
+**Fresh machine (new clone, Mac, or Ubuntu/WSL)?** Start with
 `SETUP.md` and run `bash cre_setup.sh` (one-command preflight + bootstrap:
-toolchain, deps, env, stack, offline smoke). Then continue below.
-
+toolchain, deps, env, API readiness, bounded public Interra inventory GET and
+database-free dry-run ingestion). `--check` skips installation and collection;
+its API check is GET-only readiness, not scrape or database transport proof.
 Then run:
 
 ```bash
@@ -1193,7 +1203,9 @@ cd <repo>                         # the firecrawl clone root on this machine
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 cd scripts/firecrawl-ops/cre_collector
 bash cre_setup.sh --check        # read-only health snapshot (skip if you just ran full setup)
-bash cre_status.sh               # run-health heartbeat (schedules, last runs, staleness)
+bash cre_status.sh               # macOS scheduler/artifact preflight
+# On Ubuntu/WSL, replace the command above with:
+# bash cre_status.sh --scheduler external
 npm run typecheck
 python3 -m py_compile cre_ingest.py
 npm run validate:supabase -- --out /tmp/cre_validate_latest.md

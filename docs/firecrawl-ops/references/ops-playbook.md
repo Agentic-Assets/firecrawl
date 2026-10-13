@@ -1,6 +1,7 @@
 # Firecrawl Ops Playbook
 
-Verified locally with OrbStack after syncing `firecrawl/firecrawl:main`; fresh-clone onboarding reviewed on 2026-05-25.
+For macOS use OrbStack; for Windows use Docker Desktop's WSL2 backend and
+the [Windows onboarding guide](windows-docker-desktop-onboarding.md).
 
 ## Fresh clone
 For a new Mac or business partner setup, follow:
@@ -11,22 +12,28 @@ cd firecrawl
 docker context show
 scripts/firecrawl-ops/install_git_hooks.sh
 scripts/firecrawl-ops/sync_agent_skills.sh
-docker compose build
-docker compose up -d
+docker compose build api playwright-service nuq-postgres
+docker compose up -d api
 scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
 Expected Docker context is `orbstack`. If not, open OrbStack and run `docker context use orbstack`. See `docs/firecrawl-ops/references/partner-orbstack-onboarding.md` for the longer checklist.
 
-## Start / restart
+## Start / stop
 ```bash
-cd ~/Github/agentic-assets/firecrawl
-docker compose up -d
-# after model profile or API env changes
-docker compose up -d --force-recreate api
-# full restart
-docker compose down && docker compose up -d
+cd /path/to/firecrawl
+docker compose up -d api
+# After current work/queues have settled:
+docker compose stop
 ```
+
+Keep the current Compose override/file selection. `up -d api` selects the
+five-service core and avoids optional FoundationDB. `stop` preserves containers;
+`down` removes them. The development Redis/RabbitMQ/NuQ containers have no
+durable data volumes, so removal/recreation can discard queue/database state.
+Rebuilds, recreation and model/OCR transitions on an existing live stack are
+deliberate maintenance, subject to the operator handoff/idleness rules; they
+are not an ordinary restart command.
 
 ## Health check
 ```bash
@@ -43,9 +50,14 @@ work, read `scripts/firecrawl-ops/cre_collector/START_HERE.md` and use
 `cre_checkpoint_series.py --sources all` for the full registry. Before a
 resource-sensitive run, apply the reversible CRE resource profile and recreate
 the API and Playwright services. The checkpoint manifest, exact generation
-readback, canonical lock, live `cre_status.sh` result, and CPU evidence
-(`host-cpu-guard.jsonl`, plus `cpu-incidents.jsonl` when present) are the
-operational record.
+readback, canonical lock, live `cre_status.sh` result, and resource evidence
+(`host-cpu-guard.jsonl`, `host-memory-guard.jsonl`, plus `cpu-incidents.jsonl`
+when present) are the operational record.
+
+For a working API but failing CRE PostgreSQL connection, use
+[WSL Supabase connection troubleshooting](wsl-supabase-connection-troubleshooting.md).
+CLI Management API access, collector transport, disposable ingest contracts
+and a completed live refresh are separate checks.
 
 ## Logs
 ```bash

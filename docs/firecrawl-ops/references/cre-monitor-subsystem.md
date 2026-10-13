@@ -192,7 +192,8 @@ is unchanged and remains the source of truth for listing content.
 
 ## Tests
 
-`tests/` (run `python3 -m pytest tests/ -q` from `cre_collector/`) covers the
+`tests/` (run from `cre_collector/` in a genuine standalone
+`git clone --no-hardlinks`, following [SETUP](../../../scripts/firecrawl-ops/cre_collector/SETUP.md#isolated-verification)) covers the
 monitor and gate, including the neutral-update set clause, the change-guard
 (`IS DISTINCT FROM`), REAPPEARED idempotency, the date-range parse guard, and
 the gate's folded-coverage rollup.

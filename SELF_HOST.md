@@ -14,6 +14,7 @@ the services and configuration match the revision you checked out.
 | Decide whether self-hosting fits and run the first scrape | [Public self-hosting guide](https://docs.firecrawl.dev/contributing/self-host) |
 | Set up this fork on Windows with Docker Desktop | [Windows Docker Desktop onboarding](./docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md) |
 | Set up this fork on macOS with OrbStack | [Local development guide](./LOCAL_DEVELOPMENT_GUIDE.md) |
+| Diagnose the CRE database connection from Ubuntu/WSL | [WSL Supabase connection troubleshooting](./docs/firecrawl-ops/references/wsl-supabase-connection-troubleshooting.md) |
 | Check which variables and services exist at this revision | [Root Compose configuration](./docker-compose.yaml) |
 | Adapt a Kubernetes deployment | [Kubernetes manifests](./examples/kubernetes/cluster-install/) or [Helm chart](./examples/kubernetes/firecrawl-helm/) |
 | Change Firecrawl product code | [Running Locally](https://docs.firecrawl.dev/contributing/guide), then the [contribution guide](./CONTRIBUTING.md) |
@@ -46,7 +47,11 @@ Do not use `apps/api/.env.example` as a drop-in Compose contract.
 
 At this revision, Compose runs the Firecrawl API and workers, Playwright, Redis,
 RabbitMQ, NuQ PostgreSQL, and FoundationDB services for the optional queue
-backend. Only the API is published to the host by default, on port `3002`.
+backend. The API is published on all host interfaces by default, on port `3002`;
+Playwright is also published, on loopback `127.0.0.1:3003`. For a local-only API,
+follow the loopback overlay procedure in the host onboarding guide. Select
+`docker compose up -d api` for the five-service core; starting every defined
+service also starts the optional FoundationDB backend.
 
 Self-hosting gives you source and infrastructure control. You also own
 security, availability, capacity, upgrades, data retention, and compliance.
