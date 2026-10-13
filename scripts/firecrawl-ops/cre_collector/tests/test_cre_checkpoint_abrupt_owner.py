@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import cre_checkpoint_refresh as refresh
 import pytest
+from cre_validate import CHECKPOINT_PREFLIGHT_QUERY_NAMES
 
 
 def configure_main(monkeypatch, tmp_path):
@@ -51,12 +52,18 @@ def configure_main(monkeypatch, tmp_path):
             Path(argv[argv.index("--out") + 1]).write_text(
                 json.dumps(
                     {
+                        "ok": True,
+                        "validation_profile": refresh.CHECKPOINT_PREFLIGHT_PROFILE,
+                        "audit_scope": refresh.VALIDATION_AUDIT_SCOPES[
+                            refresh.CHECKPOINT_PREFLIGHT_PROFILE
+                        ],
                         "queries": {
+                            **{name: [] for name in CHECKPOINT_PREFLIGHT_QUERY_NAMES},
                             "lifecycle_schema_contract": [
                                 {"contract_item": name, "status": "ok"}
                                 for name in refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS
-                            ]
-                        }
+                            ],
+                        },
                     }
                 )
             )
@@ -71,6 +78,7 @@ import json, os, sys, time
 from contextlib import nullcontext
 from pathlib import Path
 import cre_checkpoint_refresh as r
+from cre_validate import CHECKPOINT_PREFLIGHT_QUERY_NAMES
 root, phase, shape = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 r.git_identity = lambda: ("b" * 40, False)
 r.checkpoint_lock_dir = lambda _: root / ".cre.lock"
@@ -111,7 +119,10 @@ def command(argv, log, **kwargs):
     if phase in {"during_dispatch", "during_registration"}:
         return r._run_logged_command([sys.executable, str(root / "native.py"), shape], log)
     if "--out" in argv:
-        Path(argv[argv.index("--out") + 1]).write_text(json.dumps({"queries": {
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps({
+            "ok": True, "validation_profile": r.CHECKPOINT_PREFLIGHT_PROFILE,
+            "audit_scope": r.VALIDATION_AUDIT_SCOPES[r.CHECKPOINT_PREFLIGHT_PROFILE],
+            "queries": {**{name: [] for name in CHECKPOINT_PREFLIGHT_QUERY_NAMES},
             "lifecycle_schema_contract": [
                 {"contract_item": name, "status": "ok"}
                 for name in r.LIFECYCLE_SCHEMA_CONTRACT_ITEMS

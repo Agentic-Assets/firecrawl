@@ -13,6 +13,7 @@ from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
 import pytest
+from cre_validate import CHECKPOINT_PREFLIGHT_QUERY_NAMES
 
 ATTEMPT = "2026-07-29T12:00:00+00:00"
 
@@ -83,7 +84,17 @@ def lifecycle_schema_contract_validation(*, failed_item=None):
         }
         for item in refresh.LIFECYCLE_SCHEMA_CONTRACT_ITEMS
     ]
-    return {"queries": {"lifecycle_schema_contract": rows}}
+    return {
+        "ok": True,
+        "validation_profile": refresh.CHECKPOINT_PREFLIGHT_PROFILE,
+        "audit_scope": refresh.VALIDATION_AUDIT_SCOPES[
+            refresh.CHECKPOINT_PREFLIGHT_PROFILE
+        ],
+        "queries": {
+            **{name: [] for name in CHECKPOINT_PREFLIGHT_QUERY_NAMES},
+            "lifecycle_schema_contract": rows,
+        },
+    }
 
 
 def test_preflight_accepts_complete_migration_016_contract():

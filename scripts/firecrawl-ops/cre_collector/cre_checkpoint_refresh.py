@@ -76,7 +76,14 @@ from cre_performance_report import save_report
 from cre_resource_usage import observe_resource_usage
 from cre_runtime_observability import append_incident
 from cre_source_policy import load_source_policy
-from cre_validate import LIFECYCLE_SCHEMA_CONTRACT_ITEMS
+from cre_validate import (
+    CHECKPOINT_PREFLIGHT_PROFILE,
+    FULL_VALIDATION_PROFILE,
+    LIFECYCLE_SCHEMA_CONTRACT_ITEMS,
+    VALIDATION_AUDIT_SCOPES,
+    require_checkpoint_preflight_report,
+    require_full_validation_report,
+)
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
 REPO_ROOT = COLLECTOR_DIR.parents[2]
@@ -2487,7 +2494,12 @@ def build_validate_argv(
     *,
     expected_db_target_sha256: str | None = None,
     expected_artifact_run_key: str | None = None,
+    profile: str = FULL_VALIDATION_PROFILE,
 ) -> list[str]:
+    if not isinstance(profile, str) or profile not in VALIDATION_AUDIT_SCOPES:
+        raise ValueError("unknown validation profile")
+    if profile != FULL_VALIDATION_PROFILE and expected_artifact_run_key is not None:
+        raise ValueError("artifact recovery requires full validation")
     argv = [
         sys.executable,
         "cre_validate.py",
@@ -2502,6 +2514,8 @@ def build_validate_argv(
         argv.extend(["--expected-db-target-sha256", expected_db_target_sha256])
     if expected_artifact_run_key:
         argv.extend(["--expected-artifact-run-key", expected_artifact_run_key])
+    if profile != FULL_VALIDATION_PROFILE:
+        argv.extend(["--profile", profile])
     return argv
 
 
@@ -5104,6 +5118,7 @@ def recover_interrupted_ingest(
         )
     try:
         validation = _load_json(output)
+        require_full_validation_report(validation)
         probe_manifest = {
             "config": {"sources": [source]},
             "sources": {
@@ -5840,10 +5855,21 @@ def run_final_validation(
     if rc != 0:
         raise GlobalStageError(f"final validation failed (rc={rc})")
     result = _load_json(output)
+    try:
+        require_full_validation_report(result)
+    except (TypeError, ValueError) as exc:
+        raise GlobalStageError("final validation requires a full report") from exc
     before_rel = (manifest.get("preflight") or {}).get("validation_path")
     if not isinstance(before_rel, str):
         raise GlobalStageError("pre-refresh validation snapshot is missing")
     before = _load_json(run_dir / before_rel)
+    if "validation_profile" in before or "audit_scope" in before:
+        try:
+            require_checkpoint_preflight_report(before)
+        except (TypeError, ValueError) as exc:
+            raise GlobalStageError(
+                "pre-refresh validation profile is incomplete"
+            ) from exc
     quality = compare_validation_quality(before, result)
     absolute_quality = verify_absolute_validation_quality(result)
     readback = verify_validation_readback(run_dir, manifest, result)
@@ -5894,6 +5920,15 @@ def compare_validation_quality(
     before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Reject newly introduced hard defects or severe child-data loss."""
+    try:
+        if "validation_profile" in before or "audit_scope" in before:
+            require_checkpoint_preflight_report(before)
+        require_full_validation_report(after)
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "failures": ["validation report profile is incomplete or unsuitable"],
+        }
     before_queries = (
         before.get("queries") if isinstance(before.get("queries"), dict) else {}
     )
@@ -6044,6 +6079,13 @@ def verify_absolute_validation_quality(after: Mapping[str, Any]) -> dict[str, An
     economics remain.  Missing coordinates and other source-policy-permitted
     sparse fields are informational and intentionally do not appear here.
     """
+    try:
+        require_full_validation_report(after)
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "failures": ["absolute quality audit requires a full validation report"],
+        }
     queries = after.get("queries")
     failures: list[str] = []
     if not isinstance(queries, dict):
@@ -6738,6 +6780,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         expected_db_target_sha256=(
                             manifest_database_target_sha256(manifest)
                         ),
+                        profile=CHECKPOINT_PREFLIGHT_PROFILE,
                     ),
                     pre_validation_log,
                     env=safe_process_env(),
@@ -6755,6 +6798,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "validation_sha256": sha256_file(pre_validation),
                     }
                 )
+            try:
+                profile = require_checkpoint_preflight_report(
+                    pre_result,
+                    expected_profile=None
+                    if recorded_pre_hash
+                    else CHECKPOINT_PREFLIGHT_PROFILE,
+                )
+            except (TypeError, ValueError) as exc:
+                raise GlobalStageError(
+                    "pre-refresh validation profile is incomplete"
+                ) from exc
+            manifest["preflight"]["validation_profile"] = profile
+            manifest["preflight"]["validation_audit_scope"] = VALIDATION_AUDIT_SCOPES[
+                profile
+            ]
             manifest["preflight"]["lifecycle_schema_contract"] = (
                 require_lifecycle_schema_contract(pre_result)
             )
