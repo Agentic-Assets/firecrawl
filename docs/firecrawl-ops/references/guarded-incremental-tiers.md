@@ -145,6 +145,51 @@ Scheduler's **End** action does not prove Linux work stopped:
 The independent Linux deadline still applies to a surviving owner. Abrupt
 Linux owner death leaves the durable fence armed.
 
+### Cooperative stop for one exact Linux incremental run
+
+Part of [AGENTIC-4163](https://linear.app/agenticassets/issue/AGENTIC-4163).
+After a reviewed deployment containing this helper, the one-shot Linux CLI
+prints its run directory before starting native work. Copy that exact run ID;
+there is no "latest run" selector. Request a stop from Windows with:
+
+```powershell
+& .\scripts\firecrawl-ops\cre_collector\windows\Stop-CreGuardedTier.ps1 `
+  -RunId '2026-10-13T230000Z-0123456789ab' -WaitSeconds 45
+```
+
+The example ID is a placeholder. `-CheckOnly` prints the invocation without
+starting WSL or validating an owner. The wrapper forwards to
+`python3 cre_stop_guarded_tier.py --run-id ID --wait-seconds 45` in the selected
+Ubuntu clone. Stop requests skip Windows CPU admission. Wait is bounded to
+1–120 seconds; this does not preempt a blocked kernel call.
+
+The helper checks the private receipt, process birth/boot/namespace/user,
+canonical lease and authority inode/token/generation, and the owner's actual
+held flock descriptor. It sends one cooperative SIGTERM through a Linux pidfd,
+then waits on the same handle for owner exit and matching terminal evidence.
+It never signals a bare numeric PID or process group, escalates to SIGKILL,
+stops Docker, or changes a recovery barrier. The existing owner remains
+responsible for its bounded child-group cleanup and watchdog shutdown.
+
+JSON output distinguishes `completed` from
+`terminal_local_settlement_confirmed`, with the actual `terminal_status`,
+`signal_sent`, `owner_exited`, `local_settlement`, and `recovery_fence` fields.
+Exit 0 requires a matching terminal receipt, stopped watchdogs, and confirmed
+local settlement or a verified pre-native `not_started` state. Natural completion racing the request is reported
+as completion, without claiming that the request caused cancellation. Exit 1
+means refusal before a verified stop; exit 2 means timeout or unverified
+terminal/settlement evidence. Inspect the retained receipt and recovery state.
+Known interrupted work retains its recovery fence even when local child groups
+settled. Local settlement does not prove remote provider cancellation or SQL
+rollback, and the helper never clears a fence or authorizes a retry.
+
+Only the actual one-shot Linux process entrypoint publishes this capability.
+Imported/library calls, Mac runs, old receipts and the already-running full
+checkpoint series have no retrofitted stop capability. Missing pidfd support,
+stale or malformed evidence, ownership changes and permission failures refuse
+the request. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
+End and forced `wsl.exe` termination remain insufficient settlement evidence.
+
 ## Scheduling remains a separate acceptance step
 
 The proposed deterministic surface is Windows Task Scheduler calling this

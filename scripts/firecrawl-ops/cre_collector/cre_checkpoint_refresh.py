@@ -163,6 +163,24 @@ def _cleanup_unknown_in_chain(error: BaseException | None) -> bool:
     return False
 
 
+def command_local_settlement(error: BaseException) -> dict | None:
+    """Keep positive local cleanup evidence through later observer/I/O errors."""
+    if _cleanup_unknown_in_chain(error):
+        return None
+    pending = [error]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        evidence = getattr(current, "cre_local_settlement", None)
+        if isinstance(evidence, dict) and evidence.get("state") == "confirmed":
+            return evidence
+        pending.extend((current.__context__, current.__cause__))
+    return None
+
+
 def _require_completed_group_settlement(group: OwnedProcessGroup) -> None:
     """After leader reap, only observe disappearance; never signal its PGID."""
     try:
@@ -3290,6 +3308,16 @@ def _run_logged_command(
                 )
                 reaped_after_interrupt = settlement.settled
                 local_settlement_proved = settlement.settled
+                if settlement.settled:
+                    # Positive local evidence, independent of later log/observer
+                    # failures. Never an assertion about remote rollback.
+                    evidence = {
+                        "state": "confirmed",
+                        "groups": list(settlement.groups),
+                        "errors": list(settlement.errors),
+                    }
+                    interrupted.cre_local_settlement = evidence
+                    cleanup_interrupt.cre_local_settlement = evidence
                 record_interrupt(
                     f"[{utc_now()}] process settlement: {json.dumps({'groups': settlement.groups, 'errors': settlement.errors})}\n"
                 )
