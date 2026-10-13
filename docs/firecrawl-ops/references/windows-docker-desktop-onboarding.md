@@ -2,6 +2,24 @@
 
 This guide sets up this fork's five-service Firecrawl core on Windows. It does not change the MacBook's OrbStack workflow, model routing, OCR configuration, or CRE production runtime. Keep verified computer-specific paths, installed versions, and hardware facts in Context Engineering's gitignored `local/machine.md`.
 
+## Backend choices
+
+The verified baseline here uses WSL 2, Docker Desktop's default Windows
+backend, with a separate Ubuntu ext4 workspace for the POSIX collector.
+[Docker VMM](https://docs.docker.com/desktop/features/vmm/) is also available
+on Windows starting with Desktop 4.86; Docker labels it Beta as of October 13,
+2026.
+Docker documents improved file I/O and idle-memory reclamation, but those are
+not a measured CRE workload speedup. Keep the verified WSL baseline until a
+separate bounded comparison proves resource, networking, file-sharing and
+collector compatibility. Switching the container backend does not itself
+remove the collector's Linux/macOS requirement.
+
+The `desktop-linux` and `default` entries in **Settings > Builders** are
+[BuildKit builders](https://docs.docker.com/build/builders/), not the VMM
+selection or evidence of two independent VMs. Inspect the actual engine and
+process/resource measurements before attributing load to a builder entry.
+
 ## Prerequisites and host settings
 
 - Docker Desktop for Windows, matching the CPU architecture. AMD64 supports both Intel and AMD x64 PCs; ARM64 is for Windows on ARM.
@@ -209,3 +227,41 @@ in [PR108](https://github.com/Agentic-Assets/firecrawl/pull/108); production
 cutover remains separately governed.
 
 For a bounded no-write collector probe, inspect the source adapter before choosing it. `--max-items` limits emitted listings, not necessarily inventory network requests: SVN/Buildout still enumerates the complete inventory first. Interra's authoritative inventory adapter performs one size/time-bounded request and can project a three-row sample for `cre_ingest.py --dry-run`. Keep sample artifacts private and do not confuse a truncated sample with full-source refresh acceptance.
+
+## Recurring Windows execution
+
+Routine acquisition does not need a continuously active AI agent. A
+deterministic Windows Task Scheduler task can invoke a foreground WSL job,
+retain the runner's locks/guards/logs, and expose status and failures. This is
+the proposed desktop execution surface under
+[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752), not an
+installed or approved scheduler. The alternative Codex heartbeat remains
+paused while the concrete choice and acceptance are reviewed.
+
+Prefer inexpensive incremental work over frequent full-registry sweeps: the
+proposed initial cadence is inventory checks twice daily, bounded detail
+enrichment every four hours, and a weekly full guarded sweep. JLL, JLL
+Investor, CBRE Deal Flow and Colliers are excluded from the cheap monitor;
+they need separate admitted detail cadences. Do not describe the incremental
+cadence as freshness for all 51 sources.
+
+Do not directly schedule the legacy monitor/enrich/weekly commands: their
+equivalent resource/cancellation protection remains an acceptance gate in the
+[tier guide](../../../scripts/firecrawl-ops/cre_collector/launchd/README.md).
+Use the proven guarded checkpoint path for a bounded pilot. A native task
+needs tested graceful Linux cancellation, no overlap, bounded readiness,
+reviewed deadlines and visible stop controls before activation. A Task
+Scheduler hard stop is not proof that Linux children or backend work stopped.
+
+Docker Desktop must be available in the task user's session. A locked screen
+and a signed-out session are different. WSL systemd services do not keep a
+stopped distro alive, so an internal timer is not an independent Windows wake
+or login mechanism. Check Windows host load as well as VM telemetry when
+admitting background work; Linux guards cannot observe unrelated Windows
+applications. Recorded approval of the exact surface, its registry entry and
+a tested bounded pilot are required before activating recurring production
+execution. Whole-registry completion remains a separate acceptance item.
+
+References: [Microsoft WSL systemd](https://learn.microsoft.com/en-us/windows/wsl/systemd),
+[Docker Windows permissions](https://docs.docker.com/desktop/setup/install/windows-permission-requirements/),
+and [Task Scheduler hard termination](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-allowhardterminate).
