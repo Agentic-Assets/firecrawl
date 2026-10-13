@@ -132,6 +132,33 @@ If the clone or the EQUIRE repo lives anywhere other than the `~/Documents`
 defaults, set `CRE_ENV_FILE`. The URL value is never printed; only the resolved
 file path appears in logs.
 
+On an IPv4-only network, use the project's **Session pooler** connection from
+Supabase's Connect panel (port `5432`), with the project-qualified username.
+The existing `POSTGRES_URL_NON_POOLING` key is preferred when present despite
+its historical name; it can hold a session-pooler URL. Do not leave an older
+value there while updating only `POSTGRES_URL`.
+
+Keep machine-specific credentials outside the checkout, for example
+`~/.config/cre/equire.env` with directory mode `0700` and file mode `0600`, and
+set `CRE_ENV_FILE` to that path. Provision through the approved local credential
+workflow; never copy another computer's env file or commit connection strings.
+Preserve each Mac's own connection settings.
+
+Use `sslmode=verify-full` with `sslrootcert` pointing to the Supabase CA downloaded
+from its Database settings. This verifies both the certificate chain and
+hostname. Ubuntu's default public CA store may not contain the Supabase CA.
+Keep `connect_timeout` bounded, and use the existing psql environment helpers
+so credentials stay out of process arguments. First verify a bounded read-only
+transaction and COPY OUT against the expected project; CLI Management API
+success alone does not prove PostgreSQL transport. Temporary-table/COPY IN
+contracts belong in a disposable local database before live ingestion.
+
+The shared-pooler fingerprint binds the project suffix, not the role/password.
+Changing connection endpoint or upgrading a historical pooled fingerprint
+requires a fresh checkpoint generation, not an edited resume manifest.
+See [Supabase connection guidance](https://supabase.com/docs/guides/database/connecting-to-postgres)
+and [SSL enforcement](https://supabase.com/docs/guides/platform/ssl-enforcement).
+
 ---
 
 ## Scheduling (launchd, gated)
