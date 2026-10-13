@@ -78,13 +78,17 @@ def test_empty_startup_options_do_not_change_target():
     ) == fingerprint(pooled(f"postgres.{PROJECT_A}"))
 
 
-def test_unix_socket_named_like_a_pooler_retains_direct_identity():
-    host = "/tmp/local.pooler.supabase.com"
+@pytest.mark.parametrize(
+    ("host", "encoded_host"),
+    [
+        ("/tmp/local.pooler.supabase.com", "%2Ftmp%2Flocal.pooler.supabase.com"),
+        ("@local.pooler.supabase.com", "%40local.pooler.supabase.com"),
+    ],
+)
+def test_unix_socket_named_like_a_pooler_retains_direct_identity(host, encoded_host):
     expected = hashlib.sha256(f"{host}:5432/postgres".encode()).hexdigest()
     assert (
-        fingerprint(
-            "postgresql://user:synthetic@%2Ftmp%2Flocal.pooler.supabase.com/postgres"
-        )["value"]
+        fingerprint(f"postgresql://user:synthetic@{encoded_host}/postgres")["value"]
         == expected
     )
 

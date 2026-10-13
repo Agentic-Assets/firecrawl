@@ -5460,7 +5460,7 @@ def database_target_fingerprint_from_url(db_url):
         fingerprint_host = decoded_hostname.lower().rstrip(".")
     target = f"{fingerprint_host}:{port}/{database}"
     if (
-        not fingerprint_host.startswith("/")
+        not fingerprint_host.startswith(("/", "@"))
         and ":" not in fingerprint_host
         and fingerprint_host.endswith(".pooler.supabase.com")
     ):
