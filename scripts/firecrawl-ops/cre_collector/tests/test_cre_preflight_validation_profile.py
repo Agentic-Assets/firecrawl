@@ -156,6 +156,8 @@ def test_every_missing_before_family_fails_closed(missing):
         "missing_metadata",
         "scope",
         "unknown_profile",
+        "null_profile",
+        "scope_only",
         "extra_family",
         "row_type",
         "unavailable",
@@ -172,6 +174,10 @@ def test_malformed_or_misdeclared_profile_is_refused(fault):
         ]
     elif fault == "unknown_profile":
         report["validation_profile"] = []
+    elif fault == "null_profile":
+        report["validation_profile"] = None
+    elif fault == "scope_only":
+        del report["validation_profile"]
     elif fault == "extra_family":
         report["queries"]["totals"] = []
     elif fault == "row_type":
@@ -182,6 +188,8 @@ def test_malformed_or_misdeclared_profile_is_refused(fault):
         validate.require_checkpoint_preflight_report(
             report, expected_profile=validate.CHECKPOINT_PREFLIGHT_PROFILE
         )
+    if fault != "missing_metadata":
+        assert refresh.compare_validation_quality(report, snapshot())["ok"] is False
 
 
 def test_legacy_full_snapshot_remains_compatible_but_cannot_fulfill_new_profile_request():

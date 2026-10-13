@@ -5863,7 +5863,7 @@ def run_final_validation(
     if not isinstance(before_rel, str):
         raise GlobalStageError("pre-refresh validation snapshot is missing")
     before = _load_json(run_dir / before_rel)
-    if before.get("validation_profile") is not None:
+    if "validation_profile" in before or "audit_scope" in before:
         try:
             require_checkpoint_preflight_report(before)
         except (TypeError, ValueError) as exc:
@@ -5921,7 +5921,7 @@ def compare_validation_quality(
 ) -> dict[str, Any]:
     """Reject newly introduced hard defects or severe child-data loss."""
     try:
-        if before.get("validation_profile") is not None:
+        if "validation_profile" in before or "audit_scope" in before:
             require_checkpoint_preflight_report(before)
         require_full_validation_report(after)
     except (TypeError, ValueError):
