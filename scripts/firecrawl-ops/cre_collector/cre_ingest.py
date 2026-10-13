@@ -2639,7 +2639,11 @@ def to_row(listing, brokers_by_idx, scraped_at):
     # artifact cannot write cre_listing_om_facts through this ingestor.
     om_facts = []
 
-    title = listing.get("name") or listing.get("headline") or listing.get("street")
+    title = (
+        clean_text(listing.get("name"))
+        or clean_text(listing.get("headline"))
+        or clean_text(listing.get("street"))
+    )
     desc = listing.get("description")
     markdown = listing.get("markdown")
     highlights = str_array_or_none(listing.get("highlights"))
