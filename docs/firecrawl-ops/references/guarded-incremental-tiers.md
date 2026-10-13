@@ -1,4 +1,4 @@
-Governed by [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752), implementation [AGENTIC-4141](https://linear.app/agenticassets/issue/AGENTIC-4141).
+Governed by [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752), implementation [AGENTIC-4141](https://linear.app/agenticassets/issue/AGENTIC-4141) and [AGENTIC-4154](https://linear.app/agenticassets/issue/AGENTIC-4154).
 
 # Guarded incremental CRE trials
 
@@ -13,18 +13,39 @@ their behavior; they do not acquire these new protections automatically.
 | Invocation | Provider work | Database work |
 | --- | --- | --- |
 | `monitor --source KEY` | Current inventory for that source, collector concurrency1 | None; monitor transforms the artifact in dry-run mode |
+| `monitor --source KEY --apply` | Same complete inventory check | Existing monitor audit job, index observations, events, neutral listing metadata and eligible enrichment queue entries |
 | `enrich --source KEY` | None | None; prints the proposed queue claim SQL |
 | `enrich --source KEY --apply` | Details for an exact-source queue batch | Claims, additive listing ingest, queue completion/retry accounting |
 
-Monitor `--apply` is refused. JLL, JLL Investor, CBRE Deal Flow and Colliers
+JLL, JLL Investor, CBRE Deal Flow and Colliers
 SalesTracker are excluded from inventory monitoring; use separately admitted
-checkpoint runs. Inventory observation does not refresh listing detail or
-enqueue new work. The enrichment SQL dry-run does not test rendering.
+checkpoint runs. The default inventory trial does not enqueue work. Neither
+inventory mode refreshes listing detail. The enrichment SQL dry-run does not
+test rendering.
+
+Explicit monitor apply reuses the existing transactional worker. It updates
+source-index observations/presence, records its audit job and events, and may
+update existing listings' `source_lastmod` and `canonical_key`. Those neutral
+updates can advance trigger-managed `updated_at`; that timestamp is not proof
+of fresh listing detail. It does not change listing status or deletion.
+
+Queueing has a narrower scope than general discovery: a first-ever source-index
+seed emits no events or queue entries. A newly enumerated identity without an
+existing listing row is counted as `enumerated_unmatched` and is not queued,
+even on later monitor passes. For existing listings, observed status and price
+fingerprint changes can queue enrichment; revision-only, text/image/document-only
+changes and reappearance alone do not automatically queue it. Full acquisition
+remains responsible for creating previously un-ingested listings.
 
 An applied enrichment uses the existing worker semantics, with an additional
 database target fingerprint checked before claims and passed to the ingest
 child. An uncertain bound-ingest failure retains claims for reconciliation.
-No mode enables status activation, mark-missing, baseline updates, OM extraction
+Applied monitor work similarly binds the database target before loading prior
+state or executing its transaction. Its summary is emitted before SQL execution:
+enqueue counts are proposed candidates, not committed inserts or net queue
+growth. Require terminal success and exact database readback for that proof.
+
+No mode enables status activation, listing mark-missing, coverage-baseline updates, OM extraction
 or DDL. No-write inventory success does not admit a source through the strict
 coverage gate or certify a full refresh.
 
@@ -68,16 +89,20 @@ python3 cre_guarded_tier.py enrich --source hanley --batch 2 \
 ```
 
 Adding `--apply` to the enrichment command performs real queue and listing
-writes. Require a permitted supervised additive trial, approved target,
+writes. Adding it to monitor performs the observation, neutral metadata and
+queue transaction described above. Require a permitted supervised trial, approved target,
 healthy existing services and exact artifact/database readback before doing
 that. Use the real generation artifact to assess data freshness and quality;
 a successful worker exit alone is not a production acceptance certificate.
+Do not run an applied trial while a full refresh owns the canonical lock.
 
 ## Protection and operator controls
 
 The Linux owner arms the existing canonical recovery fence before any native
 child, reuses checkpoint CPU/memory watchdogs and owns each subprocess group.
-The batch is capped at50, and the work deadline is30 to14400 seconds. Cleanup
+Enrichment claims are capped at50; monitor checks the complete selected-source
+inventory and its transaction is not limited by that batch parameter. The work
+deadline is30 to14400 seconds. Cleanup
 has the checkpoint's separate grace/join budgets; the work deadline does not
 preempt a blocked kernel call or certify cancellation of remote work.
 

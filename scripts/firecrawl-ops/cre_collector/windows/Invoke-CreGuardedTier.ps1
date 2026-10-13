@@ -27,7 +27,6 @@ if ($env:OS -ne 'Windows_NT') { throw 'Run this launcher on Windows.' }
 if (-not $CheckOnly -and (-not $Source -or -not $ExpectedSha)) {
     throw 'Source and ExpectedSha are required to start a tier.'
 }
-if ($Apply -and $Tier -ne 'enrich') { throw 'Monitor is observe-only.' }
 
 if (-not ('CreWindowsAdmission.Native' -as [type])) {
     Add-Type -TypeDefinition @'

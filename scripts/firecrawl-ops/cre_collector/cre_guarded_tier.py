@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run one explicitly selected incremental tier with checkpoint safety.
 
-Monitor is inventory acquisition plus a database-free monitor transform.
+Monitor defaults to inventory acquisition plus a database-free transform;
+explicit --apply admits the existing bound monitor transaction.
 Enrichment is SQL-only unless --apply is explicit. This foreground entrypoint
 does not install schedules, run weekly/daily backstops, or recover failed runs.
 Linux resource observations describe its kernel/VM, not the Windows host.
@@ -111,6 +112,23 @@ def build_commands(args: argparse.Namespace, run_dir: Path, target: str | None):
     """Fixed direct workers; no legacy shell, dispatcher, or lifecycle flags."""
     if args.tier == "monitor":
         artifact = run_dir / "monitor.json"
+        monitor = [
+            sys.executable,
+            str(COLLECTOR_DIR / "cre_monitor.py"),
+            "--in",
+            str(artifact),
+            "--quiet",
+            "--out",
+            str(run_dir / "monitor-summary.json"),
+        ]
+        if args.apply:
+            if target is None or not re.fullmatch(r"[0-9a-f]{64}", target):
+                raise GuardedTierError("database target binding is unavailable")
+            monitor.extend(["--apply", "--expected-db-target-sha256", target])
+            if args.env_file:
+                monitor.extend(["--env-file", args.env_file])
+        else:
+            monitor.append("--dry-run")
         return [
             (
                 "collect",
@@ -126,17 +144,8 @@ def build_commands(args: argparse.Namespace, run_dir: Path, target: str | None):
                 ],
             ),
             (
-                "monitor_dry_run",
-                [
-                    sys.executable,
-                    str(COLLECTOR_DIR / "cre_monitor.py"),
-                    "--in",
-                    str(artifact),
-                    "--dry-run",
-                    "--quiet",
-                    "--out",
-                    str(run_dir / "monitor-summary.json"),
-                ],
+                "monitor_apply" if args.apply else "monitor_dry_run",
+                monitor,
             ),
         ]
     argv = [
@@ -282,10 +291,8 @@ def run_guarded_tier(
         raise GuardedTierError("batch or deadline exceeds the bounded tier policy")
     if not re.fullmatch(r"[0-9a-f]{40}", args.expected_sha):
         raise GuardedTierError("a full expected checkout SHA is required")
-    if args.tier == "monitor" and (args.apply or args.source in MONITOR_EXCLUDED):
-        raise GuardedTierError(
-            "monitor apply or monitor-excluded sources are not admitted"
-        )
+    if args.tier == "monitor" and args.source in MONITOR_EXCLUDED:
+        raise GuardedTierError("monitor-excluded sources are not admitted")
     if args.env_file and any(ord(c) < 32 or ord(c) == 127 for c in args.env_file):
         raise GuardedTierError("invalid environment file path")
     windows_admission = getattr(args, "windows_admission_unix_ms", None)

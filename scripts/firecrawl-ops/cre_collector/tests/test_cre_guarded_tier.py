@@ -9,10 +9,9 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 import cre_checkpoint_refresh as checkpoint
 import cre_guarded_tier as tier
+import pytest
 
 
 def options(**changes):
@@ -99,9 +98,13 @@ def monitor_artifact():
         "total_mismatch",
     ],
 )
+@pytest.mark.parametrize("apply", [False, True])
 def test_monitor_partial_artifact_never_reaches_transform_or_completion(
-    tmp_path, fault
+    tmp_path, monkeypatch, fault, apply
 ):
+    monkeypatch.setattr(
+        checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64}
+    )
     data = monitor_artifact()
     if fault == "error":
         data["sources"][1]["error"] = "secret timeout"
@@ -134,7 +137,7 @@ def test_monitor_partial_artifact_never_reaches_transform_or_completion(
         (log.parent.parent / "monitor.json").write_text(json.dumps(data))
         return 0
 
-    assert execute(options(tier="monitor"), tmp_path, _runner=runner) == 1
+    assert execute(options(tier="monitor", apply=apply), tmp_path, _runner=runner) == 1
     assert calls == ["collect"]
     assert receipt(tmp_path)["status"] == "failed_recovery_required"
     assert_fenced(tmp_path)
@@ -174,8 +177,11 @@ def test_complete_monitor_artifact_reaches_database_free_transform(tmp_path, emp
         {"deadline_seconds": 14401},
         {"expected_sha": "abc"},
         {"env_file": "secret\npath"},
-        {"tier": "monitor", "apply": True},
-        *[{"tier": "monitor", "source": source} for source in tier.MONITOR_EXCLUDED],
+        *[
+            {"tier": "monitor", "source": source, "apply": apply}
+            for source in tier.MONITOR_EXCLUDED
+            for apply in (False, True)
+        ],
     ],
 )
 def test_invalid_policy_never_acquires_or_dispatches(tmp_path, changes):
@@ -199,6 +205,75 @@ def test_monitor_commands_remain_inventory_and_database_free(tmp_path):
     assert not any(
         "cre_ingest.py" in arg for argv in (collect, monitor) for arg in argv
     )
+
+
+@pytest.mark.parametrize(
+    "source", sorted(set(tier.SOURCE_TO_BROKERAGE) - tier.MONITOR_EXCLUDED)
+)
+def test_monitor_apply_argv_is_exact_source_bound_and_preserves_transaction(
+    tmp_path, source
+):
+    target = "b" * 64
+    commands = tier.build_commands(
+        options(tier="monitor", source=source, apply=True, env_file="/private/cre.env"),
+        tmp_path,
+        target,
+    )
+    assert [phase for phase, _ in commands] == ["collect", "monitor_apply"]
+    collect, monitor = [argv for _, argv in commands]
+    assert f"--source={source}" in collect and "--monitor" in collect
+    assert "--apply" in monitor and "--dry-run" not in monitor
+    assert monitor[monitor.index("--expected-db-target-sha256") + 1] == target
+    assert monitor[monitor.index("--env-file") + 1] == "/private/cre.env"
+    assert not set(monitor).intersection(
+        {
+            "--force-disappear",
+            "--mark-missing",
+            "--activate-status",
+            "--update-baseline",
+        }
+    )
+
+
+@pytest.mark.parametrize("target", [None, "invalid", "A" * 64])
+def test_monitor_apply_refuses_unbound_commands(tmp_path, target):
+    with pytest.raises(tier.GuardedTierError):
+        tier.build_commands(options(tier="monitor", apply=True), tmp_path, target)
+
+
+@pytest.mark.parametrize("outcome", ["success", "nonzero", "interrupt", "unknown"])
+def test_monitor_apply_owner_keeps_failure_and_cancellation_fences(
+    tmp_path, monkeypatch, outcome
+):
+    calls = []
+    monkeypatch.setattr(
+        checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64}
+    )
+
+    def runner(argv, log, *, env):
+        calls.append(log.stem)
+        if log.stem == "collect":
+            (log.parent.parent / "monitor.json").write_text(
+                json.dumps(monitor_artifact())
+            )
+            return 0
+        assert "--apply" in argv and "--expected-db-target-sha256" in argv
+        if outcome == "interrupt":
+            raise KeyboardInterrupt
+        if outcome == "unknown":
+            raise checkpoint.ProcessCleanupUnknown("secret-canary")
+        return int(outcome == "nonzero")
+
+    rc = execute(options(tier="monitor", apply=True), tmp_path, _runner=runner)
+    assert calls == ["collect", "monitor_apply"]
+    assert receipt(tmp_path)["database_target_sha256"] == "b" * 64
+    if outcome == "success":
+        assert rc == 0
+        assert_released(tmp_path)
+    else:
+        assert rc != 0
+        assert "secret-canary" not in json.dumps(receipt(tmp_path))
+        assert_fenced(tmp_path)
 
 
 def test_enrichment_apply_is_exactly_bound_and_never_lifecycle_escalated(tmp_path):
