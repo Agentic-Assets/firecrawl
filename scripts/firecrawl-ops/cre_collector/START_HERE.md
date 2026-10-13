@@ -147,6 +147,16 @@ Linux instead uses the PSI, available-memory/swap and visible cgroup policy
 above, including percentage thresholds. Under WSL those samples cover the
 Linux VM and visible cgroups, not aggregate Windows memory.
 
+The optional resource timeline uses platform-specific memory readers too:
+Darwin VM categories on macOS, Linux available-memory/swap bytes and the
+existing PSI/cgroup pressure policy on Linux. Linux records the VM/visible-cgroup
+scope explicitly and leaves Darwin-only VM categories absent. Diagnostic gaps
+remain visible and do not replace or disable the required safety guards. For
+an IPv4-only loopback stack, set `FIRECRAWL_API_URL=http://127.0.0.1:3002`
+before starting a fresh generation so performance diagnostics can bind to the
+actual publication; do not relax the runtime identity check or rewrite an
+existing generation to hide missing evidence.
+
 This is a safe stop with an exact resume point, not a background monitor or an
 automatic pause/resume service. `logs/host-cpu-guard.jsonl` records samples;
 `logs/cpu-incidents.jsonl` records one best-effort, sanitized process and

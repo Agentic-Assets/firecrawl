@@ -41,7 +41,9 @@ the guards measure the Linux VM and visible cgroups, not aggregate Windows host
 CPU or RAM. Keep the WSL/container ceilings and use Ubuntu with an ext4 checkout
 for the POSIX runner. CRE offline tests require a separate no-hardlinks clone;
 Linux verification does not prove native Windows or native Mac runtime parity.
-The Windows setup did not rerun the native Mac runtime. The Linux safety port
+Separate Linux and native Mac offline regression proof is recorded on
+[AGENTIC-3753](https://linear.app/agenticassets/issue/AGENTIC-3753); it does not
+establish a live refresh or authorize a Mac writer. The Linux safety port
 merged after founder approval in PR108. Follow the separate production cutover
 gates; do not
 bypass guards, enable a scheduler or perform production writes for onboarding.
