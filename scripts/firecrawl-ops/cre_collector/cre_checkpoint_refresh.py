@@ -63,6 +63,8 @@ from cre_memory_guard import (
     HostMemoryGuard,
     memory_guard_config,
 )
+from cre_linux_telemetry import LinuxTelemetryError, cpu_percent as linux_cpu_percent
+from cre_linux_telemetry import read_cpu_ticks as read_linux_cpu_ticks
 from cre_owned_processes import (
     OwnedProcessGroup,
     _defer_cleanup_signals,
@@ -455,9 +457,41 @@ class DarwinCpuSampler:
         return cpu_percent_from_ticks(previous, current)
 
 
+@dataclass
+class LinuxCpuSampler:
+    read_ticks: Callable[[], tuple[int, ...]] = read_linux_cpu_ticks
+    initial_interval_seconds: float = 0.1
+    previous: tuple[int, ...] | None = field(default=None, init=False)
+
+    def __call__(self) -> float:
+        try:
+            previous = self.previous
+            if previous is None:
+                previous = self.read_ticks()
+                time.sleep(self.initial_interval_seconds)
+            current = self.read_ticks()
+            percent = linux_cpu_percent(previous, current)
+            self.previous = current
+            return percent
+        except LinuxTelemetryError as exc:
+            raise CpuTelemetryError(str(exc)) from exc
+
+
+def host_cpu_sampler(*, initial_interval_seconds: float = 0.1) -> Callable[[], float]:
+    if sys.platform == "darwin":
+        return DarwinCpuSampler(initial_interval_seconds=initial_interval_seconds)
+    if sys.platform.startswith("linux"):
+        return LinuxCpuSampler(initial_interval_seconds=initial_interval_seconds)
+
+    def unsupported() -> float:
+        raise CpuTelemetryError("host CPU telemetry unsupported on this platform")
+
+    return unsupported
+
+
 def read_host_cpu_percent() -> float:
-    """Return a one-shot total Darwin host CPU utilization sample."""
-    return DarwinCpuSampler()()
+    """Sample the native host on Darwin, or the Linux kernel/VM on Linux."""
+    return host_cpu_sampler()()
 
 
 @dataclass
@@ -474,9 +508,9 @@ class HostCpuGuard:
     max_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT
     sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS
     sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS
-    # Required admission must allow Mach counters to advance before its first read.
+    # Required admission allows kernel counters to advance before its first read.
     sampler: Callable[[], float] = field(
-        default_factory=lambda: DarwinCpuSampler(initial_interval_seconds=2.0)
+        default_factory=lambda: host_cpu_sampler(initial_interval_seconds=2.0)
     )
     coordinator_pid: int = field(default_factory=os.getpid)
     incident_log_path: Path | None = None
@@ -489,13 +523,16 @@ class HostCpuGuard:
     thread: threading.Thread | None = field(default=None, init=False)
 
     def config(self) -> dict[str, float | str]:
-        return {
+        config = {
             "max_host_cpu_percent": self.max_percent,
             "sustain_seconds": self.sustain_seconds,
             "sample_seconds": self.sample_seconds,
             "action": "interrupt_and_checkpoint",
             "telemetry_failure_action": "interrupt_and_checkpoint",
         }
+        if sys.platform.startswith("linux"):
+            config["telemetry_scope"] = "linux_kernel_or_vm_not_windows_host"
+        return config
 
     def observe(self, percent: float, *, observed_monotonic: float) -> str | None:
         self._validate_clock(observed_monotonic)
@@ -6601,7 +6638,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             observe_resource_usage(
                 run_dir,
                 env=safe_process_env(),
-                cpu_sampler=DarwinCpuSampler(),
+                cpu_sampler=host_cpu_sampler(),
                 context_provider=lambda: dict(cpu_guard.incident_context),
             ),
         ):

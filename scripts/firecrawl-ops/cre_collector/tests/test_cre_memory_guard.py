@@ -16,7 +16,7 @@ import cre_checkpoint_series as series
 import cre_memory_guard as memory
 import pytest
 
-REAL_READ_PRESSURE = memory.read_memory_pressure
+REAL_READ_PRESSURE = memory.read_darwin_memory_pressure
 
 
 @pytest.fixture(autouse=True)

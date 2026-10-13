@@ -117,7 +117,32 @@ bash cre_setup.sh --check
 bash cre_status.sh --scheduler external
 ```
 
-Missing production credentials and empty run history are honest status warnings. `external` mode retains lock and staleness checks and creates no scheduler. Provision secrets separately through the approved operator workflow. A Linux context bootstrap can reference the existing canonical company context and a Linux `local/machine.md`; it does not require installing unrelated agent clients or copying Windows credentials. Use a separate `git clone --no-hardlinks` for the full offline suites.
+Missing production credentials and empty run history are honest status warnings. `external` mode retains lock and staleness checks and creates no scheduler. Provision secrets separately through the approved operator workflow. Use a separate `git clone --no-hardlinks` for the full offline suites.
+
+### Minimal company context in Ubuntu
+
+The verified minimal WSL context uses the existing canonical Windows Context
+Engineering checkout through its Linux mount path, for example
+`/mnt/c/Users/<WindowsUser>/GitHub/Agentic-Assets-Context-Engineering`. Resolve
+the actual path with `wslpath`; keep the machine's exact path only in the
+context root's ignored `local/machine.md`. `~/.agentic-assets/env` exports
+`AA_CONTEXT_ROOT` and `AA_OPERATOR`; `~/.agentic-assets/operator` names the
+operator (`cayman` on this workstation), and `~/.agentic-assets/machine` is
+`client`. `~/AGENTS.md` is a symlink to the canonical root's `AGENTS.md`.
+
+Verify those existing entries inside Ubuntu:
+
+```bash
+source ~/.agentic-assets/env
+test -f "$AA_CONTEXT_ROOT/AGENTS.md"
+test "$(cat ~/.agentic-assets/operator)" = "$AA_OPERATOR"
+test "$(cat ~/.agentic-assets/machine)" = client
+test "$(readlink -f ~/AGENTS.md)" = "$(realpath "$AA_CONTEXT_ROOT/AGENTS.md")"
+```
+
+This provisions context for the Linux workspace. It is not a completed
+company `verify-install` run or proof that every global Linux agent client is
+installed. It copies no Windows credentials and enables no scheduler.
 
 ### Supabase validation and database transport
 
@@ -148,6 +173,19 @@ Stopping services preserves their containers. The root stack has no durable data
 
 Non-AI scrape, map, crawl, batch, search, and basic PDF parsing are the onboarding scope. Summary/JSON/extract need a configured provider; advanced browser routes need Hangar, and layout-aware OCR needs its separately governed adapter. Do not change those configurations to make a basic smoke test pass.
 
-CRE collector offline suites must run in a separate `git clone --no-hardlinks`, never a worktree that can resolve the live `.cre.lock`. When Windows-specific toolchains or shell assumptions prevent native tests, run the offline suites inside an isolated Linux Docker container against that separate clone and report that execution platform explicitly. Passing Linux tests does not prove native Windows support. The supervised CRE refresh host guard currently requires Darwin/macOS, so neither Linux containers nor WSL make that production runner portable. Do not bypass the guard, enable a scheduler, or perform CRE database writes during onboarding.
+CRE collector offline suites must run in a separate `git clone --no-hardlinks`, never a worktree that can resolve the live `.cre.lock`. Run the POSIX suites under Ubuntu/WSL or an isolated Linux Docker container against that separate clone and report the execution platform explicitly. Passing Linux tests does not prove native Windows support.
+
+The supervised checkpoint runner selects Darwin Mach/sysctl telemetry on macOS
+and Linux `/proc/stat`, memory PSI, available memory/swap and visible cgroup v2
+limits/events on Linux. Unsupported platforms and missing safety evidence fail
+closed. In WSL2/Docker Desktop these measurements cover the Linux VM and
+visible cgroups, **not aggregate Windows host CPU or RAM**. Keep the WSL and
+container resource ceilings and follow the exact Linux policy in
+[`START_HERE.md`](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#cpu-and-memory-safety-and-evidence).
+Injected Darwin contracts remain tested; native Mac runtime verification was
+not available during this Windows setup. Do not bypass guards, enable a
+scheduler, cut over the production writer, or perform CRE database writes as
+an onboarding shortcut. AGENTIC-3746 requires founder review before merging
+the Linux safety change; production cutover remains separately governed.
 
 For a bounded no-write collector probe, inspect the source adapter before choosing it. `--max-items` limits emitted listings, not necessarily inventory network requests: SVN/Buildout still enumerates the complete inventory first. Interra's authoritative inventory adapter performs one size/time-bounded request and can project a three-row sample for `cre_ingest.py --dry-run`. Keep sample artifacts private and do not confuse a truncated sample with full-source refresh acceptance.

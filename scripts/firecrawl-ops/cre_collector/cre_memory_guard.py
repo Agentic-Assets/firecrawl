@@ -1,4 +1,4 @@
-"""Required Darwin host-memory pressure guard for foreground checkpoints.
+"""Required platform-selected memory pressure guard for foreground checkpoints.
 
 The guard owns no child or database operation. Its injected trip callback uses
 the checkpoint's existing signal/owned-process cleanup protocol. Free pages,
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from cre_performance import utc_now
+from cre_linux_telemetry import LinuxMemorySampler, LinuxTelemetryError, memory_policy
 from cre_resource_usage import _append_record
 from cre_runtime_observability import sanitize_context
 
@@ -52,7 +54,7 @@ def memory_guard_config(
         raise ValueError(
             "memory sustain must be within (0,30]s; sample within [0.25,5]s and no greater than sustain"
         )
-    return {
+    config = {
         "warning_sustain_seconds": sustain_seconds,
         "sample_seconds": sample_seconds,
         "critical_action": "interrupt_immediately",
@@ -61,9 +63,12 @@ def memory_guard_config(
         "telemetry_failure_action": "interrupt_and_checkpoint",
         "basis": "darwin_dispatch_pressure_level_1_normal_2_warning_4_critical",
     }
+    if sys.platform.startswith("linux"):
+        config.update(memory_policy())
+    return config
 
 
-def read_memory_pressure(*, timeout: float = 1.0) -> int:
+def read_darwin_memory_pressure(*, timeout: float = 1.0) -> int:
     """Read only the userspace dispatch level, never the kernel's internal enum."""
     try:
         result = subprocess.run(
@@ -84,6 +89,19 @@ def read_memory_pressure(*, timeout: float = 1.0) -> int:
         raise MemoryTelemetryError("host memory pressure unavailable") from exc
 
 
+def read_memory_pressure(
+    *, timeout: float = 1.0, linux_sampler: LinuxMemorySampler | None = None
+) -> int:
+    if sys.platform == "darwin":
+        return read_darwin_memory_pressure(timeout=timeout)
+    if sys.platform.startswith("linux"):
+        try:
+            return (linux_sampler or LinuxMemorySampler())()
+        except LinuxTelemetryError as exc:
+            raise MemoryTelemetryError(str(exc)) from exc
+    raise MemoryTelemetryError("host memory telemetry unsupported on this platform")
+
+
 @dataclass
 class HostMemoryGuard:
     log_path: Path
@@ -97,6 +115,7 @@ class HostMemoryGuard:
     tripped: bool = field(default=False, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
+    linux_sampler: LinuxMemorySampler = field(default_factory=LinuxMemorySampler, init=False)
 
     def config(self) -> dict[str, Any]:
         return memory_guard_config(self.sustain_seconds, self.sample_seconds)
@@ -185,7 +204,9 @@ class HostMemoryGuard:
         pressure = (
             self.sampler()
             if self.sampler
-            else read_memory_pressure(timeout=min(1.0, self.sample_seconds))
+            else read_memory_pressure(
+                timeout=min(1.0, self.sample_seconds), linux_sampler=self.linux_sampler
+            )
         )
         observed = time.monotonic()
         if observed - started > min(1.0, self.sample_seconds):
