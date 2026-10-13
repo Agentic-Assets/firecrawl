@@ -31,6 +31,9 @@ COLLECTOR_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT_ROOT = COLLECTOR_DIR / "out" / "guarded-tiers"
 MONITOR_EXCLUDED = frozenset({"jll", "jll-investor", "cbre-dealflow", "colliers"})
 MAX_MONITOR_ARTIFACT_BYTES = 128 * 1024 * 1024
+# Set only by this module's one-shot process entrypoint, never by main/library
+# defaults. Identity comparison prevents a caller flag from granting the role.
+_CLI_STOP_CAPABILITY = None
 
 
 class GuardedTierError(RuntimeError):
@@ -281,6 +284,7 @@ def run_guarded_tier(
     _memory_sampler: Callable[[], int] | None = None,
     _verify_checkout: Callable[..., None] | None = None,
     _deadline_seconds: float | None = None,
+    _cli_stop_capability: object | None = None,
 ) -> int:
     """Hidden Python seams support isolated, synthetic process fault tests."""
     if args.tier not in {"monitor", "enrich"} or args.source not in SOURCE_TO_BROKERAGE:
@@ -320,6 +324,7 @@ def run_guarded_tier(
             "status": "running",
             "phase": "preflight",
             "recovery_fence": "armed_until_terminal_owner_clear",
+            "local_settlement": {"state": "not_started"},
         }
         terminal_saved = False
         success = False
@@ -365,21 +370,42 @@ def run_guarded_tier(
                 tier_worker_started = True
             native_work_started = True
             native_command_active = True
-            command_rc = runner(
-                argv,
-                run_dir / "logs" / f"{phase}.log",
-                env=checkpoint.safe_process_env(),
-            )
+            receipt["local_settlement"] = {"state": "unknown", "phase": phase}
+            try:
+                command_rc = runner(
+                    argv,
+                    run_dir / "logs" / f"{phase}.log",
+                    env=checkpoint.safe_process_env(),
+                )
+            except BaseException as exc:
+                settled = checkpoint.command_local_settlement(exc)
+                if settled is not None:
+                    receipt["local_settlement"] = {**settled, "phase": phase}
+                raise
             # The production runner returns only after its owned group is
             # settled. Exceptions deliberately leave this active witness set.
             native_command_active = False
+            receipt["local_settlement"] = {"state": "confirmed", "phase": phase}
             if command_rc != 0:
                 if phase.startswith("git_"):
                     raise PreflightRefused("checkout identity could not be verified")
                 raise GuardedTierError("tier command did not complete successfully")
 
         try:
+            if (
+                __name__ == "__main__"
+                and _CLI_STOP_CAPABILITY is not None
+                and _cli_stop_capability is _CLI_STOP_CAPABILITY
+                and sys.platform == "linux"
+            ):
+                from cre_stop_guarded_tier import publish_stop_identity
+
+                owner = publish_stop_identity(lock, run_dir)
+                if owner is not None:
+                    receipt["stop_owner"] = owner
             persist()
+            if receipt.get("stop_owner") is not None:
+                print(run_dir, flush=True)
             with checkpoint.resource_guard_boundary(memory, cpu):
                 with work_deadline(
                     args.deadline_seconds
@@ -423,7 +449,8 @@ def run_guarded_tier(
             success = True
             receipt["status"] = "complete"
             rc = 0
-        except TierDeadline:
+        except TierDeadline as exc:
+            settlement_unknown = checkpoint._cleanup_unknown_in_chain(exc)
             receipt["status"] = "deadline_interrupted"
             rc = 124
         except (checkpoint.CpuGuardTrip, KeyboardInterrupt) as exc:
@@ -440,7 +467,8 @@ def run_guarded_tier(
             pre_provider_refused = not tier_worker_started and not native_command_active
             receipt["status"] = "failed_recovery_required"
             rc = 1
-        except (Exception, SystemExit):
+        except (Exception, SystemExit) as exc:
+            settlement_unknown = checkpoint._cleanup_unknown_in_chain(exc)
             receipt["status"] = "failed_recovery_required"
             rc = 1
         finally:
@@ -453,6 +481,8 @@ def run_guarded_tier(
                 )
                 receipt["finished_at"] = checkpoint.utc_now()
                 receipt["guards_stopped"] = guards_stopped
+                if settlement_unknown:
+                    receipt["local_settlement"] = {"state": "unknown"}
                 details = checkpoint._peek_cpu_guard_trip_details()
                 clear_eligible = (
                     (success or admission_refused or pre_provider_refused)
@@ -493,6 +523,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--windows-admission-unix-ms", type=int)
     args = parser.parse_args(argv)
     try:
+        if __name__ == "__main__" and _CLI_STOP_CAPABILITY is not None:
+            return run_guarded_tier(args, _cli_stop_capability=_CLI_STOP_CAPABILITY)
         return run_guarded_tier(args)
     except checkpoint.LockHeldError:
         print("CRE tier is blocked by active ownership or recovery", file=sys.stderr)
@@ -503,4 +535,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    _CLI_STOP_CAPABILITY = object()
     raise SystemExit(main())
