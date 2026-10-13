@@ -7,7 +7,8 @@ This guide sets up this fork's five-service Firecrawl core on Windows. It does n
 The verified baseline here uses WSL 2, Docker Desktop's default Windows
 backend, with a separate Ubuntu ext4 workspace for the POSIX collector.
 [Docker VMM](https://docs.docker.com/desktop/features/vmm/) is also available
-on Windows starting with Desktop 4.86; Docker currently labels it Beta.
+on Windows starting with Desktop 4.86; Docker labels it Beta as of October 13,
+2026.
 Docker documents improved file I/O and idle-memory reclamation, but those are
 not a measured CRE workload speedup. Keep the verified WSL baseline until a
 separate bounded comparison proves resource, networking, file-sharing and
@@ -257,8 +258,9 @@ and a signed-out session are different. WSL systemd services do not keep a
 stopped distro alive, so an internal timer is not an independent Windows wake
 or login mechanism. Check Windows host load as well as VM telemetry when
 admitting background work; Linux guards cannot observe unrelated Windows
-applications. Current policy/surface approval, first full-registry acceptance
-and the registry entry remain required before unattended execution.
+applications. Recorded approval of the exact surface, its registry entry and
+a tested bounded pilot are required before activating recurring production
+execution. Whole-registry completion remains a separate acceptance item.
 
 References: [Microsoft WSL systemd](https://learn.microsoft.com/en-us/windows/wsl/systemd),
 [Docker Windows permissions](https://docs.docker.com/desktop/setup/install/windows-permission-requirements/),
