@@ -58,12 +58,13 @@ from datetime import datetime, timezone
 # imports these symbols; it never re-derives ids or re-implements status logic.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
-    SOURCE_TO_BROKERAGE,  # noqa: F401  re-exported for tests / other modules
-    STATUS_SOURCE_PATHS,
     _STATUS_BOOL_PATHS,
     _TERMINAL_STATUSES,
+    SOURCE_TO_BROKERAGE,  # noqa: F401  re-exported for tests / other modules
+    STATUS_SOURCE_PATHS,
     _canonical_key,
     _dig,
+    assert_expected_database_target,
     copy_field,
     find_psql,
     group_source_lastmod,
@@ -71,6 +72,8 @@ from cre_ingest import (  # noqa: E402
     merge_rows,
     norm_status,
     parse_source_lastmod,  # noqa: F401  re-exported for tests / other modules
+    psql_connection_args,
+    psql_connection_env,
     sql_lit,
     to_row,
 )
@@ -876,8 +879,10 @@ def _psql_read(db_url, sql):
     so NULL renders as an empty field. Never prints the DB URL."""
     psql = find_psql()
     proc = subprocess.run(
-        [psql, db_url, "-tA", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        [psql, *psql_connection_args(db_url), "-tA", "-F", "\t",
+         "-v", "ON_ERROR_STOP=1", "-c", sql],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=psql_connection_env(db_url),
     )
     if proc.returncode != 0:
         sys.exit(f"psql read failed ({proc.returncode}): {proc.stderr.strip()}")
@@ -1060,6 +1065,8 @@ def main():
     ap.add_argument("--in", dest="inputs", action="append", required=True,
                     help="collector output JSON (repeatable)")
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    ap.add_argument("--expected-db-target-sha256", default=None,
+                    help="refuse database access unless the selected target matches this fingerprint")
     ap.add_argument("--dry-run", action="store_true",
                     help="never connect; assume empty prior state (baseline seed). Default when no write flag is given.")
     ap.add_argument("--apply", "--live", dest="apply", action="store_true",
@@ -1130,6 +1137,7 @@ def main():
     db_url = None
     if apply_mode:
         db_url, env_path = load_db_url(args.env_file)
+        assert_expected_database_target(db_url, args.expected_db_target_sha256)
         print(f"credentials: {env_path}", file=sys.stderr)
         brokerage_by_slug, prior_index, prior_listings, soft_deleted_canon = load_prior_state(db_url, slugs)
 
@@ -1248,9 +1256,12 @@ def main():
     with open(sql_path, "w") as f:
         f.write(sql)
     psql = find_psql()
+    assert_expected_database_target(db_url, args.expected_db_target_sha256)
     proc = subprocess.run(
-        [psql, db_url, "-q", "-v", "ON_ERROR_STOP=1", "-f", sql_path],
+        [psql, *psql_connection_args(db_url), "-q", "-v", "ON_ERROR_STOP=1",
+         "-f", sql_path],
         stdout=sys.stdout, stderr=sys.stderr,
+        env=psql_connection_env(db_url),
     )
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")

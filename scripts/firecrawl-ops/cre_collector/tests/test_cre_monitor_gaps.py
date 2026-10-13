@@ -34,9 +34,8 @@ subprocess.run or the module-level _psql_read symbol.
 
 import subprocess
 
-import pytest
-
 import cre_monitor as m
+import pytest
 from cre_ingest import SOURCE_TO_BROKERAGE
 
 # Fixed synthetic identifiers for repeatable tests
@@ -449,10 +448,13 @@ class TestMonitorPsqlRead:
         # We need to also monkeypatch find_psql in cre_monitor's namespace
         monkeypatch.setattr(m, "find_psql", lambda: "psql_bin")
         rows = m._psql_read("postgresql://fake/db", "SELECT 1;")
+        assert rows == [("row1col1", "row1col2")]
 
         argv = captured["argv"]
         assert argv[0] == "psql_bin"
-        assert argv[1] == "postgresql://fake/db"
+        assert "postgresql://fake/db" not in argv
+        assert captured["kw"]["env"]["PGHOST"] == "fake"
+        assert captured["kw"]["env"]["PGDATABASE"] == "db"
         assert "-tA" in argv
         assert "-F" in argv
         assert "\t" in argv

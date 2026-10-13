@@ -255,6 +255,13 @@ Investor, CBRE Deal Flow and Colliers are excluded from the cheap monitor;
 they need separate admitted detail cadences. Do not describe the incremental
 cadence as freshness for all 51 sources.
 
+The default guarded monitor is a no-write trial. Its explicit apply mode can
+feed eligible changes for existing listings into the detail queue after a
+verified supervised pilot. It does not create un-ingested listings or queue
+every kind of content change; the full sweep still supplies that acquisition.
+See the [tier guide](guarded-incremental-tiers.md) for the exact write and queue
+scope before choosing a recurring cadence.
+
 Do not directly schedule the legacy monitor/enrich/weekly commands: their
 equivalent resource/cancellation protection remains an acceptance gate in the
 [tier guide](../../../scripts/firecrawl-ops/cre_collector/launchd/README.md).
