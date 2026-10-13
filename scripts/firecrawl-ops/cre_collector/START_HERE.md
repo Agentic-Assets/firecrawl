@@ -490,6 +490,19 @@ endpoint fingerprints retain their previous format. Start a fresh checkpoint
 generation after changing between direct and pooled endpoints or upgrading a
 historical pooler fingerprint; never edit a saved manifest to make resume pass.
 
+Linux abstract Unix socket names (decoded URI hosts beginning with `@`) retain
+their exact case and trailing dots in both target fingerprints and connection
+parameters. Percent-encoded spellings of the same name share one identity.
+Control characters in an abstract socket name, or literal controls in its URI,
+are refused rather than silently changing the selected route.
+[AGENTIC-4117](https://linear.app/agenticassets/issue/AGENTIC-4117) corrects the
+older DNS-style folding of these names: an affected abstract-socket checkpoint
+must start a fresh generation after upgrading, rather than rewriting its saved
+fingerprint or historical manifest to resume. This migration affects only
+abstract sockets; DNS (including Supabase poolers), absolute Unix socket paths
+and IPv6 retain their existing fingerprint contracts. This does not enable
+abstract sockets on macOS or change any database or scheduler configuration.
+
 ### Freshness evidence SLO
 
 Generation membership is necessary but not sufficient: a long detail sweep can

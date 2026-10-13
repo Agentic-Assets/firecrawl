@@ -5395,6 +5395,27 @@ def parse_postgres_uri_query(query):
     return pairs
 
 
+def _postgres_uri_hostname(parsed, db_url):
+    """Keep abstract socket names opaque instead of relying on DNS case folding."""
+    host = strict_uri_unquote(parsed.hostname or "", label="PostgreSQL URL host")
+    if host.startswith("@"):
+        # hostname is documented as lowercase. Recover the original encoded
+        # host, excluding userinfo and the port, for this case-sensitive name.
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        host = strict_uri_unquote(
+            authority.split(":", 1)[0], label="PostgreSQL URL host"
+        )
+        # urlsplit strips literal tabs/newlines; never silently route such a
+        # URI to a different abstract name. Diagnostics omit the URI entirely.
+        if any(
+            ord(character) < 32 or ord(character) == 127
+            for value in (host, db_url)
+            for character in value
+        ):
+            raise ValueError("abstract PostgreSQL socket URI contains a control character")
+    return host
+
+
 def _supabase_pooler_tenant(parsed, query_pairs):
     """Bind the project selected by Supavisor, independently of role/password."""
     # Supavisor can route through startup options.reference or .cluster. users.
@@ -5431,7 +5452,7 @@ def database_target_fingerprint_from_url(db_url):
     if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
         raise ValueError("selected database URL has no usable PostgreSQL host")
     authority = parsed.netloc.rsplit("@", 1)[-1]
-    decoded_hostname = strict_uri_unquote(parsed.hostname, label="PostgreSQL URL host")
+    decoded_hostname = _postgres_uri_hostname(parsed, db_url)
     if "," in authority or "," in decoded_hostname:
         raise ValueError("multi-host PostgreSQL URLs are not supported")
     query_pairs = parse_postgres_uri_query(parsed.query)
@@ -5454,7 +5475,7 @@ def database_target_fingerprint_from_url(db_url):
     )
     if not database or "/" in database:
         raise ValueError("selected database URL has no usable database name")
-    if decoded_hostname.startswith("/") or ":" in decoded_hostname:
+    if decoded_hostname.startswith(("/", "@")) or ":" in decoded_hostname:
         fingerprint_host = decoded_hostname
     else:
         fingerprint_host = decoded_hostname.lower().rstrip(".")
@@ -5588,7 +5609,7 @@ def psql_connection_env(db_url):
     env = os.environ.copy()
     for key in PSQL_TARGET_ENV_KEYS:
         env.pop(key, None)
-    env["PGHOST"] = strict_uri_unquote(parsed.hostname, label="PostgreSQL URL host")
+    env["PGHOST"] = _postgres_uri_hostname(parsed, db_url)
     try:
         env["PGPORT"] = str(parsed.port or 5432)
     except ValueError as exc:
@@ -5634,8 +5655,8 @@ def psql_connection_args(db_url):
     ]
     if not uri_only:
         return []
-    hostname = strict_uri_unquote(parsed.hostname or "", label="PostgreSQL URL host")
-    if ":" in hostname:
+    hostname = _postgres_uri_hostname(parsed, db_url)
+    if ":" in hostname and not hostname.startswith("@"):
         rendered_host = f"[{quote(hostname, safe=':')}]"
     else:
         rendered_host = quote(hostname, safe="-._~")
