@@ -14,7 +14,6 @@ import json
 import math
 import os
 import re
-import secrets
 import signal
 import sys
 import time
@@ -35,6 +34,10 @@ MAX_MONITOR_ARTIFACT_BYTES = 128 * 1024 * 1024
 
 class GuardedTierError(RuntimeError):
     """A fixed, credential-free refusal of incremental work."""
+
+
+class PreflightRefused(GuardedTierError):
+    """An exact non-provider admission refusal after known local settlement."""
 
 
 class TierDeadline(KeyboardInterrupt):
@@ -159,7 +162,7 @@ def _command_output(path: Path) -> list[str]:
     # run_command owns this fresh log and brackets stdout with fixed records.
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines or not lines[-1].endswith(" rc=0"):
-        raise GuardedTierError("checkout identity could not be verified")
+        raise PreflightRefused("checkout identity could not be verified")
     return lines[1:-1]
 
 
@@ -224,16 +227,16 @@ def verify_checkout(
     """
     execute("git_head", ["git", "rev-parse", "HEAD"])
     if _command_output(run_dir / "logs/git_head.log") != [expected_sha]:
-        raise GuardedTierError("checkout SHA differs from the expected revision")
+        raise PreflightRefused("checkout SHA differs from the expected revision")
     execute("git_clean", ["git", "status", "--porcelain", "--untracked-files=normal"])
     if _command_output(run_dir / "logs/git_clean.log"):
-        raise GuardedTierError("checkout is not clean")
+        raise PreflightRefused("checkout is not clean")
     execute(
         "git_pushed",
         ["git", "for-each-ref", "--format=%(objectname)", "refs/remotes/origin/"],
     )
     if expected_sha not in _command_output(run_dir / "logs/git_pushed.log"):
-        raise GuardedTierError("expected revision has no matching origin tracking tip")
+        raise PreflightRefused("expected revision has no matching origin tracking tip")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -253,11 +256,7 @@ def _create_run_dir(out_root: Path) -> Path:
     for directory in reversed(missing):
         directory.mkdir(mode=0o700)
         _fsync_directory(directory.parent)
-    run_dir = out_root / (
-        checkpoint.utc_now().replace(":", "").replace("+0000", "Z")
-        + "-"
-        + secrets.token_hex(8)
-    )
+    run_dir = out_root / checkpoint.allocate_run_id()
     run_dir.mkdir(mode=0o700)
     _fsync_directory(out_root)
     return run_dir
@@ -318,8 +317,10 @@ def run_guarded_tier(
         terminal_saved = False
         success = False
         native_work_started = False
+        native_command_active = False
         tier_worker_started = False
         admission_refused = False
+        pre_provider_refused = False
         settlement_unknown = False
         cpu = checkpoint.HostCpuGuard(log_path=run_dir / "logs/host-cpu-guard.jsonl")
         if _cpu_sampler is not None:
@@ -346,7 +347,7 @@ def run_guarded_tier(
             )
 
         def execute(phase: str, argv: Sequence[str]) -> None:
-            nonlocal native_work_started, tier_worker_started
+            nonlocal native_work_started, native_command_active, tier_worker_started
             receipt["phase"] = phase
             checkpoint.set_cpu_guard_context(
                 cpu, phase=phase, source=args.source, active_operation=phase
@@ -356,14 +357,18 @@ def run_guarded_tier(
                 validate_windows_admission(windows_admission)
                 tier_worker_started = True
             native_work_started = True
-            if (
-                runner(
-                    argv,
-                    run_dir / "logs" / f"{phase}.log",
-                    env=checkpoint.safe_process_env(),
-                )
-                != 0
-            ):
+            native_command_active = True
+            command_rc = runner(
+                argv,
+                run_dir / "logs" / f"{phase}.log",
+                env=checkpoint.safe_process_env(),
+            )
+            # The production runner returns only after its owned group is
+            # settled. Exceptions deliberately leave this active witness set.
+            native_command_active = False
+            if command_rc != 0:
+                if phase.startswith("git_"):
+                    raise PreflightRefused("checkout identity could not be verified")
                 raise GuardedTierError("tier command did not complete successfully")
 
         try:
@@ -388,11 +393,18 @@ def run_guarded_tier(
                         raise checkpoint.CpuGuardTrip
                     cpu.start()
                     verifier(args.expected_sha, execute, run_dir)
-                    target = (
-                        checkpoint.database_target_fingerprint(args.env_file)["value"]
-                        if args.apply
-                        else None
-                    )
+                    try:
+                        target = (
+                            checkpoint.database_target_fingerprint(args.env_file)[
+                                "value"
+                            ]
+                            if args.apply
+                            else None
+                        )
+                    except SystemExit as exc:
+                        raise PreflightRefused(
+                            "database environment is unavailable"
+                        ) from exc
                     if target is not None:
                         receipt["database_target_sha256"] = target
                     for phase, argv in build_commands(args, run_dir, target):
@@ -416,6 +428,11 @@ def run_guarded_tier(
             )
             rc = 75 if receipt["status"] == "resource_guard_interrupted" else 130
             admission_refused = rc == 75 and not native_work_started
+        except PreflightRefused as exc:
+            settlement_unknown = checkpoint._cleanup_unknown_in_chain(exc)
+            pre_provider_refused = not tier_worker_started and not native_command_active
+            receipt["status"] = "failed_recovery_required"
+            rc = 1
         except (Exception, SystemExit):
             receipt["status"] = "failed_recovery_required"
             rc = 1
@@ -431,8 +448,9 @@ def run_guarded_tier(
                 receipt["guards_stopped"] = guards_stopped
                 details = checkpoint._peek_cpu_guard_trip_details()
                 clear_eligible = (
-                    (success or admission_refused)
+                    (success or admission_refused or pre_provider_refused)
                     and guards_stopped
+                    and not native_command_active
                     and not settlement_unknown
                     and (
                         details is None
@@ -440,8 +458,11 @@ def run_guarded_tier(
                     )
                 )
                 receipt["native_work_started"] = native_work_started
+                receipt["native_command_active"] = native_command_active
                 receipt["tier_worker_started"] = tier_worker_started
                 receipt["recovery_clear_eligible"] = clear_eligible
+                if pre_provider_refused and clear_eligible:
+                    receipt["status"] = "preflight_refused"
                 persist()
                 terminal_saved = True
                 if clear_eligible and terminal_saved:

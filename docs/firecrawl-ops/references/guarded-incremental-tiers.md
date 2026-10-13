@@ -93,6 +93,13 @@ Windows launch audit receipts are under `out/windows-launcher/` in the Windows
 checkout. They are audit artifacts, not locks or scheduling authority. Receipt
 paths and exit status are returned in the foreground.
 
+A known, locally settled checkout or credential-file admission refusal can
+publish `preflight_refused` and clear its barrier after guards stop and the
+terminal receipt is durable, provided no tier worker or uncertain native
+command remains. It did not collect or write data. A failure or interruption
+after tier dispatch retains the barrier for reconciliation; a busy host or
+stale checkout must never be reported as a successful refresh.
+
 | Exit | Meaning |
 | --- | --- |
 | `0` | Selected trial completed; inspect its scope and receipt |

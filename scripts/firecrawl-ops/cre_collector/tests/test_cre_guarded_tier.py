@@ -317,23 +317,134 @@ def test_memory_unknown_blocks_before_worker(tmp_path):
     assert_released(tmp_path)
 
 
-def test_database_env_systemexit_publishes_fixed_failed_receipt(tmp_path, monkeypatch):
+def test_database_env_systemexit_after_settled_git_publishes_fixed_preflight_receipt(
+    tmp_path, monkeypatch
+):
     def failed_env(_path):
         raise SystemExit("password=do-not-retain")
 
     monkeypatch.setattr(checkpoint, "database_target_fingerprint", failed_env)
+
+    def verifier(_sha, command, _run_dir):
+        command("git_head", ["git", "rev-parse", "HEAD"])
+
+    def runner(argv, _log, *, env):
+        assert argv[0] == "git", "provider worker must not run"
+        return 0
+
     assert (
         execute(
             options(apply=True),
             tmp_path,
-            _runner=lambda *_a, **_kw: pytest.fail("unexpected worker"),
+            _runner=runner,
+            _verify_checkout=verifier,
         )
         == 1
     )
     doc = receipt(tmp_path)
-    assert doc["status"] == "failed_recovery_required"
+    assert doc["status"] == "preflight_refused"
+    assert doc["native_command_active"] is False
+    assert doc["native_work_started"] is True
     assert "do-not-retain" not in json.dumps(doc)
+    assert_released(tmp_path)
+
+
+@pytest.mark.parametrize("fault", ["wrong_sha", "dirty", "stale_tip", "git_nonzero"])
+def test_known_settled_git_refusal_releases_before_tier_work(tmp_path, fault):
+    calls = []
+
+    def runner(argv, log, *, env):
+        assert argv[0] == "git", "provider worker must not run"
+        calls.append(log.stem)
+        output = {
+            "git_head": ["b" * 40 if fault == "wrong_sha" else "a" * 40],
+            "git_clean": [" M dirty.py"] if fault == "dirty" else [],
+            "git_pushed": ["b" * 40 if fault == "stale_tip" else "a" * 40],
+        }[log.stem]
+        log.parent.mkdir(exist_ok=True)
+        log.write_text(
+            "[time] command: git\n"
+            + "".join(line + "\n" for line in output)
+            + "[time] rc=0\n"
+        )
+        return 1 if fault == "git_nonzero" else 0
+
+    assert (
+        execute(
+            options(), tmp_path, _verify_checkout=tier.verify_checkout, _runner=runner
+        )
+        == 1
+    )
+    doc = receipt(tmp_path)
+    assert doc["status"] == "preflight_refused"
+    assert doc["native_work_started"] is True
+    assert doc["native_command_active"] is False
+    assert doc["tier_worker_started"] is False
+    assert doc["recovery_clear_eligible"] is True
+    assert calls
+    assert_released(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "failure", ["interrupted", "unknown", "preflight_exception", "exception"]
+)
+def test_active_git_command_exception_never_clears_fence(tmp_path, failure):
+    def runner(*_a, **_kw):
+        if failure == "interrupted":
+            raise KeyboardInterrupt
+        if failure == "unknown":
+            raise checkpoint.ProcessCleanupUnknown("synthetic unknown settlement")
+        if failure == "preflight_exception":
+            raise tier.PreflightRefused("synthetic refusal during active command")
+        raise RuntimeError("synthetic unexpected command failure")
+
+    assert (
+        execute(
+            options(), tmp_path, _verify_checkout=tier.verify_checkout, _runner=runner
+        )
+        != 0
+    )
+    doc = receipt(tmp_path)
+    assert doc["native_command_active"] is True
+    assert doc["tier_worker_started"] is False
+    assert doc["recovery_clear_eligible"] is False
     assert_fenced(tmp_path)
+
+
+def test_unknown_settlement_chain_cannot_be_hidden_by_later_preflight_refusal(tmp_path):
+    def verifier(*_args):
+        raise tier.PreflightRefused(
+            "synthetic later refusal"
+        ) from checkpoint.ProcessCleanupUnknown("synthetic earlier unknown")
+
+    assert (
+        execute(
+            options(),
+            tmp_path,
+            _verify_checkout=verifier,
+            _runner=lambda *_a, **_kw: pytest.fail("unexpected work"),
+        )
+        == 1
+    )
+    assert receipt(tmp_path)["status"] == "failed_recovery_required"
+    assert_fenced(tmp_path)
+
+
+def test_real_command_has_valid_performance_journal_without_degradation(
+    tmp_path, capsys
+):
+    def runner(_argv, log, *, env):
+        return checkpoint.run_command(
+            [sys.executable, "-c", "print('synthetic completion')"], log, env=env
+        )
+
+    assert execute(options(), tmp_path, _runner=runner) == 0
+    assert "performance telemetry degraded" not in capsys.readouterr().err
+    (journal,) = (tmp_path / "runs").glob("*/logs/enrich_dry_run.performance.jsonl")
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert [record["event"] for record in records] == ["started", "finished"]
+    assert records[-1]["returncode"] == 0
+    assert_released(tmp_path)
 
 
 def test_resource_trip_after_native_dispatch_never_clears_fence(tmp_path):
