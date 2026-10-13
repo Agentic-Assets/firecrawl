@@ -52,6 +52,44 @@ def test_cross_tenant_query_override_is_refused_before_connection():
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        f"?options=reference%3D{PROJECT_B}",
+        f"?options=-c%20reference%3D{PROJECT_B}",
+        f"?options=--reference%3D{PROJECT_B}",
+        "?options=-c%20statement_timeout%3D15000",
+        f"?OPTIONS=reference%3D{PROJECT_B}&options=",
+    ],
+)
+def test_alternate_startup_routing_is_conservatively_refused(query):
+    with pytest.raises(ValueError, match="startup options may override"):
+        fingerprint(pooled(f"postgres.{PROJECT_A}", query=query))
+
+
+@pytest.mark.parametrize("query", ["", f"?user=postgres.cluster.{PROJECT_A}"])
+def test_cluster_user_routing_is_refused(query):
+    with pytest.raises(ValueError, match="cluster routing"):
+        fingerprint(pooled(f"postgres.cluster.{PROJECT_A}", query=query))
+
+
+def test_empty_startup_options_do_not_change_target():
+    assert fingerprint(
+        pooled(f"postgres.{PROJECT_A}", query="?options=")
+    ) == fingerprint(pooled(f"postgres.{PROJECT_A}"))
+
+
+def test_unix_socket_named_like_a_pooler_retains_direct_identity():
+    host = "/tmp/local.pooler.supabase.com"
+    expected = hashlib.sha256(f"{host}:5432/postgres".encode()).hexdigest()
+    assert (
+        fingerprint(
+            "postgresql://user:synthetic@%2Ftmp%2Flocal.pooler.supabase.com/postgres"
+        )["value"]
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
     "user",
     [
         None,

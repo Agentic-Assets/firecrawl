@@ -5397,6 +5397,10 @@ def parse_postgres_uri_query(query):
 
 def _supabase_pooler_tenant(parsed, query_pairs):
     """Bind the project selected by Supavisor, independently of role/password."""
+    # Supavisor can route through startup options.reference or .cluster. users.
+    # These alternate routes are outside this single-project checkpoint contract.
+    if any(key.lower() == "options" and value for key, value in query_pairs):
+        raise ValueError("Supabase pooler startup options may override project routing")
     users = []
     if parsed.username is not None:
         users.append(strict_uri_unquote(parsed.username, label="PostgreSQL URL username"))
@@ -5408,6 +5412,8 @@ def _supabase_pooler_tenant(parsed, query_pairs):
         raise ValueError("Supabase pooler URL requires an explicit project-qualified user")
     tenants = set()
     for user in users:
+        if ".cluster." in user.lower():
+            raise ValueError("Supabase pooler cluster routing is not supported")
         role, separator, tenant = user.rpartition(".")
         if not role or not separator or not re.fullmatch(r"[a-z]{20}", tenant):
             raise ValueError("Supabase pooler user must end with a valid project reference")
@@ -5453,7 +5459,11 @@ def database_target_fingerprint_from_url(db_url):
     else:
         fingerprint_host = decoded_hostname.lower().rstrip(".")
     target = f"{fingerprint_host}:{port}/{database}"
-    if fingerprint_host.endswith(".pooler.supabase.com"):
+    if (
+        not fingerprint_host.startswith("/")
+        and ":" not in fingerprint_host
+        and fingerprint_host.endswith(".pooler.supabase.com")
+    ):
         # A shared host/database does not identify a project: Supavisor routes
         # role.PROJECT_REF to the tenant. Keep legacy direct-target hashes intact.
         tenant = _supabase_pooler_tenant(parsed, query_pairs)

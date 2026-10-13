@@ -474,7 +474,9 @@ redirecting a gate, validation query, or write.
 For Supabase shared poolers, the fingerprint also binds the project reference
 in the effective `role.PROJECT_REF` username. A shared pooler host and database
 alone cannot identify the project. Role/password rotation within that project
-keeps its identity; conflicting or malformed user routing fails closed. Direct
+keeps its identity; conflicting or malformed user routing fails closed. Alternate
+Supavisor `.cluster.` usernames and nonempty URI `options` startup parameters
+are refused because they can override project routing. Direct
 endpoint fingerprints retain their previous format. Start a fresh checkpoint
 generation after changing between direct and pooled endpoints or upgrading a
 historical pooler fingerprint; never edit a saved manifest to make resume pass.

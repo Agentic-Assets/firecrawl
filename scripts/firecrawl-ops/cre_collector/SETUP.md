@@ -154,6 +154,9 @@ success alone does not prove PostgreSQL transport. Temporary-table/COPY IN
 contracts belong in a disposable local database before live ingestion.
 
 The shared-pooler fingerprint binds the project suffix, not the role/password.
+Alternate `.cluster.` usernames and nonempty URI `options` startup parameters
+are unsupported on this governed path; set query-local limits with `SET LOCAL`
+inside the relevant transaction instead.
 Changing connection endpoint or upgrading a historical pooled fingerprint
 requires a fresh checkpoint generation, not an edited resume manifest.
 See [Supabase connection guidance](https://supabase.com/docs/guides/database/connecting-to-postgres)
