@@ -180,7 +180,7 @@ if python3 -c 'import pytest' >/dev/null 2>&1; then
   note "Run tests only in a separate git clone --no-hardlinks (never a worktree or runtime checkout)."
 else
   warn "pytest not installed (test suite cannot run; the pipeline itself does not need it)"
-  todo "Optional tests: in a separate git clone --no-hardlinks, python3 -m venv .venv && .venv/bin/python -m pip install pytest; run .venv/bin/python -m pytest tests/ -q there."
+  todo "Optional tests: use a separate git clone --no-hardlinks and follow SETUP.md's Isolated verification recipe (collector/sidecar Node dependencies plus a Python venv); never run suites from this runtime checkout."
 fi
 
 # ---------------------------------------------------------------------------
