@@ -42,8 +42,11 @@ Use `cre_checkpoint_refresh.py` for an operator-requested full refresh. It
 collects, validates, gates, and dry-runs each source into a resumable manifest.
 It stops on the first non-`ok` source gate, runs one aggregate gate over the
 complete prepared artifact set, and only then begins additive live ingest. The
-monolithic `cre_daily_update.sh` remains the scheduled backstop, not the proof
-path for a source-fresh detail sweep.
+monolithic `cre_daily_update.sh` is a legacy backstop, not the proof path for a
+source-fresh detail sweep or a new Windows schedule. For explicit-source,
+bounded inventory/enrichment trials, see the
+[guarded incremental guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
+Scheduling and full-source acceptance remain separately gated.
 
 Strict Avison generations use validated direct HTTP detail reads because the
 same public static property pages can exceed the local browser-render timeout.
