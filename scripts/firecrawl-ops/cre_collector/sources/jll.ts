@@ -1767,10 +1767,16 @@ export async function enrichJllListing(base: any): Promise<any> {
           jllSanitizeHiddenChildMetadata(item, "artifact"),
         )
       : harvested.media;
-    const photos = dedupeStrings([
-      ...(images.length ? images : (base.photos ?? [])),
-      ...harvested.images,
-    ]);
+    const photoPrefix = dedupeStrings(
+      images.length ? images : (base.photos ?? []),
+    );
+    // Native extraction can return the same image set in different orders.
+    // Preserve the gallery/base primary and ranks; stabilize only extra images.
+    // With no usable prefix, retain legacy ordering rather than pick a primary.
+    const supplementalImages = photoPrefix.length
+      ? [...harvested.images].sort()
+      : harvested.images;
+    const photos = dedupeStrings([...photoPrefix, ...supplementalImages]);
     // Withheld detail gets a deliberately minimal, allowlisted representation.
     // Do not attempt to maintain a future blacklist for arbitrary provider
     // fields: price-bearing prose can surface in highlights or long-tail facts.
