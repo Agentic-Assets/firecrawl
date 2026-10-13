@@ -114,7 +114,8 @@ if ($CheckOnly) {
 }
 if (-not $admitted) { throw 'Windows load prevented admission; no WSL tier was started.' }
 
-$wsl = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop).Source
+$wsl = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop |
+    Select-Object -First 1).Source
 $collector = $LinuxRepo.TrimEnd('/') + '/scripts/firecrawl-ops/cre_collector'
 $arguments = @('-d', $Distro, '-u', $LinuxUser, '--exec', 'python3',
     "$collector/cre_guarded_tier.py", $Tier, '--source', $Source,
