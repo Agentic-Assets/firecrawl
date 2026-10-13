@@ -112,6 +112,25 @@ stack action should overlap the active JLL collection. Fresh successful paired
 results are required before changing fallback, cache methods, ingest method
 admission or C10 contracts.
 
+### Stable supplemental photo order
+
+[AGENTIC-4164](https://linear.app/agenticassets/issue/AGENTIC-4164) stabilizes
+the JLL enricher's supplemental photos without changing transport selection.
+The nonempty native gallery keeps its existing order and first primary photo;
+when absent, the existing base-photo prefix keeps that role. Only extra
+harvested URLs are sorted using locale-independent string order, with the
+existing URL filtering and deduplication preserved. This intentionally changes
+secondary image `display_order` rather than discarding ordering evidence.
+
+If neither usable prefix exists, the legacy harvested order is retained:
+strict ordering parity remains unproved for that unanchored case. The paired
+audit still compares ordered arrays and exact normalized facts. Equivalent URL
+aliases are deduplicated before sorting; their existing first-seen representative
+selection is unchanged, so this does not establish universal ordering parity.
+This does not
+admit the direct candidate, add converter dependencies, repair existing image
+rows, or establish static-HTTP completeness or a live speedup.
+
 ### Opt-in concrete paired worker
 
 The AGENTIC-2900 foreground coordinator can opt into `--paired-jll`. After a
