@@ -31,8 +31,8 @@ docker compose version
 scripts/firecrawl-ops/install_git_hooks.sh
 scripts/firecrawl-ops/sync_agent_skills.sh
 
-docker compose build
-docker compose up -d
+docker compose build api playwright-service nuq-postgres
+docker compose up -d api
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
@@ -65,12 +65,17 @@ Plain scrape, crawl, map, search, and basic PDF parsing can be tested without mo
 ## Daily Commands
 
 ```bash
-docker compose up -d
+docker compose up -d api
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 docker compose logs api --tail 200
-docker compose up -d --force-recreate api
-docker compose down
+# Stop only after active work/queues have settled; preserves containers.
+docker compose stop
 ```
+
+The core's Redis/RabbitMQ/NuQ containers have no durable data volumes.
+`docker compose down` removes them, and recreation can discard their state.
+Use the existing operator maintenance/handoff procedure for model changes,
+rebuilds or recreation of a live stack; these are not routine daily commands.
 
 Use the local API:
 
@@ -102,14 +107,16 @@ OCR runs locally through Docling and does not spend Firecrawl cloud credits. Ext
 ## After Pulling Changes
 
 ```bash
-git pull
+git pull --ff-only
 scripts/firecrawl-ops/sync_agent_skills.sh
-docker compose build
-docker compose up -d
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
-If only docs or scripts changed, a full Docker rebuild may not be needed. If API TypeScript, Dockerfile, package files, or native code changed, rebuild.
+Docs-only changes require no Docker rebuild. When API/sidecar source,
+Dockerfiles, package files or native code change, plan the affected service
+rebuild/recreation in an approved idle maintenance window. Preserve current
+Compose overrides, settle queues and check runtime health afterward. Do not
+rebuild every optional service merely because a pull completed.
 
 ## Upstream Sync
 

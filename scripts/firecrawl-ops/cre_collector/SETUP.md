@@ -9,7 +9,9 @@ The pipeline has two halves:
 
 - **Heavy half** (`collect.ts`, Node/tsx): scrapes brokerage sites through the
   local self-hosted **Firecrawl Docker stack** (API + headless Chromium + Redis
-  + RabbitMQ + queue). Needs the stack up and a residential IP.
+  + RabbitMQ + queue). Needs the stack up for browser-backed adapters and
+  source-specific network access. Some brokerage anti-bot systems reject
+  particular egress IPs; a passing small probe does not certify every source.
 - **Light half** (`cre_ingest.py`, `cre_monitor.py`, `cre_gate.py`, Python
   stdlib only): upserts into Supabase `credeals` by shelling out to `psql`.
   Needs `psql` and a `POSTGRES_URL`.
@@ -100,17 +102,28 @@ explicit Firecrawl scrape smoke (which POSTs a scrape request and accesses
 example.com), run `bash scripts/firecrawl-ops/firecrawl_healthcheck.sh` from the
 repo root. Do not treat that command as a read-only doctor.
 
-For Python tests, create an isolated clone so lock discovery cannot reach a
+### Isolated verification
+
+For Python and TypeScript tests, create an isolated clone so lock discovery cannot reach a
 runtime checkout, then use a venv (also avoids Ubuntu's system-pip restriction):
 
 ```bash
 # From the repository root; choose a new destination outside the runtime clone.
 git clone --no-hardlinks . ~/code/firecrawl-tests
 cd ~/code/firecrawl-tests/scripts/firecrawl-ops/cre_collector
+npm ci --ignore-scripts
+# Python integration tests also execute Node/tsx in the browser sidecar.
+# This version must match apps/playwright-service-ts/package.json.
+(cd ../../../apps/playwright-service-ts && npx --yes pnpm@11.4.0 install --frozen-lockfile)
 python3 -m venv .venv
 .venv/bin/python -m pip install pytest
 .venv/bin/python -m pytest tests/ -q
+npm test
 ```
+
+Both suites run only in that standalone clone. The Node packages above are
+test prerequisites, not additional production services. Recheck the sidecar's
+`packageManager` pin after pulling a revision that changes it.
 
 On WSL, load `~/.agentic-assets/env` when canonical agent context has been
 installed. Use `bash cre_status.sh --scheduler external` for artifacts and API
@@ -161,6 +174,8 @@ Changing connection endpoint or upgrading a historical pooled fingerprint
 requires a fresh checkpoint generation, not an edited resume manifest.
 See [Supabase connection guidance](https://supabase.com/docs/guides/database/connecting-to-postgres)
 and [SSL enforcement](https://supabase.com/docs/guides/platform/ssl-enforcement).
+For the diagnosed IPv6/TLS failure and verified repair, use the
+[WSL Supabase troubleshooting guide](../../../docs/firecrawl-ops/references/wsl-supabase-connection-troubleshooting.md).
 
 ---
 

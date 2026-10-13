@@ -13,6 +13,11 @@ Docker's [WSL guidance](https://docs.docker.com/desktop/features/wsl/) and Micro
 
 WSL resource limits belong in `%USERPROFILE%\.wslconfig`, not a tracked repository file. They apply to all WSL 2 distributions. Changing them requires stopping Docker, shutting down WSL, and restarting Docker; first check for other running WSL work. Leave automatic Docker startup off if the stack is only needed during interactive work. The shared Compose resource limits and bounded log rotation remain unchanged.
 
+With WSL, [Docker Resource Saver](https://docs.docker.com/desktop/use-desktop/resource-saver/)
+does not stop the shared Linux VM or reclaim its memory. WSL integration can
+also prevent entry into Resource Saver. Treat the ceilings above as the bound;
+memory reclamation is a separate WSL setting, not a promised Resource Saver benefit.
+
 From PowerShell in the repository root:
 
 ```powershell
@@ -23,6 +28,9 @@ wsl --version
 ```
 
 Expect `desktop-linux` and `OSType=linux`. If necessary, select the existing `desktop-linux` context after starting Docker Desktop. Do not select the Mac's `orbstack` context on Windows.
+Inside an integrated Ubuntu distribution, the context can be `default` while
+using the same Docker Desktop engine; verify `docker info` there rather than
+creating a second daemon or forcing the Windows context name into Linux.
 
 ## Keep the API local to this computer
 
@@ -159,6 +167,11 @@ CLI 2.120.0 supports `db query --linked --project-ref <verified-project-ref> --f
 
 Management API access does not prove that Ubuntu can open the collector's PostgreSQL connection. Check DNS, routing and the actual approved database transport separately. Supabase's [connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres) explains that the default direct endpoint uses IPv6, while its shared session pooler supports IPv4. If the direct endpoint is unreachable from WSL, an operator-approved session-pooler endpoint or IPv4 add-on can provide an alternative. Preserve target-binding and credential checks; do not silently rewrite connection strings or change Windows network policy. Transaction pooling has different connection semantics and must be checked against the caller's contract before substitution. A CLI readback alone is not a full refresh or an authorization to change the live writer.
 
+Use the [WSL Supabase connection troubleshooting guide](wsl-supabase-connection-troubleshooting.md)
+for the verified IPv6 route failure, approved session pooler on5432, official
+CA/verify-full repair, credential-free diagnostics and fresh checkpoint identity.
+It separates a working database connection from production handoff acceptance.
+
 ## Daily use and limitations
 
 ```powershell
@@ -185,7 +198,8 @@ container resource ceilings and follow the exact Linux policy in
 Injected Darwin contracts remain tested; native Mac runtime verification was
 not available during this Windows setup. Do not bypass guards, enable a
 scheduler, cut over the production writer, or perform CRE database writes as
-an onboarding shortcut. AGENTIC-3746 requires founder review before merging
-the Linux safety change; production cutover remains separately governed.
+an onboarding shortcut. The Linux safety change merged after founder approval
+in [PR108](https://github.com/Agentic-Assets/firecrawl/pull/108); production
+cutover remains separately governed.
 
 For a bounded no-write collector probe, inspect the source adapter before choosing it. `--max-items` limits emitted listings, not necessarily inventory network requests: SVN/Buildout still enumerates the complete inventory first. Interra's authoritative inventory adapter performs one size/time-bounded request and can project a three-row sample for `cre_ingest.py --dry-run`. Keep sample artifacts private and do not confuse a truncated sample with full-source refresh acceptance.

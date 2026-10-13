@@ -160,9 +160,11 @@ or images into Supabase storage for the bulk collector.
 ## Monitor, enrichment, and automation
 
 The collector registers **51 source keys** in `types.ts` / `collect.ts`. Live
-counts, per-source status, and run-health belong in
-`cre_collector/START_HERE.md` only. Run `bash cre_status.sh` before quoting
-schedules or last-run verdicts.
+counts, per-source status, and run-health require fresh validation/checkpoint
+readback; Markdown snapshots are history. Use `cre_collector/START_HERE.md`
+for procedure and AGENTIC-2902 for execution evidence. Run `bash cre_status.sh`
+on macOS, or `bash cre_status.sh --scheduler external` on Ubuntu/WSL, before
+quoting scheduler or last-run state; external mode does not verify a scheduler.
 
 **Shipped architecture:**
 - Observe-only monitor (007): `collect.ts --monitor` → `cre_monitor.py` only;
@@ -180,11 +182,12 @@ schedules or last-run verdicts.
   (`cre_backfill_raw_data`, `om_classify_existing`, `cre_geo_backfill`) ran
   additively; `status` was never touched.
 
-**Current runtime, audited 2026-07-11:** no CRE scheduler is installed or
-running on the Mac mini. The 2026-07-05 launchd cutover text is historical and
-does not authorize a reload. Use the operator runbook for ordered recovery;
-aa-hub is the only approved GetCREdata scheduling lane, and remains disabled
-until its explicit readiness gates pass.
+**Historical runtime, audited 2026-07-11:** no CRE scheduler was installed or
+running on the Mac mini at that time. The 2026-07-05 launchd cutover text does
+not authorize a reload or establish present scheduler state. **aa-hub is
+decommissioned and must never be revived**, per canonical company AGENTS.md.
+Any scheduling follows the current visible-surface approval and registry
+rules; this historical note authorizes no replacement scheduler.
 
 **Still gated for explicit go-ahead:** live status activation, consumer
 board-gate deploy + widened `005`/`006` views, media backfill

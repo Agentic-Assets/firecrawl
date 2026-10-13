@@ -1,14 +1,14 @@
 # CLAUDE.md - cre_collector/
 
 > **ACTIVE production path.** This is the only supported collector and ingest
-> implementation. It is not currently scheduled on the Mac mini. Do **not**
+> implementation. Scheduler state requires live readback. Do **not**
 > implement daily collection in `../cre_scrapers/` (legacy Python
 > probes/archives only).
 
 > **Historical runtime source, 2026-07-11:** The Mac mini audit found no CRE
 > launchd jobs, markers, or collector artifacts at that point in time. For
 > current refresh work, use `cre_status.sh`, the strict checkpoint runner, and
-> the July 29 refresh ledger. The July 11 operator runbook remains historical
+> [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902). The July 11 operator runbook remains historical
 > scheduler-recovery and OM-canary context.
 
 Multi-source CRE listing collector + Supabase ingestor. This is the
@@ -104,27 +104,18 @@ checkpoint-manifest readback. Dated docs are operational history.
 ```bash
 cd scripts/firecrawl-ops/cre_collector
 bash cre_setup.sh                # fresh clone: preflight + bootstrap (deps, checks, smoke). See SETUP.md
-npm install                      # once (cre_setup.sh does this for you)
 npm run typecheck                # TypeScript validation
-npm test                         # TypeScript typecheck + unit tests
-npm run test:unit                # TypeScript unit tests only
-python3 -m pytest tests/ -q      # Python collector tests
-
-# Small probe of one source, both transactions
-npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
-
-# Development-only artifact collection. This bypasses checkpoint CPU controls
-# and must not be used for a supervised registry refresh.
-npx tsx collect.ts --source=all --transaction=both --max-items=0 \
-  --page-cap=400 --concurrency=3 --out=out/run.json
-
-# Dry-run contract check. The supervised production path is START_HERE.md's
-# checkpoint series; do not use --mark-missing for that path.
-python3 cre_ingest.py --in out/run.json --dry-run
-
-# Legacy scheduled backstop: not CPU-guarded; see START_HERE.md first.
-bash cre_daily_update.sh --no-mark-missing
+bash cre_status.sh               # macOS scheduler/artifact preflight
+# Ubuntu/WSL: use bash cre_status.sh --scheduler external instead.
 ```
+
+Setup's default smoke is a bounded public Interra inventory GET followed by
+database-free dry-run ingestion; it is not an offline or full-refresh test.
+Run Python and TypeScript suites only in a genuine standalone
+`git clone --no-hardlinks`, following
+[SETUP's isolated verification recipe](SETUP.md#isolated-verification).
+Use [START_HERE](START_HERE.md) for the supervised checkpoint path; raw
+`--source=all` and the legacy daily script are not routine setup checks.
 
 ## collect.ts
 
