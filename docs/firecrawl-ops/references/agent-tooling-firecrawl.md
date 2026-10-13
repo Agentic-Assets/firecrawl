@@ -2,6 +2,28 @@
 
 This repo keeps the local Firecrawl tool layer separate from any one agent model or IDE.
 
+## Onboarding an app to the local service
+
+Use the repository's `firecrawl-local-api` and `firecrawl-ops` skills. Inspect
+the caller's existing dependencies, choose the narrowest supported endpoint,
+set the local base URL explicitly and prove one harmless request before
+building a larger workflow. In the Windows Ubuntu runtime, prefer
+`FIRECRAWL_API_URL=http://127.0.0.1:3002` for its IPv4 loopback publication.
+Auth-disabled direct calls require no hosted Firecrawl account or paid API
+key; SDK/MCP placeholders are not hosted credentials. Keep provider keys out
+of source and use the existing pinned CLI/MCP wrappers.
+
+The official
+[firecrawl-build-onboarding skill](https://github.com/firecrawl/skills/blob/5348e9ed68062cff515f741eb61de92eeb509d12/skills/build/firecrawl-build-onboarding/SKILL.md)
+was reviewed on2026-10-13. Its default hosted-key authentication and
+`firecrawl-cli@latest init --all --browser` flow do not match this deployment.
+Do not install that onboarding flow unchanged or run cloud login to configure
+our local API. Its general project inspection, endpoint selection and smoke
+testing advice is useful; its cloud capabilities and install commands are
+not a substitute for this fork's verified interfaces. Local API calls consume
+no hosted Firecrawl credits, while separately configured AI/search/proxy
+providers can still incur charges. The route limitations below still apply.
+
 ## Layers
 
 1. **Local Firecrawl runtime**

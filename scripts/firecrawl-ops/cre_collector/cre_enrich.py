@@ -77,6 +77,7 @@ from datetime import datetime, timezone
 # symbols; it never re-implements credential loading or quote-doubling.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
+    assert_expected_database_target,
     find_psql,
     load_db_url,
     psql_connection_args,
@@ -485,6 +486,8 @@ def run(args):
         return 0
 
     db_url, env_path = load_db_url(args.env_file)
+    expected_target = getattr(args, "expected_db_target_sha256", None)
+    assert_expected_database_target(db_url, expected_target)
     print(f"credentials: {env_path}", file=sys.stderr)
 
     # (1) Claim a batch atomically.
@@ -540,10 +543,19 @@ def run(args):
         ingest = subprocess.run(
             [sys.executable, os.path.join(HERE, "cre_ingest.py"),
              *build_ingest_argv(enriched_path)]
-            + (["--env-file", args.env_file] if args.env_file else []),
+            + (["--env-file", args.env_file] if args.env_file else [])
+            + (["--expected-db-target-sha256", expected_target]
+               if expected_target is not None else []),
             cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
         )
         if ingest.returncode != 0:
+            if expected_target is not None:
+                # A guarded owner must reconcile uncertain ingest before any
+                # claim can be retried. A nonzero client exit is not rollback
+                # proof; leave claims and its durable recovery fence intact.
+                print("bound ingest did not complete; claims retained for operator recovery",
+                      file=sys.stderr)
+                return 1
             # Release so the batch re-enriches next run; re-ingest is idempotent
             # (upsert key + COALESCE-keep), so at most one wasted render.
             _psql_exec(db_url, build_release_sql(
@@ -587,6 +599,10 @@ def main():
               "that source (manual use only)"),
     )
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    ap.add_argument(
+        "--expected-db-target-sha256", default=None,
+        help="require this database target before claims and in the ingest child",
+    )
     ap.add_argument("--dry-run", action="store_true",
                     help="build the claim SQL and print it; never connect to a DB")
     args = ap.parse_args()

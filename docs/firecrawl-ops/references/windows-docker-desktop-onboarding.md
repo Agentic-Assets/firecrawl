@@ -197,6 +197,12 @@ It separates a working database connection from production handoff acceptance.
 
 ## Daily use and limitations
 
+For supervised incremental CRE trials and whole-Windows load admission, use
+the [guarded incremental tier guide](guarded-incremental-tiers.md). It explains
+which commands are database-free, how the Linux recovery barrier behaves,
+and the remaining scheduler acceptance steps. Do not enable legacy tier
+commands as an unattended Windows shortcut.
+
 ```powershell
 docker compose up -d api
 docker compose ps
