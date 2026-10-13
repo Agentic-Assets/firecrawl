@@ -32,6 +32,11 @@ Inside an integrated Ubuntu distribution, the context can be `default` while
 using the same Docker Desktop engine; verify `docker info` there rather than
 creating a second daemon or forcing the Windows context name into Linux.
 
+If Desktop is open but the engine is stopped, follow
+[Windows Docker engine recovery](windows-docker-engine-recovery.md) before
+changing WSL integration settings or reinstalling anything. Verify engine
+readiness, Ubuntu integration and Firecrawl container health separately.
+
 ## Keep the API local to this computer
 
 The shared Compose API port is published on all host interfaces by default. For local development, create an untracked `docker-compose.override.yaml` with a loopback-only port. Compose 2.24.4 or newer supports `!override`, which replaces the original port list rather than adding a second binding:
