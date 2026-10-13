@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from cre_performance import resolve_runtime_target, utc_now
+from cre_linux_telemetry import LinuxMemorySampler, LinuxTelemetryError, memory_policy
 from cre_runtime_observability import sanitize_context
 
 SCHEMA_VERSION = 1
@@ -258,6 +259,54 @@ def _append_record(path: Path, record: Mapping[str, object]) -> None:
         os.close(fd)
 
 
+def _linux_memory_observation(
+    sampler: LinuxMemorySampler, deadline: float
+) -> tuple[int, int, dict[str, int], str]:
+    """Read bounded Linux totals; reuse the existing PSI/cgroup pressure policy."""
+    if time.monotonic() >= deadline:
+        raise TimeoutError("sample deadline")
+    with (sampler.proc / "meminfo").open("r", encoding="ascii") as handle:
+        text = handle.read(MAX_COMMAND_BYTES + 1)
+    if len(text) > MAX_COMMAND_BYTES:
+        raise ValueError("Linux memory evidence exceeds cap")
+    required = {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}
+    info = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key not in required:
+            continue
+        match = re.fullmatch(r"\s*([0-9]{1,24})\s+kB\s*", value)
+        if match is None or key in info or int(match[1]) * 1024 >= 2**63:
+            raise ValueError("Linux memory evidence invalid")
+        info[key] = int(match[1]) * 1024
+    if set(info) != required:
+        raise ValueError("Linux memory evidence incomplete")
+    total, available = info["MemTotal"], info["MemAvailable"]
+    swap_total, swap_free = info["SwapTotal"], info["SwapFree"]
+    if not total or available > total or swap_free > swap_total:
+        raise ValueError("Linux memory totals invalid")
+    if time.monotonic() >= deadline:
+        raise TimeoutError("sample deadline")
+    level = sampler()
+    pressure = (
+        {1: "normal", 2: "warning", 4: "critical"}.get(level)
+        if type(level) is int
+        else None
+    )
+    if pressure is None or time.monotonic() >= deadline:
+        raise ValueError("Linux memory pressure unavailable or stale")
+    return (
+        total,
+        available,
+        {
+            "total_bytes": swap_total,
+            "free_bytes": swap_free,
+            "used_bytes": swap_total - swap_free,
+        },
+        pressure,
+    )
+
+
 class ResourceUsageSampler:
     """One independent optional observer; every instance owns one session."""
 
@@ -284,6 +333,7 @@ class ResourceUsageSampler:
         self.sample_seconds = float(sample_seconds)
         self.cpu_sampler = cpu_sampler
         self.context_provider = context_provider
+        self.linux_memory_sampler = LinuxMemorySampler()
         self.session_id = uuid.uuid4().hex
         self.started = time.monotonic()
         self.stop_event = threading.Event()
@@ -341,23 +391,57 @@ class ResourceUsageSampler:
                 gaps.append("host_cpu")
         if cpu is None:
             gaps.append("host_cpu")
-        vm = parse_vm_stat(read("vm_stat", ["/usr/bin/vm_stat"]))
-        memory_text = read(
-            "host_memory", ["/usr/sbin/sysctl", "-n", "hw.memsize"]
-        ).strip()
-        total_memory = (
-            int(memory_text)
-            if memory_text.isdigit()
-            and len(memory_text) <= 19
-            and int(memory_text) < 2**63
-            else None
-        )
-        swap = parse_swap(read("swap", ["/usr/sbin/sysctl", "-n", "vm.swapusage"]))
-        pressure_text = read(
-            "memory_pressure",
-            ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
-        ).strip()
-        pressure = {"1": "normal", "2": "warning", "4": "critical"}.get(pressure_text)
+        linux_host: dict[str, object] = {}
+        if sys.platform == "darwin":
+            vm = parse_vm_stat(read("vm_stat", ["/usr/bin/vm_stat"]))
+            memory_text = read(
+                "host_memory", ["/usr/sbin/sysctl", "-n", "hw.memsize"]
+            ).strip()
+            total_memory = (
+                int(memory_text)
+                if memory_text.isdigit()
+                and len(memory_text) <= 19
+                and int(memory_text) < 2**63
+                else None
+            )
+            swap = parse_swap(read("swap", ["/usr/sbin/sysctl", "-n", "vm.swapusage"]))
+            pressure_text = read(
+                "memory_pressure",
+                ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+            ).strip()
+            pressure = {"1": "normal", "2": "warning", "4": "critical"}.get(
+                pressure_text
+            )
+        else:
+            # Linux has no Darwin wired/compressor categories. Keep them absent,
+            # rather than deriving misleading equivalents from free/cache RAM.
+            vm = {}
+            total_memory = None
+            swap = parse_swap("")
+            pressure = None
+            if sys.platform.startswith("linux"):
+                linux_host = {
+                    "memory_available_bytes": None,
+                    "memory_telemetry_scope": memory_policy()["telemetry_scope"],
+                    "memory_pressure_basis": memory_policy()["basis"],
+                }
+                try:
+                    if self.stop_event.is_set():
+                        raise TimeoutError("sample stopped")
+                    total_memory, available, swap, pressure = _linux_memory_observation(
+                        self.linux_memory_sampler, deadline
+                    )
+                    linux_host["memory_available_bytes"] = available
+                except (
+                    OSError,
+                    UnicodeError,
+                    ValueError,
+                    TimeoutError,
+                    LinuxTelemetryError,
+                ):
+                    gaps.append("linux_memory")
+            else:
+                gaps.append("host_memory_unsupported_platform")
         try:
             load = [_number(value, 1_000_000) for value in os.getloadavg()]
         except OSError:
@@ -471,6 +555,7 @@ class ResourceUsageSampler:
                 "load_5m": load[1],
                 "load_15m": load[2],
                 "disk": disk_values,
+                **linux_host,
             },
             "processes": {
                 **processes,
@@ -571,10 +656,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     cpu_sampler = None
     try:
-        from cre_checkpoint_refresh import DarwinCpuSampler
+        from cre_checkpoint_refresh import DarwinCpuSampler, host_cpu_sampler
 
-        cpu_sampler = DarwinCpuSampler()
-    except Exception:  # noqa: BLE001 - non-Darwin hosts retain partial diagnostics
+        cpu_sampler = (
+            DarwinCpuSampler()
+            if sys.platform == "darwin"
+            else host_cpu_sampler(initial_interval_seconds=2.0)
+        )
+    except Exception:  # noqa: BLE001 - failed construction retains partial diagnostics
         with contextlib.suppress(Exception):
             print(WARNING, file=sys.stderr)
     with observe_resource_usage(

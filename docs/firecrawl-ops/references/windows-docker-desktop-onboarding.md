@@ -200,9 +200,10 @@ closed. In WSL2/Docker Desktop these measurements cover the Linux VM and
 visible cgroups, **not aggregate Windows host CPU or RAM**. Keep the WSL and
 container resource ceilings and follow the exact Linux policy in
 [`START_HERE.md`](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#cpu-and-memory-safety-and-evidence).
-Injected Darwin contracts remain tested; native Mac runtime verification was
-not available during this Windows setup. Do not bypass guards, enable a
-scheduler, cut over the production writer, or perform CRE database writes as
+Linux and native macOS offline regression proof is recorded separately on
+[AGENTIC-3753](https://linear.app/agenticassets/issue/AGENTIC-3753); neither
+substitutes for a production checkpoint or unattended acceptance. Do not
+bypass guards, enable a scheduler, cut over the production writer, or perform CRE database writes as
 an onboarding shortcut. The Linux safety change merged after founder approval
 in [PR108](https://github.com/Agentic-Assets/firecrawl/pull/108); production
 cutover remains separately governed.
