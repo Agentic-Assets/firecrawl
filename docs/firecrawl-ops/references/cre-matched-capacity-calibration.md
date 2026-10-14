@@ -220,10 +220,12 @@ provided.
 
 ## Runtime comparisons and adoption
 
-First repeat the current cautious configuration without changing it: API 2 CPU,
-8GiB, queue 4; browser 2 CPU,16GiB,4 pages,PID 384,8GiB shared memory. Treat these as
-intended settings until exact runtime readback confirms them. A possible second
-profile is the earlier trial's API 2 CPU/8GiB/queue 8 and browser 4 CPU/16GiB/8 pages/
+First repeat the separately reviewed dedicated calibration target without
+changing it: API 2 CPU,8GiB,queue 4; browser 2 CPU,16GiB,4 pages,PID 384,8GiB
+shared memory. This differs from shared Compose defaults of API 1 CPU/queue 2
+and browser 2 CPUs. Treat calibration settings as intended until exact runtime
+readback confirms them. A possible second profile is the earlier trial's
+API 2 CPU/8GiB/queue 8 and browser 4 CPU/16GiB/8 pages/
 PID 768/8GiB shared memory. That candidate requires a newly reviewed explicit
 profile and isolated runtime identity; this document does not activate it.
 Preserve pinned images, model/OCR/provider credentials, security and proxy

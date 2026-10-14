@@ -187,8 +187,9 @@ only; the watchdog makes the stop decision.
 
 For a supervised full-registry run on a shared Mac, use the more conservative
 profile below. It limits the browser to one page and gives the API and browser
-sidecar one CPU each. Compose defaults are two CPUs each, so the profile takes
-effect only after the explicit recreate.
+sidecar one CPU each. Compose defaults are one CPU for the API and two for the
+browser, so the conservative profile reduces browser capacity only after the
+explicit recreate.
 
 ```bash
 # From the repository root. This changes only four non-secret .env keys.
