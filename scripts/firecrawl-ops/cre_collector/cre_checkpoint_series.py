@@ -13,6 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
+import selectors
 import signal
 import subprocess
 import sys
@@ -30,6 +33,7 @@ from cre_checkpoint_refresh import (
     DEFAULT_MAX_RESUME_AGE_HOURS,
     SOURCE_KEYS,
     RefreshError,
+    ProcessCleanupUnknown,
     allocate_run_id,
     atomic_write_json,
     database_target_fingerprint,
@@ -44,7 +48,11 @@ from cre_memory_guard import (
     DEFAULT_MEMORY_SUSTAIN_SECONDS,
     memory_guard_config,
 )
-from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
+from cre_owned_processes import (
+    OwnedProcessGroup,
+    _defer_cleanup_signals,
+    settle_owned_groups,
+)
 from cre_performance_report import save_report
 from cre_resource_recovery import (
     DEFAULT_LOW_CPU_PERCENT,
@@ -1295,12 +1303,154 @@ def _cool_down_for_child_resume(
     return None
 
 
+def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
+    """Bound local inspection bytes/time; never fetch, persist stderr or use a shell."""
+    limit = 65536
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    try:
+        with _defer_cleanup_signals():
+            process = subprocess.Popen(
+                [
+                    "git",
+                    "--no-optional-locks",
+                    "-c",
+                    "core.fsmonitor=false",
+                    *arguments,
+                ],
+                cwd=COLLECTOR_DIR,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            try:
+                group = OwnedProcessGroup.from_spawn(process)
+            except (Exception, KeyboardInterrupt):
+                raise ProcessCleanupUnknown(
+                    "local Git ownership registration unavailable"
+                ) from None
+    except OSError:
+        raise SeriesError("local Git inspection failed to start") from None
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        try:
+            with selectors.DefaultSelector() as selector:
+                os.set_blocking(process.stdout.fileno(), False)
+                selector.register(process.stdout, selectors.EVENT_READ)
+                eof = False
+                while not eof:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SeriesError("local Git inspection timeout")
+                    for key, _events in selector.select(remaining):
+                        chunk = os.read(key.fd, min(8192, limit + 1 - len(output)))
+                        if not chunk:
+                            eof = True
+                            break
+                        output.extend(chunk)
+                        if len(output) > limit:
+                            raise SeriesError(
+                                "local Git inspection output exceeded bound"
+                            )
+                try:
+                    rc = process.wait(timeout=max(0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    raise SeriesError("local Git inspection timeout") from None
+        except BaseException as error:
+            settled = settle_owned_groups([group], grace_seconds=0.5, kill_seconds=0.5)
+            if not settled.settled:
+                raise ProcessCleanupUnknown(
+                    "local Git cleanup_unknown; manual settlement required"
+                ) from None
+            if isinstance(error, KeyboardInterrupt):
+                raise
+            if isinstance(error, SeriesError):
+                raise error from None
+            raise SeriesError("local Git inspection failed") from None
+        settled = settle_owned_groups([group], grace_seconds=0, kill_seconds=0.1)
+        if not settled.settled:
+            raise ProcessCleanupUnknown(
+                "local Git cleanup_unknown; manual settlement required"
+            ) from None
+        if rc != 0:
+            raise SeriesError("local Git inspection failed")
+        try:
+            return output.decode("utf-8").strip()
+        except UnicodeError:
+            raise SeriesError("local Git inspection output invalid") from None
+    finally:
+        process.stdout.close()
+
+
+def verify_reviewed_checkout(expected_sha: str) -> None:
+    """Pin clean local code; a matching tracking tip is not remote freshness."""
+    if (
+        not isinstance(expected_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None
+    ):
+        raise SeriesError("expected SHA must be a lowercase full40 revision")
+    if local_git_output(["rev-parse", "HEAD"]) != expected_sha:
+        raise SeriesError("checkout SHA differs from the reviewed revision")
+    if local_git_output(["status", "--porcelain", "--untracked-files=normal"]):
+        raise SeriesError("reviewed checkout is not clean")
+    if (
+        expected_sha
+        not in local_git_output(
+            [
+                "for-each-ref",
+                "--format=%(objectname)",
+                "refs/remotes/origin/",
+            ]
+        ).splitlines()
+    ):
+        raise SeriesError("reviewed revision has no matching local origin tracking tip")
+
+
+def admit_series_invocation(
+    expected_sha: str | None, windows_unix_ms: int | None
+) -> dict | None:
+    """Current invocation only; optional Windows evidence is startup-only."""
+    if expected_sha is None:
+        if windows_unix_ms is not None:
+            raise SeriesError("Windows startup admission requires an expected SHA")
+        return None
+    # Reject malformed invocation identity before local inspection.
+    if (
+        not isinstance(expected_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None
+    ):
+        raise SeriesError("expected SHA must be a lowercase full40 revision")
+    verify_reviewed_checkout(expected_sha)
+    if windows_unix_ms is not None:
+        from cre_guarded_tier import GuardedTierError, validate_windows_admission
+
+        try:
+            validate_windows_admission(windows_unix_ms)
+        except (GuardedTierError, OverflowError, TypeError, ValueError):
+            raise SeriesError("Windows startup admission is stale or invalid") from None
+    return {
+        "expected_sha": expected_sha,
+        "checked_at": utc_now(),
+        "origin_tracking": "matching_local_tip_not_remote_freshness",
+        "windows_admission_unix_ms": windows_unix_ms,
+        "windows_scope": "startup_only"
+        if windows_unix_ms is not None
+        else "not_supplied",
+    }
+
+
 def run_series(
     series_dir: Path,
     manifest: dict[str, Any],
     *,
     env_file: str | None,
     retry_failed: bool,
+    expected_sha: str | None = None,
 ) -> int:
     config = manifest["config"]
     git_sha = manifest["collector_git_sha"]
@@ -1389,6 +1539,21 @@ def run_series(
                 return cooldown_rc
 
         while True:
+            if expected_sha is not None:
+                try:
+                    verify_reviewed_checkout(expected_sha)
+                except (SeriesError, ProcessCleanupUnknown) as error:
+                    checkpoint["state"] = "failed_global"
+                    checkpoint["error"] = (
+                        "local Git cleanup_unknown; manual settlement required"
+                        if isinstance(error, ProcessCleanupUnknown)
+                        else "reviewed checkout refused before child dispatch"
+                    )
+                    manifest["status"] = "failed"
+                    manifest["error"] = checkpoint["error"]
+                    manifest["finished_at"] = utc_now()
+                    save_manifest(series_dir, manifest)
+                    return 1
             attempt_number = len(checkpoint["attempts"]) + 1
             log_path = log_root / f"{index:02d}-{source}-attempt-{attempt_number}.log"
             fresh_run_id: str | None = None
@@ -1614,6 +1779,8 @@ def run_series(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", default=None)
+    parser.add_argument("--expected-sha", default=None)
+    parser.add_argument("--windows-admission-unix-ms", type=int, default=None)
     parser.add_argument(
         "--reconcile-stale-series",
         action="store_true",
@@ -1748,7 +1915,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "when recovery is enabled"
         )
 
-    git_sha, git_dirty = git_identity()
+    invocation_admission = admit_series_invocation(
+        args.expected_sha, args.windows_admission_unix_ms
+    )
+    git_sha, git_dirty = (
+        (args.expected_sha, False) if args.expected_sha is not None else git_identity()
+    )
     if git_dirty:
         raise SeriesError("refusing checkpoint series from a dirty checkout")
     config = series_config(
@@ -1808,6 +1980,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config=config,
                     database_target=database_target,
                 )
+            # This is a replaceable latest-invocation observation, never config/history.
+            manifest.pop("latest_invocation_admission", None)
+            if invocation_admission is not None:
+                manifest["latest_invocation_admission"] = invocation_admission
             save_manifest(series_dir, manifest)
 
             previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -1818,6 +1994,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     manifest,
                     env_file=args.env_file,
                     retry_failed=args.retry_failed,
+                    **(
+                        {"expected_sha": args.expected_sha}
+                        if args.expected_sha is not None
+                        else {}
+                    ),
                 )
             finally:
                 signal.signal(signal.SIGTERM, previous_sigterm)
