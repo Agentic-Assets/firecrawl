@@ -154,7 +154,17 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
     elseif ($scenario -ne 'missing-identity') { $childArguments += @('-Source', 'hanley', '-ExpectedSha', ('a' * 40)) }
     $caseOut = Join-Path $caseRoot 'host.stdout'
     $caseErr = Join-Path $caseRoot 'host.stderr'
-    $launched = [CreWindowsCapture.Capture]::Run($hostExecutable, $childArguments, $caseOut, $caseErr, $null)
+    if ($scenario -eq 'held-pipes') {
+        # Framework descendants can also inherit this outer harness's pipe
+        # handles. Give only the test observer enough time for the4s synthetic
+        # holder to exit. The inner production launcher retains its2s budget.
+        $outerOutput = [IO.File]::Open($caseOut, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $outerError = [IO.File]::Open($caseErr, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $launched = [CreWindowsCapture.Capture]::RunWithStreams($hostExecutable, $childArguments, $outerOutput, $outerError, $null, 5000)
+    } else {
+        $launched = [CreWindowsCapture.Capture]::Run($hostExecutable, $childArguments, $caseOut, $caseErr, $null)
+    }
+    [IO.File]::WriteAllText((Join-Path $caseRoot 'host-capture.json'), ($launched | ConvertTo-Json -Depth 8))
     $audits = @(Get-ChildItem (Join-Path $caseRoot 'out/windows-launcher') -Filter '*.json' -ErrorAction SilentlyContinue)
     Assert-True (-not $launched.Failed) 'Synthetic launcher host output must drain.'
     Assert-True (([IO.File]::ReadAllText($caseOut) + [IO.File]::ReadAllText($caseErr)) -notmatch 'CREDENTIAL_CANARY_DO_NOT_LOG') 'Launcher diagnostics must not expose full exception details.'
@@ -186,6 +196,7 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
         Assert-True ($launched.NativeExitCode -eq 1 -and $null -eq $receipt.nativeExitCode -and $receipt.dispatch -ceq 'attempted' -and $receipt.capture.StartFailed) 'Native start attempt failure must remain attempted and Linux-unverified.'
     } elseif ($scenario -eq 'held-pipes') {
         Assert-True ($launched.NativeExitCode -eq 1 -and $receipt.nativeExitCode -eq 0 -and $receipt.wrapperExitCode -eq 1 -and $receipt.capture.Failed) 'Capture drain failure must make wrapper nonzero after native zero.'
+        Assert-True (($receipt.capture.Stdout.DrainTimedOut -or $receipt.capture.Stderr.DrainTimedOut) -and -not $receipt.capture.Stdout.ReaderDidNotStop -and -not $receipt.capture.Stderr.ReaderDidNotStop) 'Inner production drain must time out and join its owned readers.'
     } elseif ($scenario -eq 'flood') {
         Assert-True ($launched.NativeExitCode -eq 0 -and $receipt.capture.Stdout.Truncated -and $receipt.capture.Stderr.Truncated -and -not $receipt.capture.Failed) 'Intentional truncation alone may retain native zero.'
     } elseif ($scenario -eq 'post-start-error') {
