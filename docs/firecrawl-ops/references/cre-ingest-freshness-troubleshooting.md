@@ -56,6 +56,24 @@ findings, or authorize lifecycle changes or recurring scheduling. Follow the
 [checkpoint guide](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md)
 and the live Linear issue for the approved operation.
 
+## Respect observation and lifecycle clock semantics
+
+For a replay of already-present source-index rows, check `last_seen` and
+`last_enumerated_at` against each saved row's original observation time.
+Reject missing or invalid required observations and any newer targeted
+observation. Preserve present/non-soft-deleted state and compare the full
+source-index semantic fingerprint before and after writing.
+
+`presence_changed_at` records a presence transition, rather than enumeration
+freshness. The [lifecycle migration](../../../scripts/firecrawl-ops/sql/016_cre_listing_lifecycle.sql)
+allows NULL and seeds presence state without backfilling that timestamp.
+Canonical ingestion preserves the old transition timestamp when presence
+remains true. Historical NULLs can therefore be valid. Check a transition
+timestamp for invalid or newer values when it exists, retain NULL in the
+semantic comparison, and never fabricate a transition to satisfy a recovery
+check. An extra non-null requirement can reject healthy observations without
+improving the replay's protection against overwriting newer data.
+
 ## Distinguish stale telemetry from memory pressure
 
 `host_memory_telemetry_failed` means the required observer could not supply
