@@ -368,7 +368,7 @@ def test_completed_guard_substitution_blocks_acquire_without_deleting_foreign_pa
     """A replaced terminal journal is a stop, never a pathname cleanup target."""
     lock_path = tmp_path / "out" / "daily" / ".cre.lock"
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
-    lock_path.parent.mkdir(parents=True)
+    lock_path.parent.mkdir(mode=0o700, parents=True)
     recovery._write_recovery_guard(
         guard,
         {"kind": "test", "phase": "completed"},
@@ -390,7 +390,7 @@ def test_completed_guard_rejects_dangling_canonical_lock_or_authority(
 ) -> None:
     """A dangling canonical namespace entry blocks before authority claim/write."""
     lock_path = tmp_path / "out" / "daily" / ".cre.lock"
-    lock_path.parent.mkdir(parents=True)
+    lock_path.parent.mkdir(mode=0o700, parents=True)
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
     recovery._write_recovery_guard(
         guard,
@@ -427,7 +427,7 @@ def test_completed_guard_defers_existing_authority_to_sharedlock_validation(
 ) -> None:
     """Malformed or recovery-required persistent sidecars remain untouched stops."""
     lock_path = tmp_path / "out" / "daily" / ".cre.lock"
-    lock_path.parent.mkdir(parents=True)
+    lock_path.parent.mkdir(mode=0o700, parents=True)
     guard = lock_path.parent / recovery.QUARANTINE_RECOVERY_GUARD
     recovery._write_recovery_guard(
         guard,
