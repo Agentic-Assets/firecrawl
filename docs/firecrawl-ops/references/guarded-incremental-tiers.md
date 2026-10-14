@@ -37,11 +37,13 @@ fingerprint changes can queue enrichment; revision-only, text/image/document-onl
 changes and reappearance alone do not automatically queue it. Full acquisition
 remains responsible for creating previously un-ingested listings.
 
-Plain Matthews enrichment is refused before listing ingestion or claim
-completion because the current targeted artifact lacks strict inventory and
-generation proof. The source-specific
-[Matthews admission reference](matthews-enrichment-admission.md) explains the
-protective refusal and the separate contract needed for future queue writes.
+Unbound Matthews enrichment is refused before listing ingestion or claim
+completion. Its caller-bound targeted contract requires a current sitemap,
+genuine detail observations and the existing Linux/WSL guarded owner, with a
+work deadline of at most 600 seconds. The source-specific
+[Matthews admission reference](matthews-enrichment-admission.md) records the
+contract and its acceptance status. A source adapter registration or successful
+partial detail fetch alone does not grant queue-write authority.
 
 An applied enrichment uses the existing worker semantics, with an additional
 database target fingerprint checked before claims and passed to the ingest
@@ -108,7 +110,9 @@ The Linux owner arms the existing canonical recovery fence before any native
 child, reuses checkpoint CPU/memory watchdogs and owns each subprocess group.
 Enrichment claims are capped at50; monitor checks the complete selected-source
 inventory and its transaction is not limited by that batch parameter. The work
-deadline is30 to14400 seconds. Cleanup
+deadline is30 to14400 seconds. Applied Matthews enrichment is limited to600
+seconds and its one-shot Linux/WSL ownership contract; a longer generic deadline
+is refused before claims. Cleanup
 has the checkpoint's separate grace/join budgets; the work deadline does not
 preempt a blocked kernel call or certify cancellation of remote work.
 

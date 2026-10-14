@@ -25,7 +25,7 @@ import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcKidderMathews } from "./sources/kidder-mathews.js";
 import { srcLyonStahl } from "./sources/lyon-stahl.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
-import { srcMatthews } from "./sources/matthews.js";
+import { srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
 import { srcPyramidBrokerage } from "./sources/pyramid-brokerage.js";
@@ -326,15 +326,22 @@ const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
 async function enrichMain(claimPath: string): Promise<void> {
   const startedAt = new Date().toISOString();
   const raw = readFileSync(claimPath, "utf8");
-  const parsed = JSON.parse(raw) as { items?: EnrichItem[] };
+  const parsed = JSON.parse(raw) as { items?: EnrichItem[]; matthewsTargetedRefresh?: unknown };
   const items = Array.isArray(parsed.items) ? parsed.items : [];
-
+  const optedIn = flags["matthews-targeted-refresh"] === true;
+  const hasContext = Object.hasOwn(parsed, "matthewsTargetedRefresh");
+  if (optedIn !== hasContext) throw new Error("Matthews targeted: CLI opt-in and input context must agree");
+  const context = optedIn ? validateMatthewsTargetedRefresh(parsed.matthewsTargetedRefresh) : undefined;
   const groups = groupEnrichItems(items);
+  if (context && (MONITOR || (flags.source !== undefined && sourceArg !== "matthews") || groups.size !== 1 || !groups.has("matthews") || groups.get("matthews")?.length !== items.length)) {
+    throw new Error("Matthews targeted: requires an exact Matthews-only enrichment input");
+  }
   const companyFor = (key: string) =>
     ENRICH_COMPANY[key as SourceKey] ??
     registeredBuildoutFirmFor(key as SourceKey)?.company ??
     key;
-  const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor);
+  const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor, context);
+  if (context) validateMatthewsTargetedRefresh(context);
 
   console.error(
     `enrich done: ${listings.length} listing(s) from ${groups.size} source group(s), ${brokers.length} unique brokers`
@@ -347,6 +354,15 @@ async function enrichMain(claimPath: string): Promise<void> {
       apiUrl: API_URL,
       mode: "enrich",
       enrichInput: claimPath,
+      ...(context ? {
+        matthewsTargetedRefresh: context,
+        freshness: {
+          generationId: context.generationId,
+          generationStartedAt: context.generationStartedAt,
+          requireFreshDetails: true,
+          requireFreshPropertyDetails: requireFreshPropertyDetails(),
+        },
+      } : {}),
       startedAt,
       finishedAt: new Date().toISOString(),
     },
@@ -369,6 +385,9 @@ async function dispatch(): Promise<void> {
   flushPerformance({ terminal: false });
   try {
     const enrichInput = flags["enrich-input"];
+    if (flags["matthews-targeted-refresh"] && !enrichInput) {
+      throw new Error("Matthews targeted: requires --enrich-input");
+    }
     if (enrichInput) {
       await enrichMain(enrichInput);
     } else {

@@ -256,6 +256,70 @@ def _validate_owner(owner, receipt, lock_path):
     _held_flock(owner)
 
 
+def _require_guarded_matthews_parent(run_id, target, batch, *, worker_identity=None):
+    """Read-only admission for the inherited-group child of the one-shot CLI."""
+    if (
+        sys.platform != "linux"
+        or not isinstance(run_id, str)
+        or not RUN_ID.fullmatch(run_id)
+    ):
+        raise StopRefused("targeted Matthews requires a Linux guarded owner")
+    receipt = _read_receipt(OUT_ROOT, run_id)
+    owner = receipt["stop_owner"]
+    worker = os.getpid() if worker_identity is None else os.getppid()
+    if worker_identity is not None and _process_identity(worker) != worker_identity:
+        raise StopRefused("targeted Matthews worker birth changed")
+
+    def parent_pid():
+        if worker_identity is None:
+            return os.getppid()
+        fields = _proc_text(f"/proc/{worker}/stat").rpartition(")")[2].split()
+        return int(fields[1])
+
+    if (
+        owner.get("pid") != parent_pid()
+        or receipt.get("status") != "running"
+        or receipt.get("tier") != "enrich"
+        or receipt.get("phase") != "enrich_apply"
+        or receipt.get("source") != "matthews"
+        or receipt.get("apply") is not True
+        or receipt.get("database_target_sha256") != target
+        or type(receipt.get("deadline_seconds")) is not int
+        or not 30 <= receipt["deadline_seconds"] <= 600
+        or type(receipt.get("batch")) is not int
+        or not 1 <= receipt["batch"] <= 50
+        or type(batch) is not int
+        or not 1 <= batch <= receipt["batch"]
+        or (worker_identity is None and batch != receipt["batch"])
+    ):
+        raise StopRefused("targeted Matthews guarded context differs")
+    if (
+        os.getpgid(worker) != worker
+        or os.getsid(worker) != worker
+        or os.getpgrp() != worker
+    ):
+        raise StopRefused("targeted Matthews inherited worker group differs")
+    _validate_owner(owner, receipt, checkpoint.canonical_shared_lock_dir())
+    again = _read_receipt(OUT_ROOT, run_id)
+    if again != receipt or parent_pid() != owner["pid"]:
+        raise StopRefused("targeted Matthews guarded context changed")
+    if worker_identity is not None and (
+        os.getppid() != worker or _process_identity(worker) != worker_identity
+    ):
+        raise StopRefused("targeted Matthews worker changed")
+    _validate_owner(owner, again, checkpoint.canonical_shared_lock_dir())
+    return receipt
+
+
+def require_guarded_matthews_parent(run_id, target, batch, *, worker_identity=None):
+    try:
+        return _require_guarded_matthews_parent(
+            run_id, target, batch, worker_identity=worker_identity
+        )
+    except (OSError, ValueError, KeyError, IndexError, TypeError, OverflowError) as exc:
+        raise StopRefused("targeted Matthews guarded evidence is unavailable") from exc
+
+
 def _exited(pidfd, milliseconds=0):
     poller = select.poll()
     poller.register(pidfd, select.POLLIN)
