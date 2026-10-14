@@ -33,6 +33,7 @@ import {
 import { REGISTERED_BUILDOUT_FIRMS } from "../sources/buildout-registry.js";
 import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-young.js";
 import { enrichMarcusListing } from "../sources/marcus-millichap.js";
+import { enrichMatthewsListing } from "../sources/matthews.js";
 import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
 import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidder-mathews.js";
 import type { SourceKey } from "../types.js";
@@ -285,6 +286,15 @@ function nativeIdFor(item: EnrichItem): string {
   return item.externalId.replace(/^(main:|investor:|dealflow:)/, "");
 }
 
+// Matthews owns canonical/native identity validation and the shared direct
+// transport. A source failure never falls back to generic JSON-LD enrichment.
+export const matthewsEnricher: SourceEnricher = {
+  async enrich(items: EnrichItem[]): Promise<any[]> {
+    const rows = await pmap(items, Math.min(CONCURRENCY, 2), enrichMatthewsListing);
+    return rows.filter(Boolean);
+  },
+};
+
 // cbre is intentionally ABSENT: cbre is enumeration-only (the listings-api JSON
 // already returns fully mapped rows; monitor output equals full output), so there
 // is no per-listing detail endpoint to enrich. cbre new/changed rows ride the
@@ -297,6 +307,7 @@ export const ENRICHERS: Partial<Record<SourceKey, SourceEnricher>> = {
   svn: buildoutEnricher,
   "lee-associates": buildoutEnricher,
   "marcus-millichap": marcusEnricher,
+  matthews: matthewsEnricher,
   "avison-young": avisonYoungEnricher,
   srs: srsEnricher,
   "kidder-mathews": kidderMathewsEnricher,

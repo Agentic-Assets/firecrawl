@@ -42,6 +42,7 @@ test("ENRICHERS registry uses targeted source paths and excludes cbre", () => {
       "kidder-mathews",
       "lee-associates",
       "marcus-millichap",
+      "matthews",
       "srs",
       "svn",
       ...REGISTERED_BUILDOUT_SOURCE_KEYS,
@@ -57,6 +58,7 @@ test("resolveEnricher returns bespoke for registered keys, generic otherwise", (
   assert.equal(resolveEnricher("svn").label, "bespoke");
   assert.equal(resolveEnricher("lee-associates").label, "bespoke");
   assert.equal(resolveEnricher("marcus-millichap").label, "bespoke");
+  assert.equal(resolveEnricher("matthews").label, "bespoke");
   assert.equal(resolveEnricher("avison-young").label, "bespoke");
   assert.equal(resolveEnricher("srs").label, "bespoke");
   assert.equal(resolveEnricher("kidder-mathews").label, "bespoke");

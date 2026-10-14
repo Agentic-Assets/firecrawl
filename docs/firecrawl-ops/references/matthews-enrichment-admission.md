@@ -34,10 +34,38 @@ establish an inventory observation, but a separately reviewed targeted-refresh
 contract must bind actual inventory membership, exact native identity/tenure,
 actual detail time and honest partial-generation receipts before queue writes.
 
-AGENTIC-4200's source-owned authoritative adapter remains a private prototype;
-this correction does not register it or enable production targeted writes.
-Source-specific no-write detail diagnostics need their own reviewed code,
-selection, resource/ownership admission and bounded capture. Queue dry-run
+The Matthews enrichment resolver uses the source-owned `enrichMatthewsListing`
+adapter. It reuses the direct HTTP transport, shared request-start pacing,
+retry policy and separate 30-second header/body bounds. It validates an HTTPS
+Matthews property URL, exact queued native ID, sale/lease tenure and the page's
+canonical identity before returning the existing DOM parser's fields. It
+retains the original request URL for completion matching, refuses redirect
+aliases and invalid/error/not-found pages, and never falls back to generic
+Firecrawl/JSON-LD after a source failure. Percent-escape spelling and trailing
+slashes use the existing source identity normalization; arbitrary ID prefixes
+and slug case changes are not stripped.
+
+Targeted input must supply an accurate sale/lease tenure that agrees with the
+requested property URL. The current Python queue claim SQL has no transaction
+field, and `claim_rows_to_items` defaults ordinary claims to `sale`. A queued
+Matthews lease URL therefore fails the adapter's tenure check before transport
+and remains omitted; explicit accurate lease input works for no-write detail
+diagnostics. Queued lease enrichment is not enabled by this registration.
+Future truthful targeted-write admission must also own the tenure plumbing;
+do not weaken native URL/provider agreement or guess from stale input.
+
+Successful detail output records the actual completed `detailObservedAt` and a
+validated canonical URL. It has no invented inventory observation or generation
+proof. Ordinary `collect.ts --enrich-input` therefore produces an authoritative
+partial detail artifact that the worker and direct ingest CLI still refuse.
+Registering the adapter does not enable production queue writes or establish
+full-source completeness/freshness. The direct source path uses no Firecrawl
+scrape, browser render or AI model call.
+
+A no-write diagnostic can reuse this same source adapter with an explicit
+native ID, current source URL and tenure after reviewed selection and normal
+resource/ownership admission. Keep the output private and bounded; it is not
+an ingestible fresh-generation receipt. No new runner is needed. Queue dry-run
 fetches no detail. Queue apply claims and writes data; do not use it as a
 diagnostic workaround. No baseline, lifecycle/status, OM, scheduler or full-source
 coverage authority is granted here.

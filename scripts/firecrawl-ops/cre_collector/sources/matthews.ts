@@ -117,7 +117,8 @@ export function matthewsRetryableFetchFailure(status: number, error: unknown): b
 
 export async function matthewsFetch(
   url: string,
-  manualRedirect = false
+  manualRedirect = false,
+  strict = requireFreshDetails()
 ): Promise<MatthewsFetchResult> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -139,7 +140,7 @@ export async function matthewsFetch(
       const res = await matthewsFetchResponse(
         url,
         matthewsFetchOptions(
-          requireFreshDetails(),
+          strict,
           MATTHEWS_FETCH_TIMEOUT_MS,
           manualRedirect ? "manual" : "follow",
           controller.signal
@@ -602,6 +603,47 @@ export function parseMatthewsDetail(
     canonicalUrl: url,
     highlights,
   });
+}
+
+/**
+ * Targeted detail is partial-source work. The queue supplies identity/URL,
+ * never inventory or generation proof. A refusal stays omitted for retry;
+ * permanent aliases must not be rekeyed or falsely marked complete by URL.
+ */
+export async function enrichMatthewsListing(item: {
+  externalId: string;
+  url: string;
+  transaction?: Tx;
+}): Promise<any | null> {
+  try {
+    const requested = new URL(item.url);
+    if (
+      requested.protocol !== "https:"
+      || requested.username || requested.password || requested.port
+      || requested.search || requested.hash
+    ) return null;
+    const normalized = normalizedMatthewsPropertyUrl(item.url, MATTHEWS_HOST);
+    const comparison = matthewsPropertyComparisonUrl(item.url, MATTHEWS_HOST);
+    const tx = item.transaction ?? "sale";
+    if (
+      !normalized || !comparison
+      || comparison.split("/properties/")[1] !== item.externalId
+      || matthewsTenureFromUrl(normalized) !== tx
+    ) return null;
+
+    // Explicit freshness on the existing bounded transport does not depend on
+    // the full-generation CLI flag. Never follow redirects for queue completion.
+    const response = await matthewsFetch(normalized, true, true);
+    if (!response.html || matthewsProviderNotFound(response.html, normalized, tx)) return null;
+    const listing = parseMatthewsDetail(response.html, normalized, tx, {
+      strict: true,
+      detailObservedAt: new Date().toISOString(),
+    });
+    if (!listing || listing.id !== item.externalId) return null;
+    return prune({ ...listing, url: item.url });
+  } catch {
+    return null;
+  }
 }
 
 export function matthewsParsedCoverage(
