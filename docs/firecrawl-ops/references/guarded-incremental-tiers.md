@@ -283,6 +283,14 @@ starting WSL or validating an owner. The wrapper forwards to
 Ubuntu clone. Stop requests skip Windows CPU admission. Wait is bounded to
 1–120 seconds; this does not preempt a blocked kernel call.
 
+New canonical lock directories and their immediate authority parents are
+created with owner-only mode 0700, independently of ordinary inherited umasks.
+Existing safe parents, including mode 0755, keep their mode and identity.
+A symlink, different owner, or group/world-writable immediate parent refuses
+before authority files are created or updated; existing unsafe directories are
+never chmodded into admission. This boundary covers the immediate parent, not
+a recursive permission change to outer ancestors.
+
 The helper checks the private receipt, process birth/boot/namespace/user,
 canonical lease and authority inode/token/generation, and the owner's actual
 held flock descriptor. It sends one cooperative SIGTERM through a Linux pidfd,
