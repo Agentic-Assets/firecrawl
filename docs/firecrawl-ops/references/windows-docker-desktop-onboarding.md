@@ -238,6 +238,99 @@ cutover remains separately governed.
 
 For a bounded no-write collector probe, inspect the source adapter before choosing it. `--max-items` limits emitted listings, not necessarily inventory network requests: SVN/Buildout still enumerates the complete inventory first. Interra's authoritative inventory adapter performs one size/time-bounded request and can project a three-row sample for `cre_ingest.py --dry-run`. Keep sample artifacts private and do not confuse a truncated sample with full-source refresh acceptance.
 
+## Foreground controlled full refresh from Windows
+
+The Windows launcher also supports `-Tier series`, using the canonical
+checkpoint-series coordinator. This is an additive database-writing refresh,
+**not a dry-run**. It requires a reviewed full 40-character SHA, an explicit
+`-WorkDeadlineSeconds` budget from 30 to 86400 seconds, and
+`-AcknowledgeDatabaseWrites`. These flags do not grant production or scheduler
+approval. Settle the previous sole writer and inspect its recovery/quality
+evidence before a separately approved invocation. A full 51-source series may
+exceed a one-day budget; the budget is not a completion guarantee.
+
+From the native Windows clone, a telemetry-only check remains:
+
+```powershell
+.\scripts\firecrawl-ops\cre_collector\windows\Invoke-CreGuardedTier.ps1 -CheckOnly
+```
+
+`-CheckOnly` samples Windows only, writes no audit/log files, reads no notifier
+secret and never starts WSL. It does not validate Linux readiness or approve
+the following production command. After a reviewed deployment to the separate
+ext4 Ubuntu runtime, replace the SHA placeholder and use an approved source key
+(or `all`) and budget. For example, this is a one-hour **writing** invocation:
+
+```powershell
+$reviewedSha = '<approved deployed 40-character SHA>'
+.\scripts\firecrawl-ops\cre_collector\windows\Invoke-CreGuardedTier.ps1 `
+  -Tier series -Source hanley -ExpectedSha $reviewedSha `
+  -WorkDeadlineSeconds 3600 -AcknowledgeDatabaseWrites
+```
+
+The wrapper pins page concurrency and JLL/JLL Investor/Cushman detail and NAI
+enumeration concurrency to 1, and uses the reviewed Colliers Coveo path with
+detail concurrency 1, a 3000 ms start interval and 60000 ms challenge cooldown.
+It pins page cap 400, three attempts per source and zero CPU recovery replays.
+The process and worker nice value is 15. Linux CPU admission/guard settings are
+90%, a 30-second sustain and a 2-second sample; the memory guard uses a
+20-second sustain and a 2-second sample with the existing fail-closed thresholds.
+It starts no Docker services and changes no configuration. Docker Desktop must
+already be available in the selected signed-in user's session.
+
+Series mode refuses `-Apply`, `-Batch` and `-DeadlineSeconds`; those retain
+their existing monitor/enrich meanings. Conversely, monitor/enrich refuse the
+series budget and write-acknowledgement flags. The source is one key or `all`,
+not a comma-separated list; the Linux coordinator validates registry membership
+before credentials or output allocation. No resume, retry-failed, lifecycle,
+baseline or mark-missing controls are exposed by this Windows mode. Existing
+Mac/manual invocation defaults are unchanged.
+
+The SHA check binds clean deployed code and a matching local origin tracking
+tip; it does not perform a remote fetch or prove remote freshness. Windows
+admission must reach Linux within 15 seconds and applies only at startup.
+Subsequent Linux CPU/RAM evidence covers the VM and visible cgroups, not
+continuous whole-Windows load. The independent Linux work deadline requests
+cooperative cleanup; cleanup may extend past the budget and remains unverified
+when local settlement or receipt publication cannot be proved.
+
+The existing bounded Windows stdout/stderr files and audit remain
+informational. The coordinator's early stdout JSON contains the exact
+`series_dir` and `invocation_id`. Copy those values for an operator stop; the
+plain-directory capture hint does **not** parse that JSON or correlate an
+invocation ID into the Windows audit. A successful final directory hint, native
+exit, Windows audit or notification is not Linux settlement authority. Preserve
+the exact early identity while it is available: each stream retains at most
+1 MiB and later output may be discarded.
+
+```powershell
+.\scripts\firecrawl-ops\cre_collector\windows\Stop-CreCheckpointSeries.ps1 `
+  -SeriesDirectory '/absolute/Linux/series-directory' `
+  -InvocationId '<exact 32-character lowercase hex invocation ID>' -CheckOnly
+# Remove -CheckOnly only for the exact operator-approved stop request.
+```
+
+Stop `-CheckOnly` prints arguments without WSL, owner validation or signaling.
+The real wrapper forwards one request to the Linux pidfd-bound helper, preserves
+its exit status, and uses a 60-second wait by default (allowed 1–120 seconds).
+It does not apply a Windows CPU gate, select the latest run, kill WSL, force
+child termination, clear a recovery fence or replay work. The thin stop wrapper accepts spaces and
+apostrophes but refuses literal double quotes in Linux paths because Windows
+PowerShell 5.1 can alter those characters during native argument forwarding;
+use the Linux helper directly for such an unusual path. Linux validates the
+private durable owner receipt; stop exit 0 means confirmed local settlement,
+1 means refusal before a verified stop and 2 means timeout or an unverified
+outcome. Local settlement does
+not prove remote backend work or a database rollback. See the canonical
+[series control contract](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#optional-linux-work-deadline-and-exact-invocation-stop)
+for terminal evidence and cleanup limits.
+
+This foreground integration is engineering capability tracked by
+[AGENTIC-4178](https://linear.app/agenticassets/issue/AGENTIC-4178).
+It creates no task or recurring process. Supervised live acceptance, quality
+decisions, notification destination and exact scheduling surface approval stay
+under [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752).
+
 ## Recurring Windows execution
 
 Routine acquisition does not need a continuously active AI agent. A
