@@ -174,6 +174,17 @@ the launcher does not dump environment values or exception details into audits.
 Child stdout/stderr can contain business data or diagnostics. Keep these ignored
 local artifacts private and review/redact them before sharing.
 
+The capture helper leaves ordinary argument atoms unquoted so actual WSL
+recognizes options such as `-d` and `--exec`; empty arguments, whitespace and
+embedded quotes retain Windows argument escaping. The opt-in
+[`Test-CreWslCapture.ps1`](../../../scripts/firecrawl-ops/cre_collector/windows/Test-CreWslCapture.ps1)
+checks the shipped helper against the System32 WSL executable using only a
+synthetic environment value and literal arguments. Run it in fresh Windows
+PowerShell 5.1 and installed PowerShell 7 hosts with `-NoProfile -File` and
+`-RunWslRoundTrip`. Without that switch it creates no files and dispatches
+nothing. This proof establishes argument transport; it does not run a CRE tier
+or establish provider, database or Linux-owner settlement.
+
 ### Optional Windows failure notification
 
 `-AlertWebhookFile <absolute-Windows-path>` optionally enables one failure-only

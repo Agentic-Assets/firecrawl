@@ -53,6 +53,12 @@ namespace CreWindowsCapture {
         // Windows CRT quoting, including empty args and backslashes before quotes/end.
         public static string Quote(string value) {
             if (value == null || value.IndexOf('\0') >= 0) throw new ArgumentException("Invalid native argument.");
+            // Native option parsers such as WSL require ordinary atoms unquoted.
+            bool needsQuotes = value.Length == 0;
+            foreach (char c in value) {
+                if (Char.IsWhiteSpace(c) || c == '"') { needsQuotes = true; break; }
+            }
+            if (!needsQuotes) return value;
             StringBuilder b = new StringBuilder("\"");
             int slashes = 0;
             foreach (char c in value) {
