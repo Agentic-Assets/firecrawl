@@ -248,3 +248,9 @@ Exploratory one/two-replicate runs may finish with usable lifecycle measurements
 but no acquisition overlap; they explicitly report `measurement_incomplete`
 and cannot support qualification or adoption. Short requests are not held or
 retimed to fabricate sampling coverage. Periodic samples can still miss peaks.
+
+
+Docker start epochs are compared as exact validated native strings, including
+submicrosecond digits. Do not truncate timestamps or restamp owned-runtime pins
+to repair an admission mismatch. [AGENTIC-4182](https://linear.app/agenticassets/issue/AGENTIC-4182)
+preserves this identity precision without relaxing epoch equality or resource guards.

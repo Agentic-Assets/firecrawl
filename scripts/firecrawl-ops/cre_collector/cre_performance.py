@@ -299,7 +299,8 @@ def _runtime_timestamp(value: object) -> str | None:
         return None
     if parsed.tzinfo is None:
         return None
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Epoch identity must retain Docker's native submicrosecond precision.
+    return value
 
 
 def _runtime_ports(value: object) -> list[str] | None:
