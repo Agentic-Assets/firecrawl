@@ -420,8 +420,8 @@ def test_enricher_set_includes_all_current_detail_source_paths():
     per-listing detail endpoint to enrich). The capture-everything build added
     the Buildout Tier-B enricher for svn + lee-associates (their detail iframe
     carries the media / tours / full gallery / OM docs the inventory bulk path
-    cannot see). Marcus & Millichap, Avison Young, SRS, and Kidder Mathews use
-    direct source paths rather than the generic JSON-LD fallback, which must
+    cannot see). Marcus & Millichap, Matthews, Avison Young, SRS, and Kidder
+    Mathews use direct source paths rather than the generic JSON-LD fallback, which must
     never complete a claim without a source-backed payload.
 
     Source-text assertion only (no DB, no Node): mirrors the TS unit test
@@ -448,6 +448,7 @@ def test_enricher_set_includes_all_current_detail_source_paths():
         "svn",
         "lee-associates",
         "marcus-millichap",
+        "matthews",
         "avison-young",
         "srs",
         "kidder-mathews",
@@ -502,8 +503,6 @@ def _wire_run(monkeypatch, tmp_path, *, claimed, collect_rc=0,
 
     monkeypatch.setattr(cre_enrich, "_psql_query", _fake_query)
     monkeypatch.setattr(cre_enrich, "_psql_exec", _fake_exec)
-
-    claimed_urls = [t[3] for t in claimed]
 
     class _Proc:
         def __init__(self, rc):
