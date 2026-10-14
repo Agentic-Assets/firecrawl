@@ -162,10 +162,10 @@ def test_low_available_and_exhausted_swap_warn(kernel):
 
 
 @pytest.mark.parametrize(
-    "some,full,level", [(9.99, 0, 1), (10, 0, 2), (10, 1.99, 2), (2, 2, 4)]
+    "some,full,level", [(9.99, 0, 1), (10, 0, 2), (10, 1.99, 2), (2, 2, 2)]
 )
 @pytest.mark.parametrize("location", ["host", "cgroup"])
-def test_psi_warning_and_critical(kernel, some, full, level, location):
+def test_psi_warning_thresholds(kernel, some, full, level, location):
     sampler, group = kernel
     path = (
         sampler.proc / "pressure/memory"

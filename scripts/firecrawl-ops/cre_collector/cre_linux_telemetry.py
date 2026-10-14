@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 PSI_SOME_WARNING = 10.0
-PSI_FULL_CRITICAL = 2.0
+PSI_FULL_WARNING = 2.0
 AVAILABLE_WARNING = 0.10
 AVAILABLE_CRITICAL = 0.05
 SWAP_FREE_WARNING = 0.10
@@ -25,10 +25,10 @@ CGROUP_USAGE_CRITICAL = 0.95
 def memory_policy() -> dict[str, float | str]:
     """Persist the exact Linux policy in immutable checkpoint configuration."""
     return {
-        "basis": "linux_psi_memavailable_swap_cgroup_v2_policy_v1",
+        "basis": "linux_psi_memavailable_swap_cgroup_v2_policy_v2",
         "telemetry_scope": "linux_kernel_or_vm_and_visible_cgroups_not_windows_host",
         "psi_some_avg10_warning_percent": PSI_SOME_WARNING,
-        "psi_full_avg10_critical_percent": PSI_FULL_CRITICAL,
+        "psi_full_avg10_warning_percent": PSI_FULL_WARNING,
         "available_warning_percent": AVAILABLE_WARNING * 100,
         "available_critical_percent": AVAILABLE_CRITICAL * 100,
         "swap_free_warning_percent": SWAP_FREE_WARNING * 100,
@@ -116,7 +116,7 @@ def _psi(text: str) -> tuple[float, float]:
 
 def _psi_level(text: str) -> int:
     some, full = _psi(text)
-    return 4 if full >= PSI_FULL_CRITICAL else 2 if some >= PSI_SOME_WARNING else 1
+    return 2 if full >= PSI_FULL_WARNING or some >= PSI_SOME_WARNING else 1
 
 
 def _key_counters(text: str, required: set[str]) -> dict[str, int]:
@@ -212,7 +212,7 @@ class LinuxMemorySampler:
         causes = []
         if host_some >= PSI_SOME_WARNING:
             causes.append("host_psi_some")
-        if host_full >= PSI_FULL_CRITICAL:
+        if host_full >= PSI_FULL_WARNING:
             causes.append("host_psi_full")
         ratio = available / total
         level = max(
@@ -286,7 +286,7 @@ class LinuxMemorySampler:
             group_some, group_full = _psi(group_psi_text)
             if group_some >= PSI_SOME_WARNING:
                 group_causes.append("cgroup_psi_some")
-            if group_full >= PSI_FULL_CRITICAL:
+            if group_full >= PSI_FULL_WARNING:
                 group_causes.append("cgroup_psi_full")
             events = _key_counters(
                 _read(directory / "memory.events"), {"high", "max", "oom", "oom_kill"}

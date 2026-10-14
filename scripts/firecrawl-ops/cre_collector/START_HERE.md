@@ -117,18 +117,30 @@ to root and contain no raw paths. Normal ticks stay compact; Darwin and custom
 sampler records are unchanged. Nearby optional samples cannot identify or refute
 a transient guard stop. See [AGENTIC-4188](https://linear.app/agenticassets/issue/AGENTIC-4188).
 
-On Linux, warning pressure means PSI `some avg10 >= 10%`, available memory
+On Linux, policy v2 warning pressure means PSI `some avg10 >= 10%` or
+`full avg10 >= 2%`, available memory
 at or below 10%, a visible cgroup at or above 90% of `memory.max`, or new
 cgroup `high`/`max` events. Exhausted swap (at most 10% free) warns only when
 available memory is also at most 20%; historical swap use alone is not pressure.
-Critical pressure means PSI `full avg10 >= 2%`, available memory at or below
-5%, a visible cgroup at or above 95% of its limit, or new OOM/OOM-kill events.
+PSI measures [time spent stalled](https://docs.kernel.org/accounting/psi.html),
+not the percentage of RAM consumed. PSI-only warnings use the configured
+warning sustain window (20 seconds by default); normal pressure resets it.
+Critical pressure still means available memory at or below 5%, a visible cgroup
+at or above 95% of its limit, or new OOM/OOM-kill events, and stops immediately.
 All visible ancestor limits are checked. Cgroup usage includes page cache;
 this deliberately conservative guard may stop before an OOM. Missing or
 malformed PSI/controller evidence, changing cgroup membership, and decreasing
 counters fail closed. Cgroup v1 is unsupported. These Linux policy values and
 the measured scope are bound into the manifest; do not resume a Darwin run on
 Linux or hand-edit a manifest to cross platforms.
+
+The v2 basis applies to fresh Linux runs. New code refuses missing, v1, unknown
+or mutated Linux memory policies on resume, including policy drift between a
+series and child or in matched resource evidence. Keep the original pinned
+code/policy for an existing generation; do not rewrite old receipts. Darwin
+pressure behavior and its missing-block legacy compatibility are unchanged.
+Freshness certificates retain their data contract and do not attest memory
+safety. See [AGENTIC-4189](https://linear.app/agenticassets/issue/AGENTIC-4189).
 
 Under WSL2 or Docker Desktop these CPU and memory samples measure the Linux
 VM, plus the collector's visible cgroups. They do **not** measure Windows host
