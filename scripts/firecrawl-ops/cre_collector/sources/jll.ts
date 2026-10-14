@@ -773,6 +773,7 @@ const JLL_WITHHELD_PUBLIC_BASE_KEYS = new Set([
   "sizeText",
   "buildingSizeSqft",
   "lastUpdated",
+  "inventoryObservedAt",
   "detailObservedAt",
 ]);
 
