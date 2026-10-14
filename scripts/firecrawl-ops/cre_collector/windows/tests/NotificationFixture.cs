@@ -1,0 +1,47 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+// Offline curl substitute: records booleans/counts, never stdin or its URL.
+public static class NotificationFixture {
+    public static int Main(string[] args) {
+        string executable = Process.GetCurrentProcess().MainModule.FileName;
+        string mode = Path.GetFileNameWithoutExtension(executable);
+        string config = Console.In.ReadToEnd();
+        bool secretArg = false, globOff = false, timeout = false, retry = false, redirect = false;
+        foreach (string arg in args) {
+            secretArg |= arg.Contains("SECRET_CANARY"); globOff |= arg == "--globoff";
+            redirect |= arg == "--location" || arg == "-L" || arg == "--insecure" || arg == "-k";
+        }
+        for (int i = 0; i + 1 < args.Length; i++) {
+            timeout |= args[i] == "--max-time" && args[i+1] == "10";
+            retry |= args[i] == "--retry" && args[i+1] == "0";
+        }
+        string record = "{\"secretArg\":" + secretArg.ToString().ToLowerInvariant() +
+            ",\"globOff\":" + globOff.ToString().ToLowerInvariant() +
+            ",\"disableFirst\":" + (args.Length > 0 && args[0] == "--disable").ToString().ToLowerInvariant() +
+            ",\"timeout10\":" + timeout.ToString().ToLowerInvariant() +
+            ",\"retry0\":" + retry.ToString().ToLowerInvariant() +
+            ",\"redirectOrInsecure\":" + redirect.ToString().ToLowerInvariant() +
+            ",\"hasUrl\":" + config.Contains("url = \"https://example.invalid/SECRET_CANARY").ToString().ToLowerInvariant() +
+            ",\"hasData\":" + config.Contains("data = \"{\\\"text\\\":").ToString().ToLowerInvariant() +
+            ",\"inputBytes\":" + Encoding.UTF8.GetByteCount(config) + "}\n";
+        File.AppendAllText(executable + ".calls.jsonl", record);
+        if (mode == "curl-hang") { Thread.Sleep(15000); Console.Write("200"); return 0; }
+        if (mode == "curl-28") return 28;
+        if (mode == "curl-flood") {
+            Thread error = new Thread(delegate() { Flood(Console.OpenStandardError()); });
+            error.Start(); Flood(Console.OpenStandardOutput()); error.Join(); return 0;
+        }
+        if (mode == "curl-noise") Console.Error.Write("https://example.invalid/SECRET_CANARY must be discarded");
+        Console.Write(mode == "curl-302" ? "302" : mode == "curl-500" ? "500" : mode == "curl-204" ? "204" : mode == "curl-extra" ? "2000" : "200");
+        return 0;
+    }
+    private static void Flood(Stream stream) {
+        byte[] bytes = new byte[8192];
+        for (int i = 0; i < bytes.Length; i++) bytes[i] = (byte)'x';
+        for (int i = 0; i < 320; i++) stream.Write(bytes, 0, bytes.Length);
+    }
+}

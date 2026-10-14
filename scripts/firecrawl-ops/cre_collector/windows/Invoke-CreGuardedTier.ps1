@@ -17,6 +17,7 @@ param(
     [ValidatePattern('^[a-z_][a-z0-9_-]*$')][string]$LinuxUser = 'cayman',
     [ValidatePattern('^/[^\r\n]+$')][string]$LinuxRepo = '/home/cayman/code/firecrawl',
     [ValidatePattern('^/[^\r\n]+$')][string]$LinuxEnvFile = '/home/cayman/.config/cre/equire.env',
+    [string]$AlertWebhookFile,
     [switch]$Apply,
     [switch]$CheckOnly
 )
@@ -120,6 +121,42 @@ function Write-CreAudit {
     }
 }
 
+$script:notificationAttempted = $false
+function Set-CreFailureNotification {
+    param([System.Collections.IDictionary]$Record, [string]$AttemptId, [int]$ExitCode)
+    if ($ExitCode -eq 0) {
+        $Record['notification'] = [ordered]@{ Status = 'not_attempted'; Reason = 'successful_invocation' }
+        return
+    }
+    if ($script:notificationAttempted) { return }
+    $script:notificationAttempted = $true
+    if (-not $AlertWebhookFile) {
+        $Record['notification'] = [ordered]@{ Status = 'not_configured'; Reason = 'not_configured' }
+        return
+    }
+    try {
+        $notificationPath = Join-Path $PSScriptRoot 'CreWindowsNotification.cs'
+        $notificationBytes = [IO.File]::ReadAllBytes($notificationPath)
+        $hash = [Security.Cryptography.SHA256]::Create()
+        try { $notificationSha = [BitConverter]::ToString($hash.ComputeHash($notificationBytes)).Replace('-', '').ToLowerInvariant() }
+        finally { $hash.Dispose() }
+        if ('CreWindowsNotification.Sender' -as [type]) {
+            if (-not ('CreWindowsNotification.Identity' -as [type]) -or [CreWindowsNotification.Identity]::Sha256 -cne $notificationSha) { throw 'Cached notification helper identity differs.' }
+        } else {
+            $notificationSource = (New-Object Text.UTF8Encoding($false, $true)).GetString($notificationBytes)
+            Add-Type -TypeDefinition ($notificationSource + "`nnamespace CreWindowsNotification { public static class Identity { public const string Sha256 = ""$notificationSha""; } }")
+        }
+        $curl = (Get-Command curl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+        $safeSource = if ($Source -match '^[a-z0-9][a-z0-9-]{0,79}$') { $Source } else { 'unspecified' }
+        $nativeCode = if ($null -eq $Record.nativeExitCode) { 'unobserved' } else { [string][int]$Record.nativeExitCode }
+        $payload = [ordered]@{ text = "CRE Windows attempt $AttemptId failed (tier=$Tier source=$safeSource wrapper_exit=$ExitCode native_exit=$nativeCode). Linux settlement is unverified; inspect local audit and recovery evidence." } | ConvertTo-Json -Compress
+        $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
+        $Record['notification'] = [CreWindowsNotification.Sender]::Send($AlertWebhookFile, $repository, $curl, $payload)
+    } catch {
+        $Record['notification'] = [ordered]@{ Status = 'failed'; Reason = 'notification_unavailable'; NativeSettlement = 'unverified' }
+    }
+}
+
 if ($CheckOnly) {
     try {
         $admission = Get-CreAdmission
@@ -140,12 +177,20 @@ $record = [ordered]@{
     tier = $Tier; source = $Source; expectedSha = $ExpectedSha; apply = [bool]$Apply
     status = 'admission_pending'; dispatch = 'not_attempted'
     nativeExitCode = $null; wrapperExitCode = $null; linuxSettlement = 'unverified'
+    notification = [ordered]@{ Status = 'not_attempted'; Reason = 'invocation_pending' }
     stdoutPath = $stdoutPath; stderrPath = $stderrPath; byteLimitPerStream = 1048576
 }
 try {
     New-Item -ItemType Directory -Path $auditDir -Force | Out-Null
     Write-CreAudit $auditPath $record
-} catch { Write-Error 'Windows initial audit publication failed; no dispatch attempted.' -ErrorAction Continue; exit 1 }
+} catch {
+    Write-Error 'Windows initial audit publication failed; no dispatch attempted.' -ErrorAction Continue
+    $record.status = 'windows_initial_audit_failed_linux_settlement_unverified'
+    $record.wrapperExitCode = 1
+    Set-CreFailureNotification $record $basename 1
+    if ($AlertWebhookFile) { try { Write-CreAudit $auditPath $record } catch { } }
+    exit 1
+}
 Write-Output "Windows audit: $auditPath"
 Write-Output "Windows stdout: $stdoutPath"
 Write-Output "Windows stderr: $stderrPath"
@@ -214,9 +259,17 @@ try {
     Write-Error 'Windows admission or launcher failed; inspect the audit and Linux recovery state.' -ErrorAction Continue
 }
 $record.wrapperExitCode = $result
+if ($result -eq 0 -or -not $AlertWebhookFile) { Set-CreFailureNotification $record $basename $result }
 try { Write-CreAudit $auditPath $record }
 catch {
     Write-Error 'Windows terminal audit publication failed; prior receipt remains incomplete.' -ErrorAction Continue
-    exit 1
+    $result = 1
+    $record.wrapperExitCode = $result
+    $record.status = 'windows_terminal_audit_failed_linux_settlement_unverified'
+}
+if ($result -ne 0) {
+    Set-CreFailureNotification $record $basename $result
+    # Notification publication is best effort and never changes the tier exit.
+    if ($AlertWebhookFile) { try { Write-CreAudit $auditPath $record } catch { } }
 }
 exit $result
