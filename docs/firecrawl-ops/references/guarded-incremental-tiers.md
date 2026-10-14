@@ -120,6 +120,60 @@ Windows launch audit receipts are under `out/windows-launcher/` in the Windows
 checkout. They are audit artifacts, not locks or scheduling authority. Receipt
 paths and exit status are returned in the foreground.
 
+### Windows output and audit
+
+For Windows output capture, start the launcher in a fresh PowerShell process,
+using `pwsh.exe -NoProfile -File <launcher-path> ...` or
+`powershell.exe -NoProfile -File <launcher-path> ...`. Before admission sampling,
+a normal invocation publishes an atomic `admission_pending` audit and prints
+its audit, stdout and stderr paths. Read a running stream with
+`Get-Content -LiteralPath <stdout-path> -Wait`; stderr has its own file. The
+sidecars share the existing flat audit basename. `-CheckOnly` writes none of
+these files. Parser and parameter-binding failures occur before the script body
+and therefore cannot publish an audit.
+
+Each stream stores at most1MiB of raw bytes, including UTF8 output. The helper
+continues draining and discarding after that cap or a sink-write failure.
+Counts, truncation, EOF and read/write/flush/close failures are recorded in the
+audit, which has its own64KiB publication cap. `CapturedBytes` counts completed
+writes; a partial failed write has uncertain retention. A capped file can end
+within a UTF8 character. Intentional truncation
+alone preserves the native exit code; an actual capture failure makes the
+wrapper nonzero even when the native exit was0. Output is retained in files
+rather than echoed without a bound into the foreground console.
+
+The native process remains foreground for its whole lifetime. Only the drain
+after native exit is time bounded: up to2 seconds for EOF, then up to1 second
+per reader to join after cancelling that reader's pending Windows IO. A
+descendant retaining a pipe can produce incomplete capture. An unjoined reader
+or start-attempt/post-start helper uncertainty permanently refuses subsequent
+captures in that loaded helper; use a fresh `-File` host. This does not kill processes,
+terminate WSL, or establish Linux settlement. Once native exit is observed, a
+reader that cannot join is reported as incomplete. A blocked sink can also
+fill a pipe and prevent native exit; this wrapper has no outer hard deadline.
+The Linux owner's independent work deadline remains a separate boundary.
+
+Audit `dispatch=pending` means the helper may have attempted dispatch if it
+subsequently threw or disappeared. `attempted` records a returned start-attempt
+result; `returned` records an observed native exit. `nativeExitCode` and
+`wrapperExitCode` are separate; existing `exitCode` remains the observed native
+code when available. Terminal-audit failure returns1 and leaves the previous
+valid receipt, which may still show pending work. Admission refusal keeps
+ordinary launcher exit1; CheckOnly resource refusal uses75. These audit statuses
+never certify a refresh or clear a Linux fence.
+
+`captureHelperSha256` identifies the exact helper bytes decoded and compiled;
+a mismatched cached helper type refuses dispatch. `launcherFileSha256Observed`
+is an informational disk-file observation, not proof of the bytes previously
+parsed by PowerShell. An exact early Linux run-directory line in stdout is
+retained as `ObservedRunDirectory`, with conflicting references flagged. It is
+only an operator correlation hint. The owner-bound stop helper still validates
+the selected run independently, and `linuxSettlement` always remains
+`unverified` in the Windows launcher audit. Logs retain child output locally;
+the launcher does not dump environment values or exception details into audits.
+Child stdout/stderr can contain business data or diagnostics. Keep these ignored
+local artifacts private and review/redact them before sharing.
+
 A known, locally settled checkout or credential-file admission refusal can
 publish `preflight_refused` and clear its barrier after guards stop and the
 terminal receipt is durable, provided no tier worker or uncertain native
