@@ -1480,3 +1480,51 @@ def test_plan_cli_requires_matching_reviewed_ceiling_without_output_or_runtime(
         argv.extend(["--max-concurrency", str(requested)])
     assert matched.main(argv) == expected
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("pinned_epoch", "observed_epoch", "accepted"),
+    [
+        ("2026-10-14T04:10:31.84095916Z", "2026-10-14T04:10:31.84095916Z", True),
+        ("2026-10-14T04:10:26.710291595Z", "2026-10-14T04:10:26.710291595Z", True),
+        ("2026-10-14T04:10:31.84095916Z", "2026-10-14T04:10:31.84095917Z", False),
+        ("2026-10-14T04:10:26.710291595Z", "2026-10-14T04:10:26.710291596Z", False),
+    ],
+)
+def test_native_submicrosecond_epochs_reach_exact_matched_gate(
+    inputs, monkeypatch, pinned_epoch, observed_epoch, accepted
+):
+    import cre_performance as performance
+
+    args, _, profile, identity = inputs
+    for row in identity["containers"]:
+        row["started_at"] = pinned_epoch
+    snapshot = {
+        "availability": "available",
+        "containers": copy.deepcopy(identity["containers"]),
+    }
+    for row in snapshot["containers"]:
+        row["started_at"] = performance._runtime_timestamp(observed_epoch)
+    monkeypatch.setattr(matched.owned, "admit_runtime", lambda *_a: None)
+    monkeypatch.setattr(
+        matched, "capture_runtime_configuration", lambda *_a, **_k: snapshot
+    )
+    monkeypatch.setattr(
+        matched.owned,
+        "read_health",
+        lambda url, _d: (
+            {"maxConcurrency": 4}
+            if "queue-status" in url
+            else {"maxConcurrentPages": 4}
+        ),
+    )
+    if accepted:
+        result = matched.check_runtime(
+            None, identity, profile, args.api_url, args.browser_url, args.out, {}
+        )
+        assert result["containers"][0]["started_at"] == pinned_epoch
+    else:
+        with pytest.raises(matched.CalibrationRejected, match="epoch"):
+            matched.check_runtime(
+                None, identity, profile, args.api_url, args.browser_url, args.out, {}
+            )

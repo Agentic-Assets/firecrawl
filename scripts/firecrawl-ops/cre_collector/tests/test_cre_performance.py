@@ -706,7 +706,7 @@ def test_runtime_configuration_uses_narrow_inspect_and_writes_safe_atomic_snapsh
             "oom_killed": False,
             "restart_count": 0,
             "image": f"sha256:{'b' * 64}",
-            "started_at": "2026-09-13T12:00:00.123456Z",
+            "started_at": "2026-09-13T12:00:00.123456789Z",
             "cpu_limit": 2.0,
             "memory_limit_bytes": 8 * 1024**3,
             "memory_swap_limit_bytes": 8 * 1024**3,
@@ -1099,3 +1099,36 @@ def test_runtime_api_url_only_never_attributes_custom_stack(monkeypatch):
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-10-14T04:10:31.84095916Z",
+        "2026-10-14T04:10:26.710291595Z",
+        "2026-09-13T12:00:00Z",
+        "2026-09-13T12:00:00.123456Z",
+        "2026-09-13T15:00:00+03:00",
+        "2026-09-13 12:00:00+00:00",
+    ],
+)
+def test_runtime_timestamp_preserves_validated_native_representation(value):
+    assert performance._runtime_timestamp(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        123,
+        True,
+        [],
+        "not-a-timestamp",
+        "2026-09-13",
+        "2026-09-13T12:00:00",
+        "x" * 41,
+    ],
+)
+def test_runtime_timestamp_preserves_invalid_or_missing_behavior(value):
+    assert performance._runtime_timestamp(value) is None
