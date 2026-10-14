@@ -284,13 +284,62 @@ def rolling_median(old_median, last_active, current):
 # ---------------------------------------------------------------------------
 
 
-def count_artifacts(inputs, quiet):
+def _compact_floor_evidence(data):
+    """Retain only raw evidence consumed by the reviewed Savills floor policy."""
+    evidence = {"sources": [], "listings": []}
+    if "runMeta" in data:
+        meta = data["runMeta"]
+        evidence["runMeta"] = (
+            {
+                key: meta[key]
+                for key in ("transactions", "mode", "maxItemsPerSource")
+                if key in meta
+            }
+            if isinstance(meta, dict)
+            else meta
+        )
+    for entry in data.get("sources") or []:
+        if isinstance(entry, dict) and entry.get("sourceKey") == "savills":
+            evidence["sources"].append(
+                {
+                    key: entry[key]
+                    for key in (
+                        "sourceKey",
+                        "transaction",
+                        "supported",
+                        "error",
+                        "truncated",
+                        "listingsCollected",
+                        "totalAvailableOnSource",
+                        "sourceUrl",
+                        "method",
+                    )
+                    if key in entry
+                }
+            )
+    for listing in data.get("listings") or []:
+        if isinstance(listing, dict) and listing.get("sourceKey") == "savills":
+            evidence["listings"].append(
+                {
+                    key: listing[key]
+                    for key in ("sourceKey", "transactionMode")
+                    if key in listing
+                }
+            )
+    return evidence
+
+
+def count_artifacts(inputs, quiet, *, coverage_evidence=None):
     """Aggregate per-source counts and error state across one or more artifacts.
 
     Returns (current_active, source_error, observed_keys, scraped_at,
     torow_errors). current_active is per source_key, counting FLAT listings that
     to_row() accepts (matching cre_ingest per_source_counts, not deduped).
     source_error[sk] holds the first error text seen for that source, or None.
+    An optional output list receives one compact floor-evidence slot per input;
+    the public five-value return and raw-versus-accepted counts stay unchanged.
+    That CLI path reads UTF8 once, retaining its former evidence-read validation;
+    callers omitting the output list retain their locale-default decoding.
     """
     current_active = {}
     source_error = {}
@@ -299,7 +348,7 @@ def count_artifacts(inputs, quiet):
     torow_errors = 0
 
     for path in inputs:
-        with open(path) as f:
+        with open(path, encoding="utf-8" if coverage_evidence is not None else None) as f:
             data = json.load(f)
         run_meta = data.get("runMeta") or {}
         scraped_at = scraped_at or run_meta.get("finishedAt") or run_meta.get("startedAt")
@@ -329,6 +378,8 @@ def count_artifacts(inputs, quiet):
                 row = None
             if row is not None:
                 current_active[sk] = current_active.get(sk, 0) + 1
+        if coverage_evidence is not None:
+            coverage_evidence.append(_compact_floor_evidence(data))
 
     return current_active, source_error, observed, scraped_at, torow_errors
 
@@ -607,17 +658,11 @@ def main():
         if not os.path.isfile(path):
             sys.exit(f"artifact not found: {path}")
 
+    artifact_payloads = []
     current_active, source_error, observed, scraped_at, torow_errors = count_artifacts(
-        args.inputs, quiet
+        args.inputs, quiet, coverage_evidence=artifact_payloads
     )
     try:
-        artifact_payloads = []
-        for path in args.inputs:
-            with open(path, encoding="utf-8") as handle:
-                payload = json.load(handle)
-            if not isinstance(payload, dict):
-                raise GateCoveragePolicyError("artifact top-level value must be an object")
-            artifact_payloads.append(payload)
         coverage_policy = load_gate_coverage_policy()
     except (OSError, json.JSONDecodeError, GateCoveragePolicyError) as exc:
         sys.exit(f"coverage policy/evidence load failed: {exc}")
