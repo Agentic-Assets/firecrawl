@@ -574,3 +574,78 @@ def test_cli_cpu_samples_use_platform_counters_and_preserve_darwin_interval(
         usage.main(["--out-dir", str(tmp_path / "cli"), "--duration-seconds", "1"]) == 0
     )
     assert sleeps == [initial_wait, 1.0]
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+@pytest.mark.parametrize("initial_interval", [0.1, 2.0])
+def test_first_cpu_sample_keeps_docker_reads_within_shared_budget(
+    sampled, monkeypatch, platform, initial_interval
+):
+    """The old two-second warmup exhausts Docker's remaining read budget."""
+    from cre_checkpoint_refresh import host_cpu_sampler
+
+    sampler, _ = sampled
+    clock = [0.0]
+    ticks = [0]
+    original_run = usage.subprocess.run
+    original_target = usage.resolve_runtime_target
+    monkeypatch.setattr(usage.sys, "platform", platform)
+    monkeypatch.setattr(usage.time, "monotonic", lambda: clock[0])
+
+    def advance(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(usage.time, "sleep", advance)
+
+    def read_ticks():
+        ticks[0] += 1
+        n = ticks[0]
+        if platform == "linux":
+            return (10 * n, 0, 10 * n, 80 * n, 0, 0, 0, 0)
+        return (10 * n, 10 * n, 80 * n, 0)
+
+    sampler.cpu_sampler = host_cpu_sampler(initial_interval_seconds=initial_interval)
+    monkeypatch.setattr(sampler.cpu_sampler, "read_ticks", read_ticks)
+
+    def memory_observation(*_args):
+        advance(0.01)
+        return (
+            32 * 1024**3,
+            24 * 1024**3,
+            {"total_bytes": 2 * 1024**3, "free_bytes": 2 * 1024**3, "used_bytes": 0},
+            "normal",
+        )
+
+    monkeypatch.setattr(usage, "_linux_memory_observation", memory_observation)
+
+    def resolve(*args, **kwargs):
+        advance(0.1)
+        return original_target(*args, **kwargs)
+
+    def timed_run(argv, **kwargs):
+        duration = 2.1 if argv[:2] == ["docker", "stats"] else 0.01
+        if duration > kwargs["timeout"]:
+            advance(kwargs["timeout"])
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        advance(duration)
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(usage, "resolve_runtime_target", resolve)
+    monkeypatch.setattr(usage.subprocess, "run", timed_run)
+    first = sampler.sample_once()
+    second = sampler.sample_once()
+    assert usage.SAMPLE_BUDGET_SECONDS == 4.0
+    assert first["unavailable_fields"] == (
+        ["docker_stats", "docker_vm_memory"] if initial_interval == 2.0 else []
+    )
+    assert second["unavailable_fields"] == []
+    assert first["sample_duration_seconds"] <= 4.0
+    assert second["sample_duration_seconds"] < 3.0
+    saved = [
+        json.loads(line)
+        for line in (sampler.run_dir / "resource-usage.jsonl").read_text().splitlines()
+    ]
+    assert [record["unavailable_fields"] for record in saved] == [
+        first["unavailable_fields"],
+        [],
+    ]
