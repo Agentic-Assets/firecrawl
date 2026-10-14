@@ -4,6 +4,7 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
   refreshGenerationId,
+  refreshStartedAt,
   requireFreshDetails,
 } from "../lib/freshness.js";
 import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
@@ -610,11 +611,11 @@ export function parseMatthewsDetail(
  * never inventory or generation proof. A refusal stays omitted for retry;
  * permanent aliases must not be rekeyed or falsely marked complete by URL.
  */
-export async function enrichMatthewsListing(item: {
+async function enrichMatthewsObservedListing(item: {
   externalId: string;
   url: string;
   transaction?: Tx;
-}): Promise<any | null> {
+}, inventoryObservedAt?: string): Promise<any | null> {
   try {
     const requested = new URL(item.url);
     if (
@@ -637,6 +638,7 @@ export async function enrichMatthewsListing(item: {
     if (!response.html || matthewsProviderNotFound(response.html, normalized, tx)) return null;
     const listing = parseMatthewsDetail(response.html, normalized, tx, {
       strict: true,
+      inventoryObservedAt,
       detailObservedAt: new Date().toISOString(),
     });
     if (!listing || listing.id !== item.externalId) return null;
@@ -644,6 +646,170 @@ export async function enrichMatthewsListing(item: {
   } catch {
     return null;
   }
+}
+
+export async function enrichMatthewsListing(item: {
+  externalId: string;
+  url: string;
+  transaction?: Tx;
+}): Promise<any | null> {
+  return enrichMatthewsObservedListing(item);
+}
+
+export type MatthewsTargetedRefresh = {
+  sourceKey: "matthews";
+  generationId: string;
+  generationStartedAt: string;
+};
+
+export function validateMatthewsTargetedRefresh(value: unknown): MatthewsTargetedRefresh {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Matthews targeted: missing batch context");
+  }
+  const context = value as MatthewsTargetedRefresh;
+  if (
+    Object.keys(context).sort().join(",") !== "generationId,generationStartedAt,sourceKey"
+    || context.sourceKey !== "matthews"
+    || typeof context.generationId !== "string"
+    || !/^matthews-targeted-[0-9a-f]{32}$/.test(context.generationId)
+    || typeof context.generationStartedAt !== "string"
+    || !/(?:Z|[+-]\d{2}:\d{2})$/.test(context.generationStartedAt)
+  ) throw new Error("Matthews targeted: invalid batch context");
+  const start = Date.parse(context.generationStartedAt);
+  const age = Date.now() - start;
+  if (!Number.isFinite(start) || age < 0 || age > 600_000) {
+    throw new Error("Matthews targeted: batch start must be within the preceding 600 seconds");
+  }
+  if (
+    !requireFreshDetails()
+    || refreshGenerationId() !== context.generationId
+    || refreshStartedAt() !== context.generationStartedAt
+  ) throw new Error("Matthews targeted: caller environment does not match batch context");
+  return Object.freeze({ ...context });
+}
+
+/** One actual sitemap response, shared by full/monitor and targeted callers. */
+export async function matthewsFreshInventory(targeted = false): Promise<{
+  detailUrls: string[];
+  inventoryObservedAt: string;
+  duplicateComparisons: Set<string>;
+}> {
+  const sitemap = await matthewsFetch(MATTHEWS_SITEMAP_URL, targeted, targeted || requireFreshDetails());
+  if (!sitemap.html) throw new Error("Matthews: sitemap did not return an XML response body");
+  const xml = sitemap.html;
+  // Legacy full/monitor keeps its existing receipt instant and URL projection.
+  const receivedAt = new Date().toISOString();
+  const duplicateComparisons = new Set<string>();
+  let detailUrls: string[];
+  if (targeted) {
+    const $ = cheerio.load(xml, { xml: { xmlMode: true, withStartIndices: true, withEndIndices: true } });
+    const roots = $.root().children();
+    const root = roots.get(0);
+    if (
+      roots.length !== 1 || !root || root.type !== "tag"
+      || root.name !== "urlset" || !xml.trim().endsWith("</urlset>")
+    ) throw new Error("Matthews targeted: invalid XML sitemap structure");
+    // Cheerio repairs mismatched XML closes; require each parsed element's
+    // original span to end with its own explicit close (or self-closing tag).
+    for (const element of $("*").toArray()) {
+      if (element.type !== "tag") throw new Error("Matthews targeted: unsupported XML element");
+      const span = xml.slice(element.startIndex ?? -1, (element.endIndex ?? -1) + 1);
+      const closed = span.endsWith(`</${element.name}>`) || /^<[^<>]*\/\s*>$/.test(span);
+      if (!closed) throw new Error("Matthews targeted: repaired XML element is not authoritative inventory");
+    }
+    if ($(root).contents().toArray().some(node =>
+      node.type === "tag" ? node.name !== "url" : node.type === "text" && !!node.data.trim()
+    )) throw new Error("Matthews targeted: unsupported sitemap root content");
+    const seen = new Set<string>();
+    detailUrls = [];
+    for (const entry of $(root).children().toArray()) {
+      if (entry.type !== "tag" || entry.name !== "url") continue;
+      if ($(entry).contents().toArray().some(node =>
+        node.type === "tag"
+          ? !["loc", "lastmod", "changefreq", "priority"].includes(node.name) || $(node).children().length > 0
+          : node.type === "text" && !!node.data.trim()
+      )) throw new Error("Matthews targeted: unsupported sitemap entry content");
+      const loc = $(entry).children("loc");
+      if (loc.length !== 1 || loc.children().length) {
+        throw new Error("Matthews targeted: ambiguous sitemap location");
+      }
+      const raw = clean(loc.text());
+      if (!raw || !raw.startsWith("https://")) continue;
+      const rawUrl = new URL(raw);
+      if (
+        rawUrl.protocol !== "https:"
+        || rawUrl.hostname.toLowerCase().replace(/^www\./, "") !== "matthews.com"
+        || rawUrl.username || rawUrl.password || rawUrl.port || rawUrl.search || rawUrl.hash
+      ) throw new Error("Matthews targeted: invalid raw sitemap location authority");
+      const normalized = normalizedMatthewsPropertyUrl(raw, MATTHEWS_HOST);
+      const comparison = matthewsPropertyComparisonUrl(raw, MATTHEWS_HOST);
+      if (!normalized || !comparison) continue;
+      if (seen.has(comparison)) duplicateComparisons.add(comparison);
+      else { seen.add(comparison); detailUrls.push(normalized); }
+    }
+  } else detailUrls = matthewsDetailUrlsFromSitemap(xml);
+  if (!detailUrls.length) {
+    throw new Error("Matthews: no /properties/ URLs found in sitemap.xml (fetch may have been blocked or transformed)");
+  }
+  return {
+    detailUrls,
+    inventoryObservedAt: targeted ? new Date().toISOString() : receivedAt,
+    duplicateComparisons,
+  };
+}
+
+export async function enrichMatthewsTargetedBatch(items: Array<{
+  sourceKey: string;
+  externalId: string;
+  url: string;
+  transaction?: Tx;
+}>, suppliedContext: MatthewsTargetedRefresh): Promise<any[]> {
+  const context = validateMatthewsTargetedRefresh(suppliedContext);
+  if (items.length < 1 || items.length > 50) throw new Error("Matthews targeted: batch must contain 1–50 claims");
+  const seenIds = new Set<string>(), seenUrls = new Set<string>();
+  const claims = items.map(item => {
+    const requested = new URL(item.url);
+    const comparison = matthewsPropertyComparisonUrl(item.url, MATTHEWS_HOST);
+    if (
+      item.sourceKey !== "matthews" || requested.protocol !== "https:"
+      || requested.username || requested.password || requested.port || requested.search || requested.hash
+      || !comparison || comparison.split("/properties/")[1] !== item.externalId
+      || (item.transaction !== undefined && !["sale", "lease"].includes(item.transaction))
+      || seenIds.has(item.externalId) || seenUrls.has(comparison)
+    ) throw new Error("Matthews targeted: invalid or duplicate claimed identity");
+    seenIds.add(item.externalId); seenUrls.add(comparison);
+    return { item, comparison };
+  });
+  const inventory = await matthewsFreshInventory(true);
+  validateMatthewsTargetedRefresh(context);
+  if (Date.parse(inventory.inventoryObservedAt) < Date.parse(context.generationStartedAt)) {
+    throw new Error("Matthews targeted: inventory predates batch start");
+  }
+  const current = new Map(inventory.detailUrls.map(url => [matthewsPropertyComparisonUrl(url, MATTHEWS_HOST), url]));
+  const admitted = claims.flatMap(({ item, comparison }) => {
+    const currentUrl = current.get(comparison);
+    if (!currentUrl || inventory.duplicateComparisons.has(comparison)) {
+      return [];
+    }
+    const transaction = matthewsTenureFromUrl(currentUrl);
+    if (item.transaction !== undefined && item.transaction !== transaction) {
+      return [];
+    }
+    return [{ ...item, transaction }];
+  });
+  const rows = await pmap(admitted, Math.min(CONCURRENCY, 2), async item => {
+    validateMatthewsTargetedRefresh(context);
+    const listing = await enrichMatthewsObservedListing(item, inventory.inventoryObservedAt);
+    validateMatthewsTargetedRefresh(context);
+    if (!listing) return null;
+    if (
+      listing.freshnessProvenance?.generationId !== context.generationId
+      || Date.parse(listing.detailObservedAt) < Date.parse(inventory.inventoryObservedAt)
+      || Date.parse(listing.detailObservedAt) > Date.now() + 300_000
+    ) throw new Error("Matthews targeted: invalid detail observation binding");
+    return prune({ ...listing, transactionMode: item.transaction });
+  });
+  return rows.filter(Boolean);
 }
 
 export function matthewsParsedCoverage(
@@ -673,18 +839,7 @@ export function matthewsParsedCoverage(
 }
 
 export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
-  const sitemap = await matthewsFetch(MATTHEWS_SITEMAP_URL);
-  if (!sitemap.html) {
-    throw new Error("Matthews: sitemap did not return an XML response body");
-  }
-  const xml = sitemap.html;
-  const inventoryObservedAt = new Date().toISOString();
-  const detailUrls = matthewsDetailUrlsFromSitemap(xml);
-  if (!detailUrls.length) {
-    throw new Error(
-      "Matthews: no /properties/ URLs found in sitemap.xml (fetch may have been blocked or transformed)"
-    );
-  }
+  const { detailUrls, inventoryObservedAt } = await matthewsFreshInventory();
 
   const urls = detailUrls.filter((url) => matthewsTenureFromUrl(url) === tx);
   const sitemapUrlSet = new Set(

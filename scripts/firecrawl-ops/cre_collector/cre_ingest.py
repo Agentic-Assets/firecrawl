@@ -1469,6 +1469,171 @@ def parse_strict_freshness_timestamp(value, *, field):
     return parsed.astimezone(timezone.utc)
 
 
+def validate_matthews_targeted_claims(claims, *, now=None):
+    """Validate a caller-owned batch, never treating queue time as observation."""
+    current = now or datetime.now(timezone.utc)
+    context = (
+        claims.get("matthewsTargetedRefresh") if isinstance(claims, dict) else None
+    )
+    if (
+        not isinstance(context, dict)
+        or set(context) != {"sourceKey", "generationId", "generationStartedAt"}
+        or context["sourceKey"] != "matthews"
+    ):
+        raise ValueError("targeted Matthews caller context is invalid")
+    if not re.fullmatch(
+        r"matthews-targeted-[0-9a-f]{32}", context["generationId"] or ""
+    ):
+        raise ValueError("targeted Matthews caller generation is invalid")
+    boundary = parse_strict_freshness_timestamp(
+        context["generationStartedAt"], field="targeted generation start"
+    )
+    if not 0 <= (current - boundary).total_seconds() <= 600:
+        raise ValueError("targeted Matthews caller boundary is stale or future")
+    items = claims.get("items")
+    if not isinstance(items, list) or not 1 <= len(items) <= 50:
+        raise ValueError("targeted Matthews caller selection is invalid")
+    identities, urls, claim_ids = set(), set(), set()
+    for item in items:
+        if not isinstance(item, dict) or item.get("sourceKey") != "matthews":
+            raise ValueError("targeted Matthews caller source is invalid")
+        identity, url = item.get("externalId"), item.get("url")
+        if not isinstance(identity, str) or not isinstance(url, str):
+            raise ValueError("targeted Matthews caller identity is invalid")
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "www.matthews.com"
+            or parsed.query
+            or parsed.fragment
+            or not re.fullmatch(r"/properties/[^/]+", parsed.path)
+            or re.sub(r"%[0-9A-Fa-f]{2}", lambda m: m[0].lower(), parsed.path[12:])
+            != identity
+            or any(ord(c) < 33 or ord(c) == 127 for c in url)
+        ):
+            raise ValueError("targeted Matthews caller URL is invalid")
+        try:
+            claim_id = str(uuid.UUID(item.get("claimId", "")))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("targeted Matthews claim witness is invalid") from exc
+        claimed = parse_strict_freshness_timestamp(
+            item.get("claimedAt"), field="claim witness"
+        )
+        if (
+            not -MAX_FUTURE_CLOCK_SKEW.total_seconds()
+            <= (current - claimed).total_seconds()
+            < 3600
+        ):
+            raise ValueError("targeted Matthews claim witness is expired")
+        if (
+            identity in identities
+            or url in urls
+            or claim_id in claim_ids
+            or item.get("transaction") not in (None, "sale", "lease")
+        ):
+            raise ValueError("targeted Matthews caller selection is ambiguous")
+        identities.add(identity)
+        urls.add(url)
+        claim_ids.add(claim_id)
+    return context
+
+
+def validate_matthews_targeted_artifact(data, claims, *, now=None):
+    """Bind strict partial output to the worker's actual selection and boundary."""
+    context = validate_matthews_targeted_claims(claims, now=now)
+    meta = data.get("runMeta") if isinstance(data, dict) else None
+    if (
+        not isinstance(meta, dict)
+        or meta.get("mode") != "enrich"
+        or meta.get("matthewsTargetedRefresh") != context
+    ):
+        raise ValueError("targeted Matthews artifact is not caller-bound")
+    freshness = meta.get("freshness")
+    if (
+        not isinstance(freshness, dict)
+        or freshness.get("generationId") != context["generationId"]
+        or freshness.get("generationStartedAt") != context["generationStartedAt"]
+    ):
+        raise ValueError("targeted Matthews freshness is not caller-bound")
+    validate_strict_artifact_freshness(data, require_strict_freshness=True, now=now)
+    listings, sources = data.get("listings"), data.get("sources")
+    if (
+        not isinstance(listings, list)
+        or not isinstance(sources, list)
+        or len(sources) != 1
+    ):
+        raise ValueError("targeted Matthews source receipt is invalid")
+    source = sources[0]
+    if (
+        not isinstance(source, dict)
+        or source.get("sourceKey") != "matthews"
+        or source.get("supported") is not True
+        or source.get("enricher") != "bespoke"
+        or source.get("error")
+        or source.get("truncated")
+        or type(source.get("requested")) is not int
+        or source["requested"] != len(claims["items"])
+        or type(source.get("listingsCollected")) is not int
+        or source["listingsCollected"] != len(listings)
+    ):
+        raise ValueError("targeted Matthews source counts are invalid")
+    selected = {item["externalId"]: item for item in claims["items"]}
+    seen = set()
+    for listing in listings:
+        identity = listing.get("id")
+        item = selected.get(identity)
+        if (
+            item is None
+            or identity in seen
+            or listing.get("sourceKey") != "matthews"
+            or listing.get("url") != item["url"]
+            or listing.get("canonicalUrl") != item["url"]
+        ):
+            raise ValueError("targeted Matthews emitted identity is invalid")
+        tenure = (
+            "lease" if re.search(r"/properties/leasing-", item["url"], re.I) else "sale"
+        )
+        if (
+            listing.get("transactionMode") != tenure
+            or listing.get("transactionType")
+            != ("Lease" if tenure == "lease" else "Sale")
+            or item.get("transaction") not in (None, tenure)
+        ):
+            raise ValueError("targeted Matthews emitted tenure is invalid")
+        provenance = listing["freshnessProvenance"]
+        if (
+            provenance.get("method") != "matthews_canonical_detail"
+            or provenance.get("identityMethod") != "canonical_property_url"
+        ):
+            raise ValueError("targeted Matthews provider identity proof is invalid")
+        if parse_strict_freshness_timestamp(
+            listing["inventoryObservedAt"], field="inventory"
+        ) > parse_strict_freshness_timestamp(
+            listing["detailObservedAt"], field="detail"
+        ):
+            raise ValueError(
+                "targeted Matthews inventory follows its detail observation"
+            )
+        seen.add(identity)
+    return listings
+
+
+def matthews_targeted_sql_context(data, claims, *, now=None):
+    listings = validate_matthews_targeted_artifact(data, claims, now=now)
+    selected = {item["externalId"]: item for item in claims["items"]}
+    return [
+        {
+            **selected[row["id"]],
+            "inventoryObservedAt": row["inventoryObservedAt"],
+            "detailObservedAt": row["detailObservedAt"],
+            "canonicalUrl": row["canonicalUrl"],
+            "transactionMode": row["transactionMode"],
+            "generationId": claims["matthewsTargetedRefresh"]["generationId"],
+        }
+        for row in listings
+    ]
+
+
 def _matthews_enrichment_preserves_collections(listing):
     """Match the SQL's recursive true/string-true preservation markers."""
     pending = [(listing, False)]
@@ -3403,6 +3568,68 @@ def apply_status_activation_gate(rows, activate_status):
     return suppressed
 
 
+def _matthews_targeted_sql_parts(targets):
+    """Transaction-local input; no persistent schema or lifecycle permission."""
+    values = ",\n".join(
+        "("
+        + ",".join(
+            sql_lit(t[key])
+            for key in (
+                "claimId",
+                "claimedAt",
+                "externalId",
+                "url",
+                "inventoryObservedAt",
+                "detailObservedAt",
+                "canonicalUrl",
+                "transactionMode",
+            )
+        )
+        + ")"
+        for t in targets
+    )
+    queue = f"""
+CREATE TEMP TABLE _matthews_targets ON COMMIT DROP AS
+SELECT claim_id::uuid, claimed_at::timestamptz, external_id,url,
+ inventory_at::timestamptz,detail_at::timestamptz,canonical_url,tenure
+FROM (VALUES {values}) v(claim_id,claimed_at,external_id,url,inventory_at,detail_at,canonical_url,tenure);
+"""
+    guard = """
+CREATE TEMP TABLE _matthews_queue_locks ON COMMIT DROP AS
+SELECT q.id FROM credeals.cre_enrichment_queue q
+JOIN _matthews_targets e ON e.claim_id=q.id ORDER BY q.id FOR UPDATE OF q;
+DO $$ BEGIN
+ IF (SELECT count(*) FROM _src) != (SELECT count(*) FROM _matthews_targets)
+ OR (SELECT count(*) FROM _src s
+ JOIN credeals.cre_brokerages b ON b.id=s.brokerage_id AND b.slug='matthews'
+ JOIN _matthews_targets e ON e.external_id=s.external_id AND e.url=s.source_url
+ JOIN credeals.cre_enrichment_queue q ON q.id=e.claim_id AND q.brokerage_id=s.brokerage_id
+ JOIN credeals.cre_listings l ON l.brokerage_id=s.brokerage_id AND l.external_id=s.external_id
+ JOIN credeals.cre_source_index si ON si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id
+ WHERE q.source_key='matthews' AND q.external_id=e.external_id AND q.url=e.url
+   AND q.claimed_at IS NOT DISTINCT FROM e.claimed_at AND q.done_at IS NULL
+   AND q.attempts<5 AND q.claimed_at>now()-interval '1 hour'
+   AND l.status='active' AND l.deleted_at IS NULL AND l.source_url=e.url
+   AND (l.scraped_at IS NULL OR (isfinite(l.scraped_at) AND l.scraped_at<=e.detail_at))
+   AND si.source_key='matthews' AND si.url=e.url AND si.observation_present IS TRUE
+   AND si.soft_deleted IS FALSE AND si.last_seen IS NOT NULL AND si.last_enumerated_at IS NOT NULL
+   AND isfinite(si.last_seen) AND isfinite(si.last_enumerated_at)
+   AND si.last_seen<=e.inventory_at AND si.last_enumerated_at<=e.inventory_at
+   AND s.scraped_at=e.detail_at AND s.transaction_type=e.tenure AND s.canonical_url=e.canonical_url
+ ) != (SELECT count(*) FROM _matthews_targets) THEN
+   RAISE EXCEPTION 'targeted Matthews identity, eligibility or claim tenure changed';
+ END IF;
+END $$;
+"""
+    observation = """
+-- Selected current observations update clocks only; no presence/lifecycle transition.
+UPDATE credeals.cre_source_index si SET last_seen=e.inventory_at,last_enumerated_at=e.inventory_at
+FROM _matthews_targets e JOIN _src s ON s.external_id=e.external_id
+WHERE si.brokerage_id=s.brokerage_id AND si.external_id=s.external_id;
+"""
+    return queue, guard, observation
+
+
 def build_sql(
     rows,
     job_meta,
@@ -3415,11 +3642,19 @@ def build_sql(
     finished_at=None,
     colliers_first_party_transition=False,
     skip_post_commit_summary=False,
+    matthews_targeted_targets=None,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
     # prevents a manually constructed row from restoring the retired writer.
     rows = [{**row, "om_facts": []} for row in rows]
+    targeted = matthews_targeted_targets is not None
+    if targeted and (not matthews_targeted_targets or mark_missing_slugs
+                     or inventory_only_rows or inventory_only_scopes):
+        raise ValueError("targeted Matthews SQL scope is invalid")
+    targeted_queue, targeted_guard, targeted_observation = (
+        _matthews_targeted_sql_parts(matthews_targeted_targets) if targeted else ("", "", "")
+    )
     finished_at = finished_at or started_at
     if artifact_run_key is None:
         identity_payload = json.dumps(
@@ -3487,6 +3722,8 @@ def build_sql(
     # connection. Bound the data load separately, then restore the tighter
     # mutation timeout after all four transaction-local COPY stages.
     w("SET LOCAL statement_timeout = '1800s';")
+    if targeted:
+        w("SELECT pg_advisory_xact_lock(1687068469);")
     w("-- Intentionally serialize all generated lifecycle mutation transactions.")
     w(lifecycle_transaction_lock_sql())
     # Pin standard_conforming_strings so sql_lit()'s quote-doubling is provably
@@ -3925,7 +4162,7 @@ END $$;
 -- canonical source-index-then-listing order; the unique identity constraints
 -- serialize new-row conflicts.
 -- Lock present source-index rows after the transaction-wide lifecycle lock.
-CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
+{targeted_queue}CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
 JOIN _src s ON s.brokerage_id = si.brokerage_id AND s.external_id = si.external_id
@@ -3957,7 +4194,7 @@ FROM _src s
 LEFT JOIN credeals.cre_source_index si
   ON si.brokerage_id = s.brokerage_id AND si.external_id = s.external_id;
 
-CREATE TEMP TABLE _up ON COMMIT DROP AS
+{targeted_guard}CREATE TEMP TABLE _up ON COMMIT DROP AS
 WITH ins AS (
     INSERT INTO credeals.cre_listings AS t (
         brokerage_id, external_id, source_url, status, transaction_type,
@@ -4357,7 +4594,7 @@ FROM _src s
 WHERE t.brokerage_id = s.brokerage_id
   AND t.external_id = s.external_id
   AND s.status IS NOT NULL
-  AND t.status IS DISTINCT FROM s.status
+{targeted_status_allowed}  AND t.status IS DISTINCT FROM s.status
   AND NOT (t.status IN ('sold','leased','off_market')
            AND s.status IN ('under_contract','pending'));
 
@@ -4419,9 +4656,12 @@ END $$;
 """.replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
+        .replace("{targeted_queue}", targeted_queue)
+        .replace("{targeted_guard}", targeted_guard)
+        .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
     )
 
-    w(f"""
+    w(targeted_observation if targeted else f"""
 -- Canonical full ingest synchronizes source observation and lifecycle mirror
 -- in the same transaction as the cre_listings upsert.
 INSERT INTO credeals.cre_source_index AS si
@@ -4467,8 +4707,8 @@ JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
 WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL
 ON CONFLICT DO NOTHING;
-
--- Children: refresh wholesale only when the latest source row completed a
+""")
+    w(f"""-- Children: refresh wholesale only when the latest source row completed a
 -- detail pass. This protects previously good documents/images/contacts from
 -- transient errors and from deliberate API-only/base refresh modes.
 CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
@@ -5929,6 +6169,7 @@ def main():
         help="collect.ts output JSON (repeatable)",
     )
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
+    ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -5985,6 +6226,31 @@ def main():
     finished_at_by_slug = {}
     colliers_transition_inputs = []
 
+    targeted_claims, targeted_targets = None, None
+    if args.matthews_targeted_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.activate_status
+            or _status_activation_enabled(args.activate_status)
+            or not args.expected_db_target_sha256):
+            sys.exit("refusing unbound targeted Matthews ingest")
+        from pathlib import Path
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+
+        claim_path = Path(args.matthews_targeted_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=128 * 1024)
+            targeted_claims = json.loads(raw)
+            validate_matthews_targeted_claims(targeted_claims)
+            from cre_stop_guarded_tier import require_guarded_matthews_parent
+            guarded = targeted_claims.get("matthewsGuardedWorker")
+            if not isinstance(guarded, dict) or not isinstance(guarded.get("workerIdentity"), dict):
+                sys.exit("refusing targeted Matthews without guarded worker identity")
+            require_guarded_matthews_parent(
+                guarded.get("runId"), args.expected_db_target_sha256,
+                len(targeted_claims["items"]), worker_identity=guarded["workerIdentity"])
+        finally:
+            os.close(directory)
     for path in args.inputs:
         with open(path) as f:
             data = json.load(f)
@@ -5994,6 +6260,15 @@ def main():
                 "sole production OM extraction writer"
             )
         run_meta = data.get("runMeta") or {}
+        is_matthews_enrich = run_meta.get("mode") == "enrich" and any(
+            isinstance(row, dict) and row.get("sourceKey") == "matthews"
+            for row in data.get("listings", [])
+        )
+        if targeted_claims is not None:
+            try:
+                targeted_targets = matthews_targeted_sql_context(data, targeted_claims)
+            except (ValueError, TypeError, KeyError):
+                sys.exit("refusing caller-unbound targeted Matthews artifact")
         try:
             validate_strict_artifact_freshness(
                 data,
@@ -6001,6 +6276,8 @@ def main():
             )
         except ValueError as exc:
             sys.exit(f"refusing strict freshness artifact: {exc}")
+        if is_matthews_enrich and targeted_claims is None:
+            sys.exit("refusing strict freshness Matthews enrichment without caller-bound targeted claims")
         has_colliers_main = any(
             isinstance(entry, dict) and entry.get("sourceKey") == "colliers-main"
             for entry in (data.get("sources") or [])
@@ -6251,6 +6528,7 @@ def main():
         finished_at=finished_at,
         colliers_first_party_transition=colliers_first_party_transition,
         skip_post_commit_summary=args.skip_post_commit_summary,
+        matthews_targeted_targets=targeted_targets,
     )
 
     print(

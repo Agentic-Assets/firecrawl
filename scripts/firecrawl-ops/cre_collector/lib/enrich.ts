@@ -33,7 +33,7 @@ import {
 import { REGISTERED_BUILDOUT_FIRMS } from "../sources/buildout-registry.js";
 import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-young.js";
 import { enrichMarcusListing } from "../sources/marcus-millichap.js";
-import { enrichMatthewsListing } from "../sources/matthews.js";
+import { enrichMatthewsListing, enrichMatthewsTargetedBatch, validateMatthewsTargetedRefresh, type MatthewsTargetedRefresh } from "../sources/matthews.js";
 import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
 import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidder-mathews.js";
 import type { SourceKey } from "../types.js";
@@ -50,7 +50,7 @@ export interface SourceEnricher {
   // Each returned row MUST carry listing.url === the input EnrichItem.url.
   // Omit a row (do not push) on unrecoverable per-item failure; the worker then
   // leaves that claimed row queued and the weekly full scrape refreshes it.
-  enrich(items: EnrichItem[]): Promise<any[]>;
+  enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]>;
 }
 
 // colliers-main: strip the "main:" fold prefix to rebuild the native usa#####
@@ -289,7 +289,8 @@ function nativeIdFor(item: EnrichItem): string {
 // Matthews owns canonical/native identity validation and the shared direct
 // transport. A source failure never falls back to generic JSON-LD enrichment.
 export const matthewsEnricher: SourceEnricher = {
-  async enrich(items: EnrichItem[]): Promise<any[]> {
+  async enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]> {
+    if (context) return enrichMatthewsTargetedBatch(items, context);
     const rows = await pmap(items, Math.min(CONCURRENCY, 2), enrichMatthewsListing);
     return rows.filter(Boolean);
   },
@@ -340,8 +341,15 @@ export type EnrichGroupResult = { sources: any[]; listings: any[] };
 export async function runEnrichGroups(
   groups: Map<string, EnrichItem[]>,
   resolveEnricher: (key: string) => { enricher: SourceEnricher; label: string },
-  companyFor: (key: string) => string
+  companyFor: (key: string) => string,
+  context?: MatthewsTargetedRefresh
 ): Promise<EnrichGroupResult> {
+  if (context) {
+    validateMatthewsTargetedRefresh(context);
+    if (groups.size !== 1 || !groups.has("matthews") || !groups.get("matthews")?.length || groups.get("matthews")!.length > 50) {
+      throw new Error("Matthews targeted: requires one bounded Matthews-only group");
+    }
+  }
   const sources: any[] = [];
   const listings: any[] = [];
   for (const [key, groupItems] of groups) {
@@ -349,7 +357,7 @@ export async function runEnrichGroups(
     const company = companyFor(key);
     console.error(`enriching ${key} (${groupItems.length} item(s), enricher=${label})...`);
     try {
-      const rows = await enricher.enrich(groupItems);
+      const rows = context ? await enricher.enrich(groupItems, context) : await enricher.enrich(groupItems);
       // Echo-guard: every emitted row MUST carry its input url for URL-keyed
       // completion. Index input transaction by url so the correct
       // transactionMode tag is attached (and a url-less row is dropped).

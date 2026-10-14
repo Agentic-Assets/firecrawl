@@ -163,6 +163,11 @@ def build_commands(args: argparse.Namespace, run_dir: Path, target: str | None):
         if target is None or not re.fullmatch(r"[0-9a-f]{64}", target):
             raise GuardedTierError("database target binding is unavailable")
         argv.extend(["--expected-db-target-sha256", target])
+        if args.source == "matthews":
+            if sys.platform != "linux" or args.deadline_seconds > 600:
+                raise GuardedTierError("targeted Matthews requires Linux and a deadline at most 600 seconds")
+            argv.extend(["--matthews-targeted-refresh", "--guarded-run-id", run_dir.name,
+                         "--work-seconds", str(args.deadline_seconds)])
         if args.env_file:
             argv.extend(["--env-file", args.env_file])
     else:
@@ -297,6 +302,9 @@ def run_guarded_tier(
         raise GuardedTierError("a full expected checkout SHA is required")
     if args.tier == "monitor" and args.source in MONITOR_EXCLUDED:
         raise GuardedTierError("monitor-excluded sources are not admitted")
+    if args.tier == "enrich" and args.source == "matthews" and args.apply:
+        if sys.platform != "linux" or args.deadline_seconds > 600:
+            raise GuardedTierError("targeted Matthews requires Linux and a deadline at most 600 seconds")
     if args.env_file and any(ord(c) < 32 or ord(c) == 127 for c in args.env_file):
         raise GuardedTierError("invalid environment file path")
     windows_admission = getattr(args, "windows_admission_unix_ms", None)
