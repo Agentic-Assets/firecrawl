@@ -503,8 +503,8 @@ future. This means whole-Windows admission at startup only. It does not establis
 continuous Windows CPU/RAM safety, and the timestamp is not rechecked or relabeled
 as fresh hours later at each source. Required Linux/VM CPU and memory guards stay
 unchanged. The current guarded-tier PowerShell launcher does not launch a series;
-a weekly Windows invocation, whole-run deadline and exact-owner series stop are
-separate work, not enabled by these CLI options.
+the optional Linux controls below do not add a Windows launcher or enable a
+weekly invocation.
 
 When configured, reviewed code is checked again before every child dispatch,
 including recovery retries, before an attempt counter or child log is created.
@@ -522,6 +522,67 @@ observation of the current invocation, not append-only history. A later explicit
 resume replaces it; a legacy resume without the options removes it rather than
 presenting prior Windows evidence as current. Source artifacts, database-target
 binding, resource recovery, freshness gates and data-write policy remain unchanged.
+
+#### Optional Linux work deadline and exact invocation stop
+
+[AGENTIC-4174](https://linear.app/agenticassets/issue/AGENTIC-4174) adds explicit
+one-shot Linux CLI control through `--work-deadline-seconds`. Omit it to keep
+existing manual/Mac commands unchanged. An explicit integer budget must be
+30–86400 seconds; unsupported platforms refuse before credentials or output.
+Add the option to a separately reviewed series command, keeping its original
+source, provider, resource, environment and admission arguments.
+
+The budget starts after initial control publication and covers foreground child
+work, local Git checks and resource cooldown. It is a cooperative work deadline,
+with the existing separate child cleanup budgets (45-second parent grace plus
+5-second kill/reap allowance), not a kernel-call or total execution deadline.
+Stop signals are briefly latched during native spawn and ownership registration;
+child signal masks remain unchanged. No new source or recovery retry is dispatched
+after a delivered control interruption. A resumed invocation has a fresh explicit
+budget; this never extends a child generation's freshness or resume-age limits.
+
+The controlled CLI prints JSON containing the exact series directory and fresh
+32-character invocation ID before native work. Its private receipt lives at
+`.series-control/INVOCATION_ID.json` inside that series. Use those exact values;
+there is no latest-run selector. From the selected Linux collector checkout:
+
+```bash
+# Placeholder identities only; replace both with the controlled CLI's output.
+python3 cre_stop_checkpoint_series.py \
+  --series-dir /absolute/path/to/out/checkpoint-series/2026-10-14T030000Z \
+  --invocation-id 0123456789abcdef0123456789abcdef --wait-seconds 60
+```
+
+The stop helper checks process birth, boot, namespace and UID; series/control
+inodes; and the actual held `.series.lock` descriptor and flock. It sends one
+SIGTERM through a pidfd and waits on that same handle for up to 1–120 seconds.
+It never signals a bare PID/group, escalates, stops Docker, clears a checkpoint
+fence or authorizes a retry. The existing foreground owner handles child cleanup.
+A naturally finishing owner may be reported as completed without a signal.
+
+Exit 0 from the helper requires owner exit and matching terminal control evidence
+with confirmed local settlement or verified `not_started`. This is distinct from
+pipeline success: inspect `terminal_status`. Exit 1 means refusal before a verified
+stop; exit 2 means timeout or an unverified outcome. A known work deadline returns
+124 from the series; operator interruption returns 130. Uncertain spawn, process
+cleanup, nested checkpoint work or evidence publication cannot certify settlement.
+
+Controlled checkpoint children receive a fresh per-dispatch nonce and publish a
+separate private settlement receipt only after existing guard and canonical-lock
+teardown. The parent requires exact run/SHA/PID/invocation/dispatch binding and
+positive guard, nested-cleanup and terminal-evidence flags. Missing, stale or false
+proof remains unknown even when the coordinator group disappeared. The checkpoint's
+existing recovery-fence and reconciliation behavior remains authoritative; local
+settlement establishes neither remote provider cancellation nor SQL rollback.
+
+Receipt publication uses strict fsync and a private `.pending` witness. Readers
+refuse incomplete publication; do not remove a witness or rewrite a receipt to
+force acceptance. Current controls are recorded separately in
+`latest_invocation_control`, outside immutable config and fingerprints. A later
+legacy resume removes that current-invocation observation; old receipts do not
+become current authority. Library/manual/Mac calls and already-running series
+receive no retrofitted stop capability. This code enables no scheduler, Windows
+wrapper, deployment or supervised lifecycle acceptance.
 
 The strict runner never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. Never use `--allow-dirty` for a
