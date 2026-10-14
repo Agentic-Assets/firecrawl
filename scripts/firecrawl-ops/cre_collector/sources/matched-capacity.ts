@@ -10,6 +10,7 @@ import * as cheerio from "cheerio";
 import type { ScrapedDoc } from "../types.js";
 
 export const MATCHED_WIDTHS = [1, 2, 4, 8] as const;
+export const MATCHED_FIDELITY_SCHEMA = "cre-matched-semantic-v2" as const;
 export type MatchedSource = "jll" | "marcus-millichap";
 export type MatchedMember = {
   sampleId: string;
@@ -96,7 +97,7 @@ export function matchedCohortSha256(cohort: MatchedCohort): string {
   return digest(sorted(cohort));
 }
 
-export function matchedListingSha256(captured: CapturedDetail): string {
+function matchedListingProjection(captured: CapturedDetail): Record<string, any> {
   const row = structuredClone(captured.listing);
   // Only acquisition clocks/generation vary between otherwise identical cells.
   // All normalized facts, prose, ordering, document/media URLs and controls stay.
@@ -108,10 +109,23 @@ export function matchedListingSha256(captured: CapturedDetail): string {
       return captured.brokers[id];
     }).map(sorted);
   }
+  return row;
+}
+
+// Strict capture binding stays byte-compatible with the paired audit consumer.
+export function matchedListingSha256(captured: CapturedDetail): string {
+  return digest(sorted(matchedListingProjection(captured)));
+}
+
+export function matchedSemanticListingSha256(captured: CapturedDetail): string {
+  const row = matchedListingProjection(captured);
+  // This transport diagnostic can vary without changing normalized listing facts.
+  if (row.jllDetail?.scrape && typeof row.jllDetail.scrape === "object") delete row.jllDetail.scrape.rawHtmlLength;
   return digest(sorted(row));
 }
 
 export type MatchedCell = {
+  fidelitySchema: typeof MATCHED_FIDELITY_SCHEMA;
   source: MatchedSource;
   cohortSha256: string;
   generationId: string;
@@ -122,7 +136,7 @@ export type MatchedCell = {
   elapsedMs: number;
   freshRowsPerMinute: number;
   latencyMs: { p50: number; p95: number; p99: number; maximum: number };
-  rows: { sampleId: string; fidelitySha256: string; latencyMs: number; client: ClientEvidence }[];
+  rows: { sampleId: string; fidelitySha256: string; semanticFidelitySha256: string; latencyMs: number; client: ClientEvidence }[];
   context: TrialContext;
   coverage: {
     concurrency: string;
@@ -147,8 +161,14 @@ export async function runMatchedCapacityCell(options: {
   const members = structuredClone(cohort.members);
   const contextSnapshot = structuredClone(context);
   if (!(MATCHED_WIDTHS as readonly number[]).includes(concurrency) || !generationId) reject("cell_configuration");
-  if (baseline && (baseline.cohortSha256 !== cohortSha256 || baseline.generationId === generationId
-      || baseline.requestedConcurrency !== 1 || baseline.rows.length !== cohort.members.length)) reject("baseline_binding");
+  const sampleIds = new Set(members.map(member => member.sampleId));
+  if (baseline && (baseline.fidelitySchema !== MATCHED_FIDELITY_SCHEMA || baseline.source !== cohort.source
+      || baseline.cohortSha256 !== cohortSha256 || baseline.generationId === generationId
+      || baseline.requestedConcurrency !== 1 || !Array.isArray(baseline.rows) || baseline.rows.length !== members.length
+      || new Set(baseline.rows.map(row => row?.sampleId)).size !== members.length
+      || baseline.rows.some(row => !row || !sampleIds.has(row.sampleId)
+        || typeof row.fidelitySha256 !== "string" || !/^[0-9a-f]{64}$/.test(row.fidelitySha256)
+        || typeof row.semanticFidelitySha256 !== "string" || !/^[0-9a-f]{64}$/.test(row.semanticFidelitySha256)))) reject("baseline_binding");
   if (!context.resourceJournal || !context.runtimeSnapshot || !Object.keys(context.runtimeSnapshot).length) reject("resource_evidence");
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -161,7 +181,7 @@ export async function runMatchedCapacityCell(options: {
   let peak = 0;
   let failure: string | null = null;
   const rows: MatchedCell["rows"] = new Array(members.length);
-  const baselineRows = new Map(baseline?.rows.map((row) => [row.sampleId, row.fidelitySha256]));
+  const baselineRows = new Map(baseline?.rows.map((row) => [row.sampleId, row.semanticFidelitySha256]));
   const fail = (category: string) => {
     failure ??= category;
     controller.abort();
@@ -191,8 +211,9 @@ export async function runMatchedCapacityCell(options: {
               || client.bodyIdentity !== (cohort.source === "jll" ? "jll_native_property" : "canonical_body")
               || (cohort.source === "jll" && !client.maxAgeZero)) reject("client_reliability");
           const fidelitySha256 = matchedListingSha256(captured);
-          if (baseline && baselineRows.get(item.sampleId) !== fidelitySha256) reject("fidelity_regression");
-          rows[index] = { sampleId: item.sampleId, fidelitySha256, latencyMs: performance.now() - itemStarted, client };
+          const semanticFidelitySha256 = matchedSemanticListingSha256(captured);
+          if (baseline && baselineRows.get(item.sampleId) !== semanticFidelitySha256) reject("fidelity_regression");
+          rows[index] = { sampleId: item.sampleId, fidelitySha256, semanticFidelitySha256, latencyMs: performance.now() - itemStarted, client };
         } catch (error) {
           fail(error instanceof MatchedCapacityError ? error.category : "capture_failure");
         } finally { active--; }
@@ -205,7 +226,7 @@ export async function runMatchedCapacityCell(options: {
     const latencies = rows.map((row) => row.latencyMs).sort((a, b) => a - b);
     const quantile = (percent: number) => latencies[Math.ceil(latencies.length * percent) - 1]!;
     return {
-      source: cohort.source, cohortSha256, generationId,
+      fidelitySchema: MATCHED_FIDELITY_SCHEMA, source: cohort.source, cohortSha256, generationId,
       startedAt: new Date(wallStarted).toISOString(), finishedAt: new Date().toISOString(),
       requestedConcurrency: concurrency,
       peakActiveEnrichments: peak, elapsedMs, freshRowsPerMinute: rows.length * 60000 / elapsedMs,
