@@ -157,7 +157,7 @@ Audit `dispatch=pending` means the helper may have attempted dispatch if it
 subsequently threw or disappeared. `attempted` records a returned start-attempt
 result; `returned` records an observed native exit. `nativeExitCode` and
 `wrapperExitCode` are separate; existing `exitCode` remains the observed native
-code when available. Terminal-audit failure returns1 and leaves the previous
+code when available. Terminal-audit failure returns1 and by default leaves the previous
 valid receipt, which may still show pending work. Admission refusal keeps
 ordinary launcher exit1; CheckOnly resource refusal uses75. These audit statuses
 never certify a refresh or clear a Linux fence.
@@ -173,6 +173,61 @@ the selected run independently, and `linuxSettlement` always remains
 the launcher does not dump environment values or exception details into audits.
 Child stdout/stderr can contain business data or diagnostics. Keep these ignored
 local artifacts private and review/redact them before sharing.
+
+### Optional Windows failure notification
+
+`-AlertWebhookFile <absolute-Windows-path>` optionally enables one failure-only
+notification per launcher invocation. Provision the endpoint file outside every
+Git checkout, under the scheduled Windows user's ownership. Its Windows ACL
+must grant access only to that user, SYSTEM and Administrators. The helper
+validates the actual opened handle before reading: a local fixed-drive regular
+file, no reparse point or additional hardlinks, at most 4096 bytes, with the
+required owner/ACL. Use UTF8 without a BOM, containing one well-formed HTTPS
+URL and optionally one final newline. Broad ACLs, alternate streams, multiline
+input, URL credentials/fragments and invalid endpoints refuse notification.
+Do not put the endpoint itself in task arguments, environment values or Git.
+
+For example, add only the file reference to the existing foreground command:
+
+```powershell
+-AlertWebhookFile 'C:\Users\<user>\.config\cre\failure-webhook.url'
+```
+
+The default is unconfigured and quiet. Successful work does not read the file
+or send, and `-CheckOnly` never initializes notification, reads its secret or
+sends, including when admission fails. Ordinary admission, native-start,
+capture and initial/terminal audit failures can attempt a notification while
+the script body still has control. The fixed payload contains the Windows
+attempt ID, tier/source and observed exit codes, and explicitly says Linux
+settlement is unverified. It includes no environment, argv, business output
+or exception text. The endpoint and payload reach curl only through stdin;
+curl output is discarded except for its three-byte HTTP status.
+
+Curl has a 10-second request timeout, no retries, no redirects, no URL globbing,
+verified TLS, and its default config file disabled. The local helper waits up
+to 11 seconds for native exit plus up to 1.5 seconds of IO join/cancellation;
+filesystem/setup or kernel stalls are not a hard total-duration guarantee.
+An unexited curl or unjoined IO is `unverified`, retains unknown evidence as
+applicable and refuses further sends in that loaded helper; use a fresh
+`-File` shell. Start-attempt or IO-setup uncertainty uses the same conservative
+status and fresh-host requirement. No process is killed or claimed settled by
+a timeout.
+
+The audit records `not_configured`, `not_attempted`, `http_accepted`, `failed`
+or `unverified` notification status when writable. Exact HTTP 2xx with native
+exit 0 and completed IO means HTTP acceptance, **not destination delivery or
+readback**. Notification failure never changes the original launcher exit.
+An audit failure still returns its original failure code; when notification
+is configured, a later best-effort audit write may retain its explicit
+audit-failed status and notification result. Missing initial evidence or a
+failed metadata update remains incomplete evidence.
+
+This is not outage paging or cross-run deduplication. Parser/binding failure,
+forced launcher death, logout/reboot or an unavailable Windows/network host
+can prevent sending. Exact authorized destination binding, scheduled-user
+access and an approved delivery/readback test remain operational acceptance
+on AGENTIC-3752; no endpoint is configured and no message is sent by installing
+this code.
 
 A known, locally settled checkout or credential-file admission refusal can
 publish `preflight_refused` and clear its barrier after guards stop and the
