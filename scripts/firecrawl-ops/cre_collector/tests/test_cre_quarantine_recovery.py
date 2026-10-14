@@ -30,6 +30,7 @@ def _recovery_tests_require_an_explicit_temporary_lock(
 
 
 def _historic_quarantine_pair(lock_path: Path) -> None:
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path.mkdir(mode=0o700, parents=True)
     lock_path.chmod(0o700)
     owner = 99999999
