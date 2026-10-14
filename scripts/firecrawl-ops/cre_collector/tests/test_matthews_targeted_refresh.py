@@ -13,7 +13,8 @@ import pytest
 
 def fixture_batch():
     now = datetime.now(timezone.utc)
-    stamp = lambda seconds: (now + timedelta(seconds=seconds)).isoformat()
+    def stamp(seconds):
+        return (now + timedelta(seconds=seconds)).isoformat()
     context = {
         "sourceKey": "matthews",
         "generationId": "matthews-targeted-" + "a" * 32,
