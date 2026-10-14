@@ -266,7 +266,48 @@ def _event_request(raw, desired_present, desired_generation):
     }, None
 
 
-def build_plan(bundle, *, evidence_base_dir=".", max_age_hours=48):
+def _index_absent_retirement(raw, source, bound_artifact):
+    """Only a real active listing transition; absent index fields stay absent."""
+    if (raw.get("index_exists") is not False
+            or any(raw.get(key) is not None for key in
+                   ("index_soft_deleted", "observation_present", "presence_generation"))
+            or raw.get("listing_deleted") is not False
+            or raw.get("listing_status") != "active"
+            or "listing_deleted_at" not in raw or raw["listing_deleted_at"] is not None
+            or source.get("state") != "absent"
+            or raw.get("event_repair") is not None or raw.get("history_repair") is not None):
+        return None, "index_absent_retirement_requires_exact_active_before_state"
+    before_keys = ("listing_id", "brokerage_id", "external_id", "listing_status",
+                   "listing_deleted_at", "listing_updated_at", "listing_scraped_at", "index_exists")
+    try:
+        observed = _parse_time(source["observed_at"])
+        for key in ("listing_updated_at", "listing_scraped_at"):
+            value = raw[key]
+            if value is None and key == "listing_scraped_at":
+                continue
+            if datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None:
+                raise ValueError("naive before-state time")
+            if _parse_time(value) > observed:
+                raise ValueError("listing is fresher than source evidence")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None, "index_absent_retirement_requires_unchanged_older_listing"
+    before = {key: raw[key] for key in before_keys}
+    return {
+        "listing_id": raw["listing_id"], "brokerage_id": raw["brokerage_id"],
+        "external_id": raw["external_id"], "source_key": source["source_key"],
+        "source_url": source["url"], "source_evidence_sha256": source["evidence_sha256"],
+        "source_evidence_path": bound_artifact["path"], "observed_at": source["observed_at"],
+        "index_absent_retirement": True,
+        "operations": ["listing_only_retirement", "status_change"],
+        "lifecycle_change": True, "desired_present": False, "desired_status": "inactive",
+        "desired_generation": None, "history": None,
+        "event": {"event_type": "status_change"}, "before": before,
+        "before_hash": hashlib.sha256(_canon(before).encode()).hexdigest(),
+    }, None
+
+
+def build_plan(bundle, *, evidence_base_dir=".", max_age_hours=48,
+               allow_index_absent_retirement=False):
     """Deterministic planner whose freshness is anchored to the current clock."""
     now = datetime.now(timezone.utc)
     actions = []
@@ -302,6 +343,24 @@ def build_plan(bundle, *, evidence_base_dir=".", max_age_hours=48):
             )
         if reason:
             skipped.append(_skip(raw, reason))
+            continue
+
+        missing_index = raw.get("index_exists") is False or any(
+            raw.get(key) is None for key in
+            ("index_soft_deleted", "observation_present", "presence_generation")
+        )
+        if missing_index:
+            if allow_index_absent_retirement:
+                action, reason = _index_absent_retirement(raw, source, bound_artifact)
+                if action is not None:
+                    actions.append(action)
+                else:
+                    skipped.append(_skip(raw, reason))
+            else:
+                skipped.append(_skip(raw, "index_absent_retirement_requires_explicit_mode"))
+            continue
+        if allow_index_absent_retirement:
+            skipped.append(_skip(raw, "index_absent_retirement_requires_missing_index"))
             continue
 
         desired_present = source["state"] == "present"
@@ -442,6 +501,61 @@ def _job_identity(plan_hash, brokerage_id):
     return run_key, str(uuid.uuid5(_UUID_NAMESPACE, f"{run_key}:{brokerage_id}"))
 
 
+def _index_absent_apply_sql(action, plan_hash, job_id):
+    """The transaction already holds the source-index absence-protecting lock."""
+    before = action["before"]
+    listing_id = sql_lit(action["listing_id"])
+    brokerage_id = sql_lit(action["brokerage_id"])
+    external_id = sql_lit(action["external_id"])
+    observed = sql_lit(action["observed_at"]) + "::timestamptz"
+    event_id = sql_lit(str(uuid.uuid5(_UUID_NAMESPACE, f"index-absent:{plan_hash}:{action['listing_id']}")))
+    job = sql_lit(job_id)
+    digest = sql_lit(action["source_evidence_sha256"])
+    provenance = "approved_index_absent_retirement"
+    identity = f"l.id={listing_id}::uuid AND l.brokerage_id={brokerage_id}::uuid AND l.external_id={external_id}"
+    absent = f"NOT EXISTS (SELECT 1 FROM credeals.cre_source_index si WHERE si.brokerage_id={brokerage_id}::uuid AND si.external_id={external_id})"
+    scraped = "NULL" if before["listing_scraped_at"] is None else sql_lit(before["listing_scraped_at"]) + "::timestamptz"
+    event = (
+        f"EXISTS (SELECT 1 FROM credeals.cre_listing_events e WHERE e.id={event_id}::uuid "
+        f"AND e.listing_id={listing_id}::uuid AND e.brokerage_id={brokerage_id}::uuid "
+        f"AND e.scrape_job_id={job}::uuid AND e.event_type='status_change' AND e.field='status' "
+        "AND e.presence_generation IS NULL "
+        f"AND e.old_value='active' AND e.new_value='inactive' "
+        f"AND e.reconciliation_provenance='{provenance}' AND e.reconciliation_evidence_sha256={digest} "
+        f"AND e.detected_at=l.updated_at AND e.evidence_observed_at={observed} AND e.evidence_time_semantics='{_EVENT_TIME_SEMANTICS}' "
+        f"AND e.source_value={sql_lit(provenance + ':' + plan_hash)} "
+        f"AND e.source_url IS NOT DISTINCT FROM {sql_lit(action['source_url'])})"
+    )
+    final = (f"{identity} AND l.status='inactive' AND l.deleted_at={observed} "
+             f"AND l.updated_at>={observed} AND l.scraped_at IS NOT DISTINCT FROM {scraped} AND {absent} AND {event}")
+    unchanged = (f"{identity} AND l.status='active' AND l.deleted_at IS NULL "
+                 f"AND l.updated_at={sql_lit(before['listing_updated_at'])}::timestamptz "
+                 f"AND l.scraped_at IS NOT DISTINCT FROM {scraped} AND {absent}")
+    return f"""DO $$ BEGIN
+  PERFORM l.id FROM credeals.cre_listings l WHERE {identity} FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'listing-only retirement target missing'; END IF;
+  IF NOT ({absent}) THEN RAISE EXCEPTION 'listing-only retirement source index appeared'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM credeals.cre_listings l WHERE {final}) THEN
+    IF NOT EXISTS (SELECT 1 FROM credeals.cre_listings l WHERE {unchanged}) THEN
+      RAISE EXCEPTION 'listing-only retirement before-state drifted';
+    END IF;
+    UPDATE credeals.cre_listings l SET status='inactive', deleted_at={observed},
+      updated_at=now() WHERE {identity};
+    INSERT INTO credeals.cre_listing_events
+      (id,listing_id,brokerage_id,scrape_job_id,event_type,field,old_value,new_value,
+       source_value,source_url,detected_at,reconciliation_provenance,evidence_observed_at,
+       evidence_time_semantics,reconciliation_evidence_sha256)
+    VALUES ({event_id}::uuid,{listing_id}::uuid,{brokerage_id}::uuid,{job}::uuid,
+      'status_change','status','active','inactive',{sql_lit(provenance + ':' + plan_hash)},
+      {sql_lit(action['source_url'])},now(),'{provenance}',{observed},
+      '{_EVENT_TIME_SEMANTICS}',{digest}) ON CONFLICT DO NOTHING;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM credeals.cre_listings l WHERE {final}) THEN
+    RAISE EXCEPTION 'listing-only retirement readback failed';
+  END IF;
+END $$;"""
+
+
 def build_apply_sql(actions, plan_hash, operator, approval_ref):
     """Build one bounded, lock-and-compare transaction."""
     if len(actions) > MAX_BATCH_SIZE:
@@ -458,6 +572,11 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
         lifecycle_transaction_lock_sql(),
         "CREATE TEMP TABLE _reconcile_apply (listing_id uuid PRIMARY KEY) ON COMMIT DROP;",
     ]
+    if any(action.get("index_absent_retirement") for action in actions):
+        lines.extend([
+            "SET LOCAL lock_timeout = '5s';",
+            "LOCK TABLE credeals.cre_source_index IN SHARE ROW EXCLUSIVE MODE;",
+        ])
     for brokerage_id in sorted({action["brokerage_id"] for action in actions}):
         run_key, job_id = _job_identity(plan_hash, brokerage_id)
         lines.append(
@@ -474,6 +593,9 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
         brokerage_id = sql_lit(action["brokerage_id"])
         external_id = sql_lit(action["external_id"])
         observed_at = sql_lit(action["observed_at"])
+        if action.get("index_absent_retirement"):
+            lines.append(_index_absent_apply_sql(action, plan_hash, job_id))
+            continue
         digest_expr = (
             "encode(digest(convert_to(concat_ws(E'\\x1f', "
             "CASE WHEN (l.deleted_at IS NOT NULL) THEN 'true' ELSE 'false' END, "
@@ -875,6 +997,8 @@ def main():
     parser.add_argument("--out-prefix", required=True)
     parser.add_argument("--max-age-hours", type=float, default=48)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--allow-index-absent-retirement", action="store_true",
+                        help="explicit listing-only active retirement with proven source-index absence")
     parser.add_argument(
         "--approval-contract",
         help="private chmod-600 JSON contract bound to operator, AGENTIC reference, and plan hash",
@@ -891,6 +1015,7 @@ def main():
     plan = build_plan(
         bundle, evidence_base_dir=evidence_path.parent,
         max_age_hours=args.max_age_hours,
+        allow_index_absent_retirement=args.allow_index_absent_retirement,
     )
     json_path, csv_path = write_evidence(plan, args.out_prefix)
     print(json.dumps({
