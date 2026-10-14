@@ -1021,7 +1021,14 @@ def acquire_quarantine_recovery_sync(lock_path: Path) -> int:
     a replacement is therefore a fail-closed error, not a synchronization
     object we might accidentally trust.
     """
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent = lock_path.parent.lstat()
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or parent.st_mode & 0o022
+    ):
+        raise LockHeldError("CRE lock parent directory is unsafe")
     sync_path = quarantine_recovery_sync_path(lock_path)
     descriptor = -1
     try:
@@ -1934,7 +1941,7 @@ class SharedLock:
 
     def _acquire_with_authority(self) -> None:
         try:
-            self.path.mkdir()
+            self.path.mkdir(mode=0o700)
             self._record_created_directory()
         except FileExistsError:
             raise LockHeldError("CRE lock directory changed before acquisition")
