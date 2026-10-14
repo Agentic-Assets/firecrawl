@@ -116,6 +116,7 @@ class HostMemoryGuard:
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
     linux_sampler: LinuxMemorySampler = field(default_factory=LinuxMemorySampler, init=False)
+    linux_sample_evidence: dict[str, object] | None = field(default=None, init=False)
 
     def config(self) -> dict[str, Any]:
         return memory_guard_config(self.sustain_seconds, self.sample_seconds)
@@ -152,6 +153,15 @@ class HostMemoryGuard:
         context = sanitize_context(
             self.context_provider() if self.context_provider else None
         )
+        diagnostics: dict[str, Any] = {}
+        if (
+            pressure in (PRESSURE_WARNING, PRESSURE_CRITICAL)
+            and self.sampler is None
+            and sys.platform.startswith("linux")
+            and self.linux_sample_evidence is not None
+            and self.linux_sample_evidence["pressure_level"] == pressure
+        ):
+            diagnostics["linux_memory_sample"] = self.linux_sample_evidence
         _append_record(
             self.log_path,
             {
@@ -172,6 +182,7 @@ class HostMemoryGuard:
                     for key, value in context.items()
                     if key in {"phase", "source"} and isinstance(value, str)
                 },
+                **diagnostics,
             },
         )
 
@@ -200,6 +211,10 @@ class HostMemoryGuard:
         )
 
     def sample_once(self, *, admission: bool = False) -> int:
+        self.linux_sample_evidence = None
+        linux_sample = self.sampler is None and sys.platform.startswith("linux")
+        if linux_sample:
+            self.linux_sampler.last_sample = None
         started = time.monotonic()
         pressure = (
             self.sampler()
@@ -212,6 +227,8 @@ class HostMemoryGuard:
         if observed - started > min(1.0, self.sample_seconds):
             raise MemoryTelemetryError("host memory pressure read stale")
         code = self.observe(pressure, observed_monotonic=observed)
+        if linux_sample:
+            self.linux_sample_evidence = self.linux_sampler.last_sample
         if admission and pressure != PRESSURE_NORMAL:
             code = "host_memory_start_blocked"
         if code:

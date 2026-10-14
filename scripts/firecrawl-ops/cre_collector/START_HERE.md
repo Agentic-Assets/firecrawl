@@ -110,6 +110,13 @@ series to children. `logs/host-memory-guard.jsonl` stores compact bounded sample
 policy and the terminal reason are saved in the manifest. Memory stops never
 qualify for automatic CPU-only recovery. Resume only after host pressure clears.
 
+Linux warning and trip records also retain `linux_memory_sample`, the bounded
+validated inputs and cause codes from that exact guard read: VM totals and PSI,
+plus visible cgroup usage, PSI and event deltas. Ancestor indices run from leaf
+to root and contain no raw paths. Normal ticks stay compact; Darwin and custom
+sampler records are unchanged. Nearby optional samples cannot identify or refute
+a transient guard stop. See [AGENTIC-4188](https://linear.app/agenticassets/issue/AGENTIC-4188).
+
 On Linux, warning pressure means PSI `some avg10 >= 10%`, available memory
 at or below 10%, a visible cgroup at or above 90% of `memory.max`, or new
 cgroup `high`/`max` events. Exhausted swap (at most 10% free) warns only when

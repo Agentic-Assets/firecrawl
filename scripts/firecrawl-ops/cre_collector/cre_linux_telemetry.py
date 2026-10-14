@@ -187,8 +187,11 @@ class LinuxMemorySampler:
     filesystem: Path = Path("/")
     previous_events: dict[str, dict[str, int]] = field(default_factory=dict, init=False)
     previous_membership: tuple[str, ...] | None = field(default=None, init=False)
+    last_sample: dict[str, object] | None = field(default=None, init=False)
 
     def __call__(self) -> int:
+        # Publish only a complete, validated sample. Failures cannot reuse it.
+        self.last_sample = None
         required = {"MemTotal", "MemAvailable", "SwapTotal", "SwapFree"}
         rows = []
         for line in _read(self.proc / "meminfo").splitlines():
@@ -203,7 +206,14 @@ class LinuxMemorySampler:
         swap_total, swap_free = info["SwapTotal"], info["SwapFree"]
         if not total or available > total or swap_free > swap_total:
             raise LinuxTelemetryError("Linux memory totals invalid")
-        level = _psi_level(_read(self.proc / "pressure/memory"))
+        host_psi_text = _read(self.proc / "pressure/memory")
+        level = _psi_level(host_psi_text)
+        host_some, host_full = _psi(host_psi_text)
+        causes = []
+        if host_some >= PSI_SOME_WARNING:
+            causes.append("host_psi_some")
+        if host_full >= PSI_FULL_CRITICAL:
+            causes.append("host_psi_full")
         ratio = available / total
         level = max(
             level,
@@ -213,6 +223,10 @@ class LinuxMemorySampler:
             if ratio <= AVAILABLE_WARNING
             else 1,
         )
+        if ratio <= AVAILABLE_CRITICAL:
+            causes.append("host_available_critical")
+        elif ratio <= AVAILABLE_WARNING:
+            causes.append("host_available_warning")
         # Old swap use alone says nothing about current pressure. Exhausted
         # swap becomes a warning only together with limited available memory.
         if (
@@ -221,7 +235,9 @@ class LinuxMemorySampler:
             and ratio <= SWAP_AVAILABLE_WARNING
         ):
             level = max(level, 2)
+            causes.append("host_swap_low")
         events_now = {}
+        cgroups = []
         directories = cgroup_directories(self.proc, self.filesystem)
         membership = tuple(str(directory) for directory in directories)
         if (
@@ -229,7 +245,7 @@ class LinuxMemorySampler:
             and self.previous_membership != membership
         ):
             raise LinuxTelemetryError("Linux cgroup membership changed")
-        for directory in directories:
+        for ancestor_index, directory in enumerate(directories):
             # The real hierarchy root has no memory.current/max/events. Any
             # non-root cgroup must expose all required memory-controller files.
             if not (directory / "memory.current").exists():
@@ -246,6 +262,8 @@ class LinuxMemorySampler:
                 raise LinuxTelemetryError("Linux cgroup memory controller unavailable")
             current = _uint(_read(directory / "memory.current").strip())
             maximum = _read(directory / "memory.max").strip()
+            limit = None
+            group_causes = []
             if maximum != "max":
                 limit = _uint(maximum)
                 if limit <= 0:
@@ -259,7 +277,17 @@ class LinuxMemorySampler:
                     if usage >= CGROUP_USAGE_WARNING
                     else 1,
                 )
-            level = max(level, _psi_level(_read(directory / "memory.pressure")))
+                if usage >= CGROUP_USAGE_CRITICAL:
+                    group_causes.append("cgroup_usage_critical")
+                elif usage >= CGROUP_USAGE_WARNING:
+                    group_causes.append("cgroup_usage_warning")
+            group_psi_text = _read(directory / "memory.pressure")
+            level = max(level, _psi_level(group_psi_text))
+            group_some, group_full = _psi(group_psi_text)
+            if group_some >= PSI_SOME_WARNING:
+                group_causes.append("cgroup_psi_some")
+            if group_full >= PSI_FULL_CRITICAL:
+                group_causes.append("cgroup_psi_full")
             events = _key_counters(
                 _read(directory / "memory.events"), {"high", "max", "oom", "oom_kill"}
             )
@@ -274,7 +302,44 @@ class LinuxMemorySampler:
                     level = 4
                 elif any(events[name] > previous[name] for name in ("high", "max")):
                     level = max(level, 2)
+                group_causes.extend(
+                    f"cgroup_event_{name}"
+                    for name in sorted(events)
+                    if events[name] > previous[name]
+                )
             events_now[key] = events
+            cgroups.append(
+                {
+                    "ancestor_index": ancestor_index,
+                    "current_bytes": current,
+                    "limit_bytes": limit,
+                    "psi_some_avg10_percent": group_some,
+                    "psi_full_avg10_percent": group_full,
+                    "events": dict(events),
+                    "event_deltas": {
+                        name: events[name] - previous[name] for name in sorted(events)
+                    }
+                    if previous is not None
+                    else None,
+                    "causes": group_causes,
+                }
+            )
+            causes.extend(group_causes)
         self.previous_membership = membership
         self.previous_events = events_now
+        self.last_sample = {
+            "schema_version": 1,
+            "pressure_level": level,
+            "causes": sorted(set(causes)),
+            "host": {
+                "memory_total_bytes": total * 1024,
+                "memory_available_bytes": available * 1024,
+                "swap_total_bytes": swap_total * 1024,
+                "swap_free_bytes": swap_free * 1024,
+                "psi_some_avg10_percent": host_some,
+                "psi_full_avg10_percent": host_full,
+            },
+            # Leaf first; at most the existing 64-ancestor bound. No path names.
+            "cgroups": cgroups,
+        }
         return level

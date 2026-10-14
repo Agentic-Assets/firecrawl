@@ -1124,7 +1124,7 @@ def _record_recovery_nonadmission(
     }
     manifest["sources"][source]["state"] = "resource_guard_interrupted"
     manifest["status"] = RESOURCE_GUARD_STATUS
-    manifest["error"] = "host CPU stop was not admitted for automatic recovery"
+    manifest["error"] = "resource guard stop was not admitted for automatic recovery"
     manifest["finished_at"] = utc_now()
     save_manifest(series_dir, manifest)
     return 75
