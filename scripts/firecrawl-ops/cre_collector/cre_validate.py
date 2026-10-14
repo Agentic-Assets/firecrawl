@@ -19,6 +19,7 @@ from pathlib import Path
 
 from cre_ingest import (
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
+    MAX_NORMALIZED_SALE_PRICE_USD,
     assert_expected_database_target,
     find_psql,
     load_db_url,
@@ -732,7 +733,7 @@ SELECT
   count(*) FILTER (WHERE lat IS NULL OR lng IS NULL)::text AS missing_coords,
   count(*) FILTER (WHERE lat IS NOT NULL AND (lat < -90 OR lat > 90))::text AS impossible_lat,
   count(*) FILTER (WHERE lng IS NOT NULL AND (lng < -180 OR lng > 180))::text AS impossible_lng,
-  count(*) FILTER (WHERE sale_price_usd IS NOT NULL AND (sale_price_usd <= 0 OR sale_price_usd > 20000000000))::text AS sale_price_flags,
+  count(*) FILTER (WHERE sale_price_usd IS NOT NULL AND (sale_price_usd <= 0 OR sale_price_usd > {MAX_NORMALIZED_SALE_PRICE_USD}))::text AS sale_price_flags,
   count(*) FILTER (WHERE sale_price_per_sf IS NOT NULL AND (sale_price_per_sf <= 0 OR sale_price_per_sf > 10000))::text AS sale_psf_flags,
   count(*) FILTER (WHERE lease_rate_min IS NOT NULL AND (lease_rate_min <= 0 OR lease_rate_min > 500))::text AS lease_rate_min_flags,
   count(*) FILTER (WHERE lease_rate_max IS NOT NULL AND (lease_rate_max <= 0 OR lease_rate_max > 500))::text AS lease_rate_max_flags,
