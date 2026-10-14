@@ -83,6 +83,7 @@ from cre_ingest import (  # noqa: E402
     psql_connection_args,
     psql_connection_env,
     sql_lit,
+    validate_strict_artifact_freshness,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -460,6 +461,8 @@ def validate_enriched_artifact(claimed_rows, artifact):
             raise ValueError(f"enriched artifact contains duplicate URL: {url!r}")
         seen_urls.add(url)
         safe.append(listing)
+    if any(listing.get("sourceKey") == "matthews" for listing in safe):
+        validate_strict_artifact_freshness(artifact)
     return safe
 
 
