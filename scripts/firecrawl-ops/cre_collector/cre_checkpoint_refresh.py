@@ -3981,6 +3981,11 @@ def load_resume_manifest(
             "telemetry_failure_action": "interrupt_and_checkpoint",
         },
     )
+    if sys.platform.startswith("linux") and "host_memory_guard" not in recorded_config:
+        # An absent Linux block cannot establish which versioned policy ran.
+        raise RefreshError(
+            "resume configuration differs: Linux memory policy is missing"
+        )
     recorded_config.setdefault("host_memory_guard", memory_guard_config())
     if recorded_config != expected:
         raise RefreshError("resume configuration differs from the manifest")

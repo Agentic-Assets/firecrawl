@@ -1270,6 +1270,7 @@ def test_genuine_linux_journal_qualifies_without_darwin_compressor(
         "wrong_scope",
         "missing_scope",
         "wrong_basis",
+        "v1_basis",
         "missing_basis",
         "swap_free_missing",
         "swap_nan",
@@ -1305,6 +1306,10 @@ def test_linux_required_resource_faults_refuse(
         host.pop("memory_telemetry_scope")
     elif fault == "wrong_basis":
         host["memory_pressure_basis"] = "invented"
+    elif fault == "v1_basis":
+        host["memory_pressure_basis"] = (
+            "linux_psi_memavailable_swap_cgroup_v2_policy_v1"
+        )
     elif fault == "missing_basis":
         host.pop("memory_pressure_basis")
     elif fault == "swap_free_missing":
