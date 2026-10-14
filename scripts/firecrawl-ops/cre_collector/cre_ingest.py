@@ -400,6 +400,21 @@ def source_key_sql(listing_alias="l", brokerage_alias="b"):
         f"    AND {listing_alias}.external_id LIKE '{prefix}%' THEN '{source_key}'"
         for slug, prefix, source_key in FOLDED_SOURCE_PREFIXES
     )
+    # A singleton's admissible raw candidates and legacy fallback are identical.
+    # Avoid detoasting raw_data just to rediscover that one canonical source.
+    folded_slugs = {slug for slug, _prefix, _source_key in FOLDED_SOURCE_PREFIXES}
+    singleton_slugs = sorted(
+        slug
+        for slug, keys in SOURCE_KEYS_BY_SLUG.items()
+        if keys == {slug} and slug not in folded_slugs
+    )
+    singleton_slugs_sql = ", ".join(f"'{slug}'" for slug in singleton_slugs)
+    singleton = (
+        f"  WHEN {brokerage_alias}.slug IN ({singleton_slugs_sql}) "
+        f"THEN {brokerage_alias}.slug\n"
+        if singleton_slugs
+        else ""
+    )
     governed_slugs = sorted({slug for slug, _prefix in SOURCE_TO_BROKERAGE.values()})
     governed_slugs_sql = ", ".join(f"'{slug}'" for slug in governed_slugs)
     folded_pairs = "\n".join(
@@ -428,6 +443,7 @@ def source_key_sql(listing_alias="l", brokerage_alias="b"):
     return (
         "\nCASE\n"
         f"{folded}\n"
+        f"{singleton}"
         "  ELSE COALESCE(\n"
         f"    {raw_source},\n"
         f"    CASE WHEN {brokerage_alias}.slug IN ({governed_slugs_sql}) "
