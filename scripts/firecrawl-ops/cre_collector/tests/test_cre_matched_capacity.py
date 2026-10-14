@@ -729,6 +729,8 @@ def test_required_resource_evidence_distinguishes_load_from_idle(
     inputs, monkeypatch, fault
 ):
     args, _, _, identity = inputs
+    # These historical records are specifically Darwin-shaped on every test host.
+    monkeypatch.setattr(matched.sys, "platform", "darwin")
     now = datetime.now(timezone.utc)
     start = now - timedelta(seconds=5)
     sample_at = now - timedelta(seconds=4)
@@ -814,11 +816,20 @@ def test_activity_finalizer_preserves_unknown_through_disk_failure(
     tmp_path, monkeypatch
 ):
     tmp_path.chmod(0o700)
-    health = lambda url, _d: (
-        {"data": {"jobsInQueue": 0, "activeJobsInQueue": 0, "waitingJobsInQueue": 0}}
-        if "queue-status" in url
-        else {"status": "healthy", "activePages": 0}
-    )
+
+    def health(url, _d):
+        return (
+            {
+                "data": {
+                    "jobsInQueue": 0,
+                    "activeJobsInQueue": 0,
+                    "waitingJobsInQueue": 0,
+                }
+            }
+            if "queue-status" in url
+            else {"status": "healthy", "activePages": 0}
+        )
+
     unknown = matched.refresh.ProcessCleanupUnknown("synthetic unresolved group")
     sampler = ActivitySampler(
         tmp_path, "http://127.0.0.1:3302", "http://127.0.0.1:3303", health=health
@@ -1098,3 +1109,374 @@ def test_disarm_quarantine_preserves_unknown_and_terminal_correction(
         assert isinstance(caught.value.__cause__, OSError)
     with pytest.raises(matched.refresh.LockHeldError), matched.refresh.SharedLock(lock):
         pytest.fail("quarantine/unknown must veto a successor")
+
+
+def test_reviewed_c2_ceiling_never_dispatches_c4_or_c8(inputs):
+    args, cohort, profile, identity = inputs
+    args.max_concurrency = 2
+    args.replicates = 3
+    profile["max_concurrency"] = 2
+    calls = []
+    cells = matched.run_cells(
+        args,
+        cohort,
+        profile,
+        identity,
+        None,
+        {},
+        SimpleNamespace(incident_context={}),
+        runner=fake_runner(calls),
+        admission=fake_admission,
+    )
+    assert [(cell["replicate"], cell["concurrency"]) for cell in cells] == [
+        (replicate, width) for replicate in (1, 2, 3) for width in (1, 2)
+    ]
+    assert [width for width, phase, *_ in calls if phase == "detail"] == [1, 2] * 3
+
+
+@pytest.mark.parametrize(
+    "requested,reviewed",
+    [
+        (2, None),
+        (8, 2),
+        (2, 8),
+        (4, 4),
+        (True, True),
+        (2, "2"),
+        (2, 3),
+    ],
+)
+def test_unsupported_or_unreviewed_width_ceiling_refuses_before_dispatch(
+    inputs,
+    requested,
+    reviewed,
+):
+    args, cohort, profile, identity = inputs
+    args.max_concurrency = requested
+    if reviewed is not None:
+        profile["max_concurrency"] = reviewed
+    with pytest.raises(matched.CalibrationRejected):
+        matched.run_cells(
+            args,
+            cohort,
+            profile,
+            identity,
+            None,
+            {},
+            SimpleNamespace(),
+            runner=lambda *_a, **_k: pytest.fail("must not dispatch"),
+            admission=lambda *_a, **_k: pytest.fail("must not inspect runtime"),
+        )
+
+
+@pytest.fixture
+def real_linux_resource_journal(inputs, tmp_path, monkeypatch):
+    """Real sampler + Linux policy against synthetic proc/cgroup and Docker text."""
+    import cre_resource_usage as usage
+    from cre_linux_telemetry import LinuxMemorySampler
+
+    args, _, _, identity = inputs
+    monkeypatch.setattr(matched.sys, "platform", "linux")
+    for name, text in {
+        "proc/meminfo": "MemTotal: 1000000 kB\nMemAvailable: 700000 kB\nSwapTotal: 200000 kB\nSwapFree: 150000 kB\n",
+        "proc/pressure/memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+        "proc/self/cgroup": "0::/\n",
+        "proc/self/mountinfo": "30 20 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+        "sys/fs/cgroup/cgroup.controllers": "cpu memory pids\n",
+    }.items():
+        path = tmp_path / "kernel-fixture" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="ascii")
+    monkeypatch.setattr(
+        usage,
+        "resolve_runtime_target",
+        lambda *_a, **_k: {
+            "availability": "available",
+            "unavailable_code": None,
+            "api_endpoint": "http://127.0.0.1:3302",
+            "project": identity["project"],
+            "containers": [
+                dict(row, name="synthetic-" + row["service"])
+                for row in identity["containers"]
+            ],
+        },
+    )
+    calls = []
+
+    def command(_self, argv, _deadline):
+        calls.append(argv)
+        if argv[0] == "/bin/ps":
+            return f"{os.getpid()} 1 1.5 100\n"
+        if argv[:2] == ["docker", "stats"]:
+            return "\n".join(
+                json.dumps(
+                    {
+                        "ID": row["id"],
+                        "CPUPerc": "10%",
+                        "MemUsage": "1MiB / 8GiB",
+                        "NetIO": "0B / 0B",
+                        "BlockIO": "0B / 0B",
+                        "PIDs": "2",
+                    }
+                )
+                for row in identity["containers"]
+            )
+        if argv[:2] == ["docker", "info"]:
+            return str(32 * 1024**3)
+        pytest.fail("unexpected diagnostic command")
+
+    monkeypatch.setattr(usage.ResourceUsageSampler, "_command", command)
+    sampler = usage.ResourceUsageSampler(args.out, env={}, cpu_sampler=lambda: 20)
+    root = tmp_path / "kernel-fixture"
+    sampler.linux_memory_sampler = LinuxMemorySampler(
+        proc=root / "proc", filesystem=root
+    )
+    started = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    record = sampler.sample_once()
+    finished = datetime.now(timezone.utc).isoformat()
+    assert record["host"]["vm"] == {}
+    assert record["unavailable_fields"] == []
+    assert not any("sysctl" in argv[0] or "vm_stat" in argv[0] for argv in calls)
+    return args, identity, record, started, finished
+
+
+def test_genuine_linux_journal_qualifies_without_darwin_compressor(
+    real_linux_resource_journal,
+):
+    args, identity, record, started, finished = real_linux_resource_journal
+    cell = args.out / "linux-cell"
+    cell.mkdir(mode=0o700)
+    proof = ResourceEvidence(
+        args.out,
+        cell,
+        identity,
+        {"startedAt": started, "finishedAt": finished},
+        started,
+        qualifying=True,
+        work_deadline=time.monotonic(),
+    )
+    assert proof["measurement_complete_for_qualification"]
+    assert proof["memory_telemetry_scope"] == record["host"]["memory_telemetry_scope"]
+    assert proof["memory_pressure_basis"] == record["host"]["memory_pressure_basis"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "available_missing",
+        "available_negative",
+        "available_exceeds_total",
+        "total_zero",
+        "wrong_scope",
+        "missing_scope",
+        "wrong_basis",
+        "missing_basis",
+        "swap_free_missing",
+        "swap_nan",
+        "swap_inconsistent",
+        "pressure_missing",
+        "cpu_invalid",
+        "degraded",
+        "wrong_ids",
+        "stale",
+        "gap",
+        "no_overlap",
+        "unknown_platform",
+        "missing_gap_metadata",
+        "malformed_gap_metadata",
+    ],
+)
+def test_linux_required_resource_faults_refuse(
+    real_linux_resource_journal, monkeypatch, fault
+):
+    args, identity, record, started, finished = real_linux_resource_journal
+    host = record["host"]
+    if fault == "available_missing":
+        host.pop("memory_available_bytes")
+    elif fault == "available_negative":
+        host["memory_available_bytes"] = -1
+    elif fault == "available_exceeds_total":
+        host["memory_available_bytes"] = host["memory_total_bytes"] + 1
+    elif fault == "total_zero":
+        host["memory_total_bytes"] = 0
+    elif fault == "wrong_scope":
+        host["memory_telemetry_scope"] = "whole_windows_host"
+    elif fault == "missing_scope":
+        host.pop("memory_telemetry_scope")
+    elif fault == "wrong_basis":
+        host["memory_pressure_basis"] = "invented"
+    elif fault == "missing_basis":
+        host.pop("memory_pressure_basis")
+    elif fault == "swap_free_missing":
+        host["swap"].pop("free_bytes")
+    elif fault == "swap_nan":
+        host["swap"]["used_bytes"] = float("nan")
+    elif fault == "swap_inconsistent":
+        host["swap"]["used_bytes"] += 1
+    elif fault == "pressure_missing":
+        host["memory_pressure"] = None
+    elif fault == "cpu_invalid":
+        host["cpu_percent"] = 101
+    elif fault == "degraded":
+        record["unavailable_fields"] = ["linux_memory"]
+    elif fault == "wrong_ids":
+        record["runtime"]["containers"][0]["id"] = "f" * 64
+    elif fault == "missing_gap_metadata":
+        record.pop("unavailable_fields")
+    elif fault == "malformed_gap_metadata":
+        record["unavailable_fields"] = [{}]
+    elif fault == "unknown_platform":
+        monkeypatch.setattr(matched.sys, "platform", "win32")
+    records = [record]
+    if fault in {"stale", "gap", "no_overlap"}:
+        now = datetime.now(timezone.utc)
+        if fault == "stale":
+            started = (now - timedelta(seconds=30)).isoformat()
+            record["observed_at"] = (now - timedelta(seconds=25)).isoformat()
+        elif fault == "gap":
+            started = (now - timedelta(seconds=20)).isoformat()
+            record["observed_at"] = (now - timedelta(seconds=15)).isoformat()
+            records.append(
+                {
+                    **copy.deepcopy(record),
+                    "observed_at": (now - timedelta(seconds=4)).isoformat(),
+                }
+            )
+        else:
+            started = (now - timedelta(seconds=5)).isoformat()
+            finished = (now - timedelta(seconds=3)).isoformat()
+    journal = args.out / "resource-usage.jsonl"
+    journal.unlink()
+    matched.write_bytes(
+        journal, b"".join((json.dumps(row) + "\n").encode() for row in records)
+    )
+    cell = args.out / "linux-cell"
+    cell.mkdir(mode=0o700)
+    with pytest.raises(matched.CalibrationRejected):
+        ResourceEvidence(
+            args.out,
+            cell,
+            identity,
+            {"startedAt": started, "finishedAt": finished},
+            started,
+            qualifying=True,
+            work_deadline=time.monotonic(),
+        )
+
+
+@pytest.mark.parametrize(
+    "platform,sampler_type",
+    [
+        ("linux", matched.refresh.LinuxCpuSampler),
+        ("darwin", matched.refresh.DarwinCpuSampler),
+    ],
+)
+def test_execute_selects_platform_sampler_and_records_immutable_c2_plan(
+    inputs,
+    monkeypatch,
+    platform,
+    sampler_type,
+):
+    args, cohort, profile, identity = inputs
+    args.max_concurrency = profile["max_concurrency"] = 2
+    monkeypatch.setattr(matched.sys, "platform", platform)
+    observed = []
+
+    class Guard:
+        def __init__(self, *_a, **_k):
+            self.incident_context = {}
+
+        def preflight(self):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(
+        matched.refresh, "checkpoint_lock_dir", lambda _: args.out / ".synthetic.lock"
+    )
+    monkeypatch.setattr(matched.refresh, "HostCpuGuard", Guard)
+    monkeypatch.setattr(matched, "HostMemoryGuard", Guard)
+    monkeypatch.setattr(matched.refresh, "run_cpu_guard_preflight", lambda _: 20)
+    monkeypatch.setattr(
+        matched.refresh, "resource_guard_boundary", lambda *_a: nullcontext()
+    )
+    monkeypatch.setattr(
+        matched,
+        "observe_resource_usage",
+        lambda *_a, **kw: observed.append(kw["cpu_sampler"]) or nullcontext(),
+    )
+    monkeypatch.setattr(matched.owned, "runtime_lease", lambda _: nullcontext())
+    monkeypatch.setattr(matched, "check_runtime", lambda *_a: {})
+    monkeypatch.setattr(
+        matched,
+        "run_cells",
+        lambda *_a, **_k: [
+            {
+                "resource_measurements": {
+                    "measurement_complete_for_qualification": True
+                },
+            }
+        ],
+    )
+    matched.execute(args, cohort, profile, identity)
+    assert len(observed) == 1 and isinstance(observed[0], sampler_type)
+    assert observed[0].initial_interval_seconds == 2
+    for name in ("plan.json", "result.json"):
+        body = matched.read_json(args.out / name)
+        assert body["max_concurrency"] == 2
+        assert body["concurrency_sequence"] == [1, 2]
+    with pytest.raises(FileExistsError):
+        matched.execute(args, cohort, profile, identity)
+
+
+@pytest.mark.parametrize(
+    "requested,reviewed,expected",
+    [
+        (None, None, 0),
+        (2, 2, 0),
+        (2, None, 1),
+        (None, 2, 1),
+        (2, 8, 1),
+    ],
+)
+def test_plan_cli_requires_matching_reviewed_ceiling_without_output_or_runtime(
+    inputs,
+    monkeypatch,
+    requested,
+    reviewed,
+    expected,
+):
+    args, cohort, profile, identity = inputs
+    if reviewed is not None:
+        profile["max_concurrency"] = reviewed
+    paths = []
+    for name, value in (
+        ("cohort", cohort),
+        ("profile", profile),
+        ("identity", identity),
+    ):
+        path = args.out / f"{name}.json"
+        matched.write_json(path, value)
+        paths.extend([f"--{name}", str(path)])
+    monkeypatch.setattr(
+        matched, "execute", lambda *_a: pytest.fail("plan must not execute")
+    )
+    output = args.out / "2026-10-12T100000Z-abcdefabcdef"
+    argv = [
+        *paths,
+        "--inventory",
+        str(args.inventory),
+        "--api-url",
+        args.api_url,
+        "--browser-url",
+        args.browser_url,
+        "--out",
+        str(output),
+        "--max-p95-ratio",
+        "1.5",
+    ]
+    if requested is not None:
+        argv.extend(["--max-concurrency", str(requested)])
+    assert matched.main(argv) == expected
+    assert not output.exists()

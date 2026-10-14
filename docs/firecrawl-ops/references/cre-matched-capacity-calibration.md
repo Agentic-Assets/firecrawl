@@ -1,4 +1,4 @@
-Parent: AGENTIC-2895. Calibration issue: AGENTIC-2900.
+Parent: AGENTIC-2895. Calibration issue: AGENTIC-2900. Linux/C2 engineering: AGENTIC-4169 (under AGENTIC-3757).
 
 # Matched CRE capacity cells
 
@@ -33,8 +33,17 @@ the original clocks without relabeling them.
 The JLL paired transport audit must share this cohort and the rendered capture;
 do not make another rendered request just to obtain an audit document.
 
-Run C1, C2, C4 and C8 against the same cohort in separate owned worker processes,
-each with a new generation and empty private cache directory. The explicit cell
+By default, run C1, C2, C4 and C8 against the same cohort in separate owned
+worker processes, each with a new generation and empty private cache directory.
+For a reviewed bounded C1/C2 experiment, set `max_concurrency: 2` in the private
+matched profile and pass `--max-concurrency 2`. Both must match. An absent profile
+ceiling preserves the legacy ceiling 8; the only supported explicit ceilings
+are 2 and 8. The runner refuses unsupported or mismatched ceilings before
+runtime admission or worker dispatch. Each execution exclusively writes
+`plan.json` with the selected `concurrency_sequence`, ceiling, review reference
+and project before dispatch, and repeats the sequence and ceiling in
+`result.json`. A C2-only matrix cannot dispatch C4 or C8. The plan is private
+experiment evidence, not a production concurrency adoption decision. The explicit cell
 scheduler bypasses the ordinary CLI's six-client cap without changing it.
 `peakActiveEnrichments` measures locally awaited real enrichment operations.
 It does not measure browser pages, API jobs, provider requests, or host threads.
@@ -84,8 +93,13 @@ and must never contribute to fresh acquisition throughput.
    binding and actual CPU/memory/PID/shared-memory limits. Record observed API
    queue cap and browser page cap with every cell. A profile name is insufficient.
 4. Saves the existing five-second resource journal and required guard logs per
-   trial, with cell/source/generation association, timing gaps, total-host load,
-   memory pressure/compression/swap and owned-process/container usage. Record
+   trial, with cell/source/generation association, timing gaps, CPU,
+   memory pressure/swap and owned-process/container usage. Darwin qualification
+   retains its compressor counter requirement. Linux qualification requires
+   available and total memory, consistent swap counters and the exact Linux
+   telemetry scope and pressure-policy basis; unsupported Darwin counters are
+   not synthesized. Required degraded fields, stale coverage, wrong container
+   IDs and missing acquisition overlap still reject qualification. Record
    competing host work as unknown when it cannot be attributed safely.
 5. Owns a bounded child process group and wall deadline, and retains cleanup
    uncertainty through lock release. AbortSignal forwarding is cooperative;
@@ -105,6 +119,36 @@ all of these before starting another cell. It records required two-second
 queue/browser activity samples and sampled high-water lower bounds, read timing,
 sample gaps and coverage limitations. These periodic samples can miss peaks
 between observations. A failed activity read or evidence write stops later cells.
+
+## Linux and Windows deployment boundary
+
+The observer and required guards select the existing platform sampler. Linux
+resource journals cover the Linux kernel/WSL VM and visible cgroups, not all
+Windows applications. They cannot prove whole-Windows CPU/RAM peaks or continuous
+Windows host safety. If an experiment makes Windows host claims, retain matching
+Windows admission/observation evidence separately. Reusing the existing Windows
+launcher admission sampling can establish start-time CPU/RAM headroom only; it
+is not continuous observation and the guarded-tier launcher does not dispatch
+this matched coordinator. No new resident observer is required by this change.
+
+The owned runtime must already be reviewed and running in its own
+`firecrawl-cre-*` Compose project. The ordinary shared `firecrawl` runtime remains
+excluded. Within WSL use the explicitly reviewed local Unix Docker context and
+pin its endpoint, daemon ID, container IDs, images, epochs, limits and queue/page
+caps through the existing identity/profile contracts. A context name alone is
+not daemon identity. `.wslconfig` is intended VM configuration; actual Docker
+memory and runtime limits require readback. These changes do not start, build,
+reconfigure or deploy any runtime, alter the legacy OrbStack profile documents,
+or grant sealed C10 authority.
+
+AGENTIC-4169 is offline engineering readiness. A real WSL preflight and rendered
+provider-backed C1/C2 calibration must wait for the active full-series owner to
+settle and for a separately reviewed deployment/window. Windows foreground
+capture work (AGENTIC-4168) and independent exact-head Mac regression proof remain
+separate prerequisites; adding these options is not a completed benchmark.
+Direct JLL transport remains a separate admission under AGENTIC-2898, including
+its strict parser/fidelity requirements. Do not enable the paired direct arm as
+part of a rendered-only C1/C2 pilot.
 
 ## Foreground invocation
 
@@ -128,6 +172,9 @@ python3 cre_matched_capacity.py --prepare-jll --members 16 \
 
 Replace the example paths/run ID with fresh private paths and predeclare the latency ratio
 appropriate to the experiment; the example ratio is not an adoption decision.
+For a C1/C2-only plan, add `--max-concurrency 2` and the matching private profile
+field described above. Omit `--execute` to validate without creating output or
+making runtime calls; execution saves the exclusive plan before dispatch.
 Use `--cohort /private/cohort.json --inventory /private/original-inventory.json`
 instead of `--prepare-jll` to reuse a fresh bound artifact. `--prepare-marcus`
 uses the real sale monitor adapter: two inventory POSTs and one lightweight map

@@ -26,6 +26,7 @@ from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
 import cre_owned_runtime as owned
+from cre_linux_telemetry import memory_policy
 from cre_memory_guard import HostMemoryGuard
 from cre_owned_processes import (
     OwnedProcessGroup,
@@ -365,6 +366,66 @@ def validate_inputs(cohort: dict | None, profile: dict, identity: dict) -> None:
             raise CalibrationRejected("bounded runtime admission caps required")
 
 
+def selected_widths(args, profile: dict) -> tuple[int, ...]:
+    """A reduced matrix needs the same explicit ceiling in caller and review."""
+    requested = getattr(args, "max_concurrency", WIDTHS[-1])
+    reviewed = profile.get("max_concurrency", WIDTHS[-1])
+    if (
+        type(requested) is not int
+        or type(reviewed) is not int
+        or requested not in (2, 8)
+        or requested != reviewed
+    ):
+        raise CalibrationRejected("unsupported or unreviewed concurrency ceiling")
+    return tuple(width for width in WIDTHS if width <= requested)
+
+
+def required_host_memory_numbers(host: dict, record: dict) -> list:
+    """Require each platform's real counters without inventing equivalents."""
+    if sys.platform == "darwin":
+        return [host.get("vm", {}).get("compressor_bytes")]
+    if not sys.platform.startswith("linux"):
+        raise CalibrationRejected("cell resource platform unsupported")
+    policy = memory_policy()
+    values = [
+        host.get("memory_total_bytes"),
+        host.get("memory_available_bytes"),
+        *[
+            host.get("swap", {}).get(key)
+            for key in ("total_bytes", "free_bytes", "used_bytes")
+        ],
+    ]
+    if (
+        host.get("memory_telemetry_scope") != policy["telemetry_scope"]
+        or host.get("memory_pressure_basis") != policy["basis"]
+        or any(
+            type(value) not in (int, float) or not math.isfinite(value) or value < 0
+            for value in values
+        )
+        or values[0] <= 0
+        or values[1] > values[0]
+        or values[3] + values[4] != values[2]
+        or type(host.get("cpu_percent")) not in (int, float)
+        or not 0 <= host["cpu_percent"] <= 100
+        or not isinstance(record.get("unavailable_fields"), list)
+        or any(type(field) is not str for field in record.get("unavailable_fields", []))
+        or any(
+            field
+            in {
+                "host_cpu",
+                "linux_memory",
+                "host_memory_fields",
+                "docker_stats",
+                "docker_usage_fields",
+                "runtime_binding",
+            }
+            for field in record.get("unavailable_fields", [])
+        )
+    ):
+        raise CalibrationRejected("required Linux cell resource measurements degraded")
+    return values
+
+
 def resource_evidence(
     run_dir: Path,
     cell_dir: Path,
@@ -419,7 +480,7 @@ def resource_evidence(
             numbers = [
                 host.get("cpu_percent"),
                 host.get("memory_total_bytes"),
-                host.get("vm", {}).get("compressor_bytes"),
+                *required_host_memory_numbers(host, record),
                 host.get("swap", {}).get("used_bytes"),
             ]
             numbers.extend(
@@ -465,6 +526,14 @@ def resource_evidence(
                     "max_observed_gap_seconds": max(gaps) if gaps else None,
                     "measurement_complete_for_qualification": bool(overlapping),
                     "coverage": "sample_read_windows; periodic observations can miss peaks; lifecycle idle is not acquisition load",
+                    **(
+                        {
+                            "memory_telemetry_scope": host["memory_telemetry_scope"],
+                            "memory_pressure_basis": host["memory_pressure_basis"],
+                        }
+                        if sys.platform.startswith("linux")
+                        else {}
+                    ),
                 }
                 write_json(cell_dir / "resource-evidence.json", summary)
                 if qualifying and not overlapping:
@@ -630,12 +699,13 @@ def run_cells(
     deadline=None,
 ) -> list[dict]:
     """Sequential fresh cells; every rejection prevents subsequent dispatch."""
+    widths = selected_widths(args, profile)
     deadline = clock() + args.total_seconds if deadline is None else deadline
     cells = []
     first_baseline = None
     for replicate in range(1, args.replicates + 1):
         latency_baseline = None
-        for width in WIDTHS:
+        for width in widths:
             # Reserve bounded settings/admission and final remote readback time.
             if deadline - clock() < 45:
                 raise TimeoutError("experiment work deadline exceeded")
@@ -858,6 +928,18 @@ def disarm_interlock(shared_lock, directory: Path) -> None:
 
 
 def execute(args, cohort: dict | None, profile: dict, identity: dict) -> None:
+    widths = selected_widths(args, profile)
+    # Exclusive private write: this predeclared sequence is never replaced.
+    write_json(
+        args.out / "plan.json",
+        {
+            "kind": "cre_matched_capacity_plan",
+            "max_concurrency": widths[-1],
+            "concurrency_sequence": list(widths),
+            "review_reference": profile["review_reference"],
+            "project": identity["project"],
+        },
+    )
     deadline = time.monotonic() + args.total_seconds
     env = no_write_env(args.api_url)
     # Docker diagnostics honor this exact daemon/context and Compose selection.
@@ -894,7 +976,7 @@ def execute(args, cohort: dict | None, profile: dict, identity: dict) -> None:
                     observe_resource_usage(
                         args.out,
                         env=env,
-                        cpu_sampler=refresh.DarwinCpuSampler(
+                        cpu_sampler=refresh.host_cpu_sampler(
                             initial_interval_seconds=2
                         ),
                         context_provider=lambda: dict(cpu.incident_context),
@@ -1027,6 +1109,8 @@ def execute(args, cohort: dict | None, profile: dict, identity: dict) -> None:
                         )
                         else "measurement_incomplete",
                         "profile": profile,
+                        "max_concurrency": widths[-1],
+                        "concurrency_sequence": list(widths),
                         "cells": cells,
                         "database_writes": False,
                         "adoption": "requires_review",
@@ -1158,6 +1242,13 @@ def parse_args(argv=None):
     parser.add_argument("--browser-url", required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--replicates", type=int, choices=(1, 2, 3), default=1)
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        choices=(2, 8),
+        default=8,
+        help="reviewed matrix ceiling: 2 requires profile max_concurrency=2; default 8 preserves C1/C2/C4/C8",
+    )
     parser.add_argument("--cell-seconds", type=float, default=300)
     parser.add_argument("--total-seconds", type=float, default=1800)
     parser.add_argument("--max-p95-ratio", type=float, required=True)
@@ -1204,6 +1295,7 @@ def main(argv=None) -> int:
         cohort = read_json(args.cohort) if args.cohort else None
         identity, profile = (read_json(path) for path in (args.identity, args.profile))
         validate_inputs(cohort, profile, identity)
+        selected_widths(args, profile)
         if args.paired_jll and (
             args.prepare_marcus
             or (cohort is not None and cohort["cohort"]["source"] != "jll")
