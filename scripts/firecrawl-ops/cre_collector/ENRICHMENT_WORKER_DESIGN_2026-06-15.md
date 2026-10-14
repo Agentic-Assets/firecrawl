@@ -1,4 +1,20 @@
-# Tier-B Enrichment Worker + Cadence Restructure (Design)
+Scheduler owner: [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752).
+
+# Tier-B Enrichment Worker + Cadence Restructure (Historical Design)
+
+This is the June 15, 2026 design and implementation snapshot, not current
+scheduler inventory or an activation runbook. Its cadence, load estimates and
+"today" statements describe that historical design. Use the
+[current guarded incremental guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md)
+for Windows trial behavior and the Linear scheduler owner for activation.
+
+Current queue semantics are narrower than general discovery: the first-ever
+source-index seed queues nothing, and an identity without an existing listing
+row is not queued. Eligible ingested identities can enqueue on supported new,
+status or price changes; revision-only, text/image/document-only changes and
+reappearance alone do not. Full acquisition remains necessary to create new
+listings and refresh other detail. This qualification applies wherever the
+historical design below abbreviates monitor work as "new/changed".
 
 > Status: IMPLEMENTED (code shipped 2026-06-15; live launchd cutover still
 > GATED, Section 9). Author date: 2026-06-15.
@@ -54,15 +70,15 @@ drop from ~60k to the few hundred that actually changed.
 
 ## 2. Target tier model
 
-| Tier | Schedule (local) | Action | Soft-delete? | Loaded? |
+| Tier | Design schedule (local) | Action | Soft-delete? | Activation guidance |
 |------|------------------|--------|--------------|---------|
-| **monitor** | 2x/day (06:10, 18:10) | `collect --monitor` then `cre_monitor.py --apply`: enumerate all, detect new/changed/disappeared, enqueue new/changed | No | Yes |
-| **enrich** (NEW) | every 4h (00:30, 04:30, 08:30, 12:30, 16:30, 20:30) | `cre_enrich.py`: claim a batch from `cre_enrichment_queue`, run `collect --enrich-input` (targeted detail), `cre_ingest.py --in` (additive), then delete done / retry the rest | No | Yes |
+| **monitor** | 2x/day (06:10, 18:10) | `collect --monitor` then `cre_monitor.py --apply`: enumerate, record eligible events and queue entries as qualified above | No | Current resource and scheduler approval required |
+| **enrich** (NEW) | every 4h (00:30, 04:30, 08:30, 12:30, 16:30, 20:30) | `cre_enrich.py`: claim a batch from `cre_enrichment_queue`, run `collect --enrich-input` (targeted detail), `cre_ingest.py --in` (additive), then delete done / retry the rest | No | Current resource and scheduler approval required |
 | **weekly** | Sun 03:00 | `collect` (full) then `cre_gate.py --strict` then `cre_ingest.py --in` (**additive by default**); the detail + dead-letter backstop | No by default; `--mark-missing` only under the `CRE_WEEKLY_MARK_MISSING=1` escalation (Section 2.1) | Technically additive; loading still requires the current operator-runbook scheduler gate |
 | ~~daily~~ | retired | unloaded; case kept for rollback | n/a | No |
 
-Enrich is offset 30 min from the top of the hour so it never collides with the
-monitor (06:10/18:10). The shared governed Python authority lock (`out/daily/.cre.lock`) is the
+Enrich's scheduled start is offset from monitor (06:10/18:10), but long runs
+can still overlap. The shared governed Python authority lock (`out/daily/.cre.lock`) is the
 backstop: if two tiers ever overlap, the holder wins and the competitor exits 0.
 
 ### 2.1 Soft-delete invariant (preserved, non-negotiable)
@@ -70,8 +86,9 @@ backstop: if two tiers ever overlap, the holder wins and the competitor exits 0.
 Soft-delete (`--mark-missing`) is produced by **exactly one tier (weekly)** and
 **only when explicitly escalated** with `CRE_WEEKLY_MARK_MISSING=1` in the weekly
 plist environment (or run by hand). By default the weekly tier runs additive
-(`cre_daily_update.sh` with `--no-mark-missing`), so loading it is safe and adds
-a real backstop without any deletion risk. Even when escalated, mark-missing
+(`cre_daily_update.sh` with `--no-mark-missing`). Additive semantics do not
+authorize loading: current resource protection, sole-writer evidence and
+scheduler approval are still required. Even when escalated, mark-missing
 stays triple-gated:
 
 1. **Dispatcher gate** (`cre_run_tier.sh`): only the `weekly` branch can pass
