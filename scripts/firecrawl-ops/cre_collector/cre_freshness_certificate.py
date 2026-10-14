@@ -12,15 +12,16 @@ import argparse
 import hashlib
 import json
 import math
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from cre_checkpoint_refresh import (
     DEFAULT_MAX_OBSERVATION_AGE_HOURS,
+    GlobalStageError,
     MAX_FUTURE_CLOCK_SKEW,
     TRANSACTIONS,
+    manifest_database_target_sha256,
     parse_iso8601,
 )
 from cre_ingest import (
@@ -31,7 +32,7 @@ from cre_ingest import (
 )
 from cre_source_policy import SourcePolicyValidationError, load_source_policy
 
-CERTIFICATE_VERSION = 2
+CERTIFICATE_VERSION = 3
 SOURCE_KEYS = tuple(SOURCE_TO_BROKERAGE)
 TERMINAL_STATE = "ingested"
 TERMINAL_RUN_STATUS = "supported_scope_complete"
@@ -426,6 +427,8 @@ def build_freshness_certificate(
     current = (now or utc_now()).astimezone(timezone.utc)
     failures: list[dict[str, str]] = []
     source_records: dict[str, dict[str, Any]] = {}
+    common_target: str | None = None
+    target_binding_valid = True
     if not math.isfinite(max_source_age_hours) or max_source_age_hours <= 0:
         _failure(failures, "argument", "max_source_age_hours must be finite and positive")
     if (
@@ -452,6 +455,30 @@ def build_freshness_certificate(
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             _failure(failures, "manifest_read", str(exc), run_path=manifest_path.parent)
             continue
+        target = None
+        if isinstance(manifest.get("preflight"), dict):
+            try:
+                target = manifest_database_target_sha256(manifest)
+            except GlobalStageError:
+                pass
+        if target is None:
+            target_binding_valid = False
+            _failure(
+                failures,
+                "database_target",
+                "checkpoint requires a valid bound database target fingerprint",
+                run_path=manifest_path.parent,
+            )
+        elif common_target is None:
+            common_target = target
+        elif target != common_target:
+            target_binding_valid = False
+            _failure(
+                failures,
+                "database_target_mismatch",
+                "checkpoint database target differs from the certificate union",
+                run_path=manifest_path.parent,
+            )
         if policy:
             _validate_run(
                 manifest_path,
@@ -473,6 +500,9 @@ def build_freshness_certificate(
     sources = [source_records[key] for key in SOURCE_KEYS if key in source_records]
     return {
         "certificate_version": CERTIFICATE_VERSION,
+        "database_target": {"algorithm": "sha256", "value": common_target}
+        if target_binding_valid and common_target is not None
+        else None,
         "status": "valid" if not failures and len(sources) == len(SOURCE_KEYS) else "invalid",
         "generated_at": current.isoformat(),
         "max_source_age_hours": max_source_age_hours,

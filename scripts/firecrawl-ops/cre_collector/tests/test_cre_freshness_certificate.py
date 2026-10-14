@@ -12,6 +12,7 @@ import cre_freshness_certificate as certificate
 import cre_source_policy as source_policy
 
 NOW = datetime(2026, 7, 31, 12, tzinfo=timezone.utc)
+DATABASE_TARGET = {"algorithm": "sha256", "value": "a" * 64}
 
 
 def _sha(path):
@@ -128,7 +129,11 @@ def _run(
             "admit_baseline_hold_additively": False,
         },
         "scope": {"kind": "collector_registry", "source_keys": [source_key]},
-        "preflight": {"healthcheck_rc": 0, "validation_rc": 0},
+        "preflight": {
+            "healthcheck_rc": 0,
+            "validation_rc": 0,
+            "database_target": dict(DATABASE_TARGET),
+        },
         "aggregate_gate": {
             "rc": 0,
             "non_ok_sources": [],
@@ -189,6 +194,63 @@ def test_certificate_accepts_exact_51_source_union_and_reports_policy_evidence(t
     assert evidence["svn"] == "authoritative_inventory_feed"
     assert evidence["cbre-dealflow"] == "authoritative_inventory_feed"
     assert evidence["colliers"] == "strict_detail"
+
+
+def test_certificate_binds_the_exact_source_union_to_one_database(tmp_path):
+    result = certificate.build_freshness_certificate(
+        _valid_runs(tmp_path), max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "valid"
+    assert result["certificate_version"] == 3
+    assert result["database_target"] == DATABASE_TARGET
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        None,
+        [],
+        {},
+        {"algorithm": "sha512", "value": "a" * 64},
+        {"algorithm": "sha256", "value": "A" * 64},
+        {"algorithm": "sha256", "value": "SECRET_CANARY_NOT_A_TARGET"},
+    ],
+)
+def test_certificate_rejects_unbound_or_malformed_database_target(tmp_path, target):
+    runs = _valid_runs(tmp_path)
+    manifest_path = runs[0] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if target is None:
+        manifest["preflight"].pop("database_target")
+    else:
+        manifest["preflight"]["database_target"] = target
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "invalid"
+    assert "database_target" in _codes(result)
+    assert result["database_target"] is None
+    assert "SECRET_CANARY" not in json.dumps(result)
+
+
+def test_certificate_rejects_fresh_sources_from_distinct_databases(tmp_path):
+    runs = _valid_runs(tmp_path)
+    manifest_path = runs[-1] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["preflight"]["database_target"]["value"] = "b" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = certificate.build_freshness_certificate(
+        runs, max_source_age_hours=2, now=NOW
+    )
+
+    assert result["status"] == "invalid"
+    assert "database_target_mismatch" in _codes(result)
+    assert result["database_target"] is None
 
 
 def test_certificate_accepts_colliers_main_first_party_detail_api_only(tmp_path):

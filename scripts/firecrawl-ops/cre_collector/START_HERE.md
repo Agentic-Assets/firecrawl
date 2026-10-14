@@ -582,6 +582,15 @@ be issued until the absolute-quality backlog is clean. This separation keeps a
 known legacy defect visible without making the serial 51-source refresh unable
 to make progress.
 
+Certificate version 3 also requires every explicit checkpoint input to carry a
+valid `preflight.database_target` SHA256 fingerprint, with one identical target
+across the entire source union. The certificate reports that credential-free
+binding. Missing, malformed or mixed-target evidence is invalid; do not patch
+historical manifests to invent a binding. Separate fresh checkpoint runs may
+be combined only when all existing scope, artifact, readback, quality and age
+requirements pass. Matching collector SHAs are not a certificate-union rule;
+the runner's separate same-SHA resume contract remains unchanged.
+
 ### Colliers Main runtime calibration
 
 `colliers-main` has a large sitemap. The supervised checkpoint profile
