@@ -1478,7 +1478,10 @@ def _matthews_enrichment_preserves_collections(listing):
             return True
         if isinstance(value, dict):
             pending.extend(
-                (child, key in {"preserveChildCollections", "preserveContactCollections"})
+                (
+                    child,
+                    key in {"preserveChildCollections", "preserveContactCollections"},
+                )
                 for key, child in value.items()
             )
         elif isinstance(value, list):
