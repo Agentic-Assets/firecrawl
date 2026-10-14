@@ -37,6 +37,12 @@ fingerprint changes can queue enrichment; revision-only, text/image/document-onl
 changes and reappearance alone do not automatically queue it. Full acquisition
 remains responsible for creating previously un-ingested listings.
 
+Plain Matthews enrichment is refused before listing ingestion or claim
+completion because the current targeted artifact lacks strict inventory and
+generation proof. The source-specific
+[Matthews admission reference](matthews-enrichment-admission.md) explains the
+protective refusal and the separate contract needed for future queue writes.
+
 An applied enrichment uses the existing worker semantics, with an additional
 database target fingerprint checked before claims and passed to the ingest
 child. An uncertain bound-ingest failure retains claims for reconciliation.

@@ -1469,6 +1469,27 @@ def parse_strict_freshness_timestamp(value, *, field):
     return parsed.astimezone(timezone.utc)
 
 
+def _matthews_enrichment_preserves_collections(listing):
+    """Match the SQL's recursive true/string-true preservation markers."""
+    pending = [(listing, False)]
+    while pending:
+        value, marker = pending.pop()
+        if marker and (value is True or value == "true"):
+            return True
+        if isinstance(value, dict):
+            pending.extend(
+                (
+                    child,
+                    key in {"preserveChildCollections", "preserveContactCollections"},
+                )
+                for key, child in value.items()
+            )
+        elif isinstance(value, list):
+            # Lax JSONPath comparisons also unwrap arrays at the marker value.
+            pending.extend((child, marker) for child in value)
+    return False
+
+
 def validate_strict_artifact_freshness(
     data,
     *,
@@ -1483,6 +1504,17 @@ def validate_strict_artifact_freshness(
     """
     run_meta = data.get("runMeta")
     freshness = run_meta.get("freshness") if isinstance(run_meta, dict) else None
+    matthews_enrichment = (
+        isinstance(run_meta, dict)
+        and run_meta.get("mode") == "enrich"
+        and any(
+            isinstance(listing, dict) and listing.get("sourceKey") == "matthews"
+            for listing in (data.get("listings") or [])
+        )
+    )
+    # A successful partial detail replaces raw_data. Do not admit a Matthews
+    # queue result that would discard inventory/generation proof on that path.
+    require_strict_freshness = require_strict_freshness or matthews_enrichment
     artifact_is_strict = (
         isinstance(freshness, dict) and freshness.get("requireFreshDetails") is True
     )
@@ -1552,11 +1584,43 @@ def validate_strict_artifact_freshness(
         # Provider cards in an explicit inventory-only namespace are not
         # canonical listing rows. Their full-scope reconciliation is proved in
         # the source-index lane, not by canonical detail evidence.
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and listing.get("inventoryOnly") is not None
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] must be canonical detail"
+            )
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and _matthews_enrichment_preserves_collections(listing)
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] must not preserve collections"
+            )
         if listing.get("inventoryOnly") is not None:
             continue
         provenance = listing.get("freshnessProvenance")
         if not isinstance(provenance, dict):
             raise ValueError(f"strict freshness listings[{index}] lacks provenance")
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and provenance.get("detailScope") != "detail_page"
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] lacks detail_page scope"
+            )
+        if (
+            matthews_enrichment
+            and listing.get("sourceKey") == "matthews"
+            and provenance.get("cacheDisposition") != "live"
+        ):
+            raise ValueError(
+                f"Matthews enrichment listings[{index}] lacks live detail evidence"
+            )
         if provenance.get("generationId") != generation_id:
             raise ValueError(
                 f"strict freshness listings[{index}] has the wrong generation"
