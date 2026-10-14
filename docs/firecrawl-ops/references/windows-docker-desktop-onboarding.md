@@ -88,6 +88,8 @@ Invoke-RestMethod http://localhost:3002/
 
 Selecting `api` starts its dependencies: `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`. PostgreSQL and RabbitMQ must become healthy before API startup. FoundationDB is an optional backend and is unnecessary for this PostgreSQL baseline; plain `docker compose up -d` would start it too.
 
+Container startup and API readiness are separate. The API currently has no Compose healthcheck, so even `up --wait` does not establish that its HTTP routes are ready. If the root check fails immediately after startup, allow a short initialization window and retry the healthcheck with a bounded timeout. If it remains unavailable, inspect API startup logs and loopback bindings before restarting containers or the engine; preserve existing configuration and runtime identities during diagnosis.
+
 The image builds provide the API's Node/pnpm, Go, Rust, and browser dependencies. Do not install those language toolchains or a host PostgreSQL server solely to run the containers. Source development outside Docker has additional requirements.
 
 ## Verify useful work
