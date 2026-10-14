@@ -198,6 +198,11 @@ completed additive ingests, so this is not an all-registry atomic transaction.
 
 Use this conservative supervised command after applying the resource profile:
 
+For a new series, use a normal-priority shell (coordinator niceness 0).
+`--nice 15` applies the worker adjustment once. Do not also wrap the coordinator
+in `nice -n 15`: its children inherit that priority before adding their own
+adjustment, reaching niceness 19 on Linux.
+
 ```bash
 cd scripts/firecrawl-ops/cre_collector
 JLL_DETAIL_CONCURRENCY=1 \
@@ -208,7 +213,7 @@ COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
 NAI_ENUMERATION_CONCURRENCY=1 \
-/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
+python3 cre_checkpoint_series.py \
   --sources all \
   --concurrency 1 \
   --nice 15 \
@@ -304,7 +309,7 @@ COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
 NAI_ENUMERATION_CONCURRENCY=1 \
-/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
+python3 cre_checkpoint_series.py \
   --sources all \
   --concurrency 2 \
   --nice 15 \
@@ -458,6 +463,14 @@ finished with recorded source-local failures. Exit `75` means a required CPU or 
 stopped it; inspect the guard and incident evidence, let host pressure clear,
 then resume the exact series:
 
+The example below resumes a new conservative series launched from the
+normal-priority shell above. Historical series must retain their original
+coordinator priority/wrapper as well as their exact SHA, configuration and
+environment. Resume validation binds `--nice`, but not inherited coordinator
+niceness; removing an old outer wrapper would change effective worker priority
+even when configuration validation passes. Do not edit saved manifests or
+reinterpret an existing run's priority to match these new-run examples.
+
 ```bash
 JLL_DETAIL_CONCURRENCY=1 \
 JLL_INVESTOR_DETAIL_CONCURRENCY=1 \
@@ -467,7 +480,7 @@ COLLIERS_MAIN_DETAIL_CONCURRENCY=1 \
 COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000 \
 COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000 \
 NAI_ENUMERATION_CONCURRENCY=1 \
-/usr/bin/nice -n 15 python3 cre_checkpoint_series.py \
+python3 cre_checkpoint_series.py \
   --resume out/checkpoint-series/<series-id> \
   --sources all \
   --concurrency 1 \
@@ -502,9 +515,19 @@ or output allocation; it must be no more than 15 seconds old and cannot be in th
 future. This means whole-Windows admission at startup only. It does not establish
 continuous Windows CPU/RAM safety, and the timestamp is not rechecked or relabeled
 as fresh hours later at each source. Required Linux/VM CPU and memory guards stay
-unchanged. The current guarded-tier PowerShell launcher does not launch a series;
-the optional Linux controls below do not add a Windows launcher or enable a
-weekly invocation.
+unchanged. The current PowerShell launcher supports foreground series mode with
+an explicit work budget and database-write acknowledgement; see the
+[Windows series procedure](../../../docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md).
+It does not enable a weekly schedule.
+
+Custom Windows callers should pass native integer Unix milliseconds. If reading
+an ISO timestamp from JSON in PowerShell 7.5 or later, preserve its UTC marker with
+`ConvertFrom-Json -DateKind String` before `DateTimeOffset.Parse` and
+`ToUnixTimeMilliseconds`. Parsing a `DateTime` object's implicit local string
+can lose its UTC marker and introduce a timezone offset. The shipped launcher
+generates Unix milliseconds directly and does not use that conversion. Keep
+the existing stale/future checks; do not adjust clocks or admission evidence
+to compensate for a parsing error.
 
 When configured, reviewed code is checked again before every child dispatch,
 including recovery retries, before an attempt counter or child log is created.
