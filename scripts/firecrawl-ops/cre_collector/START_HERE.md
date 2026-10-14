@@ -486,6 +486,43 @@ hand, and do not use this flag as a normal retry mechanism.
 Use `--retry-failed` only after repairing or reviewing the recorded
 source-local failures. Resume configuration and collector SHA must match.
 
+#### Optional reviewed-code and Windows startup admission
+
+AGENTIC-4173 adds optional `--expected-sha <lowercase-full-40>` and
+`--windows-admission-unix-ms <integer>` to the canonical series CLI. Omit both
+to preserve the existing manual/Mac invocation and historical resume contract.
+An explicit SHA must match clean current HEAD and a local origin tracking tip.
+Inspection is local only: it never fetches, authenticates to a remote or proves
+that tracking references are up to date. Refresh and review the deployment's
+tracking state separately before using this admission.
+
+Windows evidence requires the explicit SHA. The existing guarded-tier validator
+checks the timestamp after bounded Git inspection and before credential loading
+or output allocation; it must be no more than 15 seconds old and cannot be in the
+future. This means whole-Windows admission at startup only. It does not establish
+continuous Windows CPU/RAM safety, and the timestamp is not rechecked or relabeled
+as fresh hours later at each source. Required Linux/VM CPU and memory guards stay
+unchanged. The current guarded-tier PowerShell launcher does not launch a series;
+a weekly Windows invocation, whole-run deadline and exact-owner series stop are
+separate work, not enabled by these CLI options.
+
+When configured, reviewed code is checked again before every child dispatch,
+including recovery retries, before an attempt counter or child log is created.
+Drift refuses new child work and records a global failure. This is admission
+inspection, not a race-free filesystem freeze, and does not retrofit children
+already running. Local Git stdout is capped at 64 KiB per command with a 5-second
+observation budget; timeout/error uses existing exact-owned process settlement.
+Unresolved local cleanup remains `cleanup_unknown`. Native calls are assumed to
+return, so these budgets are not kernel-call deadlines. No second canonical
+CRE lock, controller or scheduler is added.
+
+Explicit admission is recorded in top-level `latest_invocation_admission`,
+separately from immutable config and resume fingerprints. It is a replaceable
+observation of the current invocation, not append-only history. A later explicit
+resume replaces it; a legacy resume without the options removes it rather than
+presenting prior Windows evidence as current. Source artifacts, database-target
+binding, resource recovery, freshness gates and data-write policy remain unchanged.
+
 The strict runner never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. Never use `--allow-dirty` for a
 supervised production refresh. Before starting, require a clean worktree and
