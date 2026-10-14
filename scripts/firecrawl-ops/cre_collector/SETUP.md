@@ -208,8 +208,9 @@ Tiers and their gates (full detail in `launchd/README.md`):
 
 ### macOS Full Disk Access (TCC)
 
-> **Current operational gate, 2026-07-11:** This setup guide describes a
-> future approved recovery. The Mac mini has no active CRE scheduler. Do not
+> **Historical observation, 2026-07-11:** This setup guide describes a
+> future approved recovery. The Mac mini had no active CRE scheduler at that
+> inspection; recheck current host state before relying on it. Do not
 > install, load, kickstart, or alter a launchd job until the operator runbook's
 > explicit runtime-recovery and scheduler gates are approved.
 

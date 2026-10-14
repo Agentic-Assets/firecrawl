@@ -293,8 +293,12 @@ settled. Local settlement does not prove remote provider cancellation or SQL
 rollback, and the helper never clears a fence or authorizes a retry.
 
 Only the actual one-shot Linux process entrypoint publishes this capability.
-Imported/library calls, Mac runs, old receipts and the already-running full
-checkpoint series have no retrofitted stop capability. Missing pidfd support,
+This capability handles incremental runs only. Imported/library calls, Mac
+runs, old receipts and legacy checkpoint series have no retrofitted stop
+capability. New opt-in controlled series use the separate
+`Stop-CreCheckpointSeries.ps1` helper and the
+[series control contract](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md).
+Missing pidfd support,
 stale or malformed evidence, ownership changes and permission failures refuse
 the request. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
 End and forced `wsl.exe` termination remain insufficient settlement evidence.

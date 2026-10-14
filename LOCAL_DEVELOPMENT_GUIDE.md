@@ -58,7 +58,7 @@ bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 ```
 
 Expected baseline:
-- On macOS, OrbStack is running and `docker context show` is `orbstack`. On Windows, Docker Desktop is running with Linux containers and the `desktop-linux` context.
+- On macOS, OrbStack is running and `docker context show` is `orbstack`. Native Windows uses Docker Desktop with Linux containers and `desktop-linux`; Ubuntu/WSL integration may report `default` for the same Desktop engine. Verify the daemon and existing containers before changing contexts.
 - API is reachable at `http://localhost:3002`.
 - Core services include `api`, `playwright-service`, `redis`, `rabbitmq`, and `nuq-postgres`.
 - Local auth is usually disabled with `USE_DB_AUTHENTICATION=false`.
@@ -411,7 +411,7 @@ Operational notes:
 
 Keep these layers separate:
 
-1. Firecrawl local runtime: OrbStack + Docker compose, API at `http://localhost:3002`.
+1. Firecrawl local runtime: OrbStack on macOS or Docker Desktop on Windows, with Docker Compose and API at `http://localhost:3002`.
 2. Reusable tool interfaces: direct HTTP API, `firecrawl_cli.sh`, `firecrawl_request.py`, and `firecrawl_mcp.sh`.
 3. Agent adapters: `.cursor/mcp.json`, `.agents/skills/` (Cursor reads the synced copy at `~/.cursor/skills`), or any MCP-capable client config.
 4. Agent model runtime: Cursor Composer, Codex, Claude, or another model.
@@ -422,7 +422,7 @@ For MCP-capable agents:
 scripts/firecrawl-ops/firecrawl_mcp.sh
 ```
 
-Cursor is one optional adapter. Cursor SDK code does not load project settings by default; pass `mcpServers` inline or use `local: { cwd: process.cwd(), settingSources: ["project"] }`. Cursor cloud agents cannot reach this Mac's `localhost:3002` unless the API is exposed at a reachable URL.
+Cursor is one optional adapter. Cursor SDK code does not load project settings by default; pass `mcpServers` inline or use `local: { cwd: process.cwd(), settingSources: ["project"] }`. Cursor cloud agents cannot reach a workstation's `localhost:3002` without a separately reviewed reachable endpoint.
 
 Firecrawl's own AI-backed formats still use `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `MODEL_NAME`. Do not treat Cursor Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible endpoint.
 
