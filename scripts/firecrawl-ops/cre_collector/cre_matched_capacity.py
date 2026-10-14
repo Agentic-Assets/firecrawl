@@ -976,9 +976,7 @@ def execute(args, cohort: dict | None, profile: dict, identity: dict) -> None:
                     observe_resource_usage(
                         args.out,
                         env=env,
-                        cpu_sampler=refresh.host_cpu_sampler(
-                            initial_interval_seconds=2
-                        ),
+                        cpu_sampler=refresh.host_cpu_sampler(),
                         context_provider=lambda: dict(cpu.incident_context),
                     ),
                 ):

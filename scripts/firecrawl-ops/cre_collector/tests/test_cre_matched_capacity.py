@@ -1421,7 +1421,7 @@ def test_execute_selects_platform_sampler_and_records_immutable_c2_plan(
     )
     matched.execute(args, cohort, profile, identity)
     assert len(observed) == 1 and isinstance(observed[0], sampler_type)
-    assert observed[0].initial_interval_seconds == 2
+    assert observed[0].initial_interval_seconds == 0.1
     for name in ("plan.json", "result.json"):
         body = matched.read_json(args.out / name)
         assert body["max_concurrency"] == 2
