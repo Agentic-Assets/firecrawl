@@ -78,6 +78,8 @@ PSQL_CANDIDATES = [
 
 _RUN_UUID_NAMESPACE = uuid.UUID("c245ab8a-7397-5c20-920e-3bd852242c72")
 LIFECYCLE_TRANSACTION_LOCK_NAME = "credeals:listing-lifecycle:v1"
+# Limit normalized storage to hard validation acceptance; retain raw source prices.
+MAX_NORMALIZED_SALE_PRICE_USD = 20_000_000_000
 
 
 def lifecycle_transaction_lock_sql():
@@ -2441,7 +2443,9 @@ def to_row(listing, brokers_by_idx, scraped_at):
         lot_size_sf = lot_size_sf if lot_size_sf is not None else t_lot
 
     sale_price_text = listing.get("salePriceText")
-    sale_price = num_or_none(listing.get("salePriceUsd"), lo=100, hi=1e11)
+    sale_price = num_or_none(
+        listing.get("salePriceUsd"), lo=100, hi=MAX_NORMALIZED_SALE_PRICE_USD
+    )
     price_per_sf = num_or_none(listing.get("salePricePerSf"), lo=0, hi=10000)
     if jll_pricing_withheld:
         sale_price_text = None
@@ -2459,7 +2463,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         sale_price = num_or_none(
             cre_parse.parse_amount_ignoring_currency_label(sale_price_text),
             lo=100,
-            hi=1e11,
+            hi=MAX_NORMALIZED_SALE_PRICE_USD,
         )
     # (DQ guard 6) Newmark 'Subject to Offer' / non-numeric price: num_or_none
     # already drops a non-numeric salePriceUsd, and parse_money only matches a real
