@@ -388,6 +388,12 @@ class SeriesOwnershipLock:
             raise
         self._handle = handle
 
+    def fileno(self) -> int:
+        """The held private series flock descriptor, never canonical CRE authority."""
+        if self._handle is None:
+            raise RecoveryOwnershipError("series ownership lock is not held")
+        return self._handle.fileno()
+
     def release(self) -> None:
         handle = self._handle
         if handle is None:

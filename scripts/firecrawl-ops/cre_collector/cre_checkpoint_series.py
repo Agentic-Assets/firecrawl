@@ -54,6 +54,7 @@ from cre_owned_processes import (
     settle_owned_groups,
 )
 from cre_performance_report import save_report
+from cre_series_control import SeriesControlError, SeriesWorkStopped
 from cre_resource_recovery import (
     DEFAULT_LOW_CPU_PERCENT,
     DEFAULT_LOW_CPU_SECONDS,
@@ -74,6 +75,8 @@ from cre_resource_recovery import (
     SeriesOwnershipLock,
     wait_for_cpu_recovery,
 )
+
+_CLI_CONTROL_CAPABILITY = None
 
 SCHEMA_VERSION = 1
 DEFAULT_OUT_ROOT = COLLECTOR_DIR / "out" / "checkpoint-series"
@@ -1185,7 +1188,9 @@ def _cool_down_for_child_resume(
             utc_now=utc_now,
             on_progress=persist_progress,
         )
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        if isinstance(exc, SeriesWorkStopped):
+            raise
         return _finish_cooldown_failure(
             series_dir,
             manifest,
@@ -1303,7 +1308,9 @@ def _cool_down_for_child_resume(
     return None
 
 
-def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
+def local_git_output(
+    arguments: Sequence[str], *, timeout: float = 5.0, control=None
+) -> str:
     """Bound local inspection bytes/time; never fetch, persist stderr or use a shell."""
     limit = 65536
     environment = {
@@ -1312,7 +1319,9 @@ def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
     environment["GIT_TERMINAL_PROMPT"] = "0"
     environment["GIT_NO_LAZY_FETCH"] = "1"
     try:
-        with _defer_cleanup_signals():
+        with control.defer_stops() if control is not None else _defer_cleanup_signals():
+            if control is not None:
+                control.spawn_uncertain = True
             process = subprocess.Popen(
                 [
                     "git",
@@ -1329,6 +1338,8 @@ def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
             )
             try:
                 group = OwnedProcessGroup.from_spawn(process)
+                if control is not None:
+                    control.register_group(group)
             except (Exception, KeyboardInterrupt):
                 raise ProcessCleanupUnknown(
                     "local Git ownership registration unavailable"
@@ -1339,6 +1350,8 @@ def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
     deadline = time.monotonic() + timeout
     try:
         try:
+            if control is not None:
+                control.check()
             with selectors.DefaultSelector() as selector:
                 os.set_blocking(process.stdout.fileno(), False)
                 selector.register(process.stdout, selectors.EVENT_READ)
@@ -1363,6 +1376,8 @@ def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
                     raise SeriesError("local Git inspection timeout") from None
         except BaseException as error:
             settled = settle_owned_groups([group], grace_seconds=0.5, kill_seconds=0.5)
+            if control is not None:
+                control.settled(group, settled.settled)
             if not settled.settled:
                 raise ProcessCleanupUnknown(
                     "local Git cleanup_unknown; manual settlement required"
@@ -1373,6 +1388,8 @@ def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
                 raise error from None
             raise SeriesError("local Git inspection failed") from None
         settled = settle_owned_groups([group], grace_seconds=0, kill_seconds=0.1)
+        if control is not None:
+            control.settled(group, settled.settled)
         if not settled.settled:
             raise ProcessCleanupUnknown(
                 "local Git cleanup_unknown; manual settlement required"
@@ -1387,16 +1404,19 @@ def local_git_output(arguments: Sequence[str], *, timeout: float = 5.0) -> str:
         process.stdout.close()
 
 
-def verify_reviewed_checkout(expected_sha: str) -> None:
+def verify_reviewed_checkout(expected_sha: str, *, control=None) -> None:
     """Pin clean local code; a matching tracking tip is not remote freshness."""
     if (
         not isinstance(expected_sha, str)
         or re.fullmatch(r"[0-9a-f]{40}", expected_sha) is None
     ):
         raise SeriesError("expected SHA must be a lowercase full40 revision")
-    if local_git_output(["rev-parse", "HEAD"]) != expected_sha:
+    kwargs = {"control": control} if control is not None else {}
+    if local_git_output(["rev-parse", "HEAD"], **kwargs) != expected_sha:
         raise SeriesError("checkout SHA differs from the reviewed revision")
-    if local_git_output(["status", "--porcelain", "--untracked-files=normal"]):
+    if local_git_output(
+        ["status", "--porcelain", "--untracked-files=normal"], **kwargs
+    ):
         raise SeriesError("reviewed checkout is not clean")
     if (
         expected_sha
@@ -1405,7 +1425,8 @@ def verify_reviewed_checkout(expected_sha: str) -> None:
                 "for-each-ref",
                 "--format=%(objectname)",
                 "refs/remotes/origin/",
-            ]
+            ],
+            **kwargs,
         ).splitlines()
     ):
         raise SeriesError("reviewed revision has no matching local origin tracking tip")
@@ -1451,6 +1472,7 @@ def run_series(
     env_file: str | None,
     retry_failed: bool,
     expected_sha: str | None = None,
+    control=None,
 ) -> int:
     config = manifest["config"]
     git_sha = manifest["collector_git_sha"]
@@ -1541,7 +1563,10 @@ def run_series(
         while True:
             if expected_sha is not None:
                 try:
-                    verify_reviewed_checkout(expected_sha)
+                    verify_reviewed_checkout(
+                        expected_sha,
+                        **({"control": control} if control is not None else {}),
+                    )
                 except (SeriesError, ProcessCleanupUnknown) as error:
                     checkpoint["state"] = "failed_global"
                     checkpoint["error"] = (
@@ -1599,19 +1624,44 @@ def run_series(
                 resume_run=resume_run,
                 fresh_run_id=fresh_run_id,
             )
+            if control is not None:
+                control.prepare_checkpoint(child_run, git_sha)
+                argv.extend(
+                    [
+                        "--series-control-invocation-id",
+                        control.invocation_id,
+                        "--series-control-child-id",
+                        control.child_invocation_id,
+                    ]
+                )
+                attempt["series_control_child_id"] = control.child_invocation_id
+                save_manifest(series_dir, manifest)
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(f"[{utc_now()}] command: {' '.join(argv)}\n")
                 log.flush()
                 try:
-                    proc = subprocess.Popen(
-                        argv,
-                        cwd=COLLECTOR_DIR,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        start_new_session=True,
-                    )
-                except KeyboardInterrupt:
+                    if control is not None:
+                        proc = control.spawn(
+                            subprocess.Popen,
+                            argv,
+                            cwd=COLLECTOR_DIR,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            start_new_session=True,
+                        )
+                    else:
+                        proc = subprocess.Popen(
+                            argv,
+                            cwd=COLLECTOR_DIR,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            start_new_session=True,
+                        )
+                except KeyboardInterrupt as exc:
+                    if isinstance(exc, SeriesWorkStopped):
+                        raise
                     attempt["finished_at"] = utc_now()
                     attempt["rc"] = 130
                     checkpoint["state"] = "interrupted"
@@ -1630,10 +1680,17 @@ def run_series(
                     manifest["finished_at"] = utc_now()
                     save_manifest(series_dir, manifest)
                     return 1
-                proc._cre_owned_group = OwnedProcessGroup.from_spawn(proc)
+                if control is None:
+                    proc._cre_owned_group = OwnedProcessGroup.from_spawn(proc)
                 try:
+                    if control is not None:
+                        control.check()
                     rc = proc.wait()
-                except KeyboardInterrupt:
+                    if control is not None:
+                        control.observe_exit(proc)
+                except KeyboardInterrupt as exc:
+                    if isinstance(exc, SeriesWorkStopped):
+                        raise
                     try:
                         _terminate_child(proc)
                     except RefreshError:
@@ -1776,9 +1833,86 @@ def run_series(
     return 2 if failed_sources else 0
 
 
+def run_controlled_series(
+    series_dir, manifest, series_lock, args, *, _cli_control_capability=None
+):
+    """Own one explicit invocation; never infer remote/SQL settlement."""
+    from cre_series_control import SeriesControl
+
+    if (
+        __name__ != "__main__"
+        or _CLI_CONTROL_CAPABILITY is None
+        or _cli_control_capability is not _CLI_CONTROL_CAPABILITY
+    ):
+        raise SeriesError("controlled series require the one-shot CLI entrypoint")
+    control = SeriesControl(series_dir, series_lock, args.work_deadline_seconds)
+    rc = 1
+    with control.handlers():
+        control.publish_running()
+        manifest["latest_invocation_control"] = {
+            "invocation_id": control.invocation_id,
+            "work_deadline_seconds": control.seconds,
+            "receipt": f".series-control/{control.invocation_id}.json",
+        }
+        try:
+            save_manifest(series_dir, manifest)
+            signal.setitimer(signal.ITIMER_REAL, control.seconds)
+            rc = run_series(
+                series_dir,
+                manifest,
+                env_file=args.env_file,
+                retry_failed=args.retry_failed,
+                control=control,
+                **(
+                    {"expected_sha": args.expected_sha}
+                    if args.expected_sha is not None
+                    else {}
+                ),
+            )
+            control.check()
+        except SeriesWorkStopped as exc:
+            from cre_checkpoint_refresh import _cleanup_unknown_in_chain
+
+            control.cleanup_unknown |= _cleanup_unknown_in_chain(exc)
+            rc = 124 if control.stop_reason == "deadline" else 130
+            manifest["status"] = "interrupted"
+            manifest["error"] = (
+                "series work deadline expired" if rc == 124 else "operator interruption"
+            )
+            for checkpoint in manifest["sources"].values():
+                if checkpoint["state"] == "running":
+                    checkpoint["state"] = "interrupted"
+                    checkpoint["error"] = manifest["error"]
+                    checkpoint["attempts"][-1].update(finished_at=utc_now(), rc=rc)
+        except BaseException as exc:
+            from cre_checkpoint_refresh import _cleanup_unknown_in_chain
+
+            control.cleanup_unknown |= _cleanup_unknown_in_chain(exc)
+            manifest["status"] = "failed"
+            manifest["error"] = "controlled series failed; inspect invocation receipt"
+            rc = 1
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            with control.defer_stops():
+                control.settle_active()
+                manifest["finished_at"] = utc_now()
+                save_manifest(series_dir, manifest)
+                status = "deadline_interrupted" if rc == 124 else manifest["status"]
+                save_report(series_dir)
+                if not control.finish(status):
+                    manifest["status"] = "failed"
+                    manifest["error"] = (
+                        "owned process cleanup_unknown; manual settlement required"
+                    )
+                    save_manifest(series_dir, manifest)
+                    rc = 1
+    return rc
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", default=None)
+    parser.add_argument("--work-deadline-seconds", type=int, default=None)
     parser.add_argument("--expected-sha", default=None)
     parser.add_argument("--windows-admission-unix-ms", type=int, default=None)
     parser.add_argument(
@@ -1860,6 +1994,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--nice", type=int, default=10)
     args = parser.parse_args(argv)
+
+    if args.work_deadline_seconds is not None:
+        from cre_series_control import validate_control_budget
+
+        try:
+            validate_control_budget(args.work_deadline_seconds)
+        except SeriesControlError as exc:
+            parser.error(str(exc))
+        if __name__ != "__main__" or _CLI_CONTROL_CAPABILITY is None:
+            raise SeriesError("controlled series require the one-shot CLI entrypoint")
 
     try:
         sources = parse_sources(args.sources)
@@ -1951,7 +2095,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SeriesError(f"series directory already exists: {series_dir}")
         series_dir.mkdir(parents=True)
     try:
-        with SeriesOwnershipLock(series_dir / ".series.lock"):
+        with SeriesOwnershipLock(series_dir / ".series.lock") as series_lock:
             if args.resume:
                 manifest = load_resume_manifest(
                     manifest_path,
@@ -1984,7 +2128,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest.pop("latest_invocation_admission", None)
             if invocation_admission is not None:
                 manifest["latest_invocation_admission"] = invocation_admission
+            manifest.pop("latest_invocation_control", None)
             save_manifest(series_dir, manifest)
+
+            if args.work_deadline_seconds is not None:
+                return run_controlled_series(
+                    series_dir,
+                    manifest,
+                    series_lock,
+                    args,
+                    _cli_control_capability=_CLI_CONTROL_CAPABILITY,
+                )
 
             previous_sigterm = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, checkpoint_series_sigterm_handler)
@@ -2008,4 +2162,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    _CLI_CONTROL_CAPABILITY = object()
     raise SystemExit(main())

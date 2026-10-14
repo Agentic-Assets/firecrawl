@@ -6412,6 +6412,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--resume", default=None, help="existing run directory or manifest.json"
     )
     parser.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--series-control-invocation-id", default=None, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--series-control-child-id", default=None, help=argparse.SUPPRESS
+    )
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--sources", default="all")
@@ -6510,6 +6516,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
 
+    if (args.series_control_invocation_id is None) != (
+        args.series_control_child_id is None
+    ):
+        parser.error("series control requires both exact invocation identities")
+    if args.series_control_invocation_id is not None:
+        from cre_series_control import SeriesControlError, validate_child_invocation
+
+        try:
+            validate_child_invocation(args.series_control_invocation_id)
+            validate_child_invocation(args.series_control_child_id)
+        except SeriesControlError as exc:
+            parser.error(str(exc))
+
     internal_worker_requested = any(
         value is not None
         for value in (
@@ -6521,6 +6540,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args._cohort_generation_started_at,
         )
     )
+    if args.series_control_invocation_id is not None and internal_worker_requested:
+        parser.error("series control cannot be combined with internal worker arguments")
     if args.run_id is not None and args.resume:
         parser.error("--run-id cannot be combined with --resume")
     if args.run_id is not None and internal_worker_requested:
@@ -6664,6 +6685,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     terminal_evidence_saved = False
     terminal_publication_failed = False
     settlement_unknown = False
+    guards_stopped = False
+    details = None
 
     def persist_terminal() -> None:
         nonlocal terminal_evidence_saved, terminal_publication_failed
@@ -6974,6 +6997,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             # This runs even if final evidence, guard teardown or fence clearing
             # fails. A still-armed authority/lease is preserved by SharedLock.
             ownership.__exit__(*sys.exc_info())
+            if args.series_control_invocation_id is not None:
+                from cre_series_control import publish_checkpoint_settlement
+
+                publish_checkpoint_settlement(
+                    run_dir,
+                    args.series_control_invocation_id,
+                    manifest,
+                    child_invocation_id=args.series_control_child_id,
+                    guards_stopped=guards_stopped,
+                    nested_cleanup_confirmed=(
+                        not settlement_unknown
+                        and not _cleanup_unknown_in_chain(sys.exception())
+                        and (details is None or details.owned_processes_reaped)
+                    ),
+                    terminal_evidence_saved=terminal_evidence_saved
+                    and not terminal_publication_failed,
+                )
 
 
 if __name__ == "__main__":
