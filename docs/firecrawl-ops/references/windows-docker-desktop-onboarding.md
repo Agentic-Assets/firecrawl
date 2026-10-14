@@ -272,7 +272,10 @@ The wrapper pins page concurrency and JLL/JLL Investor/Cushman detail and NAI
 enumeration concurrency to 1, and uses the reviewed Colliers Coveo path with
 detail concurrency 1, a 3000 ms start interval and 60000 ms challenge cooldown.
 It pins page cap 400, three attempts per source and zero CPU recovery replays.
-The process and worker nice value is 15. Linux CPU admission/guard settings are
+The coordinator inherits caller priority; canonical `--nice 15` adds 15 to
+each checkpoint child's inherited nice value (15 from an ordinary nice-0
+caller, capped by Linux at 19). It does not nest a second outer nice wrapper.
+Linux CPU admission/guard settings are
 90%, a 30-second sustain and a 2-second sample; the memory guard uses a
 20-second sustain and a 2-second sample with the existing fail-closed thresholds.
 It starts no Docker services and changes no configuration. Docker Desktop must

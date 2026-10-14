@@ -260,7 +260,7 @@ try {
                 'CUSHMAN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_COVEO_ENABLE=1',
                 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000',
                 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1',
-                '/usr/bin/nice', '-n', '15', 'python3', "$collector/cre_checkpoint_series.py",
+                'python3', "$collector/cre_checkpoint_series.py",
                 '--sources', $Source, '--concurrency', '1', '--nice', '15',
                 '--page-cap', '400', '--attempts-per-source', '3', '--max-resource-recoveries-per-source', '0',
                 '--max-host-cpu-percent', '90', '--cpu-sustain-seconds', '30', '--cpu-sample-seconds', '2',
