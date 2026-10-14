@@ -54,11 +54,25 @@ Each cell reports fresh accepted rows/minute, per-member enrichment latency,
 nearest-rank p50/p95/p99/maximum, requested and actual enrichment width, the
 cohort hash, generation and coordinator-supplied runtime/load evidence.
 Normalized fidelity compares the complete listing, including prose, prices,
-withholding controls, gallery ordering, documents, media and contacts. Only the
-detail observation clock and generation are excluded. Broker references are
-resolved to broker records before comparison. Any changed content stops the
-matrix; a genuine provider update therefore produces an inconclusive matrix
-instead of being accepted as a capacity win.
+withholding controls, gallery ordering, documents, media and contacts. Broker
+references resolve to broker records. The existing `fidelitySha256` remains the
+strict capture-binding hash, excluding only the detail observation clock and
+generation; paired direct/rendered consumers retain that exact contract.
+
+Under [AGENTIC-4185](https://linear.app/agenticassets/issue/AGENTIC-4185), cells
+also record `semanticFidelitySha256`, used only for matched-cell baseline comparison.
+Its `fidelitySchema` is `cre-matched-semantic-v2`; it additionally excludes exactly
+`jllDetail.scrape.rawHtmlLength`. That is a JavaScript string-length diagnostic,
+not necessarily a UTF-8 byte count. The original listing, raw document, captures,
+length evidence and strict hashes remain intact. `markdownLength`, `linkCount`,
+JLLInvestor diagnostics and every other nested field remain strict. No source,
+ingest, freshness, identity or client-reliability gate is relaxed.
+
+A baseline must carry the current schema, valid strict/semantic digests and the
+same complete cohort/sample binding before any capture dispatch. Legacy, missing
+or unknown schemas are refused; old receipts are not rewritten or reinterpreted.
+Any other changed content stops the matrix; a genuine provider update produces
+an inconclusive matrix instead of being accepted as a capacity win.
 
 The isolated production-capture wrapper records client HTTP dispatches and
 statuses and forwards the cell AbortSignal to the real HTTP path. A retry,
