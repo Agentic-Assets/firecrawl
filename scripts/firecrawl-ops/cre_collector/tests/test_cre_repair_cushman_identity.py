@@ -898,6 +898,7 @@ def test_private_preimage_rejects_unsafe_paths_and_oversize_payload(tmp_path):
 
     permissive = tmp_path / "permissive"
     permissive.mkdir(mode=0o755)
+    permissive.chmod(0o755)
     with pytest.raises(ValueError, match="owner-only"):
         repair.atomic_private_json(permissive / "preimage.json", {"ok": True})
 
