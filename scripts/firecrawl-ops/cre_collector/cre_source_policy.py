@@ -1,8 +1,8 @@
 """Fail-closed loader for the declarative CRE source-policy registry.
 
-This module is intentionally not wired into collection or ingestion yet.  It
-provides one deterministic policy path and rejects any incomplete or malformed
-policy before a future consumer can rely on it.
+Validation, checkpoint execution and freshness certification consume this
+registry. It provides one deterministic policy path and rejects incomplete or
+malformed policy before those consumers can rely on it.
 """
 
 from __future__ import annotations

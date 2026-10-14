@@ -123,8 +123,10 @@ enriched prices, `raw_data`, and child rows). See
 `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` for the full run
 model and gotchas.
 
-Historical all-source artifact baseline: 2026-06-12. Live per-source matrix and
-board totals: `cre_collector/START_HERE.md` only (2026-07-05 snapshot there).
+Historical all-source artifact baseline: 2026-06-12. Use fresh
+`cre_validate.py` output and exact checkpoint readback for current per-source
+counts and board totals. `cre_collector/START_HERE.md` owns procedures; its
+dated count tables are historical snapshots.
 
 Supabase objects live under `credeals`, not `public`:
 
@@ -211,10 +213,11 @@ remain fail-closed.
 
 ## Broker Status Rules
 
-Current per-source status and counts live in `cre_collector/START_HERE.md` and
-`cre_collector/BROKERAGE_STATUS_2026-06-12.md` (the canonical homes). Do not
-restate counts here, and do not treat the legacy `cre_scrapers/config.py`
-active flags as production coverage.
+Current per-source status and counts require fresh validation and checkpoint
+readback. `cre_collector/START_HERE.md` owns procedures, while
+`cre_collector/BROKERAGE_STATUS_2026-06-12.md` retains a historical snapshot.
+Do not restate counts here or treat legacy `cre_scrapers/config.py` active
+flags as production coverage.
 
 Durable cautions:
 
@@ -234,7 +237,9 @@ bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 docker compose ps
 ```
 
-This Mac uses OrbStack. Expected local API:
+On macOS, use OrbStack. On Windows, use Docker Desktop with Linux containers
+and the WSL2 backend; run the CRE collector from its separate Ubuntu ext4
+checkout. Expected local API on either host:
 
 ```text
 http://localhost:3002
