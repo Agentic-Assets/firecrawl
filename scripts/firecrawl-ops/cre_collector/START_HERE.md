@@ -1054,6 +1054,11 @@ filtered search index. Explicit non-U.S. detail is excluded, and unresolved
 country, identity, alias, or build-rotation failures make the strict pass
 truncated.
 
+For an ingest that exits zero but fails generation acceptance, see
+[ingest freshness troubleshooting](../../../docs/firecrawl-ops/references/cre-ingest-freshness-troubleshooting.md).
+It separates missing identities from provenance lost during staging and explains
+why a corrective replay differs from an ordinary checkpoint resume.
+
 The manifest records `ingesting` before launching a live write. If execution
 stops in that window, resume performs a generation-exact database readback and
 never automatically replays an ambiguous ingest. Recovery distinguishes an
@@ -1062,7 +1067,8 @@ rows for the expected generation and zero scrape jobs for the immutable
 artifact run key, then returns the checkpoint to `dry_run_passed` for a reviewed
 resume. Any partial, conflicting, or missing probe remains
 `ingest_recovery_required`. A successful live readback requires the expected
-generation ID, exact active canonical count, exact inventory-only scope count,
+generation ID, exact canonical count with `deleted_at IS NULL`, exact
+inventory-only scope count,
 and observation timestamps no earlier than the generation start.
 
 If an exact rollback makes the child replay-safe but the parent series has

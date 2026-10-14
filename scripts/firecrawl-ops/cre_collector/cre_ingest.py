@@ -2029,6 +2029,7 @@ _JLL_WITHHELD_TOP_LEVEL = frozenset(
         "sizeText",
         "buildingSizeSqft",
         "lastUpdated",
+        "inventoryObservedAt",
         "detailObservedAt",
         "freshnessProvenance",
         "currentTenants",
@@ -2140,6 +2141,36 @@ def _safe_jll_tenant_identities(value):
     return tenants
 
 
+def _safe_jll_generation_id(value):
+    """Retain bounded opaque run tokens, never monetary labels or prose."""
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", value) is None
+    ):
+        return None
+    # Token delimiters cannot hide an otherwise explicit monetary disclosure.
+    text = re.sub(r"[._:-]+", " ", value)
+    text = re.sub(r"(?<=[A-Za-z])(?=[0-9])|(?<=[0-9])(?=[A-Za-z])", " ", text)
+    if _jll_text_has_monetary_disclosure(text) or _JLL_LABELLED_PRICE.search(text):
+        return None
+    return value
+
+
+def _safe_jll_inventory_observation(value):
+    """Validate the original absolute observation without rewriting its clock."""
+    if (
+        not isinstance(value, str)
+        or len(value) > 64
+        or re.fullmatch(r"[0-9TtZz:+. -]+", value) is None
+    ):
+        return None
+    try:
+        parse_strict_freshness_timestamp(value, field="inventoryObservedAt")
+    except (ValueError, OverflowError):
+        return None
+    return value
+
+
 def _safe_jll_freshness_provenance(value):
     """Project trusted JLL freshness leaves, never arbitrary detail prose."""
     if not isinstance(value, dict):
@@ -2149,6 +2180,9 @@ def _safe_jll_freshness_provenance(value):
         candidate = value.get(key)
         if candidate in allowed:
             projected[key] = candidate
+    generation = _safe_jll_generation_id(value.get("generationId"))
+    if generation is not None:
+        projected["generationId"] = generation
     return projected or None
 
 
@@ -2178,6 +2212,11 @@ def _safe_jll_withheld_projection(value, pricing):
     projected = {
         key: item for key, item in raw.items() if key in _JLL_WITHHELD_TOP_LEVEL
     }
+    inventory = _safe_jll_inventory_observation(raw.get("inventoryObservedAt"))
+    if inventory is None:
+        projected.pop("inventoryObservedAt", None)
+    else:
+        projected["inventoryObservedAt"] = inventory
     search = projected.get("jllSearchResult")
     if isinstance(search, dict):
         projected["jllSearchResult"] = {
