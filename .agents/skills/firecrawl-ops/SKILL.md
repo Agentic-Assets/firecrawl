@@ -11,7 +11,7 @@ Use this skill for runtime, sync, and platform work around this fork's self-host
 
 Run from the repo root unless `FC_DIR` is set:
 
-On Windows, use the [Docker Desktop onboarding guide](references/windows-docker-desktop-onboarding.md). Run `.sh` helpers with Git Bash explicitly, and verify that `python3` resolves there. Docker and Python helpers can also run directly from PowerShell. The compatibility doctor's `--run` stdio probe currently assumes POSIX pipe polling; use its static diagnostic on native Windows and verify CLI/MCP separately.
+On Windows, use the [Docker Desktop onboarding guide](references/windows-docker-desktop-onboarding.md). Run general `.sh` ops helpers with Git Bash explicitly, and verify that `python3` resolves there. Run CRE POSIX helpers in Ubuntu from the ext4 checkout as described below. Docker and compatible Python helpers can also run directly from PowerShell. The compatibility doctor's `--run` stdio probe currently assumes POSIX pipe polling; use its static diagnostic on native Windows and verify CLI/MCP separately.
 
 ```bash
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
@@ -68,7 +68,7 @@ The supervised path never passes `--monitor`, `--mark-missing`,
 `--activate-status`, or `--update-baseline`. GetCREdata remains the only
 production OM-extraction writer.
 
-On the Mac, use OrbStack. If Docker commands fail there, open OrbStack and confirm `docker context show` is `orbstack`. On Windows, use Docker Desktop with Linux containers and the `desktop-linux` context; do not switch Windows to `orbstack`. The expected local API on either host is `http://localhost:3002`.
+On the Mac, use OrbStack. If Docker commands fail there, open OrbStack and confirm `docker context show` is `orbstack`. Native Windows uses Docker Desktop with Linux containers and `desktop-linux`; Ubuntu/WSL may report `default` for the same Desktop daemon. Verify the daemon and existing containers before changing contexts; do not switch Windows to `orbstack`. The expected local API on either host is `http://localhost:3002`.
 
 For a fresh clone on another Mac, start with `LOCAL_DEVELOPMENT_GUIDE.md` or `references/partner-orbstack-onboarding.md`. The short path is: install/start OrbStack, confirm `docker context show`, start and verify the core stack without a root `.env`, then have a human create the minimal root `.env` described in the local guide if AI-backed calls are needed. Obtain an operator dry-run plan for the selected model, optionally run `install_git_hooks.sh` and `sync_agent_skills.sh`, then complete the human-owned transition.
 
@@ -171,7 +171,7 @@ Keep Firecrawl tooling separate from any one agent runtime:
 - Codex/Claude-style adapter: `.agents/skills/firecrawl-local-api/SKILL.md`
 - User-level installer: `scripts/firecrawl-ops/sync_agent_skills.sh`
 
-Cursor Composer 2.5 can drive a Cursor SDK agent that calls local Firecrawl through MCP/CLI/API. Use the SDK local runtime for this Mac's Firecrawl stack; cloud agents need a reachable Firecrawl URL. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
+Cursor Composer 2.5 can drive a Cursor SDK agent that calls local Firecrawl through MCP/CLI/API. Use the SDK local runtime for the workstation's Firecrawl stack; cloud agents need a separately reviewed reachable Firecrawl URL. Do not treat Composer as Firecrawl's internal model provider unless Cursor publishes an OpenAI-compatible base URL.
 
 After updating repo skills, run:
 
