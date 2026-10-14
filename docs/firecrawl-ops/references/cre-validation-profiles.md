@@ -35,6 +35,17 @@ recovery evidence. JSON declares `validation_profile` and `audit_scope`; reduced
 reports use `checkpoint_before_collection_only`. Missing required query families
 are rejected. Existing hash-bound full preflight snapshots remain compatible.
 
+[AGENTIC-4186](https://linear.app/agenticassets/issue/AGENTIC-4186) optimizes
+the shared source-attribution SQL to avoid reading raw JSON for non-folded brokerages when the governed
+brokerage mapping has exactly one source key equal to its legacy slug fallback.
+Multi-source brokerages retain prefix and nested-payload precedence. This changes
+neither query families nor snapshot, target, quality or freshness requirements.
+The opt-in `tests/run_source_key_postgres_contract.py --out <new-private-file>`
+compares a frozen pre-optimization SQL oracle with current attribution and grouped
+validator queries on synthetic data, then measures three counterbalanced runs.
+It requires the pinned cached PostgreSQL image and uses an isolated, bounded
+container with no ports or network; synthetic timings are not production gains.
+
 ## Measure the effect
 
 Compare `query_timings` and command duration from saved reports. Timings are
