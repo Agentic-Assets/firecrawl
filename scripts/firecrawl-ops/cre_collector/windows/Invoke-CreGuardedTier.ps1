@@ -5,14 +5,18 @@ Admit one foreground WSL CRE invocation using whole-Windows load evidence.
 Creates no scheduled task and starts no Docker services. -CheckOnly samples
 Windows without starting WSL or writing files. Linux owns the durable fence,
 deadline and process cleanup. Ending wsl.exe is not proof of Linux settlement.
+Series mode performs additive database writes and requires a separate explicit
+work budget and acknowledgement; it has no dry-run mode.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('monitor', 'enrich')][string]$Tier = 'monitor',
+    [ValidateSet('monitor', 'enrich', 'series')][string]$Tier = 'monitor',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*$')][string]$Source,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
     [ValidateRange(1, 50)][int]$Batch = 50,
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
+    [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
+    [switch]$AcknowledgeDatabaseWrites,
     [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Distro = 'Ubuntu-24.04',
     [ValidatePattern('^[a-z_][a-z0-9_-]*$')][string]$LinuxUser = 'cayman',
     [ValidatePattern('^/[^\r\n]+$')][string]$LinuxRepo = '/home/cayman/code/firecrawl',
@@ -180,6 +184,10 @@ $record = [ordered]@{
     notification = [ordered]@{ Status = 'not_attempted'; Reason = 'invocation_pending' }
     stdoutPath = $stdoutPath; stderrPath = $stderrPath; byteLimitPerStream = 1048576
 }
+if ($Tier -eq 'series') {
+    $record['workDeadlineSeconds'] = $WorkDeadlineSeconds
+    $record['acknowledgeDatabaseWrites'] = [bool]$AcknowledgeDatabaseWrites
+}
 try {
     New-Item -ItemType Directory -Path $auditDir -Force | Out-Null
     Write-CreAudit $auditPath $record
@@ -197,6 +205,16 @@ Write-Output "Windows stderr: $stderrPath"
 $result = 1
 try {
     if (-not $Source -or -not $ExpectedSha) { throw 'Required invocation identity missing.' }
+    if ($Tier -eq 'series') {
+        if (-not $PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or -not $AcknowledgeDatabaseWrites) {
+            throw 'Series requires an explicit work budget and database-write acknowledgement.'
+        }
+        foreach ($incompatible in @('Apply', 'Batch', 'DeadlineSeconds')) {
+            if ($PSBoundParameters.ContainsKey($incompatible)) { throw 'Incremental-only option supplied for series.' }
+        }
+    } elseif ($PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or $PSBoundParameters.ContainsKey('AcknowledgeDatabaseWrites')) {
+        throw 'Series-only option supplied for incremental tier.'
+    }
     $admission = Get-CreAdmission
     foreach ($key in $admission.Keys) { $record[$key] = $admission[$key] }
     if (-not $admission.admitted) {
@@ -234,14 +252,30 @@ try {
             '--expected-sha', $ExpectedSha, '--batch', "$Batch",
             '--deadline-seconds', "$DeadlineSeconds", '--env-file', $LinuxEnvFile,
             '--windows-admission-unix-ms', "$admissionUnixMs")
-        if ($Apply) { $arguments += '--apply' }
+        $runPrefix = "$collector/out/guarded-tiers/"
+        if ($Tier -eq 'series') {
+            $arguments = @('-d', $Distro, '-u', $LinuxUser, '--exec', 'env',
+                'FIRECRAWL_API_URL=http://127.0.0.1:3002',
+                'JLL_DETAIL_CONCURRENCY=1', 'JLL_INVESTOR_DETAIL_CONCURRENCY=1',
+                'CUSHMAN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_COVEO_ENABLE=1',
+                'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000',
+                'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1',
+                'python3', "$collector/cre_checkpoint_series.py",
+                '--sources', $Source, '--concurrency', '1', '--nice', '15',
+                '--page-cap', '400', '--attempts-per-source', '3', '--max-resource-recoveries-per-source', '0',
+                '--max-host-cpu-percent', '90', '--cpu-sustain-seconds', '30', '--cpu-sample-seconds', '2',
+                '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
+                '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
+                '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
+            $runPrefix = "$collector/out/checkpoint-series/"
+        } elseif ($Apply) { $arguments += '--apply' }
         # Pending is durably published before helper entry. An exception/crash
         # thereafter may have dispatched; it never proves no Linux work started.
         $record.dispatch = 'pending'
         Write-CreAudit $auditPath $record
         # No detach, kill or forced WSL exit. Linux owns its independent deadline.
         $capture = [CreWindowsCapture.Capture]::Run($wsl, $arguments, $stdoutPath, $stderrPath,
-            "$collector/out/guarded-tiers/")
+            $runPrefix)
         $record['capture'] = $capture
         if ($capture.StartAttempted) { $record.dispatch = 'attempted' }
         if ($null -ne $capture.NativeExitCode) {
