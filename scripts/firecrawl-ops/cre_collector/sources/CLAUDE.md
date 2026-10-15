@@ -92,6 +92,21 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
   parity tests prevent partial admission. Offline proof does not replace a
   current live canary and guarded database readback for each source.
 
+## Kidder Mathews complete inventory
+
+Strict Kidder runs request one `startIndex=0, numResults=8000` response from
+`https://services.kidder.com/search/public/listing`, matching the public
+property-search frontend's bulk request. This avoids unsorted 50-row page
+boundaries; it does not deduplicate provider rows. The independent provider
+total, returned count and unique `listing_key` set must agree within the
+8000-row ceiling. A provider cap, duplicate identity, malformed body or larger
+inventory fails closed. The transport disables redirects and bounds the whole
+request/body read to 30 seconds and decoded content to 32 MiB. Generation-bound
+caching preserves the actual observation clock, and non-strict pagination is
+unchanged. Provider evidence and the guarded live acceptance are tracked by
+[AGENTIC-4269](https://linear.app/agenticassets/issue/AGENTIC-4269); transport
+success alone does not prove source-gate or database acceptance.
+
 ## Key Env Vars (by source)
 
 | Var | Source | Effect |
