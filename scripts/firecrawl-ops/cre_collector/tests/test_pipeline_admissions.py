@@ -122,3 +122,36 @@ def test_aggregate_admission_keeps_other_raw_verdict_unchanged(tmp_path):
         phase="source",
     )
     assert report["per_source"]["interra-realty"] == raw_other
+
+@pytest.mark.parametrize("family", ["buildout", "interra"])
+@pytest.mark.parametrize("fault", [None, "raw", "raw_reason", "proof", "source_proof", "scope", "source_phase"])
+def test_prewrite_aggregate_recheck_preserves_exact_admission(tmp_path, family, fault):
+    if family == "interra":
+        from test_current_inventory_admission import SOURCE as source, setup as fixture
+    else:
+        source, fixture = SOURCE, setup
+    _, path, _, manifest, raw = fixture(tmp_path)
+    source_report = copy.deepcopy(raw)
+    kwargs = dict(source=source, current_code_sha=CODE, current_git_dirty=False)
+    proof = admission.admit(path, manifest, source_report, phase="source", **kwargs)
+    manifest["sources"][source]["gate"] = copy.deepcopy(source_report["per_source"][source])
+    admission.admit(path, manifest, raw, phase="aggregate", **kwargs)
+    original = copy.deepcopy(raw)
+    gate = raw["per_source"][source]
+    if fault == "raw":
+        gate["raw_verdict"] = "ok"
+    if fault == "proof":
+        gate["current_inventory_proof"]["artifact_sha256"] = "0" * 64
+    if fault == "raw_reason":
+        gate["raw_reason"] = "foreign baseline reason"
+    if fault == "source_proof":
+        manifest["sources"][source]["gate"]["current_inventory_proof"] = {}
+    if fault == "scope":
+        gate["admission_scope"] = "whole_source"
+    phase = "source" if fault == "source_phase" else "aggregate"
+    if fault:
+        with pytest.raises(ValueError):
+            admission.admit(path, manifest, raw, phase=phase, **kwargs)
+    else:
+        assert admission.admit(path, manifest, raw, phase=phase, **kwargs) == proof
+        assert raw == original
