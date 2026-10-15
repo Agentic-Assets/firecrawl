@@ -308,6 +308,15 @@ def test_source_counts_separates_inventory_and_detail_observation():
     assert "detail_unavailable" in sql
 
 
+def test_source_counts_reuses_one_decoded_json_root_without_changing_attribution():
+    sql = QUERIES["source_counts"]
+    assert SOURCE_KEY_SQL in sql
+    assert "NULLIF(decoded.raw_data->>'inventoryObservedAt', '')::timestamptz" in sql
+    assert "jsonb_path_exists(decoded.raw_data, '$.**.detailUnavailable')" in sql
+    assert "SELECT l.external_id, l.raw_data #> '{}'::text[] AS raw_data" in sql
+    assert sql.count("OFFSET 0") == 1
+
+
 def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
     sql = QUERIES["inventory_generation_fingerprints"]
     assert "count(live_inventory.source_id)" in sql

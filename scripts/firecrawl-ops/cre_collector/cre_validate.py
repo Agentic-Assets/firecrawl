@@ -386,6 +386,8 @@ UNION ALL
 SELECT 'v_cre_market_summary', count(*)::text FROM credeals.v_cre_market_summary
 ORDER BY metric;
 """,
+    # Share the decoded root across observation/recursive-flag reads without
+    # retaining the full raw payload in the materialized aggregate relation.
     "source_counts": f"""
 WITH base AS (
   SELECT
@@ -393,12 +395,16 @@ WITH base AS (
     b.slug AS brokerage_slug,
     l.transaction_type,
     l.scraped_at,
-    NULLIF(l.raw_data->>'inventoryObservedAt', '')::timestamptz
+    NULLIF(decoded.raw_data->>'inventoryObservedAt', '')::timestamptz
       AS inventory_observed_at,
-    jsonb_path_exists(l.raw_data, '$.**.detailUnavailable') AS detail_unavailable,
+    jsonb_path_exists(decoded.raw_data, '$.**.detailUnavailable') AS detail_unavailable,
     l.deleted_at
   FROM credeals.cre_listings l
   JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  CROSS JOIN LATERAL (
+    SELECT l.external_id, l.raw_data #> '{{}}'::text[] AS raw_data
+    OFFSET 0
+  ) AS decoded
 ),
 active AS (
   SELECT * FROM base WHERE deleted_at IS NULL

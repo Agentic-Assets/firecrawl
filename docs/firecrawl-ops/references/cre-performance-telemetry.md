@@ -99,7 +99,11 @@ another attempt and the existing final-attempt sleep are recorded separately.
 Backoff is scheduled delay, not an assertion that an interrupted sleep finished.
 
 Validator query results and timings use separate psql output channels inside the
-same repeatable-read, read-only transaction. Result framing and TSV shape remain
+same repeatable-read, read-only transaction. Each report uses one psql process
+and one shared snapshot. Native `\timing` wraps each measured statement,
+excluding the initial connection and `BEGIN`; it includes client-side result
+handling. Keep the enclosing command wall time separate, and do not add nested
+query or overlapping phase durations to it. Result framing and TSV shape remain
 fail-closed. Missing, malformed, duplicated, or structurally invalid optional
 timing output becomes a bounded `unavailable_code` and does not invalidate an
 otherwise complete result frame. Timing metadata never stores SQL, raw psql
@@ -217,6 +221,17 @@ cache policy with each experiment. Check request failures, latency and CPU
 alongside listings staged, field/document/media preservation and exact database
 readback. Do not claim a speed win by dropping content, using older cached
 observations or counting a processed error as an enriched listing.
+
+Record useful findings in the existing
+[AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895) Learning log
+and scorecard as observation, linked evidence, interpretation/limits, then next
+action. Link the existing automatic reports and bound run artifacts with their
+code SHA, generation and work scope. Label measured outcomes, unproven
+hypotheses and refuted ideas explicitly. Use the existing
+[AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900) experiments
+for controlled follow-up; search before creating an actionable child. Keep
+measurements in the existing reports and decisions in Linear rather than adding
+a separate service, logger or local backlog.
 
 Brokerages publish different amounts of detail. A missing field may be genuinely
 unpublished, inapplicable or unsuccessfully extracted; presence alone does not
