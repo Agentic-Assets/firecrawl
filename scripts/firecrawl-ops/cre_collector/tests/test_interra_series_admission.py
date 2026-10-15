@@ -2,9 +2,8 @@
 
 import json
 
-import pytest
-
 import cre_checkpoint_series as series
+import pytest
 
 
 def config(enabled=True):
