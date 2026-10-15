@@ -18,7 +18,7 @@ implementations or independent writer authorities.
   and its foreground checkpoint owner. Keep Linux dependencies and runtime-owned files here.
 - **macOS runtime checkout**: use the host-specific approved runtime with its own local
   dependencies and launcher state. Do not infer its path or state from Windows or WSL.
-- **Temporary ext4 test clone**: run CRE collector suites against the exact candidate commit
+- **Temporary test clone** (WSL ext4 on Windows, host filesystem on macOS): run CRE collector suites against the exact candidate commit
   using the isolated-verification recipe in
   [SETUP](../../../scripts/firecrawl-ops/cre_collector/SETUP.md#isolated-verification).
 
@@ -45,8 +45,8 @@ different launchers and host setup, but do not fork the pipeline by operating sy
 Windows checkout is a control surface; execute supported runtime work through the approved
 Linux/WSL or macOS runtime.
 
-Create a fresh temporary clone with `git clone --no-hardlinks` on the Linux filesystem for
-collector tests. Do not use a Git worktree or run these suites from the runtime checkout: lock
+Create a fresh temporary clone with `git clone --no-hardlinks` for collector tests. Use WSL's
+Linux filesystem on Windows and the host filesystem on macOS. Do not use a Git worktree or run these suites from the runtime checkout: lock
 discovery can otherwise resolve to runtime-owned state. Install test dependencies in that clone
 using SETUP; do not copy `node_modules`, virtual environments, database or webhook credentials,
 or runtime artifacts between checkouts. Keep credentials in private host-local files, and keep

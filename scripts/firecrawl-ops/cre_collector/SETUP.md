@@ -110,7 +110,8 @@ repo root. Do not treat that command as a read-only doctor.
 
 For checkout roles, branch-versus-runtime pins, safe promotion, and rollback boundaries, see
 [Development and runtime checkouts](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md).
-CRE tests belong in the temporary ext4 test clone described below, never in the runtime checkout.
+Collector suites belong in an independent test clone, using WSL's ext4 filesystem on Windows
+or the host filesystem on macOS, never the runtime checkout. Native launcher fixtures run on Windows.
 
 For Python and TypeScript tests, create an isolated clone so lock discovery cannot reach a
 runtime checkout, then use a venv (also avoids Ubuntu's system-pip restriction):
