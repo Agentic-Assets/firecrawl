@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
+using System.Text.RegularExpressions;
 
 // Offline curl substitute: records booleans/counts, never stdin or its URL.
 public static class NotificationFixture {
@@ -19,6 +20,10 @@ public static class NotificationFixture {
             timeout |= args[i] == "--max-time" && args[i+1] == "10";
             retry |= args[i] == "--retry" && args[i+1] == "0";
         }
+        string attempt = Regex.Match(config, "CRE Windows attempt ([0-9]{8}T[0-9]{6}Z-[0-9a-f]{32})").Groups[1].Value;
+        bool start = config.Contains(" started (tier="), finish = config.Contains(" finished (tier="), failed = config.Contains(" failed (tier=");
+        string events = Environment.GetEnvironmentVariable("CRE_TEST_NOTIFICATION_EVENTS");
+        if (!String.IsNullOrEmpty(events)) File.AppendAllText(events, start ? "notify-start\n" : "notify-terminal\n");
         string record = "{\"secretArg\":" + secretArg.ToString().ToLowerInvariant() +
             ",\"globOff\":" + globOff.ToString().ToLowerInvariant() +
             ",\"disableFirst\":" + (args.Length > 0 && args[0] == "--disable").ToString().ToLowerInvariant() +
@@ -27,6 +32,11 @@ public static class NotificationFixture {
             ",\"redirectOrInsecure\":" + redirect.ToString().ToLowerInvariant() +
             ",\"hasUrl\":" + config.Contains("url = \"https://example.invalid/SECRET_CANARY").ToString().ToLowerInvariant() +
             ",\"hasData\":" + config.Contains("data = \"{\\\"text\\\":").ToString().ToLowerInvariant() +
+            ",\"attemptId\":\"" + attempt + "\",\"started\":" + start.ToString().ToLowerInvariant() +
+            ",\"finished\":" + finish.ToString().ToLowerInvariant() + ",\"failed\":" + failed.ToString().ToLowerInvariant() +
+            ",\"noDispatchClaim\":" + config.Contains("Linux dispatch has not been attempted").ToString().ToLowerInvariant() +
+            ",\"auditFailure\":" + config.Contains("status=windows_terminal_audit_failed_linux_settlement_unverified").ToString().ToLowerInvariant() +
+            ",\"informationalRun\":" + config.Contains("reference (informational): 2026-10-15T123456Z").ToString().ToLowerInvariant() +
             ",\"inputBytes\":" + Encoding.UTF8.GetByteCount(config) + "}\n";
         File.AppendAllText(executable + ".calls.jsonl", record);
         if (mode == "curl-hang") { Thread.Sleep(15000); Console.Write("200"); return 0; }

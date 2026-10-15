@@ -23,6 +23,7 @@ param(
     [ValidatePattern('^/[^\r\n]+$')][string]$LinuxRepo = '/home/cayman/code/firecrawl',
     [ValidatePattern('^/[^\r\n]+$')][string]$LinuxEnvFile = '/home/cayman/.config/cre/equire.env',
     [string]$AlertWebhookFile,
+    [ValidateSet('Failure', 'StartFinish')][string]$NotificationMode = 'Failure',
     [switch]$Apply,
     [switch]$CheckOnly
 )
@@ -185,17 +186,20 @@ function Write-CreAudit {
     }
 }
 
-$script:notificationAttempted = $false
-function Set-CreFailureNotification {
-    param([System.Collections.IDictionary]$Record, [string]$AttemptId, [int]$ExitCode)
-    if ($ExitCode -eq 0) {
-        $Record['notification'] = [ordered]@{ Status = 'not_attempted'; Reason = 'successful_invocation' }
+$script:notificationAttempted = @{ Start = $false; Terminal = $false }
+function Set-CreNotification {
+    param([System.Collections.IDictionary]$Record, [string]$AttemptId, [int]$ExitCode,
+        [ValidateSet('Start','Terminal')][string]$Phase = 'Terminal')
+    $field = if ($Phase -eq 'Start') { 'notificationStart' } else { 'notification' }
+    if ($Phase -eq 'Start' -and $NotificationMode -ne 'StartFinish') { return }
+    if ($Phase -eq 'Terminal' -and $ExitCode -eq 0 -and $NotificationMode -eq 'Failure') {
+        $Record[$field] = [ordered]@{ Status = 'not_attempted'; Reason = 'successful_invocation' }
         return
     }
-    if ($script:notificationAttempted) { return }
-    $script:notificationAttempted = $true
+    if ($script:notificationAttempted[$Phase]) { return }
+    $script:notificationAttempted[$Phase] = $true
     if (-not $AlertWebhookFile) {
-        $Record['notification'] = [ordered]@{ Status = 'not_configured'; Reason = 'not_configured' }
+        $Record[$field] = [ordered]@{ Status = 'not_configured'; Reason = 'not_configured' }
         return
     }
     try {
@@ -213,11 +217,22 @@ function Set-CreFailureNotification {
         $curl = (Get-Command curl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         $safeSource = if ($Source -match '^[a-z0-9][a-z0-9-]{0,79}$') { $Source } else { 'unspecified' }
         $nativeCode = if ($null -eq $Record.nativeExitCode) { 'unobserved' } else { [string][int]$Record.nativeExitCode }
-        $payload = [ordered]@{ text = "CRE Windows attempt $AttemptId failed (tier=$Tier source=$safeSource wrapper_exit=$ExitCode native_exit=$nativeCode). Linux settlement is unverified; inspect local audit and recovery evidence." } | ConvertTo-Json -Compress
+        if ($Phase -eq 'Start') {
+            $text = "CRE Windows attempt $AttemptId started (tier=$Tier source=$safeSource). Linux dispatch has not been attempted."
+        } else {
+            $outcome = if ($ExitCode -eq 0) { 'finished' } else { 'failed' }
+            $text = "CRE Windows attempt $AttemptId $outcome (tier=$Tier source=$safeSource wrapper_exit=$ExitCode native_exit=$nativeCode status=$($Record.status)). Linux settlement is unverified; inspect local audit and recovery evidence."
+            if ($Record.Contains('capture') -and $null -ne $Record.capture -and
+                -not $Record.capture.Stdout.RunReferenceConflict -and $Record.capture.Stdout.ObservedRunDirectory -and
+                $Record.capture.Stdout.ObservedRunDirectory -match '/([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z(?:-[0-9a-f]{12})?)\z') {
+                $text += " Observed Linux run/series reference (informational): $($Matches[1])."
+            }
+        }
+        $payload = [ordered]@{ text = $text } | ConvertTo-Json -Compress
         $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
-        $Record['notification'] = [CreWindowsNotification.Sender]::Send($AlertWebhookFile, $repository, $curl, $payload)
+        $Record[$field] = [CreWindowsNotification.Sender]::Send($AlertWebhookFile, $repository, $curl, $payload)
     } catch {
-        $Record['notification'] = [ordered]@{ Status = 'failed'; Reason = 'notification_unavailable'; NativeSettlement = 'unverified' }
+        $Record[$field] = [ordered]@{ Status = 'failed'; Reason = 'notification_unavailable'; NativeSettlement = 'unverified' }
     }
 }
 
@@ -241,6 +256,8 @@ $record = [ordered]@{
     tier = $Tier; source = $Source; expectedSha = $ExpectedSha; apply = [bool]$Apply
     status = 'admission_pending'; dispatch = 'not_attempted'
     nativeExitCode = $null; wrapperExitCode = $null; linuxSettlement = 'unverified'
+    notificationMode = $NotificationMode
+    notificationStart = [ordered]@{ Status = 'not_attempted'; Reason = 'invocation_pending' }
     notification = [ordered]@{ Status = 'not_attempted'; Reason = 'invocation_pending' }
     stdoutPath = $stdoutPath; stderrPath = $stderrPath; byteLimitPerStream = 1048576
 }
@@ -255,7 +272,7 @@ try {
     Write-Error 'Windows initial audit publication failed; no dispatch attempted.' -ErrorAction Continue
     $record.status = 'windows_initial_audit_failed_linux_settlement_unverified'
     $record.wrapperExitCode = 1
-    Set-CreFailureNotification $record $basename 1
+    Set-CreNotification $record $basename 1
     if ($AlertWebhookFile) { try { Write-CreAudit $auditPath $record } catch { } }
     exit 1
 }
@@ -278,6 +295,18 @@ try {
     } elseif ($PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or $PSBoundParameters.ContainsKey('AcknowledgeDatabaseWrites')) {
         throw 'Series-only option supplied for incremental tier.'
     }
+    if ($NotificationMode -eq 'StartFinish' -and -not $AlertWebhookFile) {
+        throw 'Lifecycle notification requires a private webhook-file reference.'
+    }
+    if ($NotificationMode -eq 'StartFinish') {
+        & (Join-Path $PSScriptRoot 'Test-CreNotificationConfig.ps1') -AlertWebhookFile $AlertWebhookFile -Quiet
+        $record['notificationConfig'] = [ordered]@{ configured=($LASTEXITCODE -eq 0); networkCalled=$false }
+        if (-not $record.notificationConfig.configured) {
+            $record.status = 'notification_config_refused_no_dispatch'
+            throw 'Private notification configuration is invalid.'
+        }
+    }
+    Set-CreNotification $record $basename 0 -Phase Start
     $record.status = 'local_api_readiness_pending'
     Write-CreAudit $auditPath $record
     $record['localApiReadiness'] = Wait-CreLocalApi
@@ -362,13 +391,17 @@ try {
     # Fixed diagnostics: never dump child argv, environment or exception text.
     if ($record.status -eq 'local_api_not_ready_no_dispatch') {
         Write-Error 'Local Firecrawl API was not ready within the startup budget; no Linux work was dispatched.' -ErrorAction Continue
+    } elseif ($record.status -eq 'notification_config_refused_no_dispatch') {
+        Write-Error 'Private Windows notification configuration is invalid; no Linux work was dispatched.' -ErrorAction Continue
     } else {
         $record.status = 'windows_launcher_failed_linux_settlement_unverified'
         Write-Error 'Windows admission or launcher failed; inspect the audit and Linux recovery state.' -ErrorAction Continue
     }
 }
 $record.wrapperExitCode = $result
-if ($result -eq 0 -or -not $AlertWebhookFile) { Set-CreFailureNotification $record $basename $result }
+if ($NotificationMode -eq 'Failure' -and ($result -eq 0 -or -not $AlertWebhookFile)) {
+    Set-CreNotification $record $basename $result
+}
 try { Write-CreAudit $auditPath $record }
 catch {
     Write-Error 'Windows terminal audit publication failed; prior receipt remains incomplete.' -ErrorAction Continue
@@ -376,8 +409,8 @@ catch {
     $record.wrapperExitCode = $result
     $record.status = 'windows_terminal_audit_failed_linux_settlement_unverified'
 }
-if ($result -ne 0) {
-    Set-CreFailureNotification $record $basename $result
+if ($result -ne 0 -or $NotificationMode -eq 'StartFinish') {
+    Set-CreNotification $record $basename $result
     # Notification publication is best effort and never changes the tier exit.
     if ($AlertWebhookFile) { try { Write-CreAudit $auditPath $record } catch { } }
 }

@@ -6,11 +6,16 @@ the longer human guide and runbook.
 Parent context: repo `AGENTS.md`, root `CLAUDE.md`, and
 `.agents/skills/firecrawl-ops/SKILL.md`.
 
-> **Current runtime source, 2026-07-11:** The Mac mini audit found no active
+> **Historical runtime snapshot, 2026-07-11:** The Mac mini audit found no active
 > CRE launchd labels, plists, cron entries, markers, or collector artifacts.
-> Treat dated run-health and schedule claims below as historical evidence, not
-> current state. Before a runtime recovery, scheduler load, database write, or
-> canary, follow the [operator runbook](../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md).
+> Treat dated run-health and schedule claims below as historical evidence.
+> For current refresh, safety and database-write procedures, use
+> [START_HERE.md](cre_collector/START_HERE.md) and the execution evidence on
+> [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
+> Windows task installation and activation follow the
+> [guarded tier guide](../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance).
+> The [July operator runbook](../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
+> remains historical recovery and OM-canary context, not a live scheduler contract.
 
 ## Scope
 

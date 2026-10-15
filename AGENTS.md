@@ -106,6 +106,12 @@ the reported unused exports or files before committing.
 
 This fork adds a self-hosted operations layer on top of upstream Firecrawl. It is fork-only — do not push it upstream. Keep local ops work out of upstream product, API, and SDK paths unless an explicit requirement makes that change necessary.
 
+For GitHub CLI PR, review and merge operations, explicitly select
+`--repo Agentic-Assets/firecrawl`. In a fork with an upstream remote, `gh` can
+default to `firecrawl/firecrawl` even when `origin` is this fork. Inspect
+`gh repo set-default --view`; a local `gh repo set-default Agentic-Assets/firecrawl`
+corrects the clone's default without changing remotes or another computer.
+
 **Stay easy to sync with upstream.** Cayman wants `firecrawl/firecrawl:main` to merge in cheaply and often; the 2026-10-09 sync of 461 commits hit 41 conflicts, mostly where fork code was woven through upstream files.
 - When a fork behavior must touch an upstream-owned file (most of `apps/api`, the SDKs, upstream's tests), put the logic in a fork-owned module and leave only a small hook (an import plus a few lines) in the upstream file. The structured-output fallback still lives inline in `apps/api/src/scraper/scrapeURL/transformers/llmExtract.ts` and `apps/api/src/scraper/scrapeURL/lib/extractSmartScrape.ts`; PR #85 moves it into the fork-owned `apps/api/src/scraper/scrapeURL/lib/structuredOutputFallback.ts` behind small hooks (held for a live-model harness run). Do not widen the inline version meanwhile.
 - Never reformat, re-indent, rename, or reorder upstream code to make room for a fork change; wrap or spread instead, so the upstream hunk stays byte-identical.
@@ -116,6 +122,11 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 **Agent skills** (canonical in `.agents/skills/`):
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
+
+CRE Slack notifications and private webhook setup:
+[`scripts/firecrawl-ops/cre_collector/slack-setup.md`](scripts/firecrawl-ops/cre_collector/slack-setup.md).
+Keep only credential-file references in the repository; the guide owns the
+channel, local configuration check and delivery verification procedure.
 
 Default model routing: Vercel AI Gateway `gateway` profile with
 `deepseek/deepseek-v4-flash-0731` and a one-time

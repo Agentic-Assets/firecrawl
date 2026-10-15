@@ -106,10 +106,70 @@ foreach ($crePair in @(
 Assert-Cre ($crePreview -match '08:00:00' -and $crePreview -match '20:00:00' -and $crePreview -notmatch '<LogonTrigger') 'Preview must retain the two explicit daily times, with no implicit trigger.'
 $creAction = Get-CreXmlValue $creDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
 Assert-Cre ($creAction -match '"-File" "' -and $creAction -notmatch '-Command|-EncodedCommand' -and $creAction -notmatch '"-Apply"') 'Default fixed action must preserve database-free monitor semantics.'
+# Preview must preserve a private path without opening it or reading a secret.
+$creNotificationPath = "C:\private canary & owner's\not-provisioned.url"
+$creNotificationArgs = $creBase.Clone()
+$creNotificationArgs['AlertWebhookFile'] = $creNotificationPath
+$creNotificationArgs['NotificationMode'] = 'StartFinish'
+[xml]$creNotificationDoc = (& $creInstaller @creNotificationArgs) -join [Environment]::NewLine
+$creNotificationAction = Get-CreXmlValue $creNotificationDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
+Assert-Cre ($creNotificationAction.EndsWith(('"-AlertWebhookFile" "'+$creNotificationPath+'" "-NotificationMode" "StartFinish"'))) 'Private reference and lifecycle mode must survive XML/argument serialization exactly.'
+Assert-Cre ($global:Cre4265Fixture.Calls.Count -eq 0 -and $creNotificationAction -notmatch 'https://') 'Notification preview must not read secrets or enumerate tasks.'
+$creNotificationRefused=$false
+try { & $creInstaller @creNotificationArgs -Register | Out-Null } catch { $creNotificationRefused=$true }
+Assert-Cre ($creNotificationRefused -and $global:Cre4265Fixture.Calls.Count -eq 0) 'A missing StartFinish credential must fail before registration or scheduler enumeration.'
+$creSecretDirectory=Join-Path ([IO.Path]::GetTempPath()) ('cre-task-config-'+[Guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $creSecretDirectory)
+$creSecretFile=Join-Path $creSecretDirectory 'synthetic.url'
+[IO.File]::WriteAllText($creSecretFile,'https://example.invalid/SECRET_CANARY',(New-Object Text.UTF8Encoding($false)))
+$creSecretAcl=Microsoft.PowerShell.Utility\New-Object Security.AccessControl.FileSecurity
+$creSecretAcl.SetSecurityDescriptorSddlForm("O:${creSid}D:P(A;;FA;;;${creSid})(A;;FA;;;SY)(A;;FA;;;BA)")
+Set-Acl -LiteralPath $creSecretFile -AclObject $creSecretAcl
+$creValidNotificationArgs=$creNotificationArgs.Clone()
+$creValidNotificationArgs['AlertWebhookFile']=$creSecretFile
+$creValidNotificationResult=(& $creInstaller @creValidNotificationArgs -Register) -join [Environment]::NewLine | ConvertFrom-Json
+Assert-Cre (-not $creValidNotificationResult.enabled -and $global:Cre4265Fixture.Calls.Contains('register')) 'A valid private StartFinish file must allow only the existing mocked disabled registration.'
+Assert-Cre (-not $global:Cre4265Fixture.Xml.Contains('SECRET_CANARY')) 'Even validated credentials must never enter task XML.'
+$global:Cre4265Fixture.Calls.Clear()
+# Exercise actual Windows argv decoding rather than only matching XML text.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class CreTaskArguments {
+    [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CommandLineToArgvW(string commandLine, out int count);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    public static string[] Decode(string value) {
+        int count; IntPtr block = CommandLineToArgvW("fixture.exe " + value, out count);
+        if (block == IntPtr.Zero) throw new InvalidOperationException();
+        try {
+            string[] result = new string[count-1];
+            for (int i=1; i<count; i++) result[i-1] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(block, i*IntPtr.Size));
+            return result;
+        } finally { LocalFree(block); }
+    }
+}
+'@
+$creDecoded = [CreTaskArguments]::Decode($creNotificationAction)
+$creWebhookIndex = [Array]::IndexOf($creDecoded,'-AlertWebhookFile')
+Assert-Cre ($creWebhookIndex -ge 0 -and $creDecoded[$creWebhookIndex+1] -ceq $creNotificationPath) 'Windows argv decoding must preserve the private path including spaces, apostrophe and ampersand.'
+Assert-Cre ($creDecoded[$creWebhookIndex+2] -ceq '-NotificationMode' -and $creDecoded[$creWebhookIndex+3] -ceq 'StartFinish') 'Windows argv decoding must preserve the explicit notification mode.'
+$creTokens=$null; $creErrors=$null
+$creInstallerAst=[Management.Automation.Language.Parser]::ParseFile($creInstaller,[ref]$creTokens,[ref]$creErrors)
+$creContractFunction=@($creInstallerAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-CreTaskContract'},$true))[0]
+. ([scriptblock]::Create($creContractFunction.Extent.Text))
+$creEnabledXml=$crePreview.Replace('<Enabled>false</Enabled><Hidden>','<Enabled>true</Enabled><Hidden>')
+$creDefaultEnabledXml=$creEnabledXml.Replace('<Enabled>true</Enabled><Hidden>','<Hidden>')
+Assert-Cre ((Get-CreTaskContract $creEnabledXml) -ceq (Get-CreTaskContract $creDefaultEnabledXml)) 'Native omission of Settings/Enabled must equal its documented true default.'
+Assert-Cre ((Get-CreTaskContract $crePreview) -cne (Get-CreTaskContract $creDefaultEnabledXml)) 'Explicit Settings/Enabled=false must remain distinct from omitted/default true.'
 $creSeries = @{ TaskName='Offline Fixture'; Tier='series'; Source='interra-realty'; ExpectedSha=('a'*40); WorkDeadlineSeconds=3600; AcknowledgeDatabaseWrites=$true; AdmitCurrentInventorySource='interra-realty'; DailyAt='03:15'; WeeklyOn='Saturday' }
 $creSeriesPreview = (& $creInstaller @creSeries) -join [Environment]::NewLine
 Assert-Cre ($creSeriesPreview -match '<Saturday\s*/>' -and $creSeriesPreview -match '03:15:00' -and $creSeriesPreview -match 'AcknowledgeDatabaseWrites' -and $creSeriesPreview -match 'AdmitCurrentInventorySource') 'Weekly Interra series must preserve explicit work and admission flags.'
 $creInvalid = @(
+    @{ NotificationMode='invalid' }, @{ NotificationMode='StartFinish' },
+    @{ AlertWebhookFile='relative.url' }, @{ AlertWebhookFile='https://example.invalid/canary' },
+    @{ AlertWebhookFile='\\server\share\hook.url' }, @{ AlertWebhookFile='C:\private\hook.url:stream' },
+    @{ AlertWebhookFile=('C:\private\hook.url'+[char]10) },
     @{ Enable=$true }, @{ Source='unknown-source' }, @{ Tier='monitor'; Source='all' },
     @{ Source='jll' }, @{ Source='jll-investor' }, @{ Source='colliers' }, @{ Source='cbre-dealflow' },
     @{ ExpectedSha='main' }, @{ ExpectedSha=('A'*40) }, @{ ExpectedSha=(('a'*40)+[char]10) }, @{ Batch=0 },

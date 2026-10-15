@@ -29,7 +29,25 @@ process/resource measurements before attributing load to a builder entry.
 
 Docker's [WSL guidance](https://docs.docker.com/desktop/features/wsl/) and Microsoft's [WSL configuration reference](https://learn.microsoft.com/en-us/windows/wsl/wsl-config) explain the backend and resource limits. For a 24-logical-processor, approximately 128 GB RAM workstation, an initial ceiling of 8 processors, 32 GB RAM, and 2 GB swap leaves room for other applications. Smaller computers need smaller limits. These are starting limits, not a benchmarked throughput target or permanently reserved memory.
 
+For this desktop's ongoing CRE workload, the host ceiling was subsequently
+raised to 12 processors, 48 GB RAM and 4 GB swap. The October 15 controlled stop/start
+verified those effective VM limits and recovered the same five containers,
+followed by a real non-AI scrape. API/browser container limits stayed unchanged.
+This adds capacity headroom; it does not establish a throughput improvement or
+prove recovery after a Windows reboot. Verify current limits rather than
+treating a dated observation as live state.
+
 WSL resource limits belong in `%USERPROFILE%\.wslconfig`, not a tracked repository file. They apply to all WSL 2 distributions. Changing them requires stopping Docker, shutting down WSL, and restarting Docker; first check for other running WSL work. Leave automatic Docker startup off if the stack is only needed during interactive work. The shared Compose resource limits and bounded log rotation remain unchanged.
+
+Keep Linux pipeline code, `node_modules`, caches, output and Linux test clones
+inside Ubuntu's filesystem, such as `/home/<user>/code/firecrawl`, rather than
+running file-heavy Linux work against `/mnt/c/...`. Keep native PowerShell
+editing and launchers in the Windows checkout. This follows Microsoft's
+[filesystem performance guidance](https://learn.microsoft.com/en-us/windows/wsl/filesystems#file-storage-and-performance-across-file-systems).
+Both locations are on this Windows PC. Deploy reviewed Git commits between the
+checkouts; do not share `node_modules` or overwrite a running checkout with a
+directory copy. A few explicit cross-filesystem handoff files do not require
+moving the production runtime onto NTFS.
 
 With WSL, [Docker Resource Saver](https://docs.docker.com/desktop/use-desktop/resource-saver/)
 does not stop the shared Linux VM or reclaim its memory. WSL integration can
@@ -151,6 +169,9 @@ bash cre_status.sh --scheduler external
 ```
 
 Missing production credentials and empty run history are honest status warnings. `external` mode retains lock and staleness checks and creates no scheduler. Provision secrets separately through the approved operator workflow. Use a separate `git clone --no-hardlinks` for the full offline suites.
+
+The [cross-platform credential layout](guarded-incremental-tiers.md#credential-layout-across-windows-and-mac)
+distinguishes private CRE database/webhook files from Docker's root `.env`.
 
 ### Minimal company context in Ubuntu
 
@@ -341,14 +362,20 @@ under [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752).
 Routine acquisition does not need a continuously active AI agent. A
 deterministic Windows Task Scheduler task can invoke a foreground WSL job,
 retain the runner's locks/guards/logs, and expose status and failures. This is
-the proposed desktop execution surface under
-[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752), not an
-installed or approved scheduler. The alternative Codex heartbeat remains
-paused while the concrete choice and acceptance are reviewed.
+the founder-approved desktop execution surface under
+[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752). The
+[installation and acceptance procedure](guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance)
+uses the repository installer, exact reviewed SHA, visible native task and
+source-specific provider-to-database proof. Approval of the surface does not
+mean every source or task is enabled; inspect the actual native task and the
+company automation registry for current activation state. The alternative Codex
+heartbeat remains paused.
 
 Prefer inexpensive incremental work over frequent full-registry sweeps: the
-proposed initial cadence is inventory checks twice daily, bounded detail
-enrichment every four hours, and a weekly full guarded sweep. JLL, JLL
+broader future cadence is inventory checks twice daily, bounded detail
+enrichment every four hours, and a weekly full guarded sweep. This proposal
+does not describe the currently qualified task scope or enable unverified
+tiers and sources. JLL, JLL
 Investor, CBRE Deal Flow and Colliers are excluded from the cheap monitor;
 they need separate admitted detail cadences. Do not describe the incremental
 cadence as freshness for all 51 sources.
