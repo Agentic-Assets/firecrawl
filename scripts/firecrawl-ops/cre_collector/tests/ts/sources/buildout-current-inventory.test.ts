@@ -228,3 +228,82 @@ test("Buildout producer uses the shared literal inventory URL grammar", () => fi
     }
   }
 }));
+
+// Current public URLs are frozen independently of the registry coordinates.
+// Bergman/Cawley: saved public inventory; Plotkin: existing trusted source URLs.
+// Plotkin IDs and transaction flags are synthetic; these tests exercise ownership.
+const currentCoordinateFixtures = [
+  {
+    sourceKey: "nai-bergman",
+    sale: {
+      id: 2561537,
+      url: "https://bergmancommercial.com/properties/421-north-high-street-hillsboro-sale/",
+    },
+    lease: {
+      id: 602335,
+      url: "https://bergmancommercial.com/properties/77-W-Elmwood-lease/",
+    },
+  },
+  {
+    sourceKey: "nai-plotkin",
+    sale: {
+      id: 880001,
+      url: "https://www.sdplotkin.com/properties/?propertyId=100-moody-st-ludlow-lease",
+    },
+    lease: {
+      id: 880002,
+      url: "https://www.sdplotkin.com/properties/?propertyId=1095-main-street-springfield-lease",
+    },
+  },
+  {
+    sourceKey: "cawley-chicago",
+    sale: {
+      id: 585823,
+      url: "https://cawleycre.com/availabilities/?propertyId=745-Maple-Ave-LaGrange-Sale-Land-Industrial",
+    },
+    lease: {
+      id: 584249,
+      url: "https://cawleycre.com/availabilities/?propertyId=16W289-83rd-St-Burr-Ridge-Woodland-Park-Burr-Ridge-Lease-Office",
+    },
+  },
+] as const;
+
+for (const current of currentCoordinateFixtures) {
+  test(`Buildout ${current.sourceKey} current-domain sale and lease retain complete proofs`, () => fixture(async ({ setPages, requests }) => {
+    const registered = REGISTERED_BUILDOUT_FIRMS.find((value) => value.sourceKey === current.sourceKey)!;
+    const sourceOpts = { ...registered.inventoryOpts, recoveryPasses: 0, jsonAttempts: 1, jsonBackoffMs: 0 };
+    setPages(pages([
+      row(current.sale.id, { show_link: current.sale.url }),
+      row(current.lease.id, { show_link: current.lease.url, sale: false }),
+    ], 1));
+    const sale = await srcBuildout(registered.company, registered.pluginKey, registered.listingsPage, "sale", Infinity, false, sourceOpts);
+    const lease = await srcBuildout(registered.company, registered.pluginKey, registered.listingsPage, "lease", Infinity, false, sourceOpts);
+    const saleProof = proof(sale), leaseProof = proof(lease);
+    assert.equal(requests.length, 2, "both transactions share one complete inventory fetch");
+    assert.equal(saleProof.sourceKey, current.sourceKey);
+    assert.equal(saleProof.pluginKey, registered.pluginKey);
+    assert.equal(saleProof.listingsPage, registered.listingsPage);
+    assert.equal(saleProof.transaction, "sale");
+    assert.equal(leaseProof.transaction, "lease");
+    assert.deepEqual(saleProof.pages, leaseProof.pages);
+    assert.deepEqual(saleProof.pages.flatMap((page) => page.rows.map((item) => [item.id, item.showLink])), [
+      [String(current.sale.id), current.sale.url],
+      [String(current.lease.id), current.lease.url],
+    ]);
+    assert.deepEqual(sale.listings.map((item) => [item.id, item.url]), [[String(current.sale.id), current.sale.url]]);
+    assert.deepEqual(lease.listings.map((item) => [item.id, item.url]), [[String(current.lease.id), current.lease.url]]);
+    assert.equal(sale.truncated, false);
+    assert.equal(lease.truncated, false);
+  }));
+
+  test(`Buildout ${current.sourceKey} current-domain proof still rejects a foreign listing host`, () => fixture(async ({ setPages }) => {
+    const registered = REGISTERED_BUILDOUT_FIRMS.find((value) => value.sourceKey === current.sourceKey)!;
+    setPages(pages([row(current.sale.id, { show_link: "https://foreign.example/properties/?propertyId=123-sale" })]));
+    for (const tx of ["sale", "lease"] as const) {
+      const result = await srcBuildout(registered.company, registered.pluginKey, registered.listingsPage, tx, Infinity, false, {
+        ...registered.inventoryOpts, recoveryPasses: 0, jsonAttempts: 1, jsonBackoffMs: 0,
+      });
+      assert.equal(result.currentInventoryProof, undefined);
+    }
+  }));
+}

@@ -114,6 +114,12 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
   subdomains, explicit ports, credentials, fragments or non-HTTPS URLs. Original
   listing URLs, property-ID identity and configured plugin/page/iframe coordinates
   remain intact; endpoint and source-proof binding stay exact.
+- A different DNS domain requires a reviewed source-specific coordinate update,
+  not a broader host alias. Bind the current official firm identity and its
+  properties page to the exact registered Buildout token; retain primary
+  evidence on AGENTIC-4271. An unavailable legacy host is not proof of a
+  redirect or rebrand. Update only the verified registry page/host, preserving
+  source keys, plugin tokens, original listing URLs and listing identities.
 - Hudson's October 15, 2026 public feed and historical URLs use
   `hudsonpeters.com`; its tuple keeps that observed coordinate. Both old and
   corrected composed detail iframe probes returned 404. Host compatibility does
