@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 
 import cre_notification_summary as summary
+import cre_validate
 import pytest
 
 SHA = "a" * 40
@@ -291,7 +292,16 @@ def pipeline_evidence(evidence):
     validation_dir = evidence["series"] / "runs" / RUN / "pipeline" / "unit-0001"
     validation_dir.mkdir(parents=True, mode=0o700)
     validation_dir.chmod(0o700)
-    validation_raw = b'{"ok":true}'
+    validation_value = {
+        "ok": True,
+        "validation_profile": cre_validate.FULL_VALIDATION_PROFILE,
+        "audit_scope": cre_validate.VALIDATION_AUDIT_SCOPES[
+            cre_validate.FULL_VALIDATION_PROFILE
+        ],
+        "queries": {name: [] for name in cre_validate.QUERIES},
+        "historical_primary_child_conflicts": [],
+    }
+    validation_raw = json.dumps(validation_value, separators=(",", ":")).encode()
     digest = hashlib.sha256(validation_raw).hexdigest()
     child["pipeline"]["units"][0]["validation_sha256"] = digest
     parent["sources"][SOURCE]["pipeline_result"]["validation_sha256"] = digest
@@ -300,6 +310,23 @@ def pipeline_evidence(evidence):
     (validation_dir / "validation.json").chmod(0o600)
     evidence["save"]()
     return {"source2": source2, "parent": parent, "child": child}
+
+
+def rewrite_pipeline_validation(evidence, setup, mutate):
+    path = evidence["series"] / "runs" / RUN / "pipeline" / "unit-0001" / "validation.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    mutate(report)
+    raw = json.dumps(report, separators=(",", ":")).encode()
+    path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    setup["child"]["pipeline"]["units"][0]["validation_sha256"] = digest
+    setup["child"]["pipeline"]["source_results"][SOURCE][
+        "validation_sha256"
+    ] = digest
+    setup["parent"]["sources"][SOURCE]["pipeline_result"][
+        "validation_sha256"
+    ] = digest
+    evidence["save"]()
 
 
 def read_pipeline(evidence, source_keys=None):
@@ -390,6 +417,74 @@ def test_pipeline_tampered_or_unsettled_evidence_never_supplies_counts(
     else:
         evidence["values"]["control"]["finished_unix_ms"] += value
         evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "validation_profile",
+        "audit_scope",
+        "queries",
+        "historical_primary_child_conflicts",
+    ],
+)
+def test_pipeline_requires_explicit_complete_full_audit_report(evidence, field):
+    setup = pipeline_evidence(evidence)
+    rewrite_pipeline_validation(evidence, setup, lambda report: report.pop(field))
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize("missing_side", ["artifact", "source_result", "both"])
+def test_pipeline_requires_independently_present_artifact_hashes(
+    evidence, missing_side
+):
+    setup = pipeline_evidence(evidence)
+    artifact = setup["child"]["sources"][SOURCE]["artifact"]
+    source_result = setup["child"]["pipeline"]["source_results"][SOURCE]
+    if missing_side in {"artifact", "both"}:
+        artifact.pop("sha256")
+    if missing_side in {"source_result", "both"}:
+        source_result.pop("artifact_sha256")
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize("bytes_value", [None, True, 0, -1, 1.5])
+def test_pipeline_requires_positive_finite_artifact_byte_binding(evidence, bytes_value):
+    setup = pipeline_evidence(evidence)
+    artifact = setup["child"]["sources"][SOURCE]["artifact"]
+    if bytes_value is None:
+        artifact.pop("bytes")
+    else:
+        artifact["bytes"] = bytes_value
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+def test_pipeline_rejects_child_outside_parent_temporal_chain(evidence):
+    setup = pipeline_evidence(evidence)
+    setup["child"]["started_at"] = "2000-01-01T00:00:00+00:00"
+    setup["child"]["finished_at"] = "2000-01-01T00:01:00+00:00"
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+def test_pipeline_rejects_traversal_unit_path(evidence):
+    setup = pipeline_evidence(evidence)
+    unit = setup["child"]["pipeline"]["units"][0]
+    result = setup["child"]["pipeline"]["source_results"][SOURCE]
+    unit["unit_id"] = ".."
+    unit["validation_path"] = "pipeline/../validation.json"
+    result["unit_id"] = ".."
+    result["validation_path"] = "pipeline/../validation.json"
+    setup["parent"]["sources"][SOURCE]["pipeline_result"] = result
+    evidence["save"]()
     with pytest.raises(REFUSED):
         read_pipeline(evidence)
 

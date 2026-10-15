@@ -27,6 +27,7 @@ TRANSACTION_BREAKDOWN_BUDGET_SECONDS = 8.0
 PIPELINE_SOURCE_KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 MAX_VALIDATION_REPORT_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_VALIDATION_REPORT_BYTES = 16 * 1024 * 1024
+MAX_ARTIFACT_BINDING_BYTES = (1 << 63) - 1
 
 
 class SummaryUnavailable(ValueError):
@@ -557,6 +558,12 @@ def verified_pipeline_summary(
             == parent.get("database_target")
             and bool(parent.get("database_target"))
         )
+        require(
+            parent_start
+            <= timestamp(child["started_at"])
+            <= timestamp(child["finished_at"])
+            <= parent_finish
+        )
         child_private = directory(child_fd, ".series-control")
         safe._safe_stat(child_private, directory=True, private=True)
         settlement = read(child_private, child_id + ".json", 16384)
@@ -590,10 +597,31 @@ def verified_pipeline_summary(
         checkpoints = child.get("sources")
         require(isinstance(checkpoints, dict) and set(checkpoints) == set(selected_sources))
         units_by_id = {}
+        unit_memberships = {source: [] for source in selected_sources}
         for unit in units:
             require(isinstance(unit, dict))
             unit_id = unit.get("unit_id")
-            require(isinstance(unit_id, str) and unit_id not in units_by_id)
+            require(
+                isinstance(unit_id, str)
+                and re.fullmatch(r"unit-[0-9]{4,6}", unit_id)
+                and unit_id not in units_by_id
+            )
+            members = unit.get("sources")
+            require(
+                isinstance(members, list)
+                and members
+                and len(members) == len(set(members))
+                and set(members) <= set(selected_sources)
+            )
+            if unit.get("state") == "verified":
+                for member in members:
+                    member_result = source_results.get(member)
+                    require(
+                        isinstance(member_result, dict)
+                        and member_result.get("state") == "verified"
+                        and member_result.get("unit_id") == unit_id
+                    )
+                    unit_memberships[member].append(unit_id)
             units_by_id[unit_id] = unit
 
         qualified = []
@@ -633,6 +661,7 @@ def verified_pipeline_summary(
                 isinstance(unit, dict)
                 and unit.get("state") == "verified"
                 and source in unit.get("sources", [])
+                and unit_memberships[source] == [unit_id]
                 and result.get("readback_ok") is True
                 and result.get("generation_id") == run_id
             )
@@ -661,6 +690,11 @@ def verified_pipeline_summary(
                 validation = json.loads(validation_raw)
                 from cre_validate import require_full_validation_report
 
+                require(
+                    validation.get("validation_profile") == "full"
+                    and validation.get("audit_scope")
+                    == "full_standalone_post_ingest_or_recovery"
+                )
                 require_full_validation_report(validation)
                 require(validation.get("ok") is True)
                 validated_units.add(unit_id)
@@ -669,13 +703,20 @@ def verified_pipeline_summary(
             require(type(checkpoint.get("ingest", {}).get("rc")) is int and checkpoint["ingest"]["rc"] == 0)
             artifact, readback = checkpoint["artifact"], checkpoint["readback"]
             count = readback["expected_staged_unique"]
+            artifact_sha = artifact.get("sha256")
+            artifact_bytes = artifact.get("bytes")
             require(type(count) is int and 0 < count <= 500000)
+            require(
+                isinstance(artifact_sha, str)
+                and re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+                and type(artifact_bytes) is int
+                and 0 < artifact_bytes <= MAX_ARTIFACT_BINDING_BYTES
+                and result.get("artifact_sha256") == artifact_sha
+            )
             require(
                 readback.get("ok") is True
                 and readback.get("latest_inventory_batch_active") == count
-                and readback.get("latest_inventory_batch_active") == count
                 and readback.get("generation_id") == run_id
-                and result.get("artifact_sha256") == artifact.get("sha256")
                 and artifact.get("path") == f"sources/{source}.json"
                 and artifact.get("staged_unique") == count
                 and artifact.get("inventory_only") == 0
