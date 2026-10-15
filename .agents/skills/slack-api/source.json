@@ -1,0 +1,9 @@
+{
+  "repository": "slackapi/slack-skills-plugin",
+  "commit": "ad6be88096678812c448b0279390b4d25bce0164",
+  "path": "skills/slack-api",
+  "license": "MIT",
+  "skill_sha256": "341eb0389a7f9da256962b694bf9f340b533a7daf65cb8326c9f1d61e80aecdb",
+  "reviewed_at": "2026-10-15",
+  "local_changes": false
+}
