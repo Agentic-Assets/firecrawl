@@ -18,7 +18,7 @@ CODE = "a" * 40
 TARGET = "b" * 64
 
 
-def setup(tmp_path, *, empty_lease=False):
+def setup(tmp_path, *, empty_lease=False, listing_host=None):
     now = datetime.now(UTC)
     start = (now - timedelta(minutes=2)).isoformat()
     observed = (now - timedelta(minutes=1)).isoformat()
@@ -35,7 +35,7 @@ def setup(tmp_path, *, empty_lease=False):
         items.append(
             {
                 "id": native,
-                "showLink": f"https://{definition['host']}/listings/?propertyId={property_id}",
+                "showLink": f"https://{listing_host or definition['host']}/listings/?propertyId={property_id}",
                 "sale": sale,
                 "closed": closed,
                 "underContract": under,
@@ -224,6 +224,80 @@ def test_empty_transaction_is_proven_from_complete_raw_feed(tmp_path):
     _, path, artifact, manifest, report = setup(tmp_path, empty_lease=True)
     assert artifact["sources"][1]["listingsCollected"] == 0
     assert admit(path, manifest, report)["staged_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "published_host"),
+    [
+        ("nai-bergman", "bergmancommercial.com"),
+        ("nai-plotkin", "www.sdplotkin.com"),
+        ("cawley-chicago", "cawleycre.com"),
+    ],
+)
+def test_published_buildout_hosts_pass_source_and_aggregate(
+    tmp_path, monkeypatch, source, published_host
+):
+    monkeypatch.setattr(f"{__name__}.SOURCE", source)
+    _, path, _, manifest, report = setup(tmp_path, listing_host=published_host)
+    proof = admit(path, manifest, report)
+    assert proof["staged_count"] == 2
+    manifest["sources"][source]["gate"] = {"current_inventory_proof": proof}
+    report["per_source"][source].update(
+        verdict="first_seen", reason="no baseline row; cannot gate (first sight)"
+    )
+    assert admit(path, manifest, report, "aggregate") == proof
+
+
+@pytest.mark.parametrize("source", ["nai-bergman", "nai-plotkin", "cawley-chicago"])
+@pytest.mark.parametrize("phase", ["source", "aggregate"])
+def test_published_source_still_refuses_unowned_domain(
+    tmp_path, monkeypatch, source, phase
+):
+    monkeypatch.setattr(f"{__name__}.SOURCE", source)
+    _, path, artifact, manifest, report = setup(tmp_path)
+    if phase == "aggregate":
+        proof = admit(path, manifest, report)
+        manifest["sources"][source]["gate"] = {"current_inventory_proof": proof}
+        report["per_source"][source].update(
+            verdict="first_seen", reason="no baseline row; cannot gate (first sight)"
+        )
+    for entry in artifact["sources"]:
+        for page in entry["currentInventoryProof"]["pages"]:
+            for row in page["rows"]:
+                row["showLink"] = row["showLink"].replace(
+                    buildout.definitions()[source]["host"], "attacker.invalid"
+                )
+    for listing in artifact["listings"]:
+        for field in ("url", "canonicalUrl"):
+            listing[field] = listing[field].replace(
+                buildout.definitions()[source]["host"], "attacker.invalid"
+            )
+    refresh(path, artifact, manifest)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report, phase)
+
+
+@pytest.mark.parametrize("source", ["nai-bergman", "nai-plotkin", "cawley-chicago"])
+@pytest.mark.parametrize("phase", ["source", "aggregate"])
+@pytest.mark.parametrize("coordinate", ["pluginKey", "listingsPage"])
+def test_published_source_still_refuses_exact_proof_coordinate_drift(
+    tmp_path, monkeypatch, source, phase, coordinate
+):
+    monkeypatch.setattr(f"{__name__}.SOURCE", source)
+    _, path, artifact, manifest, report = setup(tmp_path)
+    if phase == "aggregate":
+        proof = admit(path, manifest, report)
+        manifest["sources"][source]["gate"] = {"current_inventory_proof": proof}
+        report["per_source"][source].update(
+            verdict="first_seen", reason="no baseline row; cannot gate (first sight)"
+        )
+    for entry in artifact["sources"]:
+        entry["currentInventoryProof"][coordinate] = (
+            "d" * 40 if coordinate == "pluginKey" else "https://attacker.invalid/"
+        )
+    refresh(path, artifact, manifest)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report, phase)
 
 
 @pytest.mark.parametrize(
