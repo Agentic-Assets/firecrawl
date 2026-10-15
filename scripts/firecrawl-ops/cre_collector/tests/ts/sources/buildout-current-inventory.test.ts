@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { srcBuildout, buildoutCache, buildoutFailureCache, buildoutPageCachePath } from "../../../sources/buildout.js";
+import { srcBuildout, buildoutDetailIframeUrl, buildoutCache, buildoutFailureCache, buildoutPageCachePath } from "../../../sources/buildout.js";
 import { REGISTERED_BUILDOUT_FIRMS } from "../../../sources/buildout-registry.js";
 import { firecrawl } from "../../../lib/scrape.js";
 import type { BuildoutCurrentInventoryProof } from "../../../types.js";
@@ -188,3 +188,25 @@ test("Buildout complete inventory receipt", async (t) => {
     assert.equal(result.pages[1].transport, "direct_json"); assert.ok(result.pages[1].observedAt); assert.equal(requests.length, 2);
   }));
 });
+
+
+test("Hudson current-feed host owns inventory proof and detail claims exactly", () => fixture(async ({ setPages }) => {
+  const hudson = REGISTERED_BUILDOUT_FIRMS.find((entry) => entry.sourceKey === "hudson-peters")!;
+  const ownedUrl = "https://hudsonpeters.com/listings/?propertyId=687920-lease";
+  for (const host of ["hudsonpeters.com", "www.hudsonpeters.com", "foreign.example"]) {
+    buildoutCache.clear();
+    const listingUrl = ownedUrl.replace("hudsonpeters.com", host);
+    setPages(pages([row(968697, { show_link: listingUrl, sale: false })]));
+    const result = await srcBuildout(hudson.company, hudson.pluginKey, hudson.listingsPage, "lease", Infinity, false,
+      { ...hudson.inventoryOpts, recoveryPasses: 0, jsonAttempts: 1 });
+    const iframe = buildoutDetailIframeUrl(hudson.sourceKey, listingUrl, hudson.detailConfig);
+    if (host === "hudsonpeters.com") {
+      assert.equal(proof(result).sourceKey, "hudson-peters");
+      assert.equal(result.listings[0].url, ownedUrl);
+      assert.equal(iframe, `https://buildout.com/plugins/${hudson.pluginKey}/hudsonpeters.com/inventory/687920?pluginId=0&iframe=true&embedded=true`);
+    } else {
+      assert.equal(result.currentInventoryProof, undefined, host);
+      assert.equal(iframe, null, host);
+    }
+  }
+}));

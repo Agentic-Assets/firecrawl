@@ -593,3 +593,28 @@ def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
         manifest["sources"][SOURCE]["gate"]["current_inventory_proof"]["staged_count"]
         == 2
     )
+
+
+@pytest.mark.parametrize("host", ["hudsonpeters.com", "www.hudsonpeters.com", "foreign.example"])
+def test_hudson_admission_requires_exact_observed_listing_host(tmp_path, monkeypatch, host):
+    monkeypatch.setitem(globals(), "SOURCE", "hudson-peters")
+    _, path, artifact, manifest, report = setup(tmp_path)
+    for entry in artifact["sources"]:
+        for page in entry["currentInventoryProof"]["pages"]:
+            for row in page["rows"]:
+                property_id = row["showLink"].split("propertyId=", 1)[1]
+                row["showLink"] = f"https://{host}/listings/?propertyId={property_id}"
+    for row in artifact["listings"]:
+        property_id = row["url"].split("propertyId=", 1)[1]
+        row["url"] = row["canonicalUrl"] = f"https://{host}/listings/?propertyId={property_id}"
+    refresh(path, artifact, manifest)
+    if host == "hudsonpeters.com":
+        proof = admit(path, manifest, report)
+        assert proof["staged_count"] == 2
+        manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": proof}
+        report["per_source"][SOURCE]["verdict"] = "first_seen"
+        report["per_source"][SOURCE]["reason"] = "no baseline row; cannot gate (first sight)"
+        assert admit(path, manifest, report, "aggregate") == proof
+    else:
+        with pytest.raises(ValueError):
+            admit(path, manifest, report)

@@ -91,6 +91,11 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
   exact typed inventory; registry, ingest, checkpoint, SQL, and enrichment
   parity tests prevent partial admission. Offline proof does not replace a
   current live canary and guarded database readback for each source.
+- Hudson Peters uses the exact `hudsonpeters.com` listing host. The October 15,
+  2026 public feed and historical listing URLs support this coordinate correction
+  (AGENTIC-4271, parent AGENTIC-1972). `www.hudsonpeters.com` is not an admitted
+  alias. Both old and corrected composed detail iframe probes returned 404;
+  this inventory-host correction does not establish live detail availability.
 
 ## Kidder Mathews complete inventory
 
