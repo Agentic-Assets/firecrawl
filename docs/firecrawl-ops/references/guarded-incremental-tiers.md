@@ -268,6 +268,14 @@ channel is provisioned by installing these scripts. The native
 phase ordering, IDs, audit faults, quiet defaults and action serialization
 without contacting Slack, providers or the database.
 
+The recommended Windows location is
+`$env:USERPROFILE\.config\cre\cre-pipeline.webhook`, containing only the URL.
+Keep the file private as described above. The root `.env` configures Docker
+Compose; the native scheduled launcher does not load it. Document the file
+reference in the task configuration rather than placing the URL in Git. For
+another Windows computer, provision its private file and use the same
+`$env:USERPROFILE` expression; no hardcoded username or repository edit is needed.
+
 The audit records `not_configured`, `not_attempted`, `http_accepted`, `failed`
 or `unverified` notification status when writable. Exact HTTP 2xx with native
 exit 0 and completed IO means HTTP acceptance, **not destination delivery or
@@ -397,6 +405,9 @@ $taskOptions = @{
     AdmitCurrentInventorySource = 'interra-realty'
     DailyAt = '08:00,20:00'
 }
+# Optional, after provisioning the private channel webhook file:
+# $taskOptions.AlertWebhookFile = (Join-Path $env:USERPROFILE '.config\cre\cre-pipeline.webhook')
+# $taskOptions.NotificationMode = 'StartFinish'
 & scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions
 ```
 
