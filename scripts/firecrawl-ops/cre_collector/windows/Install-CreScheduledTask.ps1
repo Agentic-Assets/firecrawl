@@ -21,7 +21,7 @@ param(
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
     [switch]$AcknowledgeDatabaseWrites,
-    [ValidateSet('interra-realty')][string]$AdmitCurrentInventorySource,
+    [ValidateSet('interra-realty','faris-lee','fortis-net-lease','unique-properties','kiser-group','pinnacle-rea','cawley-chicago','bradford-allen','hudson-peters','gibson-commercial','leibsohn','nai-hiffman','nai-martens','bull-realty','tri-commercial','berger-commercial','nai-bergman','nai-isaac','trinity-partners','metro-commercial','33-realty','nai-hallmark','nai-plotkin','greysteel','nai-talcor','nai-dominion')][string]$AdmitCurrentInventorySource,
     [switch]$Apply,
     [string]$AlertWebhookFile,
     [ValidateSet('Failure','StartFinish')][string]$NotificationMode = 'Failure',
@@ -62,7 +62,7 @@ if ($Tier -eq 'series') {
     throw 'Series option supplied for incremental tier.'
 }
 if ($AdmitCurrentInventorySource -and ($Tier -ne 'series' -or $Source -cne $AdmitCurrentInventorySource)) {
-    throw 'Current-inventory admission requires its exact Interra series source.'
+    throw 'Current-inventory admission requires its exact reviewed series source.'
 }
 if ($Tier -eq 'enrich' -and $Source -ceq 'matthews' -and $Apply -and $DeadlineSeconds -gt 600) {
     throw 'Applied Matthews enrichment requires a deadline of at most 600 seconds.'

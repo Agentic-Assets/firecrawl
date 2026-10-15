@@ -1,5 +1,6 @@
 """No-network guard for the duplicated TypeScript/Python source registries."""
 
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -45,10 +46,25 @@ def _typescript_source_keys():
 
 
 def _registered_buildout_source_keys():
-    text = (COLLECTOR / "sources" / "buildout-registry.ts").read_text(
-        encoding="utf-8"
-    )
-    return re.findall(r'firm\(\s*"([a-z0-9-]+)"', text)
+    return [
+        row[0]
+        for row in json.loads(
+            (COLLECTOR / "data/cre-buildout-sources.json").read_text()
+        )
+    ]
+
+
+def test_current_inventory_admission_windows_allowlists_match_shared_registry():
+    from cre_buildout_current_inventory import definitions
+
+    expected = {"interra-realty", *definitions()}
+    for name in ("Invoke-CreGuardedTier.ps1", "Install-CreScheduledTask.ps1"):
+        text = (COLLECTOR / "windows" / name).read_text()
+        match = re.search(
+            r"\[ValidateSet\(([^)]+)\)\]\[string\]\$AdmitCurrentInventorySource", text
+        )
+        assert match is not None
+        assert set(re.findall(r"'([^']+)'", match[1])) == expected
 
 
 def _collector_switch_source_keys():
@@ -67,9 +83,7 @@ def _seeded_brokerage_slug_counts():
     text = (COLLECTOR.parent / "sql" / "001_cre_brokerages.sql").read_text(
         encoding="utf-8"
     )
-    return Counter(
-        re.findall(r"^\('[^']*(?:''[^']*)*', '([a-z0-9-]+)',", text, re.M)
-    )
+    return Counter(re.findall(r"^\('[^']*(?:''[^']*)*', '([a-z0-9-]+)',", text, re.M))
 
 
 def test_typescript_and_ingest_source_registries_are_exactly_equal():
@@ -97,11 +111,11 @@ def test_recovered_buildout_registry_is_exactly_the_historical_25_firms():
 
 
 def test_recovered_buildout_sources_share_strict_ingest_and_seed_contracts():
-    assert (
-        cre_ingest.BUILDOUT_SOURCE_KEYS
-        == RECOVERED_BUILDOUT_SOURCE_KEYS
-        | {"svn", "lee-associates", "franklin-street"}
-    )
+    assert cre_ingest.BUILDOUT_SOURCE_KEYS == RECOVERED_BUILDOUT_SOURCE_KEYS | {
+        "svn",
+        "lee-associates",
+        "franklin-street",
+    }
     assert RECOVERED_BUILDOUT_SOURCE_KEYS <= cre_ingest.STRICT_FRESHNESS_SOURCE_KEYS
     assert RECOVERED_BUILDOUT_SOURCE_KEYS <= (
         cre_ingest.CHILD_PRESERVING_AUTHORITATIVE_FEED_SOURCE_KEYS
