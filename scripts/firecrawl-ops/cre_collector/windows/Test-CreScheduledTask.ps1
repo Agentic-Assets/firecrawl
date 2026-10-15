@@ -246,6 +246,23 @@ Assert-Cre ((Get-CreTaskContract $creEquivalent) -ceq (Get-CreTaskContract $creP
 Assert-Cre ((Get-CreTaskContract $crePreview.Replace('<WakeToRun>false','<WakeToRun>true')) -cne (Get-CreTaskContract $crePreview)) 'Execution settings drift must be detected.'
 $creOffline = [ordered]@{ status='passed'; assertions=$global:Cre4265Fixture.Checks; nativeFixtureRequested=[bool]$NativeFixture; productionTaskRegistered=$false; providerOrDatabaseCalled=$false }
 $creOffline | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ProofDirectory 'offline.json') -Encoding UTF8
+$pipelineTaskArgs = $creBase.Clone()
+$pipelineTaskArgs.Remove('Source')
+$pipelineTaskArgs['Tier'] = 'series'
+$pipelineTaskArgs['Sources'] = 'interra-realty,faris-lee'
+$pipelineTaskArgs['Pipeline'] = $true
+$pipelineTaskArgs['AdmitCurrentInventorySources'] = 'interra-realty,faris-lee'
+$pipelineTaskArgs['WorkDeadlineSeconds'] = 3600
+$pipelineTaskArgs['AcknowledgeDatabaseWrites'] = $true
+foreach ($workers in @(1,2,3,4)) {
+    $pipelineTaskArgs['SourceWorkers'] = $workers
+    [xml]$pipelineDoc = (& $creInstaller @pipelineTaskArgs) -join [Environment]::NewLine
+    $pipelineAction = Get-CreXmlValue $pipelineDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
+    Assert-Cre ($pipelineAction.Contains('"-Sources" "interra-realty,faris-lee"') -and $pipelineAction.Contains(('"-Pipeline" "-SourceWorkers" "'+$workers+'"')) -and $pipelineAction.Contains('"-AdmitCurrentInventorySources" "interra-realty,faris-lee"')) 'Preview forwards the selected worker limit and finite admissions without creating a task.'
+}
+$pipelineTaskArgs.Remove('SourceWorkers')
+[xml]$pipelineDoc = (& $creInstaller @pipelineTaskArgs) -join [Environment]::NewLine
+Assert-Cre ((Get-CreXmlValue $pipelineDoc '/t:Task/t:Actions/t:Exec/t:Arguments').Contains('"-SourceWorkers" "2"')) 'Omitted opt-in pipeline setting resolves two in the visible preview.'
 $crePreview | Set-Content -LiteralPath (Join-Path $ProofDirectory 'preview.xml') -Encoding UTF8
 Write-Output ('Offline scheduled-task PASS: '+$global:Cre4265Fixture.Checks+' assertions')
 

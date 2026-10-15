@@ -73,6 +73,7 @@ from cre_owned_processes import (
     settle_owned_groups,
 )
 from cre_performance import capture_runtime_configuration, run_observed_command
+from cre_refresh_pipeline import (compute_root, initial_preflight_binding, poll_hook, resolve_source_workers, run_artifact_compute, run_bounded_pipeline, wait_with_poll_hook)
 from cre_performance_report import save_report
 from cre_resource_usage import observe_resource_usage
 from cre_runtime_observability import append_incident
@@ -912,6 +913,8 @@ def parse_iso8601(value: Any, *, field: str) -> datetime:
 
 
 def sha256_file(path: Path) -> str:
+    if poll_hook() is not None:
+        return run_artifact_compute(compute_root(path), "hash", {"path": str(path)})["sha256"]
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -2667,7 +2670,7 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
+def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, Any]:
     run_meta = data.get("runMeta")
     if not isinstance(run_meta, dict):
         raise ArtifactValidationError("runMeta must be an object")
@@ -2740,6 +2743,15 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
                 f"{key[1]!r}"
             )
         merged[key] = merge_rows(merged[key], row) if key in merged else row
+    transaction_types = [row.get("transaction_type") for row in merged.values()]
+    breakdown = None
+    if all(kind in {"sale", "lease", "sale_or_lease"} for kind in transaction_types):
+        breakdown = {
+            "sale": sum(kind in {"sale", "sale_or_lease"} for kind in transaction_types),
+            "lease": sum(kind in {"lease", "sale_or_lease"} for kind in transaction_types),
+            "both": sum(kind == "sale_or_lease" for kind in transaction_types),
+            "measurement": "current_staged_inventory_transaction_types",
+        }
     return {
         "flat_listings": len(listings),
         "staged_unique": len(merged),
@@ -2748,10 +2760,48 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, int]:
         "detail_unavailable": detail_unavailable,
         "provisional_identities": provisional_identities,
         "inventory_only": len(inventory_only),
+        "transaction_breakdown": breakdown,
     }
 
 
 def validate_source_artifact(
+    path: Path,
+    expected_source: str,
+    attempt_started_at: str | datetime,
+    *,
+    require_strict_freshness: bool = False,
+    expected_generation_id: str | None = None,
+    expected_generation_started_at: str | datetime | None = None,
+    expected_transactions: Sequence[str] = TRANSACTIONS,
+    max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if poll_hook() is None:
+        return _validate_source_artifact_local(
+            path, expected_source, attempt_started_at,
+            require_strict_freshness=require_strict_freshness,
+            expected_generation_id=expected_generation_id,
+            expected_generation_started_at=expected_generation_started_at,
+            expected_transactions=expected_transactions,
+            max_observation_age_hours=max_observation_age_hours, now=now,
+        )
+    def timestamp(value):
+        return value.isoformat() if isinstance(value, datetime) else value
+    return run_artifact_compute(compute_root(path), "validate", {
+        "path": str(path), "source": expected_source,
+        "attempt_started_at": timestamp(attempt_started_at),
+        "kwargs": {
+            "require_strict_freshness": require_strict_freshness,
+            "expected_generation_id": expected_generation_id,
+            "expected_generation_started_at": timestamp(expected_generation_started_at),
+            "expected_transactions": list(expected_transactions),
+            "max_observation_age_hours": max_observation_age_hours,
+            "now": timestamp(now),
+        },
+    })
+
+
+def _validate_source_artifact_local(
     path: Path,
     expected_source: str,
     attempt_started_at: str | datetime,
@@ -3212,6 +3262,15 @@ def validate_source_artifact(
         and not (expected_source in INVENTORY_ONLY_SOURCE_DEFINITIONS and not listings)
     ):
         raise ArtifactValidationError("artifact has no usable unique rows")
+    artifact_sha256 = sha256_file(path)
+    artifact_bytes = path.stat().st_size
+    breakdown = stats.get("transaction_breakdown")
+    if isinstance(breakdown, dict):
+        stats["transaction_breakdown"] = {
+            **breakdown, "source_key": expected_source,
+            "artifact_sha256": artifact_sha256, "artifact_bytes": artifact_bytes,
+            "generation_id": generation_id,
+        }
     return {
         **stats,
         "started_at": started.isoformat(),
@@ -3224,8 +3283,8 @@ def validate_source_artifact(
         "freshness_generation_started_at": (
             generation_started.isoformat() if generation_started is not None else None
         ),
-        "sha256": sha256_file(path),
-        "bytes": path.stat().st_size,
+        "sha256": artifact_sha256,
+        "bytes": artifact_bytes,
     }
 
 
@@ -3290,8 +3349,10 @@ def _run_logged_command(
         )
         owned_group = OwnedProcessGroup.from_spawn(proc)
         try:
-            rc = proc.wait()
-        except KeyboardInterrupt as interrupted:
+            rc = wait_with_poll_hook(proc)
+        except BaseException as interrupted:
+            if not isinstance(interrupted, KeyboardInterrupt) and poll_hook() is None:
+                raise
             with _defer_cleanup_signals():
                 resource_reason = _peek_cpu_guard_trip()
                 cleanup_interrupt = (
@@ -3692,10 +3753,35 @@ def _start_cohort_collection(
     )
 
 
+def make_private_artifact(path: Path) -> None:
+    """Tighten only a singly linked owned regular file, without following aliases."""
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        opened = os.fstat(descriptor)
+        named = path.lstat()
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+                or opened.st_nlink != 1 or not stat.S_ISREG(named.st_mode)
+                or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+            raise ArtifactValidationError("artifact publication requires an owned, singly linked regular file")
+        os.fchmod(descriptor, 0o600)
+        after = os.fstat(descriptor)
+        named = path.lstat()
+        if (after.st_nlink != 1 or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino)
+                or stat.S_IMODE(after.st_mode) != 0o600):
+            raise ArtifactValidationError("artifact changed during private publication")
+    except OSError as exc:
+        raise ArtifactValidationError("artifact private publication refused") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _finalize_cohort_collection(
     run_dir: Path,
     manifest: dict[str, Any],
     item: CohortCollectionProcess,
+    *, candidate_only: bool = False,
 ) -> bool:
     """Validate and publish a completed source worker's artifact centrally."""
     checkpoint = manifest["sources"][item.source]
@@ -3742,6 +3828,34 @@ def _finalize_cohort_collection(
         save_manifest(run_dir, manifest)
         return False
     try:
+        make_private_artifact(item.tmp_artifact)
+    except ArtifactValidationError as exc:
+        checkpoint["state"] = "artifact_rejected"
+        item.attempt["error"] = str(exc)
+        save_manifest(run_dir, manifest)
+        return False
+    if candidate_only:
+        if item.tmp_artifact.is_symlink() or not item.tmp_artifact.is_file():
+            checkpoint["state"] = "artifact_rejected"
+            item.attempt["error"] = "collector did not publish a regular candidate"
+            save_manifest(run_dir, manifest)
+            return False
+        canonical = run_dir / "sources" / f"{item.source}.json"
+        os.replace(item.tmp_artifact, canonical)
+        make_private_artifact(canonical)
+        identity = canonical.stat()
+        checkpoint["candidate"] = {
+            "path": _relative_to_run(canonical, run_dir),
+            "attempt_started_at": item.attempt_started_at,
+            "attempt_number": item.attempt["number"],
+            "file_identity": [identity.st_dev, identity.st_ino, identity.st_size,
+                              identity.st_mtime_ns, identity.st_ctime_ns],
+            "bytes": identity.st_size,
+        }
+        checkpoint["state"] = "candidate"
+        save_manifest(run_dir, manifest)
+        return True
+    try:
         generation_bound = (
             item.source in STRICT_FRESHNESS_SOURCE_KEYS
             or item.source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
@@ -3767,6 +3881,7 @@ def _finalize_cohort_collection(
         return False
     canonical = run_dir / "sources" / f"{item.source}.json"
     os.replace(item.tmp_artifact, canonical)
+    make_private_artifact(canonical)
     stats["sha256"] = sha256_file(canonical)
     stats["bytes"] = canonical.stat().st_size
     checkpoint["artifact"] = {
@@ -3846,7 +3961,7 @@ def new_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
-    source_workers: int = 1,
+    source_workers: int | None = None,
     max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
     cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
     cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
@@ -3855,8 +3970,11 @@ def new_manifest(
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     admit_current_inventory_source: str | None = None,
+    pipeline: bool = False,
+    admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    source_workers = resolve_source_workers(pipeline, source_workers)
     now = utc_now()
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -3919,6 +4037,16 @@ def new_manifest(
         "error": None,
     }
 
+    if pipeline:
+        manifest["config"]["pipeline"] = True
+        current_inventory.validate_options(
+            admit_current_inventory_sources, sources, transactions, pipeline=True,
+            additive_hold=admit_baseline_hold_additively,
+            allow_dirty=git_dirty,
+        )
+        manifest["config"]["current_inventory_admissions"] = current_inventory.configuration_map(
+            admit_current_inventory_sources, sources,
+        )
     if admit_current_inventory_source is not None:
         current_inventory.validate_option(
             admit_current_inventory_source,
@@ -3940,7 +4068,7 @@ def load_resume_manifest(
     sources: Sequence[str],
     page_cap: int,
     concurrency: int,
-    source_workers: int = 1,
+    source_workers: int | None = None,
     max_host_cpu_percent: float = DEFAULT_MAX_HOST_CPU_PERCENT,
     cpu_sustain_seconds: float = DEFAULT_CPU_SUSTAIN_SECONDS,
     cpu_sample_seconds: float = DEFAULT_CPU_SAMPLE_SECONDS,
@@ -3949,10 +4077,13 @@ def load_resume_manifest(
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     admit_current_inventory_source: str | None = None,
+    pipeline: bool = False,
+    admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
     max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    source_workers = resolve_source_workers(pipeline, source_workers)
     value = _load_json(manifest_path)
     if "cleanup_unknown" in str(value.get("error", "")) or (
         (value.get("resource_stop") or {}).get("owned_processes_reaped") is False
@@ -3964,6 +4095,8 @@ def load_resume_manifest(
         raise RefreshError("unsupported checkpoint manifest schema")
     if value.get("collector_git_sha") != git_sha:
         raise RefreshError("cannot resume with a different collector Git SHA")
+    if pipeline and value.get("pipeline"):
+        raise GlobalStageError("pipeline resume requires manual exact-generation reconciliation; no mixed-stage replay")
     expected = {
         "sources": list(sources),
         "transactions": list(transactions),
@@ -3986,6 +4119,16 @@ def load_resume_manifest(
         "mark_missing": False,
         "admit_baseline_hold_additively": admit_baseline_hold_additively,
     }
+    if pipeline:
+        expected["pipeline"] = True
+        current_inventory.validate_options(
+            admit_current_inventory_sources, sources, transactions, pipeline=True,
+            additive_hold=admit_baseline_hold_additively,
+            allow_dirty=False,
+        )
+        expected["current_inventory_admissions"] = current_inventory.configuration_map(
+            admit_current_inventory_sources, sources,
+        )
     if admit_current_inventory_source is not None:
         current_inventory.validate_option(
             admit_current_inventory_source,
@@ -4171,6 +4314,8 @@ def _checkpoint_artifact_valid(
             expected_transactions=transactions,
         )
     except ArtifactValidationError:
+        return None
+    if poll_hook() is not None and stats.get("sha256") != expected_hash:
         return None
     return path, stats
 
@@ -4429,6 +4574,7 @@ def collect_source(
             save_manifest(run_dir, manifest)
             continue
         try:
+            make_private_artifact(tmp_artifact)
             generation_bound = (
                 source in STRICT_FRESHNESS_SOURCE_KEYS
                 or source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
@@ -4453,6 +4599,7 @@ def collect_source(
             save_manifest(run_dir, manifest)
             continue
         os.replace(tmp_artifact, canonical)
+        make_private_artifact(canonical)
         stats["sha256"] = sha256_file(canonical)
         stats["bytes"] = canonical.stat().st_size
         checkpoint["artifact"] = {
@@ -4487,13 +4634,30 @@ def gate_verdict_is_admitted(manifest: Mapping[str, Any], verdict: Any) -> bool:
         return verdict == "ok_additive_subset"
     if manifest["config"].get("admit_baseline_hold_additively") is True:
         return verdict in {"ok", "ok_additive_coverage_hold"}
+    if manifest["config"].get("current_inventory_admissions"):
+        return verdict in {"ok", current_inventory.VERDICT}
     if manifest["config"].get("current_inventory_admission"):
         return verdict == current_inventory.VERDICT
     return verdict == "ok"
 
 
-def _admit_current_inventory(run_dir, manifest, report, artifact, phase):
-    source = manifest["config"]["current_inventory_admission"]["source_key"]
+def _admit_current_inventory(run_dir, manifest, report, artifact, phase, *, source=None):
+    source = source or manifest["config"]["current_inventory_admission"]["source_key"]
+    if poll_hook() is not None:
+        response = run_artifact_compute(run_dir, "admit", {
+            "path": str(artifact), "source": source, "run_dir": str(run_dir),
+            "manifest": manifest, "report": report, "phase": phase,
+        })
+        evidence = Path(response["report_path"])
+        if sha256_file(evidence) != response["sha256"]:
+            raise GlobalStageError("pipeline admission evidence changed")
+        scope = response.get("scope")
+        if not isinstance(scope, dict) or scope.get("kind") != "collector_registry_additive_current_inventory" or scope.get("whole_source_coverage") is not False or scope.get("source_keys") != manifest["scope"]["source_keys"]:
+            raise GlobalStageError("pipeline admission scope changed")
+        manifest["scope"].update(scope)
+        report.clear()
+        report.update(_load_json(evidence))
+        return
     info = manifest["sources"][source]["artifact"]
     try:
         validate_source_artifact(
@@ -4511,7 +4675,7 @@ def _admit_current_inventory(run_dir, manifest, report, artifact, phase):
             report,
             current_code_sha=git_sha,
             current_git_dirty=git_dirty,
-            phase=phase,
+            phase=phase, source=source,
         )
     except (ArtifactValidationError, KeyError, TypeError, ValueError) as exc:
         raise GlobalStageError("current-inventory admission refused") from exc
@@ -4551,8 +4715,9 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
-        if manifest["config"].get("current_inventory_admission"):
-            _admit_current_inventory(run_dir, manifest, result, artifact, "source")
+        if current_inventory.admission_configuration(manifest["config"], source):
+            _admit_current_inventory(run_dir, manifest, result, artifact, "source", source=source)
+            per_source = result["per_source"][source]
             atomic_write_json(gate_path, result)
         subset_mode = not full_transaction_scope
         additive_coverage_hold = (
@@ -4722,6 +4887,10 @@ def ingest_source(
             "readback_ok": False,
         }
         save_manifest(run_dir, manifest)
+        if poll_hook() is not None:
+            checkpoint["state"] = "ingest_recovery_required"
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
         return
     checkpoint["state"] = "ingested"
@@ -4986,17 +5155,27 @@ def prepare_sources_cohort(
     return failures
 
 
+def scoped_source_keys(manifest, sources=None):
+    selected = tuple(manifest["config"]["sources"] if sources is None else sources)
+    if not selected or len(selected) != len(set(selected)) or not set(selected) <= set(manifest["config"]["sources"]):
+        raise GlobalStageError("invalid sealed source scope")
+    return selected
+
+
 def run_aggregate_gate(
     run_dir: Path,
     manifest: dict[str, Any],
     env_file: str | None,
-) -> None:
+    *, sources: Sequence[str] | None = None, evidence_dir: Path | None = None,
+) -> dict[str, Any]:
+    selected = scoped_source_keys(manifest, sources)
     artifacts = [
         run_dir / manifest["sources"][source]["artifact"]["path"]
-        for source in manifest["config"]["sources"]
+        for source in selected
     ]
-    output = run_dir / "aggregate-gate.json"
-    log = run_dir / "logs" / "aggregate-gate.log"
+    output = (evidence_dir or run_dir) / "aggregate-gate.json"
+    log = (run_dir / "logs" / f"{evidence_dir.name}-aggregate-gate.log") if evidence_dir else run_dir / "logs" / "aggregate-gate.log"
+    output.parent.mkdir(parents=True, exist_ok=True)
     argv = [sys.executable, "cre_gate.py"]
     for artifact in artifacts:
         argv.extend(["--in", str(artifact)])
@@ -5010,9 +5189,10 @@ def run_aggregate_gate(
     if rc not in (0, 2):
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
-    if manifest["config"].get("current_inventory_admission"):
-        _admit_current_inventory(run_dir, manifest, result, artifacts[0], "aggregate")
-        atomic_write_json(output, result)
+    for source, artifact in zip(selected, artifacts):
+        if current_inventory.admission_configuration(manifest["config"], source):
+            _admit_current_inventory(run_dir, manifest, result, artifact, "aggregate", source=source)
+            atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     per_source = result.get("per_source") or {}
     additive_hold_enabled = (
@@ -5092,10 +5272,10 @@ def run_aggregate_gate(
         )
         summary["mark_missing_safe_brokerages"] = []
         atomic_write_json(output, result)
-    configured_sources = set(manifest["config"]["sources"])
+    configured_sources = set(selected)
     observed_sources = set(per_source) if isinstance(per_source, dict) else set()
     non_ok_sources = sorted(
-        configured_sources - observed_sources
+        configured_sources ^ observed_sources
         | {
             source
             for source, info in per_source.items()
@@ -5130,6 +5310,7 @@ def run_aggregate_gate(
             "aggregate coverage gate is not established for source(s): "
             + ", ".join(non_ok_sources)
         )
+    return manifest["aggregate_gate"]
 
 
 def ingest_admitted_sources(
@@ -5386,6 +5567,7 @@ def verify_validation_readback(
     *,
     now: datetime | None = None,
     persist_manifest: bool = True,
+    sources: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate generation-exact readback and optionally persist its manifest.
 
@@ -5393,6 +5575,7 @@ def verify_validation_readback(
     persistence so only the canonical full checkpoint can replace
     ``manifest.json``. Full final validation keeps the default persistence.
     """
+    selected = scoped_source_keys(manifest, sources)
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
     queries = validation.get("queries")
@@ -5414,7 +5597,7 @@ def verify_validation_readback(
 
     canonical_sources = [
         source
-        for source in manifest["config"]["sources"]
+        for source in selected
         if requires_canonical_generation(source)
     ]
     if canonical_sources and not isinstance(generation_rows, list):
@@ -5484,7 +5667,7 @@ def verify_validation_readback(
                 "inventory generation does not cover every active listing"
             )
     failures: list[str] = []
-    for source in manifest["config"]["sources"]:
+    for source in selected:
         checkpoint = manifest["sources"][source]
         artifact = checkpoint.get("artifact") or {}
         try:
@@ -5949,9 +6132,12 @@ def run_final_validation(
     run_dir: Path,
     manifest: dict[str, Any],
     env_file: str | None,
-) -> None:
-    output = run_dir / "validation.json"
-    log = run_dir / "logs" / "validation.log"
+    *, sources: Sequence[str] | None = None, evidence_dir: Path | None = None,
+    before_path: Path | None = None,
+) -> dict[str, Any]:
+    output = (evidence_dir or run_dir) / "validation.json"
+    log = (run_dir / "logs" / f"{evidence_dir.name}-validation.log") if evidence_dir else run_dir / "logs" / "validation.log"
+    output.parent.mkdir(parents=True, exist_ok=True)
     rc = run_command(
         build_validate_argv(
             output,
@@ -5964,14 +6150,17 @@ def run_final_validation(
     if rc != 0:
         raise GlobalStageError(f"final validation failed (rc={rc})")
     result = _load_json(output)
+    if sources is not None or manifest["config"].get("pipeline") is True:
+        from cre_refresh_pipeline import require_pipeline_full_report
+        require_pipeline_full_report(result)
     try:
         require_full_validation_report(result)
     except (TypeError, ValueError) as exc:
         raise GlobalStageError("final validation requires a full report") from exc
     before_rel = (manifest.get("preflight") or {}).get("validation_path")
-    if not isinstance(before_rel, str):
+    if before_path is None and not isinstance(before_rel, str):
         raise GlobalStageError("pre-refresh validation snapshot is missing")
-    before = _load_json(run_dir / before_rel)
+    before = _load_json(before_path if before_path is not None else run_dir / before_rel)
     if "validation_profile" in before or "audit_scope" in before:
         try:
             require_checkpoint_preflight_report(before)
@@ -5981,7 +6170,10 @@ def run_final_validation(
             ) from exc
     quality = compare_validation_quality(before, result)
     absolute_quality = verify_absolute_validation_quality(result)
-    readback = verify_validation_readback(run_dir, manifest, result)
+    readback = (
+        verify_validation_readback(run_dir, manifest, result)
+        if sources is None else verify_validation_readback(run_dir, manifest, result, sources=sources)
+    )
     manifest["validation"] = {
         "path": _relative_to_run(output, run_dir),
         "log": _relative_to_run(log, run_dir),
@@ -6004,6 +6196,7 @@ def run_final_validation(
         raise GlobalStageError(
             "final validation or per-source freshness readback failed"
         )
+    return manifest["validation"]
 
 
 def _int_value(value: Any) -> int:
@@ -6521,17 +6714,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--admit-current-inventory-source",
-        default=None,
-        help="One reviewed Interra/Buildout source additive current inventory; no baseline/lifecycle/certificate authority",
+        default=None, action="append", dest="admit_current_inventory_sources",
+        help="Exact reviewed source additive current inventory; repeat only with --pipeline; no lifecycle/certificate authority",
     )
+    parser.add_argument("--pipeline", action="store_true", help="overlap bounded collection with serial validation/ingest on any supported host")
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument(
         "--source-workers",
         type=int,
-        default=1,
+        default=None,
         help=(
-            "opt-in bounded source collection workers (default: 1 serial, maximum: 4). "
+            "bounded source collection workers (default: 2 with --pipeline, 1 otherwise; maximum: 4). "
             "Provider lanes and coordinator-only checkpoint finalization apply."
         ),
     )
@@ -6601,6 +6795,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--allow-dirty", action="store_true")
     args = parser.parse_args(argv)
+    try:
+        args.source_workers = resolve_source_workers(args.pipeline, args.source_workers)
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.admit_current_inventory_sources = tuple(args.admit_current_inventory_sources or ())
+    args.admit_current_inventory_source = (
+        args.admit_current_inventory_sources[0]
+        if not args.pipeline and len(args.admit_current_inventory_sources) == 1 else None
+    )
 
     if (args.series_control_invocation_id is None) != (
         args.series_control_child_id is None
@@ -6713,10 +6916,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
-        current_inventory.validate_option(
-            args.admit_current_inventory_source,
+        current_inventory.validate_options(
+            args.admit_current_inventory_sources,
             sources,
-            transactions,
+            transactions, pipeline=args.pipeline,
             additive_hold=args.admit_baseline_hold_additively,
             allow_dirty=args.allow_dirty,
         )
@@ -6748,6 +6951,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             admit_current_inventory_source=args.admit_current_inventory_source,
+            pipeline=args.pipeline,
+            admit_current_inventory_sources=args.admit_current_inventory_sources if args.pipeline else (),
             database_target=database_target,
             max_age_hours=args.max_resume_age_hours,
         )
@@ -6773,6 +6978,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             admit_current_inventory_source=args.admit_current_inventory_source,
+            pipeline=args.pipeline,
+            admit_current_inventory_sources=args.admit_current_inventory_sources if args.pipeline else (),
             database_target=database_target,
         )
     # Publish the existing durable recovery barrier before any native child can
@@ -6974,43 +7181,59 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source=sources[0] if len(sources) == 1 else None,
                 active_operation="source_collection_preflight",
             )
-            source_failures = prepare_sources_cohort(
-                run_dir,
-                manifest,
-                sources,
-                page_cap=args.page_cap,
-                concurrency=args.concurrency,
-                attempts_this_run=args.attempts_per_source,
-                env_file=args.env_file,
-                source_workers=args.source_workers,
-            )
-            if source_failures:
-                raise RefreshError(
-                    "source checkpoints remain incomplete: "
-                    + ", ".join(source_failures)
+            if args.pipeline:
+                set_cpu_guard_context(cpu_guard, phase="pipeline", active_operation="bounded_pipeline_manual_reconciliation")
+                source_failures = run_bounded_pipeline(
+                    run_dir, manifest, sources,
+                    page_cap=args.page_cap, concurrency=args.concurrency,
+                    attempts_this_run=args.attempts_per_source, env_file=args.env_file,
+                    source_workers=args.source_workers,
+                    owner_check=lock._require_authority,
+                    initial_before=initial_preflight_binding(
+                        run_dir, manifest, fresh=not bool(recorded_pre_hash),
+                        resumed=bool(args.resume), owner_check=lock._require_authority,
+                    ),
                 )
-            set_cpu_guard_context(
-                cpu_guard,
-                phase="aggregate_gate",
-                active_operation="aggregate_gate",
-            )
-            run_aggregate_gate(run_dir, manifest, args.env_file)
-            set_cpu_guard_context(
-                cpu_guard,
-                phase="ingest",
-                active_operation="serial_additive_ingest",
-            )
-            ingest_admitted_sources(run_dir, manifest, args.env_file)
-            set_cpu_guard_context(
-                cpu_guard,
-                phase="readback",
-                active_operation="generation_exact_readback",
-            )
-            run_final_validation(run_dir, manifest, args.env_file)
+                if source_failures:
+                    raise RefreshError("pipeline source checkpoints remain incomplete: " + ", ".join(source_failures))
+            else:
+                source_failures = prepare_sources_cohort(
+                    run_dir,
+                    manifest,
+                    sources,
+                    page_cap=args.page_cap,
+                    concurrency=args.concurrency,
+                    attempts_this_run=args.attempts_per_source,
+                    env_file=args.env_file,
+                    source_workers=args.source_workers,
+                )
+                if source_failures:
+                    raise RefreshError(
+                        "source checkpoints remain incomplete: "
+                        + ", ".join(source_failures)
+                    )
+                set_cpu_guard_context(
+                    cpu_guard,
+                    phase="aggregate_gate",
+                    active_operation="aggregate_gate",
+                )
+                run_aggregate_gate(run_dir, manifest, args.env_file)
+                set_cpu_guard_context(
+                    cpu_guard,
+                    phase="ingest",
+                    active_operation="serial_additive_ingest",
+                )
+                ingest_admitted_sources(run_dir, manifest, args.env_file)
+                set_cpu_guard_context(
+                    cpu_guard,
+                    phase="readback",
+                    active_operation="generation_exact_readback",
+                )
+                run_final_validation(run_dir, manifest, args.env_file)
             quiesce_resource_guards(memory_guard, cpu_guard)
             manifest["status"] = (
                 "additive_scope_complete_current_inventory"
-                if manifest["config"].get("current_inventory_admission")
+                if manifest["config"].get("current_inventory_admission") or manifest["config"].get("current_inventory_admissions")
                 else (
                     "selected_transaction_scope_complete"
                     if transactions != TRANSACTIONS
@@ -7092,6 +7315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and not terminal_publication_failed
                 and guards_stopped
                 and not settlement_unknown
+                and not (manifest.get("pipeline") or {}).get("commit_outcome_unknown", False)
                 and (details is None or details.owned_processes_reaped)
             ):
                 lock.clear_recovery_requirement()

@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 
 import cre_notification_summary as summary
+import cre_validate
 import pytest
 
 SHA = "a" * 40
@@ -230,6 +231,227 @@ def read(evidence, **changes):
     return summary.verified_summary(**args)
 
 
+def bind_staged_breakdown(
+    evidence,
+    source=SOURCE,
+    *,
+    sale=2,
+    lease=3,
+    both=2,
+    artifact_bytes=None,
+    generation_id=RUN,
+):
+    artifact = evidence["values"]["child"]["sources"][source]["artifact"]
+    artifact["freshness_generation_id"] = generation_id
+    artifact["finished_at"] = evidence["artifact"]["runMeta"]["finishedAt"]
+    stats = {
+        "sale": sale,
+        "lease": lease,
+        "both": both,
+        "measurement": "current_staged_inventory_transaction_types",
+        "source_key": source,
+        "artifact_sha256": artifact["sha256"],
+        "artifact_bytes": artifact_bytes or artifact["bytes"],
+        "generation_id": generation_id,
+    }
+    artifact["transaction_breakdown"] = stats
+    if artifact_bytes is not None:
+        artifact["bytes"] = artifact_bytes
+    evidence["save"]()
+    return stats
+
+
+def pipeline_evidence(evidence, primary_source=SOURCE, second_source="cbre"):
+    """Bind two source entries to one child and one verified validation unit."""
+    source2 = second_source
+    parent = evidence["values"]["parent"]
+    child = evidence["values"]["child"]
+    if primary_source != SOURCE:
+        parent["sources"][primary_source] = parent["sources"].pop(SOURCE)
+        child["sources"][primary_source] = child["sources"].pop(SOURCE)
+        parent["config"]["sources"] = [primary_source, source2]
+        child["config"]["sources"] = [primary_source, source2]
+        artifact_path = evidence["files"]["artifact"]
+        artifact_path.rename(artifact_path.with_name(f"{primary_source}.json"))
+        evidence["files"]["artifact"] = artifact_path.with_name(
+            f"{primary_source}.json"
+        )
+        for listing in evidence["artifact"]["listings"]:
+            listing["sourceKey"] = primary_source
+        evidence["artifact_raw"] = json.dumps(
+            evidence["artifact"], separators=(",", ":")
+        ).encode()
+        evidence["artifact_sha"] = hashlib.sha256(evidence["artifact_raw"]).hexdigest()
+        artifact = child["sources"][primary_source]["artifact"]
+        artifact.update(
+            path=f"sources/{primary_source}.json",
+            sha256=evidence["artifact_sha"],
+            bytes=len(evidence["artifact_raw"]),
+        )
+        (evidence["files"]["artifact"]).write_bytes(evidence["artifact_raw"])
+        evidence["files"]["artifact"].chmod(0o600)
+    parent["config"].update(
+        pipeline=True,
+        sources=[primary_source, source2],
+        current_inventory_admissions={},
+    )
+    parent["status"] = "failed"
+    parent["sources"][primary_source]["state"] = "complete"
+    parent["sources"][primary_source]["pipeline_result"] = {
+        "state": "verified",
+        "unit_id": "unit-0001",
+        "validation_path": "pipeline/unit-0001/validation.json",
+        "validation_sha256": "0" * 64,
+        "readback_ok": True,
+        "generation_id": RUN,
+        "artifact_sha256": evidence["artifact_sha"],
+    }
+    parent["sources"][primary_source]["attempts"][-1]["checkpoint_run"] = "runs/" + RUN
+    parent["sources"][source2] = {
+        "state": "failed_source",
+        "checkpoint_run": "runs/" + RUN,
+        "checkpoint_status": child["status"],
+        "attempts": [
+            {
+                "rc": 1,
+                "checkpoint_run": "runs/" + RUN,
+                "series_control_child_id": CHILD,
+            }
+        ],
+    }
+    child["status"] = "failed"
+    child["config"].update(
+        pipeline=True,
+        sources=[primary_source, source2],
+        current_inventory_admissions=parent["config"]["current_inventory_admissions"],
+    )
+    child["sources"][source2] = {"state": "collect_failed"}
+    child["pipeline"] = {
+        "status": "partial",
+        "source_results": {
+            primary_source: parent["sources"][primary_source]["pipeline_result"],
+            source2: {"state": "failed", "reason": "bounded test fixture"},
+        },
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "sources": [primary_source],
+                "state": "verified",
+                "validation_path": "pipeline/unit-0001/validation.json",
+                "validation_sha256": "0" * 64,
+            }
+        ],
+    }
+    parent["sources"][primary_source]["checkpoint_status"] = child["status"]
+    validation_dir = evidence["series"] / "runs" / RUN / "pipeline" / "unit-0001"
+    validation_dir.mkdir(parents=True, mode=0o700)
+    validation_dir.chmod(0o700)
+    validation_value = {
+        "ok": True,
+        "validation_profile": cre_validate.FULL_VALIDATION_PROFILE,
+        "audit_scope": cre_validate.VALIDATION_AUDIT_SCOPES[
+            cre_validate.FULL_VALIDATION_PROFILE
+        ],
+        "queries": {name: [] for name in cre_validate.QUERIES},
+        "historical_primary_child_conflicts": [],
+    }
+    validation_raw = json.dumps(validation_value, separators=(",", ":")).encode()
+    digest = hashlib.sha256(validation_raw).hexdigest()
+    child["pipeline"]["units"][0]["validation_sha256"] = digest
+    parent["sources"][primary_source]["pipeline_result"]["validation_sha256"] = digest
+    child["pipeline"]["source_results"][primary_source]["validation_sha256"] = digest
+    (validation_dir / "validation.json").write_bytes(validation_raw)
+    (validation_dir / "validation.json").chmod(0o600)
+    evidence["save"]()
+    return {"source": primary_source, "source2": source2, "parent": parent, "child": child}
+
+
+def qualify_pipeline_second_source(evidence, setup):
+    """Turn the second fixture source into a peer verified by the same unit."""
+    source = setup["source2"]
+    parent, child = setup["parent"], setup["child"]
+    primary = setup["source"]
+    second_artifact_value = copy.deepcopy(evidence["artifact"])
+    for listing in second_artifact_value["listings"]:
+        listing["sourceKey"] = source
+    second_raw = json.dumps(second_artifact_value, separators=(",", ":")).encode()
+    second_sha = hashlib.sha256(second_raw).hexdigest()
+    second_path = evidence["series"] / "runs" / RUN / "sources" / f"{source}.json"
+    second_path.write_bytes(second_raw)
+    second_path.chmod(0o600)
+    checkpoint = copy.deepcopy(child["sources"][primary])
+    checkpoint["artifact"].update(
+        path=f"sources/{source}.json",
+        sha256=second_sha,
+        bytes=len(second_raw),
+        freshness_generation_id=RUN,
+        finished_at=second_artifact_value["runMeta"]["finishedAt"],
+        transaction_breakdown={
+            "sale": 2,
+            "lease": 3,
+            "both": 2,
+            "measurement": "current_staged_inventory_transaction_types",
+            "source_key": source,
+            "artifact_sha256": second_sha,
+            "artifact_bytes": len(second_raw),
+            "generation_id": RUN,
+        },
+    )
+    checkpoint["readback"]["generation_id"] = RUN
+    child["sources"][source] = checkpoint
+    child["pipeline"]["units"][0]["sources"].append(source)
+    result = copy.deepcopy(parent["sources"][primary]["pipeline_result"])
+    result["artifact_sha256"] = second_sha
+    child["pipeline"]["source_results"][source] = result
+    entry = {
+        "state": "complete",
+        "checkpoint_run": "runs/" + RUN,
+        "checkpoint_status": "supported_scope_complete",
+        "pipeline_result": result,
+        "attempts": [
+            {
+                "rc": 0,
+                "checkpoint_run": "runs/" + RUN,
+                "series_control_child_id": CHILD,
+            }
+        ],
+    }
+    parent["sources"][source] = entry
+    parent["sources"][primary]["checkpoint_status"] = "supported_scope_complete"
+    child["status"] = "supported_scope_complete"
+    parent["status"] = "complete"
+    child["pipeline"]["status"] = "complete"
+    evidence["save"]()
+    return second_path
+
+
+def rewrite_pipeline_validation(evidence, setup, mutate):
+    path = evidence["series"] / "runs" / RUN / "pipeline" / "unit-0001" / "validation.json"
+    report = json.loads(path.read_text(encoding="utf-8"))
+    mutate(report)
+    raw = json.dumps(report, separators=(",", ":")).encode()
+    path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    setup["child"]["pipeline"]["units"][0]["validation_sha256"] = digest
+    setup["child"]["pipeline"]["source_results"][SOURCE][
+        "validation_sha256"
+    ] = digest
+    setup["parent"]["sources"][SOURCE]["pipeline_result"][
+        "validation_sha256"
+    ] = digest
+    evidence["save"]()
+
+
+def read_pipeline(evidence, source_keys=None):
+    args = {
+        "series_directory": evidence["series"],
+        "source_keys": source_keys or [SOURCE, "cbre"],
+        "expected_sha": SHA,
+        "windows_admission_ms": evidence["admission"],
+    }
+    return summary.verified_pipeline_summary(**args)
+
+
 def test_real_private_receipts_prove_only_exact_current_inventory(
     evidence, monkeypatch
 ):
@@ -253,6 +475,368 @@ def test_real_private_receipts_prove_only_exact_current_inventory(
         {"new", "updated", "sale_count", "lease_count", "whole_source_coverage"}
         & result.keys()
     )
+
+
+def test_large_bound_staging_stats_avoid_reading_artifact_payload(evidence, monkeypatch):
+    bind_staged_breakdown(evidence, artifact_bytes=20 * 1024 * 1024)
+    original = summary.safe._read_at
+
+    def forbid_artifact_read(descriptor, name, limit=16384):
+        if name == f"{SOURCE}.json":
+            raise AssertionError("bound staging statistics should not open the payload")
+        return original(descriptor, name, limit)
+
+    monkeypatch.setattr(summary.safe, "_read_at", forbid_artifact_read)
+    result = read(evidence)
+    assert result["verified_listings"] == 3
+    assert result["transaction_breakdown"] == {
+        "sale": 2,
+        "lease": 3,
+        "both": 2,
+        "measurement": "current_staged_inventory_transaction_types",
+    }
+    assert result["transaction_breakdown_status"]["basis"] == (
+        "artifact_staging_statistics"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "outer_field"),
+    [
+        ("source_key", "cbre", None),
+        ("artifact_sha256", "f" * 64, None),
+        ("artifact_bytes", 999, None),
+        ("generation_id", "stale-generation", None),
+        ("measurement", "raw_cards", None),
+        ("sale", True, None),
+        ("both", 4, None),
+        ("sale", 1, None),
+        ("generation_id", RUN, "freshness_generation_id"),
+    ],
+)
+def test_invalid_staging_stats_omit_breakdown_and_preserve_total(
+    evidence, field, value, outer_field
+):
+    stats = bind_staged_breakdown(evidence)
+    if outer_field:
+        evidence["values"]["child"]["sources"][SOURCE]["artifact"][
+            outer_field
+        ] = "stale-generation"
+    else:
+        stats[field] = value
+    evidence["save"]()
+    result = read(evidence)
+    assert result["verified_listings"] == 3
+    assert "transaction_breakdown" not in result
+    assert result["transaction_breakdown_status"]["status"] == "unavailable"
+    assert result["transaction_breakdown_status"]["reason"] == (
+        "staging_stats_invalid"
+    )
+
+
+def test_staging_stats_reject_unknown_fields(evidence):
+    stats = bind_staged_breakdown(evidence)
+    stats["raw_cards"] = 4
+    evidence["save"]()
+    result = read(evidence)
+    assert result["verified_listings"] == 3
+    assert "transaction_breakdown" not in result
+
+
+def test_pipeline_reports_only_qualified_source_from_one_shared_child(evidence):
+    setup = pipeline_evidence(evidence)
+    result = read_pipeline(evidence)
+    assert result["verified"] is True
+    assert result["complete"] is False
+    assert result["selected_source_keys"] == [SOURCE, setup["source2"]]
+    assert result["failed_source_keys"] == [setup["source2"]]
+    assert result["pending_source_keys"] == []
+    assert len(result["per_source_summaries"]) == 1
+    row = result["per_source_summaries"][0]
+    assert row["source_key"] == SOURCE
+    assert row["verified_listings"] == 3
+    assert row["transaction_breakdown_status"]["status"] == "verified"
+    assert type(row["transaction_breakdown_status"]["elapsed_ms"]) is int
+    assert row["transaction_breakdown"] == {
+        "sale": 2,
+        "lease": 3,
+        "both": 2,
+        "measurement": "current_staged_inventory_transaction_types",
+    }
+    assert "verified_listings" not in result
+    assert "total_verified_listings" not in result
+
+
+def test_pipeline_uses_large_bound_staging_stats_without_reading_payload(
+    evidence, monkeypatch
+):
+    setup = pipeline_evidence(evidence)
+    bind_staged_breakdown(evidence, source=SOURCE, artifact_bytes=20 * 1024 * 1024)
+    original = summary.safe._read_at
+
+    def forbid_artifact_read(descriptor, name, limit=16384):
+        if name == f"{SOURCE}.json":
+            raise AssertionError("pipeline stats should not open the artifact payload")
+        return original(descriptor, name, limit)
+
+    monkeypatch.setattr(summary.safe, "_read_at", forbid_artifact_read)
+    result = read_pipeline(evidence)
+    row = result["per_source_summaries"][0]
+    assert row["source_key"] == SOURCE
+    assert row["verified_listings"] == 3
+    assert row["transaction_breakdown"]["sale"] == 2
+    assert row["transaction_breakdown"]["lease"] == 3
+    assert row["transaction_breakdown"]["both"] == 2
+    assert row["transaction_breakdown_status"]["basis"] == (
+        "artifact_staging_statistics"
+    )
+    assert setup["child"]["sources"][SOURCE]["artifact"]["bytes"] > (
+        summary.MAX_TRANSACTION_ARTIFACT_BYTES
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "outer_stale"),
+    [
+        ("source_key", "foreign", False),
+        ("artifact_sha256", "f" * 64, False),
+        ("artifact_bytes", 1, False),
+        ("generation_id", "stale-generation", False),
+        ("measurement", "raw_cards", False),
+        ("sale", True, False),
+        ("both", 4, False),
+        ("sale", 1, False),
+        ("freshness_generation_id", "stale-generation", True),
+    ],
+)
+def test_pipeline_invalid_staging_stats_omit_breakdown_but_keep_source_total(
+    evidence, field, value, outer_stale
+):
+    setup = pipeline_evidence(evidence)
+    stats = bind_staged_breakdown(evidence, source=SOURCE)
+    if outer_stale:
+        setup["child"]["sources"][SOURCE]["artifact"][field] = value
+    else:
+        stats[field] = value
+    evidence["save"]()
+    result = read_pipeline(evidence)
+    row = result["per_source_summaries"][0]
+    assert row["verified_listings"] == 3
+    assert "transaction_breakdown" not in row
+    assert row["transaction_breakdown_status"]["status"] == "unavailable"
+    assert row["transaction_breakdown_status"]["reason"] == (
+        "staging_stats_invalid"
+    )
+    assert setup["child"]["pipeline"]["source_results"][SOURCE]["state"] == (
+        "verified"
+    )
+
+
+def test_empty_admission_map_qualifies_normal_hanley_and_srs(evidence):
+    setup = pipeline_evidence(evidence, "hanley", "srs")
+    qualify_pipeline_second_source(evidence, setup)
+    result = read_pipeline(evidence, ["hanley", "srs"])
+    assert result["complete"] is True
+    assert result["selected_source_keys"] == ["hanley", "srs"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [
+        "hanley",
+        "srs",
+    ]
+    assert [row["verified_listings"] for row in result["per_source_summaries"]] == [
+        3,
+        3,
+    ]
+    assert setup["parent"]["config"]["current_inventory_admissions"] == {}
+
+
+def test_mixed_admitted_and_normal_sources_use_only_the_admitted_subset(evidence):
+    from cre_current_inventory_admission import configuration
+
+    setup = pipeline_evidence(evidence, "hanley", "interra-realty")
+    qualify_pipeline_second_source(evidence, setup)
+    admissions = {"interra-realty": configuration("interra-realty")}
+    setup["parent"]["config"]["current_inventory_admissions"] = admissions
+    setup["child"]["config"]["current_inventory_admissions"] = admissions
+    evidence["save"]()
+    result = read_pipeline(evidence, ["hanley", "interra-realty"])
+    assert result["complete"] is True
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [
+        "hanley",
+        "interra-realty",
+    ]
+    assert setup["parent"]["config"]["current_inventory_admissions"] == admissions
+
+
+@pytest.mark.parametrize("invalid_map", [None, {"foreign-source": {}}])
+def test_pipeline_rejects_missing_or_foreign_admission_map(evidence, invalid_map):
+    setup = pipeline_evidence(evidence)
+    if invalid_map is None:
+        setup["parent"]["config"].pop("current_inventory_admissions")
+        setup["child"]["config"].pop("current_inventory_admissions")
+    else:
+        setup["parent"]["config"]["current_inventory_admissions"] = invalid_map
+        setup["child"]["config"]["current_inventory_admissions"] = invalid_map
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize(
+    ("target", "value"),
+    [
+        ("validation_hash", "f" * 64),
+        ("source_map", "foreign"),
+        ("unit_state", "failed"),
+        ("terminal_age", -600000),
+    ],
+)
+def test_pipeline_tampered_or_unsettled_evidence_never_supplies_counts(
+    evidence, target, value
+):
+    setup = pipeline_evidence(evidence)
+    if target == "validation_hash":
+        setup["child"]["pipeline"]["source_results"][SOURCE][
+            "validation_sha256"
+        ] = value
+        evidence["save"]()
+    elif target == "source_map":
+        setup["child"]["pipeline"]["source_results"][value] = setup[
+            "child"
+        ]["pipeline"]["source_results"].pop(SOURCE)
+        evidence["save"]()
+    elif target == "unit_state":
+        setup["child"]["pipeline"]["units"][0]["state"] = value
+        evidence["save"]()
+    else:
+        evidence["values"]["control"]["finished_unix_ms"] += value
+        evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "validation_profile",
+        "audit_scope",
+        "queries",
+        "historical_primary_child_conflicts",
+    ],
+)
+def test_pipeline_requires_explicit_complete_full_audit_report(evidence, field):
+    setup = pipeline_evidence(evidence)
+    rewrite_pipeline_validation(evidence, setup, lambda report: report.pop(field))
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize("missing_side", ["artifact", "source_result", "both"])
+def test_pipeline_requires_independently_present_artifact_hashes(
+    evidence, missing_side
+):
+    setup = pipeline_evidence(evidence)
+    artifact = setup["child"]["sources"][SOURCE]["artifact"]
+    source_result = setup["child"]["pipeline"]["source_results"][SOURCE]
+    if missing_side in {"artifact", "both"}:
+        artifact.pop("sha256")
+    if missing_side in {"source_result", "both"}:
+        source_result.pop("artifact_sha256")
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize("bytes_value", [None, True, 0, -1, 1.5])
+def test_pipeline_requires_positive_finite_artifact_byte_binding(evidence, bytes_value):
+    setup = pipeline_evidence(evidence)
+    artifact = setup["child"]["sources"][SOURCE]["artifact"]
+    if bytes_value is None:
+        artifact.pop("bytes")
+    else:
+        artifact["bytes"] = bytes_value
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+def test_pipeline_rejects_child_outside_parent_temporal_chain(evidence):
+    setup = pipeline_evidence(evidence)
+    setup["child"]["started_at"] = "2000-01-01T00:00:00+00:00"
+    setup["child"]["finished_at"] = "2000-01-01T00:01:00+00:00"
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+def test_pipeline_rejects_traversal_unit_path(evidence):
+    setup = pipeline_evidence(evidence)
+    unit = setup["child"]["pipeline"]["units"][0]
+    result = setup["child"]["pipeline"]["source_results"][SOURCE]
+    unit["unit_id"] = ".."
+    unit["validation_path"] = "pipeline/../validation.json"
+    result["unit_id"] = ".."
+    result["validation_path"] = "pipeline/../validation.json"
+    setup["parent"]["sources"][SOURCE]["pipeline_result"] = result
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+def test_pipeline_distinguishes_pending_from_failed(evidence):
+    setup = pipeline_evidence(evidence)
+    source2 = setup["source2"]
+    setup["parent"]["sources"][source2]["state"] = "pending"
+    setup["child"]["pipeline"]["status"] = "partial"
+    setup["child"]["sources"][source2] = {"state": "pending"}
+    setup["child"]["pipeline"]["source_results"].pop(source2)
+    evidence["save"]()
+    result = read_pipeline(evidence)
+    assert result["verified"] is True
+    assert result["complete"] is False
+    assert result["failed_source_keys"] == []
+    assert result["pending_source_keys"] == [source2]
+
+
+def test_pipeline_marks_complete_only_when_every_selected_source_qualifies(evidence):
+    setup = pipeline_evidence(evidence)
+    source2 = setup["source2"]
+    parent, child = setup["parent"], setup["child"]
+    parent["config"]["sources"] = [SOURCE]
+    parent["sources"].pop(source2)
+    parent["status"] = "complete"
+    child["config"]["sources"] = [SOURCE]
+    child["sources"].pop(source2)
+    child["pipeline"]["source_results"].pop(source2)
+    child["pipeline"]["status"] = "complete"
+    child["status"] = "supported_scope_complete"
+    parent["sources"][SOURCE]["checkpoint_status"] = child["status"]
+    evidence["save"]()
+    result = read_pipeline(evidence, [SOURCE])
+    assert result["verified"] is True
+    assert result["complete"] is True
+    assert result["failed_source_keys"] == []
+    assert result["pending_source_keys"] == []
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+
+
+def test_legacy_cli_contract_remains_single_source(evidence, capsys):
+    status = summary.main(
+        [
+            "--series-directory",
+            str(evidence["series"]),
+            "--source",
+            SOURCE,
+            "--expected-sha",
+            SHA,
+            "--windows-admission-unix-ms",
+            str(evidence["admission"]),
+        ]
+    )
+    assert status == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["source"] == SOURCE
+    assert output["verified_listings"] == 3
+    assert "per_source_summaries" not in output
 
 
 def test_breakdown_proof_failures_preserve_exact_verified_total(evidence):

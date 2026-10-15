@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -19,6 +20,73 @@ NOW = datetime(2026, 9, 13, 12, 1, tzinfo=timezone.utc)
 COMMAND = "b" * 32
 LOG = "jll-collect-attempt-1.log"
 METRICS = f"jll-collect-attempt-1.{COMMAND}.scrape-performance.json"
+
+
+def pipeline_query_evidence(tmp_path, count):
+    run = tmp_path / RUN
+    run.mkdir()
+    manifest = {
+        "config": {"pipeline": True},
+        "started_at": "2026-09-13T12:00:00Z",
+        "finished_at": "2026-09-13T12:01:00Z",
+        "pipeline": {"units": []},
+    }
+    raw = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:30Z",
+            "validation_profile": "full",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 5}
+            },
+        }
+    ).encode()
+    for number in range(1, count + 1):
+        name = f"unit-{number:04d}"
+        path = run / "pipeline" / name / "validation.json"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(raw)
+        manifest["pipeline"]["units"].append(
+            {
+                "unit_id": name,
+                "validation_path": str(path.relative_to(run)),
+                "validation_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+    return run, manifest, len(raw)
+
+
+def test_retry_units_beyond_source_count_retain_query_metrics(tmp_path):
+    run, manifest, _ = pipeline_query_evidence(tmp_path, 52)
+    # Rejected preparation attempts also remain in the real unit history.
+    manifest["pipeline"]["units"].insert(0, {"unit_id": "unit-0000", "state": "failed"})
+    frames = report._validation_timings(run, manifest)
+    assert len(frames) == 52
+    assert (
+        sum(frame["queries"]["source_counts"]["elapsed_ms"] for frame in frames) == 260
+    )
+
+
+def test_query_unit_budget_preserves_known_frames_and_exposes_gap(
+    tmp_path, monkeypatch
+):
+    run, manifest, _ = pipeline_query_evidence(tmp_path, 3)
+    monkeypatch.setattr(report, "MAX_VALIDATION_UNITS", 2)
+    frames = report._validation_timings(run, manifest)
+    assert [frame["stage"] for frame in frames if frame["queries"]] == [
+        "unit-0001",
+        "unit-0002",
+    ]
+    assert frames[0]["unavailable_code"] == "unit_timing_budget_exhausted"
+
+
+def test_query_byte_budget_preserves_known_frames_and_exposes_gap(
+    tmp_path, monkeypatch
+):
+    run, manifest, size = pipeline_query_evidence(tmp_path, 3)
+    monkeypatch.setattr(report, "MAX_TOTAL_VALIDATION_BYTES", size)
+    frames = report._validation_timings(run, manifest)
+    assert [frame["stage"] for frame in frames if frame["queries"]] == ["unit-0001"]
+    assert frames[-1]["unavailable_code"] == "query_timing_byte_budget_exhausted"
 
 
 def checkpoint(tmp_path: Path) -> Path:
@@ -69,6 +137,209 @@ def checkpoint(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return run
+
+
+def test_pipeline_report_reads_shared_child_journals_once(tmp_path, monkeypatch):
+    run = checkpoint(tmp_path / "child")
+    data = json.loads((run / "manifest.json").read_text())
+    data["config"].update(
+        pipeline=True, sources=["jll", "srs"], transactions=["sale", "lease"]
+    )
+    data["sources"]["jll"]["state"] = "ingested"
+    data["sources"]["srs"] = {
+        "state": "ingested",
+        "artifact": {"staged_unique": 20},
+        "readback": {"ok": True},
+    }
+    data["pipeline"] = {
+        "source_timings": {
+            "jll": {
+                "collection_started_at": "2026-09-13T12:00:00Z",
+                "collection_finished_at": "2026-09-13T12:00:10Z",
+                "validation_started_at": "2026-09-13T12:00:12Z",
+                "verified_at": "2026-09-13T12:00:40Z",
+            }
+        }
+    }
+    (run / "manifest.json").write_text(json.dumps(data))
+    journal(run)
+    series = tmp_path / SERIES
+    (series / "runs").mkdir(parents=True)
+    moved = series / "runs" / RUN
+    shutil.move(run, moved)
+    (series / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "series_id": SERIES,
+                "collector_git_sha": SHA,
+                "config": data["config"],
+                "sources": {
+                    key: {"state": "complete", "checkpoint_run": f"runs/{RUN}"}
+                    for key in ["jll", "srs"]
+                },
+            }
+        )
+    )
+    reads = []
+    original = report._commands
+
+    def counted(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(report, "_commands", counted)
+    result = report.build_report(series, now=NOW)
+    assert reads == [moved]
+    assert len(result["shared_commands"]) == 1
+    assert len(result["checkpoint_resources"]) == 1
+    assert result["sources"][0]["source_elapsed_seconds"] == 40
+    assert (
+        result["sources"][0]["stage_wall_seconds"]["awaiting_validation_seconds"] == 2
+    )
+    assert result["sources"][1]["staged_unique"] == 20
+
+
+def test_query_timing_projection_and_current_inventory_status_are_retained(tmp_path):
+    run = checkpoint(tmp_path)
+    data = json.loads((run / "manifest.json").read_text())
+    data["status"] = "additive_scope_complete_current_inventory"
+    (run / "manifest.json").write_text(json.dumps(data))
+    (run / "validation.json").write_text(
+        json.dumps(
+            {
+                "validation_profile": "full",
+                "env_file": "private-password",
+                "queries": {"secret": "provider-body"},
+                "query_timings": {
+                    "source_counts": {"status": "available", "elapsed_ms": 125.2},
+                    "private-password": {"status": "available", "elapsed_ms": 1},
+                },
+            }
+        )
+    )
+    result = report.build_report(run, now=NOW)
+    assert result["sources"][0]["status"] == "additive_scope_complete_current_inventory"
+    assert result["validation_query_timings"][0]["queries"] == {
+        "source_counts": {"status": "available", "elapsed_ms": 125.2}
+    }
+    assert "private-password" not in json.dumps(result)
+    assert "provider-body" not in json.dumps(result)
+
+
+def test_cli_compares_saved_generations_without_network(tmp_path, capsys):
+    before = checkpoint(tmp_path / "before")
+    after = checkpoint(tmp_path / "after")
+    assert report.main([str(after), "--baseline", str(before), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["comparison"]["baseline_generation_id"] == RUN
+    assert result["comparison"]["causal_improvement_established"] is False
+
+
+def test_total_journal_budget_keeps_prior_measurements_and_marks_gap(
+    tmp_path, monkeypatch
+):
+    run = checkpoint(tmp_path)
+    path = journal(run)
+    (run / "logs" / "z-extra.performance.jsonl").write_bytes(path.read_bytes())
+    monkeypatch.setattr(report, "MAX_TOTAL_JOURNAL_BYTES", path.stat().st_size)
+    commands, warnings = report._commands(run, now=NOW)
+    assert len(commands) == 1
+    assert "journal_total_byte_limit_exceeded" in warnings
+
+
+def test_pipeline_query_timings_include_first_before_and_refuse_changed_hash(tmp_path):
+    import hashlib
+
+    run = checkpoint(tmp_path)
+    unit = run / "pipeline" / "unit-0001"
+    unit.mkdir(parents=True)
+    before = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:05Z",
+            "validation_profile": "checkpoint-preflight",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 111}
+            },
+        }
+    ).encode()
+    post = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:30Z",
+            "validation_profile": "full",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 222}
+            },
+        }
+    ).encode()
+    (unit / "before.json").write_bytes(before)
+    (unit / "validation.json").write_bytes(post)
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["pipeline"] = True
+    manifest["pipeline"] = {
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "before_path": "pipeline/unit-0001/before.json",
+                "before_sha256": hashlib.sha256(before).hexdigest(),
+                "validation_path": "pipeline/unit-0001/validation.json",
+                "validation_sha256": hashlib.sha256(post).hexdigest(),
+            }
+        ]
+    }
+    result = report._validation_timings(run, manifest)
+    assert (
+        sum(
+            row["queries"].get("source_counts", {}).get("elapsed_ms", 0) or 0
+            for row in result
+        )
+        == 333
+    )
+    (unit / "validation.json").write_bytes(post.replace(b"222", b"999"))
+    result = report._validation_timings(run, manifest)
+    assert not any(
+        row["queries"].get("source_counts", {}).get("elapsed_ms") == 999
+        for row in result
+    )
+    assert any(
+        row.get("unavailable_code") == "report_binding_invalid" for row in result
+    )
+
+
+def test_copied_reused_initial_preflight_is_one_query_not_two(tmp_path):
+    import hashlib
+
+    run = checkpoint(tmp_path)
+    unit = run / "pipeline" / "unit-0001"
+    unit.mkdir(parents=True)
+    raw = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:05Z",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 111}
+            },
+        }
+    ).encode()
+    (run / "pre-validation.json").write_bytes(raw)
+    (unit / "before.json").write_bytes(raw)
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["pipeline"] = True
+    manifest["preflight"] = {"validation_path": "pre-validation.json"}
+    manifest["pipeline"] = {
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "before_path": "pipeline/unit-0001/before.json",
+                "before_sha256": hashlib.sha256(raw).hexdigest(),
+                "before_reused": True,
+                "before_reuse_kind": "initial_preflight",
+                "before_source_path": "pre-validation.json",
+            }
+        ]
+    }
+    result = report._validation_timings(run, manifest)
+    assert len(result) == 1
+    assert result[0]["queries"]["source_counts"]["elapsed_ms"] == 111
 
 
 def journal(run: Path, *, identity: str = COMMAND, finish: bool = True) -> Path:
@@ -336,7 +607,8 @@ def test_missing_readback_and_timing_are_unknown_not_false_or_zero(tmp_path):
     path.write_text(json.dumps(manifest))
     result = report.build_report(run, now=NOW)
     assert result["sources"][0]["database_readback_ok"] is None
-    assert "0.0s" not in report.render(result)
+    assert result["sources"][0]["collection_seconds"] is None
+    assert " 0.0s" not in report.render(result)
 
 
 def test_directory_enumeration_is_bounded_including_unrelated_files(

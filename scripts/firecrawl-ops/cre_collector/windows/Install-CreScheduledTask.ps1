@@ -13,8 +13,11 @@ param(
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\z')][string]$TaskName,
     [Parameter(Mandatory = $true)]
     [ValidateSet('monitor', 'enrich', 'series')][string]$Tier,
-    [Parameter(Mandatory = $true)]
     [ValidatePattern('^[a-z0-9][a-z0-9-]*\z')][string]$Source,
+    [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$Sources,
+    [switch]$Pipeline,
+    [ValidateRange(1, 4)][int]$SourceWorkers,
+    [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{40}\z')][string]$ExpectedSha,
     [ValidateRange(1, 50)][int]$Batch = 50,
@@ -36,6 +39,53 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'Run this installer on Windows.' }
+
+# Pure selection validation runs before readiness, telemetry or notification work.
+if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
+    throw '-Sources requires pipeline series and conflicts with -Source.'
+}
+if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
+if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
+    throw '-SourceWorkers requires -Pipeline.'
+}
+$resolvedSourceWorkers = 1
+if ($Pipeline) {
+    $resolvedSourceWorkers = 2
+    if ($PSBoundParameters.ContainsKey('SourceWorkers')) { $resolvedSourceWorkers = $SourceWorkers }
+}
+$knownSourceKeys = @()
+if ($Pipeline) {
+$policyForSelection = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../data/cre-source-policy.json') -Raw | ConvertFrom-Json
+$knownSourceKeys = @($policyForSelection.PSObject.Properties.Name)
+}
+$selectedSourceKeys = @()
+if ($Sources) {
+    $selectedSourceKeys = @($Sources.Split(','))
+    if (@($selectedSourceKeys | Sort-Object -Unique).Count -ne $selectedSourceKeys.Count) { throw 'Duplicate source keys.' }
+    foreach ($key in $selectedSourceKeys) {
+        if ($knownSourceKeys -cnotcontains $key) { throw 'Unknown source key.' }
+    }
+} elseif ($Source -ceq 'all' -and $Pipeline) { $selectedSourceKeys = $knownSourceKeys }
+elseif ($Source) { $selectedSourceKeys = @($Source) }
+if ($AdmitCurrentInventorySource -and $AdmitCurrentInventorySources) { throw 'Conflicting admission flags.' }
+$selectedAdmissionKeys = @()
+if ($AdmitCurrentInventorySources) {
+    if (-not $Pipeline) { throw 'Multiple admissions require pipeline mode.' }
+    $selectedAdmissionKeys = @($AdmitCurrentInventorySources.Split(','))
+} elseif ($AdmitCurrentInventorySource) { $selectedAdmissionKeys = @($AdmitCurrentInventorySource) }
+if (@($selectedAdmissionKeys | Sort-Object -Unique).Count -ne $selectedAdmissionKeys.Count) { throw 'Duplicate admission keys.' }
+$admissibleKeys = $selectedAdmissionKeys
+if ($AdmitCurrentInventorySources) {
+$buildoutRows = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../data/cre-buildout-sources.json') -Raw | ConvertFrom-Json
+$admissibleKeys = @('interra-realty') + @($buildoutRows | ForEach-Object { $_[0] })
+}
+foreach ($key in $selectedAdmissionKeys) {
+    if ($Tier -ne 'series' -or $admissibleKeys -cnotcontains $key -or $selectedSourceKeys -cnotcontains $key) {
+        throw 'Admission requires an exact selected and supported source key.'
+    }
+}
+$selectedSourceArgument = if ($Sources) { $Sources } else { $Source }
+
 if ($ExpectedSha -cnotmatch '^[0-9a-f]{40}\z') { throw 'ExpectedSha must be a full lowercase commit SHA.' }
 if ($Enable -and -not $Register) { throw '-Enable requires -Register; existing tasks are never changed.' }
 $Tier = $Tier.ToLowerInvariant()
@@ -44,11 +94,11 @@ if ($WeeklyOn) { $WeeklyOn = [Globalization.CultureInfo]::InvariantCulture.TextI
 # Source names come from the existing JSON policy, without importing a worker.
 $policy = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../data/cre-source-policy.json') -Raw | ConvertFrom-Json
 $sourceKeys = @($policy.PSObject.Properties.Name)
-if (($Source -ceq 'all' -and $Tier -ne 'series') -or
-    ($Source -cne 'all' -and $sourceKeys -cnotcontains $Source)) {
+if (($selectedSourceArgument -ceq 'all' -and $Tier -ne 'series') -or
+    (-not $Sources -and $selectedSourceArgument -cne 'all' -and $sourceKeys -cnotcontains $selectedSourceArgument)) {
     throw 'Source is not supported by this tier.'
 }
-if ($Tier -eq 'monitor' -and $Source -in @('jll','jll-investor','cbre-dealflow','colliers')) {
+if ($Tier -eq 'monitor' -and $selectedSourceArgument -in @('jll','jll-investor','cbre-dealflow','colliers')) {
     throw 'Source is excluded from the guarded monitor tier.'
 }
 if ($Tier -eq 'series') {
@@ -61,10 +111,7 @@ if ($Tier -eq 'series') {
 } elseif ($PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or $AcknowledgeDatabaseWrites) {
     throw 'Series option supplied for incremental tier.'
 }
-if ($AdmitCurrentInventorySource -and ($Tier -ne 'series' -or $Source -cne $AdmitCurrentInventorySource)) {
-    throw 'Current-inventory admission requires its exact reviewed series source.'
-}
-if ($Tier -eq 'enrich' -and $Source -ceq 'matthews' -and $Apply -and $DeadlineSeconds -gt 600) {
+if ($Tier -eq 'enrich' -and $selectedSourceArgument -ceq 'matthews' -and $Apply -and $DeadlineSeconds -gt 600) {
     throw 'Applied Matthews enrichment requires a deadline of at most 600 seconds.'
 }
 if ($NotificationMode -eq 'StartFinish' -and -not $AlertWebhookFile) {
@@ -172,7 +219,11 @@ if ((Get-Item -LiteralPath $powerShell).VersionInfo.ProductVersion -notmatch '^7
     throw 'The installed task host must be PowerShell 7.'
 }
 $arguments = @('-NoProfile','-NonInteractive','-File',$launcher,
-    '-Tier',$Tier,'-Source',$Source,'-ExpectedSha',$ExpectedSha)
+    '-Tier',$Tier)
+if ($Sources) { $arguments += @('-Sources',$Sources) } else { $arguments += @('-Source',$selectedSourceArgument) }
+$arguments += @('-ExpectedSha',$ExpectedSha)
+if ($Pipeline) { $arguments += @('-Pipeline','-SourceWorkers',"$resolvedSourceWorkers") }
+if ($AdmitCurrentInventorySources) { $arguments += @('-AdmitCurrentInventorySources',$AdmitCurrentInventorySources) }
 if ($Tier -eq 'series') {
     $arguments += @('-WorkDeadlineSeconds',"$WorkDeadlineSeconds",'-AcknowledgeDatabaseWrites')
     if ($AdmitCurrentInventorySource) { $arguments += @('-AdmitCurrentInventorySource',$AdmitCurrentInventorySource) }
@@ -189,7 +240,7 @@ $triggerXml = foreach ($time in $times) {
     } else { '<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>' }
     '<CalendarTrigger><StartBoundary>' + $start + '</StartBoundary><Enabled>true</Enabled>' + $schedule + '</CalendarTrigger>'
 }
-$description = "Guarded CRE $Tier for $Source at reviewed SHA $ExpectedSha. Linux owns its finite deadline and settlement. Inspect out/windows-launcher audits; use the exact run/series cooperative stop helper. Disabling this task prevents future launches; End Task is not settlement proof."
+$description = "Guarded CRE $Tier for $selectedSourceArgument at reviewed SHA $ExpectedSha. Linux owns its finite deadline and settlement. Inspect out/windows-launcher audits; use the exact run/series cooperative stop helper. Disabling this task prevents future launches; End Task is not settlement proof."
 $taskXml = @"
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Author>Agentic Assets</Author><Description>$(ConvertTo-CreXml $description)</Description></RegistrationInfo>

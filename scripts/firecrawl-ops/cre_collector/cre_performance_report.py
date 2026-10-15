@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from cre_ingest import SOURCE_TO_BROKERAGE
+from cre_performance_compare import compare_reports, source_stage_timing
 from cre_run_insights import build_trial_report, overlap, resource_report
 from cre_series_status import (
     CHILD_STATES,
@@ -31,7 +33,10 @@ MAX_JOURNAL_BYTES = 1024 * 1024
 MAX_RECORD_BYTES = 4096
 MAX_SNAPSHOT_BYTES = 128 * 1024
 MAX_CPU_BYTES = 4 * 1024 * 1024
-MAX_FILES_PER_SOURCE = 256
+MAX_FILES_PER_SOURCE = 1024
+MAX_TOTAL_JOURNAL_BYTES = 16 * 1024 * 1024
+MAX_VALIDATION_UNITS = 1024
+MAX_TOTAL_VALIDATION_BYTES = 16 * 1024 * 1024
 MAX_LOG_DIRECTORY_ENTRIES = 4096
 MAX_COMMANDS_PER_SOURCE = 2048
 RUN_ID = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z(?:-[0-9a-f]{12})?\Z")
@@ -48,6 +53,7 @@ PHASES = {
     "ingest",
     "ingest_recovery",
     "readback",
+    "artifact_validation",
     "unknown",
 }
 OUTCOMES = {"running", "success", "failed", "interrupted", "exception"}
@@ -58,6 +64,7 @@ STATUSES = {
     "supported_scope_complete",
     "selected_transaction_scope_complete",
     "additive_scope_complete_coverage_hold",
+    "additive_scope_complete_current_inventory",
     "failed",
     "failed_source",
     "failed_global",
@@ -308,12 +315,20 @@ def _commands(
     except (OSError, ValueError):
         return [], ["logs_unavailable"]
     commands: dict[str, dict[str, Any]] = {}
+    journal_bytes = 0
     for name in sorted(journals):
+        remaining = MAX_TOTAL_JOURNAL_BYTES - journal_bytes
+        if remaining <= 0:
+            warnings.append("journal_total_byte_limit_exceeded")
+            break
         try:
-            raw = _read_regular_file(logs / name, limit=MAX_JOURNAL_BYTES)
+            raw = _read_regular_file(
+                logs / name, limit=min(MAX_JOURNAL_BYTES, remaining)
+            )
         except (OSError, ValueError):
             warnings.append("journal_unreadable_or_oversized")
             continue
+        journal_bytes += len(raw)
         for line in raw.splitlines():
             if len(line) > MAX_RECORD_BYTES:
                 warnings.append("journal_record_oversized")
@@ -454,6 +469,7 @@ def _settings(manifest: Mapping[str, Any], source: str) -> dict[str, Any]:
         key: _number(config.get(key))
         for key in ("concurrency", "source_workers", "page_cap")
     }
+    settings["pipeline"] = config.get("pipeline") is True
     guard = _object(config.get("host_cpu_guard"))
     settings["host_cpu_guard"] = {
         key: _number(guard.get(key))
@@ -578,15 +594,157 @@ def _runtime(run_dir: Path, *, now: datetime) -> dict[str, Any]:
     return result
 
 
+def _validation_timings(run_dir: Path, manifest: Mapping[str, Any]) -> list[dict]:
+    """Read numeric query timing projections, never expose SQL/results/env paths."""
+    from cre_validate import QUERIES
+
+    allowed = set(QUERIES) | {"artifact_run_jobs", "historical_primary_child_conflicts"}
+    pipeline_mode = _object(manifest.get("config")).get("pipeline") is True
+    files = []
+    before = _object(manifest.get("preflight")).get("validation_path")
+    if isinstance(before, str) or not pipeline_mode:
+        files.append(("pre_validation", before or "pre-validation.json", None, False))
+    if not pipeline_mode:
+        after = _object(manifest.get("validation")).get("path")
+        files.append(("post_validation", after or "validation.json", None, False))
+    units = _object(manifest.get("pipeline")).get("units")
+    unit_budget_exhausted = (
+        isinstance(units, list) and len(units) > MAX_VALIDATION_UNITS
+    )
+    if isinstance(units, list):
+        for unit in units[:MAX_VALIDATION_UNITS]:
+            unit = _object(unit)
+            name = unit.get("unit_id", unit.get("id"))
+            if isinstance(name, str) and re.fullmatch(r"unit-[0-9]{4,6}", name):
+                for stage, path_key, hash_key in (
+                    (name + "-before", "before_path", "before_sha256"),
+                    (name, "validation_path", "validation_sha256"),
+                ):
+                    relative = unit.get(path_key)
+                    if (
+                        path_key == "before_path"
+                        and unit.get("before_reused") is True
+                        and unit.get("before_reuse_kind") == "initial_preflight"
+                    ):
+                        relative = unit.get("before_source_path")
+                    if isinstance(relative, str):
+                        files.append((stage, relative, unit.get(hash_key), True))
+    result = []
+    if unit_budget_exhausted:
+        result.append(
+            {
+                "run_id": run_dir.name,
+                "stage": "pipeline",
+                "queries": {},
+                "unavailable_code": "unit_timing_budget_exhausted",
+            }
+        )
+    bound_files = {}
+    for stage, relative, expected_hash, required in files:
+        path = _contained_path(run_dir, relative)
+        if path is None:
+            continue
+        previous = bound_files.get(path)
+        if previous is None or (required and not previous[2]):
+            bound_files[path] = (stage, expected_hash, required)
+        elif required and previous[2] and previous[1] != expected_hash:
+            bound_files[path] = (stage, None, True)
+    validation_bytes = 0
+    for path, (stage, expected_hash, required) in bound_files.items():
+        remaining = MAX_TOTAL_VALIDATION_BYTES - validation_bytes
+        if remaining <= 0:
+            result.append(
+                {
+                    "run_id": run_dir.name,
+                    "stage": "pipeline",
+                    "queries": {},
+                    "unavailable_code": "query_timing_byte_budget_exhausted",
+                }
+            )
+            break
+        try:
+            raw = _read_regular_file(path, limit=min(MAX_MANIFEST_BYTES, remaining))
+            validation_bytes += len(raw)
+            if required and (
+                not isinstance(expected_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+                or hashlib.sha256(raw).hexdigest() != expected_hash
+            ):
+                raise ValueError("invalid report binding")
+            data = _object(json.loads(raw))
+            if pipeline_mode:
+                observed = _timestamp(data.get("generated_at"))
+                start, end = (
+                    _timestamp(manifest.get("started_at")),
+                    _timestamp(manifest.get("finished_at"))
+                    or _timestamp(manifest.get("updated_at"))
+                    or datetime.now(timezone.utc),
+                )
+                if (
+                    observed is None
+                    or start is None
+                    or end is None
+                    or not start <= observed <= end
+                ):
+                    raise ValueError("invalid report generation")
+        except (OSError, ValueError, UnicodeError, RecursionError):
+            if required:
+                result.append(
+                    {
+                        "run_id": run_dir.name,
+                        "stage": stage,
+                        "queries": {},
+                        "unavailable_code": "report_binding_invalid",
+                    }
+                )
+            continue
+        timings = _object(data.get("query_timings"))
+        result.append(
+            {
+                "run_id": run_dir.name,
+                "stage": stage,
+                "validation_profile": data.get("validation_profile")
+                if data.get("validation_profile") in {"full", "checkpoint-preflight"}
+                else "unknown",
+                "queries": {
+                    name: {
+                        "status": "available"
+                        if _object(timings[name]).get("status") == "available"
+                        and _number(_object(timings[name]).get("elapsed_ms"))
+                        is not None
+                        else "unavailable",
+                        "elapsed_ms": _number(_object(timings[name]).get("elapsed_ms"))
+                        if _object(timings[name]).get("status") == "available"
+                        else None,
+                    }
+                    for name in sorted(allowed & timings.keys())
+                },
+            }
+        )
+    return result
+
+
 def _source_report(
-    run_dir: Path, manifest: Mapping[str, Any], source: str, *, now: datetime
+    run_dir: Path,
+    manifest: Mapping[str, Any],
+    source: str,
+    *,
+    now: datetime,
+    command_evidence: tuple | None = None,
 ) -> dict[str, Any]:
-    commands, warnings = _commands(run_dir, now=now)
+    commands, warnings = (
+        command_evidence
+        if command_evidence is not None
+        else _commands(run_dir, now=now)
+    )
     multi_source = len(_object(manifest.get("config")).get("sources", [])) > 1
     if multi_source:
         commands = [command for command in commands if command["source"] == source]
     checkpoint = _object(_object(manifest.get("sources")).get(source))
     artifact = _object(checkpoint.get("artifact"))
+    stages = source_stage_timing(
+        _object(_object(manifest.get("pipeline")).get("source_timings")).get(source)
+    )
     timing: dict[str, float] = {}
     for command in commands:
         seconds = command["elapsed_seconds"]
@@ -607,7 +765,8 @@ def _source_report(
             if _member(manifest.get("status"), STATUSES)
             else "unknown"
         ),
-        "source_elapsed_seconds": None
+        "stage_wall_seconds": stages,
+        "source_elapsed_seconds": stages["source_elapsed_seconds"]
         if multi_source
         else _duration(manifest.get("started_at"), manifest.get("finished_at")),
         "timed_command_seconds": timing,
@@ -644,6 +803,15 @@ def _source_report(
             if type(_object(checkpoint.get("readback")).get("ok")) is bool
             else None
         ),
+        "quality_no_regression": True
+        if _object(
+            _object(_object(manifest.get("pipeline")).get("source_results")).get(source)
+        ).get("state")
+        == "verified"
+        else _object(manifest.get("validation")).get("quality_no_regression")
+        if type(_object(manifest.get("validation")).get("quality_no_regression"))
+        is bool
+        else None,
         "settings": _settings(manifest, source),
         "host_cpu": {"scope": "shared_coordinator", "state": "see_run_resources"}
         if multi_source
@@ -674,6 +842,15 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
     if not isinstance(sha, str) or not SHA.fullmatch(sha):
         raise ValueError("manifest collector identity is unavailable")
     rows = []
+    bound_runs = {}
+
+    def source_row(run_dir, child, source):
+        if run_dir not in bound_runs:
+            bound_runs[run_dir] = (child, _commands(run_dir, now=now))
+        return _source_report(
+            run_dir, child, source, now=now, command_evidence=bound_runs[run_dir][1]
+        )
+
     if "series_id" in manifest:
         if not _schema(manifest.get("schema_version"), 1):
             raise ValueError("unsupported series schema")
@@ -706,17 +883,30 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
             try:
                 if child_root is None or child_root.parent != (root / "runs").resolve():
                     raise ValueError("child unavailable")
-                child = _read_json(
-                    child_root / "manifest.json", limit=MAX_MANIFEST_BYTES
+                child = (
+                    bound_runs[child_root][0]
+                    if child_root in bound_runs
+                    else _read_json(
+                        child_root / "manifest.json", limit=MAX_MANIFEST_BYTES
+                    )
+                )
+                expected_sources = (
+                    _object(manifest.get("config")).get("sources")
+                    if _object(manifest.get("config")).get("pipeline") is True
+                    else [source]
                 )
                 if (
                     not _schema(child.get("schema_version"), 2)
                     or child.get("run_id") != child_root.name
                     or child.get("collector_git_sha") != sha
-                    or _object(child.get("config")).get("sources") != [source]
+                    or _object(child.get("config")).get("sources") != expected_sources
+                    or (
+                        _object(manifest.get("config")).get("pipeline") is True
+                        and _object(child.get("config")).get("pipeline") is not True
+                    )
                 ):
                     raise ValueError("child identity mismatch")
-                rows.append(_source_report(child_root, child, source, now=now))
+                rows.append(source_row(child_root, child, source))
             except (OSError, ValueError, UnicodeError, RecursionError):
                 rows.append(
                     {
@@ -742,9 +932,7 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
             or generation != root.name
         ):
             raise ValueError("expected a checkpoint generation")
-        rows.extend(
-            _source_report(root, manifest, source, now=now) for source in sources
-        )
+        rows.extend(source_row(root, manifest, source) for source in sources)
     if not isinstance(generation, str) or not RUN_ID.fullmatch(generation):
         raise ValueError("invalid generation identity")
     collection_intervals = []
@@ -774,6 +962,18 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
         else "current_checkpoint_sessions",
         "generation_id": generation,
         "collector_git_sha": sha,
+        "run_status": manifest.get("status")
+        if _member(manifest.get("status"), STATUSES)
+        else "unknown",
+        "run_scope": {
+            "transactions": _object(manifest.get("config")).get("transactions")
+            if _object(manifest.get("config")).get("transactions")
+            in (["sale"], ["lease"], ["sale", "lease"])
+            else None,
+            "max_items": _number(_object(manifest.get("config")).get("max_items")),
+            "pipeline": _object(manifest.get("config")).get("pipeline") is True,
+            "freshness_policy": "checkpoint_generation_bound",
+        },
         "computed_at": now.isoformat(),
         "sources": rows,
         "run_elapsed_seconds": _duration(
@@ -783,10 +983,25 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
         "collection_overlap": collection_overlap,
         "shared_commands": [
             command
-            for command in _commands(root, now=now)[0]
+            for _, evidence in bound_runs.values()
+            for command in evidence[0]
             if command["source"] is None
+        ],
+        "validation_query_timings": [
+            item
+            for run_dir, (child, _) in bound_runs.items()
+            for item in _validation_timings(run_dir, child)
+        ],
+        "checkpoint_resources": [
+            {
+                "run_id": run_dir.name,
+                "runtime_configuration": _runtime(run_dir, now=now),
+                "resources": resource_report(run_dir, now=now),
+            }
+            for run_dir in bound_runs
         ]
-        if "series_id" not in manifest
+        if "series_id" in manifest
+        and _object(manifest.get("config")).get("pipeline") is True
         else [],
         "shared_host_cpu": _cpu(root) if "series_id" not in manifest else None,
         "shared_runtime_configuration": _runtime(root, now=now)
@@ -807,6 +1022,7 @@ def render(report: Mapping[str, Any]) -> str:
     lines = [
         f"CRE performance  {report['generation_id']}",
         f"Collector SHA    {report['collector_git_sha']}",
+        f"Run elapsed     {_display(report.get('run_elapsed_seconds'))}s (wall time; overlapping commands are not summed)",
         "",
         "Source                Status                     Raw  Staged  Rejected  Readback   Timed commands",
     ]
@@ -827,6 +1043,19 @@ def render(report: Mapping[str, Any]) -> str:
             f"{_display(row.get('raw_emitted_rows')):>4} {_display(staged):>7} "
             f"{_display(row.get('rejected_by_ingest')):>9} {_display(row.get('database_readback_ok')):>9} {timed:>15}"
         )
+        if timings:
+            lines.append(
+                "  Command steps: "
+                + ", ".join(
+                    f"{name}={seconds:.3f}s"
+                    for name, seconds in sorted(timings.items())
+                )
+            )
+        stage = _object(row.get("stage_wall_seconds"))
+        if stage.get("awaiting_validation_seconds") is not None:
+            lines.append(
+                f"  Dispatch wait={_display(stage.get('dispatch_wait_seconds'))}s; awaiting validation={stage['awaiting_validation_seconds']}s; collection-to-verified={_display(stage.get('source_elapsed_seconds'))}s."
+            )
         collection = [item for item in row["commands"] if item.get("scrape")]
         if collection:
             scrape = collection[-1]["scrape"]
@@ -861,6 +1090,22 @@ def render(report: Mapping[str, Any]) -> str:
             + ". This is subprocess wall-time overlap, not request concurrency."
         )
     lines.extend(_render_resources(_object(report.get("resources"))))
+    for item in report.get("validation_query_timings", []):
+        queries = _object(item.get("queries"))
+        measured = [
+            (name, row["elapsed_ms"])
+            for name, row in queries.items()
+            if row.get("elapsed_ms") is not None
+        ]
+        if measured:
+            slowest = sorted(measured, key=lambda pair: pair[1], reverse=True)[:3]
+            lines.append(
+                f"Validation {item['stage']} slowest client queries: "
+                + ", ".join(
+                    f"{name}={milliseconds:.3f}ms" for name, milliseconds in slowest
+                )
+                + "; all measured families in JSON."
+            )
     if _object(report.get("resources")).get("state") != "observed":
         for row in report["sources"]:
             if _object(row.get("resources")).get("state") == "observed":
@@ -873,9 +1118,30 @@ def render(report: Mapping[str, Any]) -> str:
             "Latency is approximate; queue wait and direct-provider/cache coverage may be unknown.",
             "CPU is from bounded guard evidence; Node RSS is sampled, not a true peak.",
             "Use --json for command IDs, settings, retries/cache counters and evidence gaps.",
-            "No matched quality-valid baseline: speedup is unknown. Shared coordinator metrics are not source costs.",
+            "No matched quality-valid baseline: speedup is unknown. Shared coordinator metrics are not source costs."
+            if _object(report.get("comparison")).get("state") == "unavailable"
+            else "Saved-run comparison is observational; code, provider, cache and host changes can affect results.",
         ]
     )
+    comparison = _object(report.get("comparison"))
+    if comparison.get("state") != "unavailable":
+        elapsed = _object(comparison.get("elapsed"))
+        lines.extend(
+            [
+                "",
+                f"Baseline generation {comparison.get('baseline_generation_id')} / SHA {comparison.get('baseline_collector_git_sha')}",
+                f"Run wall: {_display(elapsed.get('baseline_seconds'))}s -> {_display(elapsed.get('current_seconds'))}s; matched-work elapsed reduction={_display(elapsed.get('reduction_percent'))}%.",
+            ]
+        )
+        for item in comparison.get("sources", []):
+            duration, rate = item["elapsed_seconds"], item["staged_per_minute"]
+            lines.append(
+                f"  {item['source']}: elapsed {_display(duration['baseline'])}s -> {_display(duration['current'])}s; staged/min {_display(rate['baseline'])} -> {_display(rate['current'])}; recorded readbacks={item['readbacks_recorded_ok']}."
+            )
+        if comparison.get("context_differences"):
+            lines.append(
+                "Context differences: " + ", ".join(comparison["context_differences"])
+            )
     return "\n".join(lines)
 
 
@@ -1092,6 +1358,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--json", action="store_true", help="print a structured one-shot report"
     )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="compare another saved checkpoint/series offline; never queries providers or the database",
+    )
     args = parser.parse_args(argv)
     try:
         if args.trial_dir is not None:
@@ -1103,6 +1374,10 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.run).expanduser() if args.run else resolve_series_path(None)
             )
             report = build_report(path)
+        if args.baseline is not None:
+            report["comparison"] = compare_reports(
+                report, build_report(args.baseline.expanduser())
+            )
         if args.out_dir is not None:
             write_report(report, args.out_dir.expanduser())
     except (OSError, ValueError, UnicodeError, TypeError, RecursionError):

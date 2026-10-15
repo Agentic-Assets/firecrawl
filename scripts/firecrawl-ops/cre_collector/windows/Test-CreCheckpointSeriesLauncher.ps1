@@ -75,9 +75,23 @@ $cases = @(
     @{ Name = 'source-list'; Args = @('-Tier', 'series', '-Source', 'jll,hanley', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'bad-sha'; Args = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', 'main', '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false }
 )
+$pipelineBase = @('-Tier','series','-Sources','cbre,jll','-Pipeline','-ExpectedSha',$sha,
+    '-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
+$cases += @{Name='pipeline-default'; Args=$pipelineBase; Exit=0; Dispatch=$true; Workers=2}
+foreach ($workers in @(1,2,3,4)) {
+    $cases += @{Name=('pipeline-' + $workers); Args=($pipelineBase + @('-SourceWorkers',"$workers")); Exit=0; Dispatch=$true; Workers=$workers}
+}
+foreach ($workers in @(0,5)) {
+    $cases += @{Name=('pipeline-invalid-' + $workers); Args=($pipelineBase + @('-SourceWorkers',"$workers")); Exit=1; Dispatch=$false}
+}
+$cases += @{Name='pipeline-duplicate'; Args=($series + @('-Pipeline','-Sources','jll,jll')); Exit=1; Dispatch=$false}
+$cases += @{Name='pipeline-unknown'; Args=@('-Tier','series','-Pipeline','-Sources','jll,unknown','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=1; Dispatch=$false}
+$cases += @{Name='pipeline-source-conflict'; Args=($series + @('-Pipeline','-Sources','cbre,jll')); Exit=1; Dispatch=$false}
+$cases += @{Name='serial-workers'; Args=($series + @('-SourceWorkers','2')); Exit=1; Dispatch=$false}
 foreach ($case in $cases) {
     $caseRoot = Join-Path $ProofDirectory $case.Name
     $caseWindows = Join-Path $caseRoot 'windows'
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../data') -Destination (Join-Path $caseRoot 'data') -Recurse -Force
     New-Item -ItemType Directory -Path $caseWindows -Force | Out-Null
     [IO.File]::Copy((Join-Path $PSScriptRoot 'CreNativeCapture.cs'), (Join-Path $caseWindows 'CreNativeCapture.cs'))
     $argvPath = Join-Path $caseRoot 'argv.bin'
@@ -133,9 +147,12 @@ foreach ($case in $cases) {
         }
         Assert-True (($forwarded -join '|').Contains('--concurrency|1|--nice|15|--page-cap|400|--attempts-per-source|3|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
         Assert-True (-not ($forwarded -contains '/usr/bin/nice') -and ($forwarded -join '|').Contains('NAI_ENUMERATION_CONCURRENCY=1|python3|')) 'Coordinator must inherit caller priority; canonical --nice supplies the only checkpoint adjustment.'
-        $selectedSource = if ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
-        $budget = if ($case.Name -in @('selected', 'interra-current', 'buildout-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
+        $selectedSource = if ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
+        $budget = if ($case.ContainsKey('Workers')) { '30' } elseif ($case.Name -in @('selected', 'interra-current', 'buildout-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
         Assert-True (($forwarded -join '|').Contains('--sources|' + $selectedSource + '|') -and ($forwarded -join '|').Contains('--work-deadline-seconds|' + $budget + '|')) 'Selected source and exact finite work budget must be forwarded.'
+        if ($case.ContainsKey('Workers')) {
+            Assert-True (($forwarded -join '|').Contains('--pipeline|--source-workers|' + $case.Workers)) 'Resolved worker setting crosses actual native argv boundary.'
+        }
         if ($case.Name -in @('interra-current', 'buildout-current')) {
             Assert-True (($forwarded -join '|').EndsWith('--admit-current-inventory-source|' + $selectedSource)) 'Explicit source admission must survive the actual native argv boundary.'
         } else {

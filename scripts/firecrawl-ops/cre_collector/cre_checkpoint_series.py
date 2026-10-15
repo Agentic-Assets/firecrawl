@@ -11,6 +11,7 @@ series immediately. Every live write remains inside the checkpoint runner.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -21,7 +22,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +33,8 @@ from cre_checkpoint_refresh import (
     DEFAULT_MAX_HOST_CPU_PERCENT,
     DEFAULT_MAX_RESUME_AGE_HOURS,
     SOURCE_KEYS,
-    RefreshError,
     ProcessCleanupUnknown,
+    RefreshError,
     allocate_run_id,
     atomic_write_json,
     database_target_fingerprint,
@@ -54,7 +55,6 @@ from cre_owned_processes import (
     settle_owned_groups,
 )
 from cre_performance_report import save_report
-from cre_series_control import SeriesControlError, SeriesWorkStopped
 from cre_resource_recovery import (
     DEFAULT_LOW_CPU_PERCENT,
     DEFAULT_LOW_CPU_SECONDS,
@@ -75,6 +75,7 @@ from cre_resource_recovery import (
     SeriesOwnershipLock,
     wait_for_cpu_recovery,
 )
+from cre_series_control import SeriesControlError, SeriesWorkStopped
 
 _CLI_CONTROL_CAPABILITY = None
 
@@ -140,7 +141,7 @@ def _exact_json_equal(left: Any, right: Any) -> bool:
 
 
 def _run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
 
 
 def parse_sources(value: str) -> tuple[str, ...]:
@@ -171,13 +172,19 @@ def series_config(
     recovery: RecoveryConfig | None = None,
     memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
     memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
-    admit_current_inventory_source: str | None = None,
+    admit_current_inventory_source: str | Sequence[str] | None = None,
+    pipeline: bool = False,
+    source_workers: int | None = None,
 ) -> dict[str, Any]:
     import cre_current_inventory_admission as current_inventory
 
-    current_inventory.validate_option(
-        admit_current_inventory_source, sources, ("sale", "lease")
-    )
+    admissions = ([admit_current_inventory_source] if isinstance(admit_current_inventory_source, str)
+                  else list(admit_current_inventory_source or ()))
+    current_inventory.validate_options(admissions, sources, ("sale", "lease"), pipeline=pipeline)
+    workers = (2 if pipeline else 1) if source_workers is None else source_workers
+    if type(workers) is not int or not 1 <= workers <= 4 or (not pipeline and workers != 1):
+        raise ValueError("source-workers must be 1–4 in pipeline mode; serial series requires 1")
+
     recovery_config = recovery or RecoveryConfig()
     recovery_config.validate()
     if (
@@ -192,7 +199,7 @@ def series_config(
         "transactions": ["sale", "lease"],
         "page_cap": page_cap,
         "concurrency": concurrency,
-        "source_workers": 1,
+        "source_workers": workers,
         "attempts_per_source": attempts_per_source,
         "max_resume_age_hours": max_resume_age_hours,
         "host_cpu_guard": {
@@ -207,10 +214,13 @@ def series_config(
         "nice": nice,
         "continue_source_local_failures": True,
     }
-    if admit_current_inventory_source is not None:
-        config["current_inventory_admission"] = current_inventory.configuration(
-            admit_current_inventory_source
-        )
+    if pipeline:
+        config["pipeline"] = True
+        config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources)
+        if recovery_config.max_recoveries_per_source:
+            raise ValueError("pipeline resource failures require a hard stop; automatic recovery is disabled")
+    elif admissions:
+        config["current_inventory_admission"] = current_inventory.configuration(admissions[0])
     return config
 
 
@@ -256,7 +266,7 @@ def new_manifest(
         },
         "error": None,
     }
-    if config.get("current_inventory_admission"):
+    if config.get("current_inventory_admission") or config.get("current_inventory_admissions"):
         result["scope"] = {
             "kind": "collector_registry_additive_current_inventory",
             "whole_source_coverage": False,
@@ -541,7 +551,7 @@ def build_checkpoint_argv(
         "--concurrency",
         str(config["concurrency"]),
         "--source-workers",
-        "1",
+        str(config["source_workers"]),
         "--attempts-per-source",
         str(config["attempts_per_source"]),
         "--max-resume-age-hours",
@@ -557,6 +567,10 @@ def build_checkpoint_argv(
         "--memory-sample-seconds",
         str(config["host_memory_guard"]["sample_seconds"]),
     ]
+    if config.get("pipeline"):
+        argv.append("--pipeline")
+        for key in config.get("current_inventory_admissions", {}):
+            argv.extend(["--admit-current-inventory-source", key])
     if resume_run is not None:
         argv.extend(["--resume", str(resume_run)])
     elif fresh_run_id is not None:
@@ -576,12 +590,12 @@ def _expected_child_config(
 ) -> dict[str, Any]:
     guard = config["host_cpu_guard"]
     expected = {
-        "sources": [source],
+        "sources": source.split(",") if config.get("pipeline") else [source],
         "transactions": ["sale", "lease"],
         "max_items": 0,
         "page_cap": config["page_cap"],
         "concurrency": config["concurrency"],
-        "source_workers": 1,
+        "source_workers": config["source_workers"],
         "host_cpu_guard": {
             "max_host_cpu_percent": guard["max_host_cpu_percent"],
             "sustain_seconds": guard["sustain_seconds"],
@@ -594,6 +608,9 @@ def _expected_child_config(
         "mark_missing": False,
         "admit_baseline_hold_additively": False,
     }
+    if config.get("pipeline"):
+        expected["pipeline"] = True
+        expected["current_inventory_admissions"] = config.get("current_inventory_admissions", {})
     if "current_inventory_admission" in config:
         expected["current_inventory_admission"] = config["current_inventory_admission"]
     # Reconciliation also inspects completed historical parent/child pairs.
@@ -628,7 +645,7 @@ def _parse_utc_timestamp(value: Any, *, field: str) -> datetime:
         raise SeriesError(f"{field} is invalid") from exc
     if parsed.tzinfo is None:
         raise SeriesError(f"{field} must include a timezone")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def validate_resource_recovery_admission(
@@ -678,7 +695,7 @@ def validate_resource_recovery_admission(
     finished_at = _parse_utc_timestamp(
         child_manifest.get("finished_at"), field="child finished_at"
     )
-    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    current = (now or datetime.now(UTC)).astimezone(UTC)
     future_limit = current + timedelta(minutes=5)
     if (
         started_at > future_limit
@@ -911,6 +928,8 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
     ownership: each stale parent must have exactly one child from its current
     outer attempt, on the same collector SHA and one-source configuration.
     """
+    if manifest["config"].get("pipeline"):
+        return reconcile_pipeline_series(series_dir, manifest)
     child_root = series_dir / "runs"
     git_sha = manifest["collector_git_sha"]
     for source, checkpoint in manifest["sources"].items():
@@ -1035,7 +1054,7 @@ def checkpoint_series_sigterm_handler(_signum: int, _frame: Any) -> None:
 
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _resource_recovery_state(manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -1527,6 +1546,536 @@ def admit_series_invocation(
     }
 
 
+def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
+    """Recover observations from the same exact terminal owner, never replay."""
+    sources = manifest["config"]["sources"]
+    refs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
+    if len(refs) != 1 or not isinstance(next(iter(refs)), str):
+        raise SeriesError("pipeline reconciliation requires one exact shared owner")
+    relative = Path(next(iter(refs)))
+    if (
+        relative.is_absolute()
+        or len(relative.parts) != 2
+        or relative.parts[0] != "runs"
+        or ".." in relative.parts
+    ):
+        raise SeriesError("invalid pipeline owner path")
+    _, child = _load_child_manifest(
+        series_dir / "runs",
+        before=set(),
+        source=",".join(sources),
+        git_sha=manifest["collector_git_sha"],
+        expected_path=series_dir / relative / "manifest.json",
+        expected_config=_expected_child_config(",".join(sources), manifest["config"]),
+    )
+    if child.get("status") not in {
+        SUCCESS_STATUS,
+        "additive_scope_complete_current_inventory",
+        "failed",
+        "interrupted",
+        RESOURCE_GUARD_STATUS,
+    } or child.get("preflight", {}).get("database_target") != manifest.get(
+        "database_target"
+    ):
+        raise SeriesError(
+            "pipeline reconciliation requires exact target and terminal owner"
+        )
+    finished = _parse_utc_timestamp(
+        child.get("finished_at"), field="pipeline finished_at"
+    )
+    started = _parse_utc_timestamp(child.get("started_at"), field="pipeline started_at")
+    for key in sources:
+        attempts = manifest["sources"][key].get("attempts")
+        if (
+            not attempts
+            or finished
+            < _parse_utc_timestamp(
+                attempts[-1].get("started_at"), field="attempt started_at"
+            )
+            or finished < started
+        ):
+            raise SeriesError(
+                "pipeline reconciliation lacks exact terminal attempt timing"
+            )
+    unit_cache = {}
+    for key in sources:
+        row = manifest["sources"][key]
+        row.update(
+            state="complete"
+            if pipeline_source_qualified(
+                child,
+                key,
+                run_dir=series_dir / relative,
+                parent_started_at=manifest["started_at"],
+                parent_finished_at=utc_now(),
+                unit_cache=unit_cache,
+                parent_attempts=row["attempts"],
+            )
+            else "interrupted",
+            checkpoint_status=child["status"],
+            error=child.get("error"),
+        )
+        row["attempts"][-1]["finished_at"] = child["finished_at"]
+    save_manifest(series_dir, manifest)
+
+
+def _pipeline_member_report_matches(
+    report: dict, checkpoint: dict, source: str, run_id: str
+) -> bool:
+    """Cross-bind saved exact readback fields to the hashed full query output."""
+    artifact = checkpoint["artifact"]
+    readback = checkpoint["readback"]
+    staged = artifact["staged_unique"]
+    inventory_only = artifact.get("inventory_only", 0)
+    if (
+        type(staged) is not int
+        or staged < 0
+        or type(inventory_only) is not int
+        or inventory_only < 0
+        or readback["expected_staged_unique"] != staged
+    ):
+        return False
+    rows = report["queries"]["freshness_generations"]
+    generation_rows = [
+        row
+        for row in rows
+        if row.get("source_key") == source and row.get("generation_id") == run_id
+    ]
+    if readback.get("generation_id") == run_id:
+        if len(generation_rows) != 1:
+            return False
+        generation = generation_rows[0]
+        if (
+            int(generation["active"]) != staged
+            or int(generation["persisted_inventory_observed"]) != staged
+            or readback["latest_inventory_batch_active"] != staged
+            or generation["evidence_class"] != readback["evidence_class"]
+        ):
+            return False
+        for name in (
+            "earliest_inventory_observed_at",
+            "latest_inventory_observed_at",
+            "earliest_detail_observed_at",
+            "latest_detail_observed_at",
+        ):
+            if readback.get(name) is not None and (
+                _parse_utc_timestamp(generation[name], field=name)
+                != _parse_utc_timestamp(readback[name], field=name)
+            ):
+                return False
+    elif (
+        staged != 0 or inventory_only <= 0 or readback.get("generation_id") is not None
+    ):
+        return False
+    if readback.get("generation_id") is None:
+        from cre_source_policy import load_source_policy
+
+        if load_source_policy()[source]["inventory_only_namespace"] is None:
+            return False
+    if inventory_only:
+        inventory = [
+            row
+            for row in report["queries"]["inventory_only_index"]
+            if row.get("source_key") == source
+        ]
+        saved = readback["inventory_only"]
+        if (
+            len(inventory) != 1
+            or int(inventory[0]["active"]) != inventory_only
+            or int(inventory[0]["latest_batch_active"]) != inventory_only
+            or saved["expected_active"] != inventory_only
+        ):
+            return False
+    fingerprint_rows = [
+        row
+        for row in report["queries"]["inventory_generation_fingerprints"]
+        if row.get("source_key") == source
+    ]
+    fingerprint = readback["inventory_fingerprint"]
+    if (
+        len(fingerprint_rows) != 1
+        or fingerprint["sourceId"] != source
+        or fingerprint["publicationStatus"] != "complete"
+        or type(fingerprint["rowCount"]) is not int
+        or int(fingerprint_rows[0]["row_count"]) != fingerprint["rowCount"]
+    ):
+        return False
+    return all(
+        _parse_utc_timestamp(fingerprint_rows[0][raw], field=raw)
+        == _parse_utc_timestamp(fingerprint[saved], field=saved)
+        for raw, saved in (
+            ("max_row_updated_at", "maxRowUpdatedAt"),
+            ("max_observation_at", "maxObservationAt"),
+        )
+    )
+
+
+def pipeline_source_qualified(
+    child: Mapping[str, Any],
+    source: str,
+    *,
+    run_dir: Path | None = None,
+    parent_started_at: str | None = None,
+    parent_finished_at: str | None = None,
+    unit_cache: dict | None = None,
+    allow_running: bool = False,
+    parent_attempts: Sequence[Mapping[str, Any]] | None = None,
+) -> bool:
+    """Qualify original bound audit bytes; matching manifest strings are insufficient.
+
+    A caller owns one cache for a single qualification pass. It never persists
+    cache entries across reads or generations, and each sealed report is read once.
+    """
+    from cre_series_status import _contained_path, _read_regular_file
+    from cre_validate import (
+        FULL_VALIDATION_PROFILE,
+        VALIDATION_AUDIT_SCOPES,
+        require_full_validation_report,
+    )
+
+    if run_dir is None or parent_started_at is None or not parent_attempts:
+        return False
+    cache = unit_cache if unit_cache is not None else {}
+    try:
+        run_id = child["run_id"]
+        if not isinstance(run_id, str) or validate_run_id(run_id) != run_dir.name:
+            return False
+        parent_start = _parse_utc_timestamp(
+            parent_started_at, field="parent started_at"
+        )
+        parent_end = _parse_utc_timestamp(
+            parent_finished_at or utc_now(), field="parent finished_at"
+        )
+        child_start = _parse_utc_timestamp(
+            child["started_at"], field="child started_at"
+        )
+        child_finished = child.get("finished_at")
+        if child_finished is None and not (
+            allow_running and child.get("status") == "running"
+        ):
+            return False
+        child_end = _parse_utc_timestamp(
+            child_finished or parent_end.isoformat(), field="child finished_at"
+        )
+        if not parent_start <= child_start <= child_end <= parent_end:
+            return False
+        results = child["pipeline"]["source_results"]
+        result = results[source]
+        unit_id = result["unit_id"]
+        if (
+            not isinstance(unit_id, str)
+            or not re.fullmatch(r"unit-[0-9]{4,6}", unit_id)
+            or int(unit_id[5:]) <= 0
+        ):
+            return False
+        units = child["pipeline"]["units"]
+        matching = [unit for unit in units if unit.get("unit_id") == unit_id]
+        if len(matching) != 1:
+            return False
+        unit = matching[0]
+        members = unit["sources"]
+        if (
+            unit["state"] != "verified"
+            or not isinstance(members, list)
+            or not 1 <= len(members) <= 5
+            or len(set(members)) != len(members)
+            or source not in members
+            or any(key not in child["sources"] for key in members)
+        ):
+            return False
+        unit_start = _parse_utc_timestamp(unit["started_at"], field="unit started_at")
+        unit_end = _parse_utc_timestamp(unit["finished_at"], field="unit finished_at")
+        if not child_start <= unit_start <= unit_end <= child_end:
+            return False
+        in_parent_attempt = False
+        for attempt in parent_attempts:
+            attempt_start = _parse_utc_timestamp(
+                attempt.get("started_at"), field="parent attempt started_at"
+            )
+            attempt_end = _parse_utc_timestamp(
+                attempt.get("finished_at") or parent_end.isoformat(),
+                field="parent attempt finished_at",
+            )
+            if (
+                parent_start
+                <= attempt_start
+                <= unit_start
+                <= unit_end
+                <= attempt_end
+                <= parent_end
+            ):
+                in_parent_attempt = True
+        if not in_parent_attempt:
+            return False
+        path = unit["validation_path"]
+        digest = unit["validation_sha256"]
+        expected_path = f"pipeline/{unit_id}/validation.json"
+        if (
+            path != expected_path
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", digest)
+        ):
+            return False
+        evidence = unit["validation"]
+        if (
+            evidence["path"] != path
+            or type(evidence["rc"]) is not int
+            or evidence["rc"] != 0
+            or evidence["query_execution_ok"] is not True
+            or evidence["quality_no_regression"] is not True
+            or evidence["quality_failures"] != []
+            or evidence["readback_ok"] is not True
+            or evidence["failed_readback_sources"] != []
+            or type(evidence["absolute_quality_ok"]) is not bool
+            or not isinstance(evidence["absolute_quality_failures"], list)
+        ):
+            return False
+        cache_key = (str(run_dir), unit_id, path, digest)
+        if cache_key not in cache:
+            cache[cache_key] = None
+            bound = _contained_path(run_dir, path)
+            original = run_dir / path
+            if bound is None or any(
+                part.is_symlink()
+                for part in (run_dir, original.parent.parent, original.parent, original)
+            ):
+                return False
+            raw = _read_regular_file(original, limit=32 * 1024 * 1024)
+            if hashlib.sha256(raw).hexdigest() != digest:
+                return False
+            report = json.loads(raw)
+            if (
+                report.get("validation_profile") != FULL_VALIDATION_PROFILE
+                or report.get("audit_scope")
+                != VALIDATION_AUDIT_SCOPES[FULL_VALIDATION_PROFILE]
+                or report.get("ok") is not True
+            ):
+                return False
+            require_full_validation_report(report)
+            report_time = _parse_utc_timestamp(
+                report["generated_at"], field="validation generated_at"
+            )
+            if not unit_start <= report_time <= unit_end:
+                return False
+            cache[cache_key] = report
+        if cache[cache_key] is None:
+            return False
+        report = cache[cache_key]
+        for key in members:
+            checkpoint = child["sources"][key]
+            proof = results[key]
+            artifact = checkpoint["artifact"]
+            artifact_digest = artifact["sha256"]
+            if (
+                not isinstance(artifact_digest, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", artifact_digest)
+                or type(artifact["bytes"]) is not int
+                or artifact["bytes"] <= 0
+                or proof["state"] != "verified"
+                or proof["unit_id"] != unit_id
+                or proof["readback_ok"] is not True
+                or proof["generation_id"] != run_id
+                or proof["artifact_sha256"] != artifact_digest
+                or proof["validation_path"] != expected_path
+                or proof["validation_sha256"] != digest
+                or checkpoint["readback"]["ok"] is not True
+                or not _pipeline_member_report_matches(report, checkpoint, key, run_id)
+                or sum(
+                    key in candidate.get("sources", [])
+                    for candidate in units
+                    if candidate.get("state") == "verified"
+                )
+                != 1
+            ):
+                return False
+        return True
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        OverflowError,
+        SeriesError,
+    ):
+        return False
+
+
+def run_pipeline_series(
+    series_dir: Path,
+    manifest: dict[str, Any],
+    *,
+    env_file: str | None,
+    expected_sha: str | None = None,
+    control=None,
+) -> int:
+    """Forward the finite selection once; the refresh owns all stage overlap."""
+    config = manifest["config"]
+    sources = config["sources"]
+    root = series_dir / "runs"
+    root.mkdir(parents=True, exist_ok=True)
+    logs = series_dir / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    prior_runs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
+    resume = None
+    if prior_runs != {None}:
+        if len(prior_runs) != 1 or None in prior_runs:
+            raise SeriesError(
+                "pipeline sources must share exactly one bound refresh owner"
+            )
+        prior = next(iter(prior_runs))
+        if not isinstance(prior, str):
+            raise SeriesError("pipeline owner binding is malformed")
+        resume = series_dir / prior
+        _load_child_manifest(
+            root,
+            before=set(),
+            source=",".join(sources),
+            git_sha=manifest["collector_git_sha"],
+            expected_path=resume / "manifest.json",
+            expected_config=_expected_child_config(",".join(sources), config),
+        )
+    if expected_sha is not None:
+        verify_reviewed_checkout(
+            expected_sha, **({"control": control} if control else {})
+        )
+    run_id = None if resume else allocate_run_id()
+    child_run = resume or root / run_id
+    attempt = {
+        "number": 1
+        + max(
+            (len(manifest["sources"][key]["attempts"]) for key in sources), default=0
+        ),
+        "started_at": utc_now(),
+        "finished_at": None,
+        "rc": None,
+        "log": "logs/pipeline.log",
+    }
+    for key in sources:
+        row = manifest["sources"][key]
+        row.update(
+            state="running",
+            checkpoint_run=str(child_run.relative_to(series_dir)),
+            checkpoint_status=None,
+            error=None,
+        )
+        row["attempts"].append(dict(attempt))
+    save_manifest(series_dir, manifest)
+    argv = build_checkpoint_argv(
+        ",".join(sources),
+        child_out_root=root,
+        env_file=env_file,
+        config=config,
+        resume_run=resume,
+        fresh_run_id=run_id,
+    )
+    if control is not None:
+        control.prepare_checkpoint(child_run, manifest["collector_git_sha"])
+        argv.extend(
+            [
+                "--series-control-invocation-id",
+                control.invocation_id,
+                "--series-control-child-id",
+                control.child_invocation_id,
+            ]
+        )
+        for key in sources:
+            manifest["sources"][key]["attempts"][-1]["series_control_child_id"] = (
+                control.child_invocation_id
+            )
+        save_manifest(series_dir, manifest)
+    proc = None
+    try:
+        with (logs / "pipeline.log").open("a", encoding="utf-8") as log:
+            spawn = control.spawn if control is not None else None
+            kwargs = {
+                "cwd": COLLECTOR_DIR,
+                "stdout": log,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "start_new_session": True,
+            }
+            with _defer_cleanup_signals():
+                proc = (
+                    spawn(subprocess.Popen, argv, **kwargs)
+                    if spawn
+                    else subprocess.Popen(argv, **kwargs)
+                )
+                if control is None:
+                    proc._cre_owned_group = OwnedProcessGroup.from_spawn(proc)
+            if control is not None:
+                control.check()
+            rc = proc.wait()
+            if control is not None:
+                control.observe_exit(proc)
+            else:
+                _terminate_child(proc)
+    except BaseException:
+        if proc is not None and control is None:
+            _terminate_child(proc)
+        raise
+    _, child = _load_child_manifest(
+        root,
+        before=set(),
+        source=",".join(sources),
+        git_sha=manifest["collector_git_sha"],
+        expected_path=child_run / "manifest.json",
+        expected_config=_expected_child_config(",".join(sources), config),
+    )
+    if child.get("preflight", {}).get("database_target") != manifest.get(
+        "database_target"
+    ):
+        raise SeriesError("pipeline checkpoint database target changed")
+    qualified = set()
+    unit_cache = {}
+    for key in sources:
+        row = manifest["sources"][key]
+        row["attempts"][-1].update(finished_at=utc_now(), rc=rc)
+        if pipeline_source_qualified(child, key, run_dir=child_run,
+                parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
+                parent_attempts=row["attempts"]):
+            qualified.add(key)
+            row.update(state="complete", error=None)
+            row["pipeline_result"] = child["pipeline"]["source_results"][key]
+        else:
+            state = child.get("sources", {}).get(key, {}).get("state")
+            if state in {
+                "collect_failed",
+                "artifact_rejected",
+                "gate_failed",
+                "gate_blocked",
+                "baseline_seed_required",
+                "dry_run_failed",
+            }:
+                outcome = "failed_source"
+            elif state in {
+                "pending",
+                "collecting",
+                "candidate",
+                "validated",
+                "gated",
+                "dry_run_passed",
+            }:
+                outcome = "pending"
+            else:
+                outcome = "failed_global"
+            row.update(
+                state=outcome, error="pipeline source lacks qualified unit readback"
+            )
+        row["checkpoint_status"] = child.get("status")
+    success = rc == 0 and len(qualified) == len(sources)
+    manifest.update(
+        status="complete" if success else "failed",
+        finished_at=utc_now(),
+        error=None
+        if success
+        else "pipeline incomplete; inspect exact member and owner evidence",
+    )
+    save_manifest(series_dir, manifest)
+    print(series_dir)
+    return 0 if success else (rc or 1)
+
+
 def run_series(
     series_dir: Path,
     manifest: dict[str, Any],
@@ -1537,6 +2086,14 @@ def run_series(
     control=None,
 ) -> int:
     config = manifest["config"]
+    if config.get("pipeline"):
+        return run_pipeline_series(
+            series_dir,
+            manifest,
+            env_file=env_file,
+            expected_sha=expected_sha,
+            control=control,
+        )
     git_sha = manifest["collector_git_sha"]
     child_out_root = series_dir / "runs"
     child_out_root.mkdir(parents=True, exist_ok=True)
@@ -1986,7 +2543,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--sources", default="all")
-    parser.add_argument("--admit-current-inventory-source", default=None)
+    parser.add_argument("--admit-current-inventory-source", action="append", default=None)
+    parser.add_argument("--pipeline", action="store_true")
+    parser.add_argument("--source-workers", type=int, default=None)
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
@@ -2072,9 +2631,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         sources = parse_sources(args.sources)
         import cre_current_inventory_admission as current_inventory
 
-        current_inventory.validate_option(
-            args.admit_current_inventory_source, sources, ("sale", "lease")
+        current_inventory.validate_options(
+            args.admit_current_inventory_source, sources, ("sale", "lease"), pipeline=args.pipeline
         )
+        if args.source_workers is not None and (not 1 <= args.source_workers <= 4 or
+                (not args.pipeline and args.source_workers != 1)):
+            raise ValueError("source-workers must be 1–4 in pipeline mode; serial series requires 1")
+        if args.pipeline and args.max_resource_recoveries_per_source:
+            raise ValueError("pipeline automatic resource recovery is disabled")
     except ValueError as exc:
         parser.error(str(exc))
     if args.page_cap < 1 or not 1 <= args.concurrency <= 6:
@@ -2149,6 +2713,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         nice=args.nice,
         recovery=recovery_config,
         admit_current_inventory_source=args.admit_current_inventory_source,
+        pipeline=args.pipeline,
+        source_workers=args.source_workers,
     )
     database_target = database_target_fingerprint(args.env_file)
 

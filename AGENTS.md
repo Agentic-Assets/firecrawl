@@ -68,6 +68,9 @@ production DDL, cache refresh, scheduling, or deployment. The collector must
 preserve the five-column OM-facts identity; it does not own OM extraction
 writes, market-data objects, or EQUIRE product views.
 
+For development, launcher, runtime, and isolated-test checkout roles—including exact-SHA
+handoff and database rollback limits, see [Development and runtime checkouts](docs/firecrawl-ops/references/development-and-runtime-checkouts.md).
+
 ## Env files (which is which)
 
 - **`./.env`** — **primary when present.** This is the root file Docker Compose reads. It is gitignored and optional for non-AI local calls. Never commit it.

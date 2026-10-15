@@ -108,6 +108,11 @@ repo root. Do not treat that command as a read-only doctor.
 
 ### Isolated verification
 
+For checkout roles, branch-versus-runtime pins, safe promotion, and rollback boundaries, see
+[Development and runtime checkouts](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md).
+Collector suites belong in an independent test clone, using WSL's ext4 filesystem on Windows
+or the host filesystem on macOS, never the runtime checkout. Native launcher fixtures run on Windows.
+
 For Python and TypeScript tests, create an isolated clone so lock discovery cannot reach a
 runtime checkout, then use a venv (also avoids Ubuntu's system-pip restriction):
 
@@ -301,3 +306,7 @@ Firecrawl's container API and agent helpers remain usable from PowerShell.
 For WSL2, keep a separate clone and Linux dependencies under `~/code/firecrawl`
 on ext4. Do not reuse Windows `node_modules`, copy production secrets or run a
 second writer. See [Windows onboarding](../../../docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md).
+
+## Portable pipeline configuration
+
+The opt-in `--pipeline --source-workers 2` behavior is shared by macOS and Linux/WSL; serial defaults remain unchanged. Follow [Start Here](START_HERE.md#opt-in-stage-overlap) for finite source admissions and the audit/recovery boundary. Setup never activates this mode or changes an installed task.
