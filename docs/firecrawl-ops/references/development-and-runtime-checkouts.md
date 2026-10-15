@@ -8,13 +8,13 @@ implementations or independent writer authorities.
 
 ## Checkout roles
 
-- **Permanent development clone** (`C:\Users\CSEAGRAVES2018\GitHub\firecrawl-dev`): create
+- **Permanent development clone** (`%USERPROFILE%\GitHub\firecrawl-dev` on Windows): create
   branches, edit, review, and commit code. Keep its dependencies and build outputs local to this
   clone. Do not run the production refresh from it.
-- **Native Windows launcher and audit checkout** (`C:\Users\CSEAGRAVES2018\GitHub\firecrawl`):
+- **Native Windows launcher and audit checkout** (`%USERPROFILE%\GitHub\firecrawl`):
   open runtime/control tasks, retain launcher and audit files, and verify the intended source
-  SHA. Native Windows is not a supported collector runtime or CRE test environment.
-- **WSL2 ext4 runtime checkout** (`/home/cayman/code/firecrawl`): run the approved Linux runtime
+  SHA. Run native launcher fixtures on Windows; POSIX collector execution and suites require WSL.
+- **WSL2 ext4 runtime checkout** (for example `~/code/firecrawl` inside Ubuntu): run the approved Linux runtime
   and its foreground checkpoint owner. Keep Linux dependencies and runtime-owned files here.
 - **macOS runtime checkout**: use the host-specific approved runtime with its own local
   dependencies and launcher state. Do not infer its path or state from Windows or WSL.
@@ -36,8 +36,9 @@ ordinary pipeline work does not require Developer Mode or administrator changes.
 
 A branch names a line of source history; a checkout is a filesystem tree with its own
 dependencies, runtime paths, and lock files. Two checkouts on the same branch or commit do not
-share local lock ownership. The CRE lock and authority evidence protect only the configured
-checkout and host. They do not coordinate the Windows launcher, a second WSL clone, or a Mac.
+share local lock ownership. The CRE lock and authority evidence protect the configured runtime.
+A Windows launcher targeting that runtime uses its lock. Independent runtime clones and other
+computers have separate locks; cloning does not provide shared production-writer exclusion.
 
 Keep the collector and ingestor as one shared implementation. Linux/WSL and macOS may use
 different launchers and host setup, but do not fork the pipeline by operating system. The native
@@ -62,11 +63,15 @@ enable a schedule, or change a runtime.
 After the candidate has passed its isolated checks and is merged or otherwise selected through
 the approved release path:
 
-1. Record the reviewed commit SHA and verify the development tree is clean.
-2. Fast-forward the stable native launcher checkout and the intended ext4 runtime checkout to
+1. Record the reviewed commit SHA and verify the development tree is clean. Save the exact task
+   definitions and prior pins. Prevent new scheduled launches and prove existing owned processes
+   are settled with no unresolved recovery fence before changing either runtime tree.
+2. Under the existing ownership procedure, fast-forward the stable native launcher checkout and the intended ext4 runtime checkout to
    the selected commit using ordinary Git history. Do not force-reset either checkout. Keep all
    host-local dependencies and credentials in place.
-3. At the target host, run the read-only dependency check (bash cre_setup.sh --check) and
+3. Update each existing task's expected SHA to the same reviewed commit, preserving its other
+   settings and cadence. Keep scheduling disabled until both clean checkout SHAs and pins agree.
+   At the target host, run the read-only dependency check (`bash cre_setup.sh --check`) and
    runtime checks in cre_status.sh and START HERE. Recheck the expected source definitions and
    exact code SHA; the selected task SHA is only the code pin and grants no runtime or data
    admission.
@@ -74,6 +79,10 @@ the approved release path:
    HERE](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md). Restore the scheduler to
    its recorded prior state after the supervised operation; do not turn a previously disabled
    scheduler on as part of a code handoff.
+
+This is a coordinated update across Windows and Linux, not an atomic deployment. Keep the saved
+definitions and previous commits for recovery at another proven settled boundary; never force-reset
+an uncertain writer. Exact host paths belong in the context root's ignored `local/machine.md`.
 
 A code pin can select earlier code; it cannot undo database writes. Treat data repair or
 reversal as a separate reviewed database operation with its own exact-generation evidence and
