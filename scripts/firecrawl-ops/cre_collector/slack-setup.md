@@ -75,6 +75,49 @@ ordinary channel messages lead with the brokerage name and readable outcome.
 Wrapper exit zero or an observed stdout reference alone never supplies a
 verified listing count.
 
+### Manual formatting preview
+
+For quick message iteration, use
+`windows/Send-CreNotificationPreview.ps1`. It defaults to preview-only and
+formats the four named scenarios with the same brokerage and message formatter
+used by the guarded launcher. The preview begins with `FORMAT TEST | SAMPLE
+DATA | NO PIPELINE OR DB READBACK`; its counts are illustrative. Preview mode
+does not read a webhook file and does not call WSL, a provider, the database,
+or Slack.
+
+From the repository root, preview the default mixed-count completion message:
+
+```powershell
+pwsh -NoProfile -File .\scripts\firecrawl-ops\cre_collector\windows\Send-CreNotificationPreview.ps1
+```
+
+Choose `-Scenario Started`, `-Scenario NeedsAttention`, or
+`-Scenario Unverified` for other states. Adjust the safe `-Source` key and
+`-Total`, `-ForSale`, `-ForLease`, and `-Both` values for a completion sample;
+the tool refuses inconsistent counts. For typography-only iteration, provide a
+UTF-8 `-TextFile` (up to 3,500 bytes); the sample prefix remains on every
+message. Example:
+
+```powershell
+$samplePath = Join-Path $env:TEMP 'cre-notification-sample.txt'
+[IO.File]::WriteAllText($samplePath, "*Test heading*`n• Test bullet", (New-Object Text.UTF8Encoding($false)))
+pwsh -NoProfile -File .\scripts\firecrawl-ops\cre_collector\windows\Send-CreNotificationPreview.ps1 -TextFile $samplePath
+```
+
+Only an explicit `-Mode Send` invokes the existing private sender, once, using
+the configured private webhook file (default
+`%USERPROFILE%\.config\cre\cre-pipeline.webhook`). It sends the clearly marked
+sample message, not a pipeline notification. The sender's 4,096-byte cap and
+private-file checks still apply. A successful HTTP response is transport
+acceptance only; verify the exact labeled message in the channel before
+claiming delivery. This utility does not create a pipeline audit or imply that
+a collection or database readback occurred. To deliberately send the default
+labeled completion sample:
+
+```powershell
+pwsh -NoProfile -File .\scripts\firecrawl-ops\cre_collector\windows\Send-CreNotificationPreview.ps1 -Mode Send -Scenario Completed
+```
+
 ### What the summary means
 
 `StartFinish` still sends at most two channel messages per Windows attempt.
