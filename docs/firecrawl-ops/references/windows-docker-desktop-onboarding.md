@@ -177,7 +177,7 @@ distinguishes private CRE database/webhook files from Docker's root `.env`.
 
 The verified minimal WSL context uses the existing canonical Windows Context
 Engineering checkout through its Linux mount path, for example
-`/mnt/c/Users/<WindowsUser>/GitHub/Agentic-Assets-Context-Engineering`. Resolve
+`/mnt/c/Users/<WindowsUser>/GitHub/agentic-assets/Agentic-Assets-Context-Engineering`. Resolve
 the actual path with `wslpath`; keep the machine's exact path only in the
 context root's ignored `local/machine.md`. `~/.agentic-assets/env` exports
 `AA_CONTEXT_ROOT` and `AA_OPERATOR`; `~/.agentic-assets/operator` names the

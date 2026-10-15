@@ -74,8 +74,8 @@ Assert-Cre ($argv -contains ($LinuxRepo+'/scripts/firecrawl-ops/cre_collector/cr
 $start=Get-CreNotificationText $record 'Start' 0 $null
 $finish=Get-CreNotificationText $record 'Terminal' 0 $result
 $rocket=[char]::ConvertFromUtf32(0x1F680); $successMark=[char]::ConvertFromUtf32(0x2705); $warningMark=[char]::ConvertFromUtf32(0x26A0)+[char]0xFE0F; $bullet=[char]0x2022
-Assert-Cre ($start.StartsWith("$rocket *Newmark | Started*") -and $start.Contains('collection has not started')) 'Start must begin with its emoji and bold brokerage heading without claiming collection has happened.'
-Assert-Cre ($finish.StartsWith("$successMark *Newmark | Completed*") -and $finish.Contains('*Listings verified:* 4,535 unique properties')) 'Terminal message must lead with status and label the verified generation total.'
+Assert-Cre ($start.StartsWith("`n$rocket *Newmark | Started*`n`n") -and $start.Contains('collection has not started')) 'Start must have spacing before and after its status heading and avoid claiming collection has happened.'
+Assert-Cre ($finish.StartsWith("`n$successMark *Newmark | Completed*`n`n") -and $finish.Contains('*Listings verified:* 4,535 unique properties')) 'Terminal message must have spacing before and after its status heading and label the verified generation total.'
 Assert-Cre ($finish.Contains('*For sale:* 3,000 | *For lease:* 2,000') -and $finish.Contains('*Both:* 465 (included in For sale and For lease)')) 'Transaction counts use the exact staged identity union and disclose overlap.'
 Assert-Cre ($finish.Contains('*Database readback:* passed; no quality regression.') -and $finish -match "$bullet \*Duration:\* [0-9]+[smh]") 'Summary includes the measured duration and exact readback outcome.'
 Assert-Cre ($finish -notmatch 'wrapper_exit|native_exit|[a-f0-9]{32}|updated|new listings|whole.source|full.pipeline|&amp;') 'Channel text must omit technical IDs and unmeasured or broader claims.'
@@ -147,7 +147,7 @@ $record=New-Record
 $unknown=Get-CreNotificationText $record 'Terminal' 0 $null
 Assert-Cre ($unknown -match 'could not be verified' -and $unknown -notmatch 'listings verified|completed') 'Wrapper zero alone must not claim a refresh or listing count.'
 $failure=Get-CreNotificationText $record 'Terminal' 23 (New-Summary)
-Assert-Cre ($failure.StartsWith("$warningMark *Newmark | Needs attention*") -and $failure -notmatch 'Completed|Listings verified') 'A nonzero result must not be promoted by available metrics.'
+Assert-Cre ($failure.StartsWith("`n$warningMark *Newmark | Needs attention*`n`n") -and $failure -notmatch 'Completed|Listings verified') 'A nonzero result must not be promoted by available metrics and must be spaced from adjacent alerts.'
 $record.status='windows_terminal_audit_failed_linux_settlement_unverified'
 Assert-Cre ((Get-CreNotificationText $record 'Terminal' 1 $null).Contains('audit could not be saved')) 'Audit failure needs a clear completion warning.'
 $Source='cushman-wakefield'
@@ -163,7 +163,10 @@ $selectedSourceKeys = @('newmark','cbre','jll')
 $selectedSourceArgument = $selectedSourceKeys -join ','
 $pipelineSummary = New-Summary
 $pipelineSummary['selected_source_keys'] = $selectedSourceKeys
-$pipelineSummary['per_source_summaries'] = @([ordered]@{source_key='newmark'; verified_listings=4535})
+$pipelineSummary['per_source_summaries'] = @([ordered]@{
+    source_key='newmark'; verified_listings=4535
+    transaction_breakdown=[ordered]@{sale=3000;lease=2000;both=465;measurement='current_staged_inventory_transaction_types'}
+})
 $pipelineSummary['failed_source_keys'] = @('cbre')
 $pipelineSummary['pending_source_keys'] = @('jll')
 $pipelineSummary['complete'] = $false
@@ -175,14 +178,24 @@ Assert-Cre ($null -ne $partial -and -not $partial.complete) 'A qualified partial
 $pipelineArgv = [IO.File]::ReadAllLines($argvFile)
 Assert-Cre ($pipelineArgv -contains '--pipeline-source-keys' -and $pipelineArgv -contains 'newmark,cbre,jll' -and $pipelineArgv -notcontains '--source') 'Pipeline helper receives the exact finite source selection.'
 $partialText = Get-CreNotificationText $partialRecord 'Terminal' 1 $partial
-Assert-Cre ($partialText.Contains('*Newmark:* 4,535 listings verified') -and $partialText.Contains('Partial result') -and $partialText.Contains('*Failed:* 1 | *Pending:* 1') -and $partialText -notmatch 'Completed|unique properties') 'Partial terminal text names only qualified brokerages and avoids a cross-source total.'
+Assert-Cre ($partialText.StartsWith("`n$warningMark *CRE pipeline | Needs attention*`n`n") -and $partialText.Contains("`n    *For sale:* 3,000 | *For lease:* 2,000 | *Both:* 465") -and $partialText.Contains('Both counts overlap and are included in the For sale and For lease figures.') -and $partialText.Contains("`n`n$bullet *Failed:* 1 | *Pending:* 1") -and $partialText.Contains('Partial result') -and $partialText -notmatch 'unique properties') 'Partial terminal text has a distinct status, spaced source breakdown, no cross-source total and clear failure state.'
+$pipelineSummary['per_source_summaries'][0].transaction_breakdown.both = 5000
+Save-Summary $pipelineSummary
+$invalidPipelineBreakdown = Get-CreVerifiedSummary $partialRecord 'pipeline-invalid-breakdown'
+$invalidPipelineText = Get-CreNotificationText $partialRecord 'Terminal' 1 $invalidPipelineBreakdown
+Assert-Cre ($null -ne $invalidPipelineBreakdown -and $invalidPipelineBreakdown.per_source_summaries[0].verified_listings -eq 4535 -and $null -eq $invalidPipelineBreakdown.per_source_summaries[0].transaction_breakdown -and $invalidPipelineText.Contains("`n    *For sale / lease / both:* unavailable")) 'Invalid optional pipeline counts preserve the verified total and display breakdown as unavailable.'
 $pipelineSummary['pending_source_keys'] = @('cbre')
 Save-Summary $pipelineSummary
 Assert-Cre ($null -eq (Get-CreVerifiedSummary $partialRecord 'pipeline-duplicate')) 'Duplicate or missing partition members cannot enter the formatter.'
 $many = @()
-foreach ($key in 1..51) { $many += [pscustomobject]@{source_key='newmark'; verified_listings=4535} }
+foreach ($key in 1..51) {
+    $many += [pscustomobject]@{
+        source_key='newmark'; verified_listings=4535
+        transaction_breakdown=[pscustomobject]@{sale=3000;lease=2000;both=465}
+    }
+}
 $manySummary = [pscustomobject]@{per_source_summaries=$many; failed_source_keys=@(); pending_source_keys=@(); complete=$true}
 $manyText = Get-CreNotificationText $partialRecord 'Terminal' 0 $manySummary
-Assert-Cre ($manyText.Contains('31 additional verified brokerages') -and [Text.Encoding]::UTF8.GetByteCount((@{text=$manyText}|ConvertTo-Json -Compress)) -lt 4096) 'Long terminal summaries retain the unchanged sender payload bound and disclose omitted members.'
+Assert-Cre ($manyText.StartsWith("`n$successMark *CRE pipeline | Completed*`n`n") -and $manyText.Contains("*Both:* 465`n`n$bullet *Newmark:* 4,535") -and $manyText.Contains('31 additional verified brokerages') -and [Text.Encoding]::UTF8.GetByteCount((@{text=$manyText}|ConvertTo-Json -Compress)) -lt 4096) 'Long terminal summaries space broker blocks and retain the unchanged sender payload bound and omitted-member disclosure.'
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV
 Write-Output "Readable CRE notification PASS: $script:checks assertions; proof=$ProofDirectory"

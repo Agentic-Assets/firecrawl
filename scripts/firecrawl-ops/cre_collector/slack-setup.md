@@ -122,7 +122,9 @@ pwsh -NoProfile -File .\scripts\firecrawl-ops\cre_collector\windows\Send-CreNoti
 ### What the summary means
 
 `StartFinish` still sends at most two channel messages per Windows attempt.
-Start names the brokerage and says preparation checks precede collection.
+For a single-source attempt, the start message names the brokerage and says
+preparation checks precede collection. A multi-source pipeline start uses a
+generic heading.
 A qualified single-source series can finish in this form (placeholders):
 
 ```text
@@ -144,19 +146,23 @@ confirmed local process cleanup. Evidence must be stable and no more than five
 minutes past terminal control publication. Inventory-only mixtures and missing
 or zero canonical counts currently fall back to an unavailable summary.
 
-Optional **For sale** and **For lease** figures are unique canonical property
-IDs normalized from the exact hashed, generation-bound source artifact using
-the same `cre_ingest.to_row`, duplicate-identity validation and `merge_rows`
-semantics as staging. The normalized identity union must equal both the
-artifact's staged-unique count and the committed generation-exact readback.
-Counts use each normalized staged row's `transaction_type`, so an explicit
-sale-and-lease offering counts in both categories even if it appeared in only
-one transaction pass. A property present in both passes also counts in both;
-**Both** reports either kind of overlap. These values describe the current
-artifact's staged offering classification, not price availability or fresh
-property-detail counts. If the optional artifact is missing, unsafe, stale,
-oversized, or inconsistent, the split is reported unavailable while the
-independently verified total remains. Older schema-v1
+Optional **For sale** and **For lease** figures count unique canonical property
+IDs by their normalized staged `transaction_type`. Current producers compute
+these counts from canonical staged rows with the same `cre_ingest.to_row`,
+duplicate-identity validation and `merge_rows` semantics, then stores them in
+checkpoint artifact metadata bound to the source key, generation, source
+artifact SHA-256 and byte size. The read-only notification helper checks those
+bindings and count consistency against the staged-unique count and committed
+generation-exact readback. For older artifacts without producer statistics,
+the helper may make a bounded read and reconstruct the counts from the exact
+hashed, generation-bound source artifact. An explicit sale-and-lease offering counts
+in both categories even if it appeared in only one transaction pass. A property
+present in both passes also counts in both; **Both** reports either kind of
+overlap. These values describe the current artifact's staged offering
+classification, not price availability or fresh property-detail counts. If
+the optional artifact data is missing, unsafe, stale, oversized, or
+inconsistent, the split is reported unavailable while the independently
+verified total remains. Older schema-v1
 summary readers without this optional field remain compatible. **New**,
 **updated** and **unchanged** are omitted because the current upsert does not
 measure those categories. The duration measures elapsed Windows attempt time,
