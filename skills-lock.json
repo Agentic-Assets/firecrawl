@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "block-kit": {
+      "source": "slackapi/slack-skills-plugin",
+      "sourceType": "github",
+      "skillPath": "skills/block-kit/SKILL.md",
+      "computedHash": "812e43deb27d55a837d799f151f97ec3d39826313a998ac83052370180d49c65"
+    },
     "pytest-coverage": {
       "source": "github/awesome-copilot",
       "sourceType": "github",
@@ -30,6 +36,18 @@
       "sourceType": "github",
       "skillPath": "skills/ruff-recursive-fix/SKILL.md",
       "computedHash": "a6f4b355dd277d24f9ea95cb0f6f181fb4fc77fa8080d1e4f649af21d2095f2a"
+    },
+    "slack-api": {
+      "source": "slackapi/slack-skills-plugin",
+      "sourceType": "github",
+      "skillPath": "skills/slack-api/SKILL.md",
+      "computedHash": "d656bf5691f327e37446345a248fb5fd00d309f426205fa593477da8523958c1"
+    },
+    "slack-docs": {
+      "source": "slackapi/slack-skills-plugin",
+      "sourceType": "github",
+      "skillPath": "skills/slack-docs/SKILL.md",
+      "computedHash": "d8b24498b80969f2a0473078e0b89ae493f3f6073697ab9670b1e1987777611b"
     },
     "thermo-nuclear-code-quality-review": {
       "source": "cursor/plugins",
