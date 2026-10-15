@@ -276,7 +276,7 @@ approved target host.
 | `Firecrawl API readiness failed` | stack down, wrong service or port | verify `FIRECRAWL_API_URL` / `API_URL`; start the core with `docker compose up -d api` from repo root |
 | smoke collect fails for one source | site layout drift | `CRE_SMOKE_SOURCE=<other> bash cre_setup.sh` |
 | unexpected `docker context` | possibly wrong Docker backend | verify Docker Desktop WSL integration on Windows, or OrbStack on macOS; `default`, `desktop-linux` and `orbstack` are supported |
-| a scheduled run was missed or failed | scheduler has not been approved or recovered | record the read-only preflight and follow the operator runbook |
+| a scheduled run was missed or failed | disabled task, missed trigger, or a runner/resource/provider/database failure | inspect the actual scheduler history, launcher audit and checkpoint; follow `START_HERE.md` and [Slack setup](slack-setup.md) for notification checks |
 | `cre_status.sh` flags a hung or stale lock | prior run or lock authority needs investigation | follow `START_HERE.md` Operational Recovery and its governed recovery tool; do not manually move or delete the lock or authority sidecar |
 
 ---
