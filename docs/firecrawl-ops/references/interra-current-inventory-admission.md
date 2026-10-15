@@ -62,3 +62,11 @@ with `--sources interra-realty`. The series retains the explicit additive scope
 and accepts only a child with the exact matching opt-in configuration and scope.
 A completed Interra-only series does not publish whole-registry producer health.
 Default runs, other sources and incremental tiers do not inherit the option.
+
+Before listing upsert, ingestion refuses exact source-URL collisions between
+Interra's numeric provider IDs and different existing, non-soft-deleted IDs of
+the same brokerage. Legacy `listing/<slug>` IDs require a separately reviewed
+identity or lifecycle repair; this admission never aliases, merges or retires
+those rows. An absent legacy ID in a numeric-ID feed is not provider-absence
+evidence. The guard runs under the existing transaction-wide lifecycle lock,
+so its failure rolls back the transaction instead of leaving duplicate inserts.
