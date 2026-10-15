@@ -1963,6 +1963,7 @@ def run_pipeline_series(
         "finished_at": None,
         "rc": None,
         "log": "logs/pipeline.log",
+        "checkpoint_run": str(child_run.relative_to(series_dir)),
     }
     for key in sources:
         row = manifest["sources"][key]

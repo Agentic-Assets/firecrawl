@@ -274,6 +274,9 @@ def test_single_pipeline_owner_even_with_partial_success(monkeypatch, tmp_path):
         != 0
     )
     assert len(calls) == 1
+    # The strict notification reader consumes the actual producer attempt locator.
+    for row in manifest["sources"].values():
+        assert row["attempts"][-1]["checkpoint_run"] == row["checkpoint_run"]
     assert calls[0][calls[0].index("--sources") + 1] == "cbre,jll"
     assert manifest["sources"]["cbre"]["state"] == "complete"
     assert manifest["sources"]["jll"]["state"] == "failed_global"
