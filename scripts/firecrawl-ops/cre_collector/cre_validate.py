@@ -149,7 +149,7 @@ def _freshness_payload_sql(alias):
     return "CASE\n      " + "\n      ".join(branches) + "\n      ELSE NULL::jsonb\n    END"
 
 
-FRESHNESS_PAYLOAD_SQL = _freshness_payload_sql("l")
+FRESHNESS_PAYLOAD_SQL = _freshness_payload_sql("decoded")
 
 
 SOURCE_POLICY = load_source_policy()
@@ -529,7 +529,7 @@ WITH source_policy (source_key, evidence_class, detail_claim) AS (
 -- production statement timeout.
 raw AS MATERIALIZED (
   SELECT
-    {SOURCE_KEY_SQL} AS source_key,
+    {source_key_sql("decoded")} AS source_key,
     NULLIF(provenance."generationId", '') AS generation_id,
     NULLIF(provenance."detailScope", '') AS detail_scope,
     NULLIF(provenance."cacheDisposition", '') AS cache_disposition,
@@ -539,6 +539,14 @@ raw AS MATERIALIZED (
       AS detail_observed_at
   FROM credeals.cre_listings l
   JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  -- Empty-path extraction preserves every JSON type while detoasting the root
+  -- once. Keep this per-row fence: repeated CASE path/presence checks otherwise
+  -- decompress a wide raw_data value independently. Do not materialize the full
+  -- raw JSON relation; only the small final provenance projection is retained.
+  CROSS JOIN LATERAL (
+    SELECT l.external_id, l.raw_data #> '{{}}'::text[] AS raw_data
+    OFFSET 0
+  ) AS decoded
   CROSS JOIN LATERAL (
     SELECT {FRESHNESS_PAYLOAD_SQL} AS payload
     OFFSET 0

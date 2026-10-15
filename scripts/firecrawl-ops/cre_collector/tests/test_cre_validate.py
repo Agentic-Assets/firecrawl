@@ -452,11 +452,11 @@ def test_persisted_freshness_provenance_never_uses_scraped_at_as_detail_proof():
 
 def test_freshness_generations_groups_readback_by_persisted_generation():
     sql = QUERIES["freshness_generations"]
-    assert "l.raw_data #> '{latestInventoryObservation}'" in sql
-    assert "l.raw_data #> '{latestInventoryObservation,primary}'" in sql
-    assert "l.raw_data #> '{latestInventoryObservation,secondary_pass}'" in sql
-    assert "l.raw_data #> '{primary}'" in sql
-    assert "l.raw_data #> '{secondary_pass}'" in sql
+    assert "decoded.raw_data #> '{latestInventoryObservation}'" in sql
+    assert "decoded.raw_data #> '{latestInventoryObservation,primary}'" in sql
+    assert "decoded.raw_data #> '{latestInventoryObservation,secondary_pass}'" in sql
+    assert "decoded.raw_data #> '{primary}'" in sql
+    assert "decoded.raw_data #> '{secondary_pass}'" in sql
     assert "jsonb_to_record(" in sql
     assert 'provenance."generationId"' in sql
     assert 'provenance."detailScope"' in sql
@@ -473,10 +473,12 @@ def test_freshness_generations_groups_readback_by_persisted_generation():
     assert "latest_inventory_batch_active" not in sql
 
 
-def test_freshness_generations_materializes_once_and_has_no_presentation_sort():
+def test_freshness_generations_reuses_one_root_and_has_no_presentation_sort():
     sql = QUERIES["freshness_generations"]
     assert "raw AS MATERIALIZED" in sql
-    assert "OFFSET 0" in sql
+    assert "l.raw_data #> '{}'::text[] AS raw_data" in sql
+    assert sql.count("OFFSET 0") == 2
+    assert "decoded.raw_data" in sql
     assert "ORDER BY active.source_key" not in sql
     assert sql.rstrip().endswith("active.generation_id;")
     assert "AS detail_scopes" in sql
