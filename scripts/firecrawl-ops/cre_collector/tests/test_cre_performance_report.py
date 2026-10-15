@@ -71,6 +71,115 @@ def checkpoint(tmp_path: Path) -> Path:
     return run
 
 
+def test_pipeline_report_reads_shared_child_journals_once(tmp_path, monkeypatch):
+    run = checkpoint(tmp_path / "child")
+    data = json.loads((run / "manifest.json").read_text())
+    data["config"].update(
+        pipeline=True, sources=["jll", "srs"], transactions=["sale", "lease"]
+    )
+    data["sources"]["jll"]["state"] = "ingested"
+    data["sources"]["srs"] = {
+        "state": "ingested",
+        "artifact": {"staged_unique": 20},
+        "readback": {"ok": True},
+    }
+    data["pipeline"] = {
+        "source_timings": {
+            "jll": {
+                "collection_started_at": "2026-09-13T12:00:00Z",
+                "collection_finished_at": "2026-09-13T12:00:10Z",
+                "validation_started_at": "2026-09-13T12:00:12Z",
+                "verified_at": "2026-09-13T12:00:40Z",
+            }
+        }
+    }
+    (run / "manifest.json").write_text(json.dumps(data))
+    journal(run)
+    series = tmp_path / SERIES
+    (series / "runs").mkdir(parents=True)
+    moved = series / "runs" / RUN
+    shutil.move(run, moved)
+    (series / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "series_id": SERIES,
+                "collector_git_sha": SHA,
+                "config": data["config"],
+                "sources": {
+                    key: {"state": "complete", "checkpoint_run": f"runs/{RUN}"}
+                    for key in ["jll", "srs"]
+                },
+            }
+        )
+    )
+    reads = []
+    original = report._commands
+
+    def counted(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(report, "_commands", counted)
+    result = report.build_report(series, now=NOW)
+    assert reads == [moved]
+    assert len(result["shared_commands"]) == 1
+    assert len(result["checkpoint_resources"]) == 1
+    assert result["sources"][0]["source_elapsed_seconds"] == 40
+    assert (
+        result["sources"][0]["stage_wall_seconds"]["awaiting_validation_seconds"] == 2
+    )
+    assert result["sources"][1]["staged_unique"] == 20
+
+
+def test_query_timing_projection_and_current_inventory_status_are_retained(tmp_path):
+    run = checkpoint(tmp_path)
+    data = json.loads((run / "manifest.json").read_text())
+    data["status"] = "additive_scope_complete_current_inventory"
+    (run / "manifest.json").write_text(json.dumps(data))
+    (run / "validation.json").write_text(
+        json.dumps(
+            {
+                "validation_profile": "full",
+                "env_file": "private-password",
+                "queries": {"secret": "provider-body"},
+                "query_timings": {
+                    "source_counts": {"status": "available", "elapsed_ms": 125.2},
+                    "private-password": {"status": "available", "elapsed_ms": 1},
+                },
+            }
+        )
+    )
+    result = report.build_report(run, now=NOW)
+    assert result["sources"][0]["status"] == "additive_scope_complete_current_inventory"
+    assert result["validation_query_timings"][0]["queries"] == {
+        "source_counts": {"status": "available", "elapsed_ms": 125.2}
+    }
+    assert "private-password" not in json.dumps(result)
+    assert "provider-body" not in json.dumps(result)
+
+
+def test_cli_compares_saved_generations_without_network(tmp_path, capsys):
+    before = checkpoint(tmp_path / "before")
+    after = checkpoint(tmp_path / "after")
+    assert report.main([str(after), "--baseline", str(before), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["comparison"]["baseline_generation_id"] == RUN
+    assert result["comparison"]["causal_improvement_established"] is False
+
+
+def test_total_journal_budget_keeps_prior_measurements_and_marks_gap(
+    tmp_path, monkeypatch
+):
+    run = checkpoint(tmp_path)
+    path = journal(run)
+    (run / "logs" / "z-extra.performance.jsonl").write_bytes(path.read_bytes())
+    monkeypatch.setattr(report, "MAX_TOTAL_JOURNAL_BYTES", path.stat().st_size)
+    commands, warnings = report._commands(run, now=NOW)
+    assert len(commands) == 1
+    assert "journal_total_byte_limit_exceeded" in warnings
+
+
 def journal(run: Path, *, identity: str = COMMAND, finish: bool = True) -> Path:
     path = run / "logs" / Path(LOG).with_suffix(".performance.jsonl")
     base = {
@@ -336,7 +445,8 @@ def test_missing_readback_and_timing_are_unknown_not_false_or_zero(tmp_path):
     path.write_text(json.dumps(manifest))
     result = report.build_report(run, now=NOW)
     assert result["sources"][0]["database_readback_ok"] is None
-    assert "0.0s" not in report.render(result)
+    assert result["sources"][0]["collection_seconds"] is None
+    assert " 0.0s" not in report.render(result)
 
 
 def test_directory_enumeration_is_bounded_including_unrelated_files(

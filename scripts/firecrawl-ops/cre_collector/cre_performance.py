@@ -73,6 +73,7 @@ _PHASES = frozenset(
         "ingest",
         "ingest_recovery",
         "readback",
+        "artifact_validation",
         "unknown",
     }
 )
@@ -177,6 +178,7 @@ def _configured_numbers(argv: Sequence[str]) -> dict[str, int]:
 
 
 def _known_source(argv: Sequence[str], command_log: str) -> str | None:
+    command_log = re.sub(r"^unit-[0-9]{4,6}-", "", command_log)
     values = _argv_strings(argv)
     candidate = _option_value(values, "--source") if values else None
     if candidate is None and values:
@@ -190,6 +192,13 @@ def _known_source(argv: Sequence[str], command_log: str) -> str | None:
 
 
 def _phase(argv: Sequence[str], command_log: str) -> str:
+    unit_log = re.sub(r"^unit-[0-9]{4,6}-", "", command_log)
+    if unit_log != command_log:
+        return _phase(argv, unit_log)
+    if "cre_pipeline_artifact_worker.py" in {
+        _executable_name(value) for value in _argv_strings(argv)[:3]
+    }:
+        return "artifact_validation"
     if command_log == "healthcheck.log":
         return "healthcheck"
     if command_log == "pre-validation.log":

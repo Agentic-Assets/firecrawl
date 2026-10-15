@@ -13,6 +13,7 @@ From `scripts/firecrawl-ops/cre_collector/`:
 python3 cre_series_status.py --watch 5
 python3 cre_performance_report.py
 python3 cre_performance_report.py out/checkpoint-series/SERIES_ID --json
+python3 cre_performance_report.py out/checkpoint-series/CURRENT_ID --baseline out/checkpoint-series/BASELINE_ID
 ```
 
 The first command watches progress. The performance report is a read-only,
@@ -22,6 +23,31 @@ Checkpoint and series coordinators save `performance-report.json` and
 `performance-report.md` on exit, including ordinary failure and interrupt paths.
 To save an offline report explicitly, append `--out-dir REPORT_DIRECTORY`. No server,
 browser dashboard, tracing vendor, database connection or scheduler is added.
+
+The same report and comparison commands run on macOS and in Windows' WSL
+checkout. Comparison reads saved evidence only. JSON preserves each code SHA,
+scope, settings, measured source durations, staged counts, readback/quality
+outcomes, phase command times and query client timings. Query comparisons show
+the number of measured calls as well as summed client milliseconds, so fewer
+audits are distinguishable from a faster individual query.
+
+The comparison shows end-to-end wall time separately from summed command
+durations. It supplies an observed elapsed reduction only for matching source
+sets, transaction/freshness scope, staged counts and recorded successful
+readback/no-regression outcomes. Changed code, configuration, runtime limits or
+quality/work counts are visible context. The result is observational, not a
+causal speedup claim; provider, cache and host conditions can still differ.
+Unmatched runs remain useful side-by-side measurements and never receive a
+whole-run speedup percentage. Older missing metrics stay unknown.
+
+In opt-in pipeline runs, source transition timestamps record dispatch waiting,
+collection, waiting for validation, ingestion and verification. These timestamp
+intervals are wall observations; subprocess journals use monotonic elapsed
+time. One shared child is read once even when several series source entries
+refer to it. Shared DB-unit audits, machine resources and query timing frames
+are attributed once to the owning run/unit rather than to every brokerage.
+Per-source rates use collection-to-verified wall time when available; the
+separate acquisition rate retains its collection-only meaning.
 
 ## Saved evidence and meanings
 
@@ -197,6 +223,10 @@ and conflict handling before it can influence canonical brokerage facts.
 ## Bounds and failure behavior
 
 Command records are capped at 4 KiB and journals at 1 MiB; snapshots at 128 KiB.
+An offline report reads at most 1,024 journals and 16 MiB of journal content per
+checkpoint, retaining parsed measurements and reporting a gap if the byte
+budget is exhausted. This accommodates multi-source runs without multiplying
+the same journal scan by the number of brokerages.
 Regular-file checks, no-follow opens and nonblocking journal locking prevent
 special files from blocking collection. Command journals are owner-only. A
 diagnostic write failure emits a fixed warning and preserves the original
