@@ -32,6 +32,7 @@ from cre_checkpoint_refresh import (
     DEFAULT_CPU_SUSTAIN_SECONDS,
     DEFAULT_MAX_HOST_CPU_PERCENT,
     DEFAULT_MAX_RESUME_AGE_HOURS,
+    FRESHNESS_EVIDENCE_CONTRACT,
     SOURCE_KEYS,
     ProcessCleanupUnknown,
     RefreshError,
@@ -1652,15 +1653,27 @@ def _pipeline_member_report_matches(
             or generation["evidence_class"] != readback["evidence_class"]
         ):
             return False
+        contract = FRESHNESS_EVIDENCE_CONTRACT.get(generation["evidence_class"])
+        if contract is None:
+            return False
         for name in (
             "earliest_inventory_observed_at",
             "latest_inventory_observed_at",
             "earliest_detail_observed_at",
             "latest_detail_observed_at",
         ):
-            if readback.get(name) is not None and (
-                _parse_utc_timestamp(generation[name], field=name)
-                != _parse_utc_timestamp(readback[name], field=name)
+            saved, queried = readback[name], generation[name]
+            # psql serializes SQL NULL as an empty cell. Only feed detail
+            # clocks are optional, and both bound reports must agree on absence.
+            if (
+                not contract["requires_detail"]
+                and name in {"earliest_detail_observed_at", "latest_detail_observed_at"}
+                and saved in (None, "")
+                and queried in (None, "")
+            ):
+                continue
+            if _parse_utc_timestamp(queried, field=name) != _parse_utc_timestamp(
+                saved, field=name
             ):
                 return False
     elif (
