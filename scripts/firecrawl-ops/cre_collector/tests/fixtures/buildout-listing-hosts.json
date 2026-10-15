@@ -82,7 +82,8 @@
   {
     "host": "broker.example",
     "url": "http://broker.example/listings/?propertyId=687920-lease",
-    "owned": false
+    "owned": false,
+    "inventoryOwned": true
   },
   {
     "host": "broker.example",
@@ -177,7 +178,8 @@
   {
     "host": "www.broker.example",
     "url": "http://broker.example/listings/?propertyId=687920-lease",
-    "owned": false
+    "owned": false,
+    "inventoryOwned": true
   },
   {
     "host": "www.broker.example",
