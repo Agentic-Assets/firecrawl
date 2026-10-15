@@ -99,6 +99,8 @@ def qualified_child(run_dir=None):
             "evidence_class": "authoritative_inventory_feed",
             "earliest_inventory_observed_at": observed,
             "latest_inventory_observed_at": observed,
+            "earliest_detail_observed_at": "",
+            "latest_detail_observed_at": "",
         }
     ]
     report["queries"]["inventory_generation_fingerprints"] = [
@@ -162,6 +164,8 @@ def qualified_child(run_dir=None):
                     "evidence_class": "authoritative_inventory_feed",
                     "earliest_inventory_observed_at": observed,
                     "latest_inventory_observed_at": observed,
+                    "earliest_detail_observed_at": "",
+                    "latest_detail_observed_at": "",
                     "inventory_fingerprint": {
                         "sourceId": "cbre",
                         "rowCount": 1,
@@ -511,3 +515,87 @@ def test_existing_inventory_only_readback_contract_remains_supported(tmp_path):
     assert not series.pipeline_source_qualified(
         child, "cbre-dealflow", **qualification_context(run)
     )
+
+
+@pytest.mark.parametrize("saved,queried", [("", ""), (None, None), ("", None), (None, "")])
+def test_authoritative_feed_sql_null_detail_clocks_qualify(tmp_path, saved, queried):
+    """Real feed reports use empty psql timestamp cells, not absent keys."""
+    run = tmp_path / RUN_ID
+    child = qualified_child(run)
+    unit = child["pipeline"]["units"][0]
+    report_path = run / unit["validation_path"]
+    report = json.loads(report_path.read_bytes())
+    generation = report["queries"]["freshness_generations"][0]
+    readback = child["sources"]["cbre"]["readback"]
+    for field in ("earliest_detail_observed_at", "latest_detail_observed_at"):
+        readback[field] = saved
+        generation[field] = queried
+    raw = json.dumps(report).encode()
+    report_path.write_bytes(raw)
+    unit["validation_sha256"] = child["pipeline"]["source_results"]["cbre"]["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    assert series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+
+
+@pytest.mark.parametrize(
+    "field,saved,queried,evidence_class",
+    [
+        ("earliest_inventory_observed_at", "", "", "authoritative_inventory_feed"),
+        ("latest_inventory_observed_at", None, None, "authoritative_inventory_feed"),
+        ("earliest_inventory_observed_at", "not-a-date", "not-a-date", "authoritative_inventory_feed"),
+        ("earliest_detail_observed_at", "not-a-date", "not-a-date", "authoritative_inventory_feed"),
+        ("latest_detail_observed_at", "", "2026-10-15T12:00:15Z", "authoritative_inventory_feed"),
+        ("latest_detail_observed_at", "2026-10-15T12:00:15Z", "", "authoritative_inventory_feed"),
+        ("earliest_detail_observed_at", "", "", "strict_detail"),
+        ("latest_detail_observed_at", None, None, "property_detail"),
+    ],
+)
+def test_qualification_refuses_missing_required_or_malformed_clock(
+    tmp_path, field, saved, queried, evidence_class
+):
+    run = tmp_path / RUN_ID
+    child = qualified_child(run)
+    unit = child["pipeline"]["units"][0]
+    report_path = run / unit["validation_path"]
+    report = json.loads(report_path.read_bytes())
+    generation = report["queries"]["freshness_generations"][0]
+    readback = child["sources"]["cbre"]["readback"]
+    generation["evidence_class"] = readback["evidence_class"] = evidence_class
+    generation[field] = queried
+    readback[field] = saved
+    raw = json.dumps(report).encode()
+    report_path.write_bytes(raw)
+    unit["validation_sha256"] = child["pipeline"]["source_results"]["cbre"]["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    assert not series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+
+@pytest.mark.parametrize("evidence_class", ["strict_detail", "property_detail"])
+def test_required_populated_detail_clocks_still_qualify(tmp_path, evidence_class):
+    run = tmp_path / RUN_ID
+    child = qualified_child(run)
+    unit = child["pipeline"]["units"][0]
+    report_path = run / unit["validation_path"]
+    report = json.loads(report_path.read_bytes())
+    generation = report["queries"]["freshness_generations"][0]
+    readback = child["sources"]["cbre"]["readback"]
+    generation["evidence_class"] = readback["evidence_class"] = evidence_class
+    for field in ("earliest_detail_observed_at", "latest_detail_observed_at"):
+        generation[field] = readback[field] = "2026-10-15T12:00:15Z"
+    raw = json.dumps(report).encode()
+    report_path.write_bytes(raw)
+    unit["validation_sha256"] = child["pipeline"]["source_results"]["cbre"]["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    assert series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
+
+
+@pytest.mark.parametrize("missing_from", ["report", "readback"])
+def test_absent_required_inventory_clock_key_refused(tmp_path, missing_from):
+    run = tmp_path / RUN_ID
+    child = qualified_child(run)
+    unit = child["pipeline"]["units"][0]
+    report_path = run / unit["validation_path"]
+    report = json.loads(report_path.read_bytes())
+    row = (report["queries"]["freshness_generations"][0] if missing_from == "report"
+           else child["sources"]["cbre"]["readback"])
+    row.pop("earliest_inventory_observed_at")
+    raw = json.dumps(report).encode()
+    report_path.write_bytes(raw)
+    unit["validation_sha256"] = child["pipeline"]["source_results"]["cbre"]["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    assert not series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
