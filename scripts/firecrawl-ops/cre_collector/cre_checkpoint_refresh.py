@@ -73,6 +73,7 @@ from cre_owned_processes import (
     settle_owned_groups,
 )
 from cre_performance import capture_runtime_configuration, run_observed_command
+from cre_refresh_pipeline import poll_hook, wait_with_poll_hook
 from cre_performance_report import save_report
 from cre_resource_usage import observe_resource_usage
 from cre_runtime_observability import append_incident
@@ -3290,8 +3291,10 @@ def _run_logged_command(
         )
         owned_group = OwnedProcessGroup.from_spawn(proc)
         try:
-            rc = proc.wait()
-        except KeyboardInterrupt as interrupted:
+            rc = wait_with_poll_hook(proc)
+        except BaseException as interrupted:
+            if not isinstance(interrupted, KeyboardInterrupt) and poll_hook() is None:
+                raise
             with _defer_cleanup_signals():
                 resource_reason = _peek_cpu_guard_trip()
                 cleanup_interrupt = (
