@@ -72,10 +72,21 @@ def _digest(value: object) -> None:
     require(isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value))
 
 
+def _listing_hosts_match(actual: str, expected: str) -> bool:
+    """Compare the same DNS host with exactly one optional leading www. label."""
+    return actual.lower().removeprefix("www.") == expected.lower().removeprefix("www.")
+
+
 def _owned_url(value: object, host: str) -> str:
     require(isinstance(value, str) and value and not any(c.isspace() for c in value))
     parsed = urlsplit(value)
-    require(parsed.scheme == "https" and parsed.netloc == host and not parsed.fragment)
+    require(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.netloc.lower() == parsed.hostname
+        and _listing_hosts_match(parsed.hostname, host)
+        and "#" not in value
+    )
     ids = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True).get(
         "propertyId", []
     )

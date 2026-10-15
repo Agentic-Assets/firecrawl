@@ -731,8 +731,8 @@ export type BuildoutDetailConfig = {
   pluginKey: string;
   host: string;
   /**
-   * Exact public listing hosts allowed to supply `propertyId` values for this
-   * plugin. Keep aliases explicit: a queue row must prove source ownership
+   * Public listing hosts allowed to supply `propertyId` values for this
+   * plugin, with central bare/www equivalence. A queue row must prove ownership
    * before its slug is used to fetch and complete a Buildout detail claim.
    */
   listingHosts: readonly string[];
@@ -772,20 +772,14 @@ export function buildoutSlugFromUrl(url: string | null): string | null {
   return null;
 }
 
-// Compose the Buildout detail iframe content URL for a source. Returns null when
-// the input URL is not a clean HTTPS URL owned by an explicitly admitted
-// listing host, or when the slug cannot be derived. Rejection leaves the claim
-// queued for the weekly additive backstop. Pure; never throws.
-//   buildout.com/plugins/<key>/<host>/inventory/<slug>?pluginId=0&iframe=true&embedded=true
-export function buildoutDetailIframeUrl(
-  sourceKey: string,
+// Listing ownership permits only the same DNS host with one optional leading
+// www. label. Keep the configured iframe host and the original listing URL intact.
+function buildoutOwnedListingUrl(
   listingUrl: string | null,
-  detailConfig?: BuildoutDetailConfig
-): string | null {
-  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
-  if (!cfg) return null;
+  listingHosts: readonly string[]
+): URL | null {
   const rawUrl = clean(listingUrl);
-  if (!rawUrl) return null;
+  if (!rawUrl || /\s/.test(rawUrl)) return null;
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -798,18 +792,39 @@ export function buildoutDetailIframeUrl(
   const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
   if (
     parsed.protocol !== "https:" ||
+    !authority ||
+    authority.toLowerCase() !== parsed.hostname ||
     authority.includes("@") ||
     parsed.username ||
     parsed.password ||
     parsed.port ||
     hostPort.includes(":") ||
     rawUrl.includes("#") ||
-    !cfg.listingHosts.some(
-      (host) => parsed.hostname.toLowerCase() === host.toLowerCase()
+    !listingHosts.some(
+      (host) => parsed.hostname.toLowerCase().replace(/^www\./, "") ===
+        host.toLowerCase().replace(/^www\./, "")
     )
   ) {
     return null;
   }
+  return parsed;
+}
+
+// Compose the Buildout detail iframe content URL for a source. Returns null when
+// the input URL is not a clean HTTPS URL owned by an admitted listing host
+// (with one optional leading www. label), or when the slug cannot be derived.
+// Rejection leaves the claim queued for the weekly additive backstop. Pure;
+// never throws.
+//   buildout.com/plugins/<key>/<host>/inventory/<slug>?pluginId=0&iframe=true&embedded=true
+export function buildoutDetailIframeUrl(
+  sourceKey: string,
+  listingUrl: string | null,
+  detailConfig?: BuildoutDetailConfig
+): string | null {
+  const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
+  if (!cfg) return null;
+  const parsed = buildoutOwnedListingUrl(listingUrl, cfg.listingHosts);
+  if (!parsed) return null;
   const propertyId = parsed.searchParams.get("propertyId");
   const slug = propertyId?.replace(/-(?:sale|lease)$/i, "") || null;
   if (!slug) return null;
@@ -1074,9 +1089,7 @@ export async function srcBuildout(
     !buildoutCapTruncated(max, listings.length, eligibleItems.length) &&
     proofPages.every((page) => page.rows.every((row) => {
       try {
-        const url = new URL(row.showLink);
-        return url.protocol === "https:" && !url.username && !url.password &&
-          url.hostname === new URL(listingsPage).hostname;
+        return buildoutOwnedListingUrl(row.showLink, [new URL(listingsPage).hostname]) !== null;
       } catch { return false; }
     }))
       ? {

@@ -190,23 +190,22 @@ test("Buildout complete inventory receipt", async (t) => {
 });
 
 
-test("Hudson current-feed host owns inventory proof and detail claims exactly", () => fixture(async ({ setPages }) => {
-  const hudson = REGISTERED_BUILDOUT_FIRMS.find((entry) => entry.sourceKey === "hudson-peters")!;
-  const ownedUrl = "https://hudsonpeters.com/listings/?propertyId=687920-lease";
-  for (const host of ["hudsonpeters.com", "www.hudsonpeters.com", "foreign.example"]) {
+test("Buildout listing ownership shares bare/www equivalence and URL guards", () => fixture(async ({ setPages }) => {
+  const vectors = JSON.parse(readFileSync(new URL("../../fixtures/buildout-listing-hosts.json", import.meta.url), "utf8")) as { host: string; url: string; owned: boolean }[];
+  for (const vector of vectors) {
     buildoutCache.clear();
-    const listingUrl = ownedUrl.replace("hudsonpeters.com", host);
-    setPages(pages([row(968697, { show_link: listingUrl, sale: false })]));
-    const result = await srcBuildout(hudson.company, hudson.pluginKey, hudson.listingsPage, "lease", Infinity, false,
-      { ...hudson.inventoryOpts, recoveryPasses: 0, jsonAttempts: 1 });
-    const iframe = buildoutDetailIframeUrl(hudson.sourceKey, listingUrl, hudson.detailConfig);
-    if (host === "hudsonpeters.com") {
-      assert.equal(proof(result).sourceKey, "hudson-peters");
-      assert.equal(result.listings[0].url, ownedUrl);
-      assert.equal(iframe, `https://buildout.com/plugins/${hudson.pluginKey}/hudsonpeters.com/inventory/687920?pluginId=0&iframe=true&embedded=true`);
+    setPages(pages([row(968697, { show_link: vector.url, sale: false })]));
+    const listingPage = `https://${vector.host}/`;
+    const result = await srcBuildout(firm.company, firm.pluginKey, listingPage, "lease", Infinity, false, opts);
+    const iframe = buildoutDetailIframeUrl(firm.sourceKey, vector.url,
+      { ...firm.detailConfig!, host: vector.host, listingHosts: [vector.host] });
+    if (vector.owned) {
+      assert.equal(proof(result).pages[0].rows[0].showLink, vector.url);
+      assert.equal(result.listings[0].url, vector.url);
+      assert.equal(iframe, `https://buildout.com/plugins/${firm.pluginKey}/${vector.host}/inventory/687920?pluginId=0&iframe=true&embedded=true`);
     } else {
-      assert.equal(result.currentInventoryProof, undefined, host);
-      assert.equal(iframe, null, host);
+      assert.equal(result.currentInventoryProof, undefined, vector.url);
+      assert.equal(iframe, null, vector.url);
     }
   }
 }));
