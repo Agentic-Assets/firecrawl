@@ -155,10 +155,51 @@ def queries():
     }
 
 
+def json_root_fixture_sql():
+    payloads = [
+        None,
+        {},
+        [],
+        [1, {"detailUnavailable": False}],
+        "scalar",
+        7,
+        True,
+        {"inventoryObservedAt": None},
+        {"inventoryObservedAt": ""},
+        {"inventoryObservedAt": "2026-01-02T03:04:05Z"},
+        {"detailUnavailable": False},
+        {"detailUnavailable": None},
+        {"primary": {"inventoryObservedAt": "invalid", "detailUnavailable": True}},
+        {"latestInventoryObservation": {"inventoryObservedAt": "invalid"}},
+    ]
+    return "\n".join(
+        "INSERT INTO credeals.cre_listings(id,brokerage_id,external_id,raw_data,deleted_at) VALUES "
+        + f"({200000 + i},1,'root-fixture-{i}',{literal(json.dumps(raw))}::jsonb,"
+        + ("'2026-01-03'" if deleted else "NULL")
+        + ");"
+        for i, (raw, deleted) in enumerate(
+            (raw, deleted) for raw in payloads for deleted in (False, True)
+        )
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--source-counts-json-root-control", type=Path)
     args = parser.parse_args()
+    query_arms = queries()
+    families = FAMILIES
+    if args.source_counts_json_root_control:
+        query_arms = {
+            "source_counts": {
+                "old": args.source_counts_json_root_control.read_text()
+                .strip()
+                .removesuffix(";"),
+                "new": validate.QUERIES["source_counts"].strip().removesuffix(";"),
+            }
+        }
+        families = ("source_counts",)
     os.umask(0o077)
     output = Path(args.out)
     if output.exists():
@@ -325,7 +366,7 @@ def main():
                 arm: hashlib.sha256(query.encode()).hexdigest()
                 for arm, query in arms.items()
             }
-            for family, arms in queries().items()
+            for family, arms in query_arms.items()
         }
         for _ in range(30):
             if (
@@ -345,25 +386,62 @@ def main():
         else:
             raise RuntimeError("Synthetic PostgreSQL startup unavailable")
         sql(fixture_sql(fixture_rows()))
+        if args.source_counts_json_root_control:
+            sql(json_root_fixture_sql())
+            # Each psql invocation owns a new session: create the temporary function
+            # and exercise both arms together in that session, then roll back.
+            checks = """BEGIN;
+CREATE FUNCTION pg_temp.query_state(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN EXECUTE q; RETURN '00000'; EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$;
+"""
+            for bad in ("invalid", " ", [], {}, True, "2026-99-99"):
+                for deleted in (False, True):
+                    checks += (
+                        "UPDATE credeals.cre_listings SET raw_data="
+                        + literal(json.dumps({"inventoryObservedAt": bad}))
+                        + "::jsonb, deleted_at="
+                        + ("'2026-01-03'" if deleted else "NULL")
+                        + " WHERE id=90000;\n"
+                    )
+                    for arm, query in query_arms["source_counts"].items():
+                        checks += (
+                            "SELECT 'error:"
+                            + arm
+                            + "|'||pg_temp.query_state("
+                            + literal(query)
+                            + ");\n"
+                        )
+            checks += "ROLLBACK;\n"
+            states = [line.split("|")[1] for line in sql(checks).splitlines()]
+            if len(states) != 24 or any(
+                states[i] != states[i + 1] or not states[i].startswith("22")
+                for i in range(0, 24, 2)
+            ):
+                raise RuntimeError("Timestamp error SQLSTATE parity rejected")
+            summary["timestampErrorSqlstates"] = states
+            root = """WITH vals(raw_data) AS (VALUES (NULL::jsonb),('null'::jsonb),('{}'::jsonb),('[]'::jsonb),('1'::jsonb),('true'::jsonb),('"scalar"'::jsonb)) SELECT count(*) FROM vals WHERE raw_data IS DISTINCT FROM raw_data #> '{}'::text[] OR jsonb_typeof(raw_data) IS DISTINCT FROM jsonb_typeof(raw_data #> '{}'::text[]);"""
+            if sql(root).strip() != "0":
+                raise RuntimeError("JSON root value/type parity rejected")
+            summary["rootValueAndTypeDifferences"] = 0
         old = ORACLE.read_text().strip()
         new = ingest.source_key_sql()
         batch = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
         batch += f"SELECT 'scalar|' || count(*) FROM credeals.cre_listings l JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id WHERE ({old}) IS DISTINCT FROM ({new});\n"
-        for family, arms in queries().items():
+        for family, arms in query_arms.items():
             batch += f"WITH old_result AS ({arms['old']}), new_result AS ({arms['new']}) SELECT '{family}|'||count(*) FROM ((SELECT * FROM old_result EXCEPT ALL SELECT * FROM new_result) UNION ALL (SELECT * FROM new_result EXCEPT ALL SELECT * FROM old_result)) differences;\n"
         batch += "ROLLBACK;\n"
         differences = dict(line.split("|") for line in sql(batch).strip().splitlines())
-        if set(differences) != {"scalar", *FAMILIES} or any(
+        if set(differences) != {"scalar", *families} or any(
             value != "0" for value in differences.values()
         ):
             raise RuntimeError("Synthetic source attribution parity rejected")
         summary["parityDifferences"] = differences
-        results = {family: {"old": [], "new": []} for family in FAMILIES}
+        results = {family: {"old": [], "new": []} for family in families}
         for replicate in range(3):
             order = ("old", "new") if replicate % 2 == 0 else ("new", "old")
             script = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
             labels = []
-            for family, arms in queries().items():
+            for family, arms in query_arms.items():
                 for arm in order:
                     label = family + ":" + arm
                     labels.append(label)

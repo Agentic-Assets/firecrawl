@@ -462,8 +462,9 @@ retry/backoff, approximate request latency, locally awaited concurrency, accepte
 JLL cache hits and sampled Node resources. Unmeasured or stale evidence is explicit, not zero.
 Old runs do not gain historical timings retroactively. Request success and field
 presence are not proof of accurate, complete listings or successful ingestion.
-Definitions, saved file names, retention and interpretation:
-`../../../docs/firecrawl-ops/references/cre-performance-telemetry.md`.
+For definitions, retention, timing interpretation and the existing Linear
+learning/experiment workflow, follow the
+[performance evidence guide](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md).
 
 ### Bounded resource recovery
 
