@@ -97,17 +97,20 @@ foreach ($case in $cases) {
     Assert-Cre ($calls.Count -eq $expected) "$case must attempt each eligible phase once."
     $exit=if($case -in @('success','notification-failed','notification-audit-error','run-conflict','check-only','default-success')){0}elseif($case -eq 'native-failed'){23}elseif($case -eq 'check-denied'){75}else{1}
     Assert-Cre ($execution.NativeExitCode -eq $exit) "$case notification must preserve the original operation exit."
-    foreach($call in $calls){Assert-Cre (-not $call.secretArg -and $call.hasUrl -and $call.hasData) "$case secret/data must use stdin exclusively."}
+    foreach($call in $calls){
+        Assert-Cre (-not $call.secretArg -and $call.hasUrl -and $call.hasData) "$case secret/data must use stdin exclusively."
+        Assert-Cre ($call.readableBrokerage -and -not $call.technicalSpam) "$case must name the brokerage without technical log spam."
+    }
     $events=@(if([IO.File]::Exists($eventFile)){[IO.File]::ReadAllLines($eventFile)})
     if($expected -eq 2){
         Assert-Cre ($calls[0].started -and $calls[0].noDispatchClaim -and -not $calls[1].started) "$case start must accurately precede Linux dispatch."
-        Assert-Cre ($calls[0].attemptId -ceq $calls[1].attemptId -and $calls[0].attemptId -match '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{32}$') "$case phases must use the identical attempt ID."
+        Assert-Cre (-not $calls[0].attemptId -and -not $calls[1].attemptId) "$case technical attempt IDs must remain in the audit rather than channel text."
         Assert-Cre (($events -join ',').StartsWith('audit-1,notify-start,audit-2,ready')) "$case start must follow durable initial audit and precede readiness/admission."
         $terminalAudit=if($case -in @('denied','not-ready')){'audit-3'}else{'audit-4'}
         Assert-Cre ([Array]::IndexOf($events,$terminalAudit) -ge 0 -and [Array]::IndexOf($events,'notify-terminal') -gt [Array]::IndexOf($events,$terminalAudit)) "$case terminal send must follow terminal audit attempt."
         Assert-Cre ($calls[1].finished -eq ($exit -eq 0) -and $calls[1].failed -eq ($exit -ne 0)) "$case terminal outcome must reflect wrapper exit."
         if($case -in @('terminal-audit-error','persistent-audit-error')){Assert-Cre $calls[1].auditFailure "$case must explicitly identify failed terminal audit."}
-        if($case -in @('success','run-conflict')){Assert-Cre ($calls[1].informationalRun -eq ($case -eq 'success')) 'Only one unambiguous observed run reference may be included.'}
+        if($case -in @('success','run-conflict')){Assert-Cre (-not $calls[1].informationalRun) 'Technical run references remain in the local audit.'}
     }
     if($case -in @('initial-audit-error','invalid-scope')){Assert-Cre (-not $calls[0].started -and $calls[0].failed -and $events -notcontains 'ready' -and $events -notcontains 'admit') "$case must not send start or reach readiness/admission."}
     $audits=@(Get-ChildItem -LiteralPath (Join-Path $root 'out/windows-launcher') -Filter '*.json' -ErrorAction SilentlyContinue)

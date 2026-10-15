@@ -27,10 +27,11 @@ namespace CreWindowsCapture {
         public bool StartAttempted;
         public bool Started;
         public bool StartFailed;
+        public bool ReadOnlyDeadlineExpired;
         public int? NativeExitCode;
         public StreamResult Stdout = new StreamResult();
         public StreamResult Stderr = new StreamResult();
-        public bool Failed { get { return StartFailed || Stdout.Failed || Stderr.Failed; } }
+        public bool Failed { get { return StartFailed || ReadOnlyDeadlineExpired || Stdout.Failed || Stderr.Failed; } }
     }
     public static class Capture {
         public const int ByteLimit = 1048576;
@@ -80,9 +81,24 @@ namespace CreWindowsCapture {
             catch { output.Dispose(); throw; }
             return RunWithStreams(executable, arguments, output, error, runPrefix, 2000);
         }
+        // Only for an independently spawned read-only summary frontend. Never
+        // use this path for the foreground pipeline or infer Linux settlement.
+        public static CaptureResult RunReadOnly(string executable, string[] arguments, string stdoutPath, string stderrPath, int deadlineMilliseconds) {
+            RequireReusable();
+            if (deadlineMilliseconds < 50 || deadlineMilliseconds > 15000) throw new ArgumentOutOfRangeException("deadlineMilliseconds");
+            foreach (string argument in arguments) Quote(argument);
+            Stream output = new FileStream(stdoutPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            Stream error;
+            try { error = new FileStream(stderrPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read); }
+            catch { output.Dispose(); throw; }
+            return RunCore(executable, arguments, output, error, null, 2000, deadlineMilliseconds);
+        }
         // Stream/deadline seam exercises the shipped drain with synthetic IO faults.
         // Ownership of both sinks transfers here; no PowerShell callbacks run on threads.
         public static CaptureResult RunWithStreams(string executable, string[] arguments, Stream output, Stream error, string runPrefix, int drainMilliseconds) {
+            return RunCore(executable, arguments, output, error, runPrefix, drainMilliseconds, 0);
+        }
+        private static CaptureResult RunCore(string executable, string[] arguments, Stream output, Stream error, string runPrefix, int drainMilliseconds, int readOnlyDeadlineMilliseconds) {
             RequireReusable();
             if (drainMilliseconds < 1 || drainMilliseconds > 5000) throw new ArgumentOutOfRangeException("drainMilliseconds");
             CaptureResult result = new CaptureResult();
@@ -108,9 +124,23 @@ namespace CreWindowsCapture {
                 stdout = new Reader(process.StandardOutput.BaseStream, output, result.Stdout, runPrefix);
                 stderr = new Reader(process.StandardError.BaseStream, error, result.Stderr, null);
                 stdout.Start(); stderr.Start();
-                // Foreground wait only. Never terminate the native process or its children.
-                process.WaitForExit();
-                result.NativeExitCode = process.ExitCode;
+                if (readOnlyDeadlineMilliseconds == 0) {
+                    // Foreground wait only. Never terminate the pipeline process or its children.
+                    process.WaitForExit();
+                    result.NativeExitCode = process.ExitCode;
+                } else if (process.WaitForExit(readOnlyDeadlineMilliseconds)) {
+                    result.NativeExitCode = process.ExitCode;
+                } else {
+                    result.ReadOnlyDeadlineExpired = true;
+                    // This exact Process is the separate read-only frontend,
+                    // never the pipeline frontend. No Linux settlement claim.
+                    try { process.Kill(); } catch { }
+                    if (process.WaitForExit(1000)) {
+                        result.NativeExitCode = process.ExitCode;
+                    } else {
+                        Interlocked.Exchange(ref poisoned, 1);
+                    }
+                }
                 Stopwatch deadline = Stopwatch.StartNew();
                 stdout.Join(drainMilliseconds);
                 stderr.Join(Math.Max(0, drainMilliseconds - (int)deadline.ElapsedMilliseconds));
