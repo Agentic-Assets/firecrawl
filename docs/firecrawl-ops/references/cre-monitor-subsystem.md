@@ -134,12 +134,13 @@ the hard gotchas a new session needs before running anything.
    disappearance for any source whose enumeration pass reported an error or
    `truncated` this run; that gate is NOT overridable by `--force-disappear`.
 
-6. **Monitor emits supersets for `nai-global` and `colliers-main`.** Monitor
-   skips detail-dependent filters (NAI `FOR_SALE_ON_MARKET`, colliers-main
-   Sale/Lease classification), so it emits MORE rows than the full path. Correct
-   for diffing (new ids then render, which applies the filter), but monitor row
-   counts will not equal full counts and these rows must never be upserted as
-   listings as-is.
+6. **NAI full and monitor use the same conservative eligibility filter.** Both
+   paths require the public post's `listingStatus` to contain
+   `FOR_SALE_ON_MARKET`, with the appropriate sale/lease content type. Older
+   broad NAI monitor counts are not comparable with this eligible inventory.
+   `colliers-main` monitor still skips detail-dependent Sale/Lease
+   classification and can emit a superset of full listings. Monitor artifacts
+   from either source must never be ingested as listing refreshes.
 
 7. **`colliers-main` monitor emits only on the sale pass** (lease pass returns
    empty) to avoid duplicating each sitemap URL across both transactionMode
