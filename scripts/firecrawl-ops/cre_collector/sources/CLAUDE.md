@@ -76,6 +76,17 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 
 ## Buildout (`buildout.ts`) - Shared Adapter
 
+- **Diagnose the actual adapter before changing its transport.** From a clean,
+  genuine isolated clone, replay the registered source's `buildoutInventoryUrl`
+  and `directBuildoutJson` with its configured sort and Referer. Compare the
+  exact query, User-Agent, Accept, Referer and redirect behavior: a different
+  ad-hoc client returning HTML or repeated pages does not establish a current
+  collector failure. Keep diagnostic requests bounded, with no automatic
+  retries or fallback, and retain private raw bodies, observation times,
+  request metadata and hashes. A successful page proves only that page;
+  complete inventory still requires every declared page and unique-ID
+  reconciliation. Reproduce the failure in the unchanged adapter and isolate
+  the cause before adding URL variants, headers, cache changes or HTML parsing.
 - **No server-side sale/lease filter**; one inventory fetch per `pluginKey`, `buildoutCache` shared across sale+lease passes.
 - Current-inventory receipts preserve literal owned HTTP(S) listing URLs, including
   one nonempty `propertyId` alongside empty template parameters and meaningful
