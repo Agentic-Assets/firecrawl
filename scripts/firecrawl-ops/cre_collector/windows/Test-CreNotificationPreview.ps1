@@ -66,6 +66,12 @@ $oversizedTextRejected = $false
 try { & $previewTool -TextFile $oversizedTextFile | Out-Null }
 catch { $oversizedTextRejected = $true }
 Assert-Cre $oversizedTextRejected 'Oversized custom text must be rejected before preview or send.'
+$escapedTextFile = Join-Path $ProofDirectory 'escaped-oversized-message.txt'
+[IO.File]::WriteAllText($escapedTextFile, ('"' * 3500), (New-Object Text.UTF8Encoding($false)))
+$escapedTextRejected = $false
+try { & $previewTool -TextFile $escapedTextFile | Out-Null }
+catch { $escapedTextRejected = $true }
+Assert-Cre $escapedTextRejected 'Serialized payload must remain within the sender byte limit.'
 
 $invalidCountRejected = $false
 try { & $previewTool -Mode Send -Total 10 -ForSale 1 -ForLease 1 -Both 0 -WebhookFile $missingWebhook | Out-Null }

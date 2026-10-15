@@ -97,9 +97,8 @@ if ($TextFile) {
 }
 $samplePrefix = [char]::ConvertFromUtf32(0x1F9EA) + ' *FORMAT TEST | SAMPLE DATA | NO PIPELINE OR DB READBACK*'
 $message = "$samplePrefix`n$formatted"
-if ([Text.Encoding]::UTF8.GetByteCount($message) -gt 3500) {
-    throw 'Formatted sample exceeds the conservative 3,500-byte preview limit.'
-}
+$payload = [ordered]@{ text = $message } | ConvertTo-Json -Compress
+if ([Text.Encoding]::UTF8.GetByteCount($payload) -gt 4096) { throw 'Formatted sample exceeds the private sender 4,096-byte payload limit.' }
 Write-Output $message
 
 if ($Mode -eq 'Preview') {
@@ -124,7 +123,6 @@ if ('CreWindowsNotification.Sender' -as [type]) {
 try {
     $curl = (Microsoft.PowerShell.Core\Get-Command curl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
-    $payload = [ordered]@{ text = $message } | ConvertTo-Json -Compress
     $result = [CreWindowsNotification.Sender]::Send($WebhookFile, $repository, $curl, $payload)
     [pscustomobject]@{
         Status = $result.Status
