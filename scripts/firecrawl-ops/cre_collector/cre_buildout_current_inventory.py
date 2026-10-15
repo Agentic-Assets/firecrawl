@@ -16,7 +16,8 @@ from cre_current_inventory_admission import (
     _time,
     configuration,
     require,
-    validate_option,
+    admission_configuration,
+    validate_report_scope,
 )
 from cre_gate import count_artifacts
 from cre_ingest import (
@@ -147,19 +148,16 @@ def admit(
     current_code_sha: str,
     current_git_dirty: bool,
     phase: str,
+    source: str | None = None,
 ) -> dict:
     config = manifest["config"]
-    source = config.get("current_inventory_admission", {}).get("source_key")
+    if source is None:
+        source = config.get("current_inventory_admission", {}).get("source_key")
+    admission = admission_configuration(config, source)
     registry = definitions()
     require(source in registry)
     definition = registry[source]
-    validate_option(
-        source,
-        config["sources"],
-        config["transactions"],
-        additive_hold=config.get("admit_baseline_hold_additively"),
-    )
-    require(config["current_inventory_admission"] == configuration(source))
+    require(admission == configuration(source))
     require(
         config.get("additive") is True
         and config.get("mark_missing") is False
@@ -376,10 +374,7 @@ def admit(
         and rejected == 0
         and current.get(source) == len(listings)
     )
-    require(set(report["per_source"]) == {source})
-    require(
-        report["generated_for_artifact"] in (str(artifact_path), [str(artifact_path)])
-    )
+    validate_report_scope(report, manifest, source, artifact_path)
     summary, gate = report["summary"], report["per_source"][source]
     require(
         summary.get("mode") == "live"
@@ -404,10 +399,10 @@ def admit(
         "artifact_sha256": actual_hash,
         "collector_git_sha": current_code_sha,
         "database_target_sha256": target["value"],
-        "source_policy_sha256": config["current_inventory_admission"][
+        "source_policy_sha256": admission[
             "source_policy_sha256"
         ],
-        "buildout_registry_sha256": config["current_inventory_admission"][
+        "buildout_registry_sha256": admission[
             "buildout_registry_sha256"
         ],
         "generation_id": manifest["run_id"],
