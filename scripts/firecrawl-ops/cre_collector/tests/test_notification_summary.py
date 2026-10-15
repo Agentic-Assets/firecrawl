@@ -230,6 +230,88 @@ def read(evidence, **changes):
     return summary.verified_summary(**args)
 
 
+def pipeline_evidence(evidence):
+    """Bind two source entries to one child and one verified validation unit."""
+    source2 = "cbre"
+    parent = evidence["values"]["parent"]
+    child = evidence["values"]["child"]
+    parent["config"].update(
+        pipeline=True,
+        sources=[SOURCE, source2],
+        current_inventory_admissions={SOURCE: {"sha256": "f" * 64}, source2: {"sha256": "e" * 64}},
+    )
+    parent["status"] = "failed"
+    parent["sources"][SOURCE]["state"] = "complete"
+    parent["sources"][SOURCE]["pipeline_result"] = {
+        "state": "verified",
+        "unit_id": "unit-0001",
+        "validation_path": "pipeline/unit-0001/validation.json",
+        "validation_sha256": "0" * 64,
+        "readback_ok": True,
+        "generation_id": RUN,
+        "artifact_sha256": evidence["artifact_sha"],
+    }
+    parent["sources"][SOURCE]["attempts"][-1]["checkpoint_run"] = "runs/" + RUN
+    parent["sources"][source2] = {
+        "state": "failed_source",
+        "checkpoint_run": "runs/" + RUN,
+        "checkpoint_status": child["status"],
+        "attempts": [
+            {
+                "rc": 1,
+                "checkpoint_run": "runs/" + RUN,
+                "series_control_child_id": CHILD,
+            }
+        ],
+    }
+    child["status"] = "failed"
+    child["config"].update(
+        pipeline=True,
+        sources=[SOURCE, source2],
+        current_inventory_admissions=parent["config"]["current_inventory_admissions"],
+    )
+    child["sources"][source2] = {"state": "collect_failed"}
+    child["pipeline"] = {
+        "status": "partial",
+        "source_results": {
+            SOURCE: parent["sources"][SOURCE]["pipeline_result"],
+            source2: {"state": "failed", "reason": "bounded test fixture"},
+        },
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "sources": [SOURCE],
+                "state": "verified",
+                "validation_path": "pipeline/unit-0001/validation.json",
+                "validation_sha256": "0" * 64,
+            }
+        ],
+    }
+    parent["sources"][SOURCE]["checkpoint_status"] = child["status"]
+    validation_dir = evidence["series"] / "runs" / RUN / "pipeline" / "unit-0001"
+    validation_dir.mkdir(parents=True, mode=0o700)
+    validation_dir.chmod(0o700)
+    validation_raw = b'{"ok":true}'
+    digest = hashlib.sha256(validation_raw).hexdigest()
+    child["pipeline"]["units"][0]["validation_sha256"] = digest
+    parent["sources"][SOURCE]["pipeline_result"]["validation_sha256"] = digest
+    child["pipeline"]["source_results"][SOURCE]["validation_sha256"] = digest
+    (validation_dir / "validation.json").write_bytes(validation_raw)
+    (validation_dir / "validation.json").chmod(0o600)
+    evidence["save"]()
+    return {"source2": source2, "parent": parent, "child": child}
+
+
+def read_pipeline(evidence, source_keys=None):
+    args = {
+        "series_directory": evidence["series"],
+        "source_keys": source_keys or [SOURCE, "cbre"],
+        "expected_sha": SHA,
+        "windows_admission_ms": evidence["admission"],
+    }
+    return summary.verified_pipeline_summary(**args)
+
+
 def test_real_private_receipts_prove_only_exact_current_inventory(
     evidence, monkeypatch
 ):
@@ -253,6 +335,121 @@ def test_real_private_receipts_prove_only_exact_current_inventory(
         {"new", "updated", "sale_count", "lease_count", "whole_source_coverage"}
         & result.keys()
     )
+
+
+def test_pipeline_reports_only_qualified_source_from_one_shared_child(evidence):
+    setup = pipeline_evidence(evidence)
+    result = read_pipeline(evidence)
+    assert result["verified"] is True
+    assert result["complete"] is False
+    assert result["selected_source_keys"] == [SOURCE, setup["source2"]]
+    assert result["failed_source_keys"] == [setup["source2"]]
+    assert result["pending_source_keys"] == []
+    assert len(result["per_source_summaries"]) == 1
+    row = result["per_source_summaries"][0]
+    assert row["source_key"] == SOURCE
+    assert row["verified_listings"] == 3
+    assert row["transaction_breakdown_status"]["status"] == "verified"
+    assert type(row["transaction_breakdown_status"]["elapsed_ms"]) is int
+    assert row["transaction_breakdown"] == {
+        "sale": 2,
+        "lease": 3,
+        "both": 2,
+        "measurement": "current_staged_inventory_transaction_types",
+    }
+    assert "verified_listings" not in result
+    assert "total_verified_listings" not in result
+
+
+@pytest.mark.parametrize(
+    ("target", "value"),
+    [
+        ("validation_hash", "f" * 64),
+        ("source_map", "foreign"),
+        ("unit_state", "failed"),
+        ("terminal_age", -600000),
+    ],
+)
+def test_pipeline_tampered_or_unsettled_evidence_never_supplies_counts(
+    evidence, target, value
+):
+    setup = pipeline_evidence(evidence)
+    if target == "validation_hash":
+        setup["child"]["pipeline"]["source_results"][SOURCE][
+            "validation_sha256"
+        ] = value
+        evidence["save"]()
+    elif target == "source_map":
+        setup["child"]["pipeline"]["source_results"][value] = setup[
+            "child"
+        ]["pipeline"]["source_results"].pop(SOURCE)
+        evidence["save"]()
+    elif target == "unit_state":
+        setup["child"]["pipeline"]["units"][0]["state"] = value
+        evidence["save"]()
+    else:
+        evidence["values"]["control"]["finished_unix_ms"] += value
+        evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+def test_pipeline_distinguishes_pending_from_failed(evidence):
+    setup = pipeline_evidence(evidence)
+    source2 = setup["source2"]
+    setup["parent"]["sources"][source2]["state"] = "pending"
+    setup["child"]["pipeline"]["status"] = "partial"
+    setup["child"]["sources"][source2] = {"state": "pending"}
+    setup["child"]["pipeline"]["source_results"].pop(source2)
+    evidence["save"]()
+    result = read_pipeline(evidence)
+    assert result["verified"] is True
+    assert result["complete"] is False
+    assert result["failed_source_keys"] == []
+    assert result["pending_source_keys"] == [source2]
+
+
+def test_pipeline_marks_complete_only_when_every_selected_source_qualifies(evidence):
+    setup = pipeline_evidence(evidence)
+    source2 = setup["source2"]
+    parent, child = setup["parent"], setup["child"]
+    parent["config"]["sources"] = [SOURCE]
+    parent["config"]["current_inventory_admissions"].pop(source2)
+    parent["sources"].pop(source2)
+    parent["status"] = "complete"
+    child["config"]["sources"] = [SOURCE]
+    child["sources"].pop(source2)
+    child["pipeline"]["source_results"].pop(source2)
+    child["pipeline"]["status"] = "complete"
+    child["status"] = "supported_scope_complete"
+    parent["sources"][SOURCE]["checkpoint_status"] = child["status"]
+    evidence["save"]()
+    result = read_pipeline(evidence, [SOURCE])
+    assert result["verified"] is True
+    assert result["complete"] is True
+    assert result["failed_source_keys"] == []
+    assert result["pending_source_keys"] == []
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+
+
+def test_legacy_cli_contract_remains_single_source(evidence, capsys):
+    status = summary.main(
+        [
+            "--series-directory",
+            str(evidence["series"]),
+            "--source",
+            SOURCE,
+            "--expected-sha",
+            SHA,
+            "--windows-admission-unix-ms",
+            str(evidence["admission"]),
+        ]
+    )
+    assert status == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["source"] == SOURCE
+    assert output["verified_listings"] == 3
+    assert "per_source_summaries" not in output
 
 
 def test_breakdown_proof_failures_preserve_exact_verified_total(evidence):
