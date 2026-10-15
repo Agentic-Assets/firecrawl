@@ -11,6 +11,7 @@ series immediately. Every live write remains inside the checkpoint runner.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -1596,11 +1597,20 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
             raise SeriesError(
                 "pipeline reconciliation lacks exact terminal attempt timing"
             )
+    unit_cache = {}
     for key in sources:
         row = manifest["sources"][key]
         row.update(
             state="complete"
-            if pipeline_source_qualified(child, key)
+            if pipeline_source_qualified(
+                child,
+                key,
+                run_dir=series_dir / relative,
+                parent_started_at=manifest["started_at"],
+                parent_finished_at=utc_now(),
+                unit_cache=unit_cache,
+                parent_attempts=row["attempts"],
+            )
             else "interrupted",
             checkpoint_status=child["status"],
             error=child.get("error"),
@@ -1609,29 +1619,285 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     save_manifest(series_dir, manifest)
 
 
-def pipeline_source_qualified(child: Mapping[str, Any], source: str) -> bool:
-    """A terminal aggregate status never substitutes for exact member readback."""
+def _pipeline_member_report_matches(
+    report: dict, checkpoint: dict, source: str, run_id: str
+) -> bool:
+    """Cross-bind saved exact readback fields to the hashed full query output."""
+    artifact = checkpoint["artifact"]
+    readback = checkpoint["readback"]
+    staged = artifact["staged_unique"]
+    inventory_only = artifact.get("inventory_only", 0)
+    if (
+        type(staged) is not int
+        or staged < 0
+        or type(inventory_only) is not int
+        or inventory_only < 0
+        or readback["expected_staged_unique"] != staged
+    ):
+        return False
+    rows = report["queries"]["freshness_generations"]
+    generation_rows = [
+        row
+        for row in rows
+        if row.get("source_key") == source and row.get("generation_id") == run_id
+    ]
+    if readback.get("generation_id") == run_id:
+        if len(generation_rows) != 1:
+            return False
+        generation = generation_rows[0]
+        if (
+            int(generation["active"]) != staged
+            or int(generation["persisted_inventory_observed"]) != staged
+            or readback["latest_inventory_batch_active"] != staged
+            or generation["evidence_class"] != readback["evidence_class"]
+        ):
+            return False
+        for name in (
+            "earliest_inventory_observed_at",
+            "latest_inventory_observed_at",
+            "earliest_detail_observed_at",
+            "latest_detail_observed_at",
+        ):
+            if readback.get(name) is not None and (
+                _parse_utc_timestamp(generation[name], field=name)
+                != _parse_utc_timestamp(readback[name], field=name)
+            ):
+                return False
+    elif (
+        staged != 0 or inventory_only <= 0 or readback.get("generation_id") is not None
+    ):
+        return False
+    if readback.get("generation_id") is None:
+        from cre_source_policy import load_source_policy
+
+        if load_source_policy()[source]["inventory_only_namespace"] is None:
+            return False
+    if inventory_only:
+        inventory = [
+            row
+            for row in report["queries"]["inventory_only_index"]
+            if row.get("source_key") == source
+        ]
+        saved = readback["inventory_only"]
+        if (
+            len(inventory) != 1
+            or int(inventory[0]["active"]) != inventory_only
+            or int(inventory[0]["latest_batch_active"]) != inventory_only
+            or saved["expected_active"] != inventory_only
+        ):
+            return False
+    fingerprint_rows = [
+        row
+        for row in report["queries"]["inventory_generation_fingerprints"]
+        if row.get("source_key") == source
+    ]
+    fingerprint = readback["inventory_fingerprint"]
+    if (
+        len(fingerprint_rows) != 1
+        or fingerprint["sourceId"] != source
+        or fingerprint["publicationStatus"] != "complete"
+        or type(fingerprint["rowCount"]) is not int
+        or int(fingerprint_rows[0]["row_count"]) != fingerprint["rowCount"]
+    ):
+        return False
+    return all(
+        _parse_utc_timestamp(fingerprint_rows[0][raw], field=raw)
+        == _parse_utc_timestamp(fingerprint[saved], field=saved)
+        for raw, saved in (
+            ("max_row_updated_at", "maxRowUpdatedAt"),
+            ("max_observation_at", "maxObservationAt"),
+        )
+    )
+
+
+def pipeline_source_qualified(
+    child: Mapping[str, Any],
+    source: str,
+    *,
+    run_dir: Path | None = None,
+    parent_started_at: str | None = None,
+    parent_finished_at: str | None = None,
+    unit_cache: dict | None = None,
+    allow_running: bool = False,
+    parent_attempts: Sequence[Mapping[str, Any]] | None = None,
+) -> bool:
+    """Qualify original bound audit bytes; matching manifest strings are insufficient.
+
+    A caller owns one cache for a single qualification pass. It never persists
+    cache entries across reads or generations, and each sealed report is read once.
+    """
+    from cre_series_status import _contained_path, _read_regular_file
+    from cre_validate import (
+        FULL_VALIDATION_PROFILE,
+        VALIDATION_AUDIT_SCOPES,
+        require_full_validation_report,
+    )
+
+    if run_dir is None or parent_started_at is None or not parent_attempts:
+        return False
+    cache = unit_cache if unit_cache is not None else {}
     try:
-        checkpoint = child["sources"][source]
-        result = child["pipeline"]["source_results"][source]
-        unit = next(
-            unit
-            for unit in child["pipeline"]["units"]
-            if unit["unit_id"] == result["unit_id"]
+        run_id = child["run_id"]
+        if not isinstance(run_id, str) or validate_run_id(run_id) != run_dir.name:
+            return False
+        parent_start = _parse_utc_timestamp(
+            parent_started_at, field="parent started_at"
         )
-        return (
-            result["state"] == "verified"
-            and unit["state"] == "verified"
-            and result["readback_ok"] is True
-            and result["generation_id"] == child["run_id"]
-            and result["artifact_sha256"] == checkpoint["artifact"]["sha256"]
-            and checkpoint["readback"]["ok"] is True
-            and source in unit["sources"]
-            and result["validation_path"] == unit["validation_path"]
-            and result["validation_sha256"] == unit["validation_sha256"]
-            and bool(re.fullmatch(r"[a-f0-9]{64}", result["validation_sha256"]))
+        parent_end = _parse_utc_timestamp(
+            parent_finished_at or utc_now(), field="parent finished_at"
         )
-    except (KeyError, TypeError, StopIteration):
+        child_start = _parse_utc_timestamp(
+            child["started_at"], field="child started_at"
+        )
+        child_finished = child.get("finished_at")
+        if child_finished is None and not (
+            allow_running and child.get("status") == "running"
+        ):
+            return False
+        child_end = _parse_utc_timestamp(
+            child_finished or parent_end.isoformat(), field="child finished_at"
+        )
+        if not parent_start <= child_start <= child_end <= parent_end:
+            return False
+        results = child["pipeline"]["source_results"]
+        result = results[source]
+        unit_id = result["unit_id"]
+        if (
+            not isinstance(unit_id, str)
+            or not re.fullmatch(r"unit-[0-9]{4,6}", unit_id)
+            or int(unit_id[5:]) <= 0
+        ):
+            return False
+        units = child["pipeline"]["units"]
+        matching = [unit for unit in units if unit.get("unit_id") == unit_id]
+        if len(matching) != 1:
+            return False
+        unit = matching[0]
+        members = unit["sources"]
+        if (
+            unit["state"] != "verified"
+            or not isinstance(members, list)
+            or not 1 <= len(members) <= 5
+            or len(set(members)) != len(members)
+            or source not in members
+            or any(key not in child["sources"] for key in members)
+        ):
+            return False
+        unit_start = _parse_utc_timestamp(unit["started_at"], field="unit started_at")
+        unit_end = _parse_utc_timestamp(unit["finished_at"], field="unit finished_at")
+        if not child_start <= unit_start <= unit_end <= child_end:
+            return False
+        in_parent_attempt = False
+        for attempt in parent_attempts:
+            attempt_start = _parse_utc_timestamp(
+                attempt.get("started_at"), field="parent attempt started_at"
+            )
+            attempt_end = _parse_utc_timestamp(
+                attempt.get("finished_at") or parent_end.isoformat(),
+                field="parent attempt finished_at",
+            )
+            if (
+                parent_start
+                <= attempt_start
+                <= unit_start
+                <= unit_end
+                <= attempt_end
+                <= parent_end
+            ):
+                in_parent_attempt = True
+        if not in_parent_attempt:
+            return False
+        path = unit["validation_path"]
+        digest = unit["validation_sha256"]
+        expected_path = f"pipeline/{unit_id}/validation.json"
+        if (
+            path != expected_path
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", digest)
+        ):
+            return False
+        evidence = unit["validation"]
+        if (
+            evidence["path"] != path
+            or type(evidence["rc"]) is not int
+            or evidence["rc"] != 0
+            or evidence["query_execution_ok"] is not True
+            or evidence["quality_no_regression"] is not True
+            or evidence["quality_failures"] != []
+            or evidence["readback_ok"] is not True
+            or evidence["failed_readback_sources"] != []
+            or type(evidence["absolute_quality_ok"]) is not bool
+            or not isinstance(evidence["absolute_quality_failures"], list)
+        ):
+            return False
+        cache_key = (str(run_dir), unit_id, path, digest)
+        if cache_key not in cache:
+            cache[cache_key] = None
+            bound = _contained_path(run_dir, path)
+            original = run_dir / path
+            if bound is None or any(
+                part.is_symlink()
+                for part in (run_dir, original.parent.parent, original.parent, original)
+            ):
+                return False
+            raw = _read_regular_file(original, limit=32 * 1024 * 1024)
+            if hashlib.sha256(raw).hexdigest() != digest:
+                return False
+            report = json.loads(raw)
+            if (
+                report.get("validation_profile") != FULL_VALIDATION_PROFILE
+                or report.get("audit_scope")
+                != VALIDATION_AUDIT_SCOPES[FULL_VALIDATION_PROFILE]
+                or report.get("ok") is not True
+            ):
+                return False
+            require_full_validation_report(report)
+            report_time = _parse_utc_timestamp(
+                report["generated_at"], field="validation generated_at"
+            )
+            if not unit_start <= report_time <= unit_end:
+                return False
+            cache[cache_key] = report
+        if cache[cache_key] is None:
+            return False
+        report = cache[cache_key]
+        for key in members:
+            checkpoint = child["sources"][key]
+            proof = results[key]
+            artifact = checkpoint["artifact"]
+            artifact_digest = artifact["sha256"]
+            if (
+                not isinstance(artifact_digest, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", artifact_digest)
+                or type(artifact["bytes"]) is not int
+                or artifact["bytes"] <= 0
+                or proof["state"] != "verified"
+                or proof["unit_id"] != unit_id
+                or proof["readback_ok"] is not True
+                or proof["generation_id"] != run_id
+                or proof["artifact_sha256"] != artifact_digest
+                or proof["validation_path"] != expected_path
+                or proof["validation_sha256"] != digest
+                or checkpoint["readback"]["ok"] is not True
+                or not _pipeline_member_report_matches(report, checkpoint, key, run_id)
+                or sum(
+                    key in candidate.get("sources", [])
+                    for candidate in units
+                    if candidate.get("state") == "verified"
+                )
+                != 1
+            ):
+                return False
+        return True
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        OverflowError,
+        SeriesError,
+    ):
         return False
 
 
@@ -1761,10 +2027,13 @@ def run_pipeline_series(
     ):
         raise SeriesError("pipeline checkpoint database target changed")
     qualified = set()
+    unit_cache = {}
     for key in sources:
         row = manifest["sources"][key]
         row["attempts"][-1].update(finished_at=utc_now(), rc=rc)
-        if pipeline_source_qualified(child, key):
+        if pipeline_source_qualified(child, key, run_dir=child_run,
+                parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
+                parent_attempts=row["attempts"]):
             qualified.add(key)
             row.update(state="complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]

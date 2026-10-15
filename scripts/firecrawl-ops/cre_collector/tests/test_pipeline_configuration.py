@@ -1,5 +1,7 @@
 """Portable opt-in settings, one owner forwarding and exact member results."""
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -70,30 +72,121 @@ def test_distinct_admissions_forwarded_as_explicit_repeatable_keys(tmp_path):
     }
 
 
-def qualified_child():
+RUN_ID = "2026-10-15T120001Z"
+PARENT_START = "2026-10-15T12:00:00Z"
+PARENT_END = "2026-10-15T12:02:01Z"
+PARENT_ATTEMPTS = [{"started_at": "2026-10-15T12:00:01Z", "finished_at": PARENT_END}]
+
+
+def qualified_child(run_dir=None):
+    from cre_validate import QUERIES, VALIDATION_AUDIT_SCOPES
+
+    observed = "2026-10-15T12:00:15Z"
+    report = {
+        "ok": True,
+        "validation_profile": "full",
+        "audit_scope": VALIDATION_AUDIT_SCOPES["full"],
+        "generated_at": "2026-10-15T12:00:30Z",
+        "queries": {key: [] for key in QUERIES},
+        "historical_primary_child_conflicts": [],
+    }
+    report["queries"]["freshness_generations"] = [
+        {
+            "source_key": "cbre",
+            "generation_id": RUN_ID,
+            "active": "1",
+            "persisted_inventory_observed": "1",
+            "evidence_class": "authoritative_inventory_feed",
+            "earliest_inventory_observed_at": observed,
+            "latest_inventory_observed_at": observed,
+        }
+    ]
+    report["queries"]["inventory_generation_fingerprints"] = [
+        {
+            "source_key": "cbre",
+            "row_count": "1",
+            "max_row_updated_at": observed,
+            "max_observation_at": observed,
+        }
+    ]
+    raw = json.dumps(report).encode()
+    digest = hashlib.sha256(raw).hexdigest()
     result = {
         "state": "verified",
         "unit_id": "unit-0001",
         "readback_ok": True,
-        "generation_id": "generation",
+        "generation_id": RUN_ID,
         "artifact_sha256": "a" * 64,
         "validation_path": "pipeline/unit-0001/validation.json",
-        "validation_sha256": "b" * 64,
+        "validation_sha256": digest,
+    }
+    validation = {
+        "path": result["validation_path"],
+        "rc": 0,
+        "query_execution_ok": True,
+        "quality_no_regression": True,
+        "quality_failures": [],
+        "readback_ok": True,
+        "failed_readback_sources": [],
+        "absolute_quality_ok": False,
+        "absolute_quality_failures": ["retained historical diagnostic"],
     }
     unit = {
         "unit_id": "unit-0001",
         "state": "verified",
         "sources": ["cbre"],
+        "started_at": "2026-10-15T12:00:10Z",
+        "finished_at": "2026-10-15T12:01:00Z",
         "validation_path": result["validation_path"],
-        "validation_sha256": "b" * 64,
+        "validation_sha256": digest,
+        "validation": validation,
     }
-    return {
-        "run_id": "generation",
+    child = {
+        "run_id": RUN_ID,
+        "started_at": "2026-10-15T12:00:01Z",
+        "finished_at": "2026-10-15T12:02:00Z",
         "status": "supported_scope_complete",
         "sources": {
-            "cbre": {"artifact": {"sha256": "a" * 64}, "readback": {"ok": True}}
+            "cbre": {
+                "artifact": {
+                    "sha256": "a" * 64,
+                    "bytes": 123,
+                    "staged_unique": 1,
+                    "inventory_only": 0,
+                },
+                "readback": {
+                    "ok": True,
+                    "generation_id": RUN_ID,
+                    "expected_staged_unique": 1,
+                    "latest_inventory_batch_active": 1,
+                    "evidence_class": "authoritative_inventory_feed",
+                    "earliest_inventory_observed_at": observed,
+                    "latest_inventory_observed_at": observed,
+                    "inventory_fingerprint": {
+                        "sourceId": "cbre",
+                        "rowCount": 1,
+                        "publicationStatus": "complete",
+                        "maxRowUpdatedAt": observed,
+                        "maxObservationAt": observed,
+                    },
+                },
+            }
         },
         "pipeline": {"source_results": {"cbre": result}, "units": [unit]},
+    }
+    if run_dir is not None:
+        output = run_dir / result["validation_path"]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(raw)
+    return child
+
+
+def qualification_context(run):
+    return {
+        "run_dir": run,
+        "parent_started_at": PARENT_START,
+        "parent_finished_at": PARENT_END,
+        "parent_attempts": PARENT_ATTEMPTS,
     }
 
 
@@ -108,14 +201,19 @@ def qualified_child():
         "unit",
     ],
 )
-def test_exact_per_source_readback_required(drift):
-    child = qualified_child()
+def test_exact_per_source_readback_required(drift, tmp_path):
+    run = tmp_path / RUN_ID
+    child = qualified_child(run)
     if drift == "unit":
         child["pipeline"]["units"][0]["sources"] = ["jll"]
     elif drift:
         child["pipeline"]["source_results"]["cbre"][drift] = "foreign"
-    assert series.pipeline_source_qualified(child, "cbre") is (drift is None)
-    assert not series.pipeline_source_qualified(child, "jll")
+    assert series.pipeline_source_qualified(
+        child, "cbre", **qualification_context(run)
+    ) is (drift is None)
+    assert not series.pipeline_source_qualified(
+        child, "jll", **qualification_context(run)
+    )
 
 
 def test_single_pipeline_owner_even_with_partial_success(monkeypatch, tmp_path):
@@ -147,6 +245,8 @@ def test_single_pipeline_owner_even_with_partial_success(monkeypatch, tmp_path):
             pass
 
         def spawn(self, popen, argv, **kwargs):
+            for row in manifest["sources"].values():
+                row["attempts"][-1]["started_at"] = PARENT_ATTEMPTS[0]["started_at"]
             calls.append(argv)
             return Proc()
 
@@ -156,7 +256,8 @@ def test_single_pipeline_owner_even_with_partial_success(monkeypatch, tmp_path):
         def observe_exit(self, proc):
             pass
 
-    child = qualified_child()
+    manifest["started_at"] = PARENT_START
+    child = qualified_child(root / "runs" / RUN_ID)
     child["config"] = series._expected_child_config("cbre,jll", settings)
     child["preflight"] = {"database_target": manifest["database_target"]}
     monkeypatch.setattr(
@@ -185,13 +286,16 @@ def test_status_reads_shared_pipeline_owner_once(tmp_path):
     run = directory / "runs/2026-10-15T120001Z"
     run.mkdir(parents=True)
     manifest = series.new_manifest(directory, git_sha="a" * 40, config=settings)
+    manifest["started_at"] = PARENT_START
     for row in manifest["sources"].values():
         row["checkpoint_run"] = "runs/" + run.name
-    child = qualified_child()
+        row["attempts"] = PARENT_ATTEMPTS
+    child = qualified_child(run)
     child.update(
         run_id=run.name,
         collector_git_sha="a" * 40,
         config=series._expected_child_config("cbre,jll", settings),
+        preflight={"database_target": manifest.get("database_target")},
     )
     child["pipeline"]["source_results"]["cbre"]["generation_id"] = run.name
     child["sources"]["jll"] = {"state": "collecting"}
@@ -200,6 +304,9 @@ def test_status_reads_shared_pipeline_owner_once(tmp_path):
     assert counts["source_workers"] == 2
     assert counts["fetching"] == 1
     assert counts["verified"] == 1
+    child.update(status="running", finished_at=None)
+    (run / "manifest.json").write_text(json.dumps(child))
+    assert status.pipeline_progress(manifest, directory / "manifest.json")["verified"] == 1
     manifest["sources"]["jll"]["checkpoint_run"] = "runs/foreign"
     assert status.pipeline_progress(manifest, directory / "manifest.json") is None
 
@@ -222,9 +329,10 @@ def test_pipeline_resume_rejects_worker_or_source_selection_drift(tmp_path):
 def test_pipeline_stale_reconciliation_uses_same_terminal_owner(monkeypatch, tmp_path):
     settings = config(pipeline=True)
     manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings)
-    child = qualified_child()
+    manifest["started_at"] = PARENT_START
+    child = qualified_child(tmp_path / "runs" / RUN_ID)
     child.update(
-        started_at="2026-10-15T12:00:00Z",
+        started_at="2026-10-15T12:00:01Z",
         finished_at="2026-10-15T12:02:00Z",
         preflight={"database_target": None},
     )
@@ -247,3 +355,159 @@ def test_pipeline_stale_reconciliation_uses_same_terminal_owner(monkeypatch, tmp
     assert calls[0]["expected_config"]["sources"] == ["cbre", "jll"]
     assert manifest["sources"]["cbre"]["state"] == "complete"
     assert manifest["sources"]["jll"]["state"] == "interrupted"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_report",
+        "null_artifact_sha",
+        "traversal",
+        "null_generation",
+        "arbitrary_unit",
+        "missing_time",
+        "reversed_time",
+        "report_tamper",
+        "missing_profile",
+        "missing_family",
+        "missing_historical",
+        "zero_bytes",
+        "outside_parent_attempt",
+        "mismatched_report_readback",
+    ],
+)
+def test_review_qualification_failures_are_refused(tmp_path, fault):
+    run = tmp_path / RUN_ID
+    child = qualified_child(run)
+    unit = child["pipeline"]["units"][0]
+    proof = child["pipeline"]["source_results"]["cbre"]
+    report_path = run / proof["validation_path"]
+    context = qualification_context(run)
+    if fault == "missing_report":
+        report_path.unlink()
+    elif fault == "null_artifact_sha":
+        proof["artifact_sha256"] = child["sources"]["cbre"]["artifact"]["sha256"] = None
+    elif fault == "traversal":
+        proof["validation_path"] = unit["validation_path"] = (
+            "../../foreign-validation.json"
+        )
+    elif fault == "null_generation":
+        proof["generation_id"] = child["run_id"] = None
+    elif fault == "arbitrary_unit":
+        proof["unit_id"] = unit["unit_id"] = "../../foreign"
+    elif fault == "missing_time":
+        unit.pop("started_at")
+    elif fault == "reversed_time":
+        unit["finished_at"] = "2026-10-15T11:00:00Z"
+    elif fault == "zero_bytes":
+        child["sources"]["cbre"]["artifact"]["bytes"] = 0
+    elif fault == "outside_parent_attempt":
+        context["parent_attempts"] = [
+            {"started_at": "2026-10-15T12:01:01Z", "finished_at": PARENT_END}
+        ]
+    else:
+        report = json.loads(report_path.read_bytes())
+        if fault == "report_tamper":
+            report["ok"] = False
+        elif fault == "missing_profile":
+            report.pop("validation_profile")
+        elif fault == "missing_family":
+            report["queries"].pop("duplicates")
+        elif fault == "missing_historical":
+            report.pop("historical_primary_child_conflicts")
+        elif fault == "mismatched_report_readback":
+            report["queries"]["freshness_generations"][0]["active"] = "99"
+        raw = json.dumps(report).encode()
+        report_path.write_bytes(raw)
+        if fault != "report_tamper":
+            unit["validation_sha256"] = proof["validation_sha256"] = hashlib.sha256(
+                raw
+            ).hexdigest()
+    assert not series.pipeline_source_qualified(child, "cbre", **context)
+
+
+def test_qualification_without_original_run_context_fails_closed(tmp_path):
+    child = qualified_child(tmp_path / RUN_ID)
+    assert not series.pipeline_source_qualified(child, "cbre")
+
+
+def test_full_unit_report_is_read_once_for_all_members(tmp_path, monkeypatch):
+    import copy
+
+    import cre_series_status as status
+
+    run = tmp_path / RUN_ID
+    child = qualified_child(run)
+    unit = child["pipeline"]["units"][0]
+    unit["sources"].append("jll")
+    child["sources"]["jll"] = copy.deepcopy(child["sources"]["cbre"])
+    child["sources"]["jll"]["readback"]["inventory_fingerprint"]["sourceId"] = "jll"
+    child["pipeline"]["source_results"]["jll"] = copy.deepcopy(
+        child["pipeline"]["source_results"]["cbre"]
+    )
+    report_path = run / unit["validation_path"]
+    report = json.loads(report_path.read_bytes())
+    for family in ("freshness_generations", "inventory_generation_fingerprints"):
+        row = copy.deepcopy(report["queries"][family][0])
+        row["source_key"] = "jll"
+        report["queries"][family].append(row)
+    raw = json.dumps(report).encode()
+    report_path.write_bytes(raw)
+    unit["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    for proof in child["pipeline"]["source_results"].values():
+        proof["validation_sha256"] = unit["validation_sha256"]
+    reads = []
+    original = status._read_regular_file
+
+    def read(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(status, "_read_regular_file", read)
+    cache = {}
+    for source in ("cbre", "jll"):
+        assert series.pipeline_source_qualified(
+            child, source, unit_cache=cache, **qualification_context(run)
+        )
+    assert reads == [report_path]
+    # A new qualification pass must detect changed evidence; caches never persist.
+    report_path.write_bytes(b"{}")
+    assert not series.pipeline_source_qualified(
+        child, "cbre", unit_cache={}, **qualification_context(run)
+    )
+
+
+def test_existing_inventory_only_readback_contract_remains_supported(tmp_path):
+    run = tmp_path / RUN_ID
+    child = json.loads(
+        json.dumps(qualified_child(run)).replace("cbre", "cbre-dealflow")
+    )
+    checkpoint = child["sources"]["cbre-dealflow"]
+    checkpoint["artifact"].update(staged_unique=0, inventory_only=1)
+    checkpoint["readback"].update(
+        generation_id=None,
+        expected_staged_unique=0,
+        latest_inventory_batch_active=0,
+        inventory_only={"expected_active": 1},
+    )
+    unit = child["pipeline"]["units"][0]
+    report_path = run / unit["validation_path"]
+    report = json.loads(report_path.read_text().replace("cbre", "cbre-dealflow"))
+    report["queries"]["freshness_generations"] = []
+    report["queries"]["inventory_only_index"] = [
+        {"source_key": "cbre-dealflow", "active": "1", "latest_batch_active": "1"}
+    ]
+    raw = json.dumps(report).encode()
+    report_path.write_bytes(raw)
+    unit["validation_sha256"] = hashlib.sha256(raw).hexdigest()
+    child["pipeline"]["source_results"]["cbre-dealflow"]["validation_sha256"] = unit[
+        "validation_sha256"
+    ]
+    assert series.pipeline_source_qualified(
+        child, "cbre-dealflow", **qualification_context(run)
+    )
+    # Result/owner generation identity itself can never be absent.
+    child["pipeline"]["source_results"]["cbre-dealflow"]["generation_id"] = None
+    assert not series.pipeline_source_qualified(
+        child, "cbre-dealflow", **qualification_context(run)
+    )

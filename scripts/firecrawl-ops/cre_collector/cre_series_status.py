@@ -192,14 +192,37 @@ def pipeline_progress(manifest: Mapping[str, Any], path: Path) -> dict | None:
             or set(child["sources"]) != set(config["sources"])
         ):
             return None
-        from cre_checkpoint_series import pipeline_source_qualified
+        from cre_checkpoint_series import (
+            _exact_json_equal,
+            _expected_child_config,
+            pipeline_source_qualified,
+        )
 
+        if not _exact_json_equal(
+            child.get("config"),
+            _expected_child_config(",".join(config["sources"]), config),
+        ) or not _exact_json_equal(
+            child.get("preflight", {}).get("database_target"),
+            manifest.get("database_target"),
+        ):
+            return None
         counts = dict.fromkeys(
             ("fetching", "pending", "validating", "committing", "verified", "failed"), 0
         )
+        unit_cache = {}
         for key, checkpoint in child["sources"].items():
             state = checkpoint.get("pipeline_stage") or checkpoint.get("state")
-            if pipeline_source_qualified(child, key):
+            if pipeline_source_qualified(
+                child,
+                key,
+                run_dir=run,
+                parent_started_at=manifest["started_at"],
+                parent_finished_at=manifest.get("finished_at")
+                or datetime.now(timezone.utc).isoformat(),
+                unit_cache=unit_cache,
+                allow_running=True,
+                parent_attempts=manifest["sources"][key].get("attempts"),
+            ):
                 phase = "verified"
             elif state in {"collecting", "fetching"}:
                 phase = "fetching"
