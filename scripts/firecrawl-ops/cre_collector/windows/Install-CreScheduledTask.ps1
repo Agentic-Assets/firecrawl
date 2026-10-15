@@ -23,6 +23,8 @@ param(
     [switch]$AcknowledgeDatabaseWrites,
     [ValidateSet('interra-realty')][string]$AdmitCurrentInventorySource,
     [switch]$Apply,
+    [string]$AlertWebhookFile,
+    [ValidateSet('Failure','StartFinish')][string]$NotificationMode = 'Failure',
     [ValidatePattern('^(?:[01][0-9]|2[0-3]):[0-5][0-9](?:,(?:[01][0-9]|2[0-3]):[0-5][0-9]){0,3}\z')]
     [string]$DailyAt = '08:00,20:00',
     [ValidateSet('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')]
@@ -64,6 +66,13 @@ if ($AdmitCurrentInventorySource -and ($Tier -ne 'series' -or $Source -cne $Admi
 }
 if ($Tier -eq 'enrich' -and $Source -ceq 'matthews' -and $Apply -and $DeadlineSeconds -gt 600) {
     throw 'Applied Matthews enrichment requires a deadline of at most 600 seconds.'
+}
+if ($NotificationMode -eq 'StartFinish' -and -not $AlertWebhookFile) {
+    throw 'Lifecycle notification requires a private webhook-file reference.'
+}
+if ($AlertWebhookFile -and ($AlertWebhookFile -notmatch '^[A-Za-z]:[\\/]' -or
+    $AlertWebhookFile -match '[\r\n\x00-\x1f<>"|?*]' -or $AlertWebhookFile.Substring(2).Contains(':'))) {
+    throw 'Webhook reference must be an absolute local Windows file path.'
 }
 $times = @($DailyAt.Split(','))
 if (@($times | Sort-Object -Unique).Count -ne $times.Count) { throw 'Schedule times must be unique.' }
@@ -111,6 +120,7 @@ function Get-CreTaskContract([string]$Xml) {
     # defaults for comparison, while preserving any explicitly different value.
     foreach ($entry in @(
         @('/t:Task/t:Principals/t:Principal','RunLevel','LeastPrivilege'),
+        @('/t:Task/t:Settings','Enabled','true'),
         @('/t:Task/t:Settings','AllowStartOnDemand','true'),
         @('/t:Task/t:Settings','Hidden','false'),
         @('/t:Task/t:Settings','RunOnlyIfIdle','false'),
@@ -170,6 +180,7 @@ if ($Tier -eq 'series') {
     $arguments += @('-Batch',"$Batch",'-DeadlineSeconds',"$DeadlineSeconds")
     if ($Apply) { $arguments += '-Apply' }
 }
+if ($AlertWebhookFile) { $arguments += @('-AlertWebhookFile',$AlertWebhookFile,'-NotificationMode',$NotificationMode) }
 $actionArguments = ($arguments | ForEach-Object { ConvertTo-CreNativeArgument $_ }) -join ' '
 $triggerXml = foreach ($time in $times) {
     $start = [DateTime]::Today.ToString('yyyy-MM-dd') + 'T' + $time + ':00'

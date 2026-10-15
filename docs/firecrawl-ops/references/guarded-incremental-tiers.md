@@ -195,10 +195,11 @@ PowerShell 5.1 and installed PowerShell 7 hosts with `-NoProfile -File` and
 nothing. This proof establishes argument transport; it does not run a CRE tier
 or establish provider, database or Linux-owner settlement.
 
-### Optional Windows failure notification
+### Optional Windows notifications
 
 `-AlertWebhookFile <absolute-Windows-path>` optionally enables one failure-only
-notification per launcher invocation. Provision the endpoint file outside every
+notification per launcher invocation by default (`-NotificationMode Failure`).
+Provision the endpoint file outside every
 Git checkout, under the scheduled Windows user's ownership. Its Windows ACL
 must grant access only to that user, SYSTEM and Administrators. The helper
 validates the actual opened handle before reading: a local fixed-drive regular
@@ -214,7 +215,7 @@ For example, add only the file reference to the existing foreground command:
 -AlertWebhookFile 'C:\Users\<user>\.config\cre\failure-webhook.url'
 ```
 
-The default is unconfigured and quiet. Successful work does not read the file
+The default is unconfigured and quiet. In `Failure` mode, successful work does not read the file
 or send, and `-CheckOnly` never initializes notification, reads its secret or
 sends, including when admission fails. Ordinary admission, native-start,
 capture and initial/terminal audit failures can attempt a notification while
@@ -233,6 +234,38 @@ applicable and refuses further sends in that loaded helper; use a fresh
 `-File` shell. Start-attempt or IO-setup uncertainty uses the same conservative
 status and fresh-host requirement. No process is killed or claimed settled by
 a timeout.
+
+To request a concise start and terminal success/failure pair, add
+`-NotificationMode StartFinish` alongside the private file reference. The
+scheduled-task installer accepts and forwards both options; its preview/action
+contains only the file path. `StartFinish` requires a nonempty file reference.
+The start message identifies a **Windows attempt**, after option validation and
+the initial durable audit, before API readiness and fresh Windows admission.
+It explicitly says Linux dispatch has not been attempted. A later readiness or
+resource refusal therefore produces a terminal failure with the same attempt ID.
+An initial audit or option failure can send only the terminal failure. Parameter
+binding failures cannot send. There are no progress or per-listing messages.
+
+Terminal notification follows terminal audit publication, or explicitly reports
+that publication failed. The existing `notification` audit field remains the
+terminal outcome; `notificationStart` independently records the start outcome,
+and `notificationMode` records the selected behavior. Each phase is attempted
+at most once. Notification failure preserves the operation's exit code and
+never retries the collector or its database writes. A single observed Linux
+run/series reference may appear in the terminal message as informational context;
+it establishes neither Linux ownership nor settlement. Conflicting references
+are omitted. `CheckOnly` remains quiet and never reads the endpoint in either mode.
+
+For Slack, provision an [Incoming Webhook](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/)
+bound to the intended channel, then
+verify one authorized delivery by reading that exact channel. A Codex Slack
+connector session is not an unattended Task Scheduler credential. The generic
+sender records HTTP acceptance only, not Slack message readback; it does not
+implement the authenticated `chat.postMessage` API. No Slack credential or
+channel is provisioned by installing these scripts. The native
+`Test-CreLifecycleNotification.ps1` and `Test-CreScheduledTask.ps1` fixtures cover
+phase ordering, IDs, audit faults, quiet defaults and action serialization
+without contacting Slack, providers or the database.
 
 The audit records `not_configured`, `not_attempted`, `http_accepted`, `failed`
 or `unverified` notification status when writable. Exact HTTP 2xx with native

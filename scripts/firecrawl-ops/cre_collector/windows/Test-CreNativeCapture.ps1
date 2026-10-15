@@ -92,6 +92,9 @@ $admissionDefinition = @($ast.FindAll({ param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-CreAdmission'
 }, $true))
 Assert-True ($admissionDefinition.Count -eq 1) 'Exactly one telemetry seam is replaced.'
+$readinessDefinition = @($ast.FindAll({
+    param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-CreLocalApi'
+}, $true))[0]
 $auditDefinition = @($ast.FindAll({ param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-CreAudit'
 }, $true))[0]
@@ -137,12 +140,13 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
     $stub += "`nfunction Get-Command { param(`$Name, `$CommandType, `$ErrorAction) [pscustomobject]@{ Source = '" + $selectedExecutable.Replace("'", "''") + "' } }"
     if ($scenario -eq 'missing-exe') { $stub += "`nfunction Get-Command { param(`$Name, `$CommandType, `$ErrorAction) throw 'CREDENTIAL_CANARY_DO_NOT_LOG' }" }
     $transformed = $sourceText.Substring(0, $admissionDefinition[0].Extent.StartOffset) + $stub + $sourceText.Substring($admissionDefinition[0].Extent.EndOffset)
+    $transformed = $transformed.Replace($readinessDefinition.Extent.Text, 'function Wait-CreLocalApi { return [ordered]@{ ready = $true; scope = "synthetic" } }')
     if ($scenario -eq 'cached-helper') {
         $preload = "Add-Type -Path '" + (Join-Path $caseWindows 'CreNativeCapture.cs').Replace("'", "''") + "'`n"
         $transformed = $transformed.Replace('Set-StrictMode -Version Latest', $preload + 'Set-StrictMode -Version Latest')
     }
     if ($scenario -in @('initial-audit-error', 'terminal-audit-error')) {
-        $ordinal = if ($scenario -eq 'initial-audit-error') { 1 } else { 3 }
+        $ordinal = if ($scenario -eq 'initial-audit-error') { 1 } else { 4 }
         $transformed = $transformed.Replace('function Write-CreAudit {', 'function Write-CreAuditReal {')
         $wrapper = "`n`$script:auditCalls = 0`nfunction Write-CreAudit { param([string]`$Path, [System.Collections.IDictionary]`$Record) `$script:auditCalls++; if (`$script:auditCalls -eq $ordinal) { throw 'CREDENTIAL_CANARY_DO_NOT_LOG' }; Write-CreAuditReal `$Path `$Record }`n"
         $transformed = $transformed.Replace('if ($CheckOnly) {', $wrapper + 'if ($CheckOnly) {')

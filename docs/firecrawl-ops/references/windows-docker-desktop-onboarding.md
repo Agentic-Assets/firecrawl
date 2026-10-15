@@ -341,14 +341,20 @@ under [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752).
 Routine acquisition does not need a continuously active AI agent. A
 deterministic Windows Task Scheduler task can invoke a foreground WSL job,
 retain the runner's locks/guards/logs, and expose status and failures. This is
-the proposed desktop execution surface under
-[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752), not an
-installed or approved scheduler. The alternative Codex heartbeat remains
-paused while the concrete choice and acceptance are reviewed.
+the founder-approved desktop execution surface under
+[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752). The
+[installation and acceptance procedure](guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance)
+uses the repository installer, exact reviewed SHA, visible native task and
+source-specific provider-to-database proof. Approval of the surface does not
+mean every source or task is enabled; inspect the actual native task and the
+company automation registry for current activation state. The alternative Codex
+heartbeat remains paused.
 
 Prefer inexpensive incremental work over frequent full-registry sweeps: the
-proposed initial cadence is inventory checks twice daily, bounded detail
-enrichment every four hours, and a weekly full guarded sweep. JLL, JLL
+broader future cadence is inventory checks twice daily, bounded detail
+enrichment every four hours, and a weekly full guarded sweep. This proposal
+does not describe the currently qualified task scope or enable unverified
+tiers and sources. JLL, JLL
 Investor, CBRE Deal Flow and Colliers are excluded from the cheap monitor;
 they need separate admitted detail cadences. Do not describe the incremental
 cadence as freshness for all 51 sources.
