@@ -371,7 +371,7 @@ function Get-CreNotificationText {
     $bullet = [char]0x2022
     if ($Phase -eq 'Start') {
         $started = [char]::ConvertFromUtf32(0x1F680)
-        return "$started *$name | Started*`n$bullet Preparation checks are running on the Windows desktop; collection has not started."
+        return "`n$started *$name | Started*`n`n$bullet Preparation checks are running on the Windows desktop; collection has not started."
     }
     $duration = 'unavailable'
     try {
@@ -386,7 +386,7 @@ function Get-CreNotificationText {
         $title = if ($Summary.complete -and $ExitCode -eq 0) { 'Completed' } else { 'Needs attention' }
         $statusMark = if ($Summary.complete -and $ExitCode -eq 0) { [char]::ConvertFromUtf32(0x2705) }
             else { [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F }
-        $lines = @("$statusMark *CRE pipeline | $title*", '', "$bullet *Duration:* $duration", '')
+        $lines = @('', "$statusMark *CRE pipeline | $title*", '', "$bullet *Duration:* $duration", '')
         $members = @($Summary.per_source_summaries)
         $firstMember = $true
         foreach ($entry in @($members | Select-Object -First 20)) {
@@ -421,10 +421,10 @@ function Get-CreNotificationText {
     if ($ExitCode -ne 0) {
         if ($Record.status -eq 'windows_terminal_audit_failed_linux_settlement_unverified') {
             $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
-            return "$warning *$name | Needs attention*`n$bullet *Duration:* $duration`n$bullet The run's audit could not be saved; completion is unverified. Check the local CRE audit."
+            return "`n$warning *$name | Needs attention*`n`n$bullet *Duration:* $duration`n$bullet The run's audit could not be saved; completion is unverified. Check the local CRE audit."
         }
         $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
-        return "$warning *$name | Needs attention*`n$bullet *Duration:* $duration`n$bullet The Windows run did not finish successfully. Check the local CRE audit; verified listing counts are unavailable."
+        return "`n$warning *$name | Needs attention*`n`n$bullet *Duration:* $duration`n$bullet The Windows run did not finish successfully. Check the local CRE audit; verified listing counts are unavailable."
     }
     if ($null -ne $Summary) {
         $count = ([long]$Summary.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
@@ -440,10 +440,10 @@ function Get-CreNotificationText {
             $transactionLine = "$bullet *For sale:* unavailable | *For lease:* unavailable (breakdown not verified)"
         }
         $success = [char]::ConvertFromUtf32(0x2705)
-        return "$success *$name | Completed*`n$bullet *Duration:* $duration`n$bullet *Listings verified:* $count unique properties`n$transactionLine`n$bullet *Database readback:* passed; no quality regression."
+        return "`n$success *$name | Completed*`n`n$bullet *Duration:* $duration`n$bullet *Listings verified:* $count unique properties`n$transactionLine`n$bullet *Database readback:* passed; no quality regression."
     }
     $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
-    return "$warning *$name | Could not be verified*`n$bullet *Duration:* $duration`n$bullet Verified listing total and sale/lease counts are unavailable. Check the local CRE audit for details."
+    return "`n$warning *$name | Could not be verified*`n`n$bullet *Duration:* $duration`n$bullet Verified listing total and sale/lease counts are unavailable. Check the local CRE audit for details."
 }
 
 $script:notificationAttempted = @{ Start = $false; Terminal = $false }
