@@ -6431,6 +6431,14 @@ def test_final_validation_persists_canonical_manifest_and_readbacks(
 
     refresh.run_final_validation(run_dir, manifest, None)
 
+    import cre_stop_guarded_tier as safe
+    import os
+    fd = os.open(run_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        raw, _ = safe._read_at(fd, "validation.json", limit=4 * 1024 * 1024)
+        assert json.loads(raw) == report
+    finally:
+        os.close(fd)
     assert len(saved) == 2
     _assert_all_saves_keep_canonical_identity(saved, manifest)
     assert saved[0]["sources"]["svn"]["readback"]["ok"] is True
@@ -6524,3 +6532,32 @@ def test_historical_primary_conflicts_are_diagnostic_while_active_conflicts_bloc
     result = refresh.verify_absolute_validation_quality(report)
     assert result["ok"] is False
     assert any("primary_child_conflicts" in failure for failure in result["failures"])
+
+@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
+def test_final_validation_refuses_aliased_report_before_publication(tmp_path, monkeypatch, alias):
+    import os
+    import stat
+
+    root = tmp_path / "run"
+    root.mkdir()
+    foreign = tmp_path / "original.json"
+    foreign.write_text("{}")
+    foreign.chmod(0o644)
+    manifest = refresh.new_manifest(
+        root, git_sha="abc", git_dirty=False, sources=("svn",), page_cap=400,
+        concurrency=1,
+    )
+
+    def command(argv, _log, **kwargs):
+        output = Path(argv[argv.index("--out") + 1])
+        if alias == "symlink":
+            output.symlink_to(foreign)
+        else:
+            os.link(foreign, output)
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", command)
+    with pytest.raises(refresh.ArtifactValidationError):
+        refresh.run_final_validation(root, manifest, None)
+    assert stat.S_IMODE(foreign.stat().st_mode) == 0o644
+    assert foreign.read_text() == "{}"

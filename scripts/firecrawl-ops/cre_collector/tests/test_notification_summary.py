@@ -1073,3 +1073,63 @@ def test_cli_outputs_only_fixed_unavailable_result(evidence, capsys):
     output = capsys.readouterr()
     assert json.loads(output.out) == {"schema_version": 1, "verified": False}
     assert not output.err and "SECRET_CANARY" not in output.out
+
+def test_actual_pipeline_producer_attempt_and_report_feed_strict_summary(evidence, monkeypatch):
+    from pathlib import Path
+    import cre_checkpoint_series as series
+    import cre_checkpoint_refresh as refresh
+    from test_pipeline_configuration import config
+
+    setup = pipeline_evidence(evidence)
+    qualify_pipeline_second_source(evidence, setup)
+    parent, child = setup["parent"], setup["child"]
+    parent["config"] = config(sources=[SOURCE, "cbre"], pipeline=True)
+    parent["database_target"] = {"algorithm": "sha256", "value": "d" * 64}
+    child["preflight"]["database_target"] = parent["database_target"]
+    parent_finish = parent["finished_at"]
+    for row in parent["sources"].values():
+        row.update(checkpoint_run=None, attempts=[])
+    monkeypatch.setattr(series, "allocate_run_id", lambda: RUN)
+    times = iter([child["started_at"]])
+    monkeypatch.setattr(series, "utc_now", lambda: next(times, parent_finish))
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **k: (Path("manifest.json"), child))
+    # DB qualification has its own tests; retain the fixture's qualified child.
+    monkeypatch.setattr(series, "pipeline_source_qualified", lambda *a, **k: True)
+
+    class Process:
+        pid = 12345
+        def wait(self):
+            return 0
+
+    class Control:
+        invocation_id = INVOCATION
+        child_invocation_id = CHILD
+        def prepare_checkpoint(self, *a):
+            pass
+        def spawn(self, *a, **k):
+            return Process()
+        def check(self):
+            pass
+        def observe_exit(self, *a):
+            pass
+
+    assert series.run_pipeline_series(evidence["series"], parent, env_file=None, control=Control()) == 0
+    for row in parent["sources"].values():
+        assert row["attempts"][-1]["checkpoint_run"] == "runs/" + RUN
+    child_dir = evidence["series"] / "runs" / RUN
+    output = child_dir / "pipeline/unit-0001/validation.json"
+    validation_bytes = output.read_bytes()
+    child["preflight"]["validation_path"] = "pipeline/unit-0001/validation.json"
+    monkeypatch.setattr(refresh, "save_manifest", lambda *a: None)
+    monkeypatch.setattr(refresh, "verify_validation_readback", lambda *a, **k: {"ok": True, "failed_sources": []})
+
+    def validator(argv, log, **kwargs):
+        output.write_bytes(validation_bytes)
+        output.chmod(0o644)  # Actual standalone validator output under normal umask.
+        return 0
+
+    monkeypatch.setattr(refresh, "run_command", validator)
+    refresh.run_final_validation(child_dir, child, None, sources=[SOURCE, "cbre"], evidence_dir=output.parent, before_path=output)
+    assert output.stat().st_mode & 0o777 == 0o600
+    evidence["save"]()
+    assert read_pipeline(evidence)["complete"] is True

@@ -6149,6 +6149,7 @@ def run_final_validation(
     )
     if rc != 0:
         raise GlobalStageError(f"final validation failed (rc={rc})")
+    make_private_artifact(output)
     result = _load_json(output)
     if sources is not None or manifest["config"].get("pipeline") is True:
         from cre_refresh_pipeline import require_pipeline_full_report
