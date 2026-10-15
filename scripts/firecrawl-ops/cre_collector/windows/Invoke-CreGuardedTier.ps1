@@ -302,6 +302,22 @@ function Get-CreVerifiedSummary {
                 if ($selectedSourceKeys -cnotcontains $entry.source_key -or
                     -not ($entry.verified_listings -is [int] -or $entry.verified_listings -is [long]) -or
                     $entry.verified_listings -lt 0 -or $entry.verified_listings -gt 500000) { return $null }
+                $breakdownProperty = $entry.PSObject.Properties['transaction_breakdown']
+                if ($null -ne $breakdownProperty) {
+                    $breakdown = $breakdownProperty.Value
+                    try {
+                        $validBreakdown = $null -ne $breakdown -and
+                            $breakdown.measurement -is [string] -and
+                            $breakdown.measurement -ceq 'current_staged_inventory_transaction_types' -and
+                            (($breakdown.sale -is [long]) -or ($breakdown.sale -is [int])) -and
+                            (($breakdown.lease -is [long]) -or ($breakdown.lease -is [int])) -and
+                            (($breakdown.both -is [long]) -or ($breakdown.both -is [int])) -and
+                            $breakdown.sale -ge 0 -and $breakdown.lease -ge 0 -and $breakdown.both -ge 0 -and
+                            $breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
+                            ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $entry.verified_listings
+                    } catch { $validBreakdown = $false }
+                    if (-not $validBreakdown) { $entry.transaction_breakdown = $null }
+                }
                 $verifiedKeys += $entry.source_key
             }
             $partition = @($verifiedKeys) + @($summary.failed_source_keys) + @($summary.pending_source_keys)
@@ -368,16 +384,38 @@ function Get-CreNotificationText {
     } catch { }
     if ($pipelineMode -and $null -ne $Summary -and $null -ne $Summary.PSObject.Properties['per_source_summaries']) {
         $title = if ($Summary.complete -and $ExitCode -eq 0) { 'Completed' } else { 'Needs attention' }
-        $lines = @("*CRE pipeline | $title*", "$bullet *Duration:* $duration")
+        $statusMark = if ($Summary.complete -and $ExitCode -eq 0) { [char]::ConvertFromUtf32(0x2705) }
+            else { [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F }
+        $lines = @("$statusMark *CRE pipeline | $title*", '', "$bullet *Duration:* $duration", '')
         $members = @($Summary.per_source_summaries)
+        $firstMember = $true
         foreach ($entry in @($members | Select-Object -First 20)) {
+            if (-not $firstMember) { $lines += '' }
+            $firstMember = $false
             $broker = (Get-CreBrokerageName $entry.source_key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
             $count = ([long]$entry.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
-            $lines += "$bullet *${broker}:* $count listings verified by database readback"
+            $breakdownProperty = $entry.PSObject.Properties['transaction_breakdown']
+            if ($null -ne $breakdownProperty -and $null -ne $breakdownProperty.Value) {
+                $sale = ([long]$breakdownProperty.Value.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $lease = ([long]$breakdownProperty.Value.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $both = ([long]$breakdownProperty.Value.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $lines += "$bullet *${broker}:* $count listings verified by database readback`n    *For sale:* $sale | *For lease:* $lease | *Both:* $both"
+            } else {
+                $lines += "$bullet *${broker}:* $count listings verified by database readback`n    *For sale / lease / both:* unavailable"
+            }
         }
-        if ($members.Count -gt 20) { $lines += "$bullet $($members.Count - 20) additional verified brokerages are listed in the local CRE audit." }
+        if ($members.Count -gt 20) {
+            $lines += ''
+            $lines += "$bullet $($members.Count - 20) additional verified brokerages are listed in the local CRE audit."
+        }
+        $lines += ''
+        $lines += "$bullet Both counts overlap and are included in the For sale and For lease figures."
+        $lines += ''
         $lines += "$bullet *Failed:* $(@($Summary.failed_source_keys).Count) | *Pending:* $(@($Summary.pending_source_keys).Count)"
-        if (-not $Summary.complete -or $ExitCode -ne 0) { $lines += "$bullet Partial result; the selected refresh did not finish successfully. Check the local CRE audit." }
+        if (-not $Summary.complete -or $ExitCode -ne 0) {
+            $lines += ''
+            $lines += "$bullet Partial result; the selected refresh did not finish successfully. Check the local CRE audit."
+        }
         return (($lines -join "`n").Substring(0, [Math]::Min(4000, ($lines -join "`n").Length)))
     }
     if ($ExitCode -ne 0) {
