@@ -186,6 +186,93 @@ function Write-CreAudit {
     }
 }
 
+function Get-CreBrokerageName {
+    param([string]$Key)
+    $names = @{
+        'newmark'='Newmark'; 'interra-realty'='Interra Realty'; 'hanley'='Hanley Investment Group'
+        'cbre'='CBRE'; 'cbre-dealflow'='CBRE Deal Flow'; 'jll'='JLL'; 'jll-investor'='JLL Investor Center'
+        'cushman-wakefield'='Cushman & Wakefield'; 'nai-global'='NAI Global'; 'srs'='SRS'
+        'svn'='SVN'; 'lee-associates'='Lee & Associates'; 'pinnacle-rea'='Pinnacle Real Estate Advisors'
+    }
+    if ($Key -and $names.ContainsKey($Key)) { return $names[$Key] }
+    if ($Key -match '^[a-z0-9][a-z0-9-]{0,79}$') {
+        return [Globalization.CultureInfo]::InvariantCulture.TextInfo.ToTitleCase($Key.Replace('-', ' '))
+    }
+    return 'Commercial real estate'
+}
+
+function Get-CreVerifiedSummary {
+    param([System.Collections.IDictionary]$Record, [string]$AttemptId,
+        [ValidateRange(50,12000)][int]$ReadDeadlineMilliseconds = 12000)
+    # The stdout reference selects a location only. Linux verifies the private
+    # terminal owner/child receipts, exact attempt identity and database readback.
+    if ($Tier -ne 'series' -or $Record.status -ne 'returned' -or
+        $Record.nativeExitCode -ne 0 -or -not $Record.Contains('capture') -or
+        -not $Record.Contains('windowsAdmissionUnixMs')) { return $null }
+    $capture = $Record.capture
+    if ($capture.Failed -or $capture.Stdout.RunReferenceConflict -or $capture.Stderr.RunReferenceConflict) { return $null }
+    $directory = $capture.Stdout.ObservedRunDirectory
+    if (-not $directory -or ($capture.Stderr.ObservedRunDirectory -and
+        $capture.Stderr.ObservedRunDirectory -cne $directory)) { return $null }
+    $collector = $LinuxRepo.TrimEnd('/') + '/scripts/firecrawl-ops/cre_collector'
+    if ($directory -cnotmatch ('^' + [Regex]::Escape($collector + '/out/checkpoint-series/') + '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z$')) { return $null }
+    $wsl = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $summaryOut = Join-Path $auditDir ($AttemptId + '.summary.json')
+    $summaryError = Join-Path $auditDir ($AttemptId + '.summary.stderr.log')
+    $summaryArgs = @('-d', $Distro, '-u', $LinuxUser, '--exec', 'timeout', '--signal=TERM', '--kill-after=2s', '10s',
+        'python3', "$collector/cre_notification_summary.py", '--series-directory', $directory,
+        '--source', $Source, '--expected-sha', $ExpectedSha,
+        '--windows-admission-unix-ms', [string]$Record.windowsAdmissionUnixMs)
+    $summaryCapture = [CreWindowsCapture.Capture]::RunReadOnly($wsl, $summaryArgs, $summaryOut, $summaryError, $ReadDeadlineMilliseconds)
+    $Record['notificationSummaryCapture'] = $summaryCapture
+    if ($summaryCapture.Failed -or $summaryCapture.NativeExitCode -ne 0 -or
+        $summaryCapture.Stdout.Truncated -or $summaryCapture.Stdout.ObservedBytes -gt 4096 -or
+        $summaryCapture.Stderr.ObservedBytes -ne 0) { return $null }
+    $summary = [IO.File]::ReadAllText($summaryOut) | ConvertFrom-Json
+    foreach ($field in @('source','measurement','collector_git_sha','series_id','invocation_id','run_id','local_settlement')) {
+        if ($summary.$field -isnot [string]) { return $null }
+    }
+    if (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
+        $summary.schema_version -ne 1 -or $summary.verified -isnot [bool] -or -not $summary.verified -or
+        $summary.source -cne $Source -or $summary.measurement -cne 'generation_exact_current_inventory' -or
+        $summary.collector_git_sha -cne $ExpectedSha -or $summary.windows_admission_unix_ms -ne $Record.windowsAdmissionUnixMs -or
+        $summary.series_id -cne ($directory.Split('/')[-1]) -or $summary.invocation_id -cnotmatch '^[0-9a-f]{32}$' -or
+        $summary.run_id -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$' -or
+        $summary.local_settlement -cne 'confirmed' -or $summary.quality_no_regression -isnot [bool] -or -not $summary.quality_no_regression -or
+        -not ($summary.verified_listings -is [long] -or $summary.verified_listings -is [int]) -or
+        $summary.verified_listings -le 0 -or $summary.verified_listings -gt 500000 -or
+        ($summary.transaction_scope -join ',') -cne 'sale,lease') { return $null }
+    $Record['notificationSummary'] = $summary
+    return $summary
+}
+
+function Get-CreNotificationText {
+    param([System.Collections.IDictionary]$Record, [string]$Phase, [int]$ExitCode, $Summary)
+    $name = (Get-CreBrokerageName $Source).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
+    $work = if ($Tier -eq 'monitor') { 'inventory check' } elseif ($Tier -eq 'enrich') { 'listing detail update' } else { 'refresh' }
+    if ($Phase -eq 'Start') { return "$name $work started.`nPreparing checks on the Windows desktop; collection has not started." }
+    $duration = ''
+    try {
+        $elapsed = [DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($Record.createdAt, [Globalization.CultureInfo]::InvariantCulture)
+        if ($elapsed.TotalSeconds -ge 0 -and $elapsed.TotalHours -le 25) {
+            $duration = if ($elapsed.TotalHours -ge 1) { ' in {0}h {1}m' -f [int][Math]::Floor($elapsed.TotalHours), $elapsed.Minutes }
+                elseif ($elapsed.TotalMinutes -ge 1) { ' in {0}m {1}s' -f [int][Math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds }
+                else { ' in {0}s' -f [int][Math]::Floor($elapsed.TotalSeconds) }
+        }
+    } catch { }
+    if ($ExitCode -ne 0) {
+        if ($Record.status -eq 'windows_terminal_audit_failed_linux_settlement_unverified') {
+            return "$name $work needs attention$duration.`nThe run's audit could not be saved; completion is unverified. Check the local CRE audit."
+        }
+        return "$name $work needs attention$duration.`nThe Windows run did not finish successfully. Check the local CRE audit; verified listing counts are unavailable."
+    }
+    if ($null -ne $Summary) {
+        $count = ([long]$Summary.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+        return "$name refresh completed$duration.`n$count listings verified. Sale and lease inventory checked.`nDatabase readback passed; no quality regression."
+    }
+    return "$name run finished$duration.`nListing refresh could not be verified. Check the local CRE audit for details."
+}
+
 $script:notificationAttempted = @{ Start = $false; Terminal = $false }
 function Set-CreNotification {
     param([System.Collections.IDictionary]$Record, [string]$AttemptId, [int]$ExitCode,
@@ -215,19 +302,14 @@ function Set-CreNotification {
             Add-Type -TypeDefinition ($notificationSource + "`nnamespace CreWindowsNotification { public static class Identity { public const string Sha256 = ""$notificationSha""; } }")
         }
         $curl = (Get-Command curl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-        $safeSource = if ($Source -match '^[a-z0-9][a-z0-9-]{0,79}$') { $Source } else { 'unspecified' }
-        $nativeCode = if ($null -eq $Record.nativeExitCode) { 'unobserved' } else { [string][int]$Record.nativeExitCode }
-        if ($Phase -eq 'Start') {
-            $text = "CRE Windows attempt $AttemptId started (tier=$Tier source=$safeSource). Linux dispatch has not been attempted."
-        } else {
-            $outcome = if ($ExitCode -eq 0) { 'finished' } else { 'failed' }
-            $text = "CRE Windows attempt $AttemptId $outcome (tier=$Tier source=$safeSource wrapper_exit=$ExitCode native_exit=$nativeCode status=$($Record.status)). Linux settlement is unverified; inspect local audit and recovery evidence."
-            if ($Record.Contains('capture') -and $null -ne $Record.capture -and
-                -not $Record.capture.Stdout.RunReferenceConflict -and $Record.capture.Stdout.ObservedRunDirectory -and
-                $Record.capture.Stdout.ObservedRunDirectory -match '/([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z(?:-[0-9a-f]{12})?)\z') {
-                $text += " Observed Linux run/series reference (informational): $($Matches[1])."
-            }
+        $summary = $null
+        if ($Phase -eq 'Terminal' -and $ExitCode -eq 0) {
+            $Record['notificationSummaryStatus'] = 'unavailable'
+            try { $summary = Get-CreVerifiedSummary $Record $AttemptId }
+            catch { $Record['notificationSummaryUnavailable'] = $true }
+            if ($null -ne $summary) { $Record['notificationSummaryStatus'] = 'verified' }
         }
+        $text = Get-CreNotificationText $Record $Phase $ExitCode $summary
         $payload = [ordered]@{ text = $text } | ConvertTo-Json -Compress
         $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
         $Record[$field] = [CreWindowsNotification.Sender]::Send($AlertWebhookFile, $repository, $curl, $payload)
@@ -322,6 +404,7 @@ try {
     } else {
         $record.status = 'admitted'
         $admissionUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $record['windowsAdmissionUnixMs'] = $admissionUnixMs
         $wsl = (Get-Command wsl.exe -CommandType Application -ErrorAction Stop |
             Select-Object -First 1).Source
         $helperPath = Join-Path $PSScriptRoot 'CreNativeCapture.cs'

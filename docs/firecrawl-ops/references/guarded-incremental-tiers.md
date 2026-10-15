@@ -249,8 +249,9 @@ not endpoint authorization or Slack delivery. The
 records the default file location and exact command.
 The start message identifies a **Windows attempt**, after option validation and
 the initial durable audit, before API readiness and fresh Windows admission.
-It explicitly says Linux dispatch has not been attempted. A later readiness or
-resource refusal therefore produces a terminal failure with the same attempt ID.
+It explicitly says collection has not started. A later readiness or
+resource refusal therefore produces a terminal failure for the same locally
+audited attempt; technical IDs are kept out of ordinary channel text.
 An initial audit or option failure can send only the terminal failure. Parameter
 binding failures cannot send. There are no progress or per-listing messages.
 
@@ -259,10 +260,19 @@ that publication failed. The existing `notification` audit field remains the
 terminal outcome; `notificationStart` independently records the start outcome,
 and `notificationMode` records the selected behavior. Each phase is attempted
 at most once. Notification failure preserves the operation's exit code and
-never retries the collector or its database writes. A single observed Linux
-run/series reference observed on stdout may appear in the terminal message as
-informational context; it establishes neither Linux ownership nor settlement.
-Conflicting stdout references are omitted; stderr is not a run-reference source.
+never retries the collector or its database writes. Human-readable messages
+name the brokerage and report verified listings only after the read-only
+`cre_notification_summary.py` checks exact owner-bound terminal series/child
+receipts and generation readback. A stdout reference is only a locator; any
+stdout/stderr conflict refuses the summary. Missing or unverified evidence
+produces a count-unavailable message, never an inferred database success.
+The [summary metric contract](../../../scripts/firecrawl-ops/cre_collector/slack-setup.md#what-the-summary-means)
+explains transaction scope, duration, count limits and unmeasured insert/update
+categories. Technical evidence stays in the audit. No extra database query or
+Slack transport is introduced. The separate read-only frontend has a
+twelve-second native deadline, a ten-second Linux budget and bounded stream
+cleanup. Only that optional frontend may be terminated on expiry; foreground
+pipeline capture retains its original wait and never uses this deadline.
 `CheckOnly` remains quiet and never reads the endpoint in either mode.
 
 For Slack, provision an [Incoming Webhook](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/)
@@ -272,8 +282,9 @@ connector session is not an unattended Task Scheduler credential. The generic
 sender records HTTP acceptance only, not Slack message readback; it does not
 implement the authenticated `chat.postMessage` API. No Slack credential or
 channel is provisioned by installing these scripts. The native
-`Test-CreLifecycleNotification.ps1` and `Test-CreScheduledTask.ps1` fixtures cover
-phase ordering, IDs, audit faults, quiet defaults and action serialization
+`Test-CreLifecycleNotification.ps1`, `Test-CreReadableNotification.ps1` and
+`Test-CreScheduledTask.ps1` fixtures cover phase ordering, private audit IDs,
+readable metrics, audit faults, quiet defaults and action serialization
 without contacting Slack, providers or the database.
 
 The recommended Windows location is

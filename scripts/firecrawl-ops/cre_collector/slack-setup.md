@@ -1,4 +1,4 @@
-Governed by [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752) and [AGENTIC-4270](https://linear.app/agenticassets/issue/AGENTIC-4270).
+Governed by [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752), [AGENTIC-4270](https://linear.app/agenticassets/issue/AGENTIC-4270) and [AGENTIC-4279](https://linear.app/agenticassets/issue/AGENTIC-4279).
 
 # CRE pipeline Slack setup
 
@@ -70,10 +70,62 @@ and repeat local configuration and authorized delivery checks.
 
 A successful HTTP response is transport acceptance. Read the exact intended
 channel and match the test's unique identifier before claiming delivery. The
-Windows attempt ID correlates start and finish messages with the local audit.
-A terminal message reports wrapper/native outcomes; an observed Linux run
-reference is informational. Inspect the actual checkpoint, validation and
-database readback before claiming source completion or database freshness.
+local audit retains the Windows attempt ID and technical run references;
+ordinary channel messages lead with the brokerage name and readable outcome.
+Wrapper exit zero or an observed stdout reference alone never supplies a
+verified listing count.
+
+### What the summary means
+
+`StartFinish` still sends at most two channel messages per Windows attempt.
+Start names the brokerage and says preparation checks precede collection.
+A qualified single-source series can finish in this form (placeholders):
+
+```text
+Newmark refresh completed in {duration}.
+{verified_count} listings verified. Sale and lease inventory checked.
+Database readback passed; no quality regression.
+```
+
+**Listings verified** counts normalized unique listings in that run's committed
+generation with exact database readback, not raw provider cards, attempted
+requests or newly inserted rows. The notification performs no database query.
+Its read-only Linux helper checks safe owned files, matching series/child
+control identities, exact Windows admission timestamp, source and reviewed
+SHA, successful ingest, final query/readback and no-regression outcomes, and
+confirmed local process cleanup. Evidence must be stable and no more than five
+minutes past terminal control publication. Inventory-only mixtures and missing
+or zero canonical counts currently fall back to an unavailable summary.
+
+**Sale and lease inventory checked** describes the two validated transaction
+passes. It is not a numerical sale/lease breakdown or a claim of fresh property
+details. A listing can support both transactions. **New**, **updated** and
+**unchanged** are omitted because the current upsert does not measure those
+categories. The duration measures elapsed Windows attempt time, including
+startup checks and summary qualification; it is not a source-stage benchmark.
+The message makes no full-registry freshness or absolute database-health claim.
+
+When evidence is missing, stale or contradictory, a zero-returning Windows run
+says that the listing refresh could not be verified and points to the local
+audit. Failures say the run needs attention; audit publication failure is
+identified explicitly. Existing forensic fields remain in
+`out/windows-launcher/`, alongside bounded summary-reader output and the
+`notificationSummary`/`notificationSummaryStatus` fields when applicable.
+Notification or summary-reader failure never retries data work or changes its
+exit code. The distinct read-only frontend has a twelve-second native deadline
+and the Linux reader a ten-second budget. On expiry, only that separately
+spawned read-only frontend can be terminated; the original pipeline frontend is
+never terminated or treated as settled by this mechanism. Existing bounded
+stream cleanup follows the deadline. Other tiers retain a readable
+count-unavailable fallback.
+
+The existing private sender's entire UTF8 JSON payload remains capped at 4096
+bytes. There are no progress posts, per-listing logs, automatic alert retries or
+extra persistent workers. Technical details stay local. An Incoming Webhook
+does not return a message timestamp, so automatic threads need an additional
+authorized read/API capability; files also need a separate upload capability.
+This implementation adds neither credential nor OAuth scope. See Slack's
+[webhook thread contract](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/#posting-your-message-as-a-reply-in-a-thread).
 
 The first private-file delivery was verified on October 15, 2026: the sender
 returned HTTP `200`, exited normally, and the exact unique test message was
