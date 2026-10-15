@@ -80,10 +80,11 @@ verified listing count.
 For quick message iteration, use
 `windows/Send-CreNotificationPreview.ps1`. It defaults to preview-only and
 formats the four named scenarios with the same brokerage and message formatter
-used by the guarded launcher. The preview begins with `FORMAT TEST | SAMPLE
-DATA | NO PIPELINE OR DB READBACK`; its counts are illustrative. Preview mode
-does not read a webhook file and does not call WSL, a provider, the database,
-or Slack.
+used by the guarded launcher. Its completed sample replaces the production
+database-readback sentence with a truthful sample-only note. Every preview
+begins with `FORMAT TEST | SAMPLE DATA | NO PIPELINE OR DB READBACK`; counts are
+illustrative. Preview mode does not read a webhook file and does not call WSL,
+a provider, the database, or Slack.
 
 From the repository root, preview the default mixed-count completion message:
 

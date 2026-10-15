@@ -36,6 +36,7 @@ $missingWebhook = Join-Path $env:TEMP ('cre-preview-missing-' + [Guid]::NewGuid(
 $preview = @(& $previewTool -Scenario Completed -WebhookFile $missingWebhook) -join [Environment]::NewLine
 Assert-Cre ($preview.Contains('FORMAT TEST | SAMPLE DATA | NO PIPELINE OR DB READBACK')) 'Preview must identify sample content and disclaim pipeline/database work.'
 Assert-Cre ($preview.Contains('*Listings verified:* 10 unique properties') -and $preview.Contains('*For sale:* 6 | *For lease:* 5') -and $preview.Contains('*Both:* 1')) 'Default sample must show the actual formatter with valid mixed counts.'
+Assert-Cre ($preview.Contains('*Database readback:* sample only; no readback occurred.') -and -not $preview.Contains('passed; no quality regression')) 'Completed preview must not repeat the production database-readback claim.'
 Assert-Cre ($preview.Contains('PREVIEW ONLY') -and -not [IO.File]::Exists($missingWebhook)) 'Default preview must not read or require a webhook file.'
 Assert-Cre ($null -eq ('CreWindowsNotification.Sender' -as [type])) 'Default preview must not load or invoke the network sender.'
 

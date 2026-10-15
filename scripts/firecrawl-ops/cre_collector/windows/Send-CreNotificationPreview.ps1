@@ -94,6 +94,11 @@ if ($TextFile) {
         'Unverified' { $record.status = 'format_test_unverified' }
     }
     $formatted = Get-CreNotificationText $record $phase $exitCode $summary
+    if ($Scenario -eq 'Completed') {
+        $sampleReadback = "$([char]0x2022) *Database readback:* passed; no quality regression."
+        $truthfulReadback = "$([char]0x2022) *Database readback:* sample only; no readback occurred."
+        $formatted = $formatted.Replace($sampleReadback, $truthfulReadback)
+    }
 }
 $samplePrefix = [char]::ConvertFromUtf32(0x1F9EA) + ' *FORMAT TEST | SAMPLE DATA | NO PIPELINE OR DB READBACK*'
 $message = "$samplePrefix`n$formatted"
