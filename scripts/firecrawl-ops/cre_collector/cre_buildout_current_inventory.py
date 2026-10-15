@@ -383,9 +383,12 @@ def admit(
         and summary.get("baseline_updated") is False
         and summary.get("baseline_update_sources") == []
     )
+    # The pipeline repeats the exact aggregate proof immediately before writing.
+    rechecking = phase == "aggregate" and gate.get("verdict") == VERDICT
     require(
-        gate.get("verdict") == "first_seen"
-        and gate.get("reason") == "no baseline row; cannot gate (first sight)"
+        (gate.get("raw_verdict") if rechecking else gate.get("verdict")) == "first_seen"
+        and (gate.get("raw_reason") if rechecking else gate.get("reason"))
+        == "no baseline row; cannot gate (first sight)"
         and gate.get("baseline_median") is None
         and gate.get("mark_missing_safe") is False
     )
@@ -415,9 +418,16 @@ def admit(
             manifest["sources"][source].get("gate", {}).get("current_inventory_proof")
             == binding
         )
+    if rechecking:
+        require(
+            gate.get("current_inventory_proof") == binding
+            and gate.get("admission_scope") == SCOPE
+            and gate.get("reason")
+            == "complete current inventory admitted additively; historical baseline remains absent"
+        )
     gate.update(
-        raw_verdict=gate["verdict"],
-        raw_reason=gate["reason"],
+        raw_verdict="first_seen",
+        raw_reason="no baseline row; cannot gate (first sight)",
         verdict=VERDICT,
         reason="complete current inventory admitted additively; historical baseline remains absent",
         mark_missing_safe=False,
