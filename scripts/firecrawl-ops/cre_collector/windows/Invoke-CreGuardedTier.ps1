@@ -249,7 +249,7 @@ function Get-CreVerifiedSummary {
         try {
             $validBreakdown = $null -ne $breakdown -and
                 $breakdown.measurement -is [string] -and
-                $breakdown.measurement -ceq 'current_staged_inventory_modes' -and
+                $breakdown.measurement -ceq 'current_staged_inventory_transaction_types' -and
                 (($breakdown.sale -is [long]) -or ($breakdown.sale -is [int])) -and
                 (($breakdown.lease -is [long]) -or ($breakdown.lease -is [int])) -and
                 (($breakdown.both -is [long]) -or ($breakdown.both -is [int])) -and

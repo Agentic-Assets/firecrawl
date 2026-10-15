@@ -93,10 +93,16 @@ def _derive_transaction_breakdown(data, source, expected_count, scraped_at, dead
         modes = row.get("_modes")
         if not isinstance(modes, set) or not modes or not modes <= {"sale", "lease"}:
             raise SummaryUnavailable("transaction staged modes are unsupported")
-        if "sale" in modes:
+        transaction_type = row.get("transaction_type")
+        if transaction_type == "sale":
             sale_ids.add(identity)
-        if "lease" in modes:
+        elif transaction_type == "lease":
             lease_ids.add(identity)
+        elif transaction_type == "sale_or_lease":
+            sale_ids.add(identity)
+            lease_ids.add(identity)
+        else:
+            raise SummaryUnavailable("transaction staged type is unsupported")
     both_ids = sale_ids & lease_ids
     if len(sale_ids | lease_ids) != expected_count:
         raise SummaryUnavailable("transaction mode identity union mismatch")
@@ -104,7 +110,7 @@ def _derive_transaction_breakdown(data, source, expected_count, scraped_at, dead
         "sale": len(sale_ids),
         "lease": len(lease_ids),
         "both": len(both_ids),
-        "measurement": "current_staged_inventory_modes",
+        "measurement": "current_staged_inventory_transaction_types",
     }
 
 

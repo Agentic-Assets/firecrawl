@@ -59,6 +59,7 @@ def evidence(tmp_path, monkeypatch):
         {
             "sourceKey": SOURCE,
             "transactionMode": "sale",
+            "transactionType": "Sale/Lease",
             "id": "sale-1",
             "url": "https://example.test/sale-1",
         },
@@ -244,9 +245,9 @@ def test_real_private_receipts_prove_only_exact_current_inventory(
     assert result["invocation_id"] == INVOCATION
     assert result["transaction_breakdown"] == {
         "sale": 2,
-        "lease": 2,
-        "both": 1,
-        "measurement": "current_staged_inventory_modes",
+        "lease": 3,
+        "both": 2,
+        "measurement": "current_staged_inventory_transaction_types",
     }
     assert not (
         {"new", "updated", "sale_count", "lease_count", "whole_source_coverage"}
@@ -326,7 +327,7 @@ def test_zero_count_transaction_pass_is_a_verified_breakdown(evidence):
         "sale": 0,
         "lease": 1,
         "both": 0,
-        "measurement": "current_staged_inventory_modes",
+        "measurement": "current_staged_inventory_transaction_types",
     }
 
 

@@ -59,7 +59,7 @@ function New-Summary {
     return [ordered]@{schema_version=1;verified=$true;source=$Source;collector_git_sha=$ExpectedSha;
         windows_admission_unix_ms=[long]1792080000000;series_id='2026-10-15T172000Z';invocation_id=('b'*32);
         run_id='2026-10-15T172001Z-123456abcdef';verified_listings=4535;transaction_scope=@('sale','lease');
-        transaction_breakdown=[ordered]@{sale=3000;lease=2000;both=465;measurement='current_staged_inventory_modes'};
+        transaction_breakdown=[ordered]@{sale=3000;lease=2000;both=465;measurement='current_staged_inventory_transaction_types'};
         measurement='generation_exact_current_inventory';quality_no_regression=$true;local_settlement='confirmed'}
 }
 function Save-Summary($value) { [IO.File]::WriteAllText($summaryJson,($value|ConvertTo-Json -Compress -Depth 8),(New-Object Text.UTF8Encoding($false))) }
@@ -106,11 +106,11 @@ foreach ($field in @('verified','source','collector_git_sha','windows_admission_
 }
 $optionalBreakdownFailures=@(
     [ordered]@{sale=0;lease=0;both=0;measurement='wrong'},
-    [ordered]@{sale=3000;lease=2000;both=464;measurement='current_staged_inventory_modes'},
-    [ordered]@{sale=-1;lease=2001;both=465;measurement='current_staged_inventory_modes'},
-    [ordered]@{sale=3000;lease=2000;both=2001;measurement='current_staged_inventory_modes'},
+    [ordered]@{sale=3000;lease=2000;both=464;measurement='current_staged_inventory_transaction_types'},
+    [ordered]@{sale=-1;lease=2001;both=465;measurement='current_staged_inventory_transaction_types'},
+    [ordered]@{sale=3000;lease=2000;both=2001;measurement='current_staged_inventory_transaction_types'},
     [ordered]@{sale=3000;lease=2000;both=465},
-    [ordered]@{lease=4535;both=0;measurement='current_staged_inventory_modes'}
+    [ordered]@{lease=4535;both=0;measurement='current_staged_inventory_transaction_types'}
 )
 $breakdownIndex=0
 foreach($invalidBreakdown in $optionalBreakdownFailures){

@@ -105,12 +105,14 @@ IDs normalized from the exact hashed, generation-bound source artifact using
 the same `cre_ingest.to_row`, duplicate-identity validation and `merge_rows`
 semantics as staging. The normalized identity union must equal both the
 artifact's staged-unique count and the committed generation-exact readback.
-When a property appears in both transaction passes, it is counted in each
-figure; **Both** reports that overlap and the example says so. These values
-describe current source inventory modes, not stored `transaction_type` labels,
-price availability, or fresh property-detail counts. If the optional artifact
-is missing, unsafe, stale, oversized, or inconsistent, the split is reported
-unavailable while the independently verified total remains. Older schema-v1
+Counts use each normalized staged row's `transaction_type`, so an explicit
+sale-and-lease offering counts in both categories even if it appeared in only
+one transaction pass. A property present in both passes also counts in both;
+**Both** reports either kind of overlap. These values describe the current
+artifact's staged offering classification, not price availability or fresh
+property-detail counts. If the optional artifact is missing, unsafe, stale,
+oversized, or inconsistent, the split is reported unavailable while the
+independently verified total remains. Older schema-v1
 summary readers without this optional field remain compatible. **New**,
 **updated** and **unchanged** are omitted because the current upsert does not
 measure those categories. The duration measures elapsed Windows attempt time,
