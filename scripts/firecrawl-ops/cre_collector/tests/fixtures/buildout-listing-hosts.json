@@ -1,0 +1,192 @@
+[
+  {
+    "host": "broker.example",
+    "url": "https://broker.example/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "broker.example",
+    "url": "https://www.broker.example/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "broker.example",
+    "url": "https://BROKER.EXAMPLE/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "broker.example",
+    "url": "https://WWW.BROKER.EXAMPLE/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "broker.example",
+    "url": "https://foreign.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://broker.example.evil.test/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://www.broker.example.evil.test/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://evilbroker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://sub.broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://www.www.broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://broker.example./listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://broker.example:443/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://www.broker.example:444/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://user@broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://broker.example@foreign.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://foreign.example@broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "http://broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://broker.example/listings/?propertyId=687920-lease#fragment",
+    "owned": false
+  },
+  {
+    "host": "broker.example",
+    "url": "https://broker.example/listings/?propertyId=687920-lease#",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://broker.example/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://www.broker.example/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://BROKER.EXAMPLE/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://WWW.BROKER.EXAMPLE/listings/?propertyId=687920-lease",
+    "owned": true
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://foreign.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://broker.example.evil.test/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://www.broker.example.evil.test/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://evilbroker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://sub.broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://www.www.broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://broker.example./listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://broker.example:443/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://www.broker.example:444/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://user@broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://broker.example@foreign.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://foreign.example@broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "http://broker.example/listings/?propertyId=687920-lease",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://broker.example/listings/?propertyId=687920-lease#fragment",
+    "owned": false
+  },
+  {
+    "host": "www.broker.example",
+    "url": "https://broker.example/listings/?propertyId=687920-lease#",
+    "owned": false
+  }
+]
