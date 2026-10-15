@@ -129,6 +129,13 @@ def _url_identity(value: str) -> tuple:
         (parsed.hostname or "").removeprefix("www."),
         parsed.path,
         re.sub(r"-(sale|lease)$", "", literal.group(1)) if literal else None,
+        # Keep unrelated routing parameters literal and ordered: repeated query
+        # keys can select different resources depending on which value is first.
+        tuple(
+            part
+            for part in parsed.query.split("&")
+            if not part.startswith("propertyId=")
+        ),
     )
 
 

@@ -780,3 +780,55 @@ def test_shared_inventory_url_grammar_preserves_actual_ingest_identity(vector):
     else:
         with pytest.raises(ValueError):
             buildout._owned_url(vector["url"], "broker.example")
+
+
+@pytest.mark.parametrize("phase", ["source", "aggregate"])
+@pytest.mark.parametrize(
+    "sale_query,lease_query,accepted",
+    [
+        ("unit=A", "unit=B", False),
+        ("tag=A&tag=B", "tag=B&tag=A", False),
+        ("unit=A&tag=B", "unit=A&tag=B", True),
+    ],
+)
+def test_dual_mode_inventory_preserves_unrelated_query_routing(
+    tmp_path, phase, sale_query, lease_query, accepted
+):
+    _, path, artifact, manifest, report = setup(tmp_path)
+    if phase == "aggregate":
+        initial = admit(path, manifest, report)
+        manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": initial}
+        report["per_source"][SOURCE]["verdict"] = "first_seen"
+        report["per_source"][SOURCE]["reason"] = (
+            "no baseline row; cannot gate (first sight)"
+        )
+        assert admit(path, manifest, report, "aggregate") == initial
+    for entry in artifact["sources"]:
+        for page in entry["currentInventoryProof"]["pages"]:
+            for row in page["rows"]:
+                if row["id"] in {"10", "20"}:
+                    row["showLink"] += "&" + (
+                        sale_query if row["id"] == "10" else lease_query
+                    )
+    for row in artifact["listings"]:
+        if row["id"] in {"10", "20"}:
+            row["url"] = row["canonicalUrl"] = (
+                row["url"] + "&" + (sale_query if row["id"] == "10" else lease_query)
+            )
+    refresh(path, artifact, manifest)
+    report["per_source"][SOURCE]["verdict"] = "first_seen"
+    report["per_source"][SOURCE]["reason"] = (
+        "no baseline row; cannot gate (first sight)"
+    )
+    if accepted:
+        if phase == "aggregate":
+            current = admit(path, manifest, report)
+            manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": current}
+            report["per_source"][SOURCE]["verdict"] = "first_seen"
+            report["per_source"][SOURCE]["reason"] = (
+                "no baseline row; cannot gate (first sight)"
+            )
+        assert admit(path, manifest, report, phase)["staged_count"] == 2
+    else:
+        with pytest.raises(ValueError):
+            admit(path, manifest, report, phase)
