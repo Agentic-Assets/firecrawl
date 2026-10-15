@@ -4493,7 +4493,7 @@ def gate_verdict_is_admitted(manifest: Mapping[str, Any], verdict: Any) -> bool:
 
 
 def _admit_current_inventory(run_dir, manifest, report, artifact, phase):
-    source = current_inventory.SOURCE
+    source = manifest["config"]["current_inventory_admission"]["source_key"]
     info = manifest["sources"][source]["artifact"]
     try:
         validate_source_artifact(
@@ -6522,7 +6522,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--admit-current-inventory-source",
         default=None,
-        help="Interra-only additive current inventory; no baseline/lifecycle/certificate authority",
+        help="One reviewed Interra/Buildout source additive current inventory; no baseline/lifecycle/certificate authority",
     )
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)

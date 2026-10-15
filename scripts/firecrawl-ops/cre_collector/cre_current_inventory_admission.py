@@ -1,4 +1,4 @@
-"""Explicit Interra-only additive admission; never a baseline/lifecycle writer."""
+"""Explicit source-bound additive admission; never a baseline/lifecycle writer."""
 
 from __future__ import annotations
 
@@ -23,19 +23,26 @@ SCOPE = "additive_current_inventory"
 def require(condition: object) -> None:
     if not condition:
         raise ValueError(
-            "Interra current-inventory admission evidence is incomplete or drifted"
+            "Current-inventory admission evidence is incomplete or drifted"
         )
 
 
 def configuration(source: str) -> dict:
-    require(source == SOURCE)
+    from cre_buildout_current_inventory import definitions, registry_path
+
+    require(source == SOURCE or source in definitions())
     load_source_policy()
-    return {
-        "source_key": SOURCE,
+    result = {
+        "source_key": source,
         "source_policy_sha256": hashlib.sha256(
             resolve_policy_path().read_bytes()
         ).hexdigest(),
     }
+    if source != SOURCE:
+        result["buildout_registry_sha256"] = hashlib.sha256(
+            registry_path().read_bytes()
+        ).hexdigest()
+    return result
 
 
 def validate_option(
@@ -44,10 +51,10 @@ def validate_option(
     if source is None:
         return
     require(
-        source == SOURCE
-        and list(sources) == [SOURCE]
+        list(sources) == [source]
         and tuple(transactions) == ("sale", "lease")
     )
+    configuration(source)
     require(not additive_hold and not allow_dirty)
 
 
@@ -72,7 +79,7 @@ def _ids(values: object) -> list[str]:
     return values
 
 
-def admit(
+def _admit_interra(
     artifact_path: Path,
     manifest: dict,
     report: dict,
@@ -310,3 +317,13 @@ def admit(
         whole_source_coverage=False,
     )
     return binding
+
+
+def admit(artifact_path: Path, manifest: dict, report: dict, **kwargs) -> dict:
+    """Dispatch only an explicit one-source configuration, preserving defaults."""
+    source = manifest["config"].get("current_inventory_admission", {}).get("source_key")
+    if source == SOURCE:
+        return _admit_interra(artifact_path, manifest, report, **kwargs)
+    from cre_buildout_current_inventory import admit as admit_buildout
+
+    return admit_buildout(artifact_path, manifest, report, **kwargs)

@@ -232,13 +232,51 @@ export type InterraCurrentInventoryProof = {
     }
 );
 
+export type BuildoutInventoryProofRow = {
+  id: string;
+  showLink: string;
+  sale: boolean;
+  closed: boolean;
+  underContract: boolean;
+  alsoForSaleOrLease: boolean;
+};
+
+export type BuildoutInventoryProofPage = {
+  index: number;
+  endpoint: string;
+  observedAt: string;
+  generationId: string;
+  cacheDisposition: "live" | "generation_cache";
+  transport: "direct_json" | "firecrawl_json";
+  // SHA256 of UTF8(JSON.stringify(parsed provider response)), not HTTP bytes.
+  parsedJsonSha256: string;
+  total: number;
+  limit: number;
+  rows: BuildoutInventoryProofRow[];
+};
+
+export type BuildoutCurrentInventoryProof = {
+  schema: "buildout-current-inventory-v1";
+  kind: "complete_paginated_feed";
+  sourceKey: string;
+  transaction: Tx;
+  generationId: string;
+  pluginKey: string;
+  listingsPage: string;
+  sort: string;
+  // Counts the entire feed: closed rows and both transaction partitions.
+  total: number;
+  limit: number;
+  pages: BuildoutInventoryProofPage[];
+};
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
-  currentInventoryProof?: InterraCurrentInventoryProof;
+  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor

@@ -1,10 +1,11 @@
 // sources/buildout.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
-import { SourceResult, Tx } from "../types.js";
+import { BuildoutCurrentInventoryProof, BuildoutInventoryProofPage, SourceResult, Tx } from "../types.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
 import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
@@ -27,6 +28,7 @@ type BuildoutInventoryResult = {
   total: number | null;
   strictValidated?: boolean;
   generationId?: string | null;
+  proofPages?: BuildoutInventoryProofPage[];
 };
 
 export const buildoutCache = new Map<string, BuildoutInventoryResult>();
@@ -276,7 +278,47 @@ type BuildoutPageObservation = {
   observedAt: string;
   generationId: string | null;
   cacheDisposition: "live" | "generation_cache";
+  endpoint?: string;
+  transport?: "direct_json" | "firecrawl_json";
+  parsedJsonSha256?: string;
 };
+
+function observeBuildoutPage(data: any, endpoint: string, transport: "direct_json" | "firecrawl_json"): any {
+  return annotateBuildoutPage(data, {
+    observedAt: new Date().toISOString(),
+    generationId: refreshGenerationId(),
+    cacheDisposition: "live",
+    endpoint,
+    transport,
+    parsedJsonSha256: createHash("sha256").update(JSON.stringify(data), "utf8").digest("hex"),
+  });
+}
+
+// An unusable receipt never changes ordinary collection semantics. The explicit
+// opt-in consumer requires this proof and refuses unknown lifecycle/URL facts.
+function buildoutProofPage(data: any, index: number): BuildoutInventoryProofPage | null {
+  const observation = data?.__creFreshness as BuildoutPageObservation | undefined;
+  if (!observation?.generationId || !generationMatches(observation.generationId) ||
+      !observation.endpoint || !observation.transport || !observation.parsedJsonSha256 ||
+      !Array.isArray(data?.inventory)) return null;
+  const rows = [];
+  for (const row of data.inventory) {
+    if (!["sale", "closed", "under_contract", "also_for_sale_or_lease"].every(
+      (key) => typeof row?.[key] === "boolean"
+    ) || !["string", "number"].includes(typeof row?.id) || !clean(String(row.id)) ||
+      typeof row?.show_link !== "string" || !clean(row.show_link)) return null;
+    rows.push({
+      id: String(row.id), showLink: row.show_link, sale: row.sale, closed: row.closed,
+      underContract: row.under_contract, alsoForSaleOrLease: row.also_for_sale_or_lease,
+    });
+  }
+  return {
+    index, endpoint: observation.endpoint, observedAt: observation.observedAt,
+    generationId: observation.generationId, cacheDisposition: observation.cacheDisposition,
+    transport: observation.transport, parsedJsonSha256: observation.parsedJsonSha256,
+    total: data.meta.total, limit: data.meta.limit, rows,
+  };
+}
 
 function annotateBuildoutPage(data: any, observation: BuildoutPageObservation): any {
   if (!data || typeof data !== "object") return data;
@@ -314,7 +356,16 @@ export function readBuildoutPageCache(
     if (typeof cached.cachedAt !== "string" || !Number.isFinite(Date.parse(cached.cachedAt))) {
       return null;
     }
+    // Old cache files retain their original freshness behavior but cannot acquire
+    // proof retroactively. Verify new provenance against the retained parsed page.
+    const evidence = cached.observation;
+    const validEvidence = evidence && evidence.observedAt === cached.cachedAt &&
+      evidence.generationId === cached.generationId &&
+      evidence.endpoint === buildoutInventoryUrl(pluginKey, page, opts.inventorySort) &&
+      ["direct_json", "firecrawl_json"].includes(evidence.transport) &&
+      evidence.parsedJsonSha256 === createHash("sha256").update(JSON.stringify(data), "utf8").digest("hex");
     return annotateBuildoutPage(data, {
+      ...(validEvidence ? evidence : {}),
       observedAt: cached.cachedAt,
       generationId: cached.generationId ?? null,
       cacheDisposition: "generation_cache",
@@ -346,6 +397,7 @@ export function writeBuildoutPageCache(
         queryFingerprint: buildoutQueryFingerprint(opts),
         cachedAt,
         generationId: observation?.generationId ?? refreshGenerationId(),
+        observation,
         data,
       },
       null,
@@ -398,7 +450,7 @@ export async function directBuildoutJson(url: string, referer: string, timeoutMs
     });
     const body = await res.text();
     const parsed = parseJsonBody(body);
-    if (res.ok && parsed !== null) return parsed;
+    if (res.ok && parsed !== null) return observeBuildoutPage(parsed, res.url || url, "direct_json");
     const contentType = res.headers.get("content-type") ?? "unknown";
     const shape = parsed === null ? "non-json" : "json-error-status";
     throw new Error(`direct GET ${res.status} ${contentType} (${shape})`);
@@ -434,6 +486,7 @@ export async function fetchBuildoutInventoryPage(
       console.error(`  ${company}: direct Buildout JSON failed for page ${page} (${err}); falling back to Firecrawl`);
     }
   }
+  const directObservation = data?.__creFreshness;
   data ??= await scrapeJson(url, {
     timeout: 60000,
     jsonAttempts: opts.jsonAttempts,
@@ -443,11 +496,7 @@ export async function fetchBuildoutInventoryPage(
   // Reject malformed, partial, or cross-page-incoherent strict pages before
   // they can poison the generation-scoped recovery cache.
   assertBuildoutInventoryPage(data, page, expected, requireComplete);
-  annotateBuildoutPage(data, {
-    observedAt: new Date().toISOString(),
-    generationId: refreshGenerationId(),
-    cacheDisposition: "live",
-  });
+  if (!directObservation) observeBuildoutPage(data, url, "firecrawl_json");
   if (cachePolicy.write) writeBuildoutPageCache(company, pluginKey, page, opts, data);
   return data;
 }
@@ -456,7 +505,7 @@ export async function buildoutInventory(
   company: string,
   pluginKey: string,
   opts: BuildoutInventoryOpts = {}
-): Promise<{ items: any[]; total: number | null }> {
+): Promise<BuildoutInventoryResult> {
   const requireComplete = requireCompleteBuildoutInventory(opts);
   const memoryCacheKey = buildoutMemoryCacheKey(pluginKey, opts);
   const cached = buildoutCache.get(memoryCacheKey);
@@ -492,6 +541,7 @@ export async function buildoutInventory(
     );
   }
   const inventoryByPage = new Map<number, any[]>();
+  const observedPages = new Map<number, any>([[0, first]]);
   inventoryByPage.set(0, buildoutInventoryRows(first));
   const failedPages = new Set<number>();
   const attemptedPages = new Set<number>([0]);
@@ -526,6 +576,7 @@ export async function buildoutInventory(
           requireComplete ? firstPage : null
         );
         assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
+        observedPages.set(p, d);
         inventoryByPage.set(p, buildoutInventoryRows(d));
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
@@ -590,6 +641,7 @@ export async function buildoutInventory(
               cacheDisposition: "live",
             });
           }
+          observedPages.set(p, d);
           inventoryByPage.set(p, buildoutInventoryRows(d));
           if (buildoutPageCachePolicy(opts).write) {
             writeBuildoutPageCache(company, pluginKey, p, opts, d);
@@ -644,7 +696,12 @@ export async function buildoutInventory(
   const items: any[] = [];
   for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
   assertBuildoutInventoryReconciled(items, total, requireComplete);
+  const proofPages = Array.from({ length: pages }, (_, index) =>
+    observedPages.has(index) ? buildoutProofPage(observedPages.get(index), index) : null
+  );
   const result: BuildoutInventoryResult = {
+    ...(requireComplete && proofPages.every((page) => page !== null)
+      ? { proofPages: proofPages as BuildoutInventoryProofPage[] } : {}),
     items,
     total,
     strictValidated: requireComplete,
@@ -896,7 +953,7 @@ export async function srcBuildout(
 ): Promise<SourceResult> {
   // Enumeration-only source: the Buildout inventory API has no per-listing detail
   // render, so monitor output == full output (status/price/id are all in-feed).
-  const { items, total } = await buildoutInventory(company, pluginKey, inventoryOpts);
+  const { items, total, proofPages } = await buildoutInventory(company, pluginKey, inventoryOpts);
   const eligibleItems = items.filter((x) => {
     if (x.closed === true) return false;
     const isSale = x.sale === true;
@@ -1010,7 +1067,26 @@ export async function srcBuildout(
       });
     }
   }
+  const generationId = refreshGenerationId();
+  const currentInventoryProof: BuildoutCurrentInventoryProof | undefined =
+    requireFreshDetails() && proofPages && generationId && inventoryOpts.cacheSlug &&
+    inventoryOpts.inventorySort === BUILDOUT_STABLE_INVENTORY_SORT &&
+    !buildoutCapTruncated(max, listings.length, eligibleItems.length) &&
+    proofPages.every((page) => page.rows.every((row) => {
+      try {
+        const url = new URL(row.showLink);
+        return url.protocol === "https:" && !url.username && !url.password &&
+          url.hostname === new URL(listingsPage).hostname;
+      } catch { return false; }
+    }))
+      ? {
+          schema: "buildout-current-inventory-v1", kind: "complete_paginated_feed",
+          sourceKey: inventoryOpts.cacheSlug, transaction: tx, generationId,
+          pluginKey, listingsPage, sort: inventoryOpts.inventorySort,
+          total: total as number, limit: proofPages[0].limit, pages: proofPages,
+        } : undefined;
   return {
+    ...(currentInventoryProof ? { currentInventoryProof } : {}),
     company,
     sourceUrl: listingsPage,
     method: "Buildout plugin inventory API (JSON, paginated)",
