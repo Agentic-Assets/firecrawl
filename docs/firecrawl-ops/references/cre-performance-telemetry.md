@@ -232,6 +232,10 @@ An offline report reads at most 1,024 journals and 16 MiB of journal content per
 checkpoint, retaining parsed measurements and reporting a gap if the byte
 budget is exhausted. This accommodates multi-source runs without multiplying
 the same journal scan by the number of brokerages.
+Query timing reads separately allow up to 1,024 unit entries and 16 MiB of
+report content per checkpoint. Retried preparation units can outnumber sources;
+they do not erase known audit timings. Exhausted budgets retain measurements
+already read and add an explicit evidence gap.
 Regular-file checks, no-follow opens and nonblocking journal locking prevent
 special files from blocking collection. Command journals are owner-only. A
 diagnostic write failure emits a fixed warning and preserves the original

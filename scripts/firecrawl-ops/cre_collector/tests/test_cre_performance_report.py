@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -19,6 +20,73 @@ NOW = datetime(2026, 9, 13, 12, 1, tzinfo=timezone.utc)
 COMMAND = "b" * 32
 LOG = "jll-collect-attempt-1.log"
 METRICS = f"jll-collect-attempt-1.{COMMAND}.scrape-performance.json"
+
+
+def pipeline_query_evidence(tmp_path, count):
+    run = tmp_path / RUN
+    run.mkdir()
+    manifest = {
+        "config": {"pipeline": True},
+        "started_at": "2026-09-13T12:00:00Z",
+        "finished_at": "2026-09-13T12:01:00Z",
+        "pipeline": {"units": []},
+    }
+    raw = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:30Z",
+            "validation_profile": "full",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 5}
+            },
+        }
+    ).encode()
+    for number in range(1, count + 1):
+        name = f"unit-{number:04d}"
+        path = run / "pipeline" / name / "validation.json"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(raw)
+        manifest["pipeline"]["units"].append(
+            {
+                "unit_id": name,
+                "validation_path": str(path.relative_to(run)),
+                "validation_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+    return run, manifest, len(raw)
+
+
+def test_retry_units_beyond_source_count_retain_query_metrics(tmp_path):
+    run, manifest, _ = pipeline_query_evidence(tmp_path, 52)
+    # Rejected preparation attempts also remain in the real unit history.
+    manifest["pipeline"]["units"].insert(0, {"unit_id": "unit-0000", "state": "failed"})
+    frames = report._validation_timings(run, manifest)
+    assert len(frames) == 52
+    assert (
+        sum(frame["queries"]["source_counts"]["elapsed_ms"] for frame in frames) == 260
+    )
+
+
+def test_query_unit_budget_preserves_known_frames_and_exposes_gap(
+    tmp_path, monkeypatch
+):
+    run, manifest, _ = pipeline_query_evidence(tmp_path, 3)
+    monkeypatch.setattr(report, "MAX_VALIDATION_UNITS", 2)
+    frames = report._validation_timings(run, manifest)
+    assert [frame["stage"] for frame in frames if frame["queries"]] == [
+        "unit-0001",
+        "unit-0002",
+    ]
+    assert frames[0]["unavailable_code"] == "unit_timing_budget_exhausted"
+
+
+def test_query_byte_budget_preserves_known_frames_and_exposes_gap(
+    tmp_path, monkeypatch
+):
+    run, manifest, size = pipeline_query_evidence(tmp_path, 3)
+    monkeypatch.setattr(report, "MAX_TOTAL_VALIDATION_BYTES", size)
+    frames = report._validation_timings(run, manifest)
+    assert [frame["stage"] for frame in frames if frame["queries"]] == ["unit-0001"]
+    assert frames[-1]["unavailable_code"] == "query_timing_byte_budget_exhausted"
 
 
 def checkpoint(tmp_path: Path) -> Path:

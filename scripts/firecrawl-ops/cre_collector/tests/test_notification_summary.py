@@ -657,6 +657,7 @@ def test_mixed_admitted_and_normal_sources_use_only_the_admitted_subset(evidence
     admissions = {"interra-realty": configuration("interra-realty")}
     setup["parent"]["config"]["current_inventory_admissions"] = admissions
     setup["child"]["config"]["current_inventory_admissions"] = admissions
+    evidence["save"]()
     result = read_pipeline(evidence, ["hanley", "interra-realty"])
     assert result["complete"] is True
     assert [row["source_key"] for row in result["per_source_summaries"]] == [

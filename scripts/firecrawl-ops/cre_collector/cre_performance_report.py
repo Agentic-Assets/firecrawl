@@ -35,6 +35,8 @@ MAX_SNAPSHOT_BYTES = 128 * 1024
 MAX_CPU_BYTES = 4 * 1024 * 1024
 MAX_FILES_PER_SOURCE = 1024
 MAX_TOTAL_JOURNAL_BYTES = 16 * 1024 * 1024
+MAX_VALIDATION_UNITS = 1024
+MAX_TOTAL_VALIDATION_BYTES = 16 * 1024 * 1024
 MAX_LOG_DIRECTORY_ENTRIES = 4096
 MAX_COMMANDS_PER_SOURCE = 2048
 RUN_ID = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z(?:-[0-9a-f]{12})?\Z")
@@ -606,8 +608,11 @@ def _validation_timings(run_dir: Path, manifest: Mapping[str, Any]) -> list[dict
         after = _object(manifest.get("validation")).get("path")
         files.append(("post_validation", after or "validation.json", None, False))
     units = _object(manifest.get("pipeline")).get("units")
-    if isinstance(units, list) and len(units) <= len(SOURCE_TO_BROKERAGE):
-        for unit in units:
+    unit_budget_exhausted = (
+        isinstance(units, list) and len(units) > MAX_VALIDATION_UNITS
+    )
+    if isinstance(units, list):
+        for unit in units[:MAX_VALIDATION_UNITS]:
             unit = _object(unit)
             name = unit.get("unit_id", unit.get("id"))
             if isinstance(name, str) and re.fullmatch(r"unit-[0-9]{4,6}", name):
@@ -625,6 +630,15 @@ def _validation_timings(run_dir: Path, manifest: Mapping[str, Any]) -> list[dict
                     if isinstance(relative, str):
                         files.append((stage, relative, unit.get(hash_key), True))
     result = []
+    if unit_budget_exhausted:
+        result.append(
+            {
+                "run_id": run_dir.name,
+                "stage": "pipeline",
+                "queries": {},
+                "unavailable_code": "unit_timing_budget_exhausted",
+            }
+        )
     bound_files = {}
     for stage, relative, expected_hash, required in files:
         path = _contained_path(run_dir, relative)
@@ -635,9 +649,22 @@ def _validation_timings(run_dir: Path, manifest: Mapping[str, Any]) -> list[dict
             bound_files[path] = (stage, expected_hash, required)
         elif required and previous[2] and previous[1] != expected_hash:
             bound_files[path] = (stage, None, True)
+    validation_bytes = 0
     for path, (stage, expected_hash, required) in bound_files.items():
+        remaining = MAX_TOTAL_VALIDATION_BYTES - validation_bytes
+        if remaining <= 0:
+            result.append(
+                {
+                    "run_id": run_dir.name,
+                    "stage": "pipeline",
+                    "queries": {},
+                    "unavailable_code": "query_timing_byte_budget_exhausted",
+                }
+            )
+            break
         try:
-            raw = _read_regular_file(path, limit=MAX_MANIFEST_BYTES)
+            raw = _read_regular_file(path, limit=min(MAX_MANIFEST_BYTES, remaining))
+            validation_bytes += len(raw)
             if required and (
                 not isinstance(expected_hash, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
