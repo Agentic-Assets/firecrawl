@@ -301,3 +301,7 @@ Firecrawl's container API and agent helpers remain usable from PowerShell.
 For WSL2, keep a separate clone and Linux dependencies under `~/code/firecrawl`
 on ext4. Do not reuse Windows `node_modules`, copy production secrets or run a
 second writer. See [Windows onboarding](../../../docs/firecrawl-ops/references/windows-docker-desktop-onboarding.md).
+
+## Portable pipeline configuration
+
+The opt-in `--pipeline --source-workers 2` behavior is shared by macOS and Linux/WSL; serial defaults remain unchanged. Follow [Start Here](START_HERE.md#opt-in-stage-overlap) for finite source admissions and the audit/recovery boundary. Setup never activates this mode or changes an installed task.

@@ -516,3 +516,21 @@ separately controlled paused alternative. Full51-source acceptance remains
 AGENTIC-2902; an installed task does not resolve missing baselines, historical
 quality findings or a source's legitimate low inventory count. This Windows
 installer makes no Mac scheduler or configuration change.
+
+## Opt-in pipeline source selection
+
+The portable `--pipeline` mode uses one refresh owner on macOS and Linux/WSL;
+serial behavior remains the default. Windows series launchers and task previews
+forward `-Pipeline -SourceWorkers 2 -Sources interra-realty,faris-lee` and explicit
+`-AdmitCurrentInventorySources interra-realty,faris-lee`. `-Sources` accepts finite
+comma-separated exact keys only and conflicts with singleton `-Source`.
+`-SourceWorkers` supports 1–4 and defaults to 2 only with `-Pipeline`; changing that
+one value controls acquisition capacity without changing database concurrency.
+Keep the existing reviewed SHA, finite work budget, database-write acknowledgement,
+readiness and private credential gates. Installer preview still creates no task;
+registration/activation and cadence changes remain separate operator actions.
+
+The full [pipeline contract](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#opt-in-stage-overlap)
+owns provider lanes, byte/disk backpressure, immediate sealed units, cohort audit
+semantics, exact evidence paths and hard-stop reconciliation. Terminal Slack
+summaries list qualified brokerages and counts, with honest partial outcomes.

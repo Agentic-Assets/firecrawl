@@ -407,3 +407,14 @@ execution. Whole-registry completion remains a separate acceptance item.
 References: [Microsoft WSL systemd](https://learn.microsoft.com/en-us/windows/wsl/systemd),
 [Docker Windows permissions](https://docs.docker.com/desktop/setup/install/windows-permission-requirements/),
 and [Task Scheduler hard termination](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-allowhardterminate).
+
+## Shared foreground pipeline setting
+
+Windows/WSL uses the same collector pipeline as macOS. Opt in through the native
+series wrapper with `-Pipeline -SourceWorkers 2 -Sources interra-realty,faris-lee`
+and the matching explicit admissions, reviewed SHA and existing write/budget gates.
+Change `-SourceWorkers` in the invocation/task preview to choose 1–4; omitted
+pipeline mode resolves 2 and existing serial invocations remain 1. This does not
+change Docker limits, provider/detail limits, Mac settings or scheduler cadence.
+See [Start Here](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#opt-in-stage-overlap)
+for shared validation, serial ingestion and recovery requirements.

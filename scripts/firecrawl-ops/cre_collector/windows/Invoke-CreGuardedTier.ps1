@@ -12,6 +12,10 @@ work budget and acknowledgement; it has no dry-run mode.
 param(
     [ValidateSet('monitor', 'enrich', 'series')][string]$Tier = 'monitor',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*$')][string]$Source,
+    [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$Sources,
+    [switch]$Pipeline,
+    [ValidateRange(1, 4)][int]$SourceWorkers,
+    [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
     [ValidateRange(1, 50)][int]$Batch = 50,
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
@@ -31,6 +35,53 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'Run this launcher on Windows.' }
+
+# Pure selection validation runs before readiness, telemetry or notification work.
+if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
+    throw '-Sources requires pipeline series and conflicts with -Source.'
+}
+if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
+if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
+    throw '-SourceWorkers requires -Pipeline.'
+}
+$resolvedSourceWorkers = 1
+if ($Pipeline) {
+    $resolvedSourceWorkers = 2
+    if ($PSBoundParameters.ContainsKey('SourceWorkers')) { $resolvedSourceWorkers = $SourceWorkers }
+}
+$knownSourceKeys = @()
+if ($Pipeline) {
+$policyForSelection = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../data/cre-source-policy.json') -Raw | ConvertFrom-Json
+$knownSourceKeys = @($policyForSelection.PSObject.Properties.Name)
+}
+$selectedSourceKeys = @()
+if ($Sources) {
+    $selectedSourceKeys = @($Sources.Split(','))
+    if (@($selectedSourceKeys | Sort-Object -Unique).Count -ne $selectedSourceKeys.Count) { throw 'Duplicate source keys.' }
+    foreach ($key in $selectedSourceKeys) {
+        if ($knownSourceKeys -cnotcontains $key) { throw 'Unknown source key.' }
+    }
+} elseif ($Source -ceq 'all' -and $Pipeline) { $selectedSourceKeys = $knownSourceKeys }
+elseif ($Source) { $selectedSourceKeys = @($Source) }
+if ($AdmitCurrentInventorySource -and $AdmitCurrentInventorySources) { throw 'Conflicting admission flags.' }
+$selectedAdmissionKeys = @()
+if ($AdmitCurrentInventorySources) {
+    if (-not $Pipeline) { throw 'Multiple admissions require pipeline mode.' }
+    $selectedAdmissionKeys = @($AdmitCurrentInventorySources.Split(','))
+} elseif ($AdmitCurrentInventorySource) { $selectedAdmissionKeys = @($AdmitCurrentInventorySource) }
+if (@($selectedAdmissionKeys | Sort-Object -Unique).Count -ne $selectedAdmissionKeys.Count) { throw 'Duplicate admission keys.' }
+$admissibleKeys = $selectedAdmissionKeys
+if ($AdmitCurrentInventorySources) {
+$buildoutRows = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../data/cre-buildout-sources.json') -Raw | ConvertFrom-Json
+$admissibleKeys = @('interra-realty') + @($buildoutRows | ForEach-Object { $_[0] })
+}
+foreach ($key in $selectedAdmissionKeys) {
+    if ($Tier -ne 'series' -or $admissibleKeys -cnotcontains $key -or $selectedSourceKeys -cnotcontains $key) {
+        throw 'Admission requires an exact selected and supported source key.'
+    }
+}
+$selectedSourceArgument = if ($Sources) { $Sources } else { $Source }
+
 function Get-CpuTicks {
     $idle = New-Object CreWindowsAdmission.Native+FileTime
     $kernel = New-Object CreWindowsAdmission.Native+FileTime
@@ -205,10 +256,14 @@ function Get-CreBrokerageName {
 function Get-CreVerifiedSummary {
     param([System.Collections.IDictionary]$Record, [string]$AttemptId,
         [ValidateRange(50,12000)][int]$ReadDeadlineMilliseconds = 12000)
+    $pipelineMode = [bool](Get-Variable -Name Pipeline -ValueOnly -ErrorAction SilentlyContinue)
+    $notificationSource = Get-Variable -Name selectedSourceArgument -ValueOnly -ErrorAction SilentlyContinue
+    if (-not $notificationSource) { $notificationSource = $Source }
+
     # The stdout reference selects a location only. Linux verifies the private
     # terminal owner/child receipts, exact attempt identity and database readback.
     if ($Tier -ne 'series' -or $Record.status -ne 'returned' -or
-        $Record.nativeExitCode -ne 0 -or -not $Record.Contains('capture') -or
+        ($Record.nativeExitCode -ne 0 -and -not $pipelineMode) -or -not $Record.Contains('capture') -or
         -not $Record.Contains('windowsAdmissionUnixMs')) { return $null }
     $capture = $Record.capture
     if ($capture.Failed -or $capture.Stdout.RunReferenceConflict -or $capture.Stderr.RunReferenceConflict) { return $null }
@@ -222,20 +277,47 @@ function Get-CreVerifiedSummary {
     $summaryError = Join-Path $auditDir ($AttemptId + '.summary.stderr.log')
     $summaryArgs = @('-d', $Distro, '-u', $LinuxUser, '--exec', 'timeout', '--signal=TERM', '--kill-after=2s', '10s',
         'python3', "$collector/cre_notification_summary.py", '--series-directory', $directory,
-        '--source', $Source, '--expected-sha', $ExpectedSha,
+        '--expected-sha', $ExpectedSha,
         '--windows-admission-unix-ms', [string]$Record.windowsAdmissionUnixMs)
+    if ($pipelineMode) { $summaryArgs += @('--pipeline-source-keys', ($selectedSourceKeys -join ',')) }
+    else { $summaryArgs += @('--source', $notificationSource) }
     $summaryCapture = [CreWindowsCapture.Capture]::RunReadOnly($wsl, $summaryArgs, $summaryOut, $summaryError, $ReadDeadlineMilliseconds)
     $Record['notificationSummaryCapture'] = $summaryCapture
     if ($summaryCapture.Failed -or $summaryCapture.NativeExitCode -ne 0 -or
-        $summaryCapture.Stdout.Truncated -or $summaryCapture.Stdout.ObservedBytes -gt 4096 -or
+        $summaryCapture.Stdout.Truncated -or $summaryCapture.Stdout.ObservedBytes -gt $(if ($pipelineMode) { 32768 } else { 4096 }) -or
         $summaryCapture.Stderr.ObservedBytes -ne 0) { return $null }
     $summary = [IO.File]::ReadAllText($summaryOut) | ConvertFrom-Json
+    if ($pipelineMode) {
+        try {
+            if ($summary.schema_version -ne 1 -or $summary.verified -isnot [bool] -or -not $summary.verified -or
+                $summary.complete -isnot [bool] -or $summary.collector_git_sha -cne $ExpectedSha -or
+                $summary.windows_admission_unix_ms -ne $Record.windowsAdmissionUnixMs -or
+                $summary.series_id -cne ($directory.Split('/')[-1]) -or
+                $summary.invocation_id -cnotmatch '^[0-9a-f]{32}$' -or
+                $summary.run_id -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$' -or
+                $summary.local_settlement -cne 'confirmed' -or
+                ($summary.selected_source_keys -join ',') -cne ($selectedSourceKeys -join ',')) { return $null }
+            $verifiedKeys = @()
+            foreach ($entry in @($summary.per_source_summaries)) {
+                if ($selectedSourceKeys -cnotcontains $entry.source_key -or
+                    -not ($entry.verified_listings -is [int] -or $entry.verified_listings -is [long]) -or
+                    $entry.verified_listings -lt 0 -or $entry.verified_listings -gt 500000) { return $null }
+                $verifiedKeys += $entry.source_key
+            }
+            $partition = @($verifiedKeys) + @($summary.failed_source_keys) + @($summary.pending_source_keys)
+            if (@($partition | Sort-Object -Unique).Count -ne $partition.Count -or
+                (($partition | Sort-Object) -join ',') -cne (($selectedSourceKeys | Sort-Object) -join ',') -or
+                $summary.complete -ne ($verifiedKeys.Count -eq $selectedSourceKeys.Count)) { return $null }
+        } catch { return $null }
+        $Record['notificationSummary'] = $summary
+        return $summary
+    }
     foreach ($field in @('source','measurement','collector_git_sha','series_id','invocation_id','run_id','local_settlement')) {
         if ($summary.$field -isnot [string]) { return $null }
     }
     if (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
         $summary.schema_version -ne 1 -or $summary.verified -isnot [bool] -or -not $summary.verified -or
-        $summary.source -cne $Source -or $summary.measurement -cne 'generation_exact_current_inventory' -or
+        $summary.source -cne $notificationSource -or $summary.measurement -cne 'generation_exact_current_inventory' -or
         $summary.collector_git_sha -cne $ExpectedSha -or $summary.windows_admission_unix_ms -ne $Record.windowsAdmissionUnixMs -or
         $summary.series_id -cne ($directory.Split('/')[-1]) -or $summary.invocation_id -cnotmatch '^[0-9a-f]{32}$' -or
         $summary.run_id -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$' -or
@@ -265,7 +347,11 @@ function Get-CreVerifiedSummary {
 
 function Get-CreNotificationText {
     param([System.Collections.IDictionary]$Record, [string]$Phase, [int]$ExitCode, $Summary)
-    $name = (Get-CreBrokerageName $Source).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
+    $pipelineMode = [bool](Get-Variable -Name Pipeline -ValueOnly -ErrorAction SilentlyContinue)
+    $notificationSource = Get-Variable -Name selectedSourceArgument -ValueOnly -ErrorAction SilentlyContinue
+    if (-not $notificationSource) { $notificationSource = $Source }
+
+    $name = (Get-CreBrokerageName $notificationSource).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
     $bullet = [char]0x2022
     if ($Phase -eq 'Start') {
         $started = [char]::ConvertFromUtf32(0x1F680)
@@ -280,6 +366,20 @@ function Get-CreNotificationText {
                 else { '{0}s' -f [int][Math]::Floor($elapsed.TotalSeconds) }
         }
     } catch { }
+    if ($pipelineMode -and $null -ne $Summary -and $null -ne $Summary.PSObject.Properties['per_source_summaries']) {
+        $title = if ($Summary.complete -and $ExitCode -eq 0) { 'Completed' } else { 'Needs attention' }
+        $lines = @("*CRE pipeline | $title*", "$bullet *Duration:* $duration")
+        $members = @($Summary.per_source_summaries)
+        foreach ($entry in @($members | Select-Object -First 20)) {
+            $broker = (Get-CreBrokerageName $entry.source_key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
+            $count = ([long]$entry.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $lines += "$bullet *${broker}:* $count listings verified by database readback"
+        }
+        if ($members.Count -gt 20) { $lines += "$bullet $($members.Count - 20) additional verified brokerages are listed in the local CRE audit." }
+        $lines += "$bullet *Failed:* $(@($Summary.failed_source_keys).Count) | *Pending:* $(@($Summary.pending_source_keys).Count)"
+        if (-not $Summary.complete -or $ExitCode -ne 0) { $lines += "$bullet Partial result; the selected refresh did not finish successfully. Check the local CRE audit." }
+        return (($lines -join "`n").Substring(0, [Math]::Min(4000, ($lines -join "`n").Length)))
+    }
     if ($ExitCode -ne 0) {
         if ($Record.status -eq 'windows_terminal_audit_failed_linux_settlement_unverified') {
             $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
@@ -370,7 +470,7 @@ $stdoutPath = Join-Path $auditDir ($basename + '.stdout.log')
 $stderrPath = Join-Path $auditDir ($basename + '.stderr.log')
 $record = [ordered]@{
     createdAt = [DateTime]::UtcNow.ToString('o')
-    tier = $Tier; source = $Source; expectedSha = $ExpectedSha; apply = [bool]$Apply
+    tier = $Tier; source = $selectedSourceArgument; pipeline = [bool]$Pipeline; sourceWorkers = $resolvedSourceWorkers; expectedSha = $ExpectedSha; apply = [bool]$Apply
     status = 'admission_pending'; dispatch = 'not_attempted'
     nativeExitCode = $null; wrapperExitCode = $null; linuxSettlement = 'unverified'
     notificationMode = $NotificationMode
@@ -398,10 +498,7 @@ Write-Output "Windows stdout: $stdoutPath"
 Write-Output "Windows stderr: $stderrPath"
 $result = 1
 try {
-    if (-not $Source -or -not $ExpectedSha) { throw 'Required invocation identity missing.' }
-    if ($AdmitCurrentInventorySource -and ($Tier -ne 'series' -or $Source -cne $AdmitCurrentInventorySource)) {
-        throw 'Current-inventory admission requires its exact reviewed series source.'
-    }
+    if (-not $selectedSourceArgument -or -not $ExpectedSha) { throw 'Required invocation identity missing.' }
     if ($Tier -eq 'series') {
         if (-not $PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or -not $AcknowledgeDatabaseWrites) {
             throw 'Series requires an explicit work budget and database-write acknowledgement.'
@@ -465,7 +562,7 @@ try {
         $collector = $LinuxRepo.TrimEnd('/') + '/scripts/firecrawl-ops/cre_collector'
         $arguments = @('-d', $Distro, '-u', $LinuxUser, '--exec', 'env',
             'FIRECRAWL_API_URL=http://127.0.0.1:3002', 'python3',
-            "$collector/cre_guarded_tier.py", $Tier, '--source', $Source,
+            "$collector/cre_guarded_tier.py", $Tier, '--source', $selectedSourceArgument,
             '--expected-sha', $ExpectedSha, '--batch', "$Batch",
             '--deadline-seconds', "$DeadlineSeconds", '--env-file', $LinuxEnvFile,
             '--windows-admission-unix-ms', "$admissionUnixMs")
@@ -478,13 +575,14 @@ try {
                 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000',
                 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1',
                 'python3', "$collector/cre_checkpoint_series.py",
-                '--sources', $Source, '--concurrency', '1', '--nice', '15',
+                '--sources', $selectedSourceArgument, '--concurrency', '1', '--nice', '15',
                 '--page-cap', '400', '--attempts-per-source', '3', '--max-resource-recoveries-per-source', '0',
                 '--max-host-cpu-percent', '90', '--cpu-sustain-seconds', '30', '--cpu-sample-seconds', '2',
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
-            if ($AdmitCurrentInventorySource) { $arguments += @('--admit-current-inventory-source', $AdmitCurrentInventorySource) }
+            if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
+            foreach ($key in $selectedAdmissionKeys) { $arguments += @('--admit-current-inventory-source', $key) }
             $runPrefix = "$collector/out/checkpoint-series/"
         } elseif ($Apply) { $arguments += '--apply' }
         # Pending is durably published before helper entry. An exception/crash

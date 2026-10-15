@@ -158,5 +158,31 @@ $Source='cbre-other'
 Assert-Cre ((Get-CreBrokerageName $Source) -ceq 'CBRE Other') 'Generic source labels preserve allowed CBRE capitalization.'
 $Source='<!channel>'
 Assert-Cre ((Get-CreNotificationText $record 'Start' 0 $null) -notmatch '<!|@') 'Unrecognized source input cannot become a mention.'
+$Pipeline = $true
+$selectedSourceKeys = @('newmark','cbre','jll')
+$selectedSourceArgument = $selectedSourceKeys -join ','
+$pipelineSummary = New-Summary
+$pipelineSummary['selected_source_keys'] = $selectedSourceKeys
+$pipelineSummary['per_source_summaries'] = @([ordered]@{source_key='newmark'; verified_listings=4535})
+$pipelineSummary['failed_source_keys'] = @('cbre')
+$pipelineSummary['pending_source_keys'] = @('jll')
+$pipelineSummary['complete'] = $false
+Save-Summary $pipelineSummary
+$partialRecord = New-Record
+$partialRecord.nativeExitCode = 1
+$partial = Get-CreVerifiedSummary $partialRecord 'pipeline-partial'
+Assert-Cre ($null -ne $partial -and -not $partial.complete) 'A qualified partial pipeline retains exact source summaries after a nonzero exit.'
+$pipelineArgv = [IO.File]::ReadAllLines($argvFile)
+Assert-Cre ($pipelineArgv -contains '--pipeline-source-keys' -and $pipelineArgv -contains 'newmark,cbre,jll' -and $pipelineArgv -notcontains '--source') 'Pipeline helper receives the exact finite source selection.'
+$partialText = Get-CreNotificationText $partialRecord 'Terminal' 1 $partial
+Assert-Cre ($partialText.Contains('*Newmark:* 4,535 listings verified') -and $partialText.Contains('Partial result') -and $partialText.Contains('*Failed:* 1 | *Pending:* 1') -and $partialText -notmatch 'Completed|unique properties') 'Partial terminal text names only qualified brokerages and avoids a cross-source total.'
+$pipelineSummary['pending_source_keys'] = @('cbre')
+Save-Summary $pipelineSummary
+Assert-Cre ($null -eq (Get-CreVerifiedSummary $partialRecord 'pipeline-duplicate')) 'Duplicate or missing partition members cannot enter the formatter.'
+$many = @()
+foreach ($key in 1..51) { $many += [pscustomobject]@{source_key='newmark'; verified_listings=4535} }
+$manySummary = [pscustomobject]@{per_source_summaries=$many; failed_source_keys=@(); pending_source_keys=@(); complete=$true}
+$manyText = Get-CreNotificationText $partialRecord 'Terminal' 0 $manySummary
+Assert-Cre ($manyText.Contains('31 additional verified brokerages') -and [Text.Encoding]::UTF8.GetByteCount((@{text=$manyText}|ConvertTo-Json -Compress)) -lt 4096) 'Long terminal summaries retain the unchanged sender payload bound and disclose omitted members.'
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV
 Write-Output "Readable CRE notification PASS: $script:checks assertions; proof=$ProofDirectory"

@@ -50,16 +50,20 @@ def validate_option(
 ) -> None:
     if source is None:
         return
-    require(
-        list(sources) == [source]
-        and tuple(transactions) == ("sale", "lease")
-    )
+    require(list(sources) == [source] and tuple(transactions) == ("sale", "lease"))
     configuration(source)
     require(not additive_hold and not allow_dirty)
 
 
-def validate_options(admitted_sources, sources, transactions, *, pipeline=False,
-                     additive_hold=False, allow_dirty=False) -> None:
+def validate_options(
+    admitted_sources,
+    sources,
+    transactions,
+    *,
+    pipeline=False,
+    additive_hold=False,
+    allow_dirty=False,
+) -> None:
     """Admit only explicit exact keys inside the selected source set."""
     admitted = list(admitted_sources or ())
     selected = list(sources)
@@ -67,8 +71,13 @@ def validate_options(admitted_sources, sources, transactions, *, pipeline=False,
     require(len(admitted) == len(set(admitted)))
     if not pipeline:
         require(len(admitted) <= 1)
-        validate_option(admitted[0] if admitted else None, selected, transactions,
-                        additive_hold=additive_hold, allow_dirty=allow_dirty)
+        validate_option(
+            admitted[0] if admitted else None,
+            selected,
+            transactions,
+            additive_hold=additive_hold,
+            allow_dirty=allow_dirty,
+        )
         return
     if admitted:
         require(tuple(transactions) == ("sale", "lease"))
@@ -90,9 +99,13 @@ def admission_configuration(config: dict, source: str) -> dict | None:
     require(not (legacy is not None and entries is not None))
     if entries is not None:
         require(config.get("pipeline") is True and isinstance(entries, dict))
-        validate_options(entries, config["sources"], config["transactions"],
-                         pipeline=True,
-                         additive_hold=config.get("admit_baseline_hold_additively"))
+        validate_options(
+            entries,
+            config["sources"],
+            config["transactions"],
+            pipeline=True,
+            additive_hold=config.get("admit_baseline_hold_additively"),
+        )
         for key, entry in entries.items():
             require(entry == configuration(key))
         return entries.get(source)
@@ -100,14 +113,19 @@ def admission_configuration(config: dict, source: str) -> dict | None:
         return None
     require(isinstance(legacy, dict))
     key = legacy.get("source_key")
-    validate_option(key, config["sources"], config["transactions"],
-                    additive_hold=config.get("admit_baseline_hold_additively"))
+    validate_option(
+        key,
+        config["sources"],
+        config["transactions"],
+        additive_hold=config.get("admit_baseline_hold_additively"),
+    )
     require(legacy == configuration(key))
     return legacy if key == source else None
 
 
-def validate_report_scope(report: dict, manifest: dict, source: str,
-                          artifact_path: Path) -> None:
+def validate_report_scope(
+    report: dict, manifest: dict, source: str, artifact_path: Path
+) -> None:
     """The source raw verdict must belong to this exact sealed report."""
     if manifest["config"].get("pipeline") is True:
         members = set(report["per_source"])
@@ -131,8 +149,10 @@ def validate_report_scope(report: dict, manifest: dict, source: str,
         require(set(paths) == expected)
     else:
         require(set(report["per_source"]) == {source})
-        require(report["generated_for_artifact"] in
-                (str(artifact_path), [str(artifact_path)]))
+        require(
+            report["generated_for_artifact"]
+            in (str(artifact_path), [str(artifact_path)])
+        )
 
 
 def _time(value: object) -> datetime:
@@ -352,9 +372,7 @@ def _admit_interra(
         "artifact_sha256": actual_hash,
         "collector_git_sha": current_code_sha,
         "database_target_sha256": target["value"],
-        "source_policy_sha256": admission[
-            "source_policy_sha256"
-        ],
+        "source_policy_sha256": admission["source_policy_sha256"],
         "generation_id": manifest["run_id"],
         "generation_started_at": manifest["started_at"],
         "observed_at": proof["observedAt"],
@@ -389,10 +407,14 @@ def _admit_interra(
     return binding
 
 
-def admit(artifact_path: Path, manifest: dict, report: dict, *, source=None, **kwargs) -> dict:
+def admit(
+    artifact_path: Path, manifest: dict, report: dict, *, source=None, **kwargs
+) -> dict:
     """Dispatch only an explicit one-source configuration, preserving defaults."""
     if source is None:
-        source = manifest["config"].get("current_inventory_admission", {}).get("source_key")
+        source = (
+            manifest["config"].get("current_inventory_admission", {}).get("source_key")
+        )
     require(admission_configuration(manifest["config"], source) is not None)
     if source == SOURCE:
         return _admit_interra(artifact_path, manifest, report, **kwargs)

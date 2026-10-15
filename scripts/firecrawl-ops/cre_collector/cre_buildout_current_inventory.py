@@ -14,9 +14,9 @@ from cre_current_inventory_admission import (
     SCOPE,
     VERDICT,
     _time,
+    admission_configuration,
     configuration,
     require,
-    admission_configuration,
     validate_report_scope,
 )
 from cre_gate import count_artifacts
@@ -399,12 +399,8 @@ def admit(
         "artifact_sha256": actual_hash,
         "collector_git_sha": current_code_sha,
         "database_target_sha256": target["value"],
-        "source_policy_sha256": admission[
-            "source_policy_sha256"
-        ],
-        "buildout_registry_sha256": admission[
-            "buildout_registry_sha256"
-        ],
+        "source_policy_sha256": admission["source_policy_sha256"],
+        "buildout_registry_sha256": admission["buildout_registry_sha256"],
         "generation_id": manifest["run_id"],
         "generation_started_at": manifest["started_at"],
         "observed_at": min(times),

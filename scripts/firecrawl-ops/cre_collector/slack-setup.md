@@ -199,3 +199,7 @@ audit and Slack app/channel authorization. Never rerun database work merely
 to retry an alert. Forced process death, logout, reboot or a network outage
 can prevent a terminal notification; Slack is concise visibility, not a
 guaranteed outage-paging service.
+
+## Pipeline terminal counts
+
+Opt-in pipeline invocations emit one terminal summary listing only brokerages whose sealed database unit passed the full audit and exact member readback. Partial terminal results name failed/pending counts and never claim all-source completion or sum brokerage counts into a global unique-property total. See [Start Here](START_HERE.md#opt-in-stage-overlap).

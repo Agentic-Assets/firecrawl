@@ -48,6 +48,54 @@ bounded inventory/enrichment trials, see the
 [guarded incremental guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
 Scheduling and full-source acceptance remain separately gated.
 
+### Opt-in stage overlap
+
+The same foreground pipeline runs on macOS and Linux/WSL. Serial behavior is
+still the default on both hosts. Opt in with `--pipeline`; its one acquisition
+setting is `--source-workers` (1–4, default 2). Changing this setting changes
+collection capacity only. Database transactions remain serial.
+
+```bash
+python3 cre_checkpoint_series.py --pipeline --source-workers 2 \
+  --sources interra-realty,faris-lee \
+  --admit-current-inventory-source interra-realty \
+  --admit-current-inventory-source faris-lee \
+  --env-file "$HOME/.config/cre/equire.env"
+```
+
+This example performs additive database writes when run. Use an explicitly
+approved finite source selection and reviewed clean SHA. Every source requiring
+current-inventory admission needs its own repeated exact key. Family names and
+`all` never grant admission. Existing historical-baseline certificates retain
+all existing requirements. Resume with the identical source order, pipeline
+flag, worker setting, admissions, target and generation.
+
+One refresh owner keeps collecting while owned artifact inspection and database
+commands wait. Buildout shares one acquisition lane; existing JLL/CBRE family
+exclusions remain. Colliers Main runs alone through the complete database unit.
+A ready unit seals immediately with 1–5 artifacts, then runs existing gates,
+dry runs and one transaction per source, followed by a complete audit and exact
+member generation readback. Audit quality is enforced after the unit, so an
+audit failure can leave earlier source commits in place and global regressions
+can offset within that unit. Verified counts appear only after this audit.
+
+Outside a sealed unit, ready plus in-flight reservations are capped at five.
+Dispatch pauses at a 512 MiB soft pending-byte watermark, charging at least
+64 MiB per active output plus actual larger temporary/retry files, and requires
+1 GiB free beyond remaining reservations. These are dispatch limits: legitimate
+oversized artifacts retain their unchanged acceptance checks and drain alone.
+Mixed-stage resource, telemetry, ownership, evidence or database failures stop
+new dispatch and settle owned groups. There is no automatic mixed-stage
+cooldown/restart; uncertain writes retain existing reconciliation fences.
+
+Evidence stays in the single refresh manifest and `pipeline/unit-0001/` etc.
+The manifest records sealed membership, audit report bindings and exact
+`pipeline.source_results` only for qualified members. Series entries point to
+that same refresh run; partial completion cannot publish all-source last-good
+health. `cre_series_status.py` exposes stage counts and the resolved worker
+setting. Terminal Slack messages report only qualified brokerage counts.
+No scheduler or Mac configuration is activated by selecting this mode.
+
 For concise scheduled-run messages, see [Slack setup](slack-setup.md). It owns
 the private webhook-file format, local configuration check and exact-channel
 delivery verification; it does not authorize or enable a schedule.

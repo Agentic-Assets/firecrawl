@@ -357,3 +357,7 @@ ext4 WSL clone, never Windows node_modules or a worktree sharing a live lock.
 Firecrawl API helpers can run from native Windows. Linux telemetry support does
 not grant scheduler, production-write or sole-writer cutover approval. Follow
 START_HERE.md for the current guard contract and SETUP.md for installation.
+
+## Opt-in pipeline contract
+
+Use [Start Here](START_HERE.md#opt-in-stage-overlap) for the shared macOS/Linux foreground pipeline. `--source-workers` is its single collection setting (1–4, default 2 when `--pipeline` is selected); one refresh owner and serial database transactions remain mandatory. Windows only forwards these portable settings. Configuration and admission changes must match on explicit resume.

@@ -167,6 +167,64 @@ def child_progress(
         return None
 
 
+def pipeline_progress(manifest: Mapping[str, Any], path: Path) -> dict | None:
+    """Read one bounded original owner manifest for observational stage counts."""
+    config = manifest.get("config") or {}
+    if config.get("pipeline") is not True:
+        return None
+    references = {row.get("checkpoint_run") for row in manifest["sources"].values()}
+    if len(references) != 1:
+        return None
+    run = _contained_path(path.parent, next(iter(references)))
+    if run is None or not run.is_relative_to((path.parent / "runs").resolve()):
+        return None
+    try:
+        child = json.loads(
+            _read_regular_file(run / "manifest.json", limit=4 * 1024 * 1024)
+        )
+        if (
+            child.get("collector_git_sha") != manifest.get("collector_git_sha")
+            or child.get("run_id") != run.name
+            or child.get("config", {}).get("sources") != config.get("sources")
+            or child.get("config", {}).get("source_workers")
+            != config.get("source_workers")
+            or child.get("config", {}).get("pipeline") is not True
+            or set(child["sources"]) != set(config["sources"])
+        ):
+            return None
+        from cre_checkpoint_series import pipeline_source_qualified
+
+        counts = dict.fromkeys(
+            ("fetching", "pending", "validating", "committing", "verified", "failed"), 0
+        )
+        for key, checkpoint in child["sources"].items():
+            state = checkpoint.get("pipeline_stage") or checkpoint.get("state")
+            if pipeline_source_qualified(child, key):
+                phase = "verified"
+            elif state in {"collecting", "fetching"}:
+                phase = "fetching"
+            elif state in {"ingesting", "committing", "ingest_recovery_required"}:
+                phase = "committing"
+            elif state in {"validating", "validating_artifact"}:
+                phase = "validating"
+            elif state in {
+                "failed",
+                "collect_failed",
+                "collect_infrastructure_failed",
+                "artifact_rejected",
+                "gate_failed",
+                "gate_blocked",
+                "dry_run_failed",
+            }:
+                phase = "failed"
+            else:
+                phase = "pending"
+            counts[phase] += 1
+        return {"source_workers": config["source_workers"], **counts}
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
 def _finite_nonnegative(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -401,6 +459,7 @@ def build_snapshot(
         "series_path": str(manifest_path.parent.resolve()),
         "status": str(manifest.get("status", "unknown")),
         "collector_sha": manifest.get("collector_git_sha"),
+        "pipeline_progress": pipeline_progress(manifest, manifest_path),
         "total": total,
         "complete": complete,
         "handled": handled,
@@ -465,6 +524,12 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
             f"    Failed/interrupted {snapshot['failed']}"
         ),
     ]
+    pipeline = snapshot.get("pipeline_progress")
+    if pipeline:
+        lines.append(f"Collection workers     {pipeline['source_workers']}")
+        lines.append("Pipeline stages        " + " / ".join(
+            f"{key} {pipeline[key]}" for key in
+            ("fetching", "pending", "validating", "committing", "verified", "failed")))
     if snapshot["elapsed_seconds"] is not None:
         lines.append(f"Elapsed                {_duration(snapshot['elapsed_seconds'])}")
     if snapshot["updated_age_seconds"] is not None:
