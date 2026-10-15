@@ -849,11 +849,16 @@ one immutable generation and bypasses Firecrawl response caches with
 `maxAge: 0`. The scoped non-strict `cbre-dealflow` and `colliers` paths do not
 make the blanket strict-detail claim; `avison-young` has its separate
 generation-backed inventory/property-detail contract described below. A
-`first_seen` verdict stops at `baseline_seed_required`; a `hold` stops at
-`gate_blocked`. Neither state reaches dry-run or live ingest. Seed a first
-baseline only after reviewing the complete exact artifact with
-`cre_gate.py --apply --update-baseline`, read it back without
-`--update-baseline`, and then resume the same immutable run.
+`first_seen` verdict normally stops at `baseline_seed_required`; a `hold`
+stops at `gate_blocked`. Neither state reaches dry-run or live ingest through
+the ordinary baseline-backed route. The explicit, source-specific
+[current-inventory admission](#opt-in-stage-overlap) can admit supported
+Interra/Buildout sources with complete fresh proof and an absent baseline;
+it does not waive a hold for a source with an existing baseline.
+
+Baseline seeding is a separate operator procedure requiring approval for the
+exact source and artifact. AGENTIC-2895/2902 prohibit baseline writes; do not
+run `cre_gate.py --apply --update-baseline` to unblock those refreshes.
 
 The global admission floor is 100 listings. The sole reviewed exception is
 Savills, declared in `data/cre-gate-coverage-policy.json`: its floor is one
