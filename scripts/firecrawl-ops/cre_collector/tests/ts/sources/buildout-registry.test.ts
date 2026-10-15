@@ -20,7 +20,7 @@ const EXPECTED_FIRMS = [
   ["pinnacle-rea", "Pinnacle Real Estate Advisors", "53aeead9dc03d2337633a409497ff7976f68d56c", "https://www.pinnaclerea.com/"],
   ["cawley-chicago", "Cawley Chicago", "408316c565e1efe74e56779fffe3baa3fdc1f3cf", "https://www.cawleychicago.com/"],
   ["bradford-allen", "Bradford Allen", "f2c7e5eec6ebe7de1f4a0b261bd9a04d715ca1e1", "https://www.bradfordallen.com/"],
-  ["hudson-peters", "Hudson Peters Commercial", "fb2068dac489e1dacd436ebe03523aed6df9fe2e", "https://www.hudsonpeters.com/"],
+  ["hudson-peters", "Hudson Peters Commercial", "fb2068dac489e1dacd436ebe03523aed6df9fe2e", "https://hudsonpeters.com/"],
   ["gibson-commercial", "Gibson Commercial Real Estate", "cf76c48a3374831d301742075017a4b5e88642bc", "https://www.gibsoncre.com/"],
   ["leibsohn", "Leibsohn & Co", "9be8516e186ae4deb9ee10eafda9478aca7ffe68", "https://www.leibsohn.com/"],
   ["nai-hiffman", "NAI Hiffman", "783881343a019c17532413fa9b120e61d47c2ae3", "https://www.hiffman.com/"],
@@ -40,7 +40,7 @@ const EXPECTED_FIRMS = [
   ["nai-dominion", "NAI Dominion", "6a78703278580ac43114429ef6f4a0d484167434", "https://www.naidominion.com/"],
 ] as const;
 
-test("registered Buildout firms exactly preserve all 25 historical public-feed definitions", () => {
+test("registered Buildout firms preserve all 25 public-feed definitions with reviewed host corrections", () => {
   assert.deepEqual(
     REGISTERED_BUILDOUT_FIRMS.map(
       ({ sourceKey, company, pluginKey, listingsPage }) =>
