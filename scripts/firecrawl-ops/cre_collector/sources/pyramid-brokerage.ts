@@ -73,6 +73,7 @@ export function pyramidInventoryUrl(page: number): string {
   url.searchParams.set("page", String(page));
   url.searchParams.set("orderby", "id");
   url.searchParams.set("order", "asc");
+  url.searchParams.set("_embed", "wp:term");
   return url.toString();
 }
 

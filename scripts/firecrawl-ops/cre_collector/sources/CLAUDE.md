@@ -26,6 +26,13 @@
 
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 
+Pyramid's WordPress inventory requests only `_embed=wp:term`: the mapper needs
+those taxonomy labels for state, city, county and property type. Numeric term IDs
+alone are insufficient. Keep 100-record pages, bounded response bodies and complete
+ordered snapshot convergence; full mode still requires each selected detail page.
+The [WordPress REST contract](https://developer.wordpress.org/rest-api/using-the-rest-api/global-parameters/#_embed)
+supports selecting the term relation without broadly embedding other resources.
+
 ## external_id Rules (collector id → ingest)
 
 | Source | Stable `external_id` | Gotcha |

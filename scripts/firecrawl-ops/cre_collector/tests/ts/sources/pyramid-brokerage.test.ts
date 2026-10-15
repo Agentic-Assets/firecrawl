@@ -72,14 +72,49 @@ const detailHtml = `
   </html>
 `;
 
-test("Pyramid inventory URL is bounded to 100 base records without oversized embeds", () => {
+test("Pyramid inventory URL requests only the taxonomy terms consumed by mapping", () => {
   const url = new URL(pyramidInventoryUrl(21));
   assert.equal(url.pathname, "/wp-json/wp/v2/pbc-listings");
   assert.equal(url.searchParams.get("per_page"), String(PYRAMID_PAGE_SIZE));
   assert.equal(url.searchParams.get("page"), "21");
   assert.equal(url.searchParams.get("orderby"), "id");
   assert.equal(url.searchParams.get("order"), "asc");
-  assert.equal(url.searchParams.has("_embed"), false);
+  assert.equal(url.searchParams.get("_embed"), "wp:term");
+});
+
+test("Pyramid maps requested taxonomy terms across complete pages and convergence passes", async () => {
+  const requestedPages: number[] = [];
+  const snapshot = await fetchPyramidSnapshot(async (input) => {
+    const url = new URL(String(input));
+    const page = Number(url.searchParams.get("page"));
+    requestedPages.push(page);
+    const ids = page === 1 ? Array.from({ length: 100 }, (_, index) => index + 1) : [101];
+    const body = ids.map((id) => {
+      const fixture = row(id, PYRAMID_SALE_TERM_ID);
+      const value: Record<string, unknown> = { ...fixture };
+      // The real REST API supplies labels only when the request embeds terms.
+      if (url.searchParams.get("_embed") === "wp:term") {
+        value._embedded = { "wp:term": fixture._embedded["wp:term"] };
+      } else {
+        delete value._embedded;
+      }
+      return value;
+    });
+    return Response.json(body, {
+      headers: { "X-WP-Total": "101", "X-WP-TotalPages": "2" },
+    });
+  }, 2);
+  assert.deepEqual(requestedPages, [1, 2, 1, 2]);
+  assert.equal(snapshot.total, 101);
+  assert.equal(snapshot.totalPages, 2);
+  assert.deepEqual(snapshot.rows.map((value) => value.id), Array.from({ length: 101 }, (_, index) => index + 1));
+  const mapped = snapshot.rows.map((value) => mapPyramidListing(value, "sale", snapshot.observedAt));
+  for (const listing of mapped) {
+    assert.equal(listing.state, "NY");
+    assert.equal(listing.city, "Albany");
+    assert.equal(listing.county, "Albany");
+    assert.equal(listing.assetType, "Industrial");
+  }
 });
 
 test("Pyramid transport enforces URL policy, manual redirects, and streaming byte limits", async () => {
