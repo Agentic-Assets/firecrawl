@@ -2,6 +2,10 @@ Parent: [AGENTIC-1972](https://linear.app/agenticassets/issue/AGENTIC-1972). Eng
 
 # Interra additive current-inventory admission
 
+Before live use, read the [legacy identity transition procedure](interra-identity-transition.md).
+Complete current provider inventory does not authorize replacing historical IDs
+or accepting duplicate database records.
+
 The explicit checkpoint option `--admit-current-inventory-source interra-realty`
 admits one complete current Interra inventory when its historical baseline is
 absent. It is valid only with `--sources interra-realty --transactions both`,
