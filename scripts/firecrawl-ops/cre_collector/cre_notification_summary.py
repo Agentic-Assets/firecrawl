@@ -39,6 +39,36 @@ def require(condition):
         raise SummaryUnavailable("verified summary unavailable")
 
 
+def _pipeline_admissions(config, selected_sources):
+    """Validate the finite admitted subset without requiring every source admitted."""
+    admissions = config.get("current_inventory_admissions")
+    require(
+        isinstance(admissions, dict)
+        and set(admissions) <= set(selected_sources)
+        and all(
+            isinstance(source, str) and PIPELINE_SOURCE_KEY.fullmatch(source)
+            for source in admissions
+        )
+    )
+    try:
+        from cre_current_inventory_admission import configuration
+
+        require(
+            not admissions
+            or (
+                config.get("transactions") == ["sale", "lease"]
+                and not config.get("admit_baseline_hold_additively", False)
+                and not config.get("allow_dirty", False)
+            )
+        )
+        require(
+            all(value == configuration(source) for source, value in admissions.items())
+        )
+    except (ImportError, ValueError, KeyError, TypeError, OSError, AttributeError):
+        raise SummaryUnavailable("pipeline admission map unavailable") from None
+    return admissions
+
+
 def timestamp(value):
     require(isinstance(value, str))
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -115,6 +145,76 @@ def _derive_transaction_breakdown(data, source, expected_count, scraped_at, dead
         "lease": len(lease_ids),
         "both": len(both_ids),
         "measurement": "current_staged_inventory_transaction_types",
+    }
+
+
+def _staged_transaction_breakdown(artifact, source, expected_count, generation_id):
+    """Validate producer-computed transaction counts bound to this artifact."""
+    breakdown = artifact.get("transaction_breakdown")
+    if breakdown is None:
+        return None
+    require(
+        isinstance(breakdown, dict)
+        and set(breakdown)
+        == {
+            "sale",
+            "lease",
+            "both",
+            "measurement",
+            "source_key",
+            "artifact_sha256",
+            "artifact_bytes",
+            "generation_id",
+        }
+    )
+    artifact_sha = artifact.get("sha256")
+    artifact_bytes = artifact.get("bytes")
+    require(
+        isinstance(artifact_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+        and type(artifact_bytes) is int
+        and 0 < artifact_bytes <= MAX_ARTIFACT_BINDING_BYTES
+    )
+    require(
+        artifact.get("freshness_generation_id") == generation_id
+        and breakdown.get("source_key") == source
+        and breakdown.get("artifact_sha256") == artifact_sha
+        and breakdown.get("artifact_bytes") == artifact_bytes
+        and breakdown.get("generation_id") == generation_id
+        and breakdown.get("measurement")
+        == "current_staged_inventory_transaction_types"
+    )
+    require(
+        0 <= time.time() - timestamp(artifact.get("finished_at")) <= 86400
+    )
+    sale, lease, both = (
+        breakdown.get("sale"),
+        breakdown.get("lease"),
+        breakdown.get("both"),
+    )
+    require(
+        type(sale) is int
+        and type(lease) is int
+        and type(both) is int
+        and 0 <= sale <= expected_count
+        and 0 <= lease <= expected_count
+        and 0 <= both <= min(sale, lease)
+        and sale + lease - both == expected_count
+    )
+    return {
+        "sale": sale,
+        "lease": lease,
+        "both": both,
+        "measurement": "current_staged_inventory_transaction_types",
+    }
+
+
+def _breakdown_status(breakdown, basis, reason, started):
+    return {
+        "status": "verified" if breakdown is not None else "unavailable",
+        "basis": basis,
+        "reason": reason,
+        "elapsed_ms": max(0, int((time.monotonic() - started) * 1000)),
     }
 
 
@@ -325,65 +425,92 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             isinstance(readback.get("generation_id"), str)
             and readback["generation_id"] == run_id
         )
+        transaction_started = time.monotonic()
         transaction_breakdown = None
-        try:
-            artifact_path = artifact.get("path")
-            artifact_sha = artifact.get("sha256")
-            artifact_bytes = artifact.get("bytes")
-            require(artifact_path == f"sources/{source}.json")
-            require(
-                isinstance(artifact_sha, str)
-                and re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
-            )
-            require(
-                type(artifact_bytes) is int
-                and 0 < artifact_bytes <= MAX_TRANSACTION_ARTIFACT_BYTES
-            )
-            sources_fd = directory(child_fd, "sources")
-            raw, observed = safe._read_at(
-                sources_fd,
-                f"{source}.json",
-                limit=MAX_TRANSACTION_ARTIFACT_BYTES,
-            )
-            snapshots.append(
-                (sources_fd, f"{source}.json", MAX_TRANSACTION_ARTIFACT_BYTES, raw)
-            )
-            require(observed.st_size == artifact_bytes)
-            require(hashlib.sha256(raw).hexdigest() == artifact_sha)
-            data = json.loads(raw)
-            freshness = data.get("runMeta", {}).get("freshness")
-            require(
-                isinstance(freshness, dict)
-                and freshness.get("generationId") == run_id
-                and readback["generation_id"] == freshness["generationId"]
-            )
-            require(
-                time.monotonic() - summary_started
-                <= TRANSACTION_BREAKDOWN_BUDGET_SECONDS
-            )
-            transaction_breakdown = _derive_transaction_breakdown(
-                data,
-                source,
-                count,
-                data.get("runMeta", {}).get("finishedAt"),
-                summary_started + TRANSACTION_BREAKDOWN_BUDGET_SECONDS,
-            )
-            require(
-                transaction_breakdown["sale"]
-                + transaction_breakdown["lease"]
-                - transaction_breakdown["both"]
-                == count
-            )
-        except (
-            OSError,
-            ValueError,
-            KeyError,
-            TypeError,
-            IndexError,
-            AttributeError,
-            safe.StopRefused,
-        ):
-            transaction_breakdown = None
+        breakdown_basis = "none"
+        breakdown_reason = "staging_stats_absent"
+        staged_stats = artifact.get("transaction_breakdown")
+        if staged_stats is not None:
+            try:
+                transaction_breakdown = _staged_transaction_breakdown(
+                    artifact, source, count, run_id
+                )
+                breakdown_basis = "artifact_staging_statistics"
+                breakdown_reason = None
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+                IndexError,
+                AttributeError,
+                safe.StopRefused,
+            ):
+                breakdown_reason = "staging_stats_invalid"
+        else:
+            try:
+                artifact_path = artifact.get("path")
+                artifact_sha = artifact.get("sha256")
+                artifact_bytes = artifact.get("bytes")
+                require(artifact_path == f"sources/{source}.json")
+                require(
+                    isinstance(artifact_sha, str)
+                    and re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+                )
+                require(
+                    type(artifact_bytes) is int
+                    and 0 < artifact_bytes <= MAX_TRANSACTION_ARTIFACT_BYTES
+                )
+                sources_fd = directory(child_fd, "sources")
+                raw, observed = safe._read_at(
+                    sources_fd,
+                    f"{source}.json",
+                    limit=MAX_TRANSACTION_ARTIFACT_BYTES,
+                )
+                snapshots.append(
+                    (sources_fd, f"{source}.json", MAX_TRANSACTION_ARTIFACT_BYTES, raw)
+                )
+                require(observed.st_size == artifact_bytes)
+                require(hashlib.sha256(raw).hexdigest() == artifact_sha)
+                data = json.loads(raw)
+                freshness = data.get("runMeta", {}).get("freshness")
+                require(
+                    isinstance(freshness, dict)
+                    and freshness.get("generationId") == run_id
+                    and readback["generation_id"] == freshness["generationId"]
+                    and 0
+                    <= time.time() - timestamp(data["runMeta"]["finishedAt"])
+                    <= 86400
+                )
+                require(
+                    time.monotonic() - summary_started
+                    <= TRANSACTION_BREAKDOWN_BUDGET_SECONDS
+                )
+                transaction_breakdown = _derive_transaction_breakdown(
+                    data,
+                    source,
+                    count,
+                    data.get("runMeta", {}).get("finishedAt"),
+                    summary_started + TRANSACTION_BREAKDOWN_BUDGET_SECONDS,
+                )
+                require(
+                    transaction_breakdown["sale"]
+                    + transaction_breakdown["lease"]
+                    - transaction_breakdown["both"]
+                    == count
+                )
+                breakdown_basis = "bounded_artifact_read"
+                breakdown_reason = None
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+                IndexError,
+                AttributeError,
+                safe.StopRefused,
+            ):
+                breakdown_reason = "bounded_artifact_unavailable"
         for descriptor, name, limit, raw in snapshots:
             require(safe._read_at(descriptor, name, limit)[0] == raw)
         result = {
@@ -400,6 +527,12 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             "measurement": "generation_exact_current_inventory",
             "quality_no_regression": True,
             "local_settlement": "confirmed",
+            "transaction_breakdown_status": _breakdown_status(
+                transaction_breakdown,
+                breakdown_basis,
+                breakdown_reason,
+                transaction_started,
+            ),
         }
         if transaction_breakdown is not None:
             result["transaction_breakdown"] = transaction_breakdown
@@ -466,8 +599,7 @@ def verified_pipeline_summary(
             and config.get("sources") == selected_sources
             and config.get("transactions") == ["sale", "lease"]
         )
-        admissions = config.get("current_inventory_admissions")
-        require(isinstance(admissions, dict) and set(admissions) == set(selected_sources))
+        admissions = _pipeline_admissions(config, selected_sources)
         admission = parent["latest_invocation_admission"]
         require(admission.get("expected_sha") == expected_sha)
         require(admission.get("windows_admission_unix_ms") == windows_admission_ms)
@@ -732,55 +864,90 @@ def verified_pipeline_summary(
         for source, count, checkpoint, unit in qualified:
             row = {"source_key": source, "verified_listings": count}
             breakdown = None
-            breakdown_status = "unavailable"
             started_breakdown = time.monotonic()
-            try:
-                artifact = checkpoint["artifact"]
-                artifact_bytes = artifact.get("bytes")
-                artifact_sha = artifact.get("sha256")
-                require(
-                    type(artifact_bytes) is int
-                    and 0 < artifact_bytes <= MAX_TRANSACTION_ARTIFACT_BYTES
-                    and isinstance(artifact_sha, str)
-                    and re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
-                )
-                total_artifact_bytes += artifact_bytes
-                require(total_artifact_bytes <= MAX_TRANSACTION_ARTIFACT_BYTES)
-                require(
-                    time.monotonic() - summary_started
-                    <= TRANSACTION_BREAKDOWN_BUDGET_SECONDS
-                )
-                sources_fd = directory(child_fd, "sources")
-                raw, observed = safe._read_at(
-                    sources_fd, f"{source}.json", limit=MAX_TRANSACTION_ARTIFACT_BYTES
-                )
-                snapshots.append((sources_fd, f"{source}.json", MAX_TRANSACTION_ARTIFACT_BYTES, raw))
-                require(observed.st_size == artifact_bytes)
-                require(hashlib.sha256(raw).hexdigest() == artifact_sha)
-                data = json.loads(raw)
-                freshness = data.get("runMeta", {}).get("freshness")
-                require(
-                    isinstance(freshness, dict)
-                    and freshness.get("generationId") == run_id
-                    and 0
-                    <= time.time() - timestamp(data["runMeta"]["finishedAt"])
-                    <= 86400
-                )
-                breakdown = _derive_transaction_breakdown(
-                    data,
-                    source,
-                    count,
-                    data.get("runMeta", {}).get("finishedAt"),
-                    summary_started + TRANSACTION_BREAKDOWN_BUDGET_SECONDS,
-                )
-                require(breakdown["sale"] + breakdown["lease"] - breakdown["both"] == count)
-                breakdown_status = "verified"
-            except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError, safe.StopRefused):
-                breakdown = None
-            row["transaction_breakdown_status"] = {
-                "status": breakdown_status,
-                "elapsed_ms": max(0, int((time.monotonic() - started_breakdown) * 1000)),
-            }
+            artifact = checkpoint["artifact"]
+            breakdown_basis = "none"
+            breakdown_reason = "staging_stats_absent"
+            staged_stats = artifact.get("transaction_breakdown")
+            if staged_stats is not None:
+                try:
+                    breakdown = _staged_transaction_breakdown(
+                        artifact, source, count, run_id
+                    )
+                    breakdown_basis = "artifact_staging_statistics"
+                    breakdown_reason = None
+                except (
+                    OSError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    IndexError,
+                    AttributeError,
+                    safe.StopRefused,
+                ):
+                    breakdown_reason = "staging_stats_invalid"
+            else:
+                try:
+                    artifact_bytes = artifact.get("bytes")
+                    artifact_sha = artifact.get("sha256")
+                    require(
+                        type(artifact_bytes) is int
+                        and 0 < artifact_bytes <= MAX_TRANSACTION_ARTIFACT_BYTES
+                        and isinstance(artifact_sha, str)
+                        and re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+                    )
+                    total_artifact_bytes += artifact_bytes
+                    require(total_artifact_bytes <= MAX_TRANSACTION_ARTIFACT_BYTES)
+                    require(
+                        time.monotonic() - summary_started
+                        <= TRANSACTION_BREAKDOWN_BUDGET_SECONDS
+                    )
+                    sources_fd = directory(child_fd, "sources")
+                    raw, observed = safe._read_at(
+                        sources_fd,
+                        f"{source}.json",
+                        limit=MAX_TRANSACTION_ARTIFACT_BYTES,
+                    )
+                    snapshots.append(
+                        (sources_fd, f"{source}.json", MAX_TRANSACTION_ARTIFACT_BYTES, raw)
+                    )
+                    require(observed.st_size == artifact_bytes)
+                    require(hashlib.sha256(raw).hexdigest() == artifact_sha)
+                    data = json.loads(raw)
+                    freshness = data.get("runMeta", {}).get("freshness")
+                    require(
+                        isinstance(freshness, dict)
+                        and freshness.get("generationId") == run_id
+                        and 0
+                        <= time.time() - timestamp(data["runMeta"]["finishedAt"])
+                        <= 86400
+                    )
+                    breakdown = _derive_transaction_breakdown(
+                        data,
+                        source,
+                        count,
+                        data.get("runMeta", {}).get("finishedAt"),
+                        summary_started + TRANSACTION_BREAKDOWN_BUDGET_SECONDS,
+                    )
+                    require(
+                        breakdown["sale"] + breakdown["lease"] - breakdown["both"]
+                        == count
+                    )
+                    breakdown_basis = "bounded_artifact_read"
+                    breakdown_reason = None
+                except (
+                    OSError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    IndexError,
+                    AttributeError,
+                    safe.StopRefused,
+                ):
+                    breakdown_reason = "bounded_artifact_unavailable"
+            row["transaction_breakdown_status"] = _breakdown_status(
+                breakdown, breakdown_basis, breakdown_reason, started_breakdown
+            )
             if breakdown is not None:
                 row["transaction_breakdown"] = breakdown
             result_rows.append(row)
