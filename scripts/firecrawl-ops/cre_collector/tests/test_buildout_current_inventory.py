@@ -595,8 +595,12 @@ def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
     )
 
 
-@pytest.mark.parametrize("host", ["hudsonpeters.com", "www.hudsonpeters.com", "foreign.example"])
-def test_hudson_admission_requires_exact_observed_listing_host(tmp_path, monkeypatch, host):
+@pytest.mark.parametrize(
+    "host", ["hudsonpeters.com", "www.hudsonpeters.com", "foreign.example"]
+)
+def test_hudson_admission_allows_only_bare_www_listing_equivalence(
+    tmp_path, monkeypatch, host
+):
     monkeypatch.setitem(globals(), "SOURCE", "hudson-peters")
     _, path, artifact, manifest, report = setup(tmp_path)
     for entry in artifact["sources"]:
@@ -606,15 +610,84 @@ def test_hudson_admission_requires_exact_observed_listing_host(tmp_path, monkeyp
                 row["showLink"] = f"https://{host}/listings/?propertyId={property_id}"
     for row in artifact["listings"]:
         property_id = row["url"].split("propertyId=", 1)[1]
-        row["url"] = row["canonicalUrl"] = f"https://{host}/listings/?propertyId={property_id}"
+        row["url"] = row["canonicalUrl"] = (
+            f"https://{host}/listings/?propertyId={property_id}"
+        )
     refresh(path, artifact, manifest)
-    if host == "hudsonpeters.com":
+    if host in {"hudsonpeters.com", "www.hudsonpeters.com"}:
         proof = admit(path, manifest, report)
         assert proof["staged_count"] == 2
         manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": proof}
         report["per_source"][SOURCE]["verdict"] = "first_seen"
-        report["per_source"][SOURCE]["reason"] = "no baseline row; cannot gate (first sight)"
+        report["per_source"][SOURCE]["reason"] = (
+            "no baseline row; cannot gate (first sight)"
+        )
         assert admit(path, manifest, report, "aggregate") == proof
     else:
         with pytest.raises(ValueError):
             admit(path, manifest, report)
+
+
+HOST_VECTORS = json.loads(
+    (Path(__file__).parent / "fixtures" / "buildout-listing-hosts.json").read_text()
+)
+
+
+@pytest.mark.parametrize("vector", HOST_VECTORS)
+def test_buildout_listing_host_vectors_preserve_urls_and_admission(
+    tmp_path, monkeypatch, vector
+):
+    original = buildout.definitions()
+    original[SOURCE] = {
+        **original[SOURCE],
+        "host": vector["host"],
+        "page": f"https://{vector['host']}/",
+    }
+    monkeypatch.setattr(buildout, "definitions", lambda: original)
+    _, path, artifact, manifest, report = setup(tmp_path)
+    for entry in artifact["sources"]:
+        for page in entry["currentInventoryProof"]["pages"]:
+            for row in page["rows"]:
+                property_id = row["showLink"].split("propertyId=", 1)[1]
+                row["showLink"] = vector["url"].replace("687920-lease", property_id)
+    for row in artifact["listings"]:
+        property_id = row["url"].split("propertyId=", 1)[1]
+        row["url"] = row["canonicalUrl"] = vector["url"].replace(
+            "687920-lease", property_id
+        )
+    refresh(path, artifact, manifest)
+    if vector["owned"]:
+        proof = admit(path, manifest, report)
+        assert proof["staged_count"] == 2
+        assert (
+            artifact["listings"][0]["url"].split("/listings/", 1)[0]
+            == vector["url"].split("/listings/", 1)[0]
+        )
+        manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": proof}
+        report["per_source"][SOURCE]["verdict"] = "first_seen"
+        report["per_source"][SOURCE]["reason"] = (
+            "no baseline row; cannot gate (first sight)"
+        )
+        assert admit(path, manifest, report, "aggregate") == proof
+    else:
+        with pytest.raises(ValueError):
+            admit(path, manifest, report)
+
+
+@pytest.mark.parametrize("coordinate", ["listingsPage", "endpoint"])
+def test_listing_www_equivalence_does_not_rebind_proof_coordinates(
+    tmp_path, coordinate
+):
+    _, path, artifact, manifest, report = setup(tmp_path)
+    for entry in artifact["sources"]:
+        proof = entry["currentInventoryProof"]
+        if coordinate == "listingsPage":
+            proof[coordinate] = proof[coordinate].replace("https://www.", "https://")
+        else:
+            for page in proof["pages"]:
+                page[coordinate] = page[coordinate].replace(
+                    "https://buildout.com/", "https://www.buildout.com/"
+                )
+    refresh(path, artifact, manifest)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report)
