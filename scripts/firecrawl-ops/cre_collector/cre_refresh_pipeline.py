@@ -302,17 +302,111 @@ def require_pipeline_full_report(report: dict) -> None:
         raise refresh.GlobalStageError("pipeline full audit is incomplete") from exc
 
 
+@dataclass(frozen=True)
+class InitialBeforeReport:
+    """In-memory handoff of this owner's just-qualified startup comparison."""
+
+    path: Path
+    sha256: str
+    run_id: str
+    target: str
+    owner_pid: int
+    owner_lease: str
+    commit_sequence: int = 0
+
+
+def initial_preflight_binding(run_dir, manifest, *, fresh, resumed, owner_check):
+    """Never manufacture a runtime handoff from persisted resume evidence."""
+    import cre_checkpoint_refresh as refresh
+
+    if (
+        not fresh
+        or resumed
+        or (manifest.get("pipeline") or {}).get("commit_sequence", 0) != 0
+    ):
+        return None
+    owner_check()
+    preflight = manifest["preflight"]
+    target = refresh.manifest_database_target_sha256(manifest)
+    lock = Path(preflight["shared_lock"])
+    lease = refresh._lock_lease(lock)
+    if not lease or refresh._lock_owner(lock) != os.getpid() or not target:
+        return None
+    path = run_dir / preflight["validation_path"]
+    if refresh.sha256_file(path) != preflight["validation_sha256"]:
+        raise refresh.GlobalStageError("initial qualified preflight changed")
+    report = refresh._load_json(path)
+    refresh.require_checkpoint_preflight_report(
+        report, expected_profile=refresh.CHECKPOINT_PREFLIGHT_PROFILE
+    )
+    refresh.require_lifecycle_schema_contract(report)
+    return InitialBeforeReport(
+        path,
+        preflight["validation_sha256"],
+        manifest["run_id"],
+        target,
+        os.getpid(),
+        lease,
+    )
+
+
+def reuse_initial_before(run_dir, manifest, unit, initial_before):
+    import cre_checkpoint_refresh as refresh
+
+    if not isinstance(initial_before, InitialBeforeReport) or (
+        initial_before.run_id != manifest["run_id"]
+        or initial_before.target != refresh.manifest_database_target_sha256(manifest)
+        or initial_before.owner_pid != os.getpid()
+        or initial_before.owner_lease != _OWNER_LEASE.get()
+        or initial_before.commit_sequence != 0
+        or manifest["pipeline"]["commit_sequence"] != 0
+    ):
+        return None
+    require_pipeline_owner(manifest, initial_before.owner_lease)
+    if refresh.sha256_file(initial_before.path) != initial_before.sha256:
+        raise refresh.GlobalStageError("initial qualified preflight changed")
+    report = refresh._load_json(initial_before.path)
+    refresh.require_checkpoint_preflight_report(
+        report, expected_profile=refresh.CHECKPOINT_PREFLIGHT_PROFILE
+    )
+    refresh.require_lifecycle_schema_contract(report)
+    before = run_dir / "pipeline" / unit["unit_id"] / "before.json"
+    before.parent.mkdir(parents=True, exist_ok=True)
+    refresh.atomic_write_text(before, initial_before.path.read_bytes().decode("utf-8"))
+    refresh.make_private_artifact(before)
+    if (
+        refresh.sha256_file(before) != initial_before.sha256
+        or refresh.sha256_file(initial_before.path) != initial_before.sha256
+    ):
+        raise refresh.GlobalStageError(
+            "initial qualified preflight changed during handoff"
+        )
+    unit.update(
+        before_reused=True,
+        before_reuse_kind="initial_preflight",
+        before_source_path=str(initial_before.path.relative_to(run_dir)),
+    )
+    return before
+
+
 def unit_before_report(
     run_dir: Path,
     manifest: dict,
     unit: dict,
     env_file: str | None,
     previous: dict | None,
+    *,
+    initial_before: InitialBeforeReport | None = None,
 ) -> Path:
     import cre_checkpoint_refresh as refresh
 
     target = refresh.manifest_database_target_sha256(manifest)
     sequence = manifest["pipeline"]["commit_sequence"]
+    handed_before = (
+        reuse_initial_before(run_dir, manifest, unit, initial_before)
+        if previous is None
+        else None
+    )
     if previous is not None:
         if (
             previous.get("target") != target
@@ -327,6 +421,8 @@ def unit_before_report(
             raise refresh.GlobalStageError("pipeline prior qualified audit changed")
         require_pipeline_full_report(refresh._load_json(before))
         unit["before_reused"] = True
+    elif handed_before is not None:
+        before = handed_before
     else:
         # Fresh comparison whenever this uninterrupted owner has no preceding
         # qualified report. A resumed/stale persisted report is never a cache.
@@ -361,6 +457,8 @@ def run_database_unit(
     unit: dict,
     env_file: str | None,
     previous: dict | None,
+    *,
+    initial_before: InitialBeforeReport | None = None,
 ) -> dict:
     """Retain existing gates, serial transactions, full audit and exact readback."""
     import cre_checkpoint_refresh as refresh
@@ -368,7 +466,9 @@ def run_database_unit(
     sources = tuple(unit["sources"])
     evidence = run_dir / "pipeline" / unit["unit_id"]
     evidence.mkdir(parents=True, exist_ok=True)
-    before = unit_before_report(run_dir, manifest, unit, env_file, previous)
+    before = unit_before_report(
+        run_dir, manifest, unit, env_file, previous, initial_before=initial_before
+    )
     for source in sources:
         checkpoint = manifest["sources"][source]
         artifact = run_dir / checkpoint["artifact"]["path"]
@@ -491,6 +591,7 @@ def run_bounded_pipeline(
     env_file,
     source_workers,
     owner_check: Callable[[], None] | None = None,
+    initial_before: InitialBeforeReport | None = None,
 ):
     """Run a finite rolling acquisition pool inside the existing flat owner."""
     import cre_checkpoint_refresh as refresh
@@ -723,9 +824,19 @@ def run_bounded_pipeline(
                         state["active_unit"] = None
                         counts()
                         continue
-                    previous = run_database_unit(
-                        run_dir, manifest, unit, env_file, previous
-                    )
+                    if initial_before is None:
+                        previous = run_database_unit(
+                            run_dir, manifest, unit, env_file, previous
+                        )
+                    else:
+                        previous = run_database_unit(
+                            run_dir,
+                            manifest,
+                            unit,
+                            env_file,
+                            previous,
+                            initial_before=initial_before,
+                        )
                     if any(
                         (manifest["sources"][source].get("readback") or {}).get("ok")
                         is not True

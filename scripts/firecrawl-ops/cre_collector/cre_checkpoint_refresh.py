@@ -73,7 +73,7 @@ from cre_owned_processes import (
     settle_owned_groups,
 )
 from cre_performance import capture_runtime_configuration, run_observed_command
-from cre_refresh_pipeline import (compute_root, poll_hook, resolve_source_workers, run_artifact_compute, run_bounded_pipeline, wait_with_poll_hook)
+from cre_refresh_pipeline import (compute_root, initial_preflight_binding, poll_hook, resolve_source_workers, run_artifact_compute, run_bounded_pipeline, wait_with_poll_hook)
 from cre_performance_report import save_report
 from cre_resource_usage import observe_resource_usage
 from cre_runtime_observability import append_incident
@@ -7189,6 +7189,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     attempts_this_run=args.attempts_per_source, env_file=args.env_file,
                     source_workers=args.source_workers,
                     owner_check=lock._require_authority,
+                    initial_before=initial_preflight_binding(
+                        run_dir, manifest, fresh=not bool(recorded_pre_hash),
+                        resumed=bool(args.resume), owner_check=lock._require_authority,
+                    ),
                 )
                 if source_failures:
                     raise RefreshError("pipeline source checkpoints remain incomplete: " + ", ".join(source_failures))
