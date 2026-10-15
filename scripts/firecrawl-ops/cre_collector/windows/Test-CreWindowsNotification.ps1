@@ -38,6 +38,8 @@ $endpoint = 'https://example.invalid/SECRET_CANARY?x=%7Bone,two%7D&q=%5B1-2%5D'
 $valid = New-EndpointFile 'valid.url' ($endpoint + "`r`n")
 $payload = '{"text":"fixed synthetic failure"}'
 $excluded = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
+Assert-True ([CreWindowsNotification.Sender]::IsConfigured($valid, $excluded)) 'Private configuration check must accept a valid file without returning its URL.'
+Assert-True (-not [IO.File]::Exists($curl + '.calls.jsonl')) 'Configuration validation must not start transport.'
 Assert-True ([CreWindowsNotification.Sender]::Send($null, $excluded, 'missing.exe', $payload).Status -ceq 'not_configured') 'Unconfigured notification must not read or start transport.'
 $sent = [CreWindowsNotification.Sender]::Send($valid, $excluded, $curl, $payload)
 Assert-True ($sent.Status -ceq 'http_accepted' -and $sent.HttpStatus -eq 200 -and $sent.NativeSettlement -ceq 'exited') 'Private HTTPS endpoint plus curl0/HTTP200 means HTTP acceptance only.'
@@ -47,16 +49,18 @@ Assert-True ($calls.Count -eq 1 -and -not $transport.secretArg -and $transport.h
 Assert-True ($transport.disableFirst -and $transport.globOff -and $transport.timeout10 -and $transport.retry0 -and -not $transport.redirectOrInsecure) 'Fixed curl flags must refuse curlrc, glob expansion, redirects, retries and insecure TLS.'
 Assert-True ([CreWindowsNotification.Sender]::EscapeConfig("a\`"b`n`t") -ceq 'a\\\"b\n\t') 'Curl config must escape backslashes before quotes and controls.'
 foreach ($case in @(
-    @('unsafe.url', $endpoint, $true), @('oversize.url', ('x' * 4097), $false),
+    @('unsafe.url', $endpoint, $true), @('empty.url', '', $false), @('oversize.url', ('x' * 4097), $false),
     @('multiline.url', ($endpoint + "`n" + $endpoint), $false), @('http.url', 'http://example.invalid/SECRET_CANARY', $false),
     @('quote.url', 'https://example.invalid/SECRET_CANARY"', $false), @('glob.url', 'https://example.invalid/SECRET_CANARY/{one,two}', $false),
     @('userinfo.url', 'https://SECRET_CANARY@example.invalid/', $false), @('control.url', ($endpoint + [char]0), $false)
 )) {
     $file = New-EndpointFile $case[0] $case[1] -Unsafe:([bool]$case[2])
+    Assert-True (-not [CreWindowsNotification.Sender]::IsConfigured($file, $excluded)) 'Configuration validation must reject the same malformed/private-file cases as transport.'
     $rejected = [CreWindowsNotification.Sender]::Send($file, $excluded, $curl, $payload)
     Assert-True ($rejected.Status -ceq 'failed' -and $rejected.Reason -ceq 'private_endpoint_rejected') 'Unsafe or malformed endpoint must refuse before transport.'
 }
 foreach ($file in @((Join-Path $privateRoot 'missing.url'), $privateRoot, 'relative.url', ($valid + ':stream'))) {
+    Assert-True (-not [CreWindowsNotification.Sender]::IsConfigured($file, $excluded)) 'Configuration validation must reject missing/nonregular/relative/alternate-stream inputs.'
     Assert-True ([CreWindowsNotification.Sender]::Send($file, $excluded, $curl, $payload).Reason -ceq 'private_endpoint_rejected') 'Missing, nonregular, relative or alternate-stream endpoint must be rejected.'
 }
 $gitDirectory = Join-Path $privateRoot 'repo'
@@ -89,6 +93,22 @@ Assert-True ($errors.Count -eq 0) 'Launcher must parse.'
 $admission = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-CreAdmission' }, $true))[0]
 $readiness = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-CreLocalApi' }, $true))[0]
 $hostExecutable = (Get-Process -Id $PID).Path
+# The user-facing pipeline check uses the same helper, with a nonzero exit for
+# missing/empty/unsafe configuration. All credentials remain synthetic here.
+$configScript = Join-Path $PSScriptRoot 'Test-CreNotificationConfig.ps1'
+foreach ($configCase in @('valid','missing','empty','unsafe','multiline','oversize')) {
+    $configFile = Join-Path $privateRoot ($configCase + '.url')
+    $configOut = Join-Path $ProofDirectory ($configCase + '.config.stdout')
+    $configErr = Join-Path $ProofDirectory ($configCase + '.config.stderr')
+    $checked = [CreWindowsCapture.Capture]::Run($hostExecutable,
+        @('-NoProfile','-File',$configScript,'-AlertWebhookFile',$configFile), $configOut, $configErr, $null)
+    $configured = $configCase -eq 'valid'
+    Assert-True (-not $checked.Failed -and $checked.NativeExitCode -eq $(if ($configured) {0} else {1})) 'Configuration command must return a truthful exit code without transport.'
+    $output = [IO.File]::ReadAllText($configOut)
+    $configRecord = $output | ConvertFrom-Json
+    Assert-True ($configRecord.configured -eq $configured -and -not $configRecord.networkCalled -and -not ($output + [IO.File]::ReadAllText($configErr)).Contains('SECRET_CANARY')) 'Configuration output must contain only redacted validity and no network or credential data.'
+}
+Assert-True (@([IO.File]::ReadAllLines($curl + '.calls.jsonl')).Count -eq 1) 'Configuration commands must not invoke the synthetic transport.'
 foreach ($case in @('success', 'native-failed', 'notification-failed', 'bad-endpoint', 'capture-failed', 'denied', 'telemetry-error', 'missing-wsl', 'start-failed', 'initial-audit-error', 'terminal-audit-error', 'check-only', 'check-denied', 'check-error')) {
     $caseRoot = Join-Path $ProofDirectory $case; $caseWindows = Join-Path $caseRoot 'windows'
     New-Item -ItemType Directory -Path $caseWindows -Force | Out-Null

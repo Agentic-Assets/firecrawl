@@ -298,6 +298,14 @@ try {
     if ($NotificationMode -eq 'StartFinish' -and -not $AlertWebhookFile) {
         throw 'Lifecycle notification requires a private webhook-file reference.'
     }
+    if ($NotificationMode -eq 'StartFinish') {
+        & (Join-Path $PSScriptRoot 'Test-CreNotificationConfig.ps1') -AlertWebhookFile $AlertWebhookFile -Quiet
+        $record['notificationConfig'] = [ordered]@{ configured=($LASTEXITCODE -eq 0); networkCalled=$false }
+        if (-not $record.notificationConfig.configured) {
+            $record.status = 'notification_config_refused_no_dispatch'
+            throw 'Private notification configuration is invalid.'
+        }
+    }
     Set-CreNotification $record $basename 0 -Phase Start
     $record.status = 'local_api_readiness_pending'
     Write-CreAudit $auditPath $record
@@ -383,6 +391,8 @@ try {
     # Fixed diagnostics: never dump child argv, environment or exception text.
     if ($record.status -eq 'local_api_not_ready_no_dispatch') {
         Write-Error 'Local Firecrawl API was not ready within the startup budget; no Linux work was dispatched.' -ErrorAction Continue
+    } elseif ($record.status -eq 'notification_config_refused_no_dispatch') {
+        Write-Error 'Private Windows notification configuration is invalid; no Linux work was dispatched.' -ErrorAction Continue
     } else {
         $record.status = 'windows_launcher_failed_linux_settlement_unverified'
         Write-Error 'Windows admission or launcher failed; inspect the audit and Linux recovery state.' -ErrorAction Continue

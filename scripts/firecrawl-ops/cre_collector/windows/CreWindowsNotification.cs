@@ -117,6 +117,12 @@ namespace CreWindowsNotification {
         public static string EscapeConfig(string value) {
             return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
         }
+        // Configuration only: reuse the exact handle/ACL/format checks without
+        // returning the secret or starting any transport.
+        public static bool IsConfigured(string secretFile, string excludedRoot) {
+            try { ReadEndpoint(secretFile, excludedRoot); return true; }
+            catch { return false; }
+        }
         public static NotificationResult Send(string secretFile, string excludedRoot, string executable, string payload) {
             NotificationResult result = new NotificationResult();
             if (String.IsNullOrEmpty(secretFile)) { result.Status = "not_configured"; result.Reason = "not_configured"; return result; }

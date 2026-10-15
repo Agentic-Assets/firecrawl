@@ -54,6 +54,7 @@ foreach ($case in $cases) {
     [void](New-Item -ItemType Directory -Path $windows -Force)
     [IO.File]::Copy($notification,(Join-Path $windows 'CreWindowsNotification.cs'))
     [IO.File]::Copy($capture,(Join-Path $windows 'CreNativeCapture.cs'))
+    [IO.File]::Copy((Join-Path $PSScriptRoot 'Test-CreNotificationConfig.ps1'),(Join-Path $windows 'Test-CreNotificationConfig.ps1'))
     $fakeCurl=Join-Path $privateRoot ($case+'-curl.exe')
     if ($case -eq 'notification-failed') {
         $folder=Join-Path $privateRoot $case; [void](New-Item -ItemType Directory -Path $folder)
@@ -94,7 +95,7 @@ foreach ($case in $cases) {
     $calls=@(if([IO.File]::Exists($fakeCurl+'.calls.jsonl')){[IO.File]::ReadAllLines($fakeCurl+'.calls.jsonl')|ForEach-Object{$_|ConvertFrom-Json}})
     $expected=if($case -in @('bad-endpoint','invalid-mode','unconfigured','check-only','check-denied','check-error','default-success')){0}elseif($case -in @('invalid-scope','initial-audit-error')){1}else{2}
     Assert-Cre ($calls.Count -eq $expected) "$case must attempt each eligible phase once."
-    $exit=if($case -in @('success','notification-failed','bad-endpoint','notification-audit-error','run-conflict','check-only','default-success')){0}elseif($case -eq 'native-failed'){23}elseif($case -eq 'check-denied'){75}else{1}
+    $exit=if($case -in @('success','notification-failed','notification-audit-error','run-conflict','check-only','default-success')){0}elseif($case -eq 'native-failed'){23}elseif($case -eq 'check-denied'){75}else{1}
     Assert-Cre ($execution.NativeExitCode -eq $exit) "$case notification must preserve the original operation exit."
     foreach($call in $calls){Assert-Cre (-not $call.secretArg -and $call.hasUrl -and $call.hasData) "$case secret/data must use stdin exclusively."}
     $events=@(if([IO.File]::Exists($eventFile)){[IO.File]::ReadAllLines($eventFile)})
@@ -116,6 +117,10 @@ foreach ($case in $cases) {
         Assert-Cre ($audits.Count -eq 1) "$case must retain one attempt audit."
         $json=[IO.File]::ReadAllText($audits[0].FullName); $record=$json|ConvertFrom-Json
         Assert-Cre (-not $json.Contains('SECRET_CANARY') -and $record.linuxSettlement -ceq 'unverified') "$case audit must exclude secrets and preserve Linux uncertainty."
+        if($case -eq 'bad-endpoint'){
+            Assert-Cre ($record.status -ceq 'notification_config_refused_no_dispatch' -and $record.dispatch -ceq 'not_attempted' -and -not $record.notificationConfig.configured -and -not $record.notificationConfig.networkCalled) 'Invalid StartFinish configuration must fail before readiness and Linux dispatch.'
+            Assert-Cre ($events -notcontains 'ready' -and $events -notcontains 'admit' -and $record.notificationStart.Status -ceq 'not_attempted') 'Rejected configuration must not claim a start or sample resources.'
+        }
         if($expected -eq 2 -and $case -notin @('notification-audit-error','persistent-audit-error')){
             $status=if($case -eq 'notification-failed'){'failed'}else{'http_accepted'}
             Assert-Cre ($record.notificationStart.Status -ceq $status -and $record.notification.Status -ceq $status) "$case must independently persist both transport outcomes."

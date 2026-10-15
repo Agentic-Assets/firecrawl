@@ -209,6 +209,10 @@ $taskXml = @"
 "@
 $taskPath = '\Agentic Assets\CRE\'
 if (-not $Register) { Write-Output $taskXml; return }
+if ($NotificationMode -eq 'StartFinish') {
+    & (Join-Path $PSScriptRoot 'Test-CreNotificationConfig.ps1') -AlertWebhookFile $AlertWebhookFile -Quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Private notification configuration is invalid; no task registered.' }
+}
 
 # A failed enumeration is not evidence that the task does not exist.
 $existing = @(Get-ScheduledTask -ErrorAction Stop |

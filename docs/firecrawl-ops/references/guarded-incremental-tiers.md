@@ -238,7 +238,15 @@ a timeout.
 To request a concise start and terminal success/failure pair, add
 `-NotificationMode StartFinish` alongside the private file reference. The
 scheduled-task installer accepts and forwards both options; its preview/action
-contains only the file path. `StartFinish` requires a nonempty file reference.
+contains only the file path. `StartFinish` requires a valid private endpoint
+file, checked before actual task registration and before launcher readiness or
+Linux dispatch. A missing, empty, malformed or unsafe file refuses that
+configured invocation. Preview and `CheckOnly` remain secret-free. Use
+`windows/Test-CreNotificationConfig.ps1` from the collector directory for an
+explicit per-machine no-network check; exit `0` proves valid local configuration,
+not endpoint authorization or Slack delivery. The
+[Slack setup guide](../../../scripts/firecrawl-ops/cre_collector/slack-setup.md)
+records the default file location and exact command.
 The start message identifies a **Windows attempt**, after option validation and
 the initial durable audit, before API readiness and fresh Windows admission.
 It explicitly says Linux dispatch has not been attempted. A later readiness or

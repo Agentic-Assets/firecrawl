@@ -115,6 +115,22 @@ $creNotificationArgs['NotificationMode'] = 'StartFinish'
 $creNotificationAction = Get-CreXmlValue $creNotificationDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
 Assert-Cre ($creNotificationAction.EndsWith(('"-AlertWebhookFile" "'+$creNotificationPath+'" "-NotificationMode" "StartFinish"'))) 'Private reference and lifecycle mode must survive XML/argument serialization exactly.'
 Assert-Cre ($global:Cre4265Fixture.Calls.Count -eq 0 -and $creNotificationAction -notmatch 'https://') 'Notification preview must not read secrets or enumerate tasks.'
+$creNotificationRefused=$false
+try { & $creInstaller @creNotificationArgs -Register | Out-Null } catch { $creNotificationRefused=$true }
+Assert-Cre ($creNotificationRefused -and $global:Cre4265Fixture.Calls.Count -eq 0) 'A missing StartFinish credential must fail before registration or scheduler enumeration.'
+$creSecretDirectory=Join-Path ([IO.Path]::GetTempPath()) ('cre-task-config-'+[Guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $creSecretDirectory)
+$creSecretFile=Join-Path $creSecretDirectory 'synthetic.url'
+[IO.File]::WriteAllText($creSecretFile,'https://example.invalid/SECRET_CANARY',(New-Object Text.UTF8Encoding($false)))
+$creSecretAcl=Microsoft.PowerShell.Utility\New-Object Security.AccessControl.FileSecurity
+$creSecretAcl.SetSecurityDescriptorSddlForm("O:${creSid}D:P(A;;FA;;;${creSid})(A;;FA;;;SY)(A;;FA;;;BA)")
+Set-Acl -LiteralPath $creSecretFile -AclObject $creSecretAcl
+$creValidNotificationArgs=$creNotificationArgs.Clone()
+$creValidNotificationArgs['AlertWebhookFile']=$creSecretFile
+$creValidNotificationResult=(& $creInstaller @creValidNotificationArgs -Register) -join [Environment]::NewLine | ConvertFrom-Json
+Assert-Cre (-not $creValidNotificationResult.enabled -and $global:Cre4265Fixture.Calls.Contains('register')) 'A valid private StartFinish file must allow only the existing mocked disabled registration.'
+Assert-Cre (-not $global:Cre4265Fixture.Xml.Contains('SECRET_CANARY')) 'Even validated credentials must never enter task XML.'
+$global:Cre4265Fixture.Calls.Clear()
 # Exercise actual Windows argv decoding rather than only matching XML text.
 Add-Type -TypeDefinition @'
 using System;
