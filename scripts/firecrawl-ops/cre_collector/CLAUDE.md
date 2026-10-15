@@ -45,6 +45,9 @@ checkpoint-manifest readback. Dated docs are operational history.
 4. Module docs (each has its own `CLAUDE.md`): `sources/`, `lib/`, `launchd/`, `tests/`
 5. `../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` when touching
    `--monitor`, 007 change-tracking tables, `cre_monitor.py`, or `cre_gate.py`
+6. [slack-setup.md](slack-setup.md) for the CRE Slack channel, private webhook
+   file, no-network configuration check and delivery verification. Root Docker
+   `.env` does not configure native Windows task notifications.
 
 ## Files
 

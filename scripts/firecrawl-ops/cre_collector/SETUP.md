@@ -5,6 +5,10 @@ checkouts and dependencies belong on ext4, separate from the native Windows
 checkout. `cre_setup.sh --check` checks prerequisites; setup success does not
 authorize production collection, database writes, scheduling or writer cutover.
 
+For optional run notifications, use [Slack setup](slack-setup.md). CRE webhook
+and database files are private per-host configuration, separate from Docker's
+root `.env`; never commit their contents.
+
 The pipeline has two halves:
 
 - **Heavy half** (`collect.ts`, Node/tsx): scrapes brokerage sites through the

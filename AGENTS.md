@@ -117,6 +117,11 @@ This fork adds a self-hosted operations layer on top of upstream Firecrawl. It i
 - `firecrawl-ops` — runtime health, Docker, model routing, endpoint selection
 - `firecrawl-local-api` — calling the local API at `http://localhost:3002`
 
+CRE Slack notifications and private webhook setup:
+[`scripts/firecrawl-ops/cre_collector/slack-setup.md`](scripts/firecrawl-ops/cre_collector/slack-setup.md).
+Keep only credential-file references in the repository; the guide owns the
+channel, local configuration check and delivery verification procedure.
+
 Default model routing: Vercel AI Gateway `gateway` profile with
 `deepseek/deepseek-v4-flash-0731` and a one-time
 `deepseek/deepseek-v4-pro-0813` fallback only for missing, schema-invalid, or

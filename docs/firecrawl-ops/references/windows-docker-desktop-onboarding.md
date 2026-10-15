@@ -29,7 +29,25 @@ process/resource measurements before attributing load to a builder entry.
 
 Docker's [WSL guidance](https://docs.docker.com/desktop/features/wsl/) and Microsoft's [WSL configuration reference](https://learn.microsoft.com/en-us/windows/wsl/wsl-config) explain the backend and resource limits. For a 24-logical-processor, approximately 128 GB RAM workstation, an initial ceiling of 8 processors, 32 GB RAM, and 2 GB swap leaves room for other applications. Smaller computers need smaller limits. These are starting limits, not a benchmarked throughput target or permanently reserved memory.
 
+For this desktop's ongoing CRE workload, the host ceiling was subsequently
+raised to 12 processors, 48 GB RAM and 4 GB swap. The October 15 controlled stop/start
+verified those effective VM limits and recovered the same five containers,
+followed by a real non-AI scrape. API/browser container limits stayed unchanged.
+This adds capacity headroom; it does not establish a throughput improvement or
+prove recovery after a Windows reboot. Verify current limits rather than
+treating a dated observation as live state.
+
 WSL resource limits belong in `%USERPROFILE%\.wslconfig`, not a tracked repository file. They apply to all WSL 2 distributions. Changing them requires stopping Docker, shutting down WSL, and restarting Docker; first check for other running WSL work. Leave automatic Docker startup off if the stack is only needed during interactive work. The shared Compose resource limits and bounded log rotation remain unchanged.
+
+Keep Linux pipeline code, `node_modules`, caches, output and Linux test clones
+inside Ubuntu's filesystem, such as `/home/<user>/code/firecrawl`, rather than
+running file-heavy Linux work against `/mnt/c/...`. Keep native PowerShell
+editing and launchers in the Windows checkout. This follows Microsoft's
+[filesystem performance guidance](https://learn.microsoft.com/en-us/windows/wsl/filesystems#file-storage-and-performance-across-file-systems).
+Both locations are on this Windows PC. Deploy reviewed Git commits between the
+checkouts; do not share `node_modules` or overwrite a running checkout with a
+directory copy. A few explicit cross-filesystem handoff files do not require
+moving the production runtime onto NTFS.
 
 With WSL, [Docker Resource Saver](https://docs.docker.com/desktop/use-desktop/resource-saver/)
 does not stop the shared Linux VM or reclaim its memory. WSL integration can

@@ -48,6 +48,10 @@ bounded inventory/enrichment trials, see the
 [guarded incremental guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
 Scheduling and full-source acceptance remain separately gated.
 
+For concise scheduled-run messages, see [Slack setup](slack-setup.md). It owns
+the private webhook-file format, local configuration check and exact-channel
+delivery verification; it does not authorize or enable a schedule.
+
 Strict Avison generations use validated direct HTTP detail reads because the
 same public static property pages can exceed the local browser-render timeout.
 The direct transport pins validated public DNS addresses, converts the current
