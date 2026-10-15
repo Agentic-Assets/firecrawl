@@ -332,18 +332,93 @@ stale or malformed evidence, ownership changes and permission failures refuse
 the request. Keep the direct foreground Ctrl+C procedure for Mac; Task Scheduler
 End and forced `wsl.exe` termination remain insufficient settlement evidence.
 
-## Scheduling remains a separate acceptance step
+## Windows Task Scheduler installation and acceptance
 
-The proposed deterministic surface is Windows Task Scheduler calling this
-foreground launcher, with `IgnoreNew`, the same signed-in user as Docker
-Desktop, reviewed wake/catchup behavior, visible history and failure controls.
-No continuously running ChatGPT monitor is needed for deterministic work.
-Do not schedule the legacy monitor/enrich/weekly shell commands as a shortcut.
-Weekly completeness stays on the guarded checkpoint-series procedure.
+Before dispatch, the launcher waits at most 90 seconds for an anonymous HTTP
+200 response from `http://127.0.0.1:3002/`, with requests capped at two seconds.
+It then takes a fresh Windows CPU/memory admission sample. This handles an API
+startup race but never starts or restarts Docker. Failure records
+`local_api_not_ready_no_dispatch` and starts no Linux work. `-CheckOnly` remains
+a resource-telemetry check and makes no API request.
 
-Exact surface/cadence, registry approval, actual scheduled cancellation/login
-tests and supervised additive readback remain prerequisites on AGENTIC-3752
-and AGENTIC-4141. The Codex weekly proposal remains a separately controlled
-paused alternative. Full51-source acceptance remains AGENTIC-2902; a trial
-does not resolve missing baselines, historical quality findings or a source's
-legitimate low inventory count.
+The opt-in installer from [AGENTIC-4265](https://linear.app/agenticassets/issue/AGENTIC-4265)
+creates a visible task under `\Agentic Assets\CRE\`, calling the existing
+foreground launcher. It uses the current signed-in user's SID, an interactive
+token and least privilege, with `IgnoreNew`, missed-start catchup, no wake and
+no hard termination. Linux owns the finite work deadline and settlement;
+Task Scheduler has no competing execution timeout. Docker Desktop and its
+reviewed containers must already be available. The task cannot run while this
+user is logged out, and catchup does not prove Docker or API readiness.
+
+Preview an exact source and reviewed, deployed SHA from PowerShell:
+
+```powershell
+$taskOptions = @{
+    TaskName = 'Interra Refresh'
+    Tier = 'series'
+    Source = 'interra-realty'
+    ExpectedSha = '<full-reviewed-deployed-sha>'
+    WorkDeadlineSeconds = 3600
+    AcknowledgeDatabaseWrites = $true
+    AdmitCurrentInventorySource = 'interra-realty'
+    DailyAt = '08:00,20:00'
+}
+& scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions
+```
+
+Preview starts no task, WSL, provider or database work. `DailyAt` accepts one
+to four distinct local `HH:mm` values in a single comma-separated string.
+Add `WeeklyOn = 'Saturday'` and use, for example, `DailyAt = '03:00'` for a
+weekly task. Each task selects one source, or `all` for a qualified series;
+the Interra admission opt-in requires its exact single source. A schedule does
+not expand source eligibility or remove baseline and quality requirements.
+
+After the source's supervised live pilot, registry approval and scheduling
+acceptance are recorded on AGENTIC-3752, register a disabled task:
+
+```powershell
+& scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions -Register
+```
+
+Adding both `-Register -Enable` instead enables that newly created task only
+after its disabled definition passes readback. Registration is create-only:
+any existing task collision refuses rather than replacing a definition. To
+change a pinned revision or cadence, disable the exact old task, settle any
+active Linux work, inspect and unregister that exact task, then preview and
+register its replacement. Never auto-fetch/pull code from a scheduled action.
+
+Inspect the actual definition, status and last result from Task Scheduler or
+PowerShell:
+
+```powershell
+Get-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh'
+Export-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh'
+Get-ScheduledTaskInfo -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh'
+Disable-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh'
+```
+
+Disabling prevents future launches. For active work, correlate the task run
+with `out/windows-launcher/` audit and stream paths, then use the exact
+`Stop-CreGuardedTier.ps1` run ID or `Stop-CreCheckpointSeries.ps1` series
+directory and invocation ID described above. Task Scheduler **End**, a killed
+PowerShell process or a terminated `wsl.exe` does not establish Linux process
+settlement or database rollback. Optional failure notifications retain the
+separate private-webhook contract above; Task Scheduler history alone is not
+an external alert.
+
+Run `Test-CreScheduledTask.ps1` in a fresh PowerShell 7 `-NoProfile` process for
+offline definition, quoting and mutation-boundary tests. Its explicit
+`-NativeFixture` switch additionally creates and removes one GUID-named local
+synthetic task, proving native disabled readback, actual exit propagation and
+`IgnoreNew`; it never runs CRE, WSL or a provider. This fixture is not a
+production pipeline, login, reboot or notification acceptance test.
+
+Actual scheduled cancellation, startup/login recovery and supervised additive
+readback remain acceptance requirements on AGENTIC-3752 and AGENTIC-4141.
+No continuously running ChatGPT monitor is needed. Do not schedule the legacy
+monitor/enrich/weekly shell commands as a shortcut; completeness uses the
+guarded checkpoint-series procedure. The Codex weekly proposal remains a
+separately controlled paused alternative. Full51-source acceptance remains
+AGENTIC-2902; an installed task does not resolve missing baselines, historical
+quality findings or a source's legitimate low inventory count. This Windows
+installer makes no Mac scheduler or configuration change.

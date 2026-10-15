@@ -38,6 +38,7 @@ $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput($launcherText, [ref]$tokens, [ref]$errors)
 Assert-True ($errors.Count -eq 0) 'Launcher must parse.'
 $admission = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-CreAdmission' }, $true))[0]
+$readiness = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-CreLocalApi' }, $true))[0]
 $sha = 'a' * 40
 $series = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '3600', '-AcknowledgeDatabaseWrites')
 $quotedRepo = '/home/synthetic space/quote''s "directory"/firecrawl'
@@ -65,6 +66,7 @@ $cases = @(
     @{ Name = 'enrich'; Args = @('-Tier', 'enrich', '-Source', 'hanley', '-ExpectedSha', $sha, '-Apply', '-Batch', '3', '-DeadlineSeconds', '90'); Exit = 0; Dispatch = $true },
     @{ Name = 'check-only'; Args = @('-Tier', 'series', '-CheckOnly', '-AlertWebhookFile', 'MISSING-SECRET-CANARY'); Exit = 0; Dispatch = $false; Check = $true },
     @{ Name = 'denied'; Args = $series; Exit = 1; Dispatch = $false; Denied = $true },
+    @{ Name = 'readiness-unavailable'; Args = $series; Exit = 1; Dispatch = $false; ReadinessDenied = $true },
     @{ Name = 'bad-budget'; Args = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '29', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'too-large-budget'; Args = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '86401', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'source-list'; Args = @('-Tier', 'series', '-Source', 'jll,hanley', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
@@ -77,12 +79,17 @@ foreach ($case in $cases) {
     [IO.File]::Copy((Join-Path $PSScriptRoot 'CreNativeCapture.cs'), (Join-Path $caseWindows 'CreNativeCapture.cs'))
     $argvPath = Join-Path $caseRoot 'argv.bin'
     $resolverPath = Join-Path $caseRoot 'resolved'
+    $readinessPath = Join-Path $caseRoot 'readiness'
+    $admissionPath = Join-Path $caseRoot 'admission'
     $env:CRE_TEST_ARGV = $argvPath
     $env:CRE_TEST_EXIT = if ($case.ContainsKey('Native')) { $case.Native } else { '0' }
     $admitted = if ($case.ContainsKey('Denied')) { '$false' } else { '$true' }
-    $stub = "function Get-CreAdmission { return [ordered]@{ admitted = $admitted; scope = 'synthetic' } }"
+    $stub = "function Get-CreAdmission { if (-not `$CheckOnly -and -not [IO.File]::Exists('" + $readinessPath.Replace("'", "''") + "')) { throw 'Readiness must precede fresh admission' }; [IO.File]::WriteAllText('" + $admissionPath.Replace("'", "''") + "','sampled'); return [ordered]@{ admitted = $admitted; scope = 'synthetic' } }"
     $stub += "`nfunction Get-Command { param(`$Name, `$CommandType, `$ErrorAction) if (`$Name -ne 'wsl.exe') { throw 'Unexpected executable resolution' }; [IO.File]::WriteAllText('" + $resolverPath.Replace("'", "''") + "','resolved'); [pscustomobject]@{ Source='" + $fixtureExe.Replace("'", "''") + "' } }"
     $source = $launcherText.Substring(0, $admission.Extent.StartOffset) + $stub + $launcherText.Substring($admission.Extent.EndOffset)
+    $ready = if ($case.ContainsKey('ReadinessDenied')) { '$false' } else { '$true' }
+    $readyStub = "function Wait-CreLocalApi { [IO.File]::WriteAllText('" + $readinessPath.Replace("'", "''") + "','probed'); return [ordered]@{ ready = $ready; scope = 'synthetic' } }"
+    $source = $source.Replace($readiness.Extent.Text, $readyStub)
     $scriptFile = Join-Path $caseWindows 'Invoke-CreGuardedTier.ps1'
     [IO.File]::WriteAllText($scriptFile, $source, (New-Object Text.UTF8Encoding($true)))
     $result = [CreWindowsCapture.Capture]::Run($hostExecutable, (@('-NoProfile', '-NonInteractive', '-File', $scriptFile) + $case.Args), (Join-Path $caseRoot 'stdout'), (Join-Path $caseRoot 'stderr'), $null)
@@ -91,8 +98,18 @@ foreach ($case in $cases) {
     if (-not $case.Dispatch) {
         Assert-True (-not [IO.File]::Exists($resolverPath)) ("Refusal/CheckOnly must precede WSL resolution: " + $case.Name)
         if ($case.ContainsKey('Check')) { Assert-True (-not [IO.Directory]::Exists((Join-Path $caseRoot 'out'))) 'CheckOnly writes no audit/log files.' }
+        if ($case.ContainsKey('Check')) { Assert-True (-not [IO.File]::Exists($readinessPath)) 'CheckOnly must never probe the API.' }
+        if (-not $case.ContainsKey('Check') -and -not $case.ContainsKey('Denied') -and -not $case.ContainsKey('ReadinessDenied')) {
+            Assert-True (-not [IO.File]::Exists($readinessPath) -and -not [IO.File]::Exists($admissionPath)) 'Invalid options must refuse before readiness or resource sampling.'
+        }
+        if ($case.ContainsKey('ReadinessDenied')) {
+            Assert-True (-not [IO.File]::Exists($admissionPath)) 'Unavailable API must refuse before CPU sampling.'
+            $failedAudit = [IO.File]::ReadAllText(@(Get-ChildItem (Join-Path $caseRoot 'out/windows-launcher') -Filter '*.json')[0].FullName) | ConvertFrom-Json
+            Assert-True ($failedAudit.status -ceq 'local_api_not_ready_no_dispatch' -and $failedAudit.dispatch -ceq 'not_attempted' -and -not $failedAudit.localApiReadiness.ready -and $null -eq $failedAudit.nativeExitCode) 'Readiness refusal must leave a clear no-dispatch audit.'
+        }
         continue
     }
+    Assert-True ([IO.File]::Exists($readinessPath) -and [IO.File]::Exists($admissionPath)) 'Dispatch requires readiness followed by fresh resource admission.'
     $reader = New-Object IO.BinaryReader([IO.File]::OpenRead($argvPath), (New-Object Text.UTF8Encoding($false)))
     try { $count = $reader.ReadInt32(); $forwarded = @(for ($i = 0; $i -lt $count; $i++) { $reader.ReadString() }) } finally { $reader.Dispose() }
     Assert-True (($forwarded[0..5] -join '|') -ceq '-d|Ubuntu-24.04|-u|cayman|--exec|env') 'Fixed WSL executable boundary must remain separate argv.'
