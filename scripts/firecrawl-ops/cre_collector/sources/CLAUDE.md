@@ -36,11 +36,12 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 | colliers-main | `main:` + `usa#####` | Monitor: sale pass only; full pass filters tx after enrich |
 | jll | detail `property.id` (numeric) | URL slug ≠ id; monitor disabled |
 | jll-investor | `investor:` + Salesforce `listing.id` | Sitemap slug ≠ id; US filter post-detail; no coords |
-| cushman-wakefield | API `row.id` | Monitor omits real prices (detail-only) |
+| cushman-wakefield | `url:v1:` + first 32 hex characters of normalized public-URL SHA-256 | Provider GUID is observational, not canonical identity; strict inventory preserves detail-only fields and children |
 | transwestern | `PageUrl` slug | Invalid rows fail closed. The provider-published `-` slug requires fresh unique official-sitemap membership and an exact primary name/full-address match, including in monitor mode. |
 | newmark | Algolia `slug` | Algolia 1000-hit cap per query; state+type sub-split |
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
-| avison-young | SharpLaunch `row.id` | **Full runs skip detail** unless `AVISON_YOUNG_DETAIL_LIMIT` set |
+| avison-young | SharpLaunch `row.id` | Strict refresh validates every selected property detail; only ordinary unlimited runs default to no detail enrichment |
+| interra-realty | Numeric WordPress `ID` | Legacy `listing/<slug>` records require an explicitly reviewed identity transition; additive ingestion refuses exact-URL cross-identity collisions |
 | nai-global | `infabode:{id}` (prefixed in adapter) | Bulk public `publicPosts` detail fields; full and monitor share the conservative `FOR_SALE_ON_MARKET` source-eligibility rule. Do not activate provider status. |
 | Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
@@ -90,6 +91,21 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
   exact typed inventory; registry, ingest, checkpoint, SQL, and enrichment
   parity tests prevent partial admission. Offline proof does not replace a
   current live canary and guarded database readback for each source.
+
+## Kidder Mathews complete inventory
+
+Strict Kidder runs request one `startIndex=0, numResults=8000` response from
+`https://services.kidder.com/search/public/listing`, matching the public
+property-search frontend's bulk request. This avoids unsorted 50-row page
+boundaries; it does not deduplicate provider rows. The independent provider
+total, returned count and unique `listing_key` set must agree within the
+8000-row ceiling. A provider cap, duplicate identity, malformed body or larger
+inventory fails closed. The transport disables redirects and bounds the whole
+request/body read to 30 seconds and decoded content to 32 MiB. Generation-bound
+caching preserves the actual observation clock, and non-strict pagination is
+unchanged. Provider evidence and the guarded live acceptance are tracked by
+[AGENTIC-4269](https://linear.app/agenticassets/issue/AGENTIC-4269); transport
+success alone does not prove source-gate or database acceptance.
 
 ## Key Env Vars (by source)
 
@@ -146,7 +162,8 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 ```bash
 npx tsx collect.ts --source=<key> --transaction=both --max-items=6 --out=/tmp/probe.json
 python3 cre_ingest.py --in /tmp/probe.json --dry-run
-# Avison full detail on unlimited run: AVISON_YOUNG_DETAIL_LIMIT=50 ...
+# Ordinary unlimited Avison enrichment: AVISON_YOUNG_DETAIL_LIMIT=50 ...
+# Strict Avison refresh requires all selected details; this limit cannot cap it.
 # NAI full inventory: --page-cap=400
 # Lee cache assembly: BUILDOUT_ASSEMBLE_FROM_CACHE=1 (after pages 0-332 cached)
 ```

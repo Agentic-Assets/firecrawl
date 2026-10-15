@@ -81,12 +81,13 @@ foreach ($mode in @('204', '302', '500', '28', 'noise', 'extra', 'flood')) {
     Assert-True ($result.Status -ceq $status -and $result.NativeSettlement -ceq 'exited') 'Only exact three-digit2xx and native0 may be HTTP accepted.'
 }
 
-# Full launcher body; only telemetry and executable resolution are offline seams.
+# Full launcher body; readiness, telemetry and executable resolution are offline seams.
 $launcherText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Invoke-CreGuardedTier.ps1'))
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput($launcherText, [ref]$tokens, [ref]$errors)
 Assert-True ($errors.Count -eq 0) 'Launcher must parse.'
 $admission = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-CreAdmission' }, $true))[0]
+$readiness = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-CreLocalApi' }, $true))[0]
 $hostExecutable = (Get-Process -Id $PID).Path
 foreach ($case in @('success', 'native-failed', 'notification-failed', 'bad-endpoint', 'capture-failed', 'denied', 'telemetry-error', 'missing-wsl', 'start-failed', 'initial-audit-error', 'terminal-audit-error', 'check-only', 'check-denied', 'check-error')) {
     $caseRoot = Join-Path $ProofDirectory $case; $caseWindows = Join-Path $caseRoot 'windows'
@@ -110,8 +111,9 @@ foreach ($case in @('success', 'native-failed', 'notification-failed', 'bad-endp
     $stub += "`nfunction Get-Command { param(`$Name, `$CommandType, `$ErrorAction) if (`$Name -eq 'curl.exe') { [IO.File]::WriteAllText('$resolverMarker','resolved'); [pscustomobject]@{Source='" + $fakeCurl.Replace("'", "''") + "'} } else { [pscustomobject]@{Source='" + $selectedWorker.Replace("'", "''") + "'} } }"
     if ($case -eq 'missing-wsl') { $stub += "`nfunction Get-Command { param(`$Name, `$CommandType, `$ErrorAction) if (`$Name -eq 'curl.exe') { [pscustomobject]@{Source='" + $fakeCurl.Replace("'", "''") + "'} } else { throw 'synthetic missing WSL' } }" }
     $source = $launcherText.Substring(0, $admission.Extent.StartOffset) + $stub + $launcherText.Substring($admission.Extent.EndOffset)
+    $source = $source.Replace($readiness.Extent.Text, 'function Wait-CreLocalApi { return [ordered]@{ ready = $true; scope = "synthetic" } }')
     if ($case -in @('initial-audit-error', 'terminal-audit-error')) {
-        $ordinal = if ($case -eq 'initial-audit-error') { 1 } else { 3 }
+        $ordinal = if ($case -eq 'initial-audit-error') { 1 } else { 4 }
         $source = $source.Replace('function Write-CreAudit {', 'function Write-CreAuditReal {')
         $wrapper = "`n`$script:auditCalls=0`nfunction Write-CreAudit { param([string]`$Path,[System.Collections.IDictionary]`$Record) `$script:auditCalls++; if (`$script:auditCalls -eq $ordinal) { throw 'synthetic audit fault' }; Write-CreAuditReal `$Path `$Record }`n"
         $source = $source.Replace('if ($CheckOnly) {', $wrapper + 'if ($CheckOnly) {')

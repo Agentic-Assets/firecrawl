@@ -10,6 +10,13 @@ import { CacheDisposition, SourceResult, Tx } from "../types.js";
 
 const KIDDER_API = "https://services.kidder.com/search/public/listing";
 const KIDDER_PAGE_SIZE = 50;
+// The official property-search frontend requests 8000 rows from offset zero
+// and sorts them locally. Strict runs use that complete response, avoiding
+// unstable boundaries between unsorted 50-row pages. Never deduplicate a feed
+// or accept a provider total beyond this bound as complete.
+export const KIDDER_STRICT_MAX_RESULTS = 8000;
+export const KIDDER_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+export const KIDDER_INVENTORY_TIMEOUT_MS = 30_000;
 
 export type KidderInventoryResult = {
   items: any[];
@@ -112,6 +119,84 @@ export function assertKidderInventoryReconciled(
   }
 }
 
+export function assertKidderCompleteInventory(data: any): void {
+  if (!data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.results)) {
+    throw new Error("Kidder complete inventory requires an object with a results array");
+  }
+  const total = data.totalResultCount;
+  if (
+    typeof total !== "number" || !Number.isSafeInteger(total) || total < 0
+    || total > KIDDER_STRICT_MAX_RESULTS
+  ) {
+    throw new Error("Kidder complete inventory requires an integer total within the 8000-row ceiling");
+  }
+  if (data.startIndex !== 0 || data.currentResultCount !== total || data.results.length !== total) {
+    throw new Error("Kidder complete inventory must cover the independent provider total in one response");
+  }
+  assertKidderInventoryReconciled(data.results, total, true);
+}
+
+export async function kidderFetchCompleteInventory(
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = KIDDER_INVENTORY_TIMEOUT_MS,
+  maxBytes = KIDDER_MAX_RESPONSE_BYTES
+): Promise<any> {
+  if (
+    !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > KIDDER_INVENTORY_TIMEOUT_MS
+    || !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > KIDDER_MAX_RESPONSE_BYTES
+  ) {
+    throw new Error("Kidder complete inventory transport bounds are invalid");
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const response = await fetchImpl(KIDDER_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json;charset=UTF-8",
+        "User-Agent": "Mozilla/5.0",
+        Origin: "https://www.kidder.com",
+        "Cache-Control": "no-cache",
+      },
+      body: JSON.stringify({
+        startIndex: 0, numResults: KIDDER_STRICT_MAX_RESULTS, includeAggregations: false,
+      }),
+      cache: "no-store",
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error("Kidder complete inventory HTTP " + response.status);
+    if (Number(response.headers.get("content-length")) > maxBytes) {
+      throw new Error("Kidder complete inventory exceeds " + maxBytes + " bytes");
+    }
+    if (!response.body) throw new Error("Kidder complete inventory response body is missing");
+    reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let bytes = 0;
+    let text = "";
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maxBytes) throw new Error("Kidder complete inventory exceeds " + maxBytes + " bytes");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    const data = JSON.parse(text);
+    assertKidderCompleteInventory(data);
+    return data;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+    if (reader) {
+      // Do not let a stalled cancellation extend the request's work budget.
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+}
+
 function strictGeneration(strict: boolean): string | null {
   const generationId = refreshGenerationId();
   if (strict && !generationId) {
@@ -162,6 +247,18 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
     };
   }
   if (kidderCache) kidderCache = null;
+  if (strict) {
+    const data = await kidderFetchCompleteInventory();
+    kidderCache = {
+      items: data.results,
+      total: data.totalResultCount,
+      truncated: false,
+      inventoryObservedAt: new Date().toISOString(),
+      generationId,
+      strictValidated: true,
+    };
+    return kidderCache;
+  }
   const first = await kidderPost(0, strict);
   const firstPage = assertKidderInventoryPage(first, 0, null, strict);
   const total: number = strict ? firstPage.total : first.totalResultCount ?? 0;

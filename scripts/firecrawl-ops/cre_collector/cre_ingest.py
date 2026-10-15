@@ -4155,6 +4155,50 @@ BEGIN
     END IF;
 END $$;
 
+-- Interra switched from legacy listing/<slug> keys to native WordPress IDs.
+-- Exact URL overlap across those namespaces requires a reviewed identity repair,
+-- not an additive INSERT beside the existing row. Match the validator's exact
+-- source_url/non-soft-deleted scope without guessing aliases or changing IDs.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    SELECT count(*) INTO conflicting_rows
+    FROM _src s
+    JOIN credeals.cre_listings t
+      ON t.brokerage_id = s.brokerage_id
+     AND t.source_url = s.source_url
+     AND t.external_id IS DISTINCT FROM s.external_id
+    WHERE t.deleted_at IS NULL
+      AND jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "interra-realty")'
+      );
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Interra identity repair required for % existing URL collision(s); refusing duplicate growth',
+        conflicting_rows;
+    END IF;
+    -- Also refuse conflicting incoming IDs before either can become an existing
+    -- row. Preserve exact source and brokerage scope; do not invent aliases.
+    WITH incoming_interra AS MATERIALIZED (
+      SELECT s.brokerage_id, s.external_id, s.source_url
+      FROM _src s
+      WHERE jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "interra-realty")'
+      )
+    )
+    SELECT count(*) INTO conflicting_rows
+    FROM incoming_interra s
+    JOIN incoming_interra other
+      ON other.brokerage_id = s.brokerage_id
+     AND other.source_url = s.source_url
+     AND other.external_id IS DISTINCT FROM s.external_id;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Interra incoming inventory contains conflicting identities for the same URL; refusing duplicate growth';
+    END IF;
+END $$;
+
 -- The transaction-wide lifecycle advisory lock above serializes every generated
 -- bulk ingest and reviewed reconciliation. Do not also retain one advisory lock
 -- per identity: a complete high-volume source can exceed PostgreSQL's shared

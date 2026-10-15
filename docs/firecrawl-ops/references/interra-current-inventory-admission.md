@@ -2,6 +2,10 @@ Parent: [AGENTIC-1972](https://linear.app/agenticassets/issue/AGENTIC-1972). Eng
 
 # Interra additive current-inventory admission
 
+Before live use, read the [legacy identity transition procedure](interra-identity-transition.md).
+Complete current provider inventory does not authorize replacing historical IDs
+or accepting duplicate database records.
+
 The explicit checkpoint option `--admit-current-inventory-source interra-realty`
 admits one complete current Interra inventory when its historical baseline is
 absent. It is valid only with `--sources interra-realty --transactions both`,
@@ -62,3 +66,11 @@ with `--sources interra-realty`. The series retains the explicit additive scope
 and accepts only a child with the exact matching opt-in configuration and scope.
 A completed Interra-only series does not publish whole-registry producer health.
 Default runs, other sources and incremental tiers do not inherit the option.
+
+Before listing upsert, ingestion refuses exact source-URL collisions between
+Interra's numeric provider IDs and different existing, non-soft-deleted IDs of
+the same brokerage. Legacy `listing/<slug>` IDs require a separately reviewed
+identity or lifecycle repair; this admission never aliases, merges or retires
+those rows. An absent legacy ID in a numeric-ID feed is not provider-absence
+evidence. The guard runs under the existing transaction-wide lifecycle lock,
+so its failure rolls back the transaction instead of leaving duplicate inserts.

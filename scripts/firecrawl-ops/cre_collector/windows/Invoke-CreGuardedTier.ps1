@@ -110,6 +110,65 @@ function Get-CreAdmission {
     }
 }
 
+function Wait-CreLocalApi {
+    param(
+        [ValidateRange(0.1,90)][double]$BudgetSeconds = 90,
+        [ValidateRange(1,2000)][int]$RequestTimeoutMilliseconds = 2000,
+        [ValidateRange(1,1000)][int]$RetryDelayMilliseconds = 1000,
+        [uri]$Endpoint = 'http://127.0.0.1:3002/'
+    )
+    # Private test parameters permit disposable loopback fixtures. Production
+    # calls this function without overrides; no proxy, redirects or credentials.
+    if ($Endpoint.Scheme -cne 'http' -or $Endpoint.Host -cne '127.0.0.1' -or
+        $Endpoint.UserInfo -or $Endpoint.AbsolutePath -cne '/' -or
+        $Endpoint.Query -or $Endpoint.Fragment) { throw 'Local API probe endpoint is invalid.' }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    Add-Type -AssemblyName System.Net.Http
+    $handler = New-Object Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $false
+    $handler.UseProxy = $false
+    $handler.UseDefaultCredentials = $false
+    $handler.UseCookies = $false
+    $client = New-Object Net.Http.HttpClient($handler)
+    $client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
+    $attempts = 0
+    $lastStatus = $null
+    $ready = $false
+    try {
+        while ($clock.Elapsed.TotalSeconds -lt $BudgetSeconds) {
+            $remainingMs = ($BudgetSeconds - $clock.Elapsed.TotalSeconds) * 1000
+            $timeoutMs = [int][Math]::Max(1, [Math]::Min($RequestTimeoutMilliseconds, $remainingMs))
+            $cancel = New-Object Threading.CancellationTokenSource
+            $request = New-Object Net.Http.HttpRequestMessage([Net.Http.HttpMethod]::Get, $Endpoint)
+            $response = $null
+            $attempts++
+            try {
+                $cancel.CancelAfter($timeoutMs)
+                $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead,
+                    $cancel.Token).GetAwaiter().GetResult()
+                $lastStatus = [int]$response.StatusCode
+                $ready = $lastStatus -eq 200 -and $clock.Elapsed.TotalSeconds -le $BudgetSeconds
+            } catch {
+                # A startup transport failure is retried within the same finite
+                # budget. Never print exception text or inherit proxy auth.
+                $lastStatus = $null
+            } finally {
+                if ($null -ne $response) { $response.Dispose() }
+                $request.Dispose()
+                $cancel.Dispose()
+            }
+            if ($ready) { break }
+            $delayMs = [int][Math]::Min($RetryDelayMilliseconds,
+                [Math]::Max(0, ($BudgetSeconds - $clock.Elapsed.TotalSeconds) * 1000))
+            if ($delayMs -gt 0) { Start-Sleep -Milliseconds $delayMs }
+        }
+    } finally { $client.Dispose(); $handler.Dispose(); $clock.Stop() }
+    return [ordered]@{ ready=$ready; observedAt=[DateTime]::UtcNow.ToString('o');
+        attempts=$attempts; elapsedMilliseconds=[Math]::Round($clock.Elapsed.TotalMilliseconds);
+        budgetSeconds=$BudgetSeconds; requestTimeoutMilliseconds=$RequestTimeoutMilliseconds;
+        lastHttpStatus=$lastStatus; scope='local_api_root_only' }
+}
+
 function Write-CreAudit {
     param([string]$Path, [System.Collections.IDictionary]$Record)
     $temporary = $Path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
@@ -219,6 +278,13 @@ try {
     } elseif ($PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or $PSBoundParameters.ContainsKey('AcknowledgeDatabaseWrites')) {
         throw 'Series-only option supplied for incremental tier.'
     }
+    $record.status = 'local_api_readiness_pending'
+    Write-CreAudit $auditPath $record
+    $record['localApiReadiness'] = Wait-CreLocalApi
+    if (-not $record.localApiReadiness.ready) {
+        $record.status = 'local_api_not_ready_no_dispatch'
+        throw 'Local API readiness deadline expired.'
+    }
     $admission = Get-CreAdmission
     foreach ($key in $admission.Keys) { $record[$key] = $admission[$key] }
     if (-not $admission.admitted) {
@@ -294,8 +360,12 @@ try {
     }
 } catch {
     # Fixed diagnostics: never dump child argv, environment or exception text.
-    $record.status = 'windows_launcher_failed_linux_settlement_unverified'
-    Write-Error 'Windows admission or launcher failed; inspect the audit and Linux recovery state.' -ErrorAction Continue
+    if ($record.status -eq 'local_api_not_ready_no_dispatch') {
+        Write-Error 'Local Firecrawl API was not ready within the startup budget; no Linux work was dispatched.' -ErrorAction Continue
+    } else {
+        $record.status = 'windows_launcher_failed_linux_settlement_unverified'
+        Write-Error 'Windows admission or launcher failed; inspect the audit and Linux recovery state.' -ErrorAction Continue
+    }
 }
 $record.wrapperExitCode = $result
 if ($result -eq 0 -or -not $AlertWebhookFile) { Set-CreFailureNotification $record $basename $result }
