@@ -82,9 +82,12 @@ Start names the brokerage and says preparation checks precede collection.
 A qualified single-source series can finish in this form (placeholders):
 
 ```text
-Newmark refresh completed in {duration}.
-{verified_count} listings verified. Sale and lease inventory checked.
-Database readback passed; no quality regression.
+✅ *Newmark | Completed*
+• *Duration:* {duration}
+• *Listings verified:* {verified_count} unique properties
+• *For sale:* {sale_count} | *For lease:* {lease_count}
+• *Both:* {both_count} (included in For sale and For lease)
+• *Database readback:* passed; no quality regression.
 ```
 
 **Listings verified** counts normalized unique listings in that run's committed
@@ -97,13 +100,23 @@ confirmed local process cleanup. Evidence must be stable and no more than five
 minutes past terminal control publication. Inventory-only mixtures and missing
 or zero canonical counts currently fall back to an unavailable summary.
 
-**Sale and lease inventory checked** describes the two validated transaction
-passes. It is not a numerical sale/lease breakdown or a claim of fresh property
-details. A listing can support both transactions. **New**, **updated** and
-**unchanged** are omitted because the current upsert does not measure those
-categories. The duration measures elapsed Windows attempt time, including
-startup checks and summary qualification; it is not a source-stage benchmark.
-The message makes no full-registry freshness or absolute database-health claim.
+Optional **For sale** and **For lease** figures are unique canonical property
+IDs normalized from the exact hashed, generation-bound source artifact using
+the same `cre_ingest.to_row`, duplicate-identity validation and `merge_rows`
+semantics as staging. The normalized identity union must equal both the
+artifact's staged-unique count and the committed generation-exact readback.
+When a property appears in both transaction passes, it is counted in each
+figure; **Both** reports that overlap and the example says so. These values
+describe current source inventory modes, not stored `transaction_type` labels,
+price availability, or fresh property-detail counts. If the optional artifact
+is missing, unsafe, stale, oversized, or inconsistent, the split is reported
+unavailable while the independently verified total remains. Older schema-v1
+summary readers without this optional field remain compatible. **New**,
+**updated** and **unchanged** are omitted because the current upsert does not
+measure those categories. The duration measures elapsed Windows attempt time,
+including startup checks and summary qualification; it is not a source-stage
+benchmark. The message makes no full-registry freshness or absolute
+database-health claim.
 
 When evidence is missing, stale or contradictory, a zero-returning Windows run
 says that the listing refresh could not be verified and points to the local

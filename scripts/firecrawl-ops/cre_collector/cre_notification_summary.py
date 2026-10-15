@@ -7,6 +7,7 @@ observed stdout path is only a locator; unavailable proof yields no counts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,8 @@ COLLECTOR = Path(__file__).resolve().parent
 SERIES_ID = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z")
 RUN_ID = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}")
 HEX_ID = re.compile(r"[0-9a-f]{32}")
+MAX_TRANSACTION_ARTIFACT_BYTES = 16 * 1024 * 1024
+TRANSACTION_BREAKDOWN_BUDGET_SECONDS = 8.0
 
 
 class SummaryUnavailable(ValueError):
@@ -39,8 +42,75 @@ def timestamp(value):
     return result.timestamp()
 
 
+def _derive_transaction_breakdown(data, source, expected_count, scraped_at, deadline):
+    """Rebuild staged identity modes with the production ingester's functions."""
+    from cre_ingest import (
+        SOURCE_TO_BROKERAGE,
+        merge_rows,
+        to_row,
+        validate_duplicate_identity_before_merge,
+    )
+
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("runMeta"), dict)
+        or data["runMeta"].get("mode") != "full"
+        or data["runMeta"].get("transactions") != ["sale", "lease"]
+        or not isinstance(data.get("listings"), list)
+        or len(data["listings"]) > 500000
+        or not isinstance(data.get("brokers", []), list)
+        or source not in SOURCE_TO_BROKERAGE
+    ):
+        raise SummaryUnavailable("transaction breakdown unavailable")
+
+    merged = {}
+    brokers_by_idx = {
+        index: broker for index, broker in enumerate(data.get("brokers", []))
+    }
+    for index, listing in enumerate(data["listings"]):
+        if index % 256 == 0 and time.monotonic() > deadline:
+            raise SummaryUnavailable("transaction breakdown deadline exceeded")
+        if not isinstance(listing, dict) or listing.get("sourceKey") != source:
+            raise SummaryUnavailable("transaction artifact source mismatch")
+        if listing.get("transactionMode") not in {"sale", "lease"}:
+            raise SummaryUnavailable("transaction artifact mode is unsupported")
+        row = to_row(listing, brokers_by_idx, scraped_at)
+        if row is None:
+            continue
+        key = (row["slug"], row["external_id"])
+        prior = merged.get(key)
+        if prior is None:
+            merged[key] = row
+            continue
+        validate_duplicate_identity_before_merge(prior, row)
+        merged[key] = merge_rows(prior, row)
+
+    if len(merged) != expected_count:
+        raise SummaryUnavailable("transaction staged identity count mismatch")
+    sale_ids = set()
+    lease_ids = set()
+    for identity, row in merged.items():
+        modes = row.get("_modes")
+        if not isinstance(modes, set) or not modes or not modes <= {"sale", "lease"}:
+            raise SummaryUnavailable("transaction staged modes are unsupported")
+        if "sale" in modes:
+            sale_ids.add(identity)
+        if "lease" in modes:
+            lease_ids.add(identity)
+    both_ids = sale_ids & lease_ids
+    if len(sale_ids | lease_ids) != expected_count:
+        raise SummaryUnavailable("transaction mode identity union mismatch")
+    return {
+        "sale": len(sale_ids),
+        "lease": len(lease_ids),
+        "both": len(both_ids),
+        "measurement": "current_staged_inventory_modes",
+    }
+
+
 def verified_summary(series_directory, source, expected_sha, windows_admission_ms):
     """Return only a completed single-source generation; never infer success."""
+    summary_started = time.monotonic()
     require(
         isinstance(source, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", source)
     )
@@ -243,11 +313,70 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         require(artifact.get("rejected_by_ingest") == 0)
         require(
             isinstance(readback.get("generation_id"), str)
-            and bool(readback["generation_id"])
+            and readback["generation_id"] == run_id
         )
+        transaction_breakdown = None
+        try:
+            artifact_path = artifact.get("path")
+            artifact_sha = artifact.get("sha256")
+            artifact_bytes = artifact.get("bytes")
+            require(artifact_path == f"sources/{source}.json")
+            require(
+                isinstance(artifact_sha, str)
+                and re.fullmatch(r"[0-9a-f]{64}", artifact_sha)
+            )
+            require(
+                type(artifact_bytes) is int
+                and 0 < artifact_bytes <= MAX_TRANSACTION_ARTIFACT_BYTES
+            )
+            sources_fd = directory(child_fd, "sources")
+            raw, observed = safe._read_at(
+                sources_fd,
+                f"{source}.json",
+                limit=MAX_TRANSACTION_ARTIFACT_BYTES,
+            )
+            snapshots.append(
+                (sources_fd, f"{source}.json", MAX_TRANSACTION_ARTIFACT_BYTES, raw)
+            )
+            require(observed.st_size == artifact_bytes)
+            require(hashlib.sha256(raw).hexdigest() == artifact_sha)
+            data = json.loads(raw)
+            freshness = data.get("runMeta", {}).get("freshness")
+            require(
+                isinstance(freshness, dict)
+                and freshness.get("generationId") == run_id
+                and readback["generation_id"] == freshness["generationId"]
+            )
+            require(
+                time.monotonic() - summary_started
+                <= TRANSACTION_BREAKDOWN_BUDGET_SECONDS
+            )
+            transaction_breakdown = _derive_transaction_breakdown(
+                data,
+                source,
+                count,
+                data.get("runMeta", {}).get("finishedAt"),
+                summary_started + TRANSACTION_BREAKDOWN_BUDGET_SECONDS,
+            )
+            require(
+                transaction_breakdown["sale"]
+                + transaction_breakdown["lease"]
+                - transaction_breakdown["both"]
+                == count
+            )
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            IndexError,
+            AttributeError,
+            safe.StopRefused,
+        ):
+            transaction_breakdown = None
         for descriptor, name, limit, raw in snapshots:
             require(safe._read_at(descriptor, name, limit)[0] == raw)
-        return {
+        result = {
             "schema_version": 1,
             "verified": True,
             "source": source,
@@ -262,6 +391,9 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             "quality_no_regression": True,
             "local_settlement": "confirmed",
         }
+        if transaction_breakdown is not None:
+            result["transaction_breakdown"] = transaction_breakdown
+        return result
 
 
 def main(argv=None):

@@ -1,18 +1,18 @@
 """Real private-file receipt qualification; no provider or database access."""
 
 import copy
+import hashlib
 import json
 import os
 import subprocess
 import time
 from datetime import datetime, timezone
 
+import cre_notification_summary as summary
 import pytest
 
-import cre_notification_summary as summary
-
 SHA = "a" * 40
-SOURCE = "newmark"
+SOURCE = "svn"
 INVOCATION = "b" * 32
 CHILD = "c" * 32
 SERIES = "2026-10-15T172000Z"
@@ -37,8 +37,13 @@ def evidence(tmp_path, monkeypatch):
     collector = tmp_path / "collector"
     series = collector / "out/checkpoint-series" / SERIES
     child = series / "runs" / RUN
-    for directory in (series / ".series-control", child / ".series-control"):
+    for directory in (
+        series / ".series-control",
+        child / ".series-control",
+        child / "sources",
+    ):
         directory.mkdir(parents=True, mode=0o700)
+        directory.chmod(0o700)
     monkeypatch.setattr(summary, "COLLECTOR", collector)
     now = int(time.time() * 1000)
     admission = now - 20000
@@ -48,7 +53,46 @@ def evidence(tmp_path, monkeypatch):
         "control": series / ".series-control" / (INVOCATION + ".json"),
         "child": child / "manifest.json",
         "settlement": child / ".series-control" / (CHILD + ".json"),
+        "artifact": child / "sources" / (SOURCE + ".json"),
     }
+    inventory = [
+        {
+            "sourceKey": SOURCE,
+            "transactionMode": "sale",
+            "id": "sale-1",
+            "url": "https://example.test/sale-1",
+        },
+        {
+            "sourceKey": SOURCE,
+            "transactionMode": "lease",
+            "id": "lease-1",
+            "url": "https://example.test/lease-1",
+        },
+        {
+            "sourceKey": SOURCE,
+            "transactionMode": "sale",
+            "id": "both-1",
+            "url": "https://example.test/both-1",
+        },
+        {
+            "sourceKey": SOURCE,
+            "transactionMode": "lease",
+            "id": "both-1",
+            "url": "https://example.test/both-1",
+        },
+    ]
+    artifact_value = {
+        "runMeta": {
+            "mode": "full",
+            "transactions": ["sale", "lease"],
+            "finishedAt": iso(now - 3000),
+            "freshness": {"generationId": RUN},
+        },
+        "listings": inventory,
+        "brokers": [],
+    }
+    artifact_raw = json.dumps(artifact_value, separators=(",", ":")).encode()
+    artifact_sha = hashlib.sha256(artifact_raw).hexdigest()
     values = {
         "parent": {
             "schema_version": 1,
@@ -122,15 +166,18 @@ def evidence(tmp_path, monkeypatch):
                     "state": "ingested",
                     "ingest": {"rc": 0},
                     "artifact": {
-                        "staged_unique": 41,
+                        "path": f"sources/{SOURCE}.json",
+                        "sha256": artifact_sha,
+                        "bytes": len(artifact_raw),
+                        "staged_unique": 3,
                         "inventory_only": 0,
                         "rejected_by_ingest": 0,
                     },
                     "readback": {
                         "ok": True,
-                        "expected_staged_unique": 41,
-                        "latest_inventory_batch_active": 41,
-                        "generation_id": "real-generation",
+                        "expected_staged_unique": 3,
+                        "latest_inventory_batch_active": 3,
+                        "generation_id": RUN,
                     },
                 }
             },
@@ -150,7 +197,12 @@ def evidence(tmp_path, monkeypatch):
 
     def save():
         for name, path in files.items():
-            path.write_text(json.dumps(values[name]))
+            if name == "artifact":
+                path.write_bytes(
+                    json.dumps(artifact_value, separators=(",", ":")).encode()
+                )
+            else:
+                path.write_text(json.dumps(values[name]))
             path.chmod(0o600)
 
     save()
@@ -159,6 +211,9 @@ def evidence(tmp_path, monkeypatch):
         "admission": admission,
         "values": values,
         "files": files,
+        "artifact": artifact_value,
+        "artifact_raw": artifact_raw,
+        "artifact_sha": artifact_sha,
         "save": save,
     }
 
@@ -183,14 +238,96 @@ def test_real_private_receipts_prove_only_exact_current_inventory(
     monkeypatch.setattr(subprocess, "run", forbidden)
     result = read(evidence)
     assert result["verified"] is True
-    assert result["verified_listings"] == 41
+    assert result["verified_listings"] == 3
     assert result["transaction_scope"] == ["sale", "lease"]
     assert result["measurement"] == "generation_exact_current_inventory"
     assert result["invocation_id"] == INVOCATION
+    assert result["transaction_breakdown"] == {
+        "sale": 2,
+        "lease": 2,
+        "both": 1,
+        "measurement": "current_staged_inventory_modes",
+    }
     assert not (
         {"new", "updated", "sale_count", "lease_count", "whole_source_coverage"}
         & result.keys()
     )
+
+
+def test_breakdown_proof_failures_preserve_exact_verified_total(evidence):
+    evidence["files"]["artifact"].write_text("tampered", encoding="utf-8")
+    result = read(evidence)
+    assert result["verified"] is True
+    assert result["verified_listings"] == 3
+    assert "transaction_breakdown" not in result
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "oversized", "stale_generation", "identity_mismatch"]
+)
+def test_optional_breakdown_unavailable_does_not_discard_total(evidence, failure):
+    artifact_meta = evidence["values"]["child"]["sources"][SOURCE]["artifact"]
+    artifact_value = evidence["artifact"]
+    if failure == "missing":
+        evidence["files"]["artifact"].unlink()
+    elif failure == "oversized":
+        artifact_meta["bytes"] = summary.MAX_TRANSACTION_ARTIFACT_BYTES + 1
+        evidence["save"]()
+    elif failure == "stale_generation":
+        artifact_value["runMeta"]["freshness"]["generationId"] = "stale-generation"
+        evidence["artifact_raw"] = json.dumps(
+            artifact_value, separators=(",", ":")
+        ).encode()
+        artifact_meta["sha256"] = hashlib.sha256(evidence["artifact_raw"]).hexdigest()
+        artifact_meta["bytes"] = len(evidence["artifact_raw"])
+        evidence["save"]()
+    else:
+        artifact_value["listings"].append(
+            {
+                "sourceKey": SOURCE,
+                "transactionMode": "sale",
+                "id": "extra",
+                "url": "https://example.test/extra",
+            }
+        )
+        evidence["artifact_raw"] = json.dumps(
+            artifact_value, separators=(",", ":")
+        ).encode()
+        artifact_meta["sha256"] = hashlib.sha256(evidence["artifact_raw"]).hexdigest()
+        artifact_meta["bytes"] = len(evidence["artifact_raw"])
+        evidence["save"]()
+    result = read(evidence)
+    assert result["verified"] is True
+    assert result["verified_listings"] == 3
+    assert "transaction_breakdown" not in result
+
+
+def test_zero_count_transaction_pass_is_a_verified_breakdown(evidence):
+    lease = {
+        "sourceKey": SOURCE,
+        "transactionMode": "lease",
+        "id": "lease-only",
+        "url": "https://example.test/lease-only",
+    }
+    evidence["artifact"]["listings"] = [lease]
+    evidence["artifact_raw"] = json.dumps(
+        evidence["artifact"], separators=(",", ":")
+    ).encode()
+    digest = hashlib.sha256(evidence["artifact_raw"]).hexdigest()
+    meta = evidence["values"]["child"]["sources"][SOURCE]
+    meta["artifact"].update(
+        staged_unique=1, sha256=digest, bytes=len(evidence["artifact_raw"])
+    )
+    meta["readback"].update(expected_staged_unique=1, latest_inventory_batch_active=1)
+    evidence["save"]()
+    result = read(evidence)
+    assert result["verified_listings"] == 1
+    assert result["transaction_breakdown"] == {
+        "sale": 0,
+        "lease": 1,
+        "both": 0,
+        "measurement": "current_staged_inventory_modes",
+    }
 
 
 def test_explicit_interra_additive_scope_is_qualified_without_whole_source_claim(
@@ -225,7 +362,7 @@ def test_explicit_interra_additive_scope_is_qualified_without_whole_source_claim
     }
     evidence["save"]()
     result = read(evidence, source=source)
-    assert result["source"] == source and result["verified_listings"] == 41
+    assert result["source"] == source and result["verified_listings"] == 3
     assert "whole_source_coverage" not in result
 
 
