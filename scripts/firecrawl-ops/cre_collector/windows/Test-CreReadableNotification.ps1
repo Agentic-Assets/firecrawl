@@ -59,6 +59,7 @@ function New-Summary {
     return [ordered]@{schema_version=1;verified=$true;source=$Source;collector_git_sha=$ExpectedSha;
         windows_admission_unix_ms=[long]1792080000000;series_id='2026-10-15T172000Z';invocation_id=('b'*32);
         run_id='2026-10-15T172001Z-123456abcdef';verified_listings=4535;transaction_scope=@('sale','lease');
+        transaction_breakdown=[ordered]@{sale=3000;lease=2000;both=465;measurement='current_staged_inventory_transaction_types'};
         measurement='generation_exact_current_inventory';quality_no_regression=$true;local_settlement='confirmed'}
 }
 function Save-Summary($value) { [IO.File]::WriteAllText($summaryJson,($value|ConvertTo-Json -Compress -Depth 8),(New-Object Text.UTF8Encoding($false))) }
@@ -72,10 +73,12 @@ Assert-Cre ($argv -contains '10s' -and $argv -contains '--kill-after=2s' -and $a
 Assert-Cre ($argv -contains ($LinuxRepo+'/scripts/firecrawl-ops/cre_collector/cre_notification_summary.py')) 'Actual CRT quoting preserves a Linux checkout path containing spaces.'
 $start=Get-CreNotificationText $record 'Start' 0 $null
 $finish=Get-CreNotificationText $record 'Terminal' 0 $result
-Assert-Cre ($start.Contains('Newmark refresh started.') -and $start.Contains('collection has not started')) 'Start must name the brokerage without claiming collection has happened.'
-Assert-Cre ($finish.Contains('4,535 listings verified.') -and $finish.Contains('Sale and lease inventory checked.')) 'Terminal message must label verified generation inventory and truthful transaction scope.'
-Assert-Cre ($finish -match 'completed in [0-9]+s' -and $finish.Contains('no quality regression')) 'Summary must include measured attempt duration and quality outcome.'
-Assert-Cre ($finish -notmatch 'wrapper_exit|native_exit|[a-f0-9]{32}|updated|new listings|whole.source|full.pipeline') 'Channel text must omit technical IDs and unmeasured or broader claims.'
+$rocket=[char]::ConvertFromUtf32(0x1F680); $successMark=[char]::ConvertFromUtf32(0x2705); $warningMark=[char]::ConvertFromUtf32(0x26A0)+[char]0xFE0F; $bullet=[char]0x2022
+Assert-Cre ($start.StartsWith("$rocket *Newmark | Started*") -and $start.Contains('collection has not started')) 'Start must begin with its emoji and bold brokerage heading without claiming collection has happened.'
+Assert-Cre ($finish.StartsWith("$successMark *Newmark | Completed*") -and $finish.Contains('*Listings verified:* 4,535 unique properties')) 'Terminal message must lead with status and label the verified generation total.'
+Assert-Cre ($finish.Contains('*For sale:* 3,000 | *For lease:* 2,000') -and $finish.Contains('*Both:* 465 (included in For sale and For lease)')) 'Transaction counts use the exact staged identity union and disclose overlap.'
+Assert-Cre ($finish.Contains('*Database readback:* passed; no quality regression.') -and $finish -match "$bullet \*Duration:\* [0-9]+[smh]") 'Summary includes the measured duration and exact readback outcome.'
+Assert-Cre ($finish -notmatch 'wrapper_exit|native_exit|[a-f0-9]{32}|updated|new listings|whole.source|full.pipeline|&amp;') 'Channel text must omit technical IDs and unmeasured or broader claims.'
 Assert-Cre ([Text.Encoding]::UTF8.GetByteCount((@{text=$finish}|ConvertTo-Json -Compress)) -lt 4096) 'Full JSON payload stays below the unchanged sender bound.'
 $env:CRE_TEST_SUMMARY_MODE='hang'
 $timed=New-Record
@@ -101,6 +104,26 @@ foreach ($field in @('verified','source','collector_git_sha','windows_admission_
     try {$candidate=Get-CreVerifiedSummary (New-Record) ('bad-'+$field)} catch { }
     Assert-Cre ($null -eq $candidate) "Wrong $field must never reach a verified summary."
 }
+$optionalBreakdownFailures=@(
+    [ordered]@{sale=0;lease=0;both=0;measurement='wrong'},
+    [ordered]@{sale=3000;lease=2000;both=464;measurement='current_staged_inventory_transaction_types'},
+    [ordered]@{sale=-1;lease=2001;both=465;measurement='current_staged_inventory_transaction_types'},
+    [ordered]@{sale=3000;lease=2000;both=2001;measurement='current_staged_inventory_transaction_types'},
+    [ordered]@{sale=3000;lease=2000;both=465},
+    [ordered]@{lease=4535;both=0;measurement='current_staged_inventory_transaction_types'}
+)
+$breakdownIndex=0
+foreach($invalidBreakdown in $optionalBreakdownFailures){
+    $breakdownIndex++
+    $invalid=New-Summary; $invalid.transaction_breakdown=$invalidBreakdown; Save-Summary $invalid
+    $candidate=Get-CreVerifiedSummary (New-Record) ('bad-breakdown-'+$breakdownIndex)
+    Assert-Cre ($null -ne $candidate -and $candidate.verified_listings -eq 4535 -and $null -eq $candidate.transaction_breakdown) 'Invalid optional breakdown must not discard the independently verified total.'
+    Assert-Cre ((Get-CreNotificationText (New-Record) 'Terminal' 0 $candidate).Contains('For sale:* unavailable')) 'Invalid optional breakdown is reported unavailable while preserving the verified total.'
+}
+$withoutBreakdown=New-Summary; $withoutBreakdown.Remove('transaction_breakdown'); Save-Summary $withoutBreakdown
+$legacySummary=Get-CreVerifiedSummary (New-Record) 'without-breakdown'
+Assert-Cre ($null -ne $legacySummary -and $legacySummary.verified_listings -eq 4535) 'Older schema-v1 summaries without optional transaction counts remain compatible.'
+Assert-Cre ((Get-CreNotificationText (New-Record) 'Terminal' 0 $legacySummary).Contains('For sale:* unavailable')) 'Missing optional counts are clearly unavailable.'
 Save-Summary (New-Summary)
 foreach ($mode in @('stdout-conflict','stderr-conflict','cross-stream','escape','wrong-prefix','failed','native-nonzero','monitor','missing-admission')) {
     $record=New-Record
@@ -122,13 +145,17 @@ foreach ($mode in @('stdout-conflict','stderr-conflict','cross-stream','escape',
 }
 $record=New-Record
 $unknown=Get-CreNotificationText $record 'Terminal' 0 $null
-Assert-Cre ($unknown.Contains('could not be verified') -and $unknown -notmatch 'listings verified|completed') 'Wrapper zero alone must not claim a refresh or listing count.'
+Assert-Cre ($unknown -match 'could not be verified' -and $unknown -notmatch 'listings verified|completed') 'Wrapper zero alone must not claim a refresh or listing count.'
 $failure=Get-CreNotificationText $record 'Terminal' 23 (New-Summary)
-Assert-Cre ($failure.Contains('needs attention') -and $failure -notmatch 'completed|listings verified') 'A nonzero result must not be promoted by available metrics.'
+Assert-Cre ($failure.StartsWith("$warningMark *Newmark | Needs attention*") -and $failure -notmatch 'Completed|Listings verified') 'A nonzero result must not be promoted by available metrics.'
 $record.status='windows_terminal_audit_failed_linux_settlement_unverified'
 Assert-Cre ((Get-CreNotificationText $record 'Terminal' 1 $null).Contains('audit could not be saved')) 'Audit failure needs a clear completion warning.'
 $Source='cushman-wakefield'
-Assert-Cre ((Get-CreNotificationText $record 'Start' 0 $null).Contains('Cushman &amp; Wakefield')) 'Slack control characters must be escaped.'
+Assert-Cre ((Get-CreNotificationText $record 'Start' 0 $null).Contains("*Cushman &amp; Wakefield | Started*")) 'Known brokerage labels preserve Slack entity escaping.'
+$Source='nai-hallmark'
+Assert-Cre ((Get-CreBrokerageName $Source) -ceq 'NAI Hallmark') 'Generic broker names preserve NAI capitalization.'
+$Source='cbre-other'
+Assert-Cre ((Get-CreBrokerageName $Source) -ceq 'CBRE Other') 'Generic source labels preserve allowed CBRE capitalization.'
 $Source='<!channel>'
 Assert-Cre ((Get-CreNotificationText $record 'Start' 0 $null) -notmatch '<!|@') 'Unrecognized source input cannot become a mention.'
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV

@@ -196,7 +196,8 @@ function Get-CreBrokerageName {
     }
     if ($Key -and $names.ContainsKey($Key)) { return $names[$Key] }
     if ($Key -match '^[a-z0-9][a-z0-9-]{0,79}$') {
-        return [Globalization.CultureInfo]::InvariantCulture.TextInfo.ToTitleCase($Key.Replace('-', ' '))
+        $genericName = [Globalization.CultureInfo]::InvariantCulture.TextInfo.ToTitleCase($Key.Replace('-', ' '))
+        return $genericName -creplace '\bNai\b', 'NAI' -creplace '\bCbre\b', 'CBRE' -creplace '\bJll\b', 'JLL' -creplace '\bSrs\b', 'SRS'
     }
     return 'Commercial real estate'
 }
@@ -242,6 +243,22 @@ function Get-CreVerifiedSummary {
         -not ($summary.verified_listings -is [long] -or $summary.verified_listings -is [int]) -or
         $summary.verified_listings -le 0 -or $summary.verified_listings -gt 500000 -or
         ($summary.transaction_scope -join ',') -cne 'sale,lease') { return $null }
+    $breakdownProperty = $summary.PSObject.Properties['transaction_breakdown']
+    if ($null -ne $breakdownProperty) {
+        $breakdown = $breakdownProperty.Value
+        try {
+            $validBreakdown = $null -ne $breakdown -and
+                $breakdown.measurement -is [string] -and
+                $breakdown.measurement -ceq 'current_staged_inventory_transaction_types' -and
+                (($breakdown.sale -is [long]) -or ($breakdown.sale -is [int])) -and
+                (($breakdown.lease -is [long]) -or ($breakdown.lease -is [int])) -and
+                (($breakdown.both -is [long]) -or ($breakdown.both -is [int])) -and
+                $breakdown.sale -ge 0 -and $breakdown.lease -ge 0 -and $breakdown.both -ge 0 -and
+                $breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
+                ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $summary.verified_listings
+        } catch { $validBreakdown = $false }
+        if (-not $validBreakdown) { $summary.transaction_breakdown = $null }
+    }
     $Record['notificationSummary'] = $summary
     return $summary
 }
@@ -249,28 +266,46 @@ function Get-CreVerifiedSummary {
 function Get-CreNotificationText {
     param([System.Collections.IDictionary]$Record, [string]$Phase, [int]$ExitCode, $Summary)
     $name = (Get-CreBrokerageName $Source).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
-    $work = if ($Tier -eq 'monitor') { 'inventory check' } elseif ($Tier -eq 'enrich') { 'listing detail update' } else { 'refresh' }
-    if ($Phase -eq 'Start') { return "$name $work started.`nPreparing checks on the Windows desktop; collection has not started." }
-    $duration = ''
+    $bullet = [char]0x2022
+    if ($Phase -eq 'Start') {
+        $started = [char]::ConvertFromUtf32(0x1F680)
+        return "$started *$name | Started*`n$bullet Preparation checks are running on the Windows desktop; collection has not started."
+    }
+    $duration = 'unavailable'
     try {
         $elapsed = [DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($Record.createdAt, [Globalization.CultureInfo]::InvariantCulture)
         if ($elapsed.TotalSeconds -ge 0 -and $elapsed.TotalHours -le 25) {
-            $duration = if ($elapsed.TotalHours -ge 1) { ' in {0}h {1}m' -f [int][Math]::Floor($elapsed.TotalHours), $elapsed.Minutes }
-                elseif ($elapsed.TotalMinutes -ge 1) { ' in {0}m {1}s' -f [int][Math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds }
-                else { ' in {0}s' -f [int][Math]::Floor($elapsed.TotalSeconds) }
+            $duration = if ($elapsed.TotalHours -ge 1) { '{0}h {1}m' -f [int][Math]::Floor($elapsed.TotalHours), $elapsed.Minutes }
+                elseif ($elapsed.TotalMinutes -ge 1) { '{0}m {1}s' -f [int][Math]::Floor($elapsed.TotalMinutes), $elapsed.Seconds }
+                else { '{0}s' -f [int][Math]::Floor($elapsed.TotalSeconds) }
         }
     } catch { }
     if ($ExitCode -ne 0) {
         if ($Record.status -eq 'windows_terminal_audit_failed_linux_settlement_unverified') {
-            return "$name $work needs attention$duration.`nThe run's audit could not be saved; completion is unverified. Check the local CRE audit."
+            $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
+            return "$warning *$name | Needs attention*`n$bullet *Duration:* $duration`n$bullet The run's audit could not be saved; completion is unverified. Check the local CRE audit."
         }
-        return "$name $work needs attention$duration.`nThe Windows run did not finish successfully. Check the local CRE audit; verified listing counts are unavailable."
+        $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
+        return "$warning *$name | Needs attention*`n$bullet *Duration:* $duration`n$bullet The Windows run did not finish successfully. Check the local CRE audit; verified listing counts are unavailable."
     }
     if ($null -ne $Summary) {
         $count = ([long]$Summary.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
-        return "$name refresh completed$duration.`n$count listings verified. Sale and lease inventory checked.`nDatabase readback passed; no quality regression."
+        $breakdownProperty = $Summary.PSObject.Properties['transaction_breakdown']
+        $breakdown = if ($null -ne $breakdownProperty) { $breakdownProperty.Value } else { $null }
+        if ($null -ne $breakdown) {
+            $sale = ([long]$breakdown.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $lease = ([long]$breakdown.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $both = ([long]$breakdown.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $transactionLine = "$bullet *For sale:* $sale | *For lease:* $lease"
+            if ([long]$breakdown.both -gt 0) { $transactionLine += "`n$bullet *Both:* $both (included in For sale and For lease)" }
+        } else {
+            $transactionLine = "$bullet *For sale:* unavailable | *For lease:* unavailable (breakdown not verified)"
+        }
+        $success = [char]::ConvertFromUtf32(0x2705)
+        return "$success *$name | Completed*`n$bullet *Duration:* $duration`n$bullet *Listings verified:* $count unique properties`n$transactionLine`n$bullet *Database readback:* passed; no quality regression."
     }
-    return "$name run finished$duration.`nListing refresh could not be verified. Check the local CRE audit for details."
+    $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
+    return "$warning *$name | Could not be verified*`n$bullet *Duration:* $duration`n$bullet Verified listing total and sale/lease counts are unavailable. Check the local CRE audit for details."
 }
 
 $script:notificationAttempted = @{ Start = $false; Terminal = $false }
