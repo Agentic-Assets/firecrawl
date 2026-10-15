@@ -246,15 +246,17 @@ function Get-CreVerifiedSummary {
     $breakdownProperty = $summary.PSObject.Properties['transaction_breakdown']
     if ($null -ne $breakdownProperty) {
         $breakdown = $breakdownProperty.Value
-        $validBreakdown = $null -ne $breakdown -and
-            $breakdown.measurement -is [string] -and
-            $breakdown.measurement -ceq 'current_staged_inventory_modes' -and
-            (($breakdown.sale -is [long]) -or ($breakdown.sale -is [int])) -and
-            (($breakdown.lease -is [long]) -or ($breakdown.lease -is [int])) -and
-            (($breakdown.both -is [long]) -or ($breakdown.both -is [int])) -and
-            $breakdown.sale -ge 0 -and $breakdown.lease -ge 0 -and $breakdown.both -ge 0 -and
-            $breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
-            ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $summary.verified_listings
+        try {
+            $validBreakdown = $null -ne $breakdown -and
+                $breakdown.measurement -is [string] -and
+                $breakdown.measurement -ceq 'current_staged_inventory_modes' -and
+                (($breakdown.sale -is [long]) -or ($breakdown.sale -is [int])) -and
+                (($breakdown.lease -is [long]) -or ($breakdown.lease -is [int])) -and
+                (($breakdown.both -is [long]) -or ($breakdown.both -is [int])) -and
+                $breakdown.sale -ge 0 -and $breakdown.lease -ge 0 -and $breakdown.both -ge 0 -and
+                $breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
+                ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $summary.verified_listings
+        } catch { $validBreakdown = $false }
         if (-not $validBreakdown) { $summary.transaction_breakdown = $null }
     }
     $Record['notificationSummary'] = $summary
@@ -263,8 +265,7 @@ function Get-CreVerifiedSummary {
 
 function Get-CreNotificationText {
     param([System.Collections.IDictionary]$Record, [string]$Phase, [int]$ExitCode, $Summary)
-    $name = Get-CreBrokerageName $Source
-    $work = if ($Tier -eq 'monitor') { 'inventory check' } elseif ($Tier -eq 'enrich') { 'listing detail update' } else { 'refresh' }
+    $name = (Get-CreBrokerageName $Source).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
     $bullet = [char]0x2022
     if ($Phase -eq 'Start') {
         $started = [char]::ConvertFromUtf32(0x1F680)

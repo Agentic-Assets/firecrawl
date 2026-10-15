@@ -108,7 +108,9 @@ $optionalBreakdownFailures=@(
     [ordered]@{sale=0;lease=0;both=0;measurement='wrong'},
     [ordered]@{sale=3000;lease=2000;both=464;measurement='current_staged_inventory_modes'},
     [ordered]@{sale=-1;lease=2001;both=465;measurement='current_staged_inventory_modes'},
-    [ordered]@{sale=3000;lease=2000;both=2001;measurement='current_staged_inventory_modes'}
+    [ordered]@{sale=3000;lease=2000;both=2001;measurement='current_staged_inventory_modes'},
+    [ordered]@{sale=3000;lease=2000;both=465},
+    [ordered]@{lease=4535;both=0;measurement='current_staged_inventory_modes'}
 )
 $breakdownIndex=0
 foreach($invalidBreakdown in $optionalBreakdownFailures){
@@ -149,7 +151,7 @@ Assert-Cre ($failure.StartsWith("$warningMark *Newmark | Needs attention*") -and
 $record.status='windows_terminal_audit_failed_linux_settlement_unverified'
 Assert-Cre ((Get-CreNotificationText $record 'Terminal' 1 $null).Contains('audit could not be saved')) 'Audit failure needs a clear completion warning.'
 $Source='cushman-wakefield'
-Assert-Cre ((Get-CreNotificationText $record 'Start' 0 $null).Contains("*Cushman & Wakefield | Started*")) 'Known safe brokerage labels use Slack mrkdwn directly.'
+Assert-Cre ((Get-CreNotificationText $record 'Start' 0 $null).Contains("*Cushman &amp; Wakefield | Started*")) 'Known brokerage labels preserve Slack entity escaping.'
 $Source='nai-hallmark'
 Assert-Cre ((Get-CreBrokerageName $Source) -ceq 'NAI Hallmark') 'Generic broker names preserve NAI capitalization.'
 $Source='cbre-other'
