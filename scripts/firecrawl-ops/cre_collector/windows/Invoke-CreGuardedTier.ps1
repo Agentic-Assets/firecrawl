@@ -17,6 +17,7 @@ param(
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
     [switch]$AcknowledgeDatabaseWrites,
+    [ValidateSet('interra-realty')][string]$AdmitCurrentInventorySource,
     [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Distro = 'Ubuntu-24.04',
     [ValidatePattern('^[a-z_][a-z0-9_-]*$')][string]$LinuxUser = 'cayman',
     [ValidatePattern('^/[^\r\n]+$')][string]$LinuxRepo = '/home/cayman/code/firecrawl',
@@ -205,6 +206,9 @@ Write-Output "Windows stderr: $stderrPath"
 $result = 1
 try {
     if (-not $Source -or -not $ExpectedSha) { throw 'Required invocation identity missing.' }
+    if ($AdmitCurrentInventorySource -and ($Tier -ne 'series' -or $Source -cne $AdmitCurrentInventorySource)) {
+        throw 'Current-inventory admission requires its exact Interra series source.'
+    }
     if ($Tier -eq 'series') {
         if (-not $PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or -not $AcknowledgeDatabaseWrites) {
             throw 'Series requires an explicit work budget and database-write acknowledgement.'
@@ -267,6 +271,7 @@ try {
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
+            if ($AdmitCurrentInventorySource) { $arguments += @('--admit-current-inventory-source', $AdmitCurrentInventorySource) }
             $runPrefix = "$collector/out/checkpoint-series/"
         } elseif ($Apply) { $arguments += '--apply' }
         # Pending is durably published before helper entry. An exception/crash

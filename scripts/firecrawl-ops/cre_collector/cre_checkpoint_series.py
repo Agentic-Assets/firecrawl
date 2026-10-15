@@ -171,7 +171,13 @@ def series_config(
     recovery: RecoveryConfig | None = None,
     memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
     memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
+    admit_current_inventory_source: str | None = None,
 ) -> dict[str, Any]:
+    import cre_current_inventory_admission as current_inventory
+
+    current_inventory.validate_option(
+        admit_current_inventory_source, sources, ("sale", "lease")
+    )
     recovery_config = recovery or RecoveryConfig()
     recovery_config.validate()
     if (
@@ -181,7 +187,7 @@ def series_config(
         raise ValueError(
             "recovery low CPU percent must be below the host CPU watchdog ceiling"
         )
-    return {
+    config = {
         "sources": list(sources),
         "transactions": ["sale", "lease"],
         "page_cap": page_cap,
@@ -201,6 +207,11 @@ def series_config(
         "nice": nice,
         "continue_source_local_failures": True,
     }
+    if admit_current_inventory_source is not None:
+        config["current_inventory_admission"] = current_inventory.configuration(
+            admit_current_inventory_source
+        )
+    return config
 
 
 def new_manifest(
@@ -211,7 +222,7 @@ def new_manifest(
     database_target: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     now = utc_now()
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "series_id": series_dir.name,
         "status": "running",
@@ -245,6 +256,12 @@ def new_manifest(
         },
         "error": None,
     }
+    if config.get("current_inventory_admission"):
+        result["scope"] = {
+            "kind": "collector_registry_additive_current_inventory",
+            "whole_source_coverage": False,
+        }
+    return result
 
 
 def save_manifest(series_dir: Path, manifest: dict[str, Any]) -> None:
@@ -546,6 +563,10 @@ def build_checkpoint_argv(
         argv.extend(["--run-id", fresh_run_id])
     if env_file:
         argv.extend(["--env-file", env_file])
+    if "current_inventory_admission" in config:
+        argv.extend(
+            ["--admit-current-inventory-source", config["current_inventory_admission"]["source_key"]]
+        )
     return argv
 
 
@@ -573,6 +594,8 @@ def _expected_child_config(
         "mark_missing": False,
         "admit_baseline_hold_additively": False,
     }
+    if "current_inventory_admission" in config:
+        expected["current_inventory_admission"] = config["current_inventory_admission"]
     # Reconciliation also inspects completed historical parent/child pairs.
     # Preserve their recorded policy shape rather than inventing a guard that
     # did not run. New series creation/resume still requires today's full config.
@@ -831,9 +854,46 @@ def _load_child_manifest(
     return candidates[0]
 
 
-def _reconciled_state(child_manifest: Mapping[str, Any]) -> str:
+def _child_succeeded(
+    child_manifest: Mapping[str, Any], config: Mapping[str, Any]
+) -> bool:
+    """Bind the additive terminal result to its explicit parent admission."""
+    admission = config.get("current_inventory_admission")
+    if admission is None:
+        return child_manifest.get("status") == SUCCESS_STATUS
+    import cre_current_inventory_admission as current_inventory
+
+    try:
+        if not isinstance(admission, Mapping) or not isinstance(
+            child_manifest.get("scope"), Mapping
+        ):
+            return False
+        current_inventory.validate_option(
+            admission["source_key"], config["sources"], config["transactions"]
+        )
+        expected = current_inventory.configuration(admission["source_key"])
+        source = admission["source_key"]
+        return (
+            _exact_json_equal(admission, expected)
+            and child_manifest.get("status")
+            == "additive_scope_complete_current_inventory"
+            and _exact_json_equal(
+                child_manifest.get("config"), _expected_child_config(source, config)
+            )
+            and (child_manifest.get("scope") or {}).get("kind")
+            == "collector_registry_additive_current_inventory"
+            and (child_manifest.get("scope") or {}).get("whole_source_coverage")
+            is False
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _reconciled_state(
+    child_manifest: Mapping[str, Any], config: Mapping[str, Any] | None = None
+) -> str:
     status = child_manifest.get("status")
-    if status == SUCCESS_STATUS:
+    if _child_succeeded(child_manifest, config or {}):
         return "complete"
     if status == RESOURCE_GUARD_STATUS:
         return "resource_guard_interrupted"
@@ -906,6 +966,7 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
                 continue
             terminal = child.get("status") in {
                 SUCCESS_STATUS,
+                "additive_scope_complete_current_inventory",
                 RESOURCE_GUARD_STATUS,
                 "interrupted",
                 "failed",
@@ -929,6 +990,7 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
             )
             legacy_identity = (
                 not exact_recorded_child
+                and not manifest["config"].get("current_inventory_admission")
                 and (child.get("config") or {}).get("sources") == [source]
                 and isinstance(child.get("started_at"), str)
                 and child_started_at >= attempt_started_at
@@ -949,7 +1011,7 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
         path, child = matches[0]
         checkpoint["checkpoint_run"] = str(path.parent.relative_to(series_dir))
         checkpoint["checkpoint_status"] = child.get("status")
-        checkpoint["state"] = _reconciled_state(child)
+        checkpoint["state"] = _reconciled_state(child, manifest["config"])
         checkpoint["error"] = child.get("error")
         attempts[-1]["finished_at"] = child.get("finished_at") or utc_now()
         save_manifest(series_dir, manifest)
@@ -1743,7 +1805,7 @@ def run_series(
             checkpoint["checkpoint_status"] = child_manifest.get("status")
             checkpoint["error"] = child_manifest.get("error")
 
-            if rc == 0 and child_manifest.get("status") == SUCCESS_STATUS:
+            if rc == 0 and _child_succeeded(child_manifest, config):
                 checkpoint["state"] = "complete"
                 save_manifest(series_dir, manifest)
                 break
@@ -1924,6 +1986,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--sources", default="all")
+    parser.add_argument("--admit-current-inventory-source", default=None)
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--attempts-per-source", type=int, default=3)
@@ -2007,6 +2070,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         sources = parse_sources(args.sources)
+        import cre_current_inventory_admission as current_inventory
+
+        current_inventory.validate_option(
+            args.admit_current_inventory_source, sources, ("sale", "lease")
+        )
     except ValueError as exc:
         parser.error(str(exc))
     if args.page_cap < 1 or not 1 <= args.concurrency <= 6:
@@ -2080,6 +2148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         memory_sample_seconds=args.memory_sample_seconds,
         nice=args.nice,
         recovery=recovery_config,
+        admit_current_inventory_source=args.admit_current_inventory_source,
     )
     database_target = database_target_fingerprint(args.env_file)
 

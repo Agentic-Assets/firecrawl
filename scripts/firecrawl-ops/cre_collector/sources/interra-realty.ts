@@ -1,8 +1,9 @@
 import * as cheerio from "cheerio";
+import { createHash } from "node:crypto";
 import { detailObservation, refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
 import { parseMoney } from "../lib/parse.js";
 import { clean, prune } from "../lib/util.js";
-import type { SourceResult, Tx } from "../types.js";
+import type { InterraCurrentInventoryProof, SourceResult, Tx } from "../types.js";
 
 export const INTERRA_LISTINGS_URL = "https://interrarealty.com/listings/";
 export const INTERRA_INVENTORY_URL =
@@ -155,7 +156,7 @@ export function parseInterraInventory(payload: unknown): InterraInventory {
 
 export async function fetchInterraInventory(
   fetchImpl: typeof fetch = fetch
-): Promise<InterraInventory> {
+): Promise<InterraInventory & { responseTextSha256: string }> {
   const text = await boundedText(INTERRA_INVENTORY_URL, fetchImpl);
   let payload: unknown;
   try {
@@ -163,7 +164,8 @@ export async function fetchInterraInventory(
   } catch {
     throw new Error("Interra inventory returned malformed JSON");
   }
-  return parseInterraInventory(payload);
+  const inventory = parseInterraInventory(payload);
+  return { ...inventory, responseTextSha256: createHash("sha256").update(text, "utf8").digest("hex") };
 }
 
 function htmlText(value: unknown): string | null {
@@ -289,17 +291,27 @@ export async function srcInterraRealty(
   _monitor: boolean,
   fetchImpl: typeof fetch = fetch
 ): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const generationId = refreshGenerationId();
   if (tx === "lease") {
+    const currentInventoryProof: InterraCurrentInventoryProof | undefined = strict && generationId ? {
+      schema: "interra-current-inventory-v1",
+      sourceKey: "interra-realty",
+      transaction: "lease",
+      generationId,
+      kind: "known_empty_transaction",
+      reason: "sale_only_source",
+      count: 0,
+    } : undefined;
     return {
       company: "Interra Realty",
       sourceUrl: INTERRA_LISTINGS_URL,
       method: "Sale-only source",
+      ...(currentInventoryProof ? { currentInventoryProof } : {}),
       totalAvailable: 0,
       listings: [],
     };
   }
-  const strict = requireFreshDetails();
-  const generationId = refreshGenerationId();
   if (strict && !generationId) {
     throw new Error("Interra strict refresh requires CRE_REFRESH_GENERATION");
   }
@@ -314,10 +326,37 @@ export async function srcInterraRealty(
   const listings = selected.map((row) =>
     mapInterraListing(row, observedAt, generationId)
   );
+  let currentInventoryProof: InterraCurrentInventoryProof | undefined;
+  if (strict && generationId) {
+    const nativeIdsByLifecycle: Record<InterraLifecycle, string[]> = {
+      available: [], under_contract: [], closed: [],
+    };
+    for (const row of inventory.rows) {
+      const status = clean(row.meta.listing_status)!.toLowerCase() as InterraLifecycle;
+      nativeIdsByLifecycle[status].push(String(row.ID));
+    }
+    for (const ids of Object.values(nativeIdsByLifecycle)) ids.sort();
+    currentInventoryProof = {
+      schema: "interra-current-inventory-v1",
+      sourceKey: "interra-realty",
+      transaction: "sale",
+      generationId,
+      kind: "terminal_feed",
+      endpoint: INTERRA_INVENTORY_URL,
+      observedAt,
+      hasNextPage: false,
+      responseTextSha256: inventory.responseTextSha256,
+      nativeIdsByLifecycle,
+      emittedNativeIdsSha256: createHash("sha256")
+        .update(JSON.stringify(listings.map(row => row.id).sort()), "utf8")
+        .digest("hex"),
+    };
+  }
   return {
     company: "Interra Realty",
     sourceUrl: INTERRA_LISTINGS_URL,
     method: "Direct complete filtered-loop JSON inventory (no LLM)",
+    ...(currentInventoryProof ? { currentInventoryProof } : {}),
     totalAvailable: active.length,
     listings,
     truncated: listings.length < active.length,

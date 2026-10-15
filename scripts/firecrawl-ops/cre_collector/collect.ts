@@ -201,6 +201,7 @@ async function main() {
           listingsCollected: res.listings.length,
           truncated: res.truncated === true,
           note: res.note ?? null,
+          ...(res.currentInventoryProof ? { currentInventoryProof: res.currentInventoryProof } : {}),
           freshness,
         });
         for (const l of res.listings) {

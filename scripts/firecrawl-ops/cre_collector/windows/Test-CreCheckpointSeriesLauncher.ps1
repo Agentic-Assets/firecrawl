@@ -44,6 +44,10 @@ $quotedRepo = '/home/synthetic space/quote''s "directory"/firecrawl'
 $quotedEnv = '/tmp/synthetic space/quote''s "env".env'
 $cases = @(
     @{ Name = 'series'; Args = $series; Exit = 0; Dispatch = $true },
+    @{ Name = 'interra-current'; Args = @('-Tier', 'series', '-Source', 'interra-realty', '-AdmitCurrentInventorySource', 'interra-realty', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
+    @{ Name = 'interra-wrong-source'; Args = $series + @('-AdmitCurrentInventorySource', 'interra-realty'); Exit = 1; Dispatch = $false },
+    @{ Name = 'interra-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'interra-realty', '-AdmitCurrentInventorySource', 'interra-realty', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
+    @{ Name = 'interra-invalid-option'; Args = $series + @('-AdmitCurrentInventorySource', 'hanley'); Exit = 1; Dispatch = $false },
     @{ Name = 'selected'; Args = @('-Tier', 'series', '-Source', 'hanley', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'max-budget'; Args = @('-Tier', 'series', '-Source', 'hanley', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '86400', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'native124'; Args = $series; Exit = 124; Dispatch = $true; Native = '124' },
@@ -109,9 +113,14 @@ foreach ($case in $cases) {
         }
         Assert-True (($forwarded -join '|').Contains('--concurrency|1|--nice|15|--page-cap|400|--attempts-per-source|3|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
         Assert-True (-not ($forwarded -contains '/usr/bin/nice') -and ($forwarded -join '|').Contains('NAI_ENUMERATION_CONCURRENCY=1|python3|')) 'Coordinator must inherit caller priority; canonical --nice supplies the only checkpoint adjustment.'
-        $selectedSource = if ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
-        $budget = if ($case.Name -eq 'selected') { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
+        $selectedSource = if ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
+        $budget = if ($case.Name -in @('selected', 'interra-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
         Assert-True (($forwarded -join '|').Contains('--sources|' + $selectedSource + '|') -and ($forwarded -join '|').Contains('--work-deadline-seconds|' + $budget + '|')) 'Selected source and exact finite work budget must be forwarded.'
+        if ($case.Name -eq 'interra-current') {
+            Assert-True (($forwarded -join '|').EndsWith('--admit-current-inventory-source|interra-realty')) 'Explicit Interra admission must survive the actual native argv boundary.'
+        } else {
+            Assert-True (-not ($forwarded -contains '--admit-current-inventory-source')) 'Default runs must not acquire current-inventory admission.'
+        }
         if ($case.Name -eq 'quoted-paths') { Assert-True ($forwarded -contains $quotedEnv -and $forwarded -contains ($quotedRepo + '/scripts/firecrawl-ops/cre_collector/cre_checkpoint_series.py')) 'Spaces and literal quotes must survive the native argv boundary without a shell.' }
         Assert-True (-not ($forwarded -contains '--apply') -and -not ($forwarded -contains '--batch') -and -not ($forwarded -contains '--resume')) 'Series has no incremental apply/batch or automatic replay.'
         $audit = @(Get-ChildItem (Join-Path $caseRoot 'out/windows-launcher') -Filter '*.json')[0]
