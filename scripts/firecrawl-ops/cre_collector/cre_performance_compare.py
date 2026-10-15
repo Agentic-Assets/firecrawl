@@ -8,6 +8,15 @@ from datetime import datetime
 
 from cre_ingest import SOURCE_TO_BROKERAGE
 
+_SUCCESS = {
+    "ingested",
+    "complete",
+    "supported_scope_complete",
+    "selected_transaction_scope_complete",
+    "additive_scope_complete_current_inventory",
+    "additive_scope_complete_coverage_hold",
+}
+
 
 def _number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -144,6 +153,8 @@ def compare_reports(current: Mapping, baseline: Mapping) -> dict:
         for key in ("transactions", "max_items", "freshness_policy")
     )
     differences = []
+    if current.get("run_status") != baseline.get("run_status"):
+        differences.append("run_outcome_changed")
     if current.get("collector_git_sha") != baseline.get("collector_git_sha"):
         differences.append("collector_code_changed")
     if not same_sources:
@@ -164,9 +175,25 @@ def compare_reports(current: Mapping, baseline: Mapping) -> dict:
         "run_scope", {}
     ).get("pipeline"):
         differences.append("pipeline_mode_changed")
-    rows, qualified, same_work, same_quality = [], True, True, True
+    rows, qualified, same_work, same_quality = (
+        [],
+        all(report.get("run_status") in _SUCCESS for report in (current, baseline)),
+        True,
+        True,
+    )
     for source in sorted(now_rows.keys() & before_rows.keys()):
         now, before = now_rows[source], before_rows[source]
+        if now.get("status") != before.get("status"):
+            differences.append(f"{source}:outcome_changed")
+        if now.get("status") not in _SUCCESS or before.get("status") not in _SUCCESS:
+            qualified = False
+            differences.append(f"{source}:outcome_not_successful")
+        current_cache, baseline_cache = _cache_retry(now), _cache_retry(before)
+        if current_cache != baseline_cache:
+            differences.append(f"{source}:cache_retry_context_changed")
+        for name in ("cache_hits", "cache_misses", "cache_refresh_bypasses"):
+            if current_cache.get(name) != baseline_cache.get(name):
+                same_work = False
         if now.get("settings") != before.get("settings"):
             differences.append(f"{source}:settings_changed")
         if now.get("staged_unique") != before.get("staged_unique"):
@@ -200,6 +227,11 @@ def compare_reports(current: Mapping, baseline: Mapping) -> dict:
             {
                 "source": source,
                 "readbacks_recorded_ok": readback,
+                "outcomes": {
+                    "current": now.get("status"),
+                    "baseline": before.get("status"),
+                },
+                "cache_retry": {"current": current_cache, "baseline": baseline_cache},
                 "staged_unique": _measurement(
                     now.get("staged_unique"), before.get("staged_unique")
                 ),
@@ -239,6 +271,10 @@ def compare_reports(current: Mapping, baseline: Mapping) -> dict:
         else "unmatched_or_unqualified_observations",
         "baseline_generation_id": baseline.get("generation_id"),
         "baseline_collector_git_sha": baseline.get("collector_git_sha"),
+        "run_outcomes": {
+            "current": current.get("run_status"),
+            "baseline": baseline.get("run_status"),
+        },
         "elapsed": {
             "current_seconds": now_wall,
             "baseline_seconds": before_wall,
@@ -252,6 +288,45 @@ def compare_reports(current: Mapping, baseline: Mapping) -> dict:
         "basis": "observed_wall_and_staged_work_not_sum_of_parallel_commands_or_independent_quality_acceptance",
         "cache_provider_and_host_variation_may_differ": True,
     }
+
+
+def _cache_retry(row: Mapping) -> dict:
+    totals = {}
+    commands = row.get("commands")
+    if not isinstance(commands, list) or len(commands) > 2048:
+        return {"state": "unavailable"}
+    for command in commands:
+        if not isinstance(command, Mapping) or command.get("phase") != "collection":
+            continue
+        scrape = command.get("scrape")
+        if not isinstance(scrape, Mapping):
+            continue
+        cache = scrape.get("jll_detail_cache")
+        cache = cache if isinstance(cache, Mapping) else {}
+        requests = scrape.get("requests")
+        requests = requests if isinstance(requests, Mapping) else {}
+        fields = {
+            "cache_" + name: cache.get(name)
+            for name in ("hits", "misses", "refresh_bypasses")
+        }
+        for kind, prefix in (("http_helper", "http"), ("json_parse", "json")):
+            retry = requests.get(kind)
+            if isinstance(retry, Mapping):
+                fields.update(
+                    {
+                        prefix + "_" + name: retry.get(name)
+                        for name in (
+                            "retry_attempts",
+                            "backoff_ms",
+                            "terminal_backoff_ms",
+                        )
+                    }
+                )
+        for name, value in fields.items():
+            number = _number(value)
+            if number is not None:
+                totals[name] = totals.get(name, 0) + number
+    return {"state": "observed", **totals} if totals else {"state": "unavailable"}
 
 
 def _compare_queries(current: Mapping, baseline: Mapping) -> list[dict]:

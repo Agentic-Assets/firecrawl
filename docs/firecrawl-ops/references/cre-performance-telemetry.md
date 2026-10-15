@@ -33,8 +33,10 @@ audits are distinguishable from a faster individual query.
 
 The comparison shows end-to-end wall time separately from summed command
 durations. It supplies an observed elapsed reduction only for matching source
-sets, transaction/freshness scope, staged counts and recorded successful
-readback/no-regression outcomes. Changed code, configuration, runtime limits or
+sets, transaction/freshness scope, staged counts, successful run/source outcomes
+and recorded successful readback/no-regression outcomes. Known changed cache
+work also prevents that matched-work percentage; observed cache/retry/backoff
+counts remain visible in JSON. Changed code, configuration, runtime limits or
 quality/work counts are visible context. The result is observational, not a
 causal speedup claim; provider, cache and host conditions can still differ.
 Unmatched runs remain useful side-by-side measurements and never receive a
@@ -46,6 +48,9 @@ intervals are wall observations; subprocess journals use monotonic elapsed
 time. One shared child is read once even when several series source entries
 refer to it. Shared DB-unit audits, machine resources and query timing frames
 are attributed once to the owning run/unit rather than to every brokerage.
+Unit before/post timings follow their declared paths and SHA bindings; changed
+or missing reports become gaps. Reused initial/post snapshots are counted once,
+even when the initial snapshot is copied into a unit's evidence directory.
 Per-source rates use collection-to-verified wall time when available; the
 separate acquisition rate retains its collection-only meaning.
 

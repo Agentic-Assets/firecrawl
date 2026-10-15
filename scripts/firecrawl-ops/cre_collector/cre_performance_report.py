@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -596,25 +597,79 @@ def _validation_timings(run_dir: Path, manifest: Mapping[str, Any]) -> list[dict
     from cre_validate import QUERIES
 
     allowed = set(QUERIES) | {"artifact_run_jobs", "historical_primary_child_conflicts"}
-    files = [
-        ("pre_validation", "pre-validation.json"),
-        ("post_validation", "validation.json"),
-    ]
+    pipeline_mode = _object(manifest.get("config")).get("pipeline") is True
+    files = []
+    before = _object(manifest.get("preflight")).get("validation_path")
+    if isinstance(before, str) or not pipeline_mode:
+        files.append(("pre_validation", before or "pre-validation.json", None, False))
+    if not pipeline_mode:
+        after = _object(manifest.get("validation")).get("path")
+        files.append(("post_validation", after or "validation.json", None, False))
     units = _object(manifest.get("pipeline")).get("units")
     if isinstance(units, list) and len(units) <= len(SOURCE_TO_BROKERAGE):
         for unit in units:
             unit = _object(unit)
             name = unit.get("unit_id", unit.get("id"))
             if isinstance(name, str) and re.fullmatch(r"unit-[0-9]{4,6}", name):
-                files.append((name, f"pipeline/{name}/validation.json"))
+                for stage, path_key, hash_key in (
+                    (name + "-before", "before_path", "before_sha256"),
+                    (name, "validation_path", "validation_sha256"),
+                ):
+                    relative = unit.get(path_key)
+                    if (
+                        path_key == "before_path"
+                        and unit.get("before_reused") is True
+                        and unit.get("before_reuse_kind") == "initial_preflight"
+                    ):
+                        relative = unit.get("before_source_path")
+                    if isinstance(relative, str):
+                        files.append((stage, relative, unit.get(hash_key), True))
     result = []
-    for stage, relative in files:
+    bound_files = {}
+    for stage, relative, expected_hash, required in files:
+        path = _contained_path(run_dir, relative)
+        if path is None:
+            continue
+        previous = bound_files.get(path)
+        if previous is None or (required and not previous[2]):
+            bound_files[path] = (stage, expected_hash, required)
+        elif required and previous[2] and previous[1] != expected_hash:
+            bound_files[path] = (stage, None, True)
+    for path, (stage, expected_hash, required) in bound_files.items():
         try:
-            path = _contained_path(run_dir, relative)
-            if path is None:
-                continue
-            data = _read_json(path, limit=MAX_MANIFEST_BYTES)
+            raw = _read_regular_file(path, limit=MAX_MANIFEST_BYTES)
+            if required and (
+                not isinstance(expected_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+                or hashlib.sha256(raw).hexdigest() != expected_hash
+            ):
+                raise ValueError("invalid report binding")
+            data = _object(json.loads(raw))
+            if pipeline_mode:
+                observed = _timestamp(data.get("generated_at"))
+                start, end = (
+                    _timestamp(manifest.get("started_at")),
+                    _timestamp(manifest.get("finished_at"))
+                    or _timestamp(manifest.get("updated_at"))
+                    or datetime.now(timezone.utc),
+                )
+                if (
+                    observed is None
+                    or start is None
+                    or end is None
+                    or not start <= observed <= end
+                ):
+                    raise ValueError("invalid report generation")
         except (OSError, ValueError, UnicodeError, RecursionError):
+            if required:
+                result.append(
+                    {
+                        "run_id": run_dir.name,
+                        "stage": stage,
+                        "queries": {},
+                        "unavailable_code": "report_binding_invalid",
+                    }
+                )
             continue
         timings = _object(data.get("query_timings"))
         result.append(
@@ -880,6 +935,9 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
         else "current_checkpoint_sessions",
         "generation_id": generation,
         "collector_git_sha": sha,
+        "run_status": manifest.get("status")
+        if _member(manifest.get("status"), STATUSES)
+        else "unknown",
         "run_scope": {
             "transactions": _object(manifest.get("config")).get("transactions")
             if _object(manifest.get("config")).get("transactions")

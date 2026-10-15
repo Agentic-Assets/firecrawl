@@ -14,6 +14,7 @@ def saved_report(*, wall=100, count=20, readback=True):
         "generation_id": "2026-10-15T120000Z",
         "collector_git_sha": "a" * 40,
         "run_elapsed_seconds": wall,
+        "run_status": "complete",
         "run_scope": {"transactions": ["sale", "lease"], "pipeline": True},
         "sources": [
             {
@@ -178,3 +179,36 @@ def test_query_comparison_shows_call_count_and_client_cost_not_run_wall():
     assert row["calls"] == {"current": 1.0, "baseline": 2.0, "change": -1.0}
     assert row["summed_client_ms"]["baseline"] == 400
     assert row["summed_client_ms"]["current"] == 50
+
+
+def test_failed_outcome_with_old_success_fields_never_gets_reduction():
+    current = saved_report(wall=50)
+    current["run_status"] = "failed"
+    current["sources"][0]["status"] = "failed_global"
+    result = compare_reports(current, saved_report())
+    assert "run_outcome_changed" in result["context_differences"]
+    assert "hanley:outcome_changed" in result["context_differences"]
+    assert result["elapsed"]["reduction_percent"] is None
+
+
+def test_known_cache_retry_differences_are_exposed_as_comparison_context():
+    current, baseline = saved_report(wall=50), saved_report()
+    for report, hits, retries in ((baseline, 0, 0), (current, 100, 20)):
+        report["sources"][0]["commands"] = [
+            {
+                "phase": "collection",
+                "scrape": {
+                    "jll_detail_cache": {"hits": hits, "misses": 10},
+                    "requests": {
+                        "http_helper": {
+                            "retry_attempts": retries,
+                            "backoff_ms": retries * 100,
+                        }
+                    },
+                },
+            }
+        ]
+    result = compare_reports(current, baseline)
+    assert "hanley:cache_retry_context_changed" in result["context_differences"]
+    assert result["sources"][0]["cache_retry"]["current"]["cache_hits"] == 100
+    assert result["sources"][0]["cache_retry"]["baseline"]["http_retry_attempts"] == 0

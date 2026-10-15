@@ -180,6 +180,100 @@ def test_total_journal_budget_keeps_prior_measurements_and_marks_gap(
     assert "journal_total_byte_limit_exceeded" in warnings
 
 
+def test_pipeline_query_timings_include_first_before_and_refuse_changed_hash(tmp_path):
+    import hashlib
+
+    run = checkpoint(tmp_path)
+    unit = run / "pipeline" / "unit-0001"
+    unit.mkdir(parents=True)
+    before = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:05Z",
+            "validation_profile": "checkpoint-preflight",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 111}
+            },
+        }
+    ).encode()
+    post = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:30Z",
+            "validation_profile": "full",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 222}
+            },
+        }
+    ).encode()
+    (unit / "before.json").write_bytes(before)
+    (unit / "validation.json").write_bytes(post)
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["pipeline"] = True
+    manifest["pipeline"] = {
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "before_path": "pipeline/unit-0001/before.json",
+                "before_sha256": hashlib.sha256(before).hexdigest(),
+                "validation_path": "pipeline/unit-0001/validation.json",
+                "validation_sha256": hashlib.sha256(post).hexdigest(),
+            }
+        ]
+    }
+    result = report._validation_timings(run, manifest)
+    assert (
+        sum(
+            row["queries"].get("source_counts", {}).get("elapsed_ms", 0) or 0
+            for row in result
+        )
+        == 333
+    )
+    (unit / "validation.json").write_bytes(post.replace(b"222", b"999"))
+    result = report._validation_timings(run, manifest)
+    assert not any(
+        row["queries"].get("source_counts", {}).get("elapsed_ms") == 999
+        for row in result
+    )
+    assert any(
+        row.get("unavailable_code") == "report_binding_invalid" for row in result
+    )
+
+
+def test_copied_reused_initial_preflight_is_one_query_not_two(tmp_path):
+    import hashlib
+
+    run = checkpoint(tmp_path)
+    unit = run / "pipeline" / "unit-0001"
+    unit.mkdir(parents=True)
+    raw = json.dumps(
+        {
+            "generated_at": "2026-09-13T12:00:05Z",
+            "query_timings": {
+                "source_counts": {"status": "available", "elapsed_ms": 111}
+            },
+        }
+    ).encode()
+    (run / "pre-validation.json").write_bytes(raw)
+    (unit / "before.json").write_bytes(raw)
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["pipeline"] = True
+    manifest["preflight"] = {"validation_path": "pre-validation.json"}
+    manifest["pipeline"] = {
+        "units": [
+            {
+                "unit_id": "unit-0001",
+                "before_path": "pipeline/unit-0001/before.json",
+                "before_sha256": hashlib.sha256(raw).hexdigest(),
+                "before_reused": True,
+                "before_reuse_kind": "initial_preflight",
+                "before_source_path": "pre-validation.json",
+            }
+        ]
+    }
+    result = report._validation_timings(run, manifest)
+    assert len(result) == 1
+    assert result[0]["queries"]["source_counts"]["elapsed_ms"] == 111
+
+
 def journal(run: Path, *, identity: str = COMMAND, finish: bool = True) -> Path:
     path = run / "logs" / Path(LOG).with_suffix(".performance.jsonl")
     base = {
