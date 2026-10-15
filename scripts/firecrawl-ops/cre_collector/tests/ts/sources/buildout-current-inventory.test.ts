@@ -191,7 +191,7 @@ test("Buildout complete inventory receipt", async (t) => {
 
 
 test("Buildout listing ownership shares bare/www equivalence and URL guards", () => fixture(async ({ setPages }) => {
-  const vectors = JSON.parse(readFileSync(new URL("../../fixtures/buildout-listing-hosts.json", import.meta.url), "utf8")) as { host: string; url: string; owned: boolean }[];
+  const vectors = JSON.parse(readFileSync(new URL("../../fixtures/buildout-listing-hosts.json", import.meta.url), "utf8")) as { host: string; url: string; owned: boolean; inventoryOwned?: boolean }[];
   for (const vector of vectors) {
     buildoutCache.clear();
     setPages(pages([row(968697, { show_link: vector.url, sale: false })]));
@@ -199,13 +199,32 @@ test("Buildout listing ownership shares bare/www equivalence and URL guards", ()
     const result = await srcBuildout(firm.company, firm.pluginKey, listingPage, "lease", Infinity, false, opts);
     const iframe = buildoutDetailIframeUrl(firm.sourceKey, vector.url,
       { ...firm.detailConfig!, host: vector.host, listingHosts: [vector.host] });
-    if (vector.owned) {
+    if (vector.inventoryOwned ?? vector.owned) {
       assert.equal(proof(result).pages[0].rows[0].showLink, vector.url);
       assert.equal(result.listings[0].url, vector.url);
-      assert.equal(iframe, `https://buildout.com/plugins/${firm.pluginKey}/${vector.host}/inventory/687920?pluginId=0&iframe=true&embedded=true`);
     } else {
       assert.equal(result.currentInventoryProof, undefined, vector.url);
+    }
+    if (vector.owned) {
+      assert.equal(iframe, `https://buildout.com/plugins/${firm.pluginKey}/${vector.host}/inventory/687920?pluginId=0&iframe=true&embedded=true`);
+    } else {
       assert.equal(iframe, null, vector.url);
+    }
+  }
+}));
+
+
+test("Buildout producer uses the shared literal inventory URL grammar", () => fixture(async ({ setPages }) => {
+  const vectors = JSON.parse(readFileSync(new URL("../../fixtures/buildout-inventory-urls.json", import.meta.url), "utf8")) as { name: string; url: string; accepted: boolean }[];
+  for (const vector of vectors) {
+    buildoutCache.clear();
+    setPages(pages([row(968697, { show_link: vector.url, sale: false })]));
+    const result = await srcBuildout(firm.company, firm.pluginKey, "https://broker.example/", "lease", Infinity, false, opts);
+    if (vector.accepted) {
+      assert.equal(proof(result).pages[0].rows[0].showLink, vector.url, vector.name);
+      assert.equal(result.listings[0].url, vector.url, vector.name);
+    } else {
+      assert.equal(result.currentInventoryProof, undefined, vector.name);
     }
   }
 }));

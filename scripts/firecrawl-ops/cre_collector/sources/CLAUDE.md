@@ -77,6 +77,12 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 ## Buildout (`buildout.ts`) - Shared Adapter
 
 - **No server-side sale/lease filter**; one inventory fetch per `pluginKey`, `buildoutCache` shared across sale+lease passes.
+- Current-inventory receipts preserve literal owned HTTP(S) listing URLs, including
+  one nonempty `propertyId` alongside empty template parameters and meaningful
+  path-routed URLs using the existing native-ID fallback. Admission still requires
+  complete pages, unique URL-to-stored-ID bindings and explained dual-mode merges.
+  HTTP metadata proves neither redirects nor TLS; detail iframe resolution remains
+  HTTPS-only and requires its existing query `propertyId`.
 - **Registered strict sources**: `requireCompletePages: true` (any page fail aborts); stable provider ordering and durable source-scoped page cache at `out/cache/buildout/{slug}/page-NNNN.json`.
 - Cache policy is fail-fresh by default: ordinary collection reads live and
   writes every validated page (`read=false`, `write=true`). Explicit

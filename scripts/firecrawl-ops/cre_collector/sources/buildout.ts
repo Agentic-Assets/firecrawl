@@ -776,10 +776,11 @@ export function buildoutSlugFromUrl(url: string | null): string | null {
 // www. label. Keep the configured iframe host and the original listing URL intact.
 function buildoutOwnedListingUrl(
   listingUrl: string | null,
-  listingHosts: readonly string[]
+  listingHosts: readonly string[],
+  allowHttp = false
 ): URL | null {
   const rawUrl = clean(listingUrl);
-  if (!rawUrl || /\s/.test(rawUrl)) return null;
+  if (!rawUrl || rawUrl !== listingUrl || /[\s\x00-\x1f\x7f]/.test(rawUrl)) return null;
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -788,10 +789,10 @@ function buildoutOwnedListingUrl(
   }
   // URL normalizes an explicit default `:443` away, so inspect the original
   // authority too. These listing hosts are DNS names, not IPv6 literals.
-  const authority = rawUrl.match(/^https:\/\/([^/?#]+)(?:[/?#]|$)/i)?.[1] ?? "";
+  const authority = rawUrl.match(/^https?:\/\/([^/?#]+)(?:[/?#]|$)/i)?.[1] ?? "";
   const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
   if (
-    parsed.protocol !== "https:" ||
+    !(parsed.protocol === "https:" || (allowHttp && parsed.protocol === "http:")) ||
     !authority ||
     authority.toLowerCase() !== parsed.hostname ||
     authority.includes("@") ||
@@ -806,6 +807,27 @@ function buildoutOwnedListingUrl(
     )
   ) {
     return null;
+  }
+  return parsed;
+}
+
+// Inventory metadata can publish HTTP or path-routed listing URLs. Keep the
+// provider's literal URL and the existing ingest identity; this does not prove
+// HTTP redirects/TLS or make path URLs resolvable by the detail iframe helper.
+function buildoutInventoryListingUrl(listingUrl: string, host: string): URL | null {
+  const parsed = buildoutOwnedListingUrl(listingUrl, [host], true);
+  if (!parsed) return null;
+  const rawPath = listingUrl.match(/^https?:\/\/[^/?#]+([^?#]*)/i)?.[1] ?? "";
+  if ((rawPath || "/") !== parsed.pathname) return null;
+  if (parsed.searchParams.has("propertyId")) {
+    const values = parsed.searchParams.getAll("propertyId").filter(Boolean);
+    const literal = listingUrl.match(/[?&]propertyId=([^&#]+)/)?.[1];
+    if (values.length !== 1 || !/^[A-Za-z0-9_-]+$/.test(values[0]) ||
+        !values[0].replace(/-(sale|lease)$/, "") || literal !== values[0]) return null;
+  } else {
+    const leaf = parsed.pathname.replace(/\/$/, "").split("/").at(-1)?.toLowerCase();
+    if (parsed.search || !/^\/(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_-]+\/?$/.test(parsed.pathname) ||
+        ["properties", "listings", "inventory", "search", "property-search", "available-properties"].includes(leaf ?? "")) return null;
   }
   return parsed;
 }
@@ -1089,7 +1111,7 @@ export async function srcBuildout(
     !buildoutCapTruncated(max, listings.length, eligibleItems.length) &&
     proofPages.every((page) => page.rows.every((row) => {
       try {
-        return buildoutOwnedListingUrl(row.showLink, [new URL(listingsPage).hostname]) !== null;
+        return buildoutInventoryListingUrl(row.showLink, new URL(listingsPage).hostname) !== null;
       } catch { return false; }
     }))
       ? {

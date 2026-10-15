@@ -78,24 +78,58 @@ def _listing_hosts_match(actual: str, expected: str) -> bool:
 
 
 def _owned_url(value: object, host: str) -> str:
-    require(isinstance(value, str) and value and not any(c.isspace() for c in value))
+    require(
+        isinstance(value, str)
+        and value
+        and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)
+    )
     parsed = urlsplit(value)
     require(
-        parsed.scheme == "https"
+        parsed.scheme in {"http", "https"}
         and parsed.hostname
         and parsed.netloc.lower() == parsed.hostname
         and _listing_hosts_match(parsed.hostname, host)
         and "#" not in value
     )
-    ids = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True).get(
-        "propertyId", []
-    )
-    require(len(ids) == 1 and re.fullmatch(r"[A-Za-z0-9_-]+", ids[0]))
-    require(bool(re.sub(r"-(sale|lease)$", "", ids[0])))
-    # to_row intentionally consumes the literal query value, without decoding.
-    literal = re.search(r"[?&]propertyId=([^&#]+)", value)
-    require(literal is not None and literal.group(1) == ids[0])
+    query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+    if "propertyId" in query:
+        # Some official feeds retain an empty template parameter before their
+        # actual propertyId. Preserve it; ingest selects the first nonempty
+        # literal value. Multiple nonempty values remain ambiguous.
+        ids = [item for item in query["propertyId"] if item]
+        require(len(ids) == 1 and re.fullmatch(r"[A-Za-z0-9_-]+", ids[0]))
+        require(bool(re.sub(r"-(sale|lease)$", "", ids[0])))
+        literal = re.search(r"[?&]propertyId=([^&#]+)", value)
+        require(literal is not None and literal.group(1) == ids[0])
+    else:
+        # Path-routed official listings retain to_row's native-ID fallback.
+        # Never turn a homepage, inventory hub or query-only URL into a listing.
+        require(not parsed.query)
+        require(re.fullmatch(r"/(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_-]+/?", parsed.path))
+        require(
+            parsed.path.rstrip("/").rsplit("/", 1)[-1].lower()
+            not in {
+                "properties",
+                "listings",
+                "inventory",
+                "search",
+                "property-search",
+                "available-properties",
+            }
+        )
     return value
+
+
+def _url_identity(value: str) -> tuple:
+    """Compare admitted URLs without changing literal URLs or ingest IDs."""
+    parsed = urlsplit(value)
+    literal = re.search(r"[?&]propertyId=([^&#]+)", value)
+    return (
+        parsed.scheme,
+        (parsed.hostname or "").removeprefix("www."),
+        parsed.path,
+        re.sub(r"-(sale|lease)$", "", literal.group(1)) if literal else None,
+    )
 
 
 def admit(
@@ -264,6 +298,7 @@ def admit(
     )
     require({r.get("id") for r in listings} == set(expected))
     staged = defaultdict(list)
+    stored_id_by_url = {}
     for listing in listings:
         item, page = expected[listing["id"]]
         tx = "sale" if item["sale"] else "lease"
@@ -302,12 +337,17 @@ def admit(
         require(not listing.get("detailObservedAt"))
         transformed = to_row(listing, {}, meta["finishedAt"])
         require(transformed is not None)
-        staged[transformed["external_id"]].append((listing, transformed))
+        url_identity = _url_identity(listing["url"])
+        external_id = transformed["external_id"]
+        require(stored_id_by_url.get(url_identity, external_id) == external_id)
+        stored_id_by_url[url_identity] = external_id
+        staged[external_id].append((listing, transformed))
     staged_bindings = []
     for external, members in sorted(staged.items()):
         require(len(members) <= 2)
         if len(members) == 2:
             require({m[0]["transactionMode"] for m in members} == {"sale", "lease"})
+            require(len({_url_identity(m[0]["url"]) for m in members}) == 1)
         merged = members[0][1]
         for _, transformed in members[1:]:
             merged = merge_rows(merged, transformed)

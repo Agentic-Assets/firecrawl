@@ -490,8 +490,18 @@ def test_historical_certificate_still_refuses_buildout_inventory_admission(tmp_p
     assert any(f["code"] == "subset_scope" for f in result["failures"])
 
 
+@pytest.mark.parametrize(
+    "url_pattern,accepted,stored_ids",
+    [
+        ("https://{host}/listings/?propertyId={pid}", True, {"one", "two"}),
+        ("http://{host}/listings/?propertyId={pid}", True, {"one", "two"}),
+        ("https://{host}/listings/?propertyId=&propertyId={pid}", True, {"one", "two"}),
+        ("https://{host}/properties/{pid}/", True, {"10", "20"}),
+        ("https://foreign.example/listings/?propertyId={pid}", False, None),
+    ],
+)
 def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, url_pattern, accepted, stored_ids
 ):
     node = shutil.which("node")
     if node is None:
@@ -508,7 +518,9 @@ def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
                 "closed": False,
                 "under_contract": False,
                 "also_for_sale_or_lease": False,
-                "show_link": f"https://{definition['host']}/listings/?propertyId=one-sale",
+                "show_link": url_pattern.format(
+                    host=definition["host"], pid="one-sale"
+                ),
                 "display_name": "Synthetic",
             },
             {
@@ -517,7 +529,9 @@ def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
                 "closed": False,
                 "under_contract": True,
                 "also_for_sale_or_lease": False,
-                "show_link": f"https://{definition['host']}/listings/?propertyId=two-lease",
+                "show_link": url_pattern.format(
+                    host=definition["host"], pid="two-lease"
+                ),
                 "display_name": "Synthetic",
             },
         ],
@@ -565,7 +579,19 @@ def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
     assert child.returncode == 0, child.stderr
     artifact = json.loads(path.read_text())
     report["per_source"][SOURCE]["current_active"] = 2
-    assert artifact["sources"][0]["currentInventoryProof"]["total"] == 2
+    if accepted:
+        assert artifact["sources"][0]["currentInventoryProof"]["total"] == 2
+        assert {row["url"] for row in artifact["listings"]} == {
+            row["show_link"] for row in feed["inventory"]
+        }
+        assert {
+            buildout.to_row(row, {}, artifact["runMeta"]["finishedAt"])["external_id"]
+            for row in artifact["listings"]
+        } == stored_ids
+    else:
+        assert all(
+            "currentInventoryProof" not in entry for entry in artifact["sources"]
+        )
     manifest["sources"][SOURCE]["artifact"] = {
         **cp.validate_source_artifact(
             path,
@@ -587,6 +613,10 @@ def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
         return 0
 
     monkeypatch.setattr(cp, "run_command", command)
+    if not accepted:
+        with pytest.raises(cp.GlobalStageError):
+            cp.gate_source(run, manifest, SOURCE, path, None)
+        return
     cp.gate_source(run, manifest, SOURCE, path, None)
     cp.run_aggregate_gate(run, manifest, None)
     assert (
@@ -656,7 +686,7 @@ def test_buildout_listing_host_vectors_preserve_urls_and_admission(
             "687920-lease", property_id
         )
     refresh(path, artifact, manifest)
-    if vector["owned"]:
+    if vector.get("inventoryOwned", vector["owned"]):
         proof = admit(path, manifest, report)
         assert proof["staged_count"] == 2
         assert (
@@ -691,3 +721,62 @@ def test_listing_www_equivalence_does_not_rebind_proof_coordinates(
     refresh(path, artifact, manifest)
     with pytest.raises(ValueError):
         admit(path, manifest, report)
+
+
+def test_path_inventory_refuses_one_url_with_different_native_identities(tmp_path):
+    _, path, artifact, manifest, report = setup(tmp_path)
+    host = buildout.definitions()[SOURCE]["host"]
+    for entry in artifact["sources"]:
+        for page in entry["currentInventoryProof"]["pages"]:
+            for row in page["rows"]:
+                row["showLink"] = f"https://{host}/properties/shared-property/"
+    for row in artifact["listings"]:
+        row["url"] = row["canonicalUrl"] = f"https://{host}/properties/shared-property/"
+    refresh(path, artifact, manifest)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report)
+
+
+def test_query_inventory_refuses_dual_modes_on_different_property_paths(tmp_path):
+    _, path, artifact, manifest, report = setup(tmp_path)
+    for entry in artifact["sources"]:
+        for page in entry["currentInventoryProof"]["pages"]:
+            for row in page["rows"]:
+                if row["id"] == "20":
+                    row["showLink"] = row["showLink"].replace(
+                        "/listings/", "/different-property/"
+                    )
+    for row in artifact["listings"]:
+        if row["id"] == "20":
+            row["url"] = row["canonicalUrl"] = row["url"].replace(
+                "/listings/", "/different-property/"
+            )
+    refresh(path, artifact, manifest)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report)
+
+
+INVENTORY_URL_VECTORS = json.loads(
+    (Path(__file__).parent / "fixtures" / "buildout-inventory-urls.json").read_text()
+)
+
+
+@pytest.mark.parametrize("vector", INVENTORY_URL_VECTORS, ids=lambda row: row["name"])
+def test_shared_inventory_url_grammar_preserves_actual_ingest_identity(vector):
+    if vector["accepted"]:
+        assert buildout._owned_url(vector["url"], "broker.example") == vector["url"]
+        transformed = buildout.to_row(
+            {
+                "sourceKey": SOURCE,
+                "id": "968697",
+                "url": vector["url"],
+                "transactionType": "Lease",
+            },
+            {},
+            datetime.now(UTC).isoformat(),
+        )
+        assert transformed["external_id"] == vector["externalId"]
+        assert transformed["source_url"] == vector["url"]
+    else:
+        with pytest.raises(ValueError):
+            buildout._owned_url(vector["url"], "broker.example")
