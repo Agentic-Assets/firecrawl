@@ -152,6 +152,9 @@ bash cre_status.sh --scheduler external
 
 Missing production credentials and empty run history are honest status warnings. `external` mode retains lock and staleness checks and creates no scheduler. Provision secrets separately through the approved operator workflow. Use a separate `git clone --no-hardlinks` for the full offline suites.
 
+The [cross-platform credential layout](guarded-incremental-tiers.md#credential-layout-across-windows-and-mac)
+distinguishes private CRE database/webhook files from Docker's root `.env`.
+
 ### Minimal company context in Ubuntu
 
 The verified minimal WSL context uses the existing canonical Windows Context

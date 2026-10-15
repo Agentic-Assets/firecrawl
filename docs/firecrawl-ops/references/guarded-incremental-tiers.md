@@ -276,6 +276,36 @@ reference in the task configuration rather than placing the URL in Git. For
 another Windows computer, provision its private file and use the same
 `$env:USERPROFILE` expression; no hardcoded username or repository edit is needed.
 
+### Credential layout across Windows and Mac
+
+Use `~/.config/cre/` as the private CRE credential directory on each host.
+Keep setup instructions and non-secret examples in this repository; provision
+the actual values separately on each computer. Do not synchronize credentials
+through Git, copy them into `local/machine.md`, or collect unrelated service
+keys into one shared environment file.
+
+| File | Format and consumer |
+| --- | --- |
+| `~/.config/cre/cre-pipeline.webhook` | One URL only, UTF8 without a BOM; Windows uses `-AlertWebhookFile`, while the existing Mac tier wrapper uses `CRE_ALERT_WEBHOOK_FILE`. |
+| `~/.config/cre/equire.env` | Approved database `KEY=value` settings; select explicitly with the collector's `--env-file` or `CRE_ENV_FILE`. |
+| Repository root `.env` | Optional Docker Compose settings, kept out of Git; this does not configure the native Windows task or automatically load CRE credentials. |
+
+On Windows, `~` means `$env:USERPROFILE`. The database consumer runs inside
+Ubuntu, so its `equire.env` belongs in the Linux user's home, currently
+`/home/cayman/.config/cre/equire.env`; the Windows notification file belongs in
+the Windows user's home. Do not move or replace an existing database file while
+adding Slack. Windows webhook files require the owner/ACL checks above. On Mac,
+use the Mac user's own home directory, an owned private directory (mode `700`)
+and an owned webhook file with mode `600` (or read-only `400`). Preserve existing
+values when creating files; never use a setup command that truncates them.
+
+The existing Mac wrapper supports failure alerts through this file format;
+Windows `StartFinish` behavior is specific to the native Windows launcher.
+Setting a path does not install or enable a Mac schedule. For migration,
+provision the needed credentials privately on the destination, update only
+non-secret file references, and verify delivery and database identity before
+changing the active writer.
+
 The audit records `not_configured`, `not_attempted`, `http_accepted`, `failed`
 or `unverified` notification status when writable. Exact HTTP 2xx with native
 exit 0 and completed IO means HTTP acceptance, **not destination delivery or
