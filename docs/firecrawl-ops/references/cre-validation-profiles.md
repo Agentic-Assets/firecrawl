@@ -46,6 +46,14 @@ validator queries on synthetic data, then measures three counterbalanced runs.
 It requires the pinned cached PostgreSQL image and uses an isolated, bounded
 container with no ports or network; synthetic timings are not production gains.
 
+[AGENTIC-4281](https://linear.app/agenticassets/issue/AGENTIC-4281) reuses one
+per-row decompressed JSON root in the full freshness-generation query. Its
+empty-path JSONB extraction and lateral fences retain the existing payload
+precedence, SQL/JSON null handling, timestamp errors and complete output. The
+fingerprint query, validation profiles and single read-only snapshot are
+unchanged. Synthetic PostgreSQL parity and timings do not establish a production
+speedup; compare a later admitted run before making that claim.
+
 ## Measure the effect
 
 Compare `query_timings` and command duration from saved reports. Timings are
