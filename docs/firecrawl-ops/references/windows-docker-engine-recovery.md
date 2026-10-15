@@ -59,6 +59,31 @@ configuration and local queue data. CRE writes still require the
 [supervised checkpoint procedure](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#strict-listing-refresh)
 and current sole-writer coordination.
 
+## Windows startup and container restart policy
+
+For an approved Windows unattended workload, verify Docker Desktop's login
+startup separately from the containers' restart policies. A running Desktop
+window, a login entry and a container policy each prove different settings.
+Inspect only the intended five core containers; do not change every container
+on the computer. Docker supports updating an existing container's policy with
+`docker update --restart unless-stopped <verified-container-id>` without
+recreating it. Reinspect its identity, image, resource limits and policy.
+
+Keep Windows-only restart settings in a private Compose override, used alongside
+the reviewed root Compose file for future recreation. Do not put the host's
+startup preference into shared Compose or the Mac configuration. Record the
+override's path in the host's ignored `local/machine.md`.
+
+`unless-stopped` respects a manual stop, including across an engine restart;
+it does not make a deliberately stopped stack ready for collection. The
+foreground Windows launcher waits briefly for the local API and then refuses
+dispatch if unavailable. It never restarts Docker. Task scheduling requires
+separate [native run acceptance](guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance).
+Verified startup settings and a manual scrape do not prove reboot/login
+recovery; record that test separately when actually observed.
+
+See Docker's [restart policy documentation](https://docs.docker.com/engine/containers/start-containers-automatically/).
+
 ## Observed recovery and limits
 
 On October 13, 2026, Docker Desktop 4.95.0 reported a stopped Linux engine.
