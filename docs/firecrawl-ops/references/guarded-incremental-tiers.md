@@ -252,9 +252,10 @@ terminal outcome; `notificationStart` independently records the start outcome,
 and `notificationMode` records the selected behavior. Each phase is attempted
 at most once. Notification failure preserves the operation's exit code and
 never retries the collector or its database writes. A single observed Linux
-run/series reference may appear in the terminal message as informational context;
-it establishes neither Linux ownership nor settlement. Conflicting references
-are omitted. `CheckOnly` remains quiet and never reads the endpoint in either mode.
+run/series reference observed on stdout may appear in the terminal message as
+informational context; it establishes neither Linux ownership nor settlement.
+Conflicting stdout references are omitted; stderr is not a run-reference source.
+`CheckOnly` remains quiet and never reads the endpoint in either mode.
 
 For Slack, provision an [Incoming Webhook](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/)
 bound to the intended channel, then
