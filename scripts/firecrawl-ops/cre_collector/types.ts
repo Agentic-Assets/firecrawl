@@ -207,12 +207,38 @@ export interface OmFactRow {
   confidence?: number | null;
 }
 
+export type InterraCurrentInventoryProof = {
+  schema: "interra-current-inventory-v1";
+  sourceKey: "interra-realty";
+  generationId: string;
+} & (
+  | {
+      kind: "terminal_feed";
+      transaction: "sale";
+      endpoint: string;
+      observedAt: string;
+      hasNextPage: false;
+      // SHA256 of the exact decoded response text encoded as UTF8, not raw bytes.
+      responseTextSha256: string;
+      nativeIdsByLifecycle: Record<"available" | "under_contract" | "closed", string[]>;
+      // SHA256 of compact JSON for the ASCII-sorted emitted native ID strings.
+      emittedNativeIdsSha256: string;
+    }
+  | {
+      kind: "known_empty_transaction";
+      transaction: "lease";
+      reason: "sale_only_source";
+      count: 0;
+    }
+);
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
+  currentInventoryProof?: InterraCurrentInventoryProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor

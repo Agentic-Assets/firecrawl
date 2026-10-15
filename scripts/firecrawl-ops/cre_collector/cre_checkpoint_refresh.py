@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Self
 
 import cre_recovery_guard_journal as recovery_guard_journal
+import cre_current_inventory_admission as current_inventory
 from cre_ingest import (
     AUTHORITATIVE_INVENTORY_FEED_SOURCE_KEYS,
     BUILDOUT_SOURCE_KEYS,
@@ -3853,10 +3854,11 @@ def new_manifest(
     memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
+    admit_current_inventory_source: str | None = None,
     database_target: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     now = utc_now()
-    return {
+    manifest = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_dir.name,
         "status": "running",
@@ -3917,6 +3919,19 @@ def new_manifest(
         "error": None,
     }
 
+    if admit_current_inventory_source is not None:
+        current_inventory.validate_option(
+            admit_current_inventory_source,
+            sources,
+            transactions,
+            additive_hold=admit_baseline_hold_additively,
+            allow_dirty=git_dirty,
+        )
+        manifest["config"]["current_inventory_admission"] = (
+            current_inventory.configuration(admit_current_inventory_source)
+        )
+    return manifest
+
 
 def load_resume_manifest(
     manifest_path: Path,
@@ -3933,6 +3948,7 @@ def load_resume_manifest(
     memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
+    admit_current_inventory_source: str | None = None,
     database_target: Mapping[str, str] | None = None,
     max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
     now: datetime | None = None,
@@ -3970,6 +3986,16 @@ def load_resume_manifest(
         "mark_missing": False,
         "admit_baseline_hold_additively": admit_baseline_hold_additively,
     }
+    if admit_current_inventory_source is not None:
+        current_inventory.validate_option(
+            admit_current_inventory_source,
+            sources,
+            transactions,
+            additive_hold=admit_baseline_hold_additively,
+        )
+        expected["current_inventory_admission"] = current_inventory.configuration(
+            admit_current_inventory_source
+        )
     recorded_config = dict(value.get("config") or {})
     # Checkpoints created before these config blocks retain their exact prior
     # contracts. Normalize in memory for comparison and for the next canonical
@@ -4461,7 +4487,34 @@ def gate_verdict_is_admitted(manifest: Mapping[str, Any], verdict: Any) -> bool:
         return verdict == "ok_additive_subset"
     if manifest["config"].get("admit_baseline_hold_additively") is True:
         return verdict in {"ok", "ok_additive_coverage_hold"}
+    if manifest["config"].get("current_inventory_admission"):
+        return verdict == current_inventory.VERDICT
     return verdict == "ok"
+
+
+def _admit_current_inventory(run_dir, manifest, report, artifact, phase):
+    source = current_inventory.SOURCE
+    info = manifest["sources"][source]["artifact"]
+    try:
+        validate_source_artifact(
+            artifact,
+            source,
+            info.get("attempt_started_at") or info["started_at"],
+            expected_generation_id=manifest["run_id"],
+            expected_generation_started_at=manifest["started_at"],
+            expected_transactions=TRANSACTIONS,
+        )
+        git_sha, git_dirty = git_identity()
+        current_inventory.admit(
+            artifact,
+            manifest,
+            report,
+            current_code_sha=git_sha,
+            current_git_dirty=git_dirty,
+            phase=phase,
+        )
+    except (ArtifactValidationError, KeyError, TypeError, ValueError) as exc:
+        raise GlobalStageError("current-inventory admission refused") from exc
 
 
 def gate_source(
@@ -4498,6 +4551,9 @@ def gate_source(
     try:
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
+        if manifest["config"].get("current_inventory_admission"):
+            _admit_current_inventory(run_dir, manifest, result, artifact, "source")
+            atomic_write_json(gate_path, result)
         subset_mode = not full_transaction_scope
         additive_coverage_hold = (
             full_transaction_scope
@@ -4573,6 +4629,11 @@ def gate_source(
         "raw_verdict": per_source.get("raw_verdict"),
         "raw_reason": per_source.get("raw_reason"),
         "admission_scope": per_source.get("admission_scope"),
+        **(
+            {"current_inventory_proof": per_source["current_inventory_proof"]}
+            if "current_inventory_proof" in per_source
+            else {}
+        ),
         # A transaction subset can prove additive freshness for the selected
         # rows, but can never authorize whole-source lifecycle deletion.
         "mark_missing_safe": (
@@ -4949,6 +5010,9 @@ def run_aggregate_gate(
     if rc not in (0, 2):
         raise GlobalStageError(f"aggregate coverage gate failed (rc={rc})")
     result = _load_json(output)
+    if manifest["config"].get("current_inventory_admission"):
+        _admit_current_inventory(run_dir, manifest, result, artifacts[0], "aggregate")
+        atomic_write_json(output, result)
     full_transaction_scope = tuple(manifest["config"]["transactions"]) == TRANSACTIONS
     per_source = result.get("per_source") or {}
     additive_hold_enabled = (
@@ -5054,6 +5118,11 @@ def run_aggregate_gate(
             else []
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
+        **(
+            {"admission_scope": current_inventory.SCOPE}
+            if manifest["config"].get("current_inventory_admission")
+            else {}
+        ),
     }
     save_manifest(run_dir, manifest)
     if non_ok_sources:
@@ -6450,6 +6519,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Never authorizes mark-missing or whole-source lifecycle coverage."
         ),
     )
+    parser.add_argument(
+        "--admit-current-inventory-source",
+        default=None,
+        help="Interra-only additive current inventory; no baseline/lifecycle/certificate authority",
+    )
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument(
@@ -6638,6 +6712,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--admit-baseline-hold-additively is only valid with --transactions both"
         )
 
+    try:
+        current_inventory.validate_option(
+            args.admit_current_inventory_source,
+            sources,
+            transactions,
+            additive_hold=args.admit_baseline_hold_additively,
+            allow_dirty=args.allow_dirty,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     lock_dir = checkpoint_lock_dir(args.lock_dir)
     database_target = database_target_fingerprint(args.env_file)
     git_sha, git_dirty = git_identity()
@@ -6663,6 +6747,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             memory_sample_seconds=args.memory_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
+            admit_current_inventory_source=args.admit_current_inventory_source,
             database_target=database_target,
             max_age_hours=args.max_resume_age_hours,
         )
@@ -6687,6 +6772,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             memory_sample_seconds=args.memory_sample_seconds,
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
+            admit_current_inventory_source=args.admit_current_inventory_source,
             database_target=database_target,
         )
     # Publish the existing durable recovery barrier before any native child can
@@ -6923,14 +7009,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_final_validation(run_dir, manifest, args.env_file)
             quiesce_resource_guards(memory_guard, cpu_guard)
             manifest["status"] = (
-                "selected_transaction_scope_complete"
-                if transactions != TRANSACTIONS
+                "additive_scope_complete_current_inventory"
+                if manifest["config"].get("current_inventory_admission")
                 else (
-                    "additive_scope_complete_coverage_hold"
-                    if (manifest.get("aggregate_gate") or {}).get(
-                        "baseline_advisory_holds"
+                    "selected_transaction_scope_complete"
+                    if transactions != TRANSACTIONS
+                    else (
+                        "additive_scope_complete_coverage_hold"
+                        if (manifest.get("aggregate_gate") or {}).get(
+                            "baseline_advisory_holds"
+                        )
+                        else "supported_scope_complete"
                     )
-                    else "supported_scope_complete"
                 )
             )
             manifest["finished_at"] = utc_now()
