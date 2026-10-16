@@ -383,6 +383,7 @@ export function assertAvisonYoungDetailDoc(
     (clean(value) ?? "")
       .toLowerCase()
       .replace(/\broad\b/g, "rd")
+      .replace(/\bavenue\b/g, "ave")
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
   const nativeInfo = $(".building__property-info-box");
@@ -420,12 +421,24 @@ export function assertAvisonYoungDetailDoc(
   const street = normalizeIdentityText(base?.street);
   const city = normalizeIdentityText(base?.city);
   const state = normalizeState(base?.state);
+  const matchesStateLocation = (value: string): boolean => {
+    const text = value.trim();
+    const withZip = /^(.*?)\s+(\d{5})$/.exec(text);
+    return normalizeState(withZip ? withZip[1] : text) === state
+      && (!withZip || !clean(base?.postalCode) || withZip[2] === clean(base?.postalCode));
+  };
   const heroLocations = $(".hero__sub-title").map((_index, element) => {
     const parts = (clean($(element).text()) ?? "").split(",");
     return parts.length === 2
       && normalizeIdentityText(parts[0]) === city
-      && normalizeState(parts[1]) === state;
+      && matchesStateLocation(parts[1]!);
   }).get();
+  const heroIdentityParts = $(".hero__sub-title").text().split("|");
+  const heroAddressParts = heroIdentityParts[1]?.split(",") ?? [];
+  const combinedHeroIdentity = $(".hero__sub-title").length === 1
+    && heroIdentityParts.length === 2 && normalizeIdentityText(heroIdentityParts[0]) === name
+    && heroAddressParts.length === 3 && normalizeIdentityText(heroAddressParts[0]) === street
+    && normalizeIdentityText(heroAddressParts[1]) === city && matchesStateLocation(heroAddressParts[2]!);
   const normalizedTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")]
     .map(normalizeIdentityText);
   const titleLocationPrefix = [name, city, ""].join(" ");
@@ -434,8 +447,10 @@ export function assertAvisonYoungDetailDoc(
       && normalizeState(title.slice(titleLocationPrefix.length)) === state);
   const canonicalUrls = $('link[rel="canonical"]').map((_index, element) => $(element).attr("href")).get();
   const identityMetadataMatches = Boolean(name && street && city && state)
-    && $("h1").length === 1 && normalizeIdentityText($("h1").text()) === name
-    && heroLocations.length === 1 && heroLocations[0] === true
+    && $("h1").length === 1
+    && ((normalizeIdentityText($("h1").text()) === name
+      && heroLocations.length === 1 && heroLocations[0] === true)
+      || combinedHeroIdentity)
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
     && normalizedTitles.every(titleMatches)
     && $('meta[property="og:url"]').length === 1
@@ -561,6 +576,8 @@ export function assertAvisonYoungDetailDoc(
     );
     const visibleIdentityMatches =
       hasCompleteFeedIdentity
+      && (heroIdentityParts.length === 1 || combinedHeroIdentity)
+      && canonicalUrls.every((value) => sameIdentityUrl(value, requested))
       && title === visibleName
       && ogTitle === visibleName
       && sameOwnedPageUrl(ogUrl)

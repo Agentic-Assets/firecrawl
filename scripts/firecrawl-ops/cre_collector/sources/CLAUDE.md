@@ -231,6 +231,15 @@ query does not establish property identity.
 
 Avison detail identity supports feed-bound SharpLaunch street-as-name headings with a separate city/state location (full US state names and postal abbreviations), including location-suffixed titles. A registered `www.avisonyoung.us/properties/` wrapper can instead bind one unambiguous `RealEstateListing` name/address/URL to coherent visible name/location and page metadata. Map/script text alone is not street evidence for these layouts. Unsupported native pages may still use a validated official alternate through the existing property-detail child-preserving mode; explicit strict mode continues to require every selected URL.
 
+Avison identity comparison recognizes the evidenced `Avenue`/`Ave` spelling at
+word boundaries and a state followed by a five-digit ZIP. When both page and
+feed supply a ZIP, they must agree; an absent feed ZIP stays unknown. A single
+combined hero can bind the exact property name, full street, city and state
+when the registered official wrapper uses a descriptive marketing headline.
+This still requires coherent visible identity, one structured listing and exact
+page metadata/URL bindings. Literal IDs, URLs and raw addresses are unchanged;
+the existing property-detail child-preserving mode remains unchanged.
+
 ## Monitor Mode Matrix
 
 | Behavior | Sources |
