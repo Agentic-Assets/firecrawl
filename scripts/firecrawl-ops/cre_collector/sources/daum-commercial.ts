@@ -840,10 +840,17 @@ type DaumCompleteCohort = {
   snapshot: Awaited<ReturnType<typeof fetchDaumSnapshot>>;
   details: Array<{ inventory: DaumInventoryRow; detail: DaumDetail; observedAt: string; bodySha256: string }>;
 };
-let completedDaumCohort: { key: string; cohort: DaumCompleteCohort } | undefined;
+let daumCohortAcquisition: { key: string; promise: Promise<DaumCompleteCohort> } | undefined;
 
 async function completeDaumCohort(key: string, transport: DaumPoliteTransport): Promise<DaumCompleteCohort> {
-  if (completedDaumCohort?.key === key) return structuredClone(completedDaumCohort.cohort);
+  if (daumCohortAcquisition?.key !== key) {
+    // Install before acquisition starts; both transactions share even a rejection.
+    daumCohortAcquisition = { key, promise: Promise.resolve().then(() => fetchCompleteDaumCohort(transport)) };
+  }
+  return structuredClone(await daumCohortAcquisition.promise);
+}
+
+async function fetchCompleteDaumCohort(transport: DaumPoliteTransport): Promise<DaumCompleteCohort> {
   const snapshot = await fetchDaumSnapshot(transport);
   const details: DaumCompleteCohort["details"] = [];
   for (const inventory of snapshot.rows) {
@@ -851,13 +858,18 @@ async function completeDaumCohort(key: string, transport: DaumPoliteTransport): 
     const observedAt = observationNow();
     const detail = parseDaumDetail(html, inventory.url);
     if (detail.observedCanonicalUrl !== inventory.url) throw new Error("DAUM strict proof requires observed canonical identity");
-    if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown") throw new Error("DAUM strict proof has unresolved tenure");
+    try {
+      if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown") throw new Error("DAUM strict proof has unresolved tenure");
+    } catch (error) {
+      if (error instanceof Error) {
+        error.message += ` [postId=${detail.postId}; ordinal=${details.length + 1}/${snapshot.rows.length}; inventoryTenure=${inventory.tenure}; inventoryTextPresent=${Boolean(inventory.tenureText)}; detailTenure=${detail.tenure}; detailTextPresent=${Boolean(detail.tenureText)}]`;
+      }
+      throw error;
+    }
     details.push({ inventory, detail, observedAt, bodySha256: textSha256(html) });
   }
   assertDaumUniqueProviderIds(details.map(row => ({ id: daumListingId(row.inventory.url), daumPostId: row.detail.postId })));
-  const cohort = { snapshot, details };
-  completedDaumCohort = { key, cohort: structuredClone(cohort) };
-  return cohort;
+  return { snapshot, details };
 }
 
 function daumProof(cohort: DaumCompleteCohort, tx: Tx, generationId: string, generationStartedAt: string): DaumCurrentInventoryProof {

@@ -1,0 +1,33 @@
+import "../../fixtures/daum-offline-deny.mjs";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {srcDaumCommercial} from '../../../sources/daum-commercial.js';
+import {observationNow} from '../../../lib/observation-clock.js';
+import {daumProofPage,daumProofDetail} from '../../fixtures/daum-proof-pages.js';
+test('same exact episode shares failure; new generation/start retry and immutable success remain',async(t)=>{
+ const saved={...process.env},fetch=globalThis.fetch,timer=globalThis.setTimeout;
+ t.after(()=>{for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);globalThis.fetch=fetch;globalThis.setTimeout=timer;});
+ Object.assign(process.env,{CRE_REQUIRE_FRESH_DETAILS:'1',CRE_REFRESH_GENERATION:'singleflight-prototype',CRE_REFRESH_STARTED_AT:observationNow()});
+ globalThis.setTimeout=((fn:any,ms?:number,...args:any[])=>timer(fn,ms&&ms>0&&ms<=3000?0:ms,...args))as typeof setTimeout;
+ let calls=0,broken=true;
+ globalThis.fetch=async(input,init)=>{
+  calls++;const url=String(input);
+  if(init?.method==='POST'&&/^https:\/\/daumcommercial[.]com\/property-search\/(?:page\/2\/)?$/.test(url))return new Response(daumProofPage(100,url.endsWith('/page/2/')?2:1));
+  const match=url.match(/^https:\/\/daumcommercial[.]com\/property\/Synthetic-(\d+)\/$/);
+  if(init?.method!=='GET'||!match)throw Error('UNEXPECTED_FAKE_NO_FALLBACK');
+  let body=daumProofDetail(Number(match[1]));if(broken&&Number(match[1])===0)body=body.replace('class="title-about">Sale<','class="title-about">Lease<');return new Response(body);
+ };
+ const failed=await Promise.allSettled([srcDaumCommercial('sale',Infinity,false),srcDaumCommercial('lease',Infinity,false)]);
+ assert.equal(failed[0].status,'rejected');assert.equal(failed[1].status,'rejected');
+ if(failed[0].status!=='rejected'||failed[1].status!=='rejected')throw Error('missing rejection');
+ const originalError=failed[0].reason;
+ assert.strictEqual(originalError,failed[1].reason,'same original error identity');assert.equal(calls,5,'one4POST+1detail acquisition');
+ await assert.rejects(srcDaumCommercial('lease',Infinity,false),error=>error===originalError);assert.equal(calls,5,'sequential second transaction doesnot reacquire');
+ broken=false;process.env.CRE_REFRESH_GENERATION='fresh-generation';
+ const [sale,lease]=await Promise.all([srcDaumCommercial('sale',Infinity,false),srcDaumCommercial('lease',Infinity,false)]);assert.equal(calls,109);assert.equal(sale.listings.length,67);assert.equal(lease.listings.length,66);
+ sale.listings[0].id='tampered';const cached=await srcDaumCommercial('sale',Infinity,false);assert.notEqual(cached.listings[0].id,'tampered');assert.equal(calls,109);
+ process.env.CRE_REFRESH_STARTED_AT=observationNow();await srcDaumCommercial('lease',Infinity,false);assert.equal(calls,213,'new exactstart reacquires');
+ const limited=await srcDaumCommercial('sale',1,false);assert.equal(limited.currentInventoryProof,undefined);assert.ok(calls>213,'limited cannotborrow fullproof');
+ const before=calls;const monitor=await srcDaumCommercial('sale',1,true);assert.equal(monitor.currentInventoryProof,undefined);assert.ok(calls>before,'monitor cannotborrow fullproof');
+ const beforeNonfresh=calls;process.env.CRE_REQUIRE_FRESH_DETAILS='0';const nonfresh=await srcDaumCommercial('sale',Infinity,false);assert.equal(nonfresh.currentInventoryProof,undefined);assert.ok(calls>beforeNonfresh,'nonfresh cannotborrow strictfullproof');
+});

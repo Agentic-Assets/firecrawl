@@ -90,6 +90,18 @@ including soft-deleted parents. Raw first_seen, baseline absence and additive
 scope remain; this grants no missing/status/retirement authority or fresh
 production acceptance.
 
+Tenure refusals include the validated native post ID, ordinal and normalized
+inventory/detail tenure with text-presence flags in the local collection log.
+Use that bounded context to inspect the exact provider record; it neither
+establishes that the website changed nor permits guessing missing tenure.
+Raw page bodies, URLs and unparsed tenure text are excluded from that diagnostic.
+Within one collector process, the exact generation ID and start time share one
+complete acquisition across sale and lease, including a rejected acquisition.
+A second transaction cannot turn that failure into accepted proof or download
+the same cohort again. A new generation/start or a fresh collector process
+reacquires; the coordinator's existing bounded fresh-process retry remains.
+Limited, monitor and non-fresh paths cannot borrow this strict cohort proof.
+
 ## Transport & Scrape Primitives
 
 | Transport | Sources |
