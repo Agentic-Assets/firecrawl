@@ -383,6 +383,7 @@ export function assertAvisonYoungDetailDoc(
     (clean(value) ?? "")
       .toLowerCase()
       .replace(/\broad\b/g, "rd")
+      .replace(/\bavenue\b/g, "ave")
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
   const nativeInfo = $(".building__property-info-box");
@@ -420,12 +421,24 @@ export function assertAvisonYoungDetailDoc(
   const street = normalizeIdentityText(base?.street);
   const city = normalizeIdentityText(base?.city);
   const state = normalizeState(base?.state);
+  const matchesStateLocation = (value: string): boolean => {
+    const text = value.trim();
+    const withZip = /^(.*?)\s+(\d{5})$/.exec(text);
+    return normalizeState(withZip ? withZip[1] : text) === state
+      && (!withZip || !clean(base?.postalCode) || withZip[2] === clean(base?.postalCode));
+  };
   const heroLocations = $(".hero__sub-title").map((_index, element) => {
     const parts = (clean($(element).text()) ?? "").split(",");
     return parts.length === 2
       && normalizeIdentityText(parts[0]) === city
-      && normalizeState(parts[1]) === state;
+      && matchesStateLocation(parts[1]!);
   }).get();
+  const heroIdentityParts = $(".hero__sub-title").text().split("|");
+  const heroAddressParts = heroIdentityParts[1]?.split(",") ?? [];
+  const combinedHeroIdentity = $(".hero__sub-title").length === 1
+    && heroIdentityParts.length === 2 && normalizeIdentityText(heroIdentityParts[0]) === name
+    && heroAddressParts.length === 3 && normalizeIdentityText(heroAddressParts[0]) === street
+    && normalizeIdentityText(heroAddressParts[1]) === city && matchesStateLocation(heroAddressParts[2]!);
   const normalizedTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")]
     .map(normalizeIdentityText);
   const titleLocationPrefix = [name, city, ""].join(" ");
@@ -434,8 +447,10 @@ export function assertAvisonYoungDetailDoc(
       && normalizeState(title.slice(titleLocationPrefix.length)) === state);
   const canonicalUrls = $('link[rel="canonical"]').map((_index, element) => $(element).attr("href")).get();
   const identityMetadataMatches = Boolean(name && street && city && state)
-    && $("h1").length === 1 && normalizeIdentityText($("h1").text()) === name
-    && heroLocations.length === 1 && heroLocations[0] === true
+    && $("h1").length === 1
+    && ((normalizeIdentityText($("h1").text()) === name
+      && heroLocations.length === 1 && heroLocations[0] === true)
+      || combinedHeroIdentity)
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
     && normalizedTitles.every(titleMatches)
     && $('meta[property="og:url"]').length === 1
@@ -561,6 +576,8 @@ export function assertAvisonYoungDetailDoc(
     );
     const visibleIdentityMatches =
       hasCompleteFeedIdentity
+      && (heroIdentityParts.length === 1 || combinedHeroIdentity)
+      && canonicalUrls.every((value) => sameIdentityUrl(value, requested))
       && title === visibleName
       && ogTitle === visibleName
       && sameOwnedPageUrl(ogUrl)
@@ -1290,9 +1307,6 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
   const units = num(row.units);
 
   // capRatePct: already set below from row.cap_rate; no change needed.
-  // salePricePerSf: SharpLaunch "sale_unit_price" is a per-SF price on some sale rows.
-  const salePricePerSf = num(row.sale_unit_price);
-
   // leaseRateMin / leaseRateMax: derive from the feed's clean numeric availability
   // rent fields via parseLeaseRate so the AY $5000/SF/YR anomaly guard fires.
   // Construct the canonical rate text ($/SF/YR) so parseLeaseRate can evaluate it.
@@ -1336,6 +1350,7 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     sourceFeedUrl: `${AVISON_YOUNG_API_BASE}?entity=website&status=active`,
     lastUpdated: clean(row.updated_at)?.slice(0, 10) ?? clean(row.on_market_at)?.slice(0, 10),
     rawSubtypes: rawTypes,
+    // The feed does not declare a per-SF basis for this value. Retain it untyped.
     saleUnitPrice: num(row.sale_unit_price),
     availableMinSqft: num(row.availabilities_min_surface_sqft),
     availableMaxSqft: num(row.availabilities_max_surface_sqft),
@@ -1355,7 +1370,6 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     buildingClass,
     submarket,
     units,
-    salePricePerSf,
     preserveChildCollections: true,
     detailUnavailable: true,
     detailUnavailableReason: "base feed row; current detail page not yet fetched",
