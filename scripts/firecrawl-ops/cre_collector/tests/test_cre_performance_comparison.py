@@ -45,6 +45,26 @@ def test_comparison_uses_actual_run_wall_not_sum_of_overlapping_commands():
     assert result["causal_improvement_established"] is False
 
 
+def test_verified_current_inventory_rate_is_compared_as_a_separate_readback_metric():
+    baseline, current = saved_report(wall=100), saved_report(wall=50)
+    for report, count, rate in ((baseline, 20, 12), (current, 20, 24)):
+        report["sources"][0]["verified_current_inventory_unique"] = count
+        report["sources"][0]["verified_current_inventory_per_minute"] = rate
+    result = compare_reports(current, baseline)
+    source = result["sources"][0]
+    assert source["verified_current_inventory_unique"] == {
+        "current": 20,
+        "baseline": 20,
+        "change": 0,
+    }
+    assert source["verified_current_inventory_per_minute"] == {
+        "current": 24,
+        "baseline": 12,
+        "change": 12,
+    }
+    assert result["causal_improvement_established"] is False
+
+
 @pytest.mark.parametrize(
     "change", ["source", "transaction", "readback", "unknown_wall"]
 )

@@ -48,6 +48,12 @@ checkpoint-manifest readback. Dated docs are operational history.
 6. [slack-setup.md](slack-setup.md) for the CRE Slack channel, private webhook
    file, no-network configuration check and delivery verification. Root Docker
    `.env` does not configure native Windows task notifications.
+7. [CRE performance evidence](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md)
+   for automatic run reports, verified-current versus staged counts and matched
+   comparisons. Record meaningful findings in the existing
+   [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895);
+   use its existing experiment/acceptance children rather than adding an issue
+   for each run.
 
 ## Files
 
