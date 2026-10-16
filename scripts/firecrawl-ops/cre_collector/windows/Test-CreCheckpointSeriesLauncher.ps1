@@ -44,6 +44,9 @@ $series = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDea
 $quotedRepo = '/home/synthetic space/quote''s "directory"/firecrawl'
 $quotedEnv = '/tmp/synthetic space/quote''s "env".env'
 $cases = @(
+    @{ Name = 'pyramid-current'; Args = @('-Tier', 'series', '-Source', 'pyramid-brokerage', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
+    @{ Name = 'pyramid-wrong-source'; Args = @('-Tier', 'series', '-Source', 'hanley', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
+    @{ Name = 'pyramid-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'pyramid-brokerage', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
     @{ Name = 'series'; Args = $series; Exit = 0; Dispatch = $true },
     @{ Name = 'interra-current'; Args = @('-Tier', 'series', '-Source', 'interra-realty', '-AdmitCurrentInventorySource', 'interra-realty', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'buildout-current'; Args = @('-Tier', 'series', '-Source', 'faris-lee', '-AdmitCurrentInventorySource', 'faris-lee', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },

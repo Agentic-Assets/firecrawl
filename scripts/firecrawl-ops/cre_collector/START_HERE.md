@@ -857,6 +857,30 @@ the ordinary baseline-backed route. The explicit, source-specific
 Interra/Buildout sources with complete fresh proof and an absent baseline;
 it does not waive a hold for a source with an existing baseline.
 
+Pyramid's explicit singleton `--admit-current-inventory-source pyramid-brokerage`
+uses the same additive coverage scope only with complete strict details. It
+requires uncapped full sale+lease, a generation-local shared REST cohort from two
+consecutive identical complete passes, and a fresh identity/transaction-matched
+detail response for every member. Source and aggregate gates recheck compact
+receipts, policy/code/target/artifact bindings, absent baseline and the normal
+source-wide unique floor100. This is not inventory-only or a historical-baseline
+certificate; strict-detail child replacement and severe-loss/quality gates remain.
+
+Before a Pyramid writer, the operator must compare a fresh target-bound parent,
+five-child and baseline snapshot against the exact fresh staged IDs/source URLs
+under canonical ownership. Refuse sameURL/differentID, sameID/differentURL or
+duplicate claims; no fuzzy or changed-slug rekey. The existing SQL URL collision
+guard is Interra-specific and does not perform this Pyramid check. Preserve the
+preimage and all14-family/no-regression/generation-exact readback receipts.
+Keep baseline writes, source-derived activation and mark-missing off. Ordinary
+upsert revival remains possible and must be disclosed if observed.
+
+Pyramid inventory concurrency is2, detail concurrency4, without an RPS limiter.
+Each source helper allows2attempts,30s per attempt,32MiB per response and up to
+3followed redirects; logical fetch counts exclude these extra HTTP dispatches.
+Use a finite separately reviewed pilot deadline, normal guards and no outer retry.
+Merged code or an inventory/two-detail canary is not full-source acceptance.
+
 Baseline seeding is a separate operator procedure requiring approval for the
 exact source and artifact. AGENTIC-2895/2902 prohibit baseline writes; do not
 run `cre_gate.py --apply --update-baseline` to unblock those refreshes.
