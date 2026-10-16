@@ -1,9 +1,12 @@
 # CLAUDE.md - cre_collector/
 
-> **ACTIVE production path.** This is the only supported collector and ingest
-> implementation. Scheduler state requires live readback. Do **not**
-> implement daily collection in `../cre_scrapers/` (legacy Python
-> probes/archives only).
+> **ACTIVE production collector and ingest implementation.** The supervised
+> refresh and series entrypoints are `cre_checkpoint_refresh.py` and
+> `cre_checkpoint_series.py`; the Windows task wrapper and its acceptance gates
+> are documented in the [guarded tier guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
+> Scheduler state requires live readback. Do **not** implement daily
+> collection in `../cre_scrapers/` (legacy
+> Python probes/archives only).
 
 > **Historical runtime source, 2026-07-11:** The Mac mini audit found no CRE
 > launchd jobs, markers, or collector artifacts at that point in time. For
@@ -25,7 +28,7 @@ is **stale** for production; README/archive there is reference-only).
 |------|-------------------|-------------------|
 | New/changed broker collect logic | `sources/<broker>.ts`, `collect.ts` | `../cre_scrapers/brokers/*/scraper.py` |
 | Ingest / board upsert | `cre_ingest.py` | `../cre_pipeline.py`, `../cre_scrapers/pipeline.py` |
-| Daily / scheduled refresh | `cre_daily_update.sh`, `launchd/` | `../cre_scrapers/config.py` |
+| Supervised refresh / series | `cre_checkpoint_refresh.py`, `cre_checkpoint_series.py`; Windows wrapper in `START_HERE.md` and the guarded tier guide | `cre_daily_update.sh` (legacy), `launchd/` (host-specific/historical), `../cre_scrapers/config.py` |
 | Live counts / source status | fresh `cre_validate.py` output + checkpoint manifest | dated docs or `../cre_scrapers/config.py` `active` flags |
 | Broker endpoint research notes | read `../cre_scrapers/brokers/*/README.md` | do not treat as runtime code |
 
@@ -74,7 +77,7 @@ checkpoint-manifest readback. Dated docs are operational history.
 | `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at`; enqueues new/changed into `cre_enrichment_queue` |
 | `cre_gate.py` | Per-source coverage gate (`cre_source_baseline`); emits `mark_missing_safe` rollup |
 | `cre_enrich.py` | Tier-B queue worker: claims a batch from `cre_enrichment_queue`, runs `collect.ts --enrich-input` (targeted detail), re-ingests additively (`cre_ingest.py --in`), deletes done rows. Additive by construction (never `--mark-missing`/`--activate-status`); URL-matched, id-keyed completion; pure builders + thin `run()`. Manual recovery may use `--source SOURCE_KEY` for an exact queue-claim filter: only that source can be claimed, retried, or have attempts incremented. |
-| `cre_daily_update.sh` | healthcheck → full collect → gate [3/4] → ingest → prune `out/daily/` artifacts |
+| `cre_daily_update.sh` | Legacy monolithic backstop: healthcheck → full collect → gate [3/4] → ingest → prune `out/daily/` artifacts; not the default supervised or scheduled route |
 | `cre_status.sh` | Read-only run-health heartbeat: launchd state, per-tier staleness vs cadence, last-run verdict (from `out/daily/last_run_<tier>.json`), last-ingest counts, checkout branch/HEAD/dirty state, per-tier rendered-plist drift, `out/` footprint + lock state (hung/stale), stack/env/TCC. Exits nonzero if unhealthy. `--full-health` runs the full healthcheck; `--expected-sha <commit>` enforces the clean deployment identity gate |
 | `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, optional network smoke); run first. See `SETUP.md` |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
@@ -88,7 +91,7 @@ checkpoint-manifest readback. Dated docs are operational history.
 | `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for parser regression coverage |
 | `om_parse.py` | Retired Firecrawl OM writer. Pure extractors and dry-run artifacts remain for regression coverage; `--apply` exits `78`. GetCREdata is the sole production OM extraction writer. |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
-| `launchd/` | macOS tier schedules (portable `*.plist.template` + `install_launchd.sh`) - see `launchd/CLAUDE.md` |
+| `launchd/` | Legacy macOS tier templates and installer (`*.plist.template`, `install_launchd.sh`); scheduler state is host-local and must be freshly verified - see `launchd/CLAUDE.md` |
 | `tests/` | pytest contracts - see `tests/CLAUDE.md` |
 | `SETUP.md` | Fresh-clone setup runbook for macOS and Ubuntu/WSL2: `cre_setup.sh`, env, macOS launchd generator |
 | `START_HERE.md` | Current procedures and new-session runbook |
@@ -274,27 +277,33 @@ coverage figures: `START_HERE.md`.
   pass reported `error` or `truncated` (not overridable by `--force-disappear`).
 - Per-source monitor behavior (excluded sources, supersets, detail skips):
   `sources/CLAUDE.md` + `cre-monitor-subsystem.md`.
-- Scheduled monitor tier uses default `--page-cap=60` unless overridden; see
-  `launchd/CLAUDE.md`. Scheduler state is host-local and can change without a
-  repository commit. Run `bash cre_status.sh` as the read-only preflight, then
-  follow the operator runbook before a recovery attempt. `cre_gate.py`
-  is wired into `cre_daily_update.sh` as observe-only step [3/4]
+- The legacy macOS monitor tier uses default `--page-cap=60` unless overridden;
+  see `launchd/CLAUDE.md`. This is not the current Windows scheduled path.
+  Scheduler state is host-local and can change without a repository commit.
+  Run `bash cre_status.sh` as the read-only preflight, then follow the current
+  operator procedure before a recovery attempt. `cre_gate.py` is wired into
+  `cre_daily_update.sh` as observe-only step [3/4]
   (`--in RUN --apply --strict --out gate.json`); if the strict gate detects any
   partial/regressed source, the script auto-downgrades to `--no-mark-missing`.
 
-## Daily updates
+## Legacy daily-update backstop
 
-`cre_daily_update.sh` = healthcheck → full collect (sale+lease, unlimited,
+`cre_daily_update.sh` is retained for explicitly approved legacy recovery; it
+is not the default supervised refresh or scheduled entrypoint. Its behavior is
+healthcheck → full collect (sale+lease, unlimited,
 `CRE_PAGE_CAP` default 400) → observe-only gate [3/4] → ingest → prune (EXIT
 trap; keeps 14 `run_*.json`, 29 `run_*.log`, 14 `gate_*.json` under
 `out/daily/`). Script default includes `--mark-missing`; use
-`bash cre_daily_update.sh --no-mark-missing` while Savills sale stays
-structurally capped (colliers-main is now complete). See `START_HERE.md` Known
-Limits and Operational Recovery.
+`bash cre_daily_update.sh --no-mark-missing` for additive legacy recovery. The
+supervised serial checkpoint-series path, opt-in pipeline mode, and guarded
+Windows wrapper are documented in `START_HERE.md` and the
+[guarded tier guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
+Use `--mark-missing` only under the separate coverage and lifecycle conditions
+in [`START_HERE.md`'s legacy backstop guidance](START_HERE.md#legacy-scheduled-backstop).
 
-Tiered schedules: `launchd/CLAUDE.md`. Never infer whether they are loaded from
-this file; use `bash cre_status.sh` and `launchctl list` on the target host.
-Step [3/4] runs `cre_gate.py` observe-only.
+Historical macOS tier schedules: `launchd/CLAUDE.md`. Never infer whether they
+are loaded from this file; use `bash cre_status.sh` and `launchctl list` on the
+target host. Step [3/4] runs `cre_gate.py` observe-only.
 
 For an operator-requested full freshness sweep, prefer
 `cre_checkpoint_refresh.py` over the monolithic daily runner. It checkpoints
