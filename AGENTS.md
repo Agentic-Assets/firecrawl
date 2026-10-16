@@ -196,6 +196,9 @@ in `docs/firecrawl-ops/references/model-routing.md`.
 
 When the user asks about scraping workflows, model selection, runtime health, or self-hosted ops, prefer this skill over guessing — invoke it via the Skill tool (`firecrawl-ops`).
 
+For CRE unattended scheduling goals and current acceptance limits, see
+[the guarded incremental operating goal](docs/firecrawl-ops/references/guarded-incremental-tiers.md#unattended-operating-goal).
+
 For Python changes under `scripts/firecrawl-ops/`, use the relevant local
 Ruff skill, verify changed Python with `py_compile`, and read the
 `python-testing-patterns` skill before adding or changing tests. For listing

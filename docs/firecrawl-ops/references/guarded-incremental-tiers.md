@@ -507,15 +507,73 @@ synthetic task, proving native disabled readback, actual exit propagation and
 `IgnoreNew`; it never runs CRE, WSL or a provider. This fixture is not a
 production pipeline, login, reboot or notification acceptance test.
 
-Actual scheduled cancellation, startup/login recovery and supervised additive
-readback remain acceptance requirements on AGENTIC-3752 and AGENTIC-4141.
-No continuously running ChatGPT monitor is needed. Do not schedule the legacy
-monitor/enrich/weekly shell commands as a shortcut; completeness uses the
-guarded checkpoint-series procedure. The Codex weekly proposal remains a
-separately controlled paused alternative. Full51-source acceptance remains
-AGENTIC-2902; an installed task does not resolve missing baselines, historical
-quality findings or a source's legitimate low inventory count. This Windows
-installer makes no Mac scheduler or configuration change.
+### Unattended operating goal
+
+The target is a deterministic Windows Task Scheduler clock trigger through the
+existing PowerShell launcher to the shared WSL2 ext4 checkpoint-series runner.
+A scheduled attempt should finish collection, validation and source/aggregate
+gates, additive writes, full post-write audit, exact-generation database
+readback, local settlement and concise start/finish/error notification without
+requiring an active Codex, ChatGPT or coding session. This means unattended
+while the scheduled Windows user is logged in; the registered task uses that
+user's interactive token. It does not establish sign-out, headless boot or
+logged-out execution.
+
+This is the operating goal, not a claim that every source is accepted or every
+recovery path is qualified. Use [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752)
+for the goal and host operation, [AGENTIC-4265](https://linear.app/agenticassets/issue/AGENTIC-4265)
+for task installation and clock evidence, and [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902)
+for full-registry source acceptance. A clock run qualifies only the exact task
+definition, pin and settings it exercised. A later code pin, task edit, reboot,
+login recovery, closed application, missed-start catch-up or delayed Docker
+startup needs its own observed evidence. StartWhenAvailable requests catch-up;
+it does not prove that Docker or the local API is ready. The launcher waits for
+the API and fails without dispatch when it is unavailable; it does not start or
+restart Docker.
+
+Each result must be bound to the exact scheduled attempt and source receipts.
+Only report verified current inventory or sale/lease breakdowns when those
+counts match the successful generation readback; do not call them new database
+rows. Keep provider bodies, credentials, raw IDs and detailed audit data in the
+existing private run artifacts. Slack should show status and affected
+brokerages, with sale/lease or current-inventory totals only when bound to the
+exact successful generation readback. Partial/error alerts must keep failures
+and partial status visible rather than implying a whole-series success. A
+missing webhook or failed send must remain visible without hiding the
+collector's original result. The existing sender's HTTP acceptance is not
+channel readback; verify actual delivery through the authorized channel when
+qualifying a configuration. See the [notification setup and summary contract](../../../scripts/firecrawl-ops/cre_collector/slack-setup.md).
+
+Handle expected provider throttling through the adapter's existing bounded
+retry and failure rules. An unexpected schema or identity change should hold
+the affected source, preserve its previous good state and produce a useful
+error notification; do not promise zero external failures or add blind retries.
+Continue after source-local failures only on a supported runner path. Ownership,
+target, integrity, global validation and resource failures stop dispatch. An
+uncertain write remains fenced until the exact attempt is reconciled; never
+replay it just because a scheduler result is missing.
+
+Before treating the schedule as unattended-ready, qualify a real clock trigger
+with the assistant applications closed, a missed-start catch-up, IgnoreNew
+overlap behavior, finite work timeout and cleanup, Docker/API unavailable and
+recovery, and logged-on startup after reboot. Exercise source 429, schema
+failure, missing/unsafe webhook, sender failure and uncertain-write refusal at
+their existing test boundaries. Require native Task Scheduler event/PID
+correlation, the exact native audit and WSL series/control settlement, full
+validation/readback, and actual Slack channel readback for a successful delivery.
+The offline task fixtures do not prove these host behaviors. On login or reboot,
+check Docker/API readiness, the canonical owner/lock and pending-write fences
+before dispatch or recovery; do not infer settlement from Task Scheduler's End
+action or a killed client process.
+
+A future agent may triage saved failures into a deduplicated Linear issue or a
+reviewable PR for a human. It is optional follow-up, never normal runtime
+control, production repair, replay approval or schedule mutation. Do not add a
+resident agent, queue or background service. Do not schedule the legacy
+monitor/enrich/weekly shell commands as a shortcut. Full51-source acceptance
+remains AGENTIC-2902; an installed task does not resolve missing baselines,
+historical quality findings or a source's legitimate low inventory count.
+This Windows installer makes no Mac scheduler or configuration change.
 
 ## Opt-in pipeline source selection
 
