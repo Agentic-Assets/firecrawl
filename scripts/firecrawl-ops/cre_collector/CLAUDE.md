@@ -261,8 +261,20 @@ or view privileges. Consumer API details: `cre-equire-consumer-api.md`.
 Phase-2 data-lift applied to prod 2026-06-15 (all additive, board-unchanged):
 DDL `011`-`014` (media/links tables, institutional + geo columns, OM-facts and
 zip/CBSA crosswalk tables) plus three additive backfills (`cre_backfill_raw_data`,
-`om_classify_existing`, `cre_geo_backfill`); `status` was never touched. Live
-coverage figures: `START_HERE.md`.
+`om_classify_existing`, `cre_geo_backfill`); `status` was never touched. Current
+coverage requires fresh validation and exact checkpoint-manifest readback; record
+execution evidence on [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
+
+## Major-phase code quality review
+
+After a major implementation or phase completes, have a separate agent apply
+the [thermo-nuclear code quality review skill](../../../.agents/skills/thermo-nuclear-code-quality-review/SKILL.md)
+before merge or deployment. Prioritize high-conviction structural simplification,
+decomposition and canonical helper reuse. Fix substantive findings with focused
+regression proof; do not substitute cosmetic rewrites or relax tests.
+Record confirmed/refuted findings and rationale on the owning Linear issue or PR,
+with learning pointers in [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
+Small mechanical edits need a focused review, not a repeated major-phase ceremony.
 
 ## Monitor mode (hard rules)
 
@@ -316,11 +328,14 @@ each sealed unit must pass its own source and aggregate gates before its
 serial database transaction; another source may continue collecting.
 Ordinary `first_seen` requires an explicit
 reviewed baseline seed and readback before resuming the same immutable run.
-The separately reviewed one-source current-inventory opt-in for Interra and
-registered Buildout feeds preserves the absent baseline and raw verdict while
-requiring complete fresh provider proof. It grants additive inventory scope,
-never historical-baseline certification or lifecycle authority. See the
-[Buildout admission reference](../../../docs/firecrawl-ops/references/buildout-current-inventory-admission.md).
+Explicit current-inventory admission preserves the absent baseline and raw
+verdict while requiring each source's complete fresh proof. Interra, registered
+Buildout feeds and DAUM support exact source-keyed pipeline admission; serial
+admission stays singleton. Pyramid and Essex remain singleton in either mode.
+This grants additive inventory scope, never historical-baseline certification
+or lifecycle authority. Follow the source contracts in [START_HERE.md](START_HERE.md)
+and [sources/CLAUDE.md](sources/CLAUDE.md); Buildout details remain in the
+[admission reference](../../../docs/firecrawl-ops/references/buildout-current-inventory-admission.md).
 
 The checkpoint runner has fail-closed Darwin/Linux CPU and memory guards and writes resumable
 evidence. For exact thresholds, resource-profile setup, guard and incident
@@ -387,4 +402,4 @@ START_HERE.md for the current guard contract and SETUP.md for installation.
 
 ## Opt-in pipeline contract
 
-Use [Start Here](START_HERE.md#opt-in-stage-overlap) for the shared macOS/Linux foreground pipeline. `--source-workers` is its single collection setting (1–4, default 2 when `--pipeline` is selected); one refresh owner and serial database transactions remain mandatory. Windows only forwards these portable settings. Configuration and admission changes must match on explicit resume.
+Use [Start Here](START_HERE.md#opt-in-stage-overlap) for the shared macOS/Linux foreground pipeline. `--source-workers` controls brokerage collection slots (1–4, default 2 when `--pipeline` is selected), separately from acquisition concurrency; one refresh owner and serial database transactions remain mandatory. Windows only forwards these portable settings. Serial resume requires identical configuration and admissions. Recorded pipeline state refuses mixed-stage resume; reconcile the exact generation and any uncertain writes before another invocation.

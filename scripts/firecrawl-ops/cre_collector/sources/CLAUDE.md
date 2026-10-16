@@ -94,8 +94,8 @@ production acceptance.
 
 | Transport | Sources |
 |-----------|---------|
-| Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (detail), newmark (cred bootstrap), buildout (fallback), savills (validated fallback only) |
-| Direct `fetch` (no Firecrawl) | cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for registered sources), savills (server-rendered public list pages) |
+| Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (ordinary detail path), newmark (cred bootstrap), buildout (fallback), savills (validated fallback only) |
+| Direct public HTTP (no Firecrawl) | avison-young (strict checkpoint detail via pinned HTTPS), cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for registered sources), savills (server-rendered public list pages) |
 
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 

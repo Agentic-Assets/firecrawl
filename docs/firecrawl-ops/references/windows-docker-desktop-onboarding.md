@@ -291,8 +291,10 @@ $reviewedSha = '<approved deployed 40-character SHA>'
   -WorkDeadlineSeconds 3600 -AcknowledgeDatabaseWrites
 ```
 
-The wrapper pins page concurrency and JLL/JLL Investor/Cushman detail and NAI
-enumeration concurrency to 1, and uses the reviewed Colliers Coveo path with
+The foreground wrapper defaults shared acquisition `-Concurrency` to 1 and
+accepts an explicit 1–6 for series only; adapters retain their own caps/pacing.
+JLL/JLL Investor/Cushman detail and NAI enumeration concurrency stay 1, and
+the reviewed Colliers Coveo path uses
 detail concurrency 1, a 3000 ms start interval and 60000 ms challenge cooldown.
 It pins page cap 400, three attempts per source and zero CPU recovery replays.
 The coordinator inherits caller priority; canonical `--nice 15` adds 15 to
@@ -306,8 +308,9 @@ already be available in the selected signed-in user's session.
 
 Series mode refuses `-Apply`, `-Batch` and `-DeadlineSeconds`; those retain
 their existing monitor/enrich meanings. Conversely, monitor/enrich refuse the
-series budget and write-acknowledgement flags. The source is one key or `all`,
-not a comma-separated list; the Linux coordinator validates registry membership
+series budget and write-acknowledgement flags. `-Source` selects one key or
+`all`; `-Pipeline -Sources` accepts a finite comma-separated exact-key list
+and conflicts with `-Source`. The Linux coordinator validates registry membership
 before credentials or output allocation. No resume, retry-failed, lifecycle,
 baseline or mark-missing controls are exposed by this Windows mode. Existing
 Mac/manual invocation defaults are unchanged.
@@ -414,7 +417,9 @@ Windows/WSL uses the same collector pipeline as macOS. Opt in through the native
 series wrapper with `-Pipeline -SourceWorkers 2 -Sources interra-realty,faris-lee`
 and the matching explicit admissions, reviewed SHA and existing write/budget gates.
 Change `-SourceWorkers` in the invocation/task preview to choose 1–4; omitted
-pipeline mode resolves 2 and existing serial invocations remain 1. This does not
+pipeline mode resolves 2 and existing serial invocations remain 1. The optional
+foreground `-Concurrency` parameter is separate; the task installer does not
+expose it and retains the default 1. This does not
 change Docker limits, provider/detail limits, Mac settings or scheduler cadence.
 See [Start Here](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#opt-in-stage-overlap)
 for shared validation, serial ingestion and recovery requirements.
