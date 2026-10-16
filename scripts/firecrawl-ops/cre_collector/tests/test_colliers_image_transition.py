@@ -2,6 +2,9 @@
 
 import copy
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -358,3 +361,38 @@ def test_fixed_log_path_rejects_byte_identical_alternate_locations(tmp_path, pat
         pointer = str(log)
     manifest["sources"]["colliers-main"]["ingest"]["log"] = pointer
     assert transition.verified_checkpoint(tmp_path, manifest) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX named pipe contract")
+@pytest.mark.parametrize("reader", ["log", "artifact"])
+def test_fifo_refuses_without_blocking_or_a_writer(tmp_path, reader):
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo, 0o600)
+    script = """
+import sys
+from pathlib import Path
+from cre_colliers_image_transition import read_outcome, expected_binding
+root, reader = Path(sys.argv[1]), sys.argv[2]
+try:
+    if reader == "log":
+        read_outcome(root / "fifo")
+    else:
+        expected_binding(root, {"sources":{"colliers-main":{"artifact":{"path":"fifo"}}}}, "c"*32)
+except (OSError, ValueError):
+    raise SystemExit(0)
+raise SystemExit(2)
+"""
+    try:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(tmp_path), reader],
+                cwd=Path(refresh.__file__).parent,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail("image evidence read blocked on an owned FIFO with no writer")
+        assert result.returncode == 0, result.stderr
+    finally:
+        fifo.unlink(missing_ok=True)

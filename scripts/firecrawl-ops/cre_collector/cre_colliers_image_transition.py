@@ -109,7 +109,7 @@ def matches_reports(receipt, raw_before, raw_after):
 def read_outcome(path):
     """Hash the complete log and accept exactly one bounded post-COMMIT line."""
     path = Path(path)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     digest, outcomes, size = hashlib.sha256(), [], 0
     try:
         before = os.fstat(fd)
@@ -147,7 +147,7 @@ def expected_binding(run_dir, manifest, attempt_id):
     path = Path(run_dir) / artifact["path"]
     if not path.resolve().is_relative_to(Path(run_dir).resolve()):
         raise ValueError("transition artifact escaped run")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
