@@ -144,6 +144,22 @@ evidence transfer, backpressure moderates queued work, host guards protect the
 operating envelope, and concurrency and deadlines bound remote activity. An
 engineering default is not evidence that a limit fits every source or workload.
 
+The pipeline's `PipelineBudget.output_reservation` defaults to 64 MiB per
+collection job. It estimates remaining disk demand when deciding whether to
+dispatch another job; it is not a maximum source-artifact size. The separate
+512 MiB soft budget applies backpressure to queued output and reservations,
+rather than trimming a completed source to fit. Do not reduce listing coverage
+to satisfy either scheduling estimate.
+
+`cre_run_insights.MAX_ARTIFACT_BYTES` also defaults to 64 MiB, but only the
+optional legacy `--trial-dir` importer uses that raw-artifact read limit.
+Oversized or missing legacy evidence produces warnings and unknown projections.
+Modern series-qualified refreshed counts use the compact manifest and bound
+unit/readback evidence, not this legacy import. An external database-snapshot
+helper has its own capture budget; record its effective value separately from
+collection settings. A 64 KiB IPC or diagnostic limit is a different unit and
+does not describe a 64 MiB listing-output limit.
+
 Calibrate a limit against representative complete workloads, measured size or
 latency at the relevant stage, and available capacity with headroom. Preserve
 all required identities, fields, children and quality evidence: a bound must
