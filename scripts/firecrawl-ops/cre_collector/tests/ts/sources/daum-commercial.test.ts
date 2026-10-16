@@ -345,7 +345,8 @@ test("DAUM mapper emits a recognized detail-resolved tenure with live freshness"
     "2026-07-30T18:00:00.000Z",
     "2026-07-30T18:01:00.000Z"
   );
-  assert.equal(mapped.id, "50388");
+  assert.equal(mapped.id, "property/main-street");
+  assert.equal(mapped.daumPostId, "50388");
   assert.equal(mapped.transactionType, "Sale");
   assert.equal(mapped.salePriceUsd, 3_250_000);
   assert.equal(mapped.freshnessProvenance.detailScope, "detail_page");
@@ -454,9 +455,9 @@ test("DAUM identity convergence signature is ordered and field-change agnostic",
 });
 
 test("DAUM emitted provider IDs must be unique", () => {
-  assert.doesNotThrow(() => assertDaumUniqueProviderIds([{ id: "1" }, { id: "2" }]));
+  assert.doesNotThrow(() => assertDaumUniqueProviderIds([{ id: "property/first", daumPostId: "1" }, { id: "property/second", daumPostId: "2" }]));
   assert.throws(
-    () => assertDaumUniqueProviderIds([{ id: "1" }, { id: "1" }]),
+    () => assertDaumUniqueProviderIds([{ id: "property/first", daumPostId: "1" }, { id: "property/second", daumPostId: "1" }]),
     /duplicate provider ID 1/
   );
 });

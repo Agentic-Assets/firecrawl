@@ -214,7 +214,8 @@ test("Lyon Stahl source fetches details but never the archive member", async (t)
   const result = await srcLyonStahl("sale", Infinity, false);
   assert.equal(result.totalAvailable, 2);
   assert.equal(result.truncated, false);
-  assert.deepEqual(result.listings.map((row) => row.id).sort(), ["39858", "40000"]);
+  assert.deepEqual(result.listings.map((row) => row.id).sort(), ["2536-atlantic-ave-long-beach-ca-90806", "6789-sabado-tarde-rd-goleta-ca-93117"]);
+  assert.deepEqual(result.listings.map((row) => row.lyonStahlPostId).sort(), ["39858", "40000"]);
   assert.deepEqual(requests.slice().sort(), [...responses.keys()].sort());
   assert.equal(requests.includes("https://lyonstahl.com/properties/"), false);
 });
@@ -302,10 +303,10 @@ test("Lyon Stahl asset URLs preserve benign queries and reject unsafe or sensiti
 
 test("Lyon Stahl emitted provider IDs must be unique", () => {
   assert.doesNotThrow(() =>
-    assertLyonStahlUniqueProviderIds([{ id: "1" }, { id: "2" }])
+    assertLyonStahlUniqueProviderIds([{ id: "first", lyonStahlPostId: "1" }, { id: "second", lyonStahlPostId: "2" }])
   );
   assert.throws(
-    () => assertLyonStahlUniqueProviderIds([{ id: "1" }, { id: "1" }]),
+    () => assertLyonStahlUniqueProviderIds([{ id: "first", lyonStahlPostId: "1" }, { id: "second", lyonStahlPostId: "1" }]),
     /duplicate provider ID 1/
   );
 });
@@ -518,7 +519,8 @@ test("Lyon Stahl parser maps current rich JSON-LD with stable identity and prove
   });
   assert.equal(outcome.kind, "accepted");
   if (outcome.kind !== "accepted") return;
-  assert.equal(outcome.listing.id, "39858");
+  assert.equal(outcome.listing.id, "6789-sabado-tarde-rd-goleta-ca-93117");
+  assert.equal(outcome.listing.lyonStahlPostId, "39858");
   assert.equal(outcome.listing.transactionType, "Sale");
   assert.equal(outcome.listing.street, "6789 Sabado Tarde Rd");
   assert.equal(outcome.listing.city, "Goleta");
@@ -693,7 +695,8 @@ test("Lyon Stahl source holds unknown availability, marks coverage incomplete, a
   const result = await srcLyonStahl("sale", Infinity, false);
   assert.equal(result.totalAvailable, 2);
   assert.equal(result.listings.length, 1);
-  assert.equal(result.listings[0].id, "40001");
+  assert.equal(result.listings[0].id, "active-sale");
+  assert.equal(result.listings[0].lyonStahlPostId, "40001");
   assert.equal(result.truncated, true);
   assert.match(result.note ?? "", /1 detail page\(s\) held/);
   assert.equal(calls.some((url) => /\.pdf(?:$|[?#])/i.test(url)), false);

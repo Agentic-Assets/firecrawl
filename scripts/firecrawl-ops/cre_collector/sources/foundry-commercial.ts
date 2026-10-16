@@ -10,6 +10,7 @@ import {
   foundryPropertyNotes,
   foundryPropertyUrls,
   foundryProviderIdentity,
+  foundryListingId,
   foundryUrl,
   FOUNDRY_HOST,
   FOUNDRY_SITEMAP_URL,
@@ -28,6 +29,7 @@ export {
   foundryPropertySitemaps,
   foundryPropertyUrls,
   foundryProviderIdentity,
+  foundryListingId,
   FOUNDRY_HOST,
   FOUNDRY_SITEMAP_URL,
 } from "./pure/foundry-identity.js";
@@ -85,14 +87,19 @@ export function foundryAssetUrl(value: unknown): string | null {
 }
 
 export function assertFoundryUniqueProviderIds(
-  listings: Array<{ id?: unknown }>
+  listings: Array<{ id?: unknown; foundryPostId?: unknown }>
 ): void {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   for (const listing of listings) {
-    const id = clean(String(listing?.id ?? ""));
-    if (!id) throw new Error("Foundry emitted a listing without a provider ID");
+    const id = clean(String(listing?.foundryPostId ?? ""));
+    const key = clean(String(listing?.id ?? ""));
+    if (!id || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error("Foundry emitted a listing without a valid provider ID");
+    if (!key) throw new Error("Foundry emitted a listing without a listing key");
     if (ids.has(id)) throw new Error(`Foundry emitted duplicate provider ID ${id}`);
+    if (keys.has(key)) throw new Error(`Foundry emitted duplicate listing key ${key}`);
     ids.add(id);
+    keys.add(key);
   }
 }
 
@@ -272,7 +279,8 @@ export function parseFoundryCommercialDetail(
   });
 
   const listingRow = prune({
-    id: identity,
+    id: foundryListingId(requestedUrl),
+    foundryPostId: identity,
     inventoryObservedAt: context.inventoryObservedAt,
     detailObservedAt: context.detailObservedAt,
     freshnessProvenance:

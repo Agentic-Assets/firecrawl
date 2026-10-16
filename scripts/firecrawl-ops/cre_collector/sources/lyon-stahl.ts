@@ -139,6 +139,12 @@ function samePage(left: string, right: string): boolean {
   }
 }
 
+export function lyonStahlListingId(value: string): string {
+  const url = lyonStahlUrl(value, "detail");
+  if (!url) throw new Error("Lyon Stahl listing key requires an owned property URL");
+  return new URL(url).pathname.replace(/\/$/, "").split("/").at(-1)!;
+}
+
 export function lyonStahlPropertySitemaps(indexXml: string): string[] {
   const locations = sitemapLocations(indexXml, "sitemapindex", "sitemap", "Lyon Stahl sitemap index");
   const urls = dedupeStrings(
@@ -231,14 +237,19 @@ export function lyonStahlAssetUrl(value: unknown): string | null {
 }
 
 export function assertLyonStahlUniqueProviderIds(
-  listings: Array<{ id?: unknown }>
+  listings: Array<{ id?: unknown; lyonStahlPostId?: unknown }>
 ): void {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   for (const listing of listings) {
-    const id = clean(String(listing?.id ?? ""));
-    if (!id) throw new Error("Lyon Stahl emitted a listing without a provider ID");
+    const id = clean(String(listing?.lyonStahlPostId ?? ""));
+    const key = clean(String(listing?.id ?? ""));
+    if (!id || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error("Lyon Stahl emitted a listing without a valid provider ID");
+    if (!key) throw new Error("Lyon Stahl emitted a listing without a listing key");
     if (ids.has(id)) throw new Error(`Lyon Stahl emitted duplicate provider ID ${id}`);
+    if (keys.has(key)) throw new Error(`Lyon Stahl emitted duplicate listing key ${key}`);
     ids.add(id);
+    keys.add(key);
   }
 }
 
@@ -449,7 +460,8 @@ export function parseLyonStahlDetail(
     .filter((value): value is number => value !== null);
 
   const row = prune({
-    id: identity,
+    id: lyonStahlListingId(requestedUrl),
+    lyonStahlPostId: identity,
     inventoryObservedAt: context.inventoryObservedAt,
     detailObservedAt: context.detailObservedAt,
     freshnessProvenance:

@@ -5,9 +5,9 @@ import { detailObservation } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { SourceResult, Tx } from "../types.js";
 import { clean, moneyToNumber, prune } from "../lib/util.js";
-import { canonicalDaumPropertyUrl, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
+import { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
 
-export { canonicalDaumPropertyUrl, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
+export { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, type DaumTenure } from "./pure/daum-identity.js";
 export const DAUM_PAGE_SIZE = 90;
 export const DAUM_ROBOTS_DELAY_MS = 3000;
 export const DAUM_MAX_RESPONSE_BYTES = 5_000_000;
@@ -601,13 +601,18 @@ export function daumSnapshotIdentitySignature(rows: DaumInventoryRow[]): string 
   return rows.map((row) => `${row.url}\t${row.tenure}`).join("\n");
 }
 
-export function assertDaumUniqueProviderIds(listings: Array<{ id?: unknown }>): void {
+export function assertDaumUniqueProviderIds(listings: Array<{ id?: unknown; daumPostId?: unknown }>): void {
   const ids = new Set<string>();
+  const keys = new Set<string>();
   for (const listing of listings) {
-    const id = clean(String(listing?.id ?? ""));
-    if (!id) throw new Error("DAUM emitted a listing without a provider ID");
+    const id = clean(String(listing?.daumPostId ?? ""));
+    const key = clean(String(listing?.id ?? ""));
+    if (!id || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new Error("DAUM emitted a listing without a valid provider ID");
+    if (!key) throw new Error("DAUM emitted a listing without a listing key");
     if (ids.has(id)) throw new Error(`DAUM emitted duplicate provider ID ${id}`);
+    if (keys.has(key)) throw new Error(`DAUM emitted duplicate listing key ${key}`);
     ids.add(id);
+    keys.add(key);
   }
 }
 
@@ -763,7 +768,8 @@ export function mapDaumListing(
         : "Lease";
   const salePriceText = detail.salePriceText ?? inventory.salePriceText;
   return prune({
-    id: String(detail.postId),
+    id: daumListingId(inventory.url),
+    daumPostId: String(detail.postId),
     name: detail.title ?? inventory.title,
     transactionType: tenure,
     assetType: detail.facts["Property Type"] ?? inventory.assetType,

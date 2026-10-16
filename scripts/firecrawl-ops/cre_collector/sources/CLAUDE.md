@@ -42,6 +42,15 @@ every other member still requires a valid owned detail URL, and empty or
 archive-only shards fail. Sitemap membership does not establish active status,
 historical identity compatibility or first-seen admission.
 
+DAUM and Foundry output keys preserve the validated owned property's literal
+pathname without outer slashes (`property/<slug>`); Lyon-Stahl preserves only
+the final literal slug. Keep case and percent spelling unchanged. Positive
+WordPress IDs remain separate `daumPostId`, `foundryPostId`, or `lyonStahlPostId`
+provenance. Native IDs and output keys must each be unique within an emitted
+source pass; changed paths never authorize aliases or rekeys. These recipes do
+not establish current availability, change strict detail/lifecycle checks or
+admit absent-baseline writes. Foundry's missing explicit status remains held.
+
 ## Transport & Scrape Primitives
 
 | Transport | Sources |
