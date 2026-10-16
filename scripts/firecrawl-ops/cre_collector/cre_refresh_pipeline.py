@@ -661,7 +661,10 @@ def run_bounded_pipeline(
         checkpoint = manifest["sources"][source]
         if (
             len(checkpoint["attempts"]) - prior_attempts[source] < attempts_this_run
-            and checkpoint.get("state") != "collect_infrastructure_failed"
+            and checkpoint.get("state") not in {
+                "collect_infrastructure_failed",
+                "artifact_rejected",
+            }
         ):
             pending.append(source)
         else:
