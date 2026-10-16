@@ -73,7 +73,7 @@ from cre_owned_processes import (
     settle_owned_groups,
 )
 from cre_performance import capture_runtime_configuration, run_observed_command
-from cre_refresh_pipeline import (compute_root, initial_preflight_binding, poll_hook, resolve_source_workers, run_artifact_compute, run_bounded_pipeline, wait_with_poll_hook)
+from cre_refresh_pipeline import (artifact_compute_enabled, artifact_compute_scope, compute_root, initial_preflight_binding, poll_hook, resolve_source_workers, run_artifact_compute, run_bounded_pipeline, wait_with_poll_hook)
 from cre_performance_report import save_report
 from cre_resource_usage import observe_resource_usage
 from cre_runtime_observability import append_incident
@@ -2787,7 +2787,7 @@ def validate_source_artifact(
     now: datetime | None = None,
     daum_verified_subset: bool = False,
 ) -> dict[str, Any]:
-    if poll_hook() is None:
+    if not artifact_compute_enabled():
         return _validate_source_artifact_local(
             path, expected_source, attempt_started_at,
             require_strict_freshness=require_strict_freshness,
@@ -4426,7 +4426,7 @@ def _checkpoint_artifact_valid(
         )
     except ArtifactValidationError:
         return None
-    if poll_hook() is not None and stats.get("sha256") != expected_hash:
+    if artifact_compute_enabled() and stats.get("sha256") != expected_hash:
         return None
     return path, stats
 
@@ -4793,7 +4793,7 @@ def _admit_current_inventory(
     subset = current_inventory.is_verified_subset(manifest["config"], source)
     if subset and phase == "aggregate":
         manifest["sources"][source].setdefault("subset_ingest_attempt_id", secrets.token_hex(16))
-    if not local and (poll_hook() is not None or subset):
+    if not local and (artifact_compute_enabled() or subset):
         response = run_artifact_compute(run_dir, "admit", {
             "path": str(artifact), "source": source, "run_dir": str(run_dir),
             "manifest": manifest, "report": report, "phase": phase,
@@ -7281,6 +7281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ownership.enter_context(lock)
         save_manifest(run_dir, manifest)
         with (
+            artifact_compute_scope(run_dir),
             resource_guard_boundary(memory_guard, cpu_guard),
             observe_resource_usage(
                 run_dir,

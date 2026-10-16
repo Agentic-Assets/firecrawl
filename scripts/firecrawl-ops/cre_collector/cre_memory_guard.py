@@ -118,6 +118,10 @@ class HostMemoryGuard:
     linux_sampler: LinuxMemorySampler = field(default_factory=LinuxMemorySampler, init=False)
     linux_sample_evidence: dict[str, object] | None = field(default=None, init=False)
 
+    telemetry_failure: dict[str, Any] | None = field(default=None, init=False)
+    sample_read_seconds: float | None = field(default=None, init=False)
+    sample_gap_seconds: float | None = field(default=None, init=False)
+
     def config(self) -> dict[str, Any]:
         return memory_guard_config(self.sustain_seconds, self.sample_seconds)
 
@@ -183,6 +187,11 @@ class HostMemoryGuard:
                     if key in {"phase", "source"} and isinstance(value, str)
                 },
                 **diagnostics,
+                **(
+                    {"telemetry_failure": self.telemetry_failure}
+                    if reason_code and self.telemetry_failure
+                    else {}
+                ),
             },
         )
 
@@ -216,14 +225,30 @@ class HostMemoryGuard:
         if linux_sample:
             self.linux_sampler.last_sample = None
         started = time.monotonic()
-        pressure = (
-            self.sampler()
-            if self.sampler
-            else read_memory_pressure(
-                timeout=min(1.0, self.sample_seconds), linux_sampler=self.linux_sampler
+        self.telemetry_failure = None
+        self.sample_read_seconds = None
+        self.sample_gap_seconds = None
+        try:
+            pressure = (
+                self.sampler()
+                if self.sampler
+                else read_memory_pressure(
+                    timeout=min(1.0, self.sample_seconds),
+                    linux_sampler=self.linux_sampler,
+                )
             )
-        )
-        observed = time.monotonic()
+        finally:
+            observed = time.monotonic()
+            elapsed = observed - started
+            gap = (
+                observed - self.previous_observed
+                if self.previous_observed is not None
+                else None
+            )
+            self.sample_read_seconds = elapsed if math.isfinite(elapsed) else None
+            self.sample_gap_seconds = (
+                gap if gap is not None and math.isfinite(gap) else None
+            )
         if observed - started > min(1.0, self.sample_seconds):
             raise MemoryTelemetryError("host memory pressure read stale")
         code = self.observe(pressure, observed_monotonic=observed)
@@ -242,11 +267,67 @@ class HostMemoryGuard:
                 ) from exc
         return pressure
 
+    def _record_failure(self, error: Exception) -> None:
+        """Bounded diagnostic enums only: no arbitrary exception text or paths."""
+        classes = (
+            MemoryEvidenceError,
+            MemoryTelemetryError,
+            LinuxTelemetryError,
+            FileNotFoundError,
+            PermissionError,
+            TimeoutError,
+            OSError,
+            UnicodeDecodeError,
+            UnicodeError,
+            subprocess.TimeoutExpired,
+            ValueError,
+            TypeError,
+            KeyError,
+        )
+        chain = []
+        current: BaseException | None = error
+        for _ in range(3):
+            if current is None:
+                break
+            chain.append(
+                next(
+                    (kind.__name__ for kind in classes if isinstance(current, kind)),
+                    "other",
+                )
+            )
+            current = current.__cause__
+        message = error.args[0] if error.args and type(error.args[0]) is str else None
+        category = {
+            "host memory pressure sample stale": "sample_gap",
+            "host memory pressure read stale": "read_stale",
+            "host memory pressure invalid": "invalid_sample",
+        }.get(message)
+        if category is None:
+            if isinstance(error, MemoryEvidenceError):
+                category = "evidence_write"
+            elif any(kind in chain for kind in (
+                "OSError", "FileNotFoundError", "PermissionError", "TimeoutError"
+            )):
+                category = "read_unavailable"
+            elif "LinuxTelemetryError" in chain:
+                category = "linux_telemetry"
+            elif isinstance(error, MemoryTelemetryError):
+                category = "telemetry_unavailable"
+            else:
+                category = "unexpected"
+        self.telemetry_failure = {
+            "category": category,
+            "exception_classes": chain,
+            "read_seconds": self.sample_read_seconds,
+            "sample_gap_seconds": self.sample_gap_seconds,
+        }
+
     def _run(self) -> None:
         while not self.stop_event.wait(self.sample_seconds):
             try:
                 self.sample_once()
             except Exception as exc:  # noqa: BLE001 - every required sampler failure stops work
+                self._record_failure(exc)
                 self._trip(
                     "host_memory_evidence_failed"
                     if isinstance(exc, MemoryEvidenceError)
@@ -262,6 +343,7 @@ class HostMemoryGuard:
         try:
             return self.sample_once(admission=True)
         except Exception as exc:
+            self._record_failure(exc)
             self._trip(
                 "host_memory_evidence_failed"
                 if isinstance(exc, MemoryEvidenceError)

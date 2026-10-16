@@ -4,6 +4,11 @@
 
 **Every adapter exports `src*(tx, max, monitor): Promise<SourceResult>`** and maps broker-site data into the shared listing vocabulary in `types.ts`. Register the source key in `collect.ts` (`SOURCE_KEYS` + `runSource`); map it in `cre_ingest.py` `SOURCE_TO_BROKERAGE` and `../sql/001_cre_brokerages.sql`. **Never ingest a `--monitor` artifact through `cre_ingest.py`** (sparse rows wipe enriched prices, `raw_data`, and child tables).
 
+For comprehensive public-field capture, supported normalization, retained
+source metadata and evidence of missingness, follow the
+[listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
+An empty consumer field is not proof of source absence.
+
 ## Adapter Contract
 
 - Return `{ company, sourceUrl, method, totalAvailable, listings, note?, truncated? }`.

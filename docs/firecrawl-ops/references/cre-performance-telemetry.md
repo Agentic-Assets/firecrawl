@@ -227,6 +227,19 @@ missing required platform evidence also blocks the run. See
 [the checkpoint safety contract](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#cpu-and-memory-safety-and-evidence)
 for the platform-specific thresholds and scope.
 
+Guarded checkpoint owners isolate expensive artifact validation and admission
+in the existing owned pure-compute subprocess, including serial runs. This
+keeps JSON decoding off the coordinator that services required guards; it does
+not install an acquisition poll callback or grant another writer. Unscoped
+offline calls and the compute worker itself remain local. Artifact identity,
+hash, bounded metadata, cancellation and uncertain-cleanup checks still apply.
+
+Failed memory-guard ticks include bounded failure categories, exception-class
+enums and finite read-duration/sample-gap measurements. They retain the same
+stop decision and expose no arbitrary exception text or paths. A telemetry
+failure alone does not prove memory exhaustion; older receipts without these
+diagnostics cannot establish which read, parsing or scheduling condition failed.
+
 The resource sampler runs only while the foreground checkpoint owns its lock.
 It uses bounded read-only commands and an owner-only, no-follow journal capped
 at 16 MiB. Optional diagnostics never change a workflow return code or the
