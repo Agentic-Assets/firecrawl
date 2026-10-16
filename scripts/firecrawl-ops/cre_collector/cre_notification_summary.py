@@ -534,6 +534,9 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
                 transaction_started,
             ),
         }
+        if config.get("admit_baseline_hold_additively") is True:
+            result["whole_source_coverage"] = False
+            result["baseline_hold_retained"] = child.get("status") == "additive_scope_complete_coverage_hold"
         if transaction_breakdown is not None:
             result["transaction_breakdown"] = transaction_breakdown
         return result
