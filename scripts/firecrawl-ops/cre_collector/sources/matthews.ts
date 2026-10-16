@@ -116,14 +116,43 @@ export function matthewsRetryableFetchFailure(status: number, error: unknown): b
   return error != null || status === 0 || status === 429 || status === 403 || status === 503;
 }
 
+function matthewsRequestRole(url: string): "inventory" | "sitemap" | "detail" | "other" {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || !["matthews.com", "www.matthews.com"].includes(parsed.hostname)) return "other";
+    if (parsed.pathname === "/sitemap.xml") return "sitemap";
+    if (parsed.pathname === "/listings") return "inventory";
+    if (/^\/properties\/[^/]+\/?$/.test(parsed.pathname)) return "detail";
+  } catch { /* A diagnostic role never changes transport behavior. */ }
+  return "other";
+}
+
+function logMatthewsAttempt(event: {
+  role: ReturnType<typeof matthewsRequestRole>;
+  attempt: number;
+  maxAttempts: number;
+  phase: "headers" | "body" | "http";
+  status: number | null;
+  elapsedMs: number;
+  cooldownMs: number;
+  nextAction: "retry_after_cooldown" | "final_cooldown_before_failure" | "terminal_failure";
+}): void {
+  // Never include URL, response content, headers or exception text. Diagnostics
+  // must not turn an otherwise bounded request/retry into a logging failure.
+  try { console.warn(`  matthews/http ${JSON.stringify(event)}`); } catch { /* best effort */ }
+}
+
 export async function matthewsFetch(
   url: string,
   manualRedirect = false,
   strict = requireFreshDetails()
 ): Promise<MatthewsFetchResult> {
   let lastError: unknown = null;
+  const role = matthewsRequestRole(url);
   for (let attempt = 0; attempt < 6; attempt++) {
     await matthewsGate();
+    const started = performance.now();
+    let phase: "headers" | "body" | "http" = "headers";
     let status = 0;
     let attemptError: unknown = null;
     const controller = new AbortController();
@@ -157,7 +186,9 @@ export async function matthewsFetch(
         }
       );
       status = res.status;
+      phase = "http";
       if (res.ok) {
+        phase = "body";
         return {
           html: await matthewsResponseText(res, controller),
           status,
@@ -178,9 +209,23 @@ export async function matthewsFetch(
     if (matthewsRetryableFetchFailure(status, attemptError)) {
       lastError = attemptError;
       matthewsInterval = Math.min(matthewsInterval + 700, 7000);
-      await matthewsSleep(20000 + attempt * 15000 + Math.random() * 5000);
+      const cooldownMs = 20000 + attempt * 15000 + Math.random() * 5000;
+      logMatthewsAttempt({
+        role, attempt: attempt + 1, maxAttempts: 6, phase,
+        status: status > 0 ? status : null,
+        elapsedMs: Math.max(0, Math.round(performance.now() - started)),
+        cooldownMs,
+        nextAction: attempt < 5 ? "retry_after_cooldown" : "final_cooldown_before_failure",
+      });
+      await matthewsSleep(cooldownMs);
       continue;
     }
+    logMatthewsAttempt({
+      role, attempt: attempt + 1, maxAttempts: 6, phase,
+      status: status > 0 ? status : null,
+      elapsedMs: Math.max(0, Math.round(performance.now() - started)),
+      cooldownMs: 0, nextAction: "terminal_failure",
+    });
     throw new Error(`Matthews HTTP ${status}`);
   }
   if (lastError instanceof Error) throw lastError;
