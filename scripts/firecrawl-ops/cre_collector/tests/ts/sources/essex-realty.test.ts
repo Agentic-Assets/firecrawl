@@ -198,7 +198,8 @@ test("Essex detail requires stable currentPropertyId and matching lifecycle", ()
     "https://essexrealtygroup.com/properties/100-main/",
     "under_contract"
   );
-  assert.equal(parsed.id, "1090741");
+  assert.equal(parsed.id, "properties/100-main");
+  assert.equal(parsed.essexPropertyId, "1090741");
   assert.equal(parsed.salePriceUsd, 9775000);
   assert.equal(parsed.units, 115);
   assert.equal(parsed.statusBadge, "Under Contract");
@@ -394,8 +395,81 @@ test("Essex monitor/full adapter always resolves stable detail identity", async 
   const monitor = await srcEssexRealty("sale", 1, true, transport);
   const full = await srcEssexRealty("sale", 1, false, transport);
   assert.equal(monitor.totalAvailable, 1);
-  assert.equal(monitor.listings[0].id, "1090741");
+  assert.equal(monitor.listings[0].id, "properties/one");
+  assert.equal(monitor.listings[0].essexPropertyId, "1090741");
   assert.equal(monitor.listings[0].preserveChildCollections, true);
-  assert.equal(full.listings[0].id, "1090741");
+  assert.equal(full.listings[0].id, "properties/one");
+  assert.equal(full.listings[0].essexPropertyId, "1090741");
   assert.equal(full.listings[0].preserveChildCollections, undefined);
+});
+
+test("Essex keys preserve literal property paths without decoding or lowercasing", () => {
+  for (const slug of ["Existing-Property", "New-Property", "Unit%2FBuilding"]) {
+    const parsed = parseEssexDetail(
+      detail(1090741, "ON MARKET", slug),
+      `https://essexrealtygroup.com/properties/${slug}/`,
+      "on_market"
+    );
+    assert.equal(parsed.id, `properties/${slug}`);
+    assert.equal(parsed.essexPropertyId, "1090741");
+  }
+  for (const invalidId of [0, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () => parseEssexDetail(
+        detail(invalidId),
+        "https://essexrealtygroup.com/properties/100-main/",
+        "under_contract"
+      ),
+      /currentPropertyId is invalid/
+    );
+  }
+  for (const suffix of ["", "?view=one#summary"]) {
+    assert.equal(
+      parseEssexDetail(
+        detail(),
+        `https://essexrealtygroup.com/properties/100-main${suffix}`,
+        "under_contract"
+      ).id,
+      "properties/100-main"
+    );
+  }
+  for (const path of ["/team/one/", "/properties/", "/properties/one/nested/"]) {
+    assert.throws(
+      () => parseEssexDetail(
+        detail().replaceAll("/properties/100-main/", path),
+        `https://essexrealtygroup.com${path}`,
+        "under_contract"
+      ),
+      /requested URL is invalid/
+    );
+  }
+});
+
+test("Essex retains independent provider-ID and canonical-path uniqueness", async () => {
+  for (const duplicate of ["provider", "path"]) {
+    const first = "https://essexrealtygroup.com/properties/one/";
+    const second = duplicate === "provider"
+      ? "https://essexrealtygroup.com/properties/two/"
+      : `${first}?view=other`;
+    const responses = new Map([
+      ["https://essexrealtygroup.com/properties/", archive([
+        card("one", "ON MARKET"),
+        card("two", "ON MARKET").replace("https://essexrealtygroup.com/properties/two/", second),
+      ])],
+      ["https://essexrealtygroup.com/properties/?sale_deal_status_id=3", archive([card("closed-one", "CLOSED")])],
+      ["https://essexrealtygroup.com/properties-sitemap.xml", `<urlset><url><loc>${first}</loc></url><url><loc>${second}</loc></url><url><loc>https://essexrealtygroup.com/properties/closed-one/</loc></url></urlset>`],
+      [first, detail(1090741, "ON MARKET", "one")],
+      [second, detail(duplicate === "provider" ? 1090741 : 1090742, "ON MARKET", duplicate === "provider" ? "two" : "one")],
+    ]);
+    await assert.rejects(
+      () => srcEssexRealty("sale", Infinity, false, {
+        async getText(url: string) {
+          const response = responses.get(url);
+          assert.notEqual(response, undefined, "unexpected offline request");
+          return response!;
+        },
+      }),
+      duplicate === "provider" ? /duplicate currentPropertyId/ : /duplicate.*path/
+    );
+  }
 });
