@@ -310,8 +310,11 @@ For an operator-requested full freshness sweep, prefer
 each source, binds observations to an immutable generation, bypasses Firecrawl
 response caches for strict source reads, expires resumable generations after
 24 hours, validates artifact provenance, and stops at the first non-`ok` source
-gate. All configured artifacts must pass their source gates and the aggregate
-gate before any live ingest begins. Ordinary `first_seen` requires an explicit
+gate. In serial mode, all configured artifacts must pass their source gates
+and the aggregate gate before live ingest begins. In opt-in pipeline mode,
+each sealed unit must pass its own source and aggregate gates before its
+serial database transaction; another source may continue collecting.
+Ordinary `first_seen` requires an explicit
 reviewed baseline seed and readback before resuming the same immutable run.
 The separately reviewed one-source current-inventory opt-in for Interra and
 registered Buildout feeds preserves the absent baseline and raw verdict while
@@ -322,8 +325,10 @@ never historical-baseline certification or lifecycle authority. See the
 The checkpoint runner has fail-closed Darwin/Linux CPU and memory guards and writes resumable
 evidence. For exact thresholds, resource-profile setup, guard and incident
 logs, full-registry commands, and stale-parent recovery, follow
-`START_HERE.md` rather than duplicating operational settings here. Keep
-`--source-workers=1` unless a no-write calibration proves a safe pairing.
+`START_HERE.md` rather than duplicating operational settings here. Serial
+mode uses one collection slot. Opt-in pipeline mode defaults to two;
+`--source-workers` adjusts its collection slots independently of the single
+database lane. Preserve provider pacing and source-specific admission gates.
 `cre_checkpoint_series.py --sources all` is the serial full-registry path;
 source-local failures may continue, while resource-guard and global failures
 stop the series. Every listing write remains inside
