@@ -221,24 +221,17 @@ def require_pipeline_owner(manifest: dict, expected_lease: str | None) -> None:
         raise refresh.GlobalStageError("pipeline canonical owner changed")
 
 
-def pending_disk_bytes(
-    run_dir: Path, excluded: set[Path], *, include_auxiliary: bool
-) -> int:
-    """Read metadata only; include temp, rejected/retry and active cache output."""
+def pending_disk_bytes(run_dir: Path, excluded: set[Path]) -> int:
+    """Charge unconsumed source outputs; retained cache/audit use free disk."""
     total = 0
-    names = ("sources", "rejected", "cache") if include_auxiliary else ("sources",)
-    for name in names:
-        root = run_dir / name
-        if not root.exists():
-            continue
-        for directory, _, files in os.walk(root, followlinks=False):
-            for filename in files:
-                path = Path(directory) / filename
-                if path not in excluded:
-                    try:
-                        total += path.lstat().st_size
-                    except FileNotFoundError:
-                        pass  # a collector may atomically replace its own temp file
+    for directory, _, files in os.walk(run_dir / "sources", followlinks=False):
+        for filename in files:
+            path = Path(directory) / filename
+            if path not in excluded:
+                try:
+                    total += path.lstat().st_size
+                except FileNotFoundError:
+                    pass  # a collector may atomically replace its own temp file
     return total
 
 
@@ -724,9 +717,7 @@ def run_bounded_pipeline(
                 item.tmp_artifact.stat().st_size if item.tmp_artifact.exists() else 0
                 for item in active
             ]
-            observed = pending_disk_bytes(
-                run_dir, excluded, include_auxiliary=bool(active or ready or preparing)
-            )
+            observed = pending_disk_bytes(run_dir, excluded)
             free = shutil.disk_usage(run_dir).free
             if not budget.can_dispatch(
                 pending_count=len(ready) + len(active) + len(preparing),
