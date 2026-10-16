@@ -379,16 +379,29 @@ export function assertAvisonYoungDetailDoc(
     }
   }
 
+  const normalizeIdentityText = (value: any): string =>
+    (clean(value) ?? "")
+      .toLowerCase()
+      .replace(/\broad\b/g, "rd")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const nativeInfo = $(".building__property-info-box");
+  const nativeInfoRows = nativeInfo.find("li").filter((_index, element) => {
+    const values = $(element).find("span").map((_spanIndex, span) =>
+      clean($(span).text())
+    ).get().filter(Boolean);
+    return values.length >= 2;
+  });
   const headingText = $("h1, h2").map((_index, element) =>
     clean($(element).text())?.toLowerCase() ?? ""
   ).get();
-  const hasSharpLaunchBuildingLayout = Boolean(
-    $(".building__property-info-box").length > 0
+  const hasLegacySharpLaunchBuildingLayout = Boolean(
+    nativeInfo.length > 0
     && $(".availability-card-v2").length > 0
     && headingText.includes("building")
     && headingText.includes("availabilities")
   );
-  if (hasSharpLaunchBuildingLayout) {
+  if (hasLegacySharpLaunchBuildingLayout) {
     const visibleName = clean(base?.name)?.toLowerCase() ?? "";
     const visibleStreet = clean(base?.street)?.toLowerCase() ?? "";
     const visibleCity = clean(base?.city)?.toLowerCase() ?? "";
@@ -400,6 +413,77 @@ export function assertAvisonYoungDetailDoc(
       && visibleHeading === visibleName
       && bodyText.includes(visibleStreet)
       && headingText.includes(visibleCity + ", " + visibleState);
+
+    if (!requestedSharpLaunchMatch || !urlMatches || !visibleIdentityMatches) {
+      throw new Error(
+        "Avison Young detail identity does not match the requested property"
+      );
+    }
+    return listing;
+  }
+
+  const hasSharpLaunchBuildingLayout =
+    nativeInfo.length > 0
+    && nativeInfoRows.length > 0
+    && $(".hero__sub-title").length > 0
+    && $('meta[property="og:url"]').length > 0;
+  if (hasSharpLaunchBuildingLayout) {
+    const visibleName = normalizeIdentityText(base?.name);
+    const visibleStreet = normalizeIdentityText(base?.street);
+    const visibleCity = normalizeIdentityText(base?.city);
+    const visibleState = normalizeIdentityText(base?.state);
+    const identityParts = [visibleName, visibleStreet, visibleCity, visibleState];
+    const hasCompleteFeedIdentity = identityParts.every(Boolean);
+    const title = normalizeIdentityText($("title").first().text());
+    const ogTitle = normalizeIdentityText(
+      $('meta[property="og:title"]').first().attr("content")
+    );
+    const ogUrl = avisonYoungAbsoluteUrl(
+      $('meta[property="og:url"]').first().attr("content"),
+      requested ?? AVISON_YOUNG_HOST
+    );
+    const sameOwnedPageUrl = (candidate: string | null): boolean => {
+      if (!requested || !candidate) return false;
+      try {
+        const requestedParsed = new URL(requested);
+        const candidateParsed = new URL(candidate);
+        return requestedParsed.protocol === "https:"
+          && candidateParsed.protocol === "https:"
+          && !requestedParsed.username
+          && !requestedParsed.password
+          && !candidateParsed.username
+          && !candidateParsed.password
+          && requestedParsed.hostname.toLowerCase()
+            === candidateParsed.hostname.toLowerCase()
+          && requestedParsed.port === candidateParsed.port
+          && requestedParsed.pathname.replace(/\/+$/, "").toLowerCase()
+            === candidateParsed.pathname.replace(/\/+$/, "").toLowerCase()
+          && requestedParsed.search === candidateParsed.search
+          && requestedParsed.hash === candidateParsed.hash;
+      } catch {
+        return false;
+      }
+    };
+    const containsWholePhrase = (text: string, phrase: string): boolean =>
+      Boolean(phrase) && (` ${text} `).includes(` ${phrase} `);
+    const visibleIdentityHeadings = $("h2").map((_index, element) =>
+      normalizeIdentityText($(element).text())
+    ).get();
+    const identityHeadingCandidates = visibleIdentityHeadings.filter((text) =>
+      containsWholePhrase(text, visibleStreet)
+    );
+    const visibleAddress = [visibleStreet, visibleCity, visibleState].join(" ");
+    const matchingIdentityHeadings = identityHeadingCandidates.filter((text) =>
+      containsWholePhrase(text, visibleName)
+      && containsWholePhrase(text, visibleAddress)
+    );
+    const visibleIdentityMatches =
+      hasCompleteFeedIdentity
+      && title === visibleName
+      && ogTitle === visibleName
+      && sameOwnedPageUrl(ogUrl)
+      && identityHeadingCandidates.length > 0
+      && matchingIdentityHeadings.length === identityHeadingCandidates.length;
 
     if (!requestedSharpLaunchMatch || !urlMatches || !visibleIdentityMatches) {
       throw new Error(
@@ -1315,6 +1399,7 @@ export async function enrichAvisonYoungListing(
 
   const docs: Array<{ doc: ScrapedDoc; url: string }> = [];
   const errors: string[] = [];
+  const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
     try {
       const doc =
@@ -1331,26 +1416,30 @@ export async function enrichAvisonYoungListing(
       docs.push({ url, doc });
     } catch (err) {
       const error = `${url}: ${String(err)}`;
-      if (strict) {
-        if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
-          const role =
-            url === clean(base.sharpLaunchUrl)
-              ? "sharpLaunch"
-              : url === clean(base.externalUrl)
-                ? "external"
-                : "other";
-          throw new AvisonYoungTerminalDetailError({
-            listingId: clean(base.id) ?? "unknown",
-            role,
-            status: 404,
-          });
-        }
+      if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
+        const role =
+          url === clean(base.sharpLaunchUrl)
+            ? "sharpLaunch"
+            : url === clean(base.externalUrl)
+              ? "external"
+              : "other";
+        const failure: AvisonYoungTerminalDetailFailure = {
+          listingId: clean(base.id) ?? "unknown",
+          role,
+          status: 404,
+        };
+        if (strict) throw new AvisonYoungTerminalDetailError(failure);
+        missingDetails.push(failure);
+      } else if (strict) {
         throw new Error(`Avison Young detail fetch failed: ${error}`);
       }
       errors.push(error);
     }
   }
   if (!docs.length) {
+    if (requireLiveDetails && missingDetails.length === detailUrls.length) {
+      throw new AvisonYoungTerminalDetailError(missingDetails[0]!);
+    }
     return prune({ ...base, detailError: errors.join("; ") || "no detail pages scraped" });
   }
   if (strict && docs.length !== detailUrls.length) {
@@ -1526,13 +1615,31 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
       },
       strict
     );
+    // Classify only successful fresh results as successes in the draining map.
+    // Otherwise a concurrent 404 could conceal this ordinary source failure.
+    if (requireLiveDetails && (
+      !enriched?.detailObservedAt
+      || enriched?.detailError
+      || enriched?.detailUnavailable
+      || enriched?.freshnessProvenance?.detailScope !== "detail_page"
+      || enriched?.freshnessProvenance?.generationId !== refreshGenerationId()
+      || enriched?.freshnessProvenance?.cacheDisposition !== "live"
+      || (strict && enriched?.preserveChildCollections === true)
+    )) {
+      const reason = clean(enriched?.detailError)
+        ?? clean(enriched?.detailUnavailableReason)
+        ?? "missing current detail provenance";
+      throw new Error(
+        `Avison Young fresh property detail is incomplete for ${clean(listing?.id) ?? "unknown-id"}: ${reason}`
+      );
+    }
     if ((idx + 1) % 10 === 0 || idx + 1 === detailLimit) {
       console.error("  avison-young/" + tx + ": detail enriched " + (idx + 1) + "/" + detailLimit);
     }
     return enriched;
   };
   const enrichedListings = detailLimit
-    ? strict && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+    ? requireLiveDetails && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
       ? await mapAvisonYoungStrictDetails(
           baseListings.slice(0, detailLimit),
           AVISON_YOUNG_DETAIL_CONCURRENCY,
