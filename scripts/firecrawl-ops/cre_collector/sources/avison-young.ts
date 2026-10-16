@@ -6,7 +6,7 @@ import { BlockList, isIP } from "node:net";
 import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
-import { decodeHtmlEntities, dedupeStrings, firstJsonLd, stripHtmlText, titleFromFilename } from "../lib/html.js";
+import { decodeHtmlEntities, dedupeStrings, firstJsonLd, jsonLdObjects, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { normBuildingClass, parseLeaseRate } from "../lib/parse.js";
 import { scrapeDoc } from "../lib/scrape.js";
 import { harvestDetail, type HarvestResult } from "../lib/harvest.js";
@@ -395,6 +395,88 @@ export function assertAvisonYoungDetailDoc(
   const headingText = $("h1, h2").map((_index, element) =>
     clean($(element).text())?.toLowerCase() ?? ""
   ).get();
+  // Captured native/wrapper variants separate the property name from its
+  // location. Bind each field within its own identity container; script/map
+  // substrings are not street evidence for this layout.
+  const sameIdentityUrl = (value: any, expected: any): boolean => {
+    try {
+      const left = new URL(String(value));
+      const right = new URL(String(expected));
+      return left.protocol === "https:" && right.protocol === "https:"
+        && !left.username && !left.password && !right.username && !right.password
+        && left.origin === right.origin
+        && left.pathname.replace(/\/+$/, "") === right.pathname.replace(/\/+$/, "")
+        && left.search === right.search && left.hash === right.hash;
+    } catch { return false; }
+  };
+  const stateNames = "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|District of Columbia|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming".split("|");
+  const stateCodes = "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".toLowerCase().split(" ");
+  const normalizeState = (value: any): string => {
+    const text = normalizeIdentityText(value);
+    const index = stateNames.findIndex((name) => normalizeIdentityText(name) === text);
+    return index >= 0 ? stateCodes[index]! : stateCodes.includes(text) ? text : "";
+  };
+  const name = normalizeIdentityText(base?.name);
+  const street = normalizeIdentityText(base?.street);
+  const city = normalizeIdentityText(base?.city);
+  const state = normalizeState(base?.state);
+  const heroLocations = $(".hero__sub-title").map((_index, element) => {
+    const parts = (clean($(element).text()) ?? "").split(",");
+    return parts.length === 2
+      && normalizeIdentityText(parts[0]) === city
+      && normalizeState(parts[1]) === state;
+  }).get();
+  const normalizedTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")]
+    .map(normalizeIdentityText);
+  const titleLocationPrefix = [name, city, ""].join(" ");
+  const titleMatches = (title: string): boolean => title === name
+    || (title.startsWith(titleLocationPrefix)
+      && normalizeState(title.slice(titleLocationPrefix.length)) === state);
+  const canonicalUrls = $('link[rel="canonical"]').map((_index, element) => $(element).attr("href")).get();
+  const identityMetadataMatches = Boolean(name && street && city && state)
+    && $("h1").length === 1 && normalizeIdentityText($("h1").text()) === name
+    && heroLocations.length === 1 && heroLocations[0] === true
+    && $("title").length === 1 && $('meta[property="og:title"]').length === 1
+    && normalizedTitles.every(titleMatches)
+    && $('meta[property="og:url"]').length === 1
+    && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
+    && canonicalUrls.every((value) => sameIdentityUrl(value, requested));
+  const capturedBuildingStructure = nativeInfo.length > 0 && nativeInfoRows.length > 0
+    && $(".hero__text .hero__title").length === 1 && heroLocations.length > 0;
+  let isRegisteredOfficialWrapper = false;
+  try {
+    const parsed = new URL(requested ?? "");
+    isRegisteredOfficialWrapper = parsed.origin === AVISON_YOUNG_HOST
+      && parsed.pathname.startsWith("/properties/")
+      && sameIdentityUrl(requested, base?.externalUrl);
+  } catch { /* no registered official URL */ }
+  if (capturedBuildingStructure && isRegisteredOfficialWrapper) {
+    const records = jsonLdObjects(doc.rawHtml).filter((object) =>
+      [object["@type"]].flat().some((type) => String(type).toLowerCase() === "realestatelisting")
+    );
+    const record = records[0];
+    const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
+    const structuredIdentityMatches = records.length === 1
+      && normalizeIdentityText(record?.name) === name
+      && sameIdentityUrl(record?.url, requested)
+      && addresses.length > 0 && addresses.every((address) =>
+        normalizeIdentityText(address.streetAddress) === street
+        && normalizeIdentityText(address.addressLocality) === city
+        && normalizeState(address.addressRegion) === state);
+    if (!identityMetadataMatches || !structuredIdentityMatches || !urlMatches) {
+      throw new Error("Avison Young detail identity does not match the requested property");
+    }
+    return record;
+  }
+  // The captured sale template uses its complete street as the property name.
+  // A named building without a visible street still needs another validated page.
+  if (capturedBuildingStructure && requestedSharpLaunchMatch && name === street) {
+    if (!identityMetadataMatches || !urlMatches || !sameIdentityUrl(requested, sharpLaunchUrl)) {
+      throw new Error("Avison Young detail identity does not match the requested property");
+    }
+    return listing;
+  }
+
   const hasLegacySharpLaunchBuildingLayout = Boolean(
     nativeInfo.length > 0
     && $(".availability-card-v2").length > 0

@@ -188,11 +188,20 @@ For the diagnosed IPv6/TLS failure and verified repair, use the
 
 ---
 
-## Scheduling (launchd, gated)
+## Scheduling by platform
 
-Schedules are macOS launchd jobs. The committed source of truth is the three
-**`*.plist.template`** files; rendered per-machine plists are gitignored and
-produced by the generator:
+The shared checkpoint runner owns collection, validation and database writes on
+both platforms. Only the scheduler and host adapter differ. Windows uses Task
+Scheduler, PowerShell and the Ubuntu ext4 checkout; follow the
+[Windows task installation and acceptance guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance).
+Its jobs execute without an active coding chat. Registration alone does not prove
+successful unattended operation: verify the actual trigger, settlement, database
+readback and Slack delivery using that guide. Do not install launchd jobs on Windows.
+
+### macOS launchd reference (gated)
+
+The macOS **`*.plist.template`** files describe host-specific launchd jobs;
+rendered per-machine plists are gitignored and produced by the generator:
 
 ```bash
 bash launchd/install_launchd.sh <monitor|enrich|weekly|daily|all> # render + install, NO load

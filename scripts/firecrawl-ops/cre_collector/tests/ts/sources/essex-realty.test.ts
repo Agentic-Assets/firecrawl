@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import {
+  createPerformanceRecorder,
+  resetPerformanceRecorderForTests,
+  setPerformanceRecorderForTests,
+  withPerformanceSource,
+} from "../../../lib/performance.js";
 import {
   createEssexTransport,
   essexAssetUrl,
@@ -47,10 +56,10 @@ function archive(rows: string[]): string {
 
 function detail(id = 1090741, status = "UNDER CONTRACT", slug = "100-main"): string {
   return `
-    <head>
+    <html><head>
       <link rel="canonical" href="https://essexrealtygroup.com/properties/${slug}/">
       <meta property="og:url" content="https://essexrealtygroup.com/properties/${slug}/">
-    </head>
+    </head><body class="single-properties postid-${id}">
     <section class="property-detail-wrapper">
       <div class="property-info__label label">${status} - MULTI-FAMILY</div>
       <span class="property-info__address--address-1">100 Main Street</span>
@@ -71,7 +80,7 @@ function detail(id = 1090741, status = "UNDER CONTRACT", slug = "100-main"): str
         <div class="small-broker-card__contact"><a href="mailto:jane@example.com">Email</a></div>
       </div>
     </section>
-    <script>var currentPropertyId = ${id};</script>`;
+    <script>var currentPropertyId = ${id};</script></body></html>`;
 }
 
 test("Essex archive parses exact current lifecycle inventory", () => {
@@ -192,7 +201,7 @@ test("Essex sitemap and lifecycle reconciliation fail closed on drift", () => {
   );
 });
 
-test("Essex detail requires stable currentPropertyId and matching lifecycle", () => {
+test("Essex detail retains observed currentPropertyId and matching lifecycle", () => {
   const parsed = parseEssexDetail(
     detail(),
     "https://essexrealtygroup.com/properties/100-main/",
@@ -363,6 +372,166 @@ test("Essex transport enforces host, byte bound, and Crawl-delay serially", asyn
   }
 });
 
+test("Essex transport records bounded direct outcomes and pacing without changing errors", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "essex-direct-performance-"));
+  const path = join(dir, "performance.json");
+  let monotonic = 0;
+  let wall = 1_000;
+  const realDateNow = Date.now;
+  const timeoutError = new DOMException("The request was aborted", "AbortError");
+  const recorder = createPerformanceRecorder({
+    path,
+    runId: "2026-09-13T120000Z-abcdef123456",
+    commandId: "0123456789abcdef0123456789abcdef",
+    monotonicMs: () => monotonic,
+    nowIso: () => new Date(Date.UTC(2026, 8, 13, 12) + monotonic).toISOString(),
+    processResources: () => ({ rssBytes: 100, cpuUserMicros: 10, cpuSystemMicros: 5 }),
+  });
+  assert.ok(recorder);
+  const calls: string[] = [];
+  const transport = createEssexTransport(
+    async (input) => {
+      const url = String(input);
+      calls.push(url);
+      monotonic += 5;
+      if (url === "https://essexrealtygroup.com/properties/") {
+        return new Response("archive", { status: 200 });
+      }
+      if (url === "https://essexrealtygroup.com/properties/?sale_deal_status_id=3") {
+        return new Response("upstream", { status: 503 });
+      }
+      if (url === "https://essexrealtygroup.com/properties-sitemap.xml") {
+        throw timeoutError;
+      }
+      return new Response("", { status: 200, headers: { "content-length": "20" } });
+    },
+    async (ms) => {
+      wall += ms;
+      monotonic += ms;
+    },
+    10
+  );
+  Date.now = () => wall;
+  setPerformanceRecorderForTests(recorder);
+  try {
+    await withPerformanceSource("essex-realty", "sale", async () => {
+      assert.equal(await transport.getText("https://essexrealtygroup.com/properties/"), "archive");
+      await assert.rejects(
+        () => transport.getText("https://essexrealtygroup.com/properties/?sale_deal_status_id=3"),
+        /HTTP 503/
+      );
+      await assert.rejects(
+        () => transport.getText("https://essexrealtygroup.com/properties-sitemap.xml"),
+        (error) => error === timeoutError
+      );
+      await assert.rejects(
+        () => transport.getText("https://essexrealtygroup.com/properties/detail/", 1),
+        /exceeds 1 bytes/
+      );
+    });
+    recorder.flush(true);
+    const snapshot = JSON.parse(readFileSync(path, "utf8"));
+    const rows = snapshot.metrics.direct_provider_requests.by_source_transaction_role;
+    const row = (role: string) => rows.find((entry: any) => entry.role === role);
+    assert.deepEqual(calls, [
+      "https://essexrealtygroup.com/properties/",
+      "https://essexrealtygroup.com/properties/?sale_deal_status_id=3",
+      "https://essexrealtygroup.com/properties-sitemap.xml",
+      "https://essexrealtygroup.com/properties/detail/",
+    ]);
+    assert.deepEqual(
+      [row("current_archive").succeeded, row("current_archive").status_counts["200"]],
+      [1, 1]
+    );
+    assert.deepEqual(
+      [row("closed_archive").failed, row("closed_archive").status_counts["503"], row("closed_archive").error_categories.http_5xx],
+      [1, 1, 1]
+    );
+    assert.equal(row("sitemap").error_categories.timeout, 1);
+    assert.deepEqual(
+      [row("detail").error_categories.response_too_large, row("detail").status_counts["200"]],
+      [1, 1]
+    );
+    for (const role of ["closed_archive", "sitemap", "detail"]) {
+      assert.equal(row(role).pacing_waits_completed, 1);
+      assert.equal(row(role).pacing_wait_ms_scheduled, 10);
+      assert.equal(row(role).pacing_wait_ms_elapsed, 10);
+    }
+    assert.equal(snapshot.metrics.requests.attempts_started, 0);
+    assert.doesNotMatch(JSON.stringify(snapshot), /https?:\/\/|upstream/);
+  } finally {
+    Date.now = realDateNow;
+    resetPerformanceRecorderForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Essex pending direct request is visible in the real snapshot before completion", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "essex-direct-active-"));
+  const path = join(dir, "performance.json");
+  let monotonic = 0;
+  let releaseFetch: ((response: Response) => void) | undefined;
+  let notifyFetchStarted: (() => void) | undefined;
+  const fetchStarted = new Promise<void>((resolve) => { notifyFetchStarted = resolve; });
+  const recorder = createPerformanceRecorder({
+    path,
+    runId: "2026-09-13T120000Z-abcdef123456",
+    commandId: "0123456789abcdef0123456789abcdef",
+    monotonicMs: () => monotonic,
+    nowIso: () => new Date(Date.UTC(2026, 8, 13, 12) + monotonic).toISOString(),
+    processResources: () => ({ rssBytes: 100, cpuUserMicros: 10, cpuSystemMicros: 5 }),
+  });
+  assert.ok(recorder);
+  const transport = createEssexTransport(
+    async () => {
+      notifyFetchStarted?.();
+      return new Promise<Response>((resolve) => { releaseFetch = resolve; });
+    },
+    async () => {},
+    0
+  );
+  setPerformanceRecorderForTests(recorder);
+  try {
+    recorder.recordSourceStarted({ source: "essex-realty", transaction: "sale" });
+    const pending = withPerformanceSource("essex-realty", "sale", () =>
+      transport.getText("https://essexrealtygroup.com/properties/")
+    );
+    await fetchStarted;
+
+    const inProgress = JSON.parse(readFileSync(path, "utf8"));
+    const current = inProgress.metrics.direct_provider_requests.by_source_transaction_role
+      .find((row: any) => row.role === "current_archive");
+    assert.equal(inProgress.terminal, false);
+    assert.equal(current.attempts_started, 1);
+    assert.equal(current.attempts_completed, 0);
+    assert.equal(current.active_locally_awaited, 1);
+    assert.deepEqual(current.latency_histogram, {
+      bounds_ms: [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000],
+      counts: Array(11).fill(0),
+    });
+
+    monotonic = 25_000;
+    releaseFetch?.(new Response("archive", { status: 200 }));
+    assert.equal(await pending, "archive");
+    recorder.recordSourceCompleted(
+      { source: "essex-realty", transaction: "sale" },
+      "succeeded",
+      0
+    );
+    recorder.flush(true);
+    const terminal = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(terminal.terminal, true);
+    const completed = terminal.metrics.direct_provider_requests.by_source_transaction_role
+      .find((row: any) => row.role === "current_archive");
+    assert.equal(completed.attempts_completed, 1);
+    assert.equal(completed.active_locally_awaited, 0);
+    assert.equal(completed.status_counts["200"], 1);
+  } finally {
+    resetPerformanceRecorderForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Essex monitor/full adapter always resolves stable detail identity", async () => {
   const responses = new Map<string, string>([
     [
@@ -445,7 +614,7 @@ test("Essex keys preserve literal property paths without decoding or lowercasing
   }
 });
 
-test("Essex retains independent provider-ID and canonical-path uniqueness", async () => {
+test("Essex retains independent WordPress-page and canonical-path uniqueness", async () => {
   for (const duplicate of ["provider", "path"]) {
     const first = "https://essexrealtygroup.com/properties/one/";
     const second = duplicate === "provider"
@@ -459,7 +628,7 @@ test("Essex retains independent provider-ID and canonical-path uniqueness", asyn
       ["https://essexrealtygroup.com/properties/?sale_deal_status_id=3", archive([card("closed-one", "CLOSED")])],
       ["https://essexrealtygroup.com/properties-sitemap.xml", `<urlset><url><loc>${first}</loc></url><url><loc>${second}</loc></url><url><loc>https://essexrealtygroup.com/properties/closed-one/</loc></url></urlset>`],
       [first, detail(1090741, "ON MARKET", "one")],
-      [second, detail(duplicate === "provider" ? 1090741 : 1090742, "ON MARKET", duplicate === "provider" ? "two" : "one")],
+      [second, detail(1090742, "ON MARKET", duplicate === "provider" ? "two" : "one").replace("postid-1090742", duplicate === "provider" ? "postid-1090741" : "postid-1090742")],
     ]);
     await assert.rejects(
       () => srcEssexRealty("sale", Infinity, false, {
@@ -469,7 +638,45 @@ test("Essex retains independent provider-ID and canonical-path uniqueness", asyn
           return response!;
         },
       }),
-      duplicate === "provider" ? /duplicate currentPropertyId/ : /duplicate.*path/
+      duplicate === "provider" ? /duplicate WordPress/ : /duplicate.*path/
     );
   }
+});
+
+test("Essex real distinct WordPress pages preserve shared raw variable without false duplicate", async () => {
+  const slugs = ["1157-west-18th-street", "1423-w-cortez-st"];
+  const urls = slugs.map(slug => "https://essexrealtygroup.com/properties/" + slug + "/");
+  const bodies = [15709, 15875].map(post => readFileSync("tests/fixtures/essex-page-" + post + ".html", "utf8"));
+  const responses = new Map([
+    ["https://essexrealtygroup.com/properties/", archive([card(slugs[0], "UNDER CONTRACT"), card(slugs[1], "ON MARKET")])],
+    ["https://essexrealtygroup.com/properties/?sale_deal_status_id=3", archive([card("closed-one", "CLOSED")])],
+    ["https://essexrealtygroup.com/properties-sitemap.xml", "<urlset>" + [...urls, "https://essexrealtygroup.com/properties/closed-one/"].map(url => "<url><loc>" + url + "</loc></url>").join("") + "</urlset>"],
+    ...urls.map((url, i) => [url, bodies[i]] as [string, string]),
+  ]);
+  const result = await srcEssexRealty("sale", Infinity, false, {async getText(url) {
+    assert.ok(responses.has(url), "unexpected offline request");
+    return responses.get(url)!;
+  }});
+  assert.deepEqual(result.listings.map(row => row.essexPropertyId), ["1090741", "1090741"]);
+  assert.deepEqual(result.listings.map(row => row.essexWordpressPage), urls.map((canonicalUrl, i) => ({
+    type: "wordpress_properties_post", id: String([15709, 15875][i]), canonicalUrl,
+  })));
+});
+
+test("Essex requires one unambiguous positive WordPress property page identity", () => {
+  const primary = readFileSync("tests/fixtures/essex-page-15709.html", "utf8");
+  const url = "https://essexrealtygroup.com/properties/1157-west-18th-street/";
+  for (const classes of [
+    "single-properties", "single-properties postid-0", "single-properties postid-01",
+    "single-properties postid-15709 postid-15875",
+    "single-properties postid-15709 postid-15709",
+    "single-post postid-15709", "single-properties single-post postid-15709",
+    "single-properties postid-not-numeric",
+    "single-properties postid-9007199254740992",
+  ]) {
+    assert.throws(() => parseEssexDetail(primary.replace(/<body class="[^"]*">/, '<body class="' + classes + '">'), url, "under_contract"), /WordPress/);
+  }
+  assert.throws(() => parseEssexDetail(primary.replace("</body>", '<body class="single-properties postid-15875"></body></body>'), url, "under_contract"), /WordPress/);
+  assert.throws(() => parseEssexDetail(primary.replace("postid-15709", "postid-15709 postid-15875"), url, "under_contract"), /WordPress/);
+
 });

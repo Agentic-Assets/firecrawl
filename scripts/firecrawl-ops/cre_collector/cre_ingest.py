@@ -4345,15 +4345,22 @@ END $$;
 
 -- Essex keeps historical literal property-path keys. Refuse contradictory
 -- staged/historical associations before DML, including soft-deleted parents.
--- Missing old native IDs remain unknown; never infer or repair them.
+-- Only typed WordPress page claims are comparable. Old currentPropertyId variables
+-- remain observed metadata; missing old page IDs are unknown, never inferred.
 DO $$
 DECLARE
     conflicting_rows bigint;
 BEGIN
     CREATE TEMP TABLE _essex_identity_claims ON COMMIT DROP AS
     SELECT s.brokerage_id, s.external_id, s.source_url,
-           ARRAY(SELECT DISTINCT n.value #>> '{}'
-                 FROM jsonb_path_query(s.raw_data, '$.**.essexPropertyId') n(value)) AS native_ids
+           ARRAY(SELECT DISTINCT CASE
+                   WHEN jsonb_typeof(n.value) = 'object'
+                    AND n.value->>'type' = 'wordpress_properties_post'
+                    AND n.value->>'canonicalUrl' = s.source_url
+                    AND n.value - ARRAY['type','id','canonicalUrl']::text[] = '{}'::jsonb
+                   THEN n.value->>'id'
+                   ELSE '__invalid_wordpress_page_claim__' END
+                 FROM jsonb_path_query(s.raw_data, '$.**.essexWordpressPage') n(value)) AS native_ids
     FROM _src s
     WHERE jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "essex-realty")');
 
@@ -4374,8 +4381,14 @@ BEGIN
 
     CREATE TEMP TABLE _essex_historical_identity_claims ON COMMIT DROP AS
     SELECT t.brokerage_id, t.external_id, t.source_url,
-           ARRAY(SELECT DISTINCT n.value #>> '{}'
-                 FROM jsonb_path_query(t.raw_data, '$.**.essexPropertyId') n(value)
+           ARRAY(SELECT DISTINCT CASE
+                   WHEN jsonb_typeof(n.value) = 'object'
+                    AND n.value->>'type' = 'wordpress_properties_post'
+                    AND n.value->>'canonicalUrl' = t.source_url
+                    AND n.value - ARRAY['type','id','canonicalUrl']::text[] = '{}'::jsonb
+                   THEN n.value->>'id'
+                   ELSE '__invalid_wordpress_page_claim__' END
+                 FROM jsonb_path_query(t.raw_data, '$.**.essexWordpressPage') n(value)
                  WHERE n.value <> 'null'::jsonb) AS native_ids
     FROM credeals.cre_listings t
     WHERE EXISTS (

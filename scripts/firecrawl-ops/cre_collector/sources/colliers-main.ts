@@ -15,6 +15,7 @@ import {
   detailObservation,
   generationMatches,
   refreshGenerationId,
+  refreshStartedAt,
   requireFreshDetails,
 } from "../lib/freshness.js";
 
@@ -131,6 +132,7 @@ export type ColliersMainEntry = {
 
 export let colliersMainSitemapCache: ColliersMainEntry[] | null = null;
 export let colliersMainEnrichedMemo: any[] | null = null;
+let colliersMainAcquisition: { key: string; promise: Promise<any[]> } | null = null;
 export let colliersMainEnrichedStats = { errors: 0, deferred: 0 };
 
 export const COLLIERS_MAIN_COVEO_BATCH_URL =
@@ -1350,7 +1352,25 @@ export function colliersMainCachedListingIsCurrent(entry: ColliersMainEntry, lis
 
 // Enrich the full sitemap once (memoized across the sale and lease passes and
 // backed by a durable JSONL cache), then srcColliersMain filters per pass.
-export async function colliersMainEnrichAll(max: number): Promise<any[]> {
+export function colliersMainEnrichAll(max: number): Promise<any[]> {
+  const key = JSON.stringify([
+    refreshGenerationId(), refreshStartedAt(),
+    Number.isFinite(max) && max > 0 ? max : null,
+  ]);
+  if (colliersMainAcquisition?.key === key) return colliersMainAcquisition.promise;
+  if (colliersMainAcquisition) {
+    colliersMainSitemapCache = null;
+    colliersMainEnrichedMemo = null;
+    colliersMainEnrichedStats = { errors: 0, deferred: 0 };
+  }
+  // Install before discovery settles, retaining the original rejection as well
+  // as success. Sale/lease are filters over one full acquisition, not retries.
+  const promise = acquireColliersMainAll(max);
+  colliersMainAcquisition = { key, promise };
+  return promise;
+}
+
+async function acquireColliersMainAll(max: number): Promise<any[]> {
   if (colliersMainEnrichedMemo) return colliersMainEnrichedMemo;
   const entries = await fetchColliersMainEntries();
   const want = max && max > 0 ? Math.min(max, entries.length) : entries.length;

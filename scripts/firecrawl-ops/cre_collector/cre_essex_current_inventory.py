@@ -27,7 +27,7 @@ from cre_ingest import (
 from cre_source_policy import load_source_policy
 
 SOURCE = "essex-realty"
-SCHEMA = "essex-strict-detail-v1"
+SCHEMA = "essex-strict-detail-v2"
 BASE = "https://essexrealtygroup.com/properties/"
 ENDPOINTS = {
     "current": BASE,
@@ -244,8 +244,9 @@ def admit(
     require(isinstance(cohort, list) and len(cohort) == total)
     native, keys = {}, set()
     for member, archive in zip(cohort, second["current"], strict=True):
-        require(isinstance(member, list) and len(member) == 4)
-        post, url, key, lifecycle = member
+        require(isinstance(member, list) and len(member) == 5)
+        post, url, key, lifecycle, raw_property_id = member
+        _post(raw_property_id)
         _post(post)
         require(
             post not in native
@@ -253,7 +254,7 @@ def admit(
             and key not in keys
             and [url, lifecycle] == archive[:2]
         )
-        native[post] = (url, key, lifecycle)
+        native[post] = (url, key, lifecycle, raw_property_id)
         keys.add(key)
     details = {}
     require(isinstance(proof["details"], list) and len(proof["details"]) == total)
@@ -276,13 +277,18 @@ def admit(
     )
     staged, emitted = {}, set()
     for listing in listings:
-        post = listing["essexPropertyId"]
+        page = listing["essexWordpressPage"]
+        require(isinstance(page, dict) and set(page) == {"type", "id", "canonicalUrl"})
+        require(page["type"] == "wordpress_properties_post")
+        post = page["id"]
         require(post in native and post not in emitted)
         emitted.add(post)
-        url, key, lifecycle = native[post]
+        url, key, lifecycle, raw_property_id = native[post]
         canonical, clock, body_hash = details[post]
         require(
-            listing.get("id") == key
+            listing.get("essexPropertyId") == raw_property_id
+            and page["canonicalUrl"] == canonical
+            and listing.get("id") == key
             and listing.get("url") == url
             and listing.get("canonicalUrl") == canonical
             and listing.get("lifecycle") == lifecycle
@@ -307,7 +313,7 @@ def admit(
             and provenance.get("cacheDisposition") == "live"
             and provenance.get("method") == "essex_direct_detail_html"
             and provenance.get("identityMethod")
-            == "literal_owned_property_path+essex_native_property_id"
+            == "literal_owned_property_path+wordpress_properties_post"
         )
         transformed = to_row(listing, {}, meta["finishedAt"])
         require(

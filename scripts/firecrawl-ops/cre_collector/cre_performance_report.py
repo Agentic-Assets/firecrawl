@@ -43,6 +43,16 @@ RUN_ID = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z(?:-[0-9a-f]{12})?\Z")
 COMMAND_ID = re.compile(r"[0-9a-f]{32}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SAFE_FILE = re.compile(r"[a-zA-Z0-9_.-]{1,200}\Z")
+DIRECT_PROVIDER_ROLES = {"current_archive", "closed_archive", "sitemap", "detail"}
+DIRECT_PROVIDER_ERRORS = (
+    "timeout",
+    "http_4xx",
+    "http_5xx",
+    "transport",
+    "empty_response",
+    "response_too_large",
+    "unknown",
+)
 PHASES = {
     "collection",
     "healthcheck",
@@ -150,6 +160,80 @@ def _source_metrics(value: object, names: tuple[str, ...]) -> list[dict[str, Any
     return result
 
 
+def _direct_provider_metrics(value: object) -> list[dict[str, Any]]:
+    records = _object(value).get("by_source_transaction_role")
+    if not isinstance(records, list) or len(records) > 12:
+        return []
+    result = []
+    seen: set[tuple[str, str, str]] = set()
+    counters = (
+        "attempts_started",
+        "attempts_completed",
+        "succeeded",
+        "failed",
+        "active_locally_awaited",
+        "max_active_locally_awaited",
+        "summed_latency_ms",
+        "other_valid_statuses",
+        "pacing_waits_started",
+        "pacing_waits_completed",
+        "pacing_waits_active",
+        "pacing_wait_ms_scheduled",
+        "pacing_wait_ms_elapsed",
+    )
+    for item in records:
+        record = _object(item)
+        source, transaction, role = (
+            record.get("source"),
+            record.get("transaction"),
+            record.get("role"),
+        )
+        if (
+            source != "essex-realty"
+            or not isinstance(transaction, str)
+            or transaction not in {"sale", "lease", "unknown"}
+            or not isinstance(role, str)
+            or role not in DIRECT_PROVIDER_ROLES
+        ):
+            continue
+        key = (source, transaction, role)
+        if key in seen:
+            continue
+        seen.add(key)
+        statuses = _object(record.get("status_counts"))
+        error_categories = _object(record.get("error_categories"))
+        histogram = _object(record.get("latency_histogram"))
+        bounds, counts = histogram.get("bounds_ms"), histogram.get("counts")
+        clean_histogram = None
+        if (
+            isinstance(bounds, list)
+            and 0 < len(bounds) <= 32
+            and isinstance(counts, list)
+            and len(counts) == len(bounds) + 1
+            and all(_number(entry) is not None for entry in [*bounds, *counts])
+            and all(left < right for left, right in pairwise(bounds))
+        ):
+            clean_histogram = {"bounds_ms": bounds, "counts": counts}
+        result.append(
+            {
+                "source": source,
+                "transaction": transaction,
+                "role": role,
+                **_numeric_fields(record, counters),
+                "latency_histogram": clean_histogram,
+                "error_categories": _numeric_fields(
+                    error_categories, DIRECT_PROVIDER_ERRORS
+                ),
+                "status_counts": {
+                    code: _number(count)
+                    for code, count in list(statuses.items())[:32]
+                    if isinstance(code, str) and re.fullmatch(r"[1-5][0-9]{2}", code)
+                },
+            }
+        )
+    return result
+
+
 def _snapshot(
     logs: Path, record: Mapping[str, Any], *, now: datetime
 ) -> dict[str, Any] | None:
@@ -207,6 +291,9 @@ def _snapshot(
         else None
     )
     cache = _object(_object(metrics.get("cache")).get("jll_detail"))
+    direct_provider_requests = _direct_provider_metrics(
+        metrics.get("direct_provider_requests")
+    )
     resources = _object(metrics.get("resources"))
     memory = _object(resources.get("node_rss_bytes"))
     cpu = _object(resources.get("process_cpu_microseconds"))
@@ -277,6 +364,7 @@ def _snapshot(
             name: _number(cache.get(name))
             for name in ("hits", "misses", "refresh_bypasses")
         },
+        "direct_provider_requests": direct_provider_requests,
         "collector_process": {
             "rss_bytes": _number(memory.get("current")),
             "max_sampled_rss_bytes": _number(memory.get("max_sampled")),
@@ -288,7 +376,11 @@ def _snapshot(
             "concurrency": "locally_awaited_attempts_not_server_concurrency",
             "latency": "approximate_histogram_attempt_latency_excludes_backoff",
             "api_queue_wait": "unknown_uninstrumented",
-            "direct_provider_requests": "unknown_uninstrumented",
+            "direct_provider_requests": (
+                "essex_only_other_direct_sources_unknown"
+                if direct_provider_requests
+                else "unknown_uninstrumented"
+            ),
             "other_caches": "unknown_uninstrumented",
             "listing_quality": "not_established_by_request_metrics",
         },
@@ -1137,6 +1229,19 @@ def render(report: Mapping[str, Any]) -> str:
                 f"per-command histogram p95 upper-bound ms={requests['approximate_p95_ms'] if requests['approximate_p95_ms'] is not None else '?'}; "
                 f"max locally awaited={requests['max_active_locally_awaited'] if requests['max_active_locally_awaited'] is not None else '?'}"
             )
+            for direct in scrape.get("direct_provider_requests", []):
+                lines.append(
+                    f"  Essex direct {direct['transaction']}/{direct['role']}: "
+                    f"started={_display(direct['attempts_started'])}, "
+                    f"completed={_display(direct['attempts_completed'])}, "
+                    f"failed={_display(direct['failed'])}, "
+                    f"active={_display(direct['active_locally_awaited'])}, "
+                    f"latency sum={_display(direct['summed_latency_ms'])}ms; "
+                    f"pacing scheduled/elapsed="
+                    f"{_display(direct['pacing_wait_ms_scheduled'])}/"
+                    f"{_display(direct['pacing_wait_ms_elapsed'])}ms; "
+                    f"HTTP statuses={direct['status_counts']}"
+                )
         if row.get("warnings"):
             lines.append("  Evidence: " + ", ".join(row["warnings"]))
     if pending:
@@ -1186,7 +1291,7 @@ def render(report: Mapping[str, Any]) -> str:
         [
             "",
             "Staged rows are not proof of ingestion. Request success is not listing completion.",
-            "Latency is approximate; queue wait and direct-provider/cache coverage may be unknown.",
+            "Firecrawl and direct-provider requests are separate; only Essex direct requests are instrumented, and other providers remain unknown.",
             "CPU is from bounded guard evidence; Node RSS is sampled, not a true peak.",
             "Use --json for command IDs, settings, retries/cache counters and evidence gaps.",
             "No matched quality-valid baseline: speedup is unknown. Shared coordinator metrics are not source costs."

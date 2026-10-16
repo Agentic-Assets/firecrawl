@@ -833,7 +833,15 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
     run = checkpoint(tmp_path)
     journal(run)
     script = """
-        import { createPerformanceRecorder } from './lib/performance.ts';
+        import {
+          createPerformanceRecorder,
+          recordDirectProviderAttemptCompleted,
+          recordDirectProviderAttemptStarted,
+          recordDirectProviderPacingWaitCompleted,
+          recordDirectProviderPacingWaitStarted,
+          setPerformanceRecorderForTests,
+          withPerformanceSource,
+        } from './lib/performance.ts';
         let clock = 0;
         const recorder = createPerformanceRecorder({
           path: process.argv[1], runId: process.argv[2], commandId: process.argv[3],
@@ -841,7 +849,16 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
           nowIso: () => new Date(Date.UTC(2026,8,13,12) + clock).toISOString(),
           processResources: () => ({rssBytes: 200000000, cpuUserMicros: 50, cpuSystemMicros: 25})
         });
+        setPerformanceRecorderForTests(recorder);
         const tokens = Array.from({length: 4}, () => recorder.recordClientAttemptStarted(true, {source:'jll',transaction:'sale'}));
+        await withPerformanceSource('essex-realty', 'sale', async () => {
+          const wait = recordDirectProviderPacingWaitStarted('current_archive', 250);
+          clock += 250;
+          recordDirectProviderPacingWaitCompleted(wait);
+          const attempt = recordDirectProviderAttemptStarted('current_archive');
+          clock += 125;
+          recordDirectProviderAttemptCompleted(attempt, {outcome:'succeeded', status:200});
+        });
         clock = 2000;
         for (const token of tokens) recorder.recordClientAttemptCompleted(token, 'succeeded');
         recorder.flush(true);
@@ -872,6 +889,52 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
     assert scrape["requests"]["other_valid_statuses"] == 0
     assert scrape["successful_client_attempts_per_second"] == 2
     assert scrape["collector_process"]["rss_bytes"] == 200_000_000
+    assert (
+        scrape["coverage"]["direct_provider_requests"]
+        == "essex_only_other_direct_sources_unknown"
+    )
+    direct = scrape["direct_provider_requests"]
+    assert len(direct) == 1
+    assert direct[0]["role"] == "current_archive"
+    assert direct[0]["attempts_completed"] == 1
+    assert direct[0]["status_counts"] == {"200": 1}
+    assert direct[0]["latency_histogram"] == {
+        "bounds_ms": [100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 120000],
+        "counts": [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    }
+    assert direct[0]["pacing_wait_ms_scheduled"] == 250
+    assert direct[0]["pacing_wait_ms_elapsed"] == 250
+
+
+def test_legacy_snapshot_keeps_direct_provider_coverage_unknown(tmp_path):
+    run = checkpoint(tmp_path)
+    journal(run)
+    snapshot(run)
+    scrape = report.build_report(run, now=NOW)["sources"][0]["commands"][0]["scrape"]
+    assert scrape["direct_provider_requests"] == []
+    assert scrape["coverage"]["direct_provider_requests"] == "unknown_uninstrumented"
+
+
+def test_direct_provider_report_ignores_unbounded_or_malformed_group_keys():
+    assert (
+        report._direct_provider_metrics(
+            {
+                "by_source_transaction_role": [
+                    {"source": "essex-realty", "transaction": [], "role": "detail"},
+                    {"source": "essex-realty", "transaction": "sale", "role": {}},
+                    {
+                        "source": "other-provider",
+                        "transaction": "sale",
+                        "role": "detail",
+                    },
+                ]
+            }
+        )
+        == []
+    )
+    assert (
+        report._direct_provider_metrics({"by_source_transaction_role": [{}] * 13}) == []
+    )
 
 
 def test_multi_source_coordinator_filters_commands_and_labels_shared_resources(
