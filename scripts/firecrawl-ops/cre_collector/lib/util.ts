@@ -62,6 +62,12 @@ export async function pmap<T, R>(items: T[], limit: number, fn: (t: T, i: number
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
+  try {
+    await Promise.all(workers);
+  } catch (error) {
+    await Promise.allSettled(workers);
+    throw error;
+  }
   return results;
 }

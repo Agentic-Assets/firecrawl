@@ -117,3 +117,99 @@ test("pmap stops scheduling new work after the first rejection", async () => {
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.deepEqual(started, [0, 1, 2]);
 });
+
+test("pmap waits for started work before rejecting and dispatching the next phase", async () => {
+  let releaseSibling!: () => void;
+  const sibling = new Promise<void>((resolve) => { releaseSibling = resolve; });
+  const firstError = new Error("first phase failed");
+  const started: number[] = [];
+  let active = 0;
+  let maxActive = 0;
+  let returned = false;
+  let nextPhaseStarted = false;
+  const operation = pmap([0, 1, 2], 2, async (value) => {
+    started.push(value);
+    active++;
+    maxActive = Math.max(maxActive, active);
+    try {
+      if (value === 0) throw firstError;
+      await sibling;
+      return value;
+    } finally {
+      active--;
+    }
+  }).catch(async (error) => {
+    returned = true;
+    assert.equal(error, firstError);
+    nextPhaseStarted = true;
+    await pmap([0, 1], 2, async (value) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        return value;
+      } finally {
+        active--;
+      }
+    });
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const beforeRelease = { returned, nextPhaseStarted, active, started: [...started] };
+  releaseSibling();
+  await operation;
+  assert.deepEqual(beforeRelease, {
+    returned: false, nextPhaseStarted: false, active: 1, started: [0, 1],
+  });
+  assert.equal(returned, true);
+  assert.equal(nextPhaseStarted, true);
+  assert.equal(active, 0);
+  assert.equal(maxActive, 2);
+});
+
+test("pmap drains a later rejection without replacing the first error", async () => {
+  let rejectSibling!: (error: Error) => void;
+  const sibling = new Promise<never>((_resolve, reject) => { rejectSibling = reject; });
+  const firstError = new Error("first worker failed");
+  const laterError = new Error("later worker failed");
+  const started: number[] = [];
+  let rejected = false;
+  const operation = pmap([0, 1, 2], 2, async (value) => {
+    started.push(value);
+    if (value === 0) throw firstError;
+    return sibling;
+  }).catch((error) => {
+    rejected = true;
+    assert.equal(error, firstError);
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const rejectedBeforeSibling = rejected;
+  rejectSibling(laterError);
+  await operation;
+  assert.equal(rejectedBeforeSibling, false);
+  assert.equal(rejected, true);
+  assert.deepEqual(started, [0, 1]);
+});
+
+test("pmap successful workers stay bounded and retain order after reverse completion", async () => {
+  const release: Array<() => void> = [];
+  const started: number[] = [];
+  let active = 0;
+  let maxActive = 0;
+  const operation = pmap([0, 1, 2], 2, async (value) => {
+    started.push(value);
+    active++;
+    maxActive = Math.max(maxActive, active);
+    await new Promise<void>((resolve) => { release[value] = resolve; });
+    active--;
+    return value * 10;
+  });
+  assert.deepEqual(started, [0, 1]);
+  release[1]();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, [0, 1, 2]);
+  release[2]();
+  release[0]();
+  assert.deepEqual(await operation, [0, 10, 20]);
+  assert.equal(maxActive, 2);
+  assert.equal(active, 0);
+});
