@@ -145,8 +145,11 @@ class ProcessCleanupUnknown(RefreshError):
 # Only the internal worker's known-settled return paths emit these codes.
 COHORT_SETTLED_FAILURE_EXIT = 80
 COHORT_SETTLED_INTERRUPT_EXIT = 81
+COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
+AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78
+AVISON_YOUNG_TERMINAL_FAILURE_CODE = "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404"
 COHORT_SETTLED_EXIT_CODES = frozenset(
-    {0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT}
+    {0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT, COHORT_SETTLED_AVISON_TERMINAL_404_EXIT}
 )
 
 
@@ -3488,7 +3491,7 @@ def run_cohort_collection_worker(
             encoding="utf-8",
         )
         return rc
-    return run_command(
+    rc = run_command(
         build_collect_argv(
             source,
             output,
@@ -3499,6 +3502,9 @@ def run_cohort_collection_worker(
         attempt_log,
         env=env,
     )
+    if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
+        return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    return rc
 
 
 @dataclass
@@ -3826,6 +3832,20 @@ def _finalize_cohort_collection(
             item.tmp_artifact, run_dir, item.source, item.attempt["number"]
         )
         checkpoint["state"] = "collect_failed"
+        if (
+            item.source == "avison-young"
+            and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+        ):
+            terminal = {
+                "code": AVISON_YOUNG_TERMINAL_FAILURE_CODE,
+                "http_status": 404,
+                "attempt_number": item.attempt["number"],
+            }
+            item.attempt["terminal_failure"] = terminal
+            checkpoint["terminal_collection_failure"] = terminal
+            item.attempt["error"] = (
+                "typed terminal required-detail HTTP 404; see private attempt log"
+            )
         save_manifest(run_dir, manifest)
         return False
     try:
@@ -4473,6 +4493,13 @@ def collect_source(
     attempts_this_run: int,
 ) -> tuple[Path, dict[str, Any]] | None:
     checkpoint = manifest["sources"][source]
+    prior_terminal = checkpoint.get("terminal_collection_failure")
+    if (
+        source == "avison-young"
+        and isinstance(prior_terminal, Mapping)
+        and prior_terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE
+    ):
+        return None
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
     if existing:
         return existing
@@ -4572,6 +4599,19 @@ def collect_source(
                 tmp_artifact, run_dir, source, attempt_number
             )
             checkpoint["state"] = "collect_failed"
+            if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
+                terminal = {
+                    "code": AVISON_YOUNG_TERMINAL_FAILURE_CODE,
+                    "http_status": 404,
+                    "attempt_number": attempt_number,
+                }
+                attempt["terminal_failure"] = terminal
+                checkpoint["terminal_collection_failure"] = terminal
+                attempt["error"] = (
+                    "typed terminal required-detail HTTP 404; see private attempt log"
+                )
+                save_manifest(run_dir, manifest)
+                return None
             save_manifest(run_dir, manifest)
             continue
         try:
@@ -5005,6 +5045,13 @@ def _cohort_needs_collection(
 ) -> bool:
     checkpoint = manifest["sources"][source]
     if _manifest_checkpoint_artifact_valid(run_dir, manifest, source):
+        return False
+    prior_terminal = checkpoint.get("terminal_collection_failure")
+    if (
+        source == "avison-young"
+        and isinstance(prior_terminal, Mapping)
+        and prior_terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE
+    ):
         return False
     if checkpoint.get("state") in {
         "collect_infrastructure_failed",
@@ -6869,6 +6916,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 transactions=worker_transactions,
             )
+            if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
+                return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
             return 0 if worker_rc == 0 else COHORT_SETTLED_FAILURE_EXIT
         except KeyboardInterrupt as exc:
             if _cleanup_unknown_in_chain(exc):

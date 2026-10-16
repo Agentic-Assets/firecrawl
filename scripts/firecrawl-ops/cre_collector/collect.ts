@@ -1,7 +1,12 @@
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { srcAvisonYoung } from "./sources/avison-young.js";
+import {
+  AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  isAvisonYoungTerminalSourceError,
+  isExclusiveAvisonYoungTerminal404Failure,
+  srcAvisonYoung,
+} from "./sources/avison-young.js";
 import { brokers } from "./lib/broker.js";
 import {
   BUILDOUT_SOURCE_INVENTORY_OPTS,
@@ -173,6 +178,11 @@ async function main() {
   const startedAt = new Date().toISOString();
   const sources: any[] = [];
   const listings: any[] = [];
+  const avisonTerminalFailures: Array<{
+    transaction: Tx;
+    failures: Array<{ listingId: string; role: string; status: 404 }>;
+  }> = [];
+  let avisonOtherFailures = 0;
 
   for (const key of requestedSources) {
     if (UNSUPPORTED[key]) {
@@ -219,6 +229,13 @@ async function main() {
       } catch (err) {
         recordSourceCompleted(key, tx, { outcome: "failed" });
         console.error(`  ${key}/${tx} FAILED: ${err}`);
+        if (key === "avison-young") {
+          if (isAvisonYoungTerminalSourceError(err)) {
+            avisonTerminalFailures.push({ transaction: tx, failures: err.failures });
+          } else {
+            avisonOtherFailures += 1;
+          }
+        }
         sources.push({
           sourceKey: key,
           transaction: tx,
@@ -233,6 +250,35 @@ async function main() {
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
   if (listings.length === 0) {
+    if (
+      !MONITOR
+      && isExclusiveAvisonYoungTerminal404Failure({
+        requestedSources,
+        transactions: TRANSACTIONS,
+        listingsCollected: listings.length,
+        terminalFailureTransactions: avisonTerminalFailures.length,
+        otherFailureCount: avisonOtherFailures,
+      })
+    ) {
+      // This exit is reserved for the typed direct-HTTP 404 path. It carries no
+      // artifact and is only used when every selected transaction failed with
+      // that terminal response, so the refresh coordinator can skip a duplicate
+      // whole-source attempt without accepting or ingesting partial data.
+      console.error(JSON.stringify({
+        event: "avison_young_terminal_required_detail_failure",
+        code: "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404",
+        failures: avisonTerminalFailures.flatMap(({ transaction, failures }) =>
+          failures.map(({ listingId, role, status }) => ({
+            transaction,
+            listingId,
+            role,
+            status,
+          }))
+        ),
+      }));
+      process.exitCode = AVISON_YOUNG_TERMINAL_404_EXIT_CODE;
+      return;
+    }
     // Full mode: zero listings means collection failed -> hard error.
     // Monitor mode: zero listings is legitimate (e.g. monitoring only sources that
     // are excluded from monitor: jll, jll-investor, cbre-dealflow, colliers), so

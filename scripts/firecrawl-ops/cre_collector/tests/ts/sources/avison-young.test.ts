@@ -42,8 +42,14 @@ import {
   assertAvisonYoungOutputIdentity,
   assertAvisonYoungDetailDoc,
   assertAvisonYoungStrictFeed,
+  AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  AvisonYoungHttpStatusError,
+  AvisonYoungTerminalDetailError,
+  AvisonYoungTerminalSourceError,
   fetchAvisonYoungDirectDoc,
   fetchAvisonYoungDirectDocWithRetry,
+  isExclusiveAvisonYoungTerminal404Failure,
+  mapAvisonYoungStrictDetails,
   isAvisonYoungDirectDetailUrl,
   isPublicAvisonYoungAddress,
   enrichAvisonYoungListing,
@@ -58,6 +64,10 @@ import { firecrawl } from "../../../lib/scrape.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dir = dirname(__filename);
 const FIXTURE_PATH = join(__dir, "../../fixtures/raw_data/avison-young.json");
+const SHARP_LAUNCH_LAYOUT_FIXTURE_PATH = join(
+  __dir,
+  "../../fixtures/raw_data/avison-young-sharplaunch-detail.html"
+);
 
 /** Load the avison-young.json fixture (array of {external_id, rawSharpLaunch} blobs). */
 function loadFixture(): Array<{ external_id: string; rawSharpLaunch: any }> {
@@ -778,6 +788,196 @@ test("Avison detail admission rejects challenge and wrong-property shells", () =
   );
 });
 
+test("Avison recognizes the observed SharpLaunch property layout only with bound visible identity", () => {
+  const rawHtml = readFileSync(SHARP_LAUNCH_LAYOUT_FIXTURE_PATH, "utf8");
+  const nativeUrl = "https://fixture-property.sharplaunch.com";
+  const base = {
+    id: "fixture-59679",
+    name: "Fixture Commerce Center",
+    street: "159 Example Street",
+    city: "Brooklyn",
+    state: "NY",
+    zip: "11206",
+    sharpLaunchUrl: nativeUrl,
+  };
+  const nativeDoc = {
+    ...doc(rawHtml),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, base)
+  );
+
+  const olderRecognizedNativePage = {
+    ...doc(
+      "<html><main class=\"property-detail\"><h1>Fixture Commerce Center</h1>" +
+        "<p>159 Example Street, Brooklyn, NY</p></main></html>"
+    ),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(olderRecognizedNativePage, nativeUrl, base)
+  );
+  for (const incidentalMarker of [
+    "building__property-info-box",
+    "availability-card-v2",
+  ]) {
+    const legacyPageWithIncidentalMarker = {
+      ...doc(
+        '<html><main class="property-detail"><h1>Fixture Commerce Center</h1>' +
+          '<p>159 Example Street, Brooklyn, NY</p>' +
+          '<div class="' + incidentalMarker + '">Legacy markup</div></main></html>'
+      ),
+      metadata: { sourceURL: nativeUrl, statusCode: 200 },
+    };
+    assert.doesNotThrow(() =>
+      assertAvisonYoungDetailDoc(legacyPageWithIncidentalMarker, nativeUrl, base)
+    );
+  }
+
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        name: "Different Property",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        street: "900 Other Avenue",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        city: "Queens",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        state: "NJ",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        street: "",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc(rawHtml.replace(
+            "<h1>Fixture Commerce Center</h1>",
+            "<h1>Fixture Commerce Center</h1><h1>Other Property</h1>"
+          )),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, "https://other.sharplaunch.com", base),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        nativeDoc,
+        "https://fixture-property.sharplaunch.com",
+        { ...base, sharpLaunchUrl: "https://fixture-property.avisonyoung.us" }
+      ),
+    /identity/
+  );
+
+  const incompleteNativeTemplate = {
+    ...doc(rawHtml
+      .replaceAll("availability-card-v2", "unrelated-card")
+      .replace("<main>", "<div>")
+      .replace("</main>", "</div>")),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.throws(
+    () => assertAvisonYoungDetailDoc(incompleteNativeTemplate, nativeUrl, base),
+    /structure/
+  );
+
+  const unrelatedTemplate = {
+    ...doc(rawHtml.replaceAll("building__property-info-box", "unrelated-info-box")
+      .replaceAll("availability-card-v2", "unrelated-card")
+      .replaceAll("<main>", "<div>").replaceAll("</main>", "</div>")),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.throws(
+    () => assertAvisonYoungDetailDoc(unrelatedTemplate, nativeUrl, base),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><h1>Fixture Commerce Center</h1><div>Provider template</div></html>"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><body><h1>Fixture Commerce Center</h1><section"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc(rawHtml),
+          metadata: { sourceURL: nativeUrl, statusCode: 404 },
+        },
+        nativeUrl,
+        base
+      ),
+    /HTTP 404/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><title>Just a moment...</title><div>captcha</div></html>"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /challenge or error shell/
+  );
+});
+
 test("Avison direct detail transport captures current HTML, links, images, and identity metadata", async (t) => {
   const url =
     "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease";
@@ -849,6 +1049,178 @@ test("Avison strict direct detail reports the terminal per-page failure", async 
       ),
     /failed after 3 attempt\(s\): Error: HTTP 503/
   );
+});
+
+test("Avison direct transport preserves actual HTTP status as a typed error", async () => {
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDoc(
+        "https://www.avisonyoung.us/properties/missing",
+        30000,
+        async () => ["93.184.216.34"],
+        async () => ({ status: 404, location: null, body: "not found" })
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungHttpStatusError && error.status === 404
+  );
+});
+
+test("Avison terminal 404 is not retried, while typed transient status is retried", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/missing",
+        async () => {
+          calls++;
+          throw new AvisonYoungHttpStatusError(
+            "https://www.avisonyoung.us/properties/missing",
+            404
+          );
+        },
+        3,
+        20,
+        async (milliseconds) => { waits.push(milliseconds); }
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungHttpStatusError && error.status === 404
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(waits, []);
+
+  calls = 0;
+  const transientWaits: number[] = [];
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/transient",
+        async () => {
+          calls++;
+          throw new AvisonYoungHttpStatusError(
+            "https://www.avisonyoung.us/properties/transient",
+            503
+          );
+        },
+        3,
+        20,
+        async (milliseconds) => { transientWaits.push(milliseconds); }
+      ),
+    /failed after 3 attempt\(s\)/
+  );
+  assert.equal(calls, 3);
+  assert.deepEqual(transientWaits, [20, 40]);
+
+  calls = 0;
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/untyped-404",
+        async () => {
+          calls++;
+          throw new Error("HTTP 404");
+        },
+        3,
+        0
+      ),
+    /failed after 3 attempt\(s\)/
+  );
+  assert.equal(calls, 3);
+});
+
+test("Avison strict mapper stops admission, settles active work, and distinguishes mixed failures", async () => {
+  const started: number[] = [];
+  let rejectSecond!: (error: Error) => void;
+  const second = new Promise<number>((_resolve, reject) => {
+    rejectSecond = reject;
+  });
+  const result = mapAvisonYoungStrictDetails(
+    [0, 1, 2],
+    2,
+    async (_item, index) => {
+      started.push(index);
+      if (index === 0) {
+        throw new AvisonYoungTerminalDetailError({
+          listingId: "17808",
+          role: "external",
+          status: 404,
+        });
+      }
+      return second;
+    }
+  );
+  rejectSecond(new Error("temporary transport failure"));
+  await assert.rejects(result, /temporary transport failure/);
+  assert.deepEqual(started.sort(), [0, 1]);
+
+  const terminalStarted: number[] = [];
+  await assert.rejects(
+    () =>
+      mapAvisonYoungStrictDetails(
+        [0, 1, 2],
+        2,
+        async (_item, index) => {
+          terminalStarted.push(index);
+          throw new AvisonYoungTerminalDetailError({
+            listingId: "id-" + index,
+            role: "sharpLaunch",
+            status: 404,
+          });
+        }
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungTerminalSourceError
+      && error.failures.length === 2
+      && error.failures.every((failure) => failure.status === 404)
+  );
+  assert.deepEqual(terminalStarted.sort(), [0, 1]);
+});
+
+test("Avison strict mapper treats undefined rejection as a failure", async () => {
+  await assert.rejects(
+    () => mapAvisonYoungStrictDetails([0], 1, async () => { throw undefined; }),
+    (error: unknown) => error === undefined
+  );
+
+  let rejectSibling!: (error: unknown) => void;
+  const sibling = new Promise<never>((_resolve, reject) => { rejectSibling = reject; });
+  const mixed = mapAvisonYoungStrictDetails([0, 1], 2, async (_item, index) => {
+    if (index === 0) {
+      throw new AvisonYoungTerminalDetailError({
+        listingId: "terminal-id",
+        role: "external",
+        status: 404,
+      });
+    }
+    return sibling;
+  });
+  rejectSibling(undefined);
+  await assert.rejects(mixed, (error: unknown) => error === undefined);
+});
+
+test("Avison reserved source exit is limited to an exclusive complete terminal failure", () => {
+  const requestedSources = ["avison-young"];
+  const transactions = ["sale", "lease"];
+  assert.equal(AVISON_YOUNG_TERMINAL_404_EXIT_CODE, 78);
+  assert.equal(
+    isExclusiveAvisonYoungTerminal404Failure({
+      requestedSources,
+      transactions,
+      listingsCollected: 0,
+      terminalFailureTransactions: 2,
+      otherFailureCount: 0,
+    }),
+    true
+  );
+  for (const input of [
+    { requestedSources: ["cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources: ["avison-young", "cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 1, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 1, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 1 },
+  ]) {
+    assert.equal(isExclusiveAvisonYoungTerminal404Failure(input), false);
+  }
 });
 
 test("Avison direct detail transport rejects unsafe URLs, addresses, and redirects", async (t) => {
@@ -1031,6 +1403,54 @@ test("strict Avison detail scrape is uncached, complete, and generation-bound", 
   assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
   assert.equal(listing.preserveChildCollections, undefined);
   assert.equal(listing.detailError, undefined);
+});
+
+test("strict Avison still fetches and validates both SharpLaunch and external detail URLs", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: string[] = [];
+  const nativeUrl = "https://fixture-property.sharplaunch.com";
+  const externalUrl = "https://www.avisonyoung.us/properties/fixture-commerce-center";
+  const rawSharpLaunchHtml = readFileSync(SHARP_LAUNCH_LAYOUT_FIXTURE_PATH, "utf8");
+  (firecrawl as any).scrape = async (url: string) => {
+    calls.push(url);
+    return {
+      rawHtml: url === nativeUrl
+        ? rawSharpLaunchHtml
+        : "<html><main class=\"property-detail\"><h1>Fixture Commerce Center</h1>" +
+          "<p>159 Example Street, Brooklyn, NY</p></main></html>",
+      markdown: "# Fixture Commerce Center\n159 Example Street, Brooklyn, NY",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-all-detail-urls-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const enriched = await enrichAvisonYoungListing(
+    {
+      id: "fixture-59679",
+      name: "Fixture Commerce Center",
+      street: "159 Example Street",
+      city: "Brooklyn",
+      state: "NY",
+      sharpLaunchUrl: nativeUrl,
+      externalUrl,
+    },
+    true
+  );
+
+  assert.deepEqual(calls, [nativeUrl, externalUrl]);
+  assert.equal(enriched.detailError, undefined);
+  assert.equal(enriched.preserveChildCollections, undefined);
 });
 
 test("degraded non-strict detail refresh preserves prior child collections", async (t) => {

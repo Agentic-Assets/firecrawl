@@ -52,6 +52,10 @@ export const AVISON_YOUNG_DIRECT_DETAIL_RETRY_MS = boundedInt(
   0,
   5000
 );
+// Reserved collector-process result for a confirmed required-detail 404. The
+// checkpoint coordinator handles this separately from ordinary collector and
+// resource/cancellation exit codes; it is still a failed, unaccepted source.
+export const AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78;
 const AVISON_YOUNG_TURNDOWN = new TurndownService({
   headingStyle: "atx",
   bulletListMarker: "-",
@@ -67,6 +71,106 @@ export let avisonYoungCache:
       teamFeedReason: string | null;
     }
   | null = null;
+
+export type AvisonYoungTerminalDetailFailure = {
+  listingId: string;
+  role: "sharpLaunch" | "external" | "other";
+  status: 404;
+};
+
+export class AvisonYoungHttpStatusError extends Error {
+  constructor(
+    readonly url: string,
+    readonly status: number
+  ) {
+    super(`Avison Young direct detail returned HTTP ${status}`);
+    this.name = "AvisonYoungHttpStatusError";
+  }
+}
+
+export class AvisonYoungTerminalDetailError extends Error {
+  constructor(readonly failure: AvisonYoungTerminalDetailFailure) {
+    super("Avison Young required detail returned HTTP 404");
+    this.name = "AvisonYoungTerminalDetailError";
+  }
+}
+
+export class AvisonYoungTerminalSourceError extends Error {
+  readonly code = "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404";
+
+  constructor(readonly failures: AvisonYoungTerminalDetailFailure[]) {
+    super(`Avison Young required detail returned HTTP 404 for ${failures.length} observed listing(s)`);
+    this.name = "AvisonYoungTerminalSourceError";
+  }
+}
+
+export function isAvisonYoungTerminalSourceError(
+  error: unknown
+): error is AvisonYoungTerminalSourceError {
+  return error instanceof AvisonYoungTerminalSourceError;
+}
+
+export function isExclusiveAvisonYoungTerminal404Failure(input: {
+  requestedSources: string[];
+  transactions: string[];
+  listingsCollected: number;
+  terminalFailureTransactions: number;
+  otherFailureCount: number;
+}): boolean {
+  return (
+    input.requestedSources.length === 1
+    && input.requestedSources[0] === "avison-young"
+    && input.transactions.length > 0
+    && input.listingsCollected === 0
+    && input.terminalFailureTransactions === input.transactions.length
+    && input.otherFailureCount === 0
+  );
+}
+
+// Stop admitting new detail requests on the first strict failure, then wait
+// for the already-started bounded batch to settle. A 404 is terminal only when
+// no in-flight request produced a different (potentially transient) failure.
+export async function mapAvisonYoungStrictDetails<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  const terminalFailures: AvisonYoungTerminalDetailFailure[] = [];
+  let firstOtherError: unknown;
+  let hasOtherError = false;
+  let next = 0;
+  let stopped = false;
+
+  async function worker(): Promise<void> {
+    while (!stopped && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await fn(items[index]!, index);
+      } catch (error) {
+        stopped = true;
+        if (error instanceof AvisonYoungTerminalDetailError) {
+          terminalFailures.push(error.failure);
+        } else {
+          if (!hasOtherError) firstOtherError = error;
+          hasOtherError = true;
+        }
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  if (hasOtherError) throw firstOtherError;
+  if (terminalFailures.length) {
+    throw new AvisonYoungTerminalSourceError(terminalFailures);
+  }
+  if (next < items.length) {
+    throw new Error("Avison Young strict detail batch stopped without a terminal error");
+  }
+  return results;
+}
 
 export async function fetchAvisonYoungApiKey(): Promise<string> {
   try {
@@ -255,6 +359,56 @@ export function assertAvisonYoungDetailDoc(
     .filter((value): value is string => Boolean(value && value.length >= 4))
     .map((value) => value.toLowerCase());
   const contentMatches = identityValues.some((value) => bodyText.includes(value));
+  const sharpLaunchUrl = avisonYoungAbsoluteUrl(base?.sharpLaunchUrl);
+  let requestedSharpLaunchMatch = false;
+  if (requested && sharpLaunchUrl) {
+    try {
+      const requestedParsed = new URL(requested);
+      const sharpLaunchParsed = new URL(sharpLaunchUrl);
+      const requestedOnSharpLaunchHost =
+        requestedParsed.protocol === "https:"
+        && requestedParsed.hostname.toLowerCase().endsWith(".sharplaunch.com");
+      requestedSharpLaunchMatch =
+        requestedOnSharpLaunchHost
+        && requestedParsed.hostname.toLowerCase()
+          === sharpLaunchParsed.hostname.toLowerCase()
+        && requestedParsed.pathname.replace(/\/+$/, "").toLowerCase()
+          === sharpLaunchParsed.pathname.replace(/\/+$/, "").toLowerCase();
+    } catch {
+      requestedSharpLaunchMatch = false;
+    }
+  }
+
+  const headingText = $("h1, h2").map((_index, element) =>
+    clean($(element).text())?.toLowerCase() ?? ""
+  ).get();
+  const hasSharpLaunchBuildingLayout = Boolean(
+    $(".building__property-info-box").length > 0
+    && $(".availability-card-v2").length > 0
+    && headingText.includes("building")
+    && headingText.includes("availabilities")
+  );
+  if (hasSharpLaunchBuildingLayout) {
+    const visibleName = clean(base?.name)?.toLowerCase() ?? "";
+    const visibleStreet = clean(base?.street)?.toLowerCase() ?? "";
+    const visibleCity = clean(base?.city)?.toLowerCase() ?? "";
+    const visibleState = clean(base?.state)?.toLowerCase() ?? "";
+    const visibleHeading = clean($("h1").first().text())?.toLowerCase() ?? "";
+    const visibleIdentityMatches =
+      $("h1").length === 1
+      && Boolean(visibleName && visibleStreet && visibleCity && visibleState)
+      && visibleHeading === visibleName
+      && bodyText.includes(visibleStreet)
+      && headingText.includes(visibleCity + ", " + visibleState);
+
+    if (!requestedSharpLaunchMatch || !urlMatches || !visibleIdentityMatches) {
+      throw new Error(
+        "Avison Young detail identity does not match the requested property"
+      );
+    }
+    return listing;
+  }
+
   const hasStructure = Boolean(
     listing
     || (
@@ -267,7 +421,10 @@ export function assertAvisonYoungDetailDoc(
       )
     )
   );
-  if (!hasStructure || (!urlMatches && !contentMatches)) {
+  if (!hasStructure) {
+    throw new Error("Avison Young detail structure was not recognized");
+  }
+  if (!urlMatches && !contentMatches) {
     throw new Error(
       "Avison Young detail identity does not match the requested property"
     );
@@ -450,7 +607,7 @@ export async function fetchAvisonYoungDirectDoc(
   }
   const rawHtml = response.body;
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`Avison Young direct detail returned HTTP ${response.status}`);
+    throw new AvisonYoungHttpStatusError(currentUrl.toString(), response.status);
   }
   if (!rawHtml.trim()) {
     throw new Error("Avison Young direct detail returned an empty body");
@@ -1121,6 +1278,9 @@ export async function fetchAvisonYoungDirectDocWithRetry(
     try {
       return await fetchDetail(url);
     } catch (error) {
+      if (error instanceof AvisonYoungHttpStatusError && error.status === 404) {
+        throw error;
+      }
       lastError = error;
       if (attempt < attempts && retryMs > 0) {
         await wait(retryMs * attempt);
@@ -1172,6 +1332,19 @@ export async function enrichAvisonYoungListing(
     } catch (err) {
       const error = `${url}: ${String(err)}`;
       if (strict) {
+        if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
+          const role =
+            url === clean(base.sharpLaunchUrl)
+              ? "sharpLaunch"
+              : url === clean(base.externalUrl)
+                ? "external"
+                : "other";
+          throw new AvisonYoungTerminalDetailError({
+            listingId: clean(base.id) ?? "unknown",
+            role,
+            status: 404,
+          });
+        }
         throw new Error(`Avison Young detail fetch failed: ${error}`);
       }
       errors.push(error);
@@ -1345,20 +1518,31 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
     };
   }
   const detailLimit = avisonYoungDetailLimit(max, baseListings.length, requireLiveDetails);
+  const enrichSelected = async (listing: any, idx: number): Promise<any> => {
+    const enriched = await enrichAvisonYoungListing(
+      {
+        ...listing,
+        preserveChildCollections: teamFeedComplete ? undefined : true,
+      },
+      strict
+    );
+    if ((idx + 1) % 10 === 0 || idx + 1 === detailLimit) {
+      console.error("  avison-young/" + tx + ": detail enriched " + (idx + 1) + "/" + detailLimit);
+    }
+    return enriched;
+  };
   const enrichedListings = detailLimit
-    ? await pmap(baseListings.slice(0, detailLimit), AVISON_YOUNG_DETAIL_CONCURRENCY, async (listing, idx) => {
-        const enriched = await enrichAvisonYoungListing(
-          {
-            ...listing,
-            preserveChildCollections: teamFeedComplete ? undefined : true,
-          },
-          strict
-        );
-        if ((idx + 1) % 10 === 0 || idx + 1 === detailLimit) {
-          console.error(`  avison-young/${tx}: detail enriched ${idx + 1}/${detailLimit}`);
-        }
-        return enriched;
-      })
+    ? strict && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+      ? await mapAvisonYoungStrictDetails(
+          baseListings.slice(0, detailLimit),
+          AVISON_YOUNG_DETAIL_CONCURRENCY,
+          enrichSelected
+        )
+      : await pmap(
+          baseListings.slice(0, detailLimit),
+          AVISON_YOUNG_DETAIL_CONCURRENCY,
+          enrichSelected
+        )
     : [];
   const listings = [...enrichedListings, ...baseListings.slice(detailLimit)];
   assertAvisonYoungOutputIdentity(selectedProviderIds, listings);

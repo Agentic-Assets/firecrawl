@@ -6561,3 +6561,175 @@ def test_final_validation_refuses_aliased_report_before_publication(tmp_path, mo
         refresh.run_final_validation(root, manifest, None)
     assert stat.S_IMODE(foreign.stat().st_mode) == 0o644
     assert foreign.read_text() == "{}"
+
+
+def test_avison_typed_terminal_404_stops_serial_attempts_and_resume(tmp_path, monkeypatch):
+    run_dir = tmp_path / "avison-terminal"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=2,
+    )
+    calls = []
+    monkeypatch.setattr(refresh, "run_command", lambda *args, **kwargs: calls.append(args) or 78)
+
+    result = refresh.collect_source(
+        run_dir,
+        manifest,
+        "avison-young",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=2,
+        attempts_this_run=3,
+    )
+
+    checkpoint = manifest["sources"]["avison-young"]
+    assert result is None
+    assert len(calls) == 1
+    assert checkpoint["state"] == "collect_failed"
+    assert checkpoint["terminal_collection_failure"] == {
+        "code": refresh.AVISON_YOUNG_TERMINAL_FAILURE_CODE,
+        "http_status": 404,
+        "attempt_number": 1,
+    }
+    assert checkpoint["attempts"][0]["rc"] == refresh.AVISON_YOUNG_TERMINAL_404_EXIT_CODE
+    assert checkpoint["attempts"][0]["terminal_failure"] == checkpoint["terminal_collection_failure"]
+    assert "see private attempt log" in checkpoint["attempts"][0]["error"]
+    assert refresh._cohort_needs_collection(
+        run_dir, manifest, "avison-young", attempts_before=0, attempts_this_run=3
+    ) is False
+
+    calls.clear()
+    assert refresh.collect_source(
+        run_dir,
+        manifest,
+        "avison-young",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=2,
+        attempts_this_run=3,
+    ) is None
+    assert calls == []
+
+
+def test_avison_untyped_nonzero_collection_keeps_existing_retry_behavior(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "avison-transient"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=2,
+    )
+    calls = []
+    monkeypatch.setattr(refresh, "run_command", lambda *args, **kwargs: calls.append(args) or 1)
+
+    assert refresh.collect_source(
+        run_dir,
+        manifest,
+        "avison-young",
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=2,
+        attempts_this_run=2,
+    ) is None
+
+    checkpoint = manifest["sources"]["avison-young"]
+    assert len(calls) == 2
+    assert checkpoint["state"] == "collect_failed"
+    assert "terminal_collection_failure" not in checkpoint
+    assert [attempt["rc"] for attempt in checkpoint["attempts"]] == [1, 1]
+
+
+def test_avison_worker_maps_only_reserved_typed_exit_to_settled_marker(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(refresh, "fresh_source_env", lambda *_a, **_k: ({}, {}))
+    monkeypatch.setattr(refresh, "build_collect_argv", lambda *_a, **_k: ["collector"])
+    results = iter((78, 78))
+    monkeypatch.setattr(refresh, "run_command", lambda *_a, **_k: next(results))
+
+    avison = refresh.run_cohort_collection_worker(
+        "avison-young",
+        tmp_path / "avison.json",
+        run_dir=tmp_path,
+        attempt_log=tmp_path / "avison.log",
+        attempt_number=1,
+        generation_started_at=ATTEMPT,
+        page_cap=400,
+        concurrency=2,
+        transactions=("sale", "lease"),
+    )
+    other = refresh.run_cohort_collection_worker(
+        "cbre",
+        tmp_path / "cbre.json",
+        run_dir=tmp_path,
+        attempt_log=tmp_path / "cbre.log",
+        attempt_number=1,
+        generation_started_at=ATTEMPT,
+        page_cap=400,
+        concurrency=2,
+        transactions=("sale", "lease"),
+    )
+    assert avison == refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    assert other == 78
+    assert refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT in refresh.COHORT_SETTLED_EXIT_CODES
+    assert 75 not in refresh.COHORT_SETTLED_EXIT_CODES
+    assert 130 not in refresh.COHORT_SETTLED_EXIT_CODES
+
+
+def test_avison_pipeline_terminal_marker_is_failed_and_not_ingested(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "avison-cohort-terminal"
+    manifest = refresh.new_manifest(
+        run_dir,
+        git_sha="abc",
+        git_dirty=False,
+        sources=("avison-young",),
+        page_cap=400,
+        concurrency=2,
+        pipeline=True,
+    )
+    attempt = {
+        "number": 1,
+        "started_at": ATTEMPT,
+        "finished_at": None,
+        "rc": None,
+        "temporary_artifact": "sources/avison-young.attempt-1.json.tmp",
+    }
+    checkpoint = manifest["sources"]["avison-young"]
+    checkpoint["state"] = "collecting"
+    checkpoint["attempts"].append(attempt)
+    monkeypatch.setattr(refresh, "utc_now", lambda: ATTEMPT)
+    monkeypatch.setattr(refresh, "_require_completed_group_settlement", lambda _group: None)
+
+    class SettledProcess:
+        returncode = refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+
+        def poll(self):
+            return self.returncode
+
+    item = refresh.CohortCollectionProcess(
+        source="avison-young",
+        process=SettledProcess(),
+        log_handle=io.StringIO(),
+        tmp_artifact=run_dir / "sources/avison-young.attempt-1.json.tmp",
+        attempt=attempt,
+        attempt_started_at=ATTEMPT,
+        owned_group=object(),
+    )
+    assert refresh._finalize_cohort_collection(run_dir, manifest, item) is False
+    assert checkpoint["state"] == "collect_failed"
+    assert checkpoint["terminal_collection_failure"]["http_status"] == 404
+    assert checkpoint["attempts"][0]["rc"] == refresh.COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    assert checkpoint["artifact"] is None
+    assert refresh._cohort_needs_collection(
+        run_dir, manifest, "avison-young", attempts_before=0, attempts_this_run=3
+    ) is False
