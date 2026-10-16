@@ -64,10 +64,10 @@ def test_current_inventory_admission_windows_allowlists_match_shared_registry():
             r"\[ValidateSet\(([^)]+)\)\]\[string\]\$AdmitCurrentInventorySource", text
         )
         assert match is not None
-        # Pyramid is a reviewed singleton one-shot extension, not a scheduler
+        # Pyramid and Essex are reviewed singleton one-shot extensions, not scheduler
         # installation or plural-admission rollout.
         allowed = (
-            expected | {"pyramid-brokerage"}
+            expected | {"pyramid-brokerage", "essex-realty"}
             if name == "Invoke-CreGuardedTier.ps1"
             else expected
         )

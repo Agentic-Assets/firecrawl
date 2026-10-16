@@ -34,7 +34,16 @@ change the source minimum, or authorize closed/missing lifecycle updates.
 Current Essex inventory includes on-market and under-contract properties only;
 the closed archive reconciles coverage but never inflates current counts. With
 no baseline the raw gate reports `first_seen` before the default 100-row floor;
-Essex current-inventory proof admission remains unimplemented and unauthorized.
+Essex's explicit singleton current-inventory admission requires two matching
+complete current/closed/sitemap reconciliations and every fresh current detail.
+Closed cards bind coverage URLs/lifecycle only and never enter current output.
+Only successful full, uncapped, non-monitor proof can supply the exact same
+generation/start's empty lease receipt. Raw `first_seen` and baseline absence
+remain; sub100 current cohorts may qualify without lowering any global floor or
+waiving baseline-backed holds. Prewrite checks refuse contradictory literal
+URL/path/known native-ID associations across all historical parents. These
+implemented checks do not establish fresh production acceptance or authorize
+closed/missing lifecycle changes.
 
 Lyon-Stahl property sitemaps may include the exact owned listing archive
 `https://lyonstahl.com/properties/`. Exclude only that URL from detail enumeration;

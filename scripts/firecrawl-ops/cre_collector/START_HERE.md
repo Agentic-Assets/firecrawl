@@ -881,6 +881,21 @@ the ordinary baseline-backed route. The explicit, source-specific
 Interra/Buildout sources with complete fresh proof and an absent baseline;
 it does not waive a hold for a source with an existing baseline.
 
+Essex's explicit singleton `--admit-current-inventory-source essex-realty`
+(`-AdmitCurrentInventorySource essex-realty` on the native series launcher) uses
+this same carrier for uncapped full sale+lease. It requires two matching complete
+current/closed/sitemap reconciliations, every fresh current detail, historical
+literal property-path keys and separate validated native IDs. Closed archive
+members prove coverage only; lease is explicitly empty. Exact absent-baseline
+`first_seen` proof may admit fewer than100 current rows; it neither lowers the
+global floor nor waives a baseline-backed hold. Source/aggregate, staging and
+summary bindings remain mandatory. The pre-upsert transaction guard checks all
+historical parents, including soft-deleted rows, for contradictory URL/path and
+known native-ID associations; missing old native IDs remain unknown. No aliases,
+rekeys, closed-row ingestion or lifecycle authority follows. A fresh bounded
+pilot still needs pre/post preservation, full audit/generation readback and
+settlement; merged code and dated public observations are not that acceptance.
+
 Pyramid's explicit singleton `--admit-current-inventory-source pyramid-brokerage`
 uses the same additive coverage scope only with complete strict details. It
 requires uncapped full sale+lease, a generation-local shared REST cohort from two

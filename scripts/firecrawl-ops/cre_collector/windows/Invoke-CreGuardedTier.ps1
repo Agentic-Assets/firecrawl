@@ -23,7 +23,7 @@ param(
     [ValidateRange(30, 14400)][int]$DeadlineSeconds = 1800,
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
     [switch]$AcknowledgeDatabaseWrites,
-    [ValidateSet('pyramid-brokerage','interra-realty','faris-lee','fortis-net-lease','unique-properties','kiser-group','pinnacle-rea','cawley-chicago','bradford-allen','hudson-peters','gibson-commercial','leibsohn','nai-hiffman','nai-martens','bull-realty','tri-commercial','berger-commercial','nai-bergman','nai-isaac','trinity-partners','metro-commercial','33-realty','nai-hallmark','nai-plotkin','greysteel','nai-talcor','nai-dominion')][string]$AdmitCurrentInventorySource,
+    [ValidateSet('essex-realty','pyramid-brokerage','interra-realty','faris-lee','fortis-net-lease','unique-properties','kiser-group','pinnacle-rea','cawley-chicago','bradford-allen','hudson-peters','gibson-commercial','leibsohn','nai-hiffman','nai-martens','bull-realty','tri-commercial','berger-commercial','nai-bergman','nai-isaac','trinity-partners','metro-commercial','33-realty','nai-hallmark','nai-plotkin','greysteel','nai-talcor','nai-dominion')][string]$AdmitCurrentInventorySource,
     [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Distro = 'Ubuntu-24.04',
     [ValidatePattern('^[a-z_][a-z0-9_-]*$')][string]$LinuxUser = 'cayman',
     [ValidatePattern('^/[^\r\n]+$')][string]$LinuxRepo = '/home/cayman/code/firecrawl',

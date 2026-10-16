@@ -291,13 +291,43 @@ export type PyramidCurrentInventoryProof = {
   details: Array<[number, string, string, string]>;
 };
 
+export type EssexArchiveProof = {
+  endpoint: string;
+  observedAt: string;
+  responseTextSha256: string;
+  declaredTotal: number;
+  // Literal URL, lifecycle, provider name/location/units; closed native IDs are unknown.
+  rows: Array<[string, "on_market" | "under_contract" | "closed", string, string | null, number | null]>;
+};
+export type EssexInventoryPass = {
+  fingerprint: string;
+  current: EssexArchiveProof;
+  closed: EssexArchiveProof;
+  sitemap: { endpoint: string; observedAt: string; responseTextSha256: string; urls: string[] };
+};
+export type EssexCurrentInventoryProof = {
+  schema: "essex-strict-detail-v1";
+  sourceKey: "essex-realty";
+  transaction: Tx;
+  kind: "complete_current_inventory" | "known_empty_transaction";
+  reason?: "sale_only_source";
+  generationId: string;
+  generationStartedAt: string;
+  observedAt: string;
+  total: number;
+  passes: EssexInventoryPass[];
+  // Validated current native ID, literal URL/path key and lifecycle. No closed ingestion.
+  cohort: Array<[string, string, string, "on_market" | "under_contract"]>;
+  details: Array<[string, string, string, string]>;
+};
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
-  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof;
+  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor

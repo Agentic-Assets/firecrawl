@@ -4343,6 +4343,73 @@ BEGIN
     END IF;
 END $$;
 
+-- Essex keeps historical literal property-path keys. Refuse contradictory
+-- staged/historical associations before DML, including soft-deleted parents.
+-- Missing old native IDs remain unknown; never infer or repair them.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    CREATE TEMP TABLE _essex_identity_claims ON COMMIT DROP AS
+    SELECT s.brokerage_id, s.external_id, s.source_url,
+           ARRAY(SELECT DISTINCT n.value #>> '{}'
+                 FROM jsonb_path_query(s.raw_data, '$.**.essexPropertyId') n(value)) AS native_ids
+    FROM _src s
+    WHERE jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "essex-realty")');
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _essex_identity_claims s
+    WHERE s.source_url IS NULL OR s.external_id IS NULL
+       OR s.source_url !~ '^https://essexrealtygroup[.]com/properties/[^/?#]+/$'
+       OR s.external_id IS DISTINCT FROM substr(
+           s.source_url, length('https://essexrealtygroup.com/') + 1,
+           length(s.source_url) - length('https://essexrealtygroup.com/') - 1)
+       OR cardinality(s.native_ids) <> 1
+       OR CASE WHEN s.native_ids[1] ~ '^[1-9][0-9]{0,15}$'
+               THEN s.native_ids[1]::numeric > 9007199254740991
+               ELSE true END;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction in incoming URL/path/native claims; refusing mutation';
+    END IF;
+
+    CREATE TEMP TABLE _essex_historical_identity_claims ON COMMIT DROP AS
+    SELECT t.brokerage_id, t.external_id, t.source_url,
+           ARRAY(SELECT DISTINCT n.value #>> '{}'
+                 FROM jsonb_path_query(t.raw_data, '$.**.essexPropertyId') n(value)
+                 WHERE n.value <> 'null'::jsonb) AS native_ids
+    FROM credeals.cre_listings t
+    WHERE EXISTS (
+      SELECT 1 FROM _essex_identity_claims s WHERE s.brokerage_id = t.brokerage_id
+    );
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _essex_identity_claims s
+    JOIN _essex_historical_identity_claims t ON t.brokerage_id = s.brokerage_id
+    WHERE (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
+       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
+       OR (s.native_ids[1] = ANY(t.native_ids)
+           AND (t.source_url IS DISTINCT FROM s.source_url OR t.external_id IS DISTINCT FROM s.external_id))
+       OR ((t.source_url = s.source_url OR t.external_id = s.external_id)
+           AND cardinality(t.native_ids) > 0
+           AND (cardinality(t.native_ids) <> 1 OR t.native_ids[1] IS DISTINCT FROM s.native_ids[1]));
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction in historical rows; refusing mutation';
+    END IF;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _essex_identity_claims s
+    JOIN _essex_identity_claims other ON other.brokerage_id = s.brokerage_id
+    WHERE (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
+       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
+       OR (other.native_ids[1] = s.native_ids[1]
+           AND (other.source_url IS DISTINCT FROM s.source_url OR other.external_id IS DISTINCT FROM s.external_id))
+       OR ((other.source_url = s.source_url OR other.external_id = s.external_id)
+           AND other.native_ids[1] IS DISTINCT FROM s.native_ids[1]);
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction within incoming cohort; refusing mutation';
+    END IF;
+END $$;
+
 -- The transaction-wide lifecycle advisory lock above serializes every generated
 -- bulk ingest and reviewed reconciliation. Do not also retain one advisory lock
 -- per identity: a complete high-volume source can exceed PostgreSQL's shared

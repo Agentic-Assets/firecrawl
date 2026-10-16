@@ -30,7 +30,10 @@ def require(condition: object) -> None:
 def configuration(source: str) -> dict:
     from cre_buildout_current_inventory import definitions, registry_path
 
-    require(source in {SOURCE, "pyramid-brokerage"} or source in definitions())
+    require(
+        source in {SOURCE, "pyramid-brokerage", "essex-realty"}
+        or source in definitions()
+    )
     load_source_policy()
     result = {
         "source_key": source,
@@ -38,7 +41,7 @@ def configuration(source: str) -> dict:
             resolve_policy_path().read_bytes()
         ).hexdigest(),
     }
-    if source not in {SOURCE, "pyramid-brokerage"}:
+    if source not in {SOURCE, "pyramid-brokerage", "essex-realty"}:
         result["buildout_registry_sha256"] = hashlib.sha256(
             registry_path().read_bytes()
         ).hexdigest()
@@ -84,7 +87,7 @@ def validate_options(
         require(not additive_hold and not allow_dirty)
     for source in admitted:
         require(source in selected)
-        if source == "pyramid-brokerage":
+        if source in {"pyramid-brokerage", "essex-realty"}:
             require(selected == [source])
         configuration(source)
 
@@ -434,6 +437,10 @@ def admit(
         from cre_pyramid_current_inventory import admit as admit_pyramid
 
         return admit_pyramid(artifact_path, manifest, report, source=source, **kwargs)
+    if source == "essex-realty":
+        from cre_essex_current_inventory import admit as admit_essex
+
+        return admit_essex(artifact_path, manifest, report, source=source, **kwargs)
     from cre_buildout_current_inventory import admit as admit_buildout
 
     return admit_buildout(artifact_path, manifest, report, source=source, **kwargs)
