@@ -1395,6 +1395,7 @@ export async function enrichAvisonYoungListing(
 
   const docs: Array<{ doc: ScrapedDoc; url: string }> = [];
   const errors: string[] = [];
+  const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
     try {
       const doc =
@@ -1411,26 +1412,30 @@ export async function enrichAvisonYoungListing(
       docs.push({ url, doc });
     } catch (err) {
       const error = `${url}: ${String(err)}`;
-      if (strict) {
-        if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
-          const role =
-            url === clean(base.sharpLaunchUrl)
-              ? "sharpLaunch"
-              : url === clean(base.externalUrl)
-                ? "external"
-                : "other";
-          throw new AvisonYoungTerminalDetailError({
-            listingId: clean(base.id) ?? "unknown",
-            role,
-            status: 404,
-          });
-        }
+      if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
+        const role =
+          url === clean(base.sharpLaunchUrl)
+            ? "sharpLaunch"
+            : url === clean(base.externalUrl)
+              ? "external"
+              : "other";
+        const failure: AvisonYoungTerminalDetailFailure = {
+          listingId: clean(base.id) ?? "unknown",
+          role,
+          status: 404,
+        };
+        if (strict) throw new AvisonYoungTerminalDetailError(failure);
+        missingDetails.push(failure);
+      } else if (strict) {
         throw new Error(`Avison Young detail fetch failed: ${error}`);
       }
       errors.push(error);
     }
   }
   if (!docs.length) {
+    if (requireLiveDetails && missingDetails.length === detailUrls.length) {
+      throw new AvisonYoungTerminalDetailError(missingDetails[0]!);
+    }
     return prune({ ...base, detailError: errors.join("; ") || "no detail pages scraped" });
   }
   if (strict && docs.length !== detailUrls.length) {
@@ -1606,13 +1611,31 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
       },
       strict
     );
+    // Classify only successful fresh results as successes in the draining map.
+    // Otherwise a concurrent 404 could conceal this ordinary source failure.
+    if (requireLiveDetails && (
+      !enriched?.detailObservedAt
+      || enriched?.detailError
+      || enriched?.detailUnavailable
+      || enriched?.freshnessProvenance?.detailScope !== "detail_page"
+      || enriched?.freshnessProvenance?.generationId !== refreshGenerationId()
+      || enriched?.freshnessProvenance?.cacheDisposition !== "live"
+      || (strict && enriched?.preserveChildCollections === true)
+    )) {
+      const reason = clean(enriched?.detailError)
+        ?? clean(enriched?.detailUnavailableReason)
+        ?? "missing current detail provenance";
+      throw new Error(
+        `Avison Young fresh property detail is incomplete for ${clean(listing?.id) ?? "unknown-id"}: ${reason}`
+      );
+    }
     if ((idx + 1) % 10 === 0 || idx + 1 === detailLimit) {
       console.error("  avison-young/" + tx + ": detail enriched " + (idx + 1) + "/" + detailLimit);
     }
     return enriched;
   };
   const enrichedListings = detailLimit
-    ? strict && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
+    ? requireLiveDetails && process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
       ? await mapAvisonYoungStrictDetails(
           baseListings.slice(0, detailLimit),
           AVISON_YOUNG_DETAIL_CONCURRENCY,
