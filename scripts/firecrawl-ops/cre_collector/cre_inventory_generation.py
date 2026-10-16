@@ -100,6 +100,13 @@ def build_inventory_generation_receipt(
     series_dir: Path, manifest: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Build the v2 receipt only for one complete required-source series."""
+    from cre_current_inventory_admission import is_verified_subset
+    try:
+        partial = is_verified_subset(manifest.get("config") or {})
+    except (KeyError, TypeError, ValueError):
+        partial = True
+    if partial:
+        raise InventoryGenerationNotReady("verified subset cannot advance a complete generation")
     manifest_sources = manifest.get("sources")
     configured_sources = (manifest.get("config") or {}).get("sources")
     if (

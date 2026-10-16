@@ -15,6 +15,7 @@ param(
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$Sources,
     [switch]$Pipeline,
     [switch]$AdmitBaselineHoldAdditively,
+    [switch]$AdmitDaumVerifiedSubset,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
@@ -84,6 +85,10 @@ foreach ($key in $selectedAdmissionKeys) {
     if ($Tier -ne 'series' -or $admissibleKeys -cnotcontains $key -or $selectedSourceKeys -cnotcontains $key) {
         throw 'Admission requires an exact selected and supported source key.'
     }
+}
+if ($AdmitDaumVerifiedSubset -and ($Tier -ne 'series' -or $selectedSourceKeys -cnotcontains 'daum-commercial' -or
+    (-not $Pipeline -and $Source -cne 'daum-commercial') -or $selectedAdmissionKeys -ccontains 'daum-commercial' -or $AdmitBaselineHoldAdditively)) {
+    throw '-AdmitDaumVerifiedSubset requires selected DAUM series without complete DAUM or baseline-hold admission.'
 }
 if ($AdmitBaselineHoldAdditively -and ($Tier -ne 'series' -or $Source -cne 'savills' -or $Sources -or $Pipeline -or $selectedAdmissionKeys.Count -ne 0)) {
     throw '-AdmitBaselineHoldAdditively requires a Savills-only serial series without other admissions.'
@@ -312,7 +317,7 @@ function Write-CreAudit {
 function Get-CreBrokerageName {
     param([string]$Key)
     $names = @{
-        'newmark'='Newmark'; 'interra-realty'='Interra Realty'; 'hanley'='Hanley Investment Group'
+        'newmark'='Newmark'; 'interra-realty'='Interra Realty'; 'hanley'='Hanley Investment Group'; 'daum-commercial'='DAUM Commercial'
         'cbre'='CBRE'; 'cbre-dealflow'='CBRE Deal Flow'; 'jll'='JLL'; 'jll-investor'='JLL Investor Center'
         'cushman-wakefield'='Cushman & Wakefield'; 'nai-global'='NAI Global'; 'srs'='SRS'
         'svn'='SVN'; 'lee-associates'='Lee & Associates'; 'pinnacle-rea'='Pinnacle Real Estate Advisors'
@@ -325,10 +330,38 @@ function Get-CreBrokerageName {
     return 'Commercial real estate'
 }
 
+function Test-CreDaumSubsetSummary {
+    param($Summary)
+    try {
+        if ($Summary.measurement -isnot [string] -or $Summary.qualification -isnot [string] -or
+            $Summary.whole_lease_coverage -isnot [string] -or $Summary.measurement -cne 'generation_exact_verified_subset' -or
+            $Summary.qualification -cne 'qualified_partial_subset' -or
+            $Summary.partial -isnot [bool] -or -not $Summary.partial -or
+            $Summary.whole_source_coverage -isnot [bool] -or $Summary.whole_source_coverage) { return $false }
+        foreach ($field in @('inventory_count','emitted_count','held_count','verified_listings')) {
+            if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
+                $Summary.$field -lt 0 -or $Summary.$field -gt 500000) { return $false }
+        }
+        if ($Summary.emitted_count -lt 100 -or $Summary.emitted_count -ne $Summary.verified_listings -or
+            $Summary.inventory_count -ne ($Summary.emitted_count + $Summary.held_count)) { return $false }
+        $leaseCoverage = if ($Summary.held_count -gt 0) { 'unknown' } else { 'proved' }
+        if ($Summary.whole_lease_coverage -cne $leaseCoverage) { return $false }
+        $breakdown = $Summary.transaction_breakdown
+        if ($breakdown.measurement -isnot [string] -or $breakdown.measurement -cne 'current_staged_inventory_transaction_types') { return $false }
+        foreach ($field in @('sale','lease','both')) {
+            if (-not ($breakdown.$field -is [int] -or $breakdown.$field -is [long]) -or
+                $breakdown.$field -lt 0 -or $breakdown.$field -gt 500000) { return $false }
+        }
+        return ($breakdown.both -le $breakdown.sale -and $breakdown.both -le $breakdown.lease -and
+            ($breakdown.sale + $breakdown.lease - $breakdown.both) -eq $Summary.emitted_count)
+    } catch { return $false }
+}
+
 function Get-CreVerifiedSummary {
     param([System.Collections.IDictionary]$Record, [string]$AttemptId,
         [ValidateRange(50,12000)][int]$ReadDeadlineMilliseconds = 12000)
     $pipelineMode = [bool](Get-Variable -Name Pipeline -ValueOnly -ErrorAction SilentlyContinue)
+    $subsetRequested = [bool](Get-Variable -Name AdmitDaumVerifiedSubset -ValueOnly -ErrorAction SilentlyContinue)
     $notificationSource = Get-Variable -Name selectedSourceArgument -ValueOnly -ErrorAction SilentlyContinue
     if (-not $notificationSource) { $notificationSource = $Source }
 
@@ -370,10 +403,21 @@ function Get-CreVerifiedSummary {
                 $summary.local_settlement -cne 'confirmed' -or
                 ($summary.selected_source_keys -join ',') -cne ($selectedSourceKeys -join ',')) { return $null }
             $verifiedKeys = @()
+            $subsetKeys = @()
             foreach ($entry in @($summary.per_source_summaries)) {
                 if ($selectedSourceKeys -cnotcontains $entry.source_key -or
                     -not ($entry.verified_listings -is [int] -or $entry.verified_listings -is [long]) -or
                     $entry.verified_listings -lt 0 -or $entry.verified_listings -gt 500000) { return $null }
+                $subsetMarked = $null -ne $entry.PSObject.Properties['partial'] -or
+                    $null -ne $entry.PSObject.Properties['held_count'] -or $null -ne $entry.PSObject.Properties['emitted_count'] -or
+                    $null -ne $entry.PSObject.Properties['qualification'] -or
+                    ($null -ne $entry.PSObject.Properties['measurement'] -and $entry.measurement -ceq 'generation_exact_verified_subset')
+                $expectsSubset = $subsetRequested -and $entry.source_key -ceq 'daum-commercial'
+                if ($subsetMarked -ne $expectsSubset) { return $null }
+                if ($expectsSubset) {
+                    if (-not (Test-CreDaumSubsetSummary $entry)) { return $null }
+                    $subsetKeys += $entry.source_key
+                }
                 $inventoryProperty = $entry.PSObject.Properties['verified_inventory_only']
                 if ($null -ne $inventoryProperty -and
                     (-not ($inventoryProperty.Value -is [int] -or $inventoryProperty.Value -is [long]) -or
@@ -396,10 +440,18 @@ function Get-CreVerifiedSummary {
                 }
                 $verifiedKeys += $entry.source_key
             }
+            $declaredSubsetKeys = @()
+            if ($null -ne $summary.PSObject.Properties['qualified_subset_source_keys']) {
+                if ($summary.qualified_subset_source_keys -isnot [array]) { return $null }
+                $declaredSubsetKeys = @($summary.qualified_subset_source_keys)
+            }
+            if ($subsetKeys.Count -gt 0 -and (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
+                -not ($summary.windows_admission_unix_ms -is [int] -or $summary.windows_admission_unix_ms -is [long]))) { return $null }
+            if (($declaredSubsetKeys -join ',') -cne ($subsetKeys -join ',')) { return $null }
             $partition = @($verifiedKeys) + @($summary.failed_source_keys) + @($summary.pending_source_keys)
             if (@($partition | Sort-Object -Unique).Count -ne $partition.Count -or
                 (($partition | Sort-Object) -join ',') -cne (($selectedSourceKeys | Sort-Object) -join ',') -or
-                $summary.complete -ne ($verifiedKeys.Count -eq $selectedSourceKeys.Count)) { return $null }
+                $summary.complete -ne ($verifiedKeys.Count -eq $selectedSourceKeys.Count -and $subsetKeys.Count -eq 0)) { return $null }
         } catch { return $null }
         $Record['notificationSummary'] = $summary
         return $summary
@@ -407,9 +459,15 @@ function Get-CreVerifiedSummary {
     foreach ($field in @('source','measurement','collector_git_sha','series_id','invocation_id','run_id','local_settlement')) {
         if ($summary.$field -isnot [string]) { return $null }
     }
+    $subsetMarked = $null -ne $summary.PSObject.Properties['partial'] -or
+        $null -ne $summary.PSObject.Properties['held_count'] -or $null -ne $summary.PSObject.Properties['emitted_count'] -or
+        $null -ne $summary.PSObject.Properties['qualification'] -or $summary.measurement -ceq 'generation_exact_verified_subset'
+    if ($subsetMarked -ne $subsetRequested) { return $null }
+    if ($subsetRequested -and ($notificationSource -cne 'daum-commercial' -or -not (Test-CreDaumSubsetSummary $summary))) { return $null }
+    $expectedMeasurement = if ($subsetRequested) { 'generation_exact_verified_subset' } else { 'generation_exact_current_inventory' }
     if (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
         $summary.schema_version -ne 1 -or $summary.verified -isnot [bool] -or -not $summary.verified -or
-        $summary.source -cne $notificationSource -or $summary.measurement -cne 'generation_exact_current_inventory' -or
+        $summary.source -cne $notificationSource -or $summary.measurement -cne $expectedMeasurement -or
         $summary.collector_git_sha -cne $ExpectedSha -or $summary.windows_admission_unix_ms -ne $Record.windowsAdmissionUnixMs -or
         $summary.series_id -cne ($directory.Split('/')[-1]) -or $summary.invocation_id -cnotmatch '^[0-9a-f]{32}$' -or
         $summary.run_id -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z-[0-9a-f]{12}$' -or
@@ -466,7 +524,9 @@ function Get-CreNotificationText {
         }
     } catch { }
     if ($pipelineMode -and $null -ne $Summary -and $null -ne $Summary.PSObject.Properties['per_source_summaries']) {
-        $title = if ($Summary.complete -and $ExitCode -eq 0) { 'Completed' } else { 'Needs attention' }
+        $qualifiedSubsets = @($Summary.per_source_summaries | Where-Object { $null -ne $_.PSObject.Properties['partial'] -and $_.partial -eq $true })
+        $subsetOnlyAttention = $qualifiedSubsets.Count -gt 0 -and $ExitCode -eq 0 -and @($Summary.failed_source_keys).Count -eq 0 -and @($Summary.pending_source_keys).Count -eq 0
+        $title = if ($Summary.complete -and $ExitCode -eq 0) { 'Completed' } elseif ($subsetOnlyAttention) { 'Verified subset refreshed' } else { 'Needs attention' }
         $statusMark = if ($Summary.complete -and $ExitCode -eq 0) { [char]::ConvertFromUtf32(0x2705) }
             else { [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F }
         $lines = @('', "$statusMark *CRE pipeline | $title*", '', "$bullet *Duration:* $duration", '')
@@ -477,6 +537,15 @@ function Get-CreNotificationText {
             $firstMember = $false
             $broker = (Get-CreBrokerageName $entry.source_key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
             $count = ([long]$entry.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            if ($null -ne $entry.PSObject.Properties['partial'] -and $entry.partial -eq $true) {
+                $sale = ([long]$entry.transaction_breakdown.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $lease = ([long]$entry.transaction_breakdown.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $both = ([long]$entry.transaction_breakdown.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $held = ([long]$entry.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $leaseScope = if ($entry.held_count -gt 0) { 'whole lease coverage unknown' } else { 'whole lease coverage proved' }
+                $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held`n    *For sale:* $sale | *For lease:* $lease | *Both:* $both`n    $lease verified subset leases; $leaseScope; whole brokerage incomplete."
+                continue
+            }
             $scopeLabel = if ($null -ne $entry.PSObject.Properties['verified_inventory_only']) { 'property listings' } else { 'listings' }
             $breakdownProperty = $entry.PSObject.Properties['transaction_breakdown']
             if ($null -ne $breakdownProperty -and $null -ne $breakdownProperty.Value) {
@@ -499,8 +568,11 @@ function Get-CreNotificationText {
         $lines += ''
         $lines += "$bullet Both counts overlap and are included in the For sale and For lease figures."
         $lines += ''
+        if ($qualifiedSubsets.Count -gt 0) {
+            $lines += "$bullet *Complete brokerages:* $($members.Count - $qualifiedSubsets.Count) | *Qualified subsets:* $($qualifiedSubsets.Count)"
+        }
         $lines += "$bullet *Failed:* $(@($Summary.failed_source_keys).Count) | *Pending:* $(@($Summary.pending_source_keys).Count)"
-        if (-not $Summary.complete -or $ExitCode -ne 0) {
+        if ((-not $Summary.complete -or $ExitCode -ne 0) -and -not $subsetOnlyAttention) {
             $lines += ''
             $lines += "$bullet Partial result; the selected refresh did not finish successfully. Check the local CRE audit."
         }
@@ -526,6 +598,14 @@ function Get-CreNotificationText {
             if ([long]$breakdown.both -gt 0) { $transactionLine += "`n$bullet *Both:* $both (included in For sale and For lease)" }
         } else {
             $transactionLine = "$bullet *For sale:* unavailable | *For lease:* unavailable (breakdown not verified)"
+        }
+        if ($null -ne $Summary.PSObject.Properties['partial'] -and $Summary.partial -eq $true) {
+            $held = ([long]$Summary.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $inventory = ([long]$Summary.inventory_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $leaseLine = if ($Summary.held_count -gt 0) { "$lease verified subset leases; whole lease coverage unknown" }
+                else { "$lease verified subset leases; whole lease coverage proved" }
+            $success = [char]::ConvertFromUtf32(0x2705)
+            return "`n$success *$name | Verified subset refreshed*`n`n$bullet *Duration:* $duration`n$bullet *Inventory:* $inventory; $count emitted; $held held`n$transactionLine`n$bullet $leaseLine`n$bullet *Database readback:* passed; no quality regression.`n$bullet *Coverage:* whole brokerage incomplete."
         }
         $coverageLine = ''
         if ($null -ne $Summary.PSObject.Properties['baseline_hold_retained'] -and $Summary.baseline_hold_retained -eq $true) {
@@ -608,6 +688,7 @@ $stderrPath = Join-Path $auditDir ($basename + '.stderr.log')
 $record = [ordered]@{
     createdAt = [DateTime]::UtcNow.ToString('o')
     admitBaselineHoldAdditively = [bool]$AdmitBaselineHoldAdditively
+    admitDaumVerifiedSubset = [bool]$AdmitDaumVerifiedSubset
     tier = $Tier; source = $selectedSourceArgument; pipeline = [bool]$Pipeline; sourceWorkers = $resolvedSourceWorkers; expectedSha = $ExpectedSha; apply = [bool]$Apply
     status = 'admission_pending'; dispatch = 'not_attempted'
     nativeExitCode = $null; wrapperExitCode = $null; linuxSettlement = 'unverified'
@@ -711,6 +792,7 @@ try {
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
+            if ($AdmitDaumVerifiedSubset) { $arguments += '--admit-daum-verified-subset' }
             foreach ($key in $selectedAdmissionKeys) { $arguments += @('--admit-current-inventory-source', $key) }
             $runPrefix = "$collector/out/checkpoint-series/"
         } elseif ($Apply) { $arguments += '--apply' }

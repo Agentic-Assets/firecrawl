@@ -55,6 +55,7 @@ bash tests/run_listing_lifecycle_postgres_contract.sh  # opt-in local PostgreSQL
 bash tests/run_cre_validate_timing_postgres_contract.sh  # opt-in native psql timing contract
 bash tests/run_ingest_institutional_postgres_contract.sh  # opt-in disposable institutional UPDATE contract
 bash tests/run_cre_quality_postgres_contract.sh  # opt-in active/historical scope + bounded financial fallback contract
+python3 tests/run_daum_subset_postgres_contract.py "$(mktemp -d)/proof"  # opt-in WSL/Linux DAUM subset transaction contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
@@ -80,6 +81,13 @@ The institutional UPDATE contract executes the generated optional Phase-2
 statement against synthetic CBRE, JLL and marker-collision rows in an isolated
 PostgreSQL 17 container. It uses a cached image, publishes no ports, and removes
 only its recorded owned container.
+
+The DAUM subset contract runs the actual generated ingest SQL in a uniquely
+owned, unexposed cached PostgreSQL 17 container on Linux/WSL. It accepts only a
+new proof-directory path, never a database URL. It tests whole-transaction
+refusals, held parent/five-child/index preservation, unchanged lifecycle and
+baseline/OM data, missing-index/new-insert cases, and bounded fresh replacement
+of emitted children. Preserve its checks and container-settlement receipts.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing

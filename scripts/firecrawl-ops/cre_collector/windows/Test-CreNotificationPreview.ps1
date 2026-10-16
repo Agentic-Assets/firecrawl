@@ -52,6 +52,11 @@ foreach ($scenario in $scenarios) {
 $custom = @(& $previewTool -Scenario Completed -Source 'cushman-wakefield' -Total 4 -ForSale 3 -ForLease 2 -Both 1) -join [Environment]::NewLine
 Assert-Cre ($custom.Contains('*Cushman &amp; Wakefield | Completed*') -and $custom.Contains('*Listings verified:* 4 unique properties')) 'Source and sample counts must be adjustable.'
 
+$subsetPreview = @(& $previewTool -Scenario VerifiedSubset -Source 'daum-commercial' -Total 560 -ForSale 374 -ForLease 372 -Both 186 -HeldCount 2 -WebhookFile $missingWebhook) -join [Environment]::NewLine
+Assert-Cre ($subsetPreview.Contains('Verified subset refreshed') -and $subsetPreview.Contains('560 emitted; 2 held') -and $subsetPreview.Contains('whole brokerage incomplete') -and $subsetPreview.Contains('sample only; no readback occurred.') -and $subsetPreview -notmatch 'Completed|passed; no quality regression') 'Subset preview uses the real partial formatter and disclaims database proof.'
+$zeroSubsetPreview = @(& $previewTool -Scenario VerifiedSubset -Source 'daum-commercial' -Total 100 -ForSale 100 -ForLease 0 -Both 0 -HeldCount 2) -join [Environment]::NewLine
+Assert-Cre ($zeroSubsetPreview.Contains('0 verified subset leases; whole lease coverage unknown')) 'Preview never equates zero subset leases with a known-empty whole brokerage.'
+
 $textFile = Join-Path $ProofDirectory 'custom-message.txt'
 [IO.File]::WriteAllText($textFile, "*Custom sample heading*`n• Short body", (New-Object Text.UTF8Encoding($false)))
 $customTextPreview = @(& $previewTool -TextFile $textFile) -join [Environment]::NewLine

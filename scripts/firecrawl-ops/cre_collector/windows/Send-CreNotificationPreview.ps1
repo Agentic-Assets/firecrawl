@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Started', 'Completed', 'NeedsAttention', 'Unverified')]
+    [ValidateSet('Started', 'Completed', 'VerifiedSubset', 'NeedsAttention', 'Unverified')]
     [string]$Scenario = 'Completed',
     [ValidateSet('Preview', 'Send')]
     [string]$Mode = 'Preview',
@@ -13,6 +13,8 @@ param(
     [int]$ForLease = 5,
     [ValidateRange(0, 500000)]
     [int]$Both = 1,
+    [ValidateRange(0, 500000)]
+    [int]$HeldCount = 2,
     [string]$TextFile,
     [string]$WebhookFile = (Join-Path $env:USERPROFILE '.config\cre\cre-pipeline.webhook')
 )
@@ -23,6 +25,7 @@ $ErrorActionPreference = 'Stop'
 if ($Source -cnotmatch '^[a-z0-9][a-z0-9-]{0,79}$') {
     throw 'Source must be a safe lowercase brokerage key.'
 }
+if ($Scenario -eq 'VerifiedSubset' -and $Source -cne 'daum-commercial') { throw 'VerifiedSubset sample requires DAUM source.' }
 if (-not $TextFile -and ($Both -gt $ForSale -or $Both -gt $ForLease -or ($ForSale + $ForLease - $Both) -ne $Total)) {
     throw 'Sample counts must satisfy sale + lease - both = total, with both no greater than either category.'
 }
@@ -90,11 +93,21 @@ if ($TextFile) {
                 }
             }
         }
+        'VerifiedSubset' {
+            $summary = [pscustomobject]@{
+                verified_listings = $Total; emitted_count = $Total; held_count = $HeldCount
+                inventory_count = ($Total + $HeldCount)
+                measurement = 'generation_exact_verified_subset'; qualification = 'qualified_partial_subset'
+                partial = $true; whole_source_coverage = $false
+                whole_lease_coverage = $(if ($HeldCount -gt 0) { 'unknown' } else { 'proved' })
+                transaction_breakdown = [pscustomobject]@{sale=$ForSale;lease=$ForLease;both=$Both;measurement='current_staged_inventory_transaction_types'}
+            }
+        }
         'NeedsAttention' { $exitCode = 23 }
         'Unverified' { $record.status = 'format_test_unverified' }
     }
     $formatted = Get-CreNotificationText $record $phase $exitCode $summary
-    if ($Scenario -eq 'Completed') {
+    if ($Scenario -in @('Completed','VerifiedSubset')) {
         $sampleReadback = "$([char]0x2022) *Database readback:* passed; no quality regression."
         $truthfulReadback = "$([char]0x2022) *Database readback:* sample only; no readback occurred."
         $formatted = $formatted.Replace($sampleReadback, $truthfulReadback)

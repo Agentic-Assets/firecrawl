@@ -13,7 +13,7 @@ $sourceText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Invoke-CreGuarded
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseInput($sourceText,[ref]$tokens,[ref]$errors)
 Assert-Cre ($errors.Count -eq 0) 'Shipped launcher must parse.'
-foreach ($name in @('Get-CreBrokerageName','Get-CreVerifiedSummary','Get-CreNotificationText')) {
+foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText')) {
     $definition=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true))
     Assert-Cre ($definition.Count -eq 1) "Exactly one shipped $name function is required."
     . ([scriptblock]::Create($definition[0].Extent.Text))
@@ -247,5 +247,96 @@ Assert-Cre ($null -ne $actualRead -and $actualText.Contains('19,501 listings ver
 $actualScope['per_source_summaries'][1].verified_inventory_only = $true
 Save-Summary $actualScope
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'invalid-pipeline-index')) 'Malformed pipeline inventory count cannot become verified scope.'
+# DAUM subset is independently scoped, including a fully resolved subset run.
+$Pipeline = $false
+$Source = 'daum-commercial'; $selectedSourceArgument = $Source
+$AdmitDaumVerifiedSubset = $true
+function New-DaumSubsetSummary {
+    $value = New-Summary
+    $value['measurement'] = 'generation_exact_verified_subset'
+    $value['qualification'] = 'qualified_partial_subset'
+    $value['partial'] = $true
+    $value['whole_source_coverage'] = $false
+    $value['inventory_count'] = 562
+    $value['emitted_count'] = 560
+    $value['held_count'] = 2
+    $value['whole_lease_coverage'] = 'unknown'
+    $value['verified_listings'] = 560
+    $value['transaction_breakdown'] = [ordered]@{sale=374;lease=372;both=186;measurement='current_staged_inventory_transaction_types'}
+    return $value
+}
+Save-Summary (New-DaumSubsetSummary)
+$subset = Get-CreVerifiedSummary (New-Record) 'daum-subset'
+Assert-Cre ($null -ne $subset -and $subset.emitted_count -eq 560) 'Explicit DAUM subset accepts exact qualified emitted readback.'
+$subsetText = Get-CreNotificationText (New-Record) 'Terminal' 0 $subset
+Assert-Cre ($subsetText.Contains('Verified subset refreshed') -and $subsetText.Contains('560') -and $subsetText.Contains('2 held') -and $subsetText.Contains('whole brokerage incomplete') -and $subsetText.Contains('374') -and $subsetText.Contains('372') -and $subsetText -notmatch 'Completed|all listings|whole-source complete') 'Subset text discloses emitted/held/transaction scope without complete-source success wording.'
+foreach ($mutation in @('whole','partial','count','inventory','held','coverage','qualification','breakdown','generation','quality','source')) {
+    $value = New-DaumSubsetSummary
+    switch ($mutation) {
+        'whole' { $value.whole_source_coverage = $true }
+        'partial' { $value.partial = $false }
+        'count' { $value.emitted_count = '560' }
+        'inventory' { $value.inventory_count = 563 }
+        'held' { $value.held_count = -1 }
+        'coverage' { $value.whole_lease_coverage = 'proved' }
+        'qualification' { $value.qualification = 'complete' }
+        'breakdown' { $value.transaction_breakdown.both = 0 }
+        'generation' { $value.run_id = 'other-generation' }
+        'quality' { $value.quality_no_regression = $false }
+        'source' { $value.source = 'newmark' }
+    }
+    Save-Summary $value
+    Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) ('subset-invalid-'+$mutation))) 'Malformed subset cannot be relabeled complete or enter verified formatter.'
+}
+$emptyLease = New-DaumSubsetSummary
+$emptyLease.transaction_breakdown = [ordered]@{sale=560;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}
+Save-Summary $emptyLease
+$emptyRead = Get-CreVerifiedSummary (New-Record) 'subset-zero-lease'
+$emptyText = Get-CreNotificationText (New-Record) 'Terminal' 0 $emptyRead
+Assert-Cre ($null -ne $emptyRead -and $emptyText.Contains('0 verified subset leases') -and $emptyText.Contains('whole lease coverage unknown')) 'Zero emitted lease with holds never establishes known-empty whole lease inventory.'
+$zeroHold = New-DaumSubsetSummary
+$zeroHold.held_count = 0; $zeroHold.inventory_count = 560; $zeroHold.whole_lease_coverage = 'proved'
+Save-Summary $zeroHold
+$zeroRead = Get-CreVerifiedSummary (New-Record) 'subset-zero-hold'
+Assert-Cre ($null -ne $zeroRead -and (Get-CreNotificationText (New-Record) 'Terminal' 0 $zeroRead).Contains('whole brokerage incomplete')) 'No holds still retains explicit partial scope.'
+$AdmitDaumVerifiedSubset = $false
+Save-Summary (New-DaumSubsetSummary)
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'subset-unbound')) 'Subset summary cannot borrow complete admission.'
+$AdmitDaumVerifiedSubset = $true
+Save-Summary (New-Summary)
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'complete-subset-flag')) 'Explicit subset mode cannot accept complete receipt in its place.'
+
+$Pipeline = $true
+$selectedSourceKeys = @('daum-commercial','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
+$subsetRow = New-DaumSubsetSummary
+$subsetRow['source_key'] = 'daum-commercial'
+$mixedSubset = New-Summary
+$mixedSubset['selected_source_keys'] = $selectedSourceKeys
+$mixedSubset['per_source_summaries'] = @($subsetRow, [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$mixedSubset['qualified_subset_source_keys'] = @('daum-commercial')
+$mixedSubset['failed_source_keys'] = @(); $mixedSubset['pending_source_keys'] = @(); $mixedSubset['complete'] = $false
+Save-Summary $mixedSubset
+$mixedRead = Get-CreVerifiedSummary (New-Record) 'subset-mixed-pipeline'
+$mixedText = Get-CreNotificationText (New-Record) 'Terminal' 0 $mixedRead
+Assert-Cre ($null -ne $mixedRead -and $mixedText.Contains('*Complete brokerages:* 1 | *Qualified subsets:* 1') -and $mixedText.Contains('*Both:* 186') -and $mixedText.Contains('whole brokerage incomplete') -and $mixedText -notmatch 'Completed|did not finish successfully') 'Mixed pipeline counts qualified subsets separately from complete brokerages.'
+foreach ($bad in @('complete','partition','duplicate','string-partition','low-floor','no-opt-in')) {
+    $value = $mixedSubset | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    switch ($bad) {
+        'complete' { $value.complete = $true }
+        'partition' { $value.qualified_subset_source_keys = @() }
+        'duplicate' { $value.qualified_subset_source_keys = @('daum-commercial','daum-commercial') }
+        'string-partition' { $value.qualified_subset_source_keys = 'daum-commercial' }
+        'low-floor' {
+            $value.per_source_summaries[0].verified_listings = 99; $value.per_source_summaries[0].emitted_count = 99
+            $value.per_source_summaries[0].inventory_count = 101
+            $value.per_source_summaries[0].transaction_breakdown.sale = 99; $value.per_source_summaries[0].transaction_breakdown.lease = 99; $value.per_source_summaries[0].transaction_breakdown.both = 99
+        }
+        'no-opt-in' { $AdmitDaumVerifiedSubset = $false }
+    }
+    Save-Summary $value
+    Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) ('subset-invalid-pipeline-'+$bad))) 'Malformed or subfloor pipeline subset never counts as full source acceptance.'
+    $AdmitDaumVerifiedSubset = $true
+}
+
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV
 Write-Output "Readable CRE notification PASS: $script:checks assertions; proof=$ProofDirectory"

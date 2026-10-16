@@ -2419,6 +2419,7 @@ def build_cohort_collect_worker_argv(
     page_cap: int,
     concurrency: int,
     transactions: Sequence[str],
+    daum_verified_subset: bool = False,
 ) -> list[str]:
     """Build the no-manifest collection worker command for one source.
 
@@ -2447,7 +2448,7 @@ def build_cohort_collect_worker_argv(
         str(concurrency),
         "--transactions",
         "both" if tuple(transactions) == TRANSACTIONS else transactions[0],
-    ]
+    ] + (["--admit-daum-verified-subset"] if daum_verified_subset else [])
 
 
 def build_gate_argv(
@@ -2571,6 +2572,7 @@ def fresh_source_env(
     generation_started_at: str | None = None,
     attempt_number: int = 1,
     collector_concurrency: int | None = None,
+    daum_verified_subset: bool = False,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -2594,6 +2596,11 @@ def fresh_source_env(
                 return
             overrides[name] = str(max(minimum, min(maximum, int(normalized))))
 
+    clear("DAUM_VERIFIED_SUBSET")
+    if daum_verified_subset:
+        if source != "daum-commercial":
+            raise ValueError("DAUM subset environment requires the DAUM source")
+        set_value("DAUM_VERIFIED_SUBSET", "1")
     set_value("CRE_REFRESH_GENERATION", run_dir.name)
     if generation_started_at:
         set_value("CRE_REFRESH_STARTED_AT", generation_started_at)
@@ -2778,6 +2785,7 @@ def validate_source_artifact(
     expected_transactions: Sequence[str] = TRANSACTIONS,
     max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
     now: datetime | None = None,
+    daum_verified_subset: bool = False,
 ) -> dict[str, Any]:
     if poll_hook() is None:
         return _validate_source_artifact_local(
@@ -2787,6 +2795,7 @@ def validate_source_artifact(
             expected_generation_started_at=expected_generation_started_at,
             expected_transactions=expected_transactions,
             max_observation_age_hours=max_observation_age_hours, now=now,
+            daum_verified_subset=daum_verified_subset,
         )
     def timestamp(value):
         return value.isoformat() if isinstance(value, datetime) else value
@@ -2800,6 +2809,7 @@ def validate_source_artifact(
             "expected_transactions": list(expected_transactions),
             "max_observation_age_hours": max_observation_age_hours,
             "now": timestamp(now),
+            "daum_verified_subset": daum_verified_subset,
         },
     })
 
@@ -2815,10 +2825,29 @@ def _validate_source_artifact_local(
     expected_transactions: Sequence[str] = TRANSACTIONS,
     max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
     now: datetime | None = None,
+    daum_verified_subset: bool = False,
 ) -> dict[str, Any]:
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
     data = _load_json(path)
+    if type(daum_verified_subset) is not bool:
+        raise ArtifactValidationError("invalid DAUM subset option")
+    if daum_verified_subset:
+        if (
+            expected_source != "daum-commercial"
+            or tuple(expected_transactions) != TRANSACTIONS
+        ):
+            raise ArtifactValidationError(
+                "DAUM subset requires exact DAUM both-transaction scope"
+            )
+        from cre_daum_current_inventory import subset_source_scope
+
+        try:
+            subset_source_scope(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactValidationError(
+                "DAUM subset structural evidence refused"
+            ) from exc
     run_meta = data.get("runMeta")
     if not isinstance(run_meta, dict):
         raise ArtifactValidationError("runMeta must be an object")
@@ -2979,11 +3008,11 @@ def _validate_source_artifact_local(
         if entry.get("error"):
             raise ArtifactValidationError(f"{expected_source}/{tx} reported an error")
         truncated = entry.get("truncated")
-        if truncated is True:
+        if truncated is True and not daum_verified_subset:
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} reported truncated=true"
             )
-        if truncated is not False:
+        if truncated is not False and not daum_verified_subset:
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} is missing explicit truncated=false"
             )
@@ -3458,6 +3487,7 @@ def run_cohort_collection_worker(
     page_cap: int,
     concurrency: int,
     transactions: Sequence[str],
+    daum_verified_subset: bool = False,
 ) -> int:
     """Collect one source without reading or writing a checkpoint manifest.
 
@@ -3473,6 +3503,7 @@ def run_cohort_collection_worker(
         generation_started_at=generation_started_at,
         attempt_number=attempt_number,
         collector_concurrency=concurrency,
+        daum_verified_subset=daum_verified_subset,
     )
     if source == "colliers-main":
         rc, _error = collect_colliers_main_chunks(
@@ -3682,6 +3713,9 @@ def _cohort_attempt(
                 generation_started_at=manifest["started_at"],
                 attempt_number=attempt_number,
                 collector_concurrency=collector_concurrency,
+                daum_verified_subset=current_inventory.is_verified_subset(
+                    manifest["config"], source
+                ),
             )[1].items()
         },
         "rejected_artifact": None,
@@ -3725,6 +3759,9 @@ def _start_cohort_collection(
         page_cap=page_cap,
         concurrency=concurrency,
         transactions=tuple(manifest["config"]["transactions"]),
+        daum_verified_subset=current_inventory.is_verified_subset(
+            manifest["config"], source
+        ),
     )
     attempt_log.parent.mkdir(parents=True, exist_ok=True)
     log_handle = attempt_log.open("a", encoding="utf-8")
@@ -3788,7 +3825,8 @@ def _finalize_cohort_collection(
     run_dir: Path,
     manifest: dict[str, Any],
     item: CohortCollectionProcess,
-    *, candidate_only: bool = False,
+    *,
+    candidate_only: bool = False,
 ) -> bool:
     """Validate and publish a completed source worker's artifact centrally."""
     checkpoint = manifest["sources"][item.source]
@@ -3891,6 +3929,9 @@ def _finalize_cohort_collection(
                 manifest["started_at"] if generation_bound else None
             ),
             expected_transactions=tuple(manifest["config"]["transactions"]),
+            daum_verified_subset=current_inventory.is_verified_subset(
+                manifest["config"], item.source
+            ),
         )
     except ArtifactValidationError as exc:
         item.attempt["error"] = str(exc)
@@ -3991,6 +4032,7 @@ def new_manifest(
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     admit_current_inventory_source: str | None = None,
+    admit_daum_verified_subset: bool = False,
     pipeline: bool = False,
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
@@ -4061,13 +4103,35 @@ def new_manifest(
     if pipeline:
         manifest["config"]["pipeline"] = True
         current_inventory.validate_options(
-            admit_current_inventory_sources, sources, transactions, pipeline=True,
+            admit_current_inventory_sources,
+            sources,
+            transactions,
+            pipeline=True,
+            daum_verified_subset=admit_daum_verified_subset,
             additive_hold=admit_baseline_hold_additively,
             allow_dirty=git_dirty,
         )
-        manifest["config"]["current_inventory_admissions"] = current_inventory.configuration_map(
-            admit_current_inventory_sources, sources,
+        manifest["config"]["current_inventory_admissions"] = (
+            current_inventory.configuration_map(
+            admit_current_inventory_sources,
+                sources,
+                daum_verified_subset=admit_daum_verified_subset,
+            )
         )
+    if admit_daum_verified_subset:
+        current_inventory.validate_options(
+            [admit_current_inventory_source] if admit_current_inventory_source else [],
+            sources,
+            transactions,
+            pipeline=pipeline,
+            additive_hold=admit_baseline_hold_additively,
+            daum_verified_subset=True,
+            allow_dirty=git_dirty,
+        )
+        if not pipeline:
+            manifest["config"]["current_inventory_admission"] = (
+                current_inventory.subset_configuration()
+            )
     if admit_current_inventory_source is not None:
         current_inventory.validate_option(
             admit_current_inventory_source,
@@ -4078,6 +4142,10 @@ def new_manifest(
         )
         manifest["config"]["current_inventory_admission"] = (
             current_inventory.configuration(admit_current_inventory_source)
+        )
+    if admit_daum_verified_subset:
+        manifest["scope"].update(
+            kind="collector_registry_verified_subset", whole_source_coverage=False
         )
     return manifest
 
@@ -4098,6 +4166,7 @@ def load_resume_manifest(
     transactions: Sequence[str] = TRANSACTIONS,
     admit_baseline_hold_additively: bool = False,
     admit_current_inventory_source: str | None = None,
+    admit_daum_verified_subset: bool = False,
     pipeline: bool = False,
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
@@ -4143,13 +4212,32 @@ def load_resume_manifest(
     if pipeline:
         expected["pipeline"] = True
         current_inventory.validate_options(
-            admit_current_inventory_sources, sources, transactions, pipeline=True,
+            admit_current_inventory_sources,
+            sources,
+            transactions,
+            pipeline=True,
+            daum_verified_subset=admit_daum_verified_subset,
             additive_hold=admit_baseline_hold_additively,
             allow_dirty=False,
         )
         expected["current_inventory_admissions"] = current_inventory.configuration_map(
-            admit_current_inventory_sources, sources,
+            admit_current_inventory_sources,
+            sources,
+            daum_verified_subset=admit_daum_verified_subset,
         )
+    if admit_daum_verified_subset:
+        current_inventory.validate_options(
+            [admit_current_inventory_source] if admit_current_inventory_source else [],
+            sources,
+            transactions,
+            pipeline=pipeline,
+            additive_hold=admit_baseline_hold_additively,
+            daum_verified_subset=True,
+        )
+        if not pipeline:
+            expected["current_inventory_admission"] = (
+                current_inventory.subset_configuration()
+            )
     if admit_current_inventory_source is not None:
         current_inventory.validate_option(
             admit_current_inventory_source,
@@ -4304,6 +4392,7 @@ def _checkpoint_artifact_valid(
     generation_started_at: str | datetime | None = None,
     *,
     transactions: Sequence[str] = TRANSACTIONS,
+    daum_verified_subset: bool = False,
 ) -> tuple[Path, dict[str, Any]] | None:
     artifact_info = checkpoint.get("artifact")
     if not isinstance(artifact_info, dict):
@@ -4333,6 +4422,7 @@ def _checkpoint_artifact_valid(
                 generation_started_at if generation_bound else None
             ),
             expected_transactions=transactions,
+            daum_verified_subset=daum_verified_subset,
         )
     except ArtifactValidationError:
         return None
@@ -4354,6 +4444,7 @@ def _manifest_checkpoint_artifact_valid(
             checkpoint,
             source,
             manifest["started_at"],
+            daum_verified_subset=current_inventory.is_verified_subset(manifest["config"], source),
         )
     return _checkpoint_artifact_valid(
         run_dir,
@@ -4532,6 +4623,9 @@ def collect_source(
             generation_started_at=manifest["started_at"],
             attempt_number=attempt_number,
             collector_concurrency=concurrency,
+            daum_verified_subset=current_inventory.is_verified_subset(
+                manifest["config"], source
+            ),
         )
         attempt = {
             "number": attempt_number,
@@ -4630,6 +4724,9 @@ def collect_source(
                     manifest["started_at"] if generation_bound else None
                 ),
                 expected_transactions=transactions,
+                daum_verified_subset=current_inventory.is_verified_subset(
+                    manifest["config"], source
+                ),
             )
         except ArtifactValidationError as exc:
             attempt["error"] = str(exc)
@@ -4670,7 +4767,13 @@ def subset_gate_can_admit(info: Mapping[str, Any]) -> bool:
     )
 
 
-def gate_verdict_is_admitted(manifest: Mapping[str, Any], verdict: Any) -> bool:
+def gate_verdict_is_admitted(
+    manifest: Mapping[str, Any], verdict: Any, *, source: str | None = None
+) -> bool:
+    if source is not None and current_inventory.is_verified_subset(
+        manifest["config"], source
+    ):
+        return verdict == current_inventory.DAUM_SUBSET_VERDICT
     transactions = tuple(manifest["config"]["transactions"])
     if transactions != TRANSACTIONS:
         return verdict == "ok_additive_subset"
@@ -4683,9 +4786,14 @@ def gate_verdict_is_admitted(manifest: Mapping[str, Any], verdict: Any) -> bool:
     return verdict == "ok"
 
 
-def _admit_current_inventory(run_dir, manifest, report, artifact, phase, *, source=None):
+def _admit_current_inventory(
+    run_dir, manifest, report, artifact, phase, *, source=None, local=False
+):
     source = source or manifest["config"]["current_inventory_admission"]["source_key"]
-    if poll_hook() is not None:
+    subset = current_inventory.is_verified_subset(manifest["config"], source)
+    if subset and phase == "aggregate":
+        manifest["sources"][source].setdefault("subset_ingest_attempt_id", secrets.token_hex(16))
+    if not local and (poll_hook() is not None or subset):
         response = run_artifact_compute(run_dir, "admit", {
             "path": str(artifact), "source": source, "run_dir": str(run_dir),
             "manifest": manifest, "report": report, "phase": phase,
@@ -4694,8 +4802,18 @@ def _admit_current_inventory(run_dir, manifest, report, artifact, phase, *, sour
         if sha256_file(evidence) != response["sha256"]:
             raise GlobalStageError("pipeline admission evidence changed")
         scope = response.get("scope")
-        if not isinstance(scope, dict) or scope.get("kind") != "collector_registry_additive_current_inventory" or scope.get("whole_source_coverage") is not False or scope.get("source_keys") != manifest["scope"]["source_keys"]:
+        if (
+            not isinstance(scope, dict)
+            or scope.get("kind") != ("collector_registry_verified_subset" if subset else "collector_registry_additive_current_inventory")
+            or scope.get("whole_source_coverage") is not False
+            or scope.get("source_keys") != manifest["scope"]["source_keys"]
+        ):
             raise GlobalStageError("pipeline admission scope changed")
+        if subset and phase == "aggregate":
+            claims = response.get("subset_claims")
+            if not isinstance(claims, dict) or sha256_file(Path(claims["path"])) != claims["sha256"]:
+                raise GlobalStageError("DAUM subset claims evidence changed")
+            manifest["sources"][source]["daum_verified_subset_claims"] = claims
         manifest["scope"].update(scope)
         report.clear()
         report.update(_load_json(evidence))
@@ -4709,15 +4827,19 @@ def _admit_current_inventory(run_dir, manifest, report, artifact, phase, *, sour
             expected_generation_id=manifest["run_id"],
             expected_generation_started_at=manifest["started_at"],
             expected_transactions=TRANSACTIONS,
+            daum_verified_subset=current_inventory.is_verified_subset(
+                manifest["config"], source
+            ),
         )
         git_sha, git_dirty = git_identity()
-        current_inventory.admit(
+        return current_inventory.admit(
             artifact,
             manifest,
             report,
             current_code_sha=git_sha,
             current_git_dirty=git_dirty,
-            phase=phase, source=source,
+            phase=phase,
+            source=source,
         )
     except (ArtifactValidationError, KeyError, TypeError, ValueError) as exc:
         raise GlobalStageError("current-inventory admission refused") from exc
@@ -4854,6 +4976,24 @@ def gate_source(
     save_manifest(run_dir, manifest)
 
 
+def subset_ingest_arguments(run_dir, manifest, source):
+    if not current_inventory.is_verified_subset(manifest["config"], source):
+        return []
+    checkpoint = manifest["sources"][source]
+    claims = checkpoint.get("daum_verified_subset_claims")
+    if not isinstance(claims, dict):
+        raise GlobalStageError("DAUM subset requires both sealed gate claims")
+    path = Path(claims["path"])
+    if not path.is_relative_to(run_dir) or path.is_symlink() or sha256_file(path) != claims["sha256"]:
+        raise GlobalStageError("DAUM subset claims changed")
+    attempt = checkpoint.get("subset_ingest_attempt_id")
+    if claims.get("attempt_id") != attempt:
+        raise GlobalStageError("DAUM subset attempt changed")
+    return ["--daum-verified-subset-claims", str(path),
+            "--checkpoint-ingest-attempt", attempt,
+            "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
+
+
 def dry_run_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -4861,6 +5001,10 @@ def dry_run_source(
     artifact: Path,
 ) -> bool:
     checkpoint = manifest["sources"][source]
+    if current_inventory.is_verified_subset(manifest["config"], source) and not checkpoint.get("daum_verified_subset_claims"):
+        checkpoint["dry_run"] = {"deferred_until": "sealed_subset_aggregate"}
+        save_manifest(run_dir, manifest)
+        return True
     sql_dir = run_dir / "dry-run" / source
     log_path = run_dir / "logs" / f"{source}-ingest-dry-run.log"
     shutil.rmtree(sql_dir, ignore_errors=True)
@@ -4869,7 +5013,7 @@ def dry_run_source(
             artifact,
             sql_dir,
             require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
-        ),
+        ) + subset_ingest_arguments(run_dir, manifest, source),
         log_path,
         env=safe_process_env(),
     )
@@ -4908,11 +5052,16 @@ def ingest_source(
         require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
         expected_db_target_sha256=manifest_database_target_sha256(manifest),
     )
-    attempt_id = secrets.token_hex(16)
+    subset = current_inventory.is_verified_subset(manifest["config"], source)
+    if subset:
+        if checkpoint.get("state") != "dry_run_passed" and not dry_run_source(run_dir, manifest, source, artifact):
+            raise GlobalStageError("DAUM subset sealed dryrun failed")
+        argv.extend(subset_ingest_arguments(run_dir, manifest, source))
+    attempt_id = checkpoint["subset_ingest_attempt_id"] if subset else secrets.token_hex(16)
     if source == "colliers-main":
         argv.extend(["--checkpoint-ingest-attempt", attempt_id])
     checkpoint["ingest"] = {
-        **({"attempt_id": attempt_id} if source == "colliers-main" else {}),
+        **({"attempt_id": attempt_id} if source == "colliers-main" or subset else {}),
         "started_at": started,
         "finished_at": None,
         "rc": None,
@@ -4982,12 +5131,12 @@ def advance_source(
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
     if checkpoint.get("state") == "ingested" and existing:
         prior_verdict = (checkpoint.get("gate") or {}).get("verdict")
-        if gate_verdict_is_admitted(manifest, prior_verdict):
+        if gate_verdict_is_admitted(manifest, prior_verdict, source=source):
             return True
         artifact, _stats = existing
         gate_source(run_dir, manifest, source, artifact, env_file)
         verdict = (checkpoint.get("gate") or {}).get("verdict")
-        if not gate_verdict_is_admitted(manifest, verdict):
+        if not gate_verdict_is_admitted(manifest, verdict, source=source):
             checkpoint["state"] = "ingested"
             checkpoint["admission_state"] = (
                 "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
@@ -5012,7 +5161,7 @@ def advance_source(
     artifact, _stats = collected
     gate_source(run_dir, manifest, source, artifact, env_file)
     verdict = (checkpoint.get("gate") or {}).get("verdict")
-    if not gate_verdict_is_admitted(manifest, verdict):
+    if not gate_verdict_is_admitted(manifest, verdict, source=source):
         checkpoint["state"] = (
             "baseline_seed_required" if verdict == "first_seen" else "gate_blocked"
         )
@@ -5227,7 +5376,9 @@ def run_aggregate_gate(
     run_dir: Path,
     manifest: dict[str, Any],
     env_file: str | None,
-    *, sources: Sequence[str] | None = None, evidence_dir: Path | None = None,
+    *,
+    sources: Sequence[str] | None = None,
+    evidence_dir: Path | None = None,
 ) -> dict[str, Any]:
     selected = scoped_source_keys(manifest, sources)
     artifacts = [
@@ -5341,7 +5492,9 @@ def run_aggregate_gate(
             source
             for source, info in per_source.items()
             if not isinstance(info, dict)
-            or not gate_verdict_is_admitted(manifest, info.get("verdict"))
+            or not gate_verdict_is_admitted(
+                manifest, info.get("verdict"), source=source
+            )
         }
     )
     manifest["aggregate_gate"] = {
@@ -5360,7 +5513,7 @@ def run_aggregate_gate(
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
         **(
-            {"admission_scope": current_inventory.SCOPE}
+            {"admission_scope": current_inventory.DAUM_SUBSET_SCOPE if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
             if manifest["config"].get("current_inventory_admission")
             else {}
         ),
@@ -5371,6 +5524,10 @@ def run_aggregate_gate(
             "aggregate coverage gate is not established for source(s): "
             + ", ".join(non_ok_sources)
         )
+    for source, artifact in zip(selected, artifacts):
+        if current_inventory.is_verified_subset(manifest["config"], source):
+            if not dry_run_source(run_dir, manifest, source, artifact):
+                raise GlobalStageError("DAUM subset sealed dryrun failed")
     return manifest["aggregate_gate"]
 
 
@@ -6793,6 +6950,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None, action="append", dest="admit_current_inventory_sources",
         help="Exact reviewed source additive current inventory; repeat only with --pipeline; no lifecycle/certificate authority",
     )
+    parser.add_argument(
+        "--admit-daum-verified-subset",
+        action="store_true",
+        help="Explicit DAUM verified subset with held rows; always partial, never complete-source credit",
+    )
     parser.add_argument("--pipeline", action="store_true", help="overlap bounded collection with serial validation/ingest on any supported host")
     parser.add_argument("--page-cap", type=int, default=400)
     parser.add_argument("--concurrency", type=int, default=3)
@@ -6940,6 +7102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 page_cap=args.page_cap,
                 concurrency=args.concurrency,
                 transactions=worker_transactions,
+                daum_verified_subset=args.admit_daum_verified_subset,
             )
             if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
                 return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
@@ -6997,7 +7160,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         current_inventory.validate_options(
             args.admit_current_inventory_sources,
             sources,
-            transactions, pipeline=args.pipeline,
+            transactions,
+            pipeline=args.pipeline,
+            daum_verified_subset=args.admit_daum_verified_subset,
             additive_hold=args.admit_baseline_hold_additively,
             allow_dirty=args.allow_dirty,
         )
@@ -7029,8 +7194,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             admit_current_inventory_source=args.admit_current_inventory_source,
+            admit_daum_verified_subset=args.admit_daum_verified_subset,
             pipeline=args.pipeline,
-            admit_current_inventory_sources=args.admit_current_inventory_sources if args.pipeline else (),
+            admit_current_inventory_sources=args.admit_current_inventory_sources
+            if args.pipeline
+            else (),
             database_target=database_target,
             max_age_hours=args.max_resume_age_hours,
         )
@@ -7056,8 +7224,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             transactions=transactions,
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             admit_current_inventory_source=args.admit_current_inventory_source,
+            admit_daum_verified_subset=args.admit_daum_verified_subset,
             pipeline=args.pipeline,
-            admit_current_inventory_sources=args.admit_current_inventory_sources if args.pipeline else (),
+            admit_current_inventory_sources=args.admit_current_inventory_sources
+            if args.pipeline
+            else (),
             database_target=database_target,
         )
     # Publish the existing durable recovery barrier before any native child can
@@ -7324,6 +7495,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
             )
+            if current_inventory.is_verified_subset(manifest["config"]):
+                manifest["status"] = current_inventory.DAUM_SUBSET_STATUS
             manifest["finished_at"] = utc_now()
             manifest["resource_stop"] = None
             manifest["error"] = None

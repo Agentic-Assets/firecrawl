@@ -7,6 +7,7 @@ observed stdout path is only a locator; unavailable proof yields no counts.
 from __future__ import annotations
 
 import argparse
+import cre_current_inventory_admission as current_inventory
 import hashlib
 import json
 import os
@@ -93,7 +94,7 @@ def _pipeline_admissions(config, selected_sources):
         )
     )
     try:
-        from cre_current_inventory_admission import configuration
+        from cre_current_inventory_admission import admission_configuration
 
         require(
             not admissions
@@ -104,11 +105,44 @@ def _pipeline_admissions(config, selected_sources):
             )
         )
         require(
-            all(value == configuration(source) for source, value in admissions.items())
+            all(value == admission_configuration(config, source) for source, value in admissions.items())
         )
     except (ImportError, ValueError, KeyError, TypeError, OSError, AttributeError):
         raise SummaryUnavailable("pipeline admission map unavailable") from None
     return admissions
+
+
+def _subset_summary_fields(child, source, count):
+    """Partial accounting is source-scoped and never grants complete-source credit."""
+    from cre_current_inventory_admission import is_verified_subset, DAUM_SUBSET_SCOPE
+    if not is_verified_subset(child["config"], source):
+        return {}
+    checkpoint = child["sources"][source]
+    gate = checkpoint["gate"]
+    binding = gate["current_inventory_proof"]
+    require(gate.get("verdict") == "ok_additive_verified_subset"
+            and gate.get("raw_verdict") == "first_seen"
+            and gate.get("admission_scope") == DAUM_SUBSET_SCOPE)
+    require(binding.get("schema") == "daum-verified-subset-v1"
+            and binding.get("scope") == DAUM_SUBSET_SCOPE
+            and binding.get("whole_source_coverage") is False
+            and binding.get("generation_id") == child["run_id"]
+            and binding.get("collector_git_sha") == child["collector_git_sha"]
+            and binding.get("artifact_sha256") == checkpoint["artifact"]["sha256"]
+            and binding.get("database_target_sha256") == child["preflight"]["database_target"].get("value")
+            and binding.get("source_policy_sha256") == current_inventory.subset_configuration()["source_policy_sha256"])
+    for key in ("inventory_count", "emitted_count", "held_count"):
+        require(type(binding.get(key)) is int and binding[key] >= 0)
+    require(binding["inventory_count"] == binding["emitted_count"] + binding["held_count"]
+            and binding["emitted_count"] == count and count >= 100
+            and binding.get("staged_count") == count)
+    lease_coverage = "unknown" if binding["held_count"] else "proved"
+    require(binding.get("whole_lease_coverage") == lease_coverage)
+    return {"measurement": "generation_exact_verified_subset",
+            "qualification": "qualified_partial_subset", "partial": True,
+            "whole_source_coverage": False,
+            **{key: binding[key] for key in ("inventory_count", "emitted_count", "held_count")},
+            "whole_lease_coverage": lease_coverage}
 
 
 def timestamp(value):
@@ -301,7 +335,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             and parent["schema_version"] == 1
             and parent.get("series_id") == selected.name
         )
-        require(parent.get("status") == "complete" and parent.get("error") is None)
+        require(parent.get("status") in {"complete", "qualified_partial_subset"} and parent.get("error") is None)
         require(parent.get("collector_git_sha") == expected_sha)
         require(parent.get("collector_git_dirty") is False)
         config = parent["config"]
@@ -336,7 +370,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             owner.get("control_directory_identity") == safe._identity(os.fstat(private))
         )
         require(
-            control.get("status") == "complete"
+            control.get("status") == ("qualified_partial_subset" if current_inventory.is_verified_subset(config) and parent.get("status") == "qualified_partial_subset" else "complete")
             and control.get("local_settlement") == "confirmed"
         )
         started, finished = control["started_unix_ms"], control["finished_unix_ms"]
@@ -356,7 +390,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         selected_source = parent["sources"][source]
         require(
             set(parent["sources"]) == {source}
-            and selected_source.get("state") == "complete"
+            and selected_source.get("state") == ("qualified_partial_subset" if current_inventory.is_verified_subset(config, source) else "complete")
         )
         attempt = selected_source["attempts"][-1]
         require(type(attempt.get("rc")) is int and attempt["rc"] == 0)
@@ -576,6 +610,10 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
                 transaction_started,
             ),
         }
+        subset_fields = _subset_summary_fields(child, source, count)
+        if subset_fields:
+            require(transaction_breakdown is not None)
+        result.update(subset_fields)
         if inventory_only:
             result["verified_inventory_only"] = inventory_only
         if config.get("admit_baseline_hold_additively") is True:
@@ -638,7 +676,7 @@ def verified_pipeline_summary(
             type(parent.get("schema_version")) is int
             and parent["schema_version"] == 1
             and parent.get("series_id") == selected.name
-            and parent.get("status") in {"complete", "failed"}
+            and parent.get("status") in {"complete", "qualified_partial_subset", "failed"}
             and parent.get("collector_git_sha") == expected_sha
             and parent.get("collector_git_dirty") is False
         )
@@ -674,7 +712,7 @@ def verified_pipeline_summary(
             == safe._identity(os.fstat(private))
         )
         require(
-            control.get("status") == "complete"
+            control.get("status") == ("qualified_partial_subset" if current_inventory.is_verified_subset(config) and parent.get("status") == "qualified_partial_subset" else "complete")
             and control.get("local_settlement") == "confirmed"
         )
         started, finished = control["started_unix_ms"], control["finished_unix_ms"]
@@ -727,6 +765,7 @@ def verified_pipeline_summary(
             in {
                 "supported_scope_complete",
                 "additive_scope_complete_current_inventory",
+                "qualified_partial_subset",
                 "selected_transaction_scope_complete",
                 "additive_scope_complete_coverage_hold",
                 "failed",
@@ -839,7 +878,7 @@ def verified_pipeline_summary(
                 continue
             require(state == "verified")
             require(
-                parent_entry.get("state") == "complete"
+                parent_entry.get("state") == ("qualified_partial_subset" if current_inventory.is_verified_subset(child["config"], source) else "complete")
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status")
             )
@@ -926,6 +965,7 @@ def verified_pipeline_summary(
         total_artifact_bytes = 0
         for source, count, checkpoint, unit, inventory_only in qualified:
             row = {"source_key": source, "verified_listings": count}
+            row.update(_subset_summary_fields(child, source, count))
             if inventory_only:
                 row["verified_inventory_only"] = inventory_only
             breakdown = None
@@ -1020,13 +1060,17 @@ def verified_pipeline_summary(
             )
             if breakdown is not None:
                 row["transaction_breakdown"] = breakdown
+            if row.get("partial") is True:
+                require(breakdown is not None)
             result_rows.append(row)
         for descriptor, name, limit, raw in snapshots:
             require(safe._read_at(descriptor, name, limit)[0] == raw)
         failed_sources = [s for s in selected_sources if s in set(failed)]
         pending_sources = [s for s in selected_sources if s in set(pending)]
+        qualified_subset_sources = [row["source_key"] for row in result_rows if row.get("partial") is True]
         complete = (
-            pipeline_status == "complete"
+            not qualified_subset_sources
+            and             pipeline_status == "complete"
             and not failed_sources
             and not pending_sources
             and len(qualified) == len(selected_sources)
@@ -1042,6 +1086,7 @@ def verified_pipeline_summary(
             "run_id": run_id,
             "selected_source_keys": selected_sources,
             "per_source_summaries": result_rows,
+            "qualified_subset_source_keys": qualified_subset_sources,
             "failed_source_keys": failed_sources,
             "pending_source_keys": pending_sources,
             "complete": complete,

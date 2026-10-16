@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -51,20 +52,36 @@ def compute(action: str, arguments: dict, response: Path) -> dict:
         result = {**stats, "bytes": before[2]}
     elif action == "admit":
         report = arguments["report"]
-        refresh._admit_current_inventory(
+        binding = refresh._admit_current_inventory(
             Path(arguments["run_dir"]),
             arguments["manifest"],
             report,
             path,
             arguments["phase"],
-            source=arguments["source"],
+            source=arguments["source"], local=True,
         )
+        claims_metadata = None
+        manifest = arguments["manifest"]
+        source = arguments["source"]
+        if arguments["phase"] == "aggregate" and refresh.current_inventory.is_verified_subset(manifest["config"], source):
+            source_report = refresh._load_json(Path(arguments["run_dir"]) / manifest["sources"][source]["gate"]["path"])
+            attempt_id = manifest["sources"][source]["subset_ingest_attempt_id"]
+            claims_path = response.with_suffix(".subset-claims.json")
+            envelope = {"manifest": manifest, "source_report": source_report,
+                        "aggregate_report": report, "binding": binding, "attempt_id": attempt_id}
+            fd = os.open(claims_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(envelope, handle, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            claims_metadata = {"path": str(claims_path), "sha256": refresh.sha256_file(claims_path), "attempt_id": attempt_id}
         evidence = response.with_suffix(".admission.json")
         refresh.atomic_write_json(evidence, report)
         result = {
             "report_path": str(evidence),
             "sha256": refresh.sha256_file(evidence),
             "scope": arguments["manifest"]["scope"],
+            **({"subset_claims": claims_metadata} if claims_metadata else {}),
         }
     else:
         raise ValueError("unknown artifact computation")

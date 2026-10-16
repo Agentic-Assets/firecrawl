@@ -367,9 +367,39 @@ def _load_child(
     return _read_json(candidate)
 
 
-def _attempt_status(checkpoint: Mapping[str, Any]) -> str:
+def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, source_key=None):
+    if source_key != "daum-commercial" or checkpoint.get("state") != "qualified_partial_subset" or not isinstance(child, Mapping):
+        return False
+    from cre_current_inventory_admission import is_verified_subset
+    try:
+        if not is_verified_subset(child["config"]):
+            return False
+        scope = _mapping(child.get("scope"))
+        source = _source_checkpoint(child, "daum-commercial")
+        binding = _mapping(_mapping(source.get("gate")).get("current_inventory_proof"))
+        start, observed, finished = (_parse_timestamp(value) for value in
+            (child.get("started_at"), observation, child.get("finished_at")))
+        return (
+            child.get("status") == "qualified_partial_subset"
+            and scope.get("kind") == "collector_registry_verified_subset"
+            and scope.get("whole_source_coverage") is False
+            and source.get("state") == "ingested"
+            and _mapping(source.get("readback")).get("ok") is True
+            and _mapping(source.get("readback")).get("generation_id") == child.get("run_id")
+            and binding.get("generation_id") == child.get("run_id")
+            and binding.get("artifact_sha256") == _mapping(source.get("artifact")).get("sha256")
+            and binding.get("scope") == "daum_verified_subset_v1"
+            and binding.get("whole_source_coverage") is False
+            and None not in (start, observed, finished) and start <= observed <= finished
+            and _within_clock_skew(observation, computed_at)
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _attempt_status(checkpoint: Mapping[str, Any], *, qualified_subset=False) -> str:
     state = checkpoint.get("state")
-    if state == "complete":
+    if state == "complete" or qualified_subset:
         return "succeeded"
     if state in STOPPED_STATES:
         return "stopped"
@@ -386,7 +416,10 @@ def _publication_status(
     observation: object,
     *,
     computed_at: object,
+    source_key: str | None = None,
 ) -> str:
+    if _qualified_subset_attempt(checkpoint, child, observation, computed_at=computed_at, source_key=source_key):
+        return "partial"
     state = checkpoint.get("state")
     if state in FAILED_STATES:
         return "failed"
@@ -600,7 +633,8 @@ def build_receipt(
             "state"
         ) != "pending" and _is_newer_or_equal(attempt_at, retained.get("lastAttemptAt"))
         if should_update_attempt:
-            attempt_status = _attempt_status(checkpoint)
+            attempt_status = _attempt_status(checkpoint, qualified_subset=_qualified_subset_attempt(
+                checkpoint, child, observation, computed_at=current_computed, source_key=source))
             failure_class = None
             if attempt_status == "stopped":
                 failure_class = "transient_resource_or_operator_stop"
@@ -619,6 +653,7 @@ def build_receipt(
                         child,
                         observation,
                         computed_at=current_computed,
+                        source_key=source,
                     ),
                 }
             )

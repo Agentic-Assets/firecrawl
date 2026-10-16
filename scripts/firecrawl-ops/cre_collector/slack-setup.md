@@ -79,7 +79,7 @@ verified listing count.
 
 For quick message iteration, use
 `windows/Send-CreNotificationPreview.ps1`. It defaults to preview-only and
-formats the four named scenarios with the same brokerage and message formatter
+formats the five named scenarios with the same brokerage and message formatter
 used by the guarded launcher. Its completed sample replaces the production
 database-readback sentence with a truthful sample-only note. Every preview
 begins with `FORMAT TEST | SAMPLE DATA | NO PIPELINE OR DB READBACK`; counts are
@@ -104,6 +104,17 @@ $samplePath = Join-Path $env:TEMP 'cre-notification-sample.txt'
 [IO.File]::WriteAllText($samplePath, "*Test heading*`n• Test bullet", (New-Object Text.UTF8Encoding($false)))
 pwsh -NoProfile -File .\scripts\firecrawl-ops\cre_collector\windows\Send-CreNotificationPreview.ps1 -TextFile $samplePath
 ```
+
+Preview DAUM's distinct partial outcome with synthetic counts, without sending:
+
+```powershell
+pwsh -NoProfile -File .\scripts\firecrawl-ops\cre_collector\windows\Send-CreNotificationPreview.ps1 -Scenario VerifiedSubset -Source daum-commercial -Total 560 -ForSale 374 -ForLease 372 -Both 186 -HeldCount 2
+```
+
+This shows verified emitted properties separately from held properties and
+keeps the whole brokerage incomplete, even with `-HeldCount 0`. For the actual
+admission and preservation rules, see the
+[DAUM subset contract](../../../docs/firecrawl-ops/references/daum-verified-subset.md).
 
 Only an explicit `-Mode Send` invokes the existing private sender, once, using
 the configured private webhook file (default
@@ -168,6 +179,14 @@ measure those categories. The duration measures elapsed Windows attempt time,
 including startup checks and summary qualification; it is not a source-stage
 benchmark. The message makes no full-registry freshness or absolute
 database-health claim.
+
+An explicitly admitted DAUM subset instead says **Verified subset refreshed**,
+shows inventory/emitted/held counts and verified sale/lease/both counts, and
+states that whole-brokerage coverage is incomplete. Unknown-tenure holds never
+count as refreshed records. Zero emitted leases with holds means zero verified
+subset leases and unknown whole-brokerage lease coverage. Pipeline summaries
+count qualified subsets separately from complete brokerages; neither this
+message nor an empty held set grants a full-source certificate.
 
 When evidence is missing, stale or contradictory, a zero-returning Windows run
 says that the listing refresh could not be verified and points to the local
