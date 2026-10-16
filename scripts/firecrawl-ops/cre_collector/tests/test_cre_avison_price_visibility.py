@@ -253,6 +253,7 @@ def postgres_vector_sql():
             "expected": "20 parking spaces.",
         }
     )
+    extra += _independent_fidelity_vectors()
     for index, vector in enumerate(_vectors() + extra):
         value, expected, role = vector["input"], vector["expected"], vector["role"]
         encoded = ingest.sql_lit(json.dumps(value)) + "::jsonb"
@@ -292,7 +293,7 @@ def postgres_vector_sql():
                 f"DO $test$ BEGIN IF {expr} IS DISTINCT FROM {wanted} THEN RAISE EXCEPTION 'vector {index} mismatch: %', {expr}; END IF; END $test$;"
             )
     statements.append(
-        "ROLLBACK;\\echo 'Avison 32 shared + 23 adversarial PostgreSQL parity passed'"
+        "ROLLBACK;\\echo 'Avison 32 shared + 47 adversarial PostgreSQL parity passed'"
     )
     return "\n".join(statements)
 
@@ -393,7 +394,7 @@ def postgres_contract_sql():
         """
 UPDATE credeals.cre_listings SET
  raw_data=jsonb_build_object('sourceKey','avison-young','rawSharpLaunch',jsonb_build_object('hide_price',0),
- 'description','Safe old facts. 100000. Rent $20/SF/YR.', 'bodySha256',repeat('a',64),'detailObservedAt','2026-10-16T20:00:00Z'),
+ 'description','Safe old facts. 100000. Rent $20/SF/YR.', 'noi',jsonb_build_object('amount',20,'note','Annual $20. Asking price $100,000.'), 'bodySha256',repeat('a',64),'detailObservedAt','2026-10-16T20:00:00Z'),
  markdown='Roof replaced 2020. 100,000.00 available. Rent $20/SF/YR.'
 WHERE external_id='old-column';
 CREATE TEMP TABLE protected_foreign AS SELECT to_jsonb(t) data FROM credeals.cre_listings t WHERE external_id='foreign';
@@ -496,6 +497,12 @@ CREATE TEMP TABLE old_baseline AS SELECT * FROM credeals.cre_source_baseline;
         check(
             "NOT EXISTS(SELECT 1 FROM old_index o JOIN credeals.cre_source_index t USING(id) WHERE t.soft_deleted IS DISTINCT FROM o.soft_deleted OR t.observation_present IS DISTINCT FROM o.observation_present OR t.presence_generation IS DISTINCT FROM o.presence_generation OR t.presence_changed_at IS DISTINCT FROM o.presence_changed_at)",
             "source-index lifecycle preserved",
+        )
+    )
+    statements.append(
+        check(
+            "(SELECT raw_data#>>'{noi,note}' FROM credeals.cre_listings WHERE external_id='old-column')='Annual $20.'",
+            "retained independent financial prose kept while asking removed",
         )
     )
     # A later independently visible observation follows ordinary upsert restoration.
@@ -711,3 +718,55 @@ def test_incomplete_merge_wrapper_without_direct_source_authority_refuses():
 
     with pytest.raises(ValueError, match="Avison"):
         visibility.effective_control({"primary": listing(1)})
+
+
+def _independent_fidelity_vectors():
+    pairs = [
+        (
+            {"amount": 20, "currency": "USD", "note": "Annual $20"},
+            {"amount": 20, "currency": "USD", "note": "Annual $20"},
+        ),
+        (
+            {"value": 20, "description": "Annual $20"},
+            {"value": 20, "description": "Annual $20"},
+        ),
+        ({"amount": 20, "note": "Asking price $20"}, {"amount": 20}),
+        (
+            {
+                "amount": 20,
+                "note": "Annual $20. Asking price $20.",
+                "unit": "USD",
+                "url": "https://example.test/asking/20.pdf",
+                "id": "20",
+                "address": "20 Main St",
+            },
+            {
+                "amount": 20,
+                "note": "Annual $20.",
+                "unit": "USD",
+                "url": "https://example.test/asking/20.pdf",
+                "id": "20",
+                "address": "20 Main St",
+            },
+        ),
+        (
+            {"value": 20, "unit": "kWh", "note": "Metered energy"},
+            {"value": 20, "unit": "kWh", "note": "Metered energy"},
+        ),
+        (
+            {"amount": 20, "description": "Rent $20/SF/YR. Asking price $20."},
+            {"amount": 20, "description": "Rent $20/SF/YR."},
+        ),
+    ]
+    return [
+        {"role": "raw", "input": {key: before}, "expected": {key: after}}
+        for key in ("noi", "rent", "grossRevenue", "revpar")
+        for before, after in pairs
+    ]
+
+
+@pytest.mark.parametrize("vector", _independent_fidelity_vectors())
+def test_nested_independent_economics_preserve_prose_without_retaining_asking(vector):
+    import cre_avison_price_visibility as visibility
+
+    assert visibility.project_value(vector["input"], [20]) == vector["expected"]

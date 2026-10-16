@@ -282,7 +282,9 @@ def project_value(value, amounts=(), context="", role="raw"):
                 and not re.search(f"{ASK_LABEL}|{MONEY}", value, re.I)
             ):
                 return value
-            return sanitize_text(value, amounts, role)
+            return sanitize_text(
+                value, amounts, "independent" if context == "lease" else role
+            )
         return value
     context = _context(value, context)
     projected = {}
@@ -564,7 +566,7 @@ BEGIN
  ELSIF jsonb_typeof(v)<>'object' THEN
   IF jsonb_typeof(v)='string' THEN
    IF role='unknown' AND context='' AND NOT v#>>'{}' ~* __ASK__ AND NOT v#>>'{}' ~* __MONEY__ THEN RETURN v; END IF;
-   RETURN to_jsonb(pg_temp.avison_asking_text(v#>>'{}',amounts,role)); END IF;
+   RETURN to_jsonb(pg_temp.avison_asking_text(v#>>'{}',amounts,CASE WHEN context='lease' THEN 'independent' ELSE role END)); END IF;
   RETURN v;
  END IF;
  function:=v->>'businessFunction';
