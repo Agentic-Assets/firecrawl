@@ -130,6 +130,14 @@ def checkpoint_fixture(tmp_path):
     artifact = tmp_path / "artifact.json"
     artifact.write_text('{"synthetic":true}')
     manifest = {
+        "config": refresh.new_manifest(
+            tmp_path,
+            git_sha="a" * 40,
+            git_dirty=False,
+            sources=["colliers-main"],
+            page_cap=400,
+            concurrency=1,
+        )["config"],
         "run_id": "fixture-generation",
         "started_at": "2026-10-16T00:00:00Z",
         "preflight": {"database_target": {"algorithm": "sha256", "value": "b" * 64}},
@@ -247,6 +255,7 @@ def test_real_checkpoint_ingest_captures_only_known_zero_result(tmp_path, monkey
     (tmp_path / "logs").mkdir(exist_ok=True)
 
     def command(argv, output, **kwargs):
+        assert "--daum-verified-subset-claims" not in argv
         assert "--checkpoint-ingest-attempt" in argv
         assert argv[argv.index("--checkpoint-ingest-attempt") + 1] == "c" * 32
         output.write_text(

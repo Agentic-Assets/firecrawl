@@ -22,12 +22,16 @@ suite's own loopback servers. Verify namespace support first; from the genuine
 standalone QA clone, the command carrier is:
 
 ```bash
-unshare -Urn -- sh -c 'ip link set lo up && exec "$@"' qa <test-command> <arguments>
+unshare --user --map-current-user --net --keep-caps -- sh -c 'ip link set lo up && exec "$@"' qa <test-command> <arguments>
 ```
 
 Only the new namespace's loopback is enabled; host services and public routes
 are absent. This does not isolate files or filesystem Unix sockets, and does
 not replace fake transports, database boundaries or the standalone-clone rule.
+Preserve the real non-root UID: `--map-root-user`/`-r` makes capacity-approval
+tests correctly refuse the apparent root account. Verify UID/EUID and an owned
+loopback bind before the suite. Install the sidecar's pinned Node dependencies
+as described in SETUP; Python's C10 loopback fixtures use its `tsx` package.
 Keep normal configuration defaults unless the test deliberately varies them;
 an unrelated URL override or rewritten interpreter argv can break the harness.
 

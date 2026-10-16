@@ -133,6 +133,11 @@ npm test
 Both suites run only in that standalone clone. The Node packages above are
 test prerequisites, not additional production services. Recheck the sidecar's
 `packageManager` pin after pulling a revision that changes it.
+For concurrent suites, use a separate standalone clone per lane so test lock
+and artifact state cannot collide. On Linux/WSL alongside a live runtime, use
+the [identity-preserving network containment recipe](tests/CLAUDE.md) and enable
+only that namespace's loopback; root-mapped test identities fail the legitimate
+non-root capacity-approval checks.
 
 On WSL, load `~/.agentic-assets/env` when canonical agent context has been
 installed. Use `bash cre_status.sh --scheduler external` for artifacts and API
