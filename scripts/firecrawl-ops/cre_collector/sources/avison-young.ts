@@ -257,25 +257,21 @@ export function assertAvisonYoungDetailDoc(
   const contentMatches = identityValues.some((value) => bodyText.includes(value));
   const sharpLaunchUrl = avisonYoungAbsoluteUrl(base?.sharpLaunchUrl);
   let requestedSharpLaunchMatch = false;
-  let requestedOnSharpLaunchHost = false;
-  if (requested) {
+  if (requested && sharpLaunchUrl) {
     try {
       const requestedParsed = new URL(requested);
-      requestedOnSharpLaunchHost =
+      const sharpLaunchParsed = new URL(sharpLaunchUrl);
+      const requestedOnSharpLaunchHost =
         requestedParsed.protocol === "https:"
         && requestedParsed.hostname.toLowerCase().endsWith(".sharplaunch.com");
-      if (sharpLaunchUrl) {
-        const sharpLaunchParsed = new URL(sharpLaunchUrl);
-        requestedSharpLaunchMatch =
-          requestedOnSharpLaunchHost
-          && requestedParsed.hostname.toLowerCase()
-            === sharpLaunchParsed.hostname.toLowerCase()
-          && requestedParsed.pathname.replace(/\/+$/, "").toLowerCase()
-            === sharpLaunchParsed.pathname.replace(/\/+$/, "").toLowerCase();
-      }
+      requestedSharpLaunchMatch =
+        requestedOnSharpLaunchHost
+        && requestedParsed.hostname.toLowerCase()
+          === sharpLaunchParsed.hostname.toLowerCase()
+        && requestedParsed.pathname.replace(/\/+$/, "").toLowerCase()
+          === sharpLaunchParsed.pathname.replace(/\/+$/, "").toLowerCase();
     } catch {
       requestedSharpLaunchMatch = false;
-      requestedOnSharpLaunchHost = false;
     }
   }
 
@@ -321,19 +317,6 @@ export function assertAvisonYoungDetailDoc(
       )
     )
   );
-  const hasPartialSharpLaunchBuildingMarkers =
-    $(".building__property-info-box").length > 0
-    || $(".availability-card-v2").length > 0;
-  if (
-    requestedOnSharpLaunchHost
-    && requestedSharpLaunchMatch
-    && !listing
-    && hasPartialSharpLaunchBuildingMarkers
-    && !hasSharpLaunchBuildingLayout
-    && !hasStructure
-  ) {
-    throw new Error("Avison Young detail structure was not recognized");
-  }
   if (!hasStructure) {
     throw new Error("Avison Young detail structure was not recognized");
   }
