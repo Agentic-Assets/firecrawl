@@ -292,12 +292,8 @@ export function mapHanleyListing(
   });
 }
 
-export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
-  const strict = requireFreshDetails();
-  const generationId = refreshGenerationId();
-  if (strict && !generationId) {
-    throw new Error("Hanley strict inventory requires CRE_REFRESH_GENERATION");
-  }
+async function loadHanleyInventory(strict: boolean, generationId: string | null, fresh = false) {
+  if (fresh) hanleyCache = null;
   let cacheDisposition: CacheDisposition = "live";
   if (
     hanleyCache &&
@@ -318,17 +314,49 @@ export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise
   } else {
     cacheDisposition = "generation_cache";
   }
+  return { inventory: hanleyCache, cacheDisposition };
+}
+
+// Ordinary enrichment uses the same structurally validated public feed and
+// mapper, without claiming a full-source strict-generation certificate.
+export async function enrichHanleyListings(
+  items: { externalId: string; url: string }[]
+): Promise<any[]> {
+  const { inventory, cacheDisposition } = await loadHanleyInventory(true, refreshGenerationId(), true);
+  const byId = new Map(inventory.rows.map((row) => [String(row.id), row]));
+  return items.flatMap((item) => {
+    const sourceRow = byId.get(item.externalId);
+    if (!sourceRow) return [];
+    const transactionMode = hanleyIsLease(sourceRow) ? "lease" : "sale";
+    const row = mapHanleyListing(sourceRow, transactionMode, {
+      strict: true,
+      inventoryObservedAt: inventory.inventoryObservedAt,
+      generationId: inventory.generationId,
+      cacheDisposition,
+    });
+    // A queue URL is not permission to overwrite the source's canonical URL.
+    return row.url === item.url ? [{ ...row, transactionMode }] : [];
+  });
+}
+
+export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const generationId = refreshGenerationId();
+  if (strict && !generationId) {
+    throw new Error("Hanley strict inventory requires CRE_REFRESH_GENERATION");
+  }
+  const { inventory, cacheDisposition } = await loadHanleyInventory(strict, generationId);
   const listings: any[] = [];
   let eligible = 0;
-  for (const row of hanleyCache.rows) {
+  for (const row of inventory.rows) {
     if (tx === "lease" ? !hanleyIsLease(row) : hanleyIsLease(row)) continue;
     eligible++;
     if (listings.length >= max) continue;
     listings.push(
       mapHanleyListing(row, tx, {
         strict,
-        inventoryObservedAt: hanleyCache.inventoryObservedAt,
-        generationId: hanleyCache.generationId,
+        inventoryObservedAt: inventory.inventoryObservedAt,
+        generationId: inventory.generationId,
         cacheDisposition,
       })
     );
@@ -337,7 +365,7 @@ export async function srcHanley(tx: Tx, max: number, _monitor: boolean): Promise
     company: "Hanley Investment Group",
     sourceUrl: HANLEY_URL,
     method: "Direct fetch of /listings/ with embedded rethink_properties JSON",
-    totalAvailable: hanleyCache.rows.length,
+    totalAvailable: inventory.rows.length,
     listings,
     truncated: listings.length < eligible,
   };

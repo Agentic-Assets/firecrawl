@@ -56,6 +56,15 @@ separate acquisition rate retains its collection-only meaning.
 
 ## Saved evidence and meanings
 
+For pipeline series, `verified_current_inventory_unique` and
+`verified_current_inventory_per_minute` are populated only when the existing
+per-source pipeline qualifier verifies the full unit report, generation-bound
+artifact, database target and exact readback. The count is staged current
+inventory identities confirmed for that generation; it is not the number of
+new database rows, strict-detail records or a full-registry quality result.
+Unqualified and legacy runs keep these values unknown. Inserted-row and
+strict-detail counts are not inferred by the performance report.
+
 | Evidence | Location within each checkpoint | What it measures |
 |---|---|---|
 | Command journal | `logs/COMMAND.performance.jsonl` | Start, terminal outcome and monotonic duration of collection, health, validation, gate and ingest subprocesses. Each invocation has a distinct ID, including repeated uses of the same log during resume. |
@@ -232,6 +241,13 @@ hypotheses and refuted ideas explicitly. Use the existing
 for controlled follow-up; search before creating an actionable child. Keep
 measurements in the existing reports and decisions in Linear rather than adding
 a separate service, logger or local backlog.
+
+Prefer verified current inventory identities per collection-to-verification
+minute when that proof is available, while preserving source quality and scope.
+Use staged rows/min only as an acquisition diagnostic; never substitute it for
+the verified rate, claim new rows, or describe inventory-feed rows as strict
+details. Keep failed and partial runs visible, and compare their source rows
+without promoting the overall result to success.
 
 Brokerages publish different amounts of detail. A missing field may be genuinely
 unpublished, inapplicable or unsuccessfully extracted; presence alone does not

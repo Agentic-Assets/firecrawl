@@ -17,6 +17,7 @@ RUN = "2026-09-13T120000Z-0123456789ab"
 SERIES = "2026-09-13T115959Z"
 SHA = "a" * 40
 NOW = datetime(2026, 9, 13, 12, 1, tzinfo=timezone.utc)
+PIPELINE_NOW = datetime.fromisoformat("2026-10-15T12:03:00+00:00")
 COMMAND = "b" * 32
 LOG = "jll-collect-attempt-1.log"
 METRICS = f"jll-collect-attempt-1.{COMMAND}.scrape-performance.json"
@@ -200,6 +201,115 @@ def test_pipeline_report_reads_shared_child_journals_once(tmp_path, monkeypatch)
     assert result["sources"][1]["staged_unique"] == 20
 
 
+def _verified_pipeline_series(tmp_path, *, fault=None, parent_status="failed"):
+    import test_pipeline_configuration as pipeline_fixture
+
+    series_id = "2026-10-15T115959Z"
+    series_dir = tmp_path / series_id
+    child_dir = series_dir / "runs" / pipeline_fixture.RUN_ID
+    (child_dir / "logs").mkdir(parents=True)
+    target = {"database": "fixture", "target_id": "fixture-target"}
+    child = pipeline_fixture.qualified_child(child_dir)
+    child.update(
+        schema_version=2,
+        collector_git_sha=SHA,
+        preflight={"database_target": target},
+        config={
+            "pipeline": True,
+            "sources": ["cbre"],
+            "transactions": ["sale", "lease"],
+        },
+    )
+    child["sources"]["cbre"].update(state="ingested", flat_listings=1)
+    child["pipeline"]["source_timings"] = {
+        "cbre": {
+            "queued_at": "2026-10-15T12:00:00Z",
+            "collection_started_at": "2026-10-15T12:00:01Z",
+            "collection_finished_at": "2026-10-15T12:00:20Z",
+            "validation_started_at": "2026-10-15T12:00:25Z",
+            "ingested_at": "2026-10-15T12:01:00Z",
+            "verified_at": "2026-10-15T12:01:30Z",
+        }
+    }
+    if fault == "artifact_hash":
+        child["pipeline"]["source_results"]["cbre"]["artifact_sha256"] = "b" * 64
+    elif fault == "readback_count":
+        child["sources"]["cbre"]["readback"]["expected_staged_unique"] = 2
+    elif fault == "artifact_count":
+        child["sources"]["cbre"]["artifact"]["staged_unique"] = 2
+        child["sources"]["cbre"]["readback"]["expected_staged_unique"] = 2
+    (child_dir / "manifest.json").write_text(json.dumps(child), encoding="utf-8")
+    parent_target = target.copy()
+    if fault == "target":
+        parent_target["target_id"] = "other-target"
+    (series_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "series_id": series_id,
+                "collector_git_sha": SHA,
+                "status": parent_status,
+                "started_at": pipeline_fixture.PARENT_START,
+                "finished_at": pipeline_fixture.PARENT_END,
+                "database_target": parent_target,
+                "config": {
+                    "pipeline": True,
+                    "sources": ["cbre"],
+                    "transactions": ["sale", "lease"],
+                },
+                "sources": {
+                    "cbre": {
+                        "state": "interrupted"
+                        if parent_status == "failed"
+                        else "complete",
+                        "checkpoint_run": f"runs/{pipeline_fixture.RUN_ID}",
+                        "attempts": pipeline_fixture.PARENT_ATTEMPTS,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return series_dir
+
+
+def test_pipeline_performance_report_counts_only_a_source_with_exact_readback(tmp_path):
+    series_dir = _verified_pipeline_series(tmp_path)
+
+    result = report.build_report(series_dir, now=PIPELINE_NOW)
+
+    assert result["run_status"] == "failed"
+    row = result["sources"][0]
+    assert row["verified_current_inventory_unique"] == 1
+    assert row["verified_current_inventory_per_minute"] == pytest.approx(
+        round(60 / 89, 3)
+    )
+    assert (
+        row["verified_current_inventory_basis"] == "pipeline_source_unit_full_readback"
+    )
+    assert row["fresh_qualified_unique"] is None
+    assert row["ingested_rows"] is None
+    rendered = report.render(result)
+    assert "Verified current staged inventory: 1 unique identities" in rendered
+    assert "not a new-row or strict-detail count" in rendered
+
+
+@pytest.mark.parametrize(
+    "fault", ["target", "artifact_hash", "readback_count", "artifact_count"]
+)
+def test_pipeline_performance_report_keeps_unqualified_current_count_unknown(
+    tmp_path, fault
+):
+    series_dir = _verified_pipeline_series(tmp_path, fault=fault)
+
+    result = report.build_report(series_dir, now=PIPELINE_NOW)
+
+    row = result["sources"][0]
+    assert row["verified_current_inventory_unique"] is None
+    assert row["verified_current_inventory_per_minute"] is None
+    assert row["verified_current_inventory_basis"] is None
+
+
 def test_query_timing_projection_and_current_inventory_status_are_retained(tmp_path):
     run = checkpoint(tmp_path)
     data = json.loads((run / "manifest.json").read_text())
@@ -219,7 +329,10 @@ def test_query_timing_projection_and_current_inventory_status_are_retained(tmp_p
         )
     )
     result = report.build_report(run, now=NOW)
-    assert result["sources"][0]["status"] == "additive_scope_complete_current_inventory"
+    row = result["sources"][0]
+    assert row["status"] == "additive_scope_complete_current_inventory"
+    assert row["verified_current_inventory_unique"] is None
+    assert row["verified_current_inventory_per_minute"] is None
     assert result["validation_query_timings"][0]["queries"] == {
         "source_counts": {"status": "available", "elapsed_ms": 125.2}
     }

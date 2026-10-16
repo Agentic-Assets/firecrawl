@@ -18,6 +18,11 @@
 > `cre_daily_update.sh`). `../cre_scrapers/brokers/` is legacy reference code,
 > not a source of board updates.
 
+For provider, endpoint, or page-layout variations, follow the source-backed
+[brokerage completion and evidence guidance](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
+before changing an adapter. Current runtime and source-specific contracts
+remain in this guide and `sources/CLAUDE.md`.
+
 ## Agent rule: verify counts before you quote or edit them
 
 Board totals, source counts, test counts, and scheduler state are point-in-time
@@ -1479,7 +1484,9 @@ Read these in order:
 5. `BROKERAGE_STATUS_2026-06-12.md` (historical per-broker snapshot; obtain current coverage/counts from live readback)
 6. `docs/firecrawl-ops/references/cre-intelligence-system-design.md` (canonical architecture + go-forward monitoring plan, section 14)
 7. `docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data: views, SQL, env, quick start)
-8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md` (reusable per-source completion process)
+8. `docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
+   (reusable per-source completion, website-variation evidence, and fail-closed
+   adapter guidance)
 9. `docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor/change-tracking layer: components, run model, hard gotchas) when touching 007, `--monitor`, `cre_monitor.py`, or `cre_gate.py`
 10. `HANDOFF_COLLIERS_MAIN_2026-06-13.md` (colliers-main full run, COMPLETE 2026-06-14: converged + ingested additively, 15,829 active main-site rows)
 11. `HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening + collect.ts modular refactor + first gated `--apply` seed) when touching the monitor layer or scaling the seed
