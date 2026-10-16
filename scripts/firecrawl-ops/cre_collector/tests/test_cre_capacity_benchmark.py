@@ -4177,6 +4177,8 @@ def test_worker_rechecks_review_grant_immediately_before_popen(tmp_path, monkeyp
         "arm_failure",
         "worker_error",
         "prearm_refusal",
+        "prearm_result_write_failure",
+        "partial_arm_failure",
     ],
 )
 def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
@@ -4229,6 +4231,8 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
 
     def arm(lock, evidence):
         real_arm(lock, evidence)
+        if outcome == "partial_arm_failure":
+            raise OSError("arm failed after marker before return event")
         events.append("armed")
         if outcome == "arm_failure":
             raise OSError("arm failed after durable marker")
@@ -4262,10 +4266,14 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
             else:
                 # Do not mask a real pre-arm refusal with a missing-marker
                 # assertion: no worker can have launched without arming.
+                assert not active_path.exists(), "partially published arm marker"
                 assert "first_worker" not in events and "later_worker" not in events
                 assert value["final_settlement"]["state"] == "not_started"
                 assert value["completed"] is False
-            if outcome == "result_write_failure":
+            if "armed" in events and outcome in {
+                "result_write_failure",
+                "prearm_result_write_failure",
+            }:
                 raise OSError("result write failed")
             real_write(path, value)
             events.append("durable_result")
@@ -4300,7 +4308,16 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
         "admission_path": tmp_path / "admission.json",
         "timeout_seconds": 60,
     }
-    if outcome == "prearm_refusal":
+    if outcome == "partial_arm_failure":
+        with pytest.raises(AssertionError, match="partially published"):
+            benchmark.run_benchmark(**kwargs)
+        assert active_path.is_file()
+        assert "first_worker" not in events and "later_worker" not in events
+        assert "disarmed" not in events
+        with pytest.raises(benchmark.LockHeldError):
+            benchmark.SharedLock(lock_path).acquire()
+        return
+    if outcome in {"prearm_refusal", "prearm_result_write_failure"}:
 
         def reject_before_arm(_grant):
             events.append("prearm_refusal")
