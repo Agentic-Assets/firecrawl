@@ -888,6 +888,17 @@ Each source helper allows2attempts,30s per attempt,32MiB per response and up to
 Use a finite separately reviewed pilot deadline, normal guards and no outer retry.
 Merged code or an inventory/two-detail canary is not full-source acceptance.
 
+Savills alone can request the existing additive historical-hold route through
+`Invoke-CreGuardedTier.ps1 -Tier series -Source savills -AdmitBaselineHoldAdditively`
+with the usual reviewed SHA, finite work budget and database-write acknowledgement.
+It requires serial, uncapped full sale+lease and normal fresh strict artifacts,
+source/aggregate gates, dry-run and full validation/readback. Only an exact
+historical floor/drop hold is admitted; raw hold and baseline remain, absent old
+listings remain untouched, and mark-missing stays off. Its terminal
+`additive_scope_complete_coverage_hold` is additive row freshness, not whole-source
+coverage or a full-registry certificate. No current-inventory admission flag,
+pipeline selection, baseline seed or lifecycle permission is implied.
+
 Baseline seeding is a separate operator procedure requiring approval for the
 exact source and artifact. AGENTIC-2895/2902 prohibit baseline writes; do not
 run `cre_gate.py --apply --update-baseline` to unblock those refreshes.

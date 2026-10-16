@@ -14,6 +14,7 @@ param(
     [ValidatePattern('^[a-z0-9][a-z0-9-]*$')][string]$Source,
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$Sources,
     [switch]$Pipeline,
+    [switch]$AdmitBaselineHoldAdditively,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
@@ -79,6 +80,9 @@ foreach ($key in $selectedAdmissionKeys) {
     if ($Tier -ne 'series' -or $admissibleKeys -cnotcontains $key -or $selectedSourceKeys -cnotcontains $key) {
         throw 'Admission requires an exact selected and supported source key.'
     }
+}
+if ($AdmitBaselineHoldAdditively -and ($Tier -ne 'series' -or $Source -cne 'savills' -or $Sources -or $Pipeline -or $selectedAdmissionKeys.Count -ne 0)) {
+    throw '-AdmitBaselineHoldAdditively requires a Savills-only serial series without other admissions.'
 }
 $selectedSourceArgument = if ($Sources) { $Sources } else { $Source }
 
@@ -341,6 +345,9 @@ function Get-CreVerifiedSummary {
         -not ($summary.verified_listings -is [long] -or $summary.verified_listings -is [int]) -or
         $summary.verified_listings -le 0 -or $summary.verified_listings -gt 500000 -or
         ($summary.transaction_scope -join ',') -cne 'sale,lease') { return $null }
+    if ((Get-Variable -Name AdmitBaselineHoldAdditively -ValueOnly -ErrorAction SilentlyContinue) -and ($summary.PSObject.Properties['whole_source_coverage'] -eq $null -or
+        $summary.whole_source_coverage -isnot [bool] -or $summary.whole_source_coverage -or
+        $summary.PSObject.Properties['baseline_hold_retained'] -eq $null -or $summary.baseline_hold_retained -isnot [bool])) { return $null }
     $breakdownProperty = $summary.PSObject.Properties['transaction_breakdown']
     if ($null -ne $breakdownProperty) {
         $breakdown = $breakdownProperty.Value
@@ -439,8 +446,12 @@ function Get-CreNotificationText {
         } else {
             $transactionLine = "$bullet *For sale:* unavailable | *For lease:* unavailable (breakdown not verified)"
         }
+        $coverageLine = ''
+        if ($null -ne $Summary.PSObject.Properties['baseline_hold_retained'] -and $Summary.baseline_hold_retained -eq $true) {
+            $coverageLine = "`n$bullet *Coverage:* historical baseline hold retained; additive refresh only."
+        }
         $success = [char]::ConvertFromUtf32(0x2705)
-        return "`n$success *$name | Completed*`n`n$bullet *Duration:* $duration`n$bullet *Listings verified:* $count unique properties`n$transactionLine`n$bullet *Database readback:* passed; no quality regression."
+        return "`n$success *$name | Completed*`n`n$bullet *Duration:* $duration`n$bullet *Listings verified:* $count unique properties`n$transactionLine`n$bullet *Database readback:* passed; no quality regression.$coverageLine"
     }
     $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
     return "`n$warning *$name | Could not be verified*`n`n$bullet *Duration:* $duration`n$bullet Verified listing total and sale/lease counts are unavailable. Check the local CRE audit for details."
@@ -508,6 +519,7 @@ $stdoutPath = Join-Path $auditDir ($basename + '.stdout.log')
 $stderrPath = Join-Path $auditDir ($basename + '.stderr.log')
 $record = [ordered]@{
     createdAt = [DateTime]::UtcNow.ToString('o')
+    admitBaselineHoldAdditively = [bool]$AdmitBaselineHoldAdditively
     tier = $Tier; source = $selectedSourceArgument; pipeline = [bool]$Pipeline; sourceWorkers = $resolvedSourceWorkers; expectedSha = $ExpectedSha; apply = [bool]$Apply
     status = 'admission_pending'; dispatch = 'not_attempted'
     nativeExitCode = $null; wrapperExitCode = $null; linuxSettlement = 'unverified'
@@ -620,6 +632,7 @@ try {
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",
                 '--work-deadline-seconds', "$WorkDeadlineSeconds", '--env-file', $LinuxEnvFile)
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
+            if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
             foreach ($key in $selectedAdmissionKeys) { $arguments += @('--admit-current-inventory-source', $key) }
             $runPrefix = "$collector/out/checkpoint-series/"
         } elseif ($Apply) { $arguments += '--apply' }

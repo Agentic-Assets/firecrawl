@@ -78,6 +78,11 @@ $cases = @(
     @{ Name = 'source-list'; Args = @('-Tier', 'series', '-Source', 'jll,hanley', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'bad-sha'; Args = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', 'main', '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false }
 )
+$savills = @('-Tier','series','-Source','savills','-AdmitBaselineHoldAdditively','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
+$cases += @{Name='savills-hold'; Args=$savills; Exit=0; Dispatch=$true}
+foreach ($bad in @(@('-Tier','monitor','-Source','savills'), @('-Tier','series','-Source','hanley'), @('-Tier','series','-Source','all'), @('-Tier','series','-Source','savills','-Pipeline'), @('-Tier','series','-Source','savills','-AdmitCurrentInventorySource','interra-realty'))) {
+    $cases += @{Name=('savills-invalid-' + $cases.Count); Args=($bad + @('-AdmitBaselineHoldAdditively','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')); Exit=1; Dispatch=$false}
+}
 $pipelineBase = @('-Tier','series','-Sources','cbre,jll','-Pipeline','-ExpectedSha',$sha,
     '-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
 $cases += @{Name='pipeline-default'; Args=$pipelineBase; Exit=0; Dispatch=$true; Workers=2}
@@ -150,8 +155,8 @@ foreach ($case in $cases) {
         }
         Assert-True (($forwarded -join '|').Contains('--concurrency|1|--nice|15|--page-cap|400|--attempts-per-source|3|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
         Assert-True (-not ($forwarded -contains '/usr/bin/nice') -and ($forwarded -join '|').Contains('NAI_ENUMERATION_CONCURRENCY=1|python3|')) 'Coordinator must inherit caller priority; canonical --nice supplies the only checkpoint adjustment.'
-        $selectedSource = if ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'pyramid-current') { 'pyramid-brokerage' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
-        $budget = if ($case.ContainsKey('Workers')) { '30' } elseif ($case.Name -in @('selected', 'interra-current', 'buildout-current', 'pyramid-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
+        $selectedSource = if ($case.Name -eq 'savills-hold') { 'savills' } elseif ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'pyramid-current') { 'pyramid-brokerage' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
+        $budget = if ($case.Name -eq 'savills-hold') { '30' } elseif ($case.ContainsKey('Workers')) { '30' } elseif ($case.Name -in @('selected', 'interra-current', 'buildout-current', 'pyramid-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
         Assert-True (($forwarded -join '|').Contains('--sources|' + $selectedSource + '|') -and ($forwarded -join '|').Contains('--work-deadline-seconds|' + $budget + '|')) 'Selected source and exact finite work budget must be forwarded.'
         if ($case.ContainsKey('Workers')) {
             Assert-True (($forwarded -join '|').Contains('--pipeline|--source-workers|' + $case.Workers)) 'Resolved worker setting crosses actual native argv boundary.'
@@ -161,6 +166,7 @@ foreach ($case in $cases) {
         } else {
             Assert-True (-not ($forwarded -contains '--admit-current-inventory-source')) 'Default runs must not acquire current-inventory admission.'
         }
+        Assert-True (($forwarded -contains '--admit-baseline-hold-additively') -eq ($case.Name -eq 'savills-hold')) 'Only explicit Savills admission crosses the native boundary.'
         if ($case.Name -eq 'quoted-paths') { Assert-True ($forwarded -contains $quotedEnv -and $forwarded -contains ($quotedRepo + '/scripts/firecrawl-ops/cre_collector/cre_checkpoint_series.py')) 'Spaces and literal quotes must survive the native argv boundary without a shell.' }
         Assert-True (-not ($forwarded -contains '--apply') -and -not ($forwarded -contains '--batch') -and -not ($forwarded -contains '--resume')) 'Series has no incremental apply/batch or automatic replay.'
         $audit = @(Get-ChildItem (Join-Path $caseRoot 'out/windows-launcher') -Filter '*.json')[0]
