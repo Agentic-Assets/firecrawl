@@ -33,14 +33,14 @@ test("Essex proof cache is immutable and limited to the exact successful full ge
   const sale = await srcEssexRealty("sale", Infinity, false, own);
   assert.equal(own.calls.length, 7);
   const proof = sale.currentInventoryProof!;
-  assert.equal(proof.schema, "essex-strict-detail-v1");
-  if (proof.schema !== "essex-strict-detail-v1") return;
+  assert.equal(proof.schema, "essex-strict-detail-v2");
+  if (proof.schema !== "essex-strict-detail-v2") return;
   assert.equal(proof.cohort.length, 1);
   proof.passes[0].current.rows[0][0] = "https://evil.test/";
   const lease = await srcEssexRealty("lease", Infinity, false, own);
   assert.equal(own.calls.length, 7);
   const empty = lease.currentInventoryProof!;
-  if (empty.schema !== "essex-strict-detail-v1") return;
+  if (empty.schema !== "essex-strict-detail-v2") return;
   assert.equal(empty.passes[0].current.rows[0][0], base + "EXISTING_PROPERTY/");
   assert.equal(empty.kind, "known_empty_transaction");
   assert.deepEqual(empty.details, []);

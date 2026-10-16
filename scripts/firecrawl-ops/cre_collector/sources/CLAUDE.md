@@ -26,11 +26,16 @@ infer a provider change from a parser gap.
 
 Essex listing keys preserve the validated owned property's literal URL pathname
 without outer slashes, decoding or lowercasing, matching the historical
-`properties/<slug>` namespace. The validated numeric `currentPropertyId` remains
-separate `essexPropertyId` provenance. Duplicate provider IDs or output paths fail
-closed; a changed path never authorizes a rekey. Canonical detail and lifecycle
-checks remain required. This identity rule does not admit first-seen writes,
-change the source minimum, or authorize closed/missing lifecycle updates.
+properties/<slug> namespace. The observed currentPropertyId
+remains raw essexPropertyId metadata: distinct real pages can share it, so it is
+not a unique page identity. New essexWordpressPage provenance explicitly identifies
+one positive postid-* on the canonical single-properties page. Version-2
+receipts bind that typed page ID separately from the raw variable; old evidence
+is not reinterpreted. Duplicate page IDs or output paths fail closed; a changed
+path never authorizes a rekey. Canonical detail and lifecycle checks remain
+required. Missing historical typed page IDs remain unknown; path/URL
+contradictions still refuse. This rule does not admit first-seen writes or
+authorize closed/missing lifecycle updates.
 Current Essex inventory includes on-market and under-contract properties only;
 the closed archive reconciles coverage but never inflates current counts. With
 no baseline the raw gate reports `first_seen` before the default 100-row floor;

@@ -306,7 +306,7 @@ export type EssexInventoryPass = {
   sitemap: { endpoint: string; observedAt: string; responseTextSha256: string; urls: string[] };
 };
 export type EssexCurrentInventoryProof = {
-  schema: "essex-strict-detail-v1";
+  schema: "essex-strict-detail-v2";
   sourceKey: "essex-realty";
   transaction: Tx;
   kind: "complete_current_inventory" | "known_empty_transaction";
@@ -316,8 +316,8 @@ export type EssexCurrentInventoryProof = {
   observedAt: string;
   total: number;
   passes: EssexInventoryPass[];
-  // Validated current native ID, literal URL/path key and lifecycle. No closed ingestion.
-  cohort: Array<[string, string, string, "on_market" | "under_contract"]>;
+  // WordPress page ID, literal URL/path, lifecycle and raw currentPropertyId observation.
+  cohort: Array<[string, string, string, "on_market" | "under_contract", string]>;
   details: Array<[string, string, string, string]>;
 };
 

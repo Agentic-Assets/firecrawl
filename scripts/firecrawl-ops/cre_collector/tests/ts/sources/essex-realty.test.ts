@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   createEssexTransport,
   essexAssetUrl,
@@ -47,10 +48,10 @@ function archive(rows: string[]): string {
 
 function detail(id = 1090741, status = "UNDER CONTRACT", slug = "100-main"): string {
   return `
-    <head>
+    <html><head>
       <link rel="canonical" href="https://essexrealtygroup.com/properties/${slug}/">
       <meta property="og:url" content="https://essexrealtygroup.com/properties/${slug}/">
-    </head>
+    </head><body class="single-properties postid-${id}">
     <section class="property-detail-wrapper">
       <div class="property-info__label label">${status} - MULTI-FAMILY</div>
       <span class="property-info__address--address-1">100 Main Street</span>
@@ -71,7 +72,7 @@ function detail(id = 1090741, status = "UNDER CONTRACT", slug = "100-main"): str
         <div class="small-broker-card__contact"><a href="mailto:jane@example.com">Email</a></div>
       </div>
     </section>
-    <script>var currentPropertyId = ${id};</script>`;
+    <script>var currentPropertyId = ${id};</script></body></html>`;
 }
 
 test("Essex archive parses exact current lifecycle inventory", () => {
@@ -192,7 +193,7 @@ test("Essex sitemap and lifecycle reconciliation fail closed on drift", () => {
   );
 });
 
-test("Essex detail requires stable currentPropertyId and matching lifecycle", () => {
+test("Essex detail retains observed currentPropertyId and matching lifecycle", () => {
   const parsed = parseEssexDetail(
     detail(),
     "https://essexrealtygroup.com/properties/100-main/",
@@ -445,7 +446,7 @@ test("Essex keys preserve literal property paths without decoding or lowercasing
   }
 });
 
-test("Essex retains independent provider-ID and canonical-path uniqueness", async () => {
+test("Essex retains independent WordPress-page and canonical-path uniqueness", async () => {
   for (const duplicate of ["provider", "path"]) {
     const first = "https://essexrealtygroup.com/properties/one/";
     const second = duplicate === "provider"
@@ -459,7 +460,7 @@ test("Essex retains independent provider-ID and canonical-path uniqueness", asyn
       ["https://essexrealtygroup.com/properties/?sale_deal_status_id=3", archive([card("closed-one", "CLOSED")])],
       ["https://essexrealtygroup.com/properties-sitemap.xml", `<urlset><url><loc>${first}</loc></url><url><loc>${second}</loc></url><url><loc>https://essexrealtygroup.com/properties/closed-one/</loc></url></urlset>`],
       [first, detail(1090741, "ON MARKET", "one")],
-      [second, detail(duplicate === "provider" ? 1090741 : 1090742, "ON MARKET", duplicate === "provider" ? "two" : "one")],
+      [second, detail(1090742, "ON MARKET", duplicate === "provider" ? "two" : "one").replace("postid-1090742", duplicate === "provider" ? "postid-1090741" : "postid-1090742")],
     ]);
     await assert.rejects(
       () => srcEssexRealty("sale", Infinity, false, {
@@ -469,7 +470,45 @@ test("Essex retains independent provider-ID and canonical-path uniqueness", asyn
           return response!;
         },
       }),
-      duplicate === "provider" ? /duplicate currentPropertyId/ : /duplicate.*path/
+      duplicate === "provider" ? /duplicate WordPress/ : /duplicate.*path/
     );
   }
+});
+
+test("Essex real distinct WordPress pages preserve shared raw variable without false duplicate", async () => {
+  const slugs = ["1157-west-18th-street", "1423-w-cortez-st"];
+  const urls = slugs.map(slug => "https://essexrealtygroup.com/properties/" + slug + "/");
+  const bodies = [15709, 15875].map(post => readFileSync("tests/fixtures/essex-page-" + post + ".html", "utf8"));
+  const responses = new Map([
+    ["https://essexrealtygroup.com/properties/", archive([card(slugs[0], "UNDER CONTRACT"), card(slugs[1], "ON MARKET")])],
+    ["https://essexrealtygroup.com/properties/?sale_deal_status_id=3", archive([card("closed-one", "CLOSED")])],
+    ["https://essexrealtygroup.com/properties-sitemap.xml", "<urlset>" + [...urls, "https://essexrealtygroup.com/properties/closed-one/"].map(url => "<url><loc>" + url + "</loc></url>").join("") + "</urlset>"],
+    ...urls.map((url, i) => [url, bodies[i]] as [string, string]),
+  ]);
+  const result = await srcEssexRealty("sale", Infinity, false, {async getText(url) {
+    assert.ok(responses.has(url), "unexpected offline request");
+    return responses.get(url)!;
+  }});
+  assert.deepEqual(result.listings.map(row => row.essexPropertyId), ["1090741", "1090741"]);
+  assert.deepEqual(result.listings.map(row => row.essexWordpressPage), urls.map((canonicalUrl, i) => ({
+    type: "wordpress_properties_post", id: String([15709, 15875][i]), canonicalUrl,
+  })));
+});
+
+test("Essex requires one unambiguous positive WordPress property page identity", () => {
+  const primary = readFileSync("tests/fixtures/essex-page-15709.html", "utf8");
+  const url = "https://essexrealtygroup.com/properties/1157-west-18th-street/";
+  for (const classes of [
+    "single-properties", "single-properties postid-0", "single-properties postid-01",
+    "single-properties postid-15709 postid-15875",
+    "single-properties postid-15709 postid-15709",
+    "single-post postid-15709", "single-properties single-post postid-15709",
+    "single-properties postid-not-numeric",
+    "single-properties postid-9007199254740992",
+  ]) {
+    assert.throws(() => parseEssexDetail(primary.replace(/<body class="[^"]*">/, '<body class="' + classes + '">'), url, "under_contract"), /WordPress/);
+  }
+  assert.throws(() => parseEssexDetail(primary.replace("</body>", '<body class="single-properties postid-15875"></body></body>'), url, "under_contract"), /WordPress/);
+  assert.throws(() => parseEssexDetail(primary.replace("postid-15709", "postid-15709 postid-15875"), url, "under_contract"), /WordPress/);
+
 });

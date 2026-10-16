@@ -406,6 +406,19 @@ export function parseEssexDetail(
     throw new Error("Essex detail currentPropertyId is invalid");
   }
   const $ = cheerio.load(html);
+  const bodies = $("body");
+  const classes = (bodies.attr("class") ?? "").split(/\s+/);
+  const postClasses = classes.filter(value => value.startsWith("postid-"));
+  const pageId = postClasses[0]?.slice("postid-".length);
+  if (
+    [...html.matchAll(/<body(?:\s|>)/gi)].length !== 1
+    || bodies.length !== 1 || !classes.includes("single-properties")
+    || classes.some(value => value.startsWith("single-") && value !== "single-properties")
+    || postClasses.length !== 1 || !pageId || !/^[1-9]\d{0,15}$/.test(pageId)
+    || !Number.isSafeInteger(Number(pageId))
+  ) {
+    throw new Error("Essex detail requires one positive WordPress property page identity");
+  }
   const identityUrls = [
     clean($("link[rel='canonical']").first().attr("href")),
     clean($("meta[property='og:url']").first().attr("content")),
@@ -492,6 +505,7 @@ export function parseEssexDetail(
   return {
     id: new URL(canonicalUrl).pathname.replace(/^\/+|\/+$/g, ""),
     essexPropertyId: id,
+    essexWordpressPage: { type: "wordpress_properties_post", id: pageId, canonicalUrl },
     name,
     lifecycle,
     statusBadge: lifecycle === "under_contract" ? "Under Contract" : "On Market",
@@ -536,7 +550,7 @@ export function mapEssexDetail(
     freshnessProvenance: {
       ...observation,
       detailScope: "detail_page",
-      identityMethod: "literal_owned_property_path+essex_native_property_id",
+      identityMethod: "literal_owned_property_path+wordpress_properties_post",
     },
     preserveChildCollections: monitor ? true : undefined,
   });
@@ -598,9 +612,9 @@ export async function srcEssexRealty(
       )
     );
   }
-  const ids = new Set(listings.map((row) => row.essexPropertyId));
+  const ids = new Set(listings.map((row) => row.essexWordpressPage.id));
   if (ids.size !== listings.length) {
-    throw new Error("Essex selected details contain duplicate currentPropertyId values");
+    throw new Error("Essex selected details contain duplicate WordPress property page identities");
   }
   if (new Set(listings.map((row) => row.id)).size !== listings.length) {
     throw new Error("Essex selected details contain duplicate canonical path identities");
@@ -608,11 +622,11 @@ export async function srcEssexRealty(
   let proof: EssexCurrentInventoryProof | undefined;
   if (proofEligible) {
     proof = {
-      schema: "essex-strict-detail-v1", sourceKey: "essex-realty", transaction: "sale",
+      schema: "essex-strict-detail-v2", sourceKey: "essex-realty", transaction: "sale",
       kind: "complete_current_inventory", generationId: generationId!, generationStartedAt: generationStartedAt!,
       observedAt: inventoryObservedAt, total: inventory.current.length, passes,
-      cohort: listings.map(row => [row.essexPropertyId, row.url, proofPath(row.url), row.lifecycle]),
-      details: listings.map(row => [row.essexPropertyId, row.canonicalUrl, row.detailObservedAt, row.essexDetailResponseSha256]),
+      cohort: listings.map(row => [row.essexWordpressPage.id, row.url, proofPath(row.url), row.lifecycle, row.essexPropertyId]),
+      details: listings.map(row => [row.essexWordpressPage.id, row.canonicalUrl, row.detailObservedAt, row.essexDetailResponseSha256]),
     };
     completedProof = { key: proofKey, proof: structuredClone(proof) };
   }

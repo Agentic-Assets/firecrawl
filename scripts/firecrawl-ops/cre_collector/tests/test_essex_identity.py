@@ -31,7 +31,7 @@ const current='<a class="allposts">ALL [2]</a>'+slugs.map(slug=>
 const closed='<a class="allposts">ALL [1]</a><a class="property-card" href="'+base+'CLOSED_PROPERTY/"><span class="property-card__label">CLOSED</span><span class="property-info__address--address-1">Synthetic closed property</span></a>';
 const bodies=new Map([[base,current],[base+'?sale_deal_status_id=3',closed],
  ['https://essexrealtygroup.com/properties-sitemap.xml','<urlset>'+[...slugs,'CLOSED_PROPERTY'].map(slug=>`<url><loc>${base}${slug}/</loc></url>`).join('')+'</urlset>'],
- ...slugs.map((slug,index)=>[base+slug+'/',template.replaceAll('EXISTING_PROPERTY',slug).replace('1090741',String(1090741+index))])]);
+ ...slugs.map((slug,index)=>[base+slug+'/',template.replaceAll('EXISTING_PROPERTY',slug).replace('1090741',String(1090741+index)).replace('postid-15709','postid-'+String(15709+index))])]);
 const transport={async getText(url){if(!bodies.has(url))throw Error('unexpected offline request');return bodies.get(url);}};
 const sale=await srcEssexRealty('sale',Infinity,false,transport);
 const lease=await srcEssexRealty('lease',Infinity,false,transport);

@@ -19,7 +19,7 @@ SOURCE = "essex-realty"
 ROOT = Path(cp.__file__).parent
 
 
-def produce(root, total=2, closed=1, second_pass="same"):
+def produce(root, total=2, closed=1, second_pass="same", primary_pair=False):
     start = (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
     generation = "2026-10-15T172001Z-123456abcdef"
     preload = root / "transport.mts"
@@ -27,10 +27,10 @@ def produce(root, total=2, closed=1, second_pass="same"):
         r"""
 import {readFileSync} from 'node:fs';
 const base='https://essexrealtygroup.com/properties/';
-const slugs=Array.from({length:__TOTAL__},(_,i)=>`Current-${i}`);
+const slugs=__PRIMARY_PAIR__?['1157-west-18th-street','1423-w-cortez-st']:Array.from({length:__TOTAL__},(_,i)=>`Current-${i}`);
 const archived=Array.from({length:__CLOSED__},(_,i)=>`Closed-${i}`);
 const card=(slug,status)=>`<a class="property-card" href="${base}${slug}/"><span class="property-card__label">${status}</span><span class="property-info__address--address-1">Synthetic ${slug}</span></a>`;
-const current=`<a class="allposts">ALL [${slugs.length}]</a>`+slugs.map((slug,i)=>card(slug,i%2?'UNDER CONTRACT':'ON MARKET')).join('');
+const current=`<a class="allposts">ALL [${slugs.length}]</a>`+slugs.map((slug,i)=>card(slug,__PRIMARY_PAIR__?(i?'ON MARKET':'UNDER CONTRACT'):(i%2?'UNDER CONTRACT':'ON MARKET'))).join('');
 const closed=`<a class="allposts">ALL [${archived.length}]</a>`+archived.map(slug=>card(slug,'CLOSED')).join('');
 const sitemap='<urlset>'+[...slugs,...archived].map(slug=>`<url><loc>${base}${slug}/</loc></url>`).join('')+'</urlset>';
 const detail=readFileSync('tests/fixtures/essex-detail.html','utf8');
@@ -64,12 +64,14 @@ globalThis.fetch=async(input)=>{
  if(url==='https://essexrealtygroup.com/properties-sitemap.xml')return new Response(changed(sitemap,url));
  const index=slugs.findIndex(slug=>url===base+slug+'/');
  if(index<0)throw Error('Unexpected offline URL');
- return new Response(detail.replaceAll('EXISTING_PROPERTY',slugs[index]).replace('1090741',String(1001+index)).replace('ON MARKET',index%2?'UNDER CONTRACT':'ON MARKET'));
+ if(__PRIMARY_PAIR__){const primary=readFileSync('tests/fixtures/essex-page-'+[15709,15875][index]+'.html','utf8');return new Response(primary);}
+ return new Response(detail.replaceAll('EXISTING_PROPERTY',slugs[index]).replace('1090741',String(1001+index)).replace('postid-15709','postid-'+String(15709+index)).replace('ON MARKET',index%2?'UNDER CONTRACT':'ON MARKET'));
 };
 process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
 """.replace("__TOTAL__", str(total))
         .replace("__CLOSED__", str(closed))
         .replace("__SECOND_PASS__", second_pass)
+        .replace("__PRIMARY_PAIR__", "true" if primary_pair else "false")
     )
     path = root / "artifact.json"
     env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
@@ -181,7 +183,7 @@ def test_actual_producer_retains_two_reconciliations_and_only_current_details(pr
     artifact, stderr, _, _ = produced
     sale, lease = artifact["sources"]
     proof = sale["currentInventoryProof"]
-    assert proof["schema"] == "essex-strict-detail-v1"
+    assert proof["schema"] == "essex-strict-detail-v2"
     assert len(proof["passes"]) == 2
     assert proof["passes"][0]["fingerprint"] == proof["passes"][1]["fingerprint"]
     assert len(proof["cohort"]) == len(proof["details"]) == 2
@@ -568,3 +570,72 @@ def test_verifier_canonicalizes_receipt_collections_without_losing_fields(
     binding = admit(path, manifest, report)
     manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
     assert admit(path, manifest, report, "aggregate") == binding
+
+
+def test_real_primary_duplicate_variable_source_aggregate_and_staging(tmp_path):
+    primary = produce(tmp_path, primary_pair=True)
+    _, path, artifact, manifest, report = setup(tmp_path, primary)
+    binding = admit(path, manifest, report)
+    manifest["sources"][SOURCE]["gate"] = {
+        "current_inventory_proof": copy.deepcopy(binding)
+    }
+    assert admit(path, manifest, report, "aggregate") == binding
+    rows = [
+        ingest.to_row(row, {}, artifact["runMeta"]["finishedAt"])
+        for row in artifact["listings"]
+    ]
+    assert [row["external_id"] for row in rows] == [
+        "properties/1157-west-18th-street",
+        "properties/1423-w-cortez-st",
+    ]
+    assert [row["raw_data"]["essexPropertyId"] for row in rows] == [
+        "1090741",
+        "1090741",
+    ]
+    assert [row["raw_data"]["essexWordpressPage"]["id"] for row in rows] == [
+        "15709",
+        "15875",
+    ]
+
+
+@pytest.mark.parametrize("phase", ["source", "aggregate"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "wrong_type",
+        "wrong_url",
+        "old_variable_only",
+        "page_collision",
+        "raw_variable_drift",
+        "old_schema",
+    ],
+)
+def test_wordpress_page_provenance_cannot_be_forged(tmp_path, produced, phase, fault):
+    _, path, artifact, manifest, report = setup(tmp_path, produced)
+    if phase == "aggregate":
+        manifest["sources"][SOURCE]["gate"] = {
+            "current_inventory_proof": copy.deepcopy(admit(path, manifest, report))
+        }
+    row = artifact["listings"][0]
+    if fault == "missing":
+        row.pop("essexWordpressPage")
+    elif fault == "wrong_type":
+        row["essexWordpressPage"]["type"] = "currentPropertyId"
+    elif fault == "wrong_url":
+        row["essexWordpressPage"]["canonicalUrl"] = artifact["listings"][1]["url"]
+    elif fault == "old_variable_only":
+        row["essexWordpressPage"]["id"] = row["essexPropertyId"]
+    elif fault == "page_collision":
+        row["essexWordpressPage"]["id"] = artifact["listings"][1]["essexWordpressPage"][
+            "id"
+        ]
+    elif fault == "raw_variable_drift":
+        row["essexPropertyId"] = "999"
+    else:
+        artifact["sources"][0]["currentInventoryProof"]["schema"] = (
+            "essex-strict-detail-v1"
+        )
+    refresh(path, artifact, manifest)
+    with pytest.raises((ValueError, KeyError, TypeError)):
+        admit(path, manifest, report, phase)
