@@ -176,12 +176,15 @@ def series_config(
     admit_current_inventory_source: str | Sequence[str] | None = None,
     pipeline: bool = False,
     source_workers: int | None = None,
+    admit_baseline_hold_additively: bool = False,
 ) -> dict[str, Any]:
     import cre_current_inventory_admission as current_inventory
 
     admissions = ([admit_current_inventory_source] if isinstance(admit_current_inventory_source, str)
                   else list(admit_current_inventory_source or ()))
     current_inventory.validate_options(admissions, sources, ("sale", "lease"), pipeline=pipeline)
+    if admit_baseline_hold_additively and (list(sources) != ["savills"] or pipeline or admissions):
+        raise ValueError("baseline-hold admission requires a Savills-only serial series without other admissions")
     workers = (2 if pipeline else 1) if source_workers is None else source_workers
     if type(workers) is not int or not 1 <= workers <= 4 or (not pipeline and workers != 1):
         raise ValueError("source-workers must be 1–4 in pipeline mode; serial series requires 1")
@@ -215,6 +218,8 @@ def series_config(
         "nice": nice,
         "continue_source_local_failures": True,
     }
+    if admit_baseline_hold_additively:
+        config["admit_baseline_hold_additively"] = True
     if pipeline:
         config["pipeline"] = True
         config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources)
@@ -272,6 +277,8 @@ def new_manifest(
             "kind": "collector_registry_additive_current_inventory",
             "whole_source_coverage": False,
         }
+    if config.get("admit_baseline_hold_additively") is True:
+        result["scope"] = {"kind": "collector_registry_additive_coverage_hold", "whole_source_coverage": False}
     return result
 
 
@@ -582,6 +589,8 @@ def build_checkpoint_argv(
         argv.extend(
             ["--admit-current-inventory-source", config["current_inventory_admission"]["source_key"]]
         )
+    if config.get("admit_baseline_hold_additively") is True:
+        argv.append("--admit-baseline-hold-additively")
     return argv
 
 
@@ -607,7 +616,7 @@ def _expected_child_config(
         "additive": True,
         "status_activation": False,
         "mark_missing": False,
-        "admit_baseline_hold_additively": False,
+        "admit_baseline_hold_additively": config.get("admit_baseline_hold_additively", False),
     }
     if config.get("pipeline"):
         expected["pipeline"] = True
@@ -876,6 +885,42 @@ def _child_succeeded(
     child_manifest: Mapping[str, Any], config: Mapping[str, Any]
 ) -> bool:
     """Bind the additive terminal result to its explicit parent admission."""
+    if config.get("admit_baseline_hold_additively") is True:
+        from cre_checkpoint_refresh import subset_gate_can_admit
+
+        checkpoint = (child_manifest.get("sources") or {}).get("savills") or {}
+        gate = checkpoint.get("gate") or {}
+        aggregate = child_manifest.get("aggregate_gate") or {}
+        scope = child_manifest.get("scope") or {}
+        bound = (
+            config.get("sources") == ["savills"]
+            and config.get("transactions") == ["sale", "lease"]
+            and not config.get("pipeline")
+            and config.get("source_workers") == 1
+            and not config.get("current_inventory_admission")
+            and not config.get("current_inventory_admissions")
+            and _exact_json_equal(child_manifest.get("config"), _expected_child_config("savills", config))
+            and aggregate.get("hold_sources") == []
+            and aggregate.get("non_ok_sources") == []
+            and type(aggregate.get("rc")) is int and aggregate["rc"] in (0, 2)
+        )
+        if not bound:
+            return False
+        # The fresh source may also clear its historical baseline naturally.
+        if child_manifest.get("status") == SUCCESS_STATUS:
+            return gate.get("verdict") == "ok" and aggregate.get("baseline_advisory_holds") == []
+        return (
+            child_manifest.get("status") == "additive_scope_complete_coverage_hold"
+            and scope.get("kind") == "collector_registry_additive_coverage_hold"
+            and scope.get("whole_source_coverage") is False
+            and gate.get("verdict") == "ok_additive_coverage_hold"
+            and gate.get("raw_verdict") == "hold"
+            and subset_gate_can_admit({"verdict": gate.get("raw_verdict"), "reason": gate.get("raw_reason")})
+            and gate.get("mark_missing_safe") is False
+            and gate.get("admission_scope") == "additive_coverage_hold"
+            and aggregate.get("baseline_advisory_holds") == ["savills"]
+            and aggregate.get("mark_missing_safe_brokerages") == []
+        )
     admission = config.get("current_inventory_admission")
     if admission is None:
         return child_manifest.get("status") == SUCCESS_STATUS
@@ -987,6 +1032,7 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
             terminal = child.get("status") in {
                 SUCCESS_STATUS,
                 "additive_scope_complete_current_inventory",
+                "additive_scope_complete_coverage_hold",
                 RESOURCE_GUARD_STATUS,
                 "interrupted",
                 "failed",
@@ -1011,6 +1057,7 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
             legacy_identity = (
                 not exact_recorded_child
                 and not manifest["config"].get("current_inventory_admission")
+                and not manifest["config"].get("admit_baseline_hold_additively")
                 and (child.get("config") or {}).get("sources") == [source]
                 and isinstance(child.get("started_at"), str)
                 and child_started_at >= attempt_started_at
@@ -2558,6 +2605,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--sources", default="all")
     parser.add_argument("--admit-current-inventory-source", action="append", default=None)
+    parser.add_argument("--admit-baseline-hold-additively", action="store_true",
+        help="Savills-only serial additive refresh retaining its historical coverage hold")
     parser.add_argument("--pipeline", action="store_true")
     parser.add_argument("--source-workers", type=int, default=None)
     parser.add_argument("--page-cap", type=int, default=400)
@@ -2648,6 +2697,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         current_inventory.validate_options(
             args.admit_current_inventory_source, sources, ("sale", "lease"), pipeline=args.pipeline
         )
+        if args.admit_baseline_hold_additively and (sources != ("savills",) or args.pipeline or args.admit_current_inventory_source):
+            raise ValueError("baseline-hold admission requires a Savills-only serial series without other admissions")
         if args.source_workers is not None and (not 1 <= args.source_workers <= 4 or
                 (not args.pipeline and args.source_workers != 1)):
             raise ValueError("source-workers must be 1–4 in pipeline mode; serial series requires 1")
@@ -2727,6 +2778,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nice=args.nice,
         recovery=recovery_config,
         admit_current_inventory_source=args.admit_current_inventory_source,
+        admit_baseline_hold_additively=args.admit_baseline_hold_additively,
         pipeline=args.pipeline,
         source_workers=args.source_workers,
     )

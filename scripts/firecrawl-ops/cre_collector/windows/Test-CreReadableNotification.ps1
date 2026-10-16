@@ -158,6 +158,23 @@ $Source='cbre-other'
 Assert-Cre ((Get-CreBrokerageName $Source) -ceq 'CBRE Other') 'Generic source labels preserve allowed CBRE capitalization.'
 $Source='<!channel>'
 Assert-Cre ((Get-CreNotificationText $record 'Start' 0 $null) -notmatch '<!|@') 'Unrecognized source input cannot become a mention.'
+$Source = 'savills'
+$AdmitBaselineHoldAdditively = $true
+Save-Summary (New-Summary)
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'savills-unbound')) 'Additive hold counts require an explicit non-coverage summary.'
+$heldSummary = New-Summary
+$heldSummary['baseline_hold_retained'] = $true
+$heldSummary['whole_source_coverage'] = $false
+Save-Summary $heldSummary
+$held = Get-CreVerifiedSummary (New-Record) 'savills-held'
+Assert-Cre ($null -ne $held) 'A bound additive refresh can retain verified row counts.'
+$heldText = Get-CreNotificationText (New-Record) 'Terminal' 0 $held
+Assert-Cre ($heldText.Contains('historical baseline hold retained; additive refresh only.')) 'Completion must disclose the unresolved coverage hold.'
+$heldSummary['whole_source_coverage'] = $true
+Save-Summary $heldSummary
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'savills-overclaim')) 'Additive carrier cannot certify whole-source coverage.'
+$Source = 'newmark'
+$AdmitBaselineHoldAdditively = $false
 $Pipeline = $true
 $selectedSourceKeys = @('newmark','cbre','jll')
 $selectedSourceArgument = $selectedSourceKeys -join ','
