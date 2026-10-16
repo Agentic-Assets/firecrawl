@@ -243,6 +243,18 @@ SharpLaunch `sale_unit_price` has no proven per-square-foot unit: retain it in
 `rawSharpLaunch` and `saleUnitPrice`, without promoting it to `salePricePerSf`.
 Canonical ingestion can derive per-square-foot price from known total and area.
 
+Avison asking visibility uses only the source-owned SharpLaunch `hide_price`
+control: absent, numeric `0` (visible), or numeric `1` (withheld); other values
+or contradictory control evidence refuse. The strict `avisonPriceVisibility`
+marker uses schema `avison-asking-price-v1` and control `absent`, `visible`, or
+`withheld`; it cannot authorize visibility without its canonical source evidence.
+Apply the source projection after enrichment and at every final emission so
+hidden asking aliases and prose cannot reappear. Preserve independent lease
+rates, cap rate, NOI and other nonprice facts, protected identity/resource URLs,
+and original observation clocks/proofs. Asking visibility is neither missing
+source data nor fresh-detail or production acceptance; follow
+[source visibility guidance](../../../../docs/firecrawl-ops/references/cre-ingest-freshness-troubleshooting.md#source-visibility-is-not-missing-data).
+
 ## Monitor Mode Matrix
 
 | Behavior | Sources |

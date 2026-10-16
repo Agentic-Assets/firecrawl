@@ -54,6 +54,7 @@ from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunspli
 # below (parse_lease_rates, parse_money, parse_size_text, is_sale_psf_text)
 # delegate to it without changing their observable to_row()-level behavior.
 import cre_parse
+import cre_avison_price_visibility as avison_prices
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -3002,7 +3003,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         desc = None
         markdown = None
 
-    return {
+    row = {
         "slug": slug,
         "external_id": external_id,
         "source_url": url,
@@ -3119,6 +3120,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "om_facts": om_facts,
         "_modes": {listing.get("transactionMode")},
     }
+    return avison_prices.project_row(row)
 
 
 def _contact_aliases(item):
@@ -3376,7 +3378,7 @@ def merge_rows(a, b):
         a["contacts"] = _safe_jll_hidden_child_metadata(a["contacts"], broker=True)
         for key in ("documents", "images", "media", "links"):
             a[key] = _safe_jll_hidden_child_metadata(a[key])
-    return a
+    return avison_prices.project_row(a)
 
 
 def validate_duplicate_identity_before_merge(a, b):
@@ -3700,7 +3702,8 @@ def build_sql(
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
     # prevents a manually constructed row from restoring the retired writer.
-    rows = [{**row, "om_facts": []} for row in rows]
+    rows = [{**avison_prices.project_row(row), "om_facts": []} for row in rows]
+    avison_price_sql = avison_prices.sql_policy(rows)
     targeted = matthews_targeted_targets is not None
     if targeted and (not matthews_targeted_targets or mark_missing_slugs
                      or inventory_only_rows or inventory_only_scopes):
@@ -3818,6 +3821,7 @@ def build_sql(
     jll_media_title_clear_sql = _jll_hidden_label_sql("m.title")
     w("\\set ON_ERROR_STOP on")
     w("BEGIN;")
+    w(avison_price_sql["definitions"])
     # Large complete-source artifacts (CBRE is ~80 MB of inline COPY data) can
     # legitimately take more than ten minutes to traverse the Supavisor
     # connection. Bound the data load separately, then restore the tighter
@@ -4526,7 +4530,7 @@ FOR UPDATE OF t;
 CREATE TEMP TABLE _prior_vals ON COMMIT DROP AS
 SELECT t.id, t.brokerage_id, t.external_id,
        t.sale_price_usd, t.sale_price_per_sf, t.lease_rate_min, t.lease_rate_max,
-       t.status, t.cap_rate, t.deleted_at
+       t.status, t.cap_rate, t.deleted_at{avison_price_sql["prior_select"]}
 FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
 
@@ -5000,6 +5004,7 @@ END $$;
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
+        .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
         .replace("{targeted_queue}", targeted_queue)
         .replace("{targeted_guard}", targeted_guard)
         .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
@@ -5553,6 +5558,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+{avison_price_sql["post_sql"]}
 -- OM-parsed facts (sql/013 cre_listing_om_facts). Existence-guarded so a pre-013
 -- ingest is a no-op. UNLIKE media/links, om_facts is NOT wholesale-deleted on
 -- refresh: it is a provenance-bearing audit trail, and a normal (non-OM) detail
@@ -5592,7 +5598,7 @@ DO $$ BEGIN
         confidence      = EXCLUDED.confidence;
   END IF;
 END $$;
-""")
+""".replace('{avison_price_sql["post_sql"]}', avison_price_sql["post_sql"]))
 
     # (H4a) Append-only price/status history: one row per listing whose watched
     # value actually changed this run. The diff is computed from the new effective

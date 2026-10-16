@@ -199,6 +199,18 @@ Key behavior:
   also COALESCE-keep: a transient parse miss does not blank a previously-good
   numeric price. Prior price/SF must remain in `(0, 10000]` and prior lease
   rates in `(0, 500]`, matching their existing forward-normalization bounds.
+- **An explicit source withholding control is different from a parse miss.**
+  Source-bound JLL and Avison projections override ordinary price retention;
+  do not restore a withheld value through sale/lease merge, current raw data,
+  Markdown or retained child titles. Avison's exact numeric `hide_price=1`
+  controls sale asking and sale PSF only; preserve independently supplied rent,
+  cap rate, NOI and other useful facts. Absent/visible controls retain ordinary
+  behavior; malformed or contradictory controls refuse. The implementation is
+  source-owned in `cre_avison_price_visibility.py`, with source hooks in
+  `sources/avison-young.ts`. Follow the
+  [visibility and freshness guidance](../../../docs/firecrawl-ops/references/cre-ingest-freshness-troubleshooting.md#source-visibility-is-not-missing-data)
+  and the source contract; never borrow another brokerage's marker or promote
+  a failed detail observation to fresh data.
 - Upsert sets `status='active'`, resurrects soft-deleted rows (`deleted_at=NULL`),
   but only resets status to `'active'` when the prior status was `'inactive'` (a
   mark-missing soft-delete); a real terminal (`sold`/`leased`/`off_market`) that

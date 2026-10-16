@@ -1,3 +1,4 @@
+import { avisonAskingControl, projectAvisonAskingPrice } from "./pure/avison-price-visibility.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
@@ -1256,6 +1257,7 @@ export function assertAvisonYoungOutputIdentity(
 }
 
 export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>): any {
+  const askingControl = avisonAskingControl(row);
   const contactsDetailed = (Array.isArray(row.team_member_ids) ? row.team_member_ids : [])
     .map((id: any) => avisonYoungContact(teamMembers.get(String(id))))
     .filter(Boolean);
@@ -1374,6 +1376,7 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     detailUnavailable: true,
     detailUnavailableReason: "base feed row; current detail page not yet fetched",
     rawSharpLaunch: row,
+    avisonPriceVisibility: { schema: "avison-asking-price-v1", control: askingControl },
   });
 }
 
@@ -1694,7 +1697,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
       method: "SharpLaunch public website API base listings only (monitor mode; detail-page enrichment skipped)",
       totalAvailable: rows.length,
       truncated,
-      listings: baseListings,
+      listings: baseListings.map(listing => projectAvisonAskingPrice({ ...listing, sourceKey: "avison-young" })),
       note:
         "Monitor mode: SharpLaunch inventory fields only; per-listing detail-page enrichment skipped and prior child collections preserved. " +
         (teamFeedComplete
@@ -1794,7 +1797,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
       "SharpLaunch public website API with bounded public detail-page enrichment for selected rows",
     totalAvailable: rows.length,
     truncated,
-    listings,
+    listings: listings.map(listing => projectAvisonAskingPrice({ ...listing, sourceKey: "avison-young" })),
     note:
       detailLimit > 0
         ? `Detail enrichment fetched public SharpLaunch/Avison pages for ${detailLimit} selected row(s); documents, images, broker cards, profile URLs, VCard URLs, and JSON-LD are stored as URLs/raw public metadata only. ${
