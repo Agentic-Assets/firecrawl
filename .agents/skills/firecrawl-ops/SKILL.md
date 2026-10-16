@@ -53,15 +53,22 @@ For CRE database transport failures, use
 It distinguishes IPv6 routing, approved IPv4 session pooling, verified TLS,
 CLI API access and checkpoint tenant identity from full-refresh acceptance.
 
-1. Apply `set_cre_resource_profile.sh apply --with-pids`, review `show`, then
-   recreate `api` and `playwright-service`.
-2. Run `cre_checkpoint_series.py --sources all` with serial collection,
-   explicit CPU settings, and `nice`; use the exact command in `START_HERE.md`.
+1. Verify the existing resource profile and running containers first. Do not
+   reapply settings or recreate services before each refresh. For an approved
+   resource change, follow the scoped procedure in `START_HERE.md`; browser-only
+   changes must not recreate the API or apply a pending model transition.
+2. Run `cre_checkpoint_series.py` with an approved finite source selection,
+   explicit CPU settings, and `nice`; use the commands in `START_HERE.md`.
+   Serial mode is the default. Opt-in `--pipeline --source-workers 2` overlaps
+   collection with serial database units through the same shared runner on
+   macOS and Linux/WSL. Keep exact-key source admissions and provider limits.
 3. The checkpoint guards stop and checkpoint sustained CPU or warning memory
    pressure, critical memory pressure, or missing required telemetry/evidence.
    They are not a permanent monitor or auto-resume service. Inspect
    `host-cpu-guard.jsonl`, `host-memory-guard.jsonl` and, when present,
-   `cpu-incidents.jsonl` before resuming exit `75`. Memory stops never qualify
+   `cpu-incidents.jsonl` after an interruption. Serial resume requires the exact
+   recorded configuration; pipeline resume is unsupported, so reconcile its
+   settled generation before any new invocation. Memory stops never qualify
    for automatic CPU-only recovery.
 
 The supervised path never passes `--monitor`, `--mark-missing`,

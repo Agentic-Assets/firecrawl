@@ -114,12 +114,13 @@ def test_pipeline_budget_counts_inflight_and_reserves_disk():
     )
 
 
-def test_pipeline_disk_accounting_charges_temp_retry_and_active_cache_files(tmp_path):
+def test_pipeline_disk_accounting_charges_only_unconsumed_source_outputs(tmp_path):
     from cre_refresh_pipeline import pending_disk_bytes
 
     paths = {
         "sources/ready.json": 9,
         "sources/source.tmp": 11,
+        "sources/retry-leftover.tmp": 19,
         "rejected/retry.json": 13,
         "cache/source/page.json": 17,
     }
@@ -128,8 +129,11 @@ def test_pipeline_disk_accounting_charges_temp_retry_and_active_cache_files(tmp_
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x" * size)
     excluded = {tmp_path / "sources/ready.json"}
-    assert pending_disk_bytes(tmp_path, excluded, include_auxiliary=True) == 41
-    assert pending_disk_bytes(tmp_path, excluded, include_auxiliary=False) == 11
+    assert pending_disk_bytes(tmp_path, excluded) == 30
+    assert pending_disk_bytes(tmp_path, set()) == 39
+    assert all(
+        (tmp_path / relative).stat().st_size == size for relative, size in paths.items()
+    )
 
 
 def test_staging_transaction_statistics_use_merged_canonical_types_and_bind_digest(
@@ -223,3 +227,38 @@ def test_private_publication_refuses_aliases_without_chmod_foreign_file(
         refresh.make_private_artifact(candidate)
     assert foreign.stat().st_mode & 0o777 == 0o644
     assert foreign.read_text() == "unrelated"
+
+
+def test_pending_output_scan_never_walks_auxiliary_or_symlink_directories(
+    tmp_path, monkeypatch
+):
+    import cre_refresh_pipeline as pipeline
+
+    for relative in (
+        "sources/nested/ready.json",
+        "cache/page.json",
+        "rejected/old.json",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"retained")
+    (tmp_path / "sources/cache-alias").symlink_to(
+        tmp_path / "cache", target_is_directory=True
+    )
+    walk = pipeline.os.walk
+    visited = []
+
+    def observed_walk(root, **kwargs):
+        assert root == tmp_path / "sources"
+        assert kwargs == {"followlinks": False}
+        for result in walk(root, **kwargs):
+            visited.append(result[0])
+            yield result
+
+    monkeypatch.setattr(pipeline.os, "walk", observed_walk)
+    ready = tmp_path / "sources/nested/ready.json"
+    assert pipeline.pending_disk_bytes(tmp_path, set()) == len(b"retained")
+    assert pipeline.pending_disk_bytes(tmp_path, {ready}) == 0
+    assert all("cache-alias" not in str(path) for path in visited)
+    assert (tmp_path / "cache/page.json").read_bytes() == b"retained"
+    assert (tmp_path / "rejected/old.json").read_bytes() == b"retained"

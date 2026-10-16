@@ -37,6 +37,9 @@ def run_schedule(
     artifact_failure=None,
     oversized_source=None,
     db_failure=False,
+    retained_paths=(),
+    temporary_bytes=None,
+    free_bytes=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -49,6 +52,11 @@ def run_schedule(
         concurrency=1,
         source_workers=workers,
     )
+    for relative in retained_paths:
+        path = run_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            handle.truncate(513 * 1024**2)
     clock = {"now": 0.0}
     events = []
     alive = {}
@@ -58,9 +66,12 @@ def run_schedule(
         "sleep",
         lambda delay: clock.__setitem__("now", clock["now"] + delay),
     )
-    monkeypatch.setattr(pipeline, "pending_disk_bytes", lambda *a, **k: 0)
     monkeypatch.setattr(
-        pipeline.shutil, "disk_usage", lambda path: SimpleNamespace(free=10 * 1024**3)
+        pipeline.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(
+            free=free_bytes(clock["now"]) if free_bytes else 10 * 1024**3
+        ),
     )
 
     def start(root, owner, source, **kwargs):
@@ -71,8 +82,12 @@ def run_schedule(
         checkpoint = owner["sources"][source]
         checkpoint["attempts"].append({"number": 1, "started_at": refresh.utc_now()})
         checkpoint["state"] = "collecting"
-        path = root / f"{source}.tmp"
+        path = root / "sources" / f"{source}.tmp"
+        path.parent.mkdir(exist_ok=True)
         path.write_text("candidate")
+        if temporary_bytes and source in temporary_bytes:
+            with path.open("r+b") as handle:
+                handle.truncate(temporary_bytes[source])
         ready_at = clock["now"] + (0.2 if source == sources[0] else 0.5)
         process = SimpleNamespace(poll=lambda: 0 if clock["now"] >= ready_at else None)
         item = SimpleNamespace(source=source, process=process, tmp_artifact=path)
@@ -84,8 +99,10 @@ def run_schedule(
         del alive[item.source]
         checkpoint = owner["sources"][item.source]
         checkpoint["candidate"] = {
-            "path": item.tmp_artifact.name,
-            "bytes": 513 * 1024**2 if item.source == oversized_source else 9,
+            "path": str(item.tmp_artifact.relative_to(root)),
+            "bytes": 513 * 1024**2
+            if item.source == oversized_source
+            else item.tmp_artifact.stat().st_size,
         }
         checkpoint["state"] = "candidate"
         events.append(("published", item.source, clock["now"]))
@@ -100,7 +117,7 @@ def run_schedule(
         if source == artifact_failure:
             raise refresh.ArtifactValidationError("ordinary invalid artifact")
         checkpoint = owner["sources"][source]
-        checkpoint["artifact"] = {"path": f"{source}.tmp", "sha256": "b" * 64}
+        checkpoint["artifact"] = {"path": f"sources/{source}.tmp", "sha256": "b" * 64}
         checkpoint["state"] = "validated"
         return True
 
@@ -222,7 +239,10 @@ def test_pipeline_drains_ready_cohort_of_five_without_waiting_to_fill(
     assert [len(unit["sources"]) for unit in manifest["pipeline"]["units"]] == [1, 5]
 
 
-def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(tmp_path, monkeypatch):
+@pytest.mark.parametrize("retained_cache", [False, True])
+def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
+    tmp_path, monkeypatch, retained_cache
+):
     """Real local child groups and the real compute worker; no provider/DB IO."""
     import json
     import subprocess
@@ -244,6 +264,9 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(tmp_path, monke
         source_workers=2,
     )
     events = []
+    owned = {}
+    cache_ready = root / "cache-ready"
+    release_cache_worker = root / "release-cache-worker"
     monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *a: None)
     original_command = refresh.run_command
 
@@ -271,6 +294,20 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(tmp_path, monke
         for row in payload["listings"]:
             row.update(inventoryObservedAt=stamp, detailObservedAt=stamp)
         code = "import pathlib,sys,time; time.sleep(float(sys.argv[1])); pathlib.Path(sys.argv[2]).write_text(sys.argv[3])"
+        if retained_cache and source == sources[0]:
+            code = (
+                "import pathlib,sys,time; root=pathlib.Path(sys.argv[2]).parent.parent; "
+                "cache=root/'cache/jll/page.json'; cache.parent.mkdir(parents=True); "
+                "handle=cache.open('wb'); handle.truncate(513*1024**2); handle.close(); "
+                "(root/'cache-ready').touch(); deadline=time.monotonic()+5\n"
+                "while not (root/'release-cache-worker').exists():\n"
+                " if time.monotonic()>=deadline: raise RuntimeError('independent dispatch withheld')\n"
+                " time.sleep(0.01)\n"
+                "time.sleep(float(sys.argv[1])); pathlib.Path(sys.argv[2]).write_text(sys.argv[3])"
+            )
+        if retained_cache and source == sources[1]:
+            assert owned[sources[0]].process.poll() is None
+            release_cache_worker.touch()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("a")
         process = subprocess.Popen(
@@ -287,7 +324,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(tmp_path, monke
             start_new_session=True,
         )
         events.append(("start", source, time.monotonic()))
-        return refresh.CohortCollectionProcess(
+        item = refresh.CohortCollectionProcess(
             source,
             process,
             log,
@@ -296,6 +333,15 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(tmp_path, monke
             started,
             OwnedProcessGroup.from_spawn(process),
         )
+        owned[source] = item
+        if retained_cache and source == sources[0]:
+            deadline = time.monotonic() + 3
+            while not cache_ready.exists():
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    refresh._terminate_cohort_processes([item])
+                    pytest.fail("owned cache writer did not publish readiness")
+                time.sleep(0.01)
+        return item
 
     def database(run_dir, owner, unit, env_file, previous):
         events.append(("db_start", time.monotonic()))
@@ -335,6 +381,9 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(tmp_path, monke
     first_db = next(event[1] for event in events if event[0] == "db_start")
     assert first_compute < fourth_start < first_db
     assert manifest["pipeline"]["status"] == "complete"
+    if retained_cache:
+        assert (root / "cache/jll/page.json").stat().st_size == 513 * 1024**2
+        assert all(item.process.poll() is not None for item in owned.values())
 
 
 def test_pipeline_oversized_candidate_waits_for_owned_fetches_then_drains_alone(
@@ -373,3 +422,66 @@ def test_pipeline_global_db_fault_records_stop_and_no_false_success(
     )
     assert manifest["pipeline"]["units"][0]["state"] == "failed"
     assert manifest["pipeline"]["commit_outcome_unknown"] is False
+
+
+@pytest.mark.parametrize(
+    "retained", ["cache/jll/page.json", "rejected/old-attempt.json"]
+)
+def test_retained_auxiliary_bytes_do_not_withhold_an_independent_collection_slot(
+    tmp_path, monkeypatch, retained
+):
+    manifest, events, failures = run_schedule(
+        tmp_path,
+        monkeypatch,
+        2,
+        sources=("transwestern", "savills"),
+        retained_paths=(retained,),
+    )
+    assert not failures
+    first_publish = next(event for event in events if event[0] == "published")
+    second_start = next(event for event in events if event[:2] == ("start", "savills"))
+    assert second_start[2] < first_publish[2], (
+        "free independent slot withheld by retained data"
+    )
+    path = tmp_path / manifest["run_id"] / retained
+    assert path.stat().st_size == 513 * 1024**2
+    assert manifest["pipeline"]["status"] == "complete"
+
+
+def test_actual_pending_temp_output_blocks_until_oversized_unit_drains(
+    tmp_path, monkeypatch
+):
+    manifest, events, failures = run_schedule(
+        tmp_path,
+        monkeypatch,
+        2,
+        sources=("transwestern", "savills"),
+        temporary_bytes={"transwestern": 513 * 1024**2},
+    )
+    assert not failures
+    first_end = next(event for event in events if event[0] == "db_end")
+    second_start = next(event for event in events if event[:2] == ("start", "savills"))
+    assert second_start[2] >= first_end[2]
+    assert manifest["pipeline"]["units"][0]["sources"] == ["transwestern"]
+    # Drained output is retained as evidence, rather than deleted to create capacity.
+    assert (
+        tmp_path / manifest["run_id"] / "sources/transwestern.tmp"
+    ).stat().st_size == 513 * 1024**2
+
+
+def test_zero_pending_queue_still_refuses_low_disk(tmp_path, monkeypatch):
+    with pytest.raises(refresh.GlobalStageError, match="disk/output admission"):
+        run_schedule(
+            tmp_path,
+            monkeypatch,
+            2,
+            sources=("transwestern", "savills"),
+            free_bytes=lambda now: 1024**3,
+        )
+    import json
+
+    manifest = json.loads(next(tmp_path.glob("*/manifest.json")).read_text())
+    assert all(
+        not checkpoint["attempts"] for checkpoint in manifest["sources"].values()
+    )
+    assert manifest["pipeline"]["status"] == "reconciliation_required"

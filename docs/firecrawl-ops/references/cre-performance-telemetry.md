@@ -158,7 +158,12 @@ collection job. It estimates remaining disk demand when deciding whether to
 dispatch another job; it is not a maximum source-artifact size. The separate
 512 MiB soft budget applies backpressure to queued output and reservations,
 rather than trimming a completed source to fit. Do not reduce listing coverage
-to satisfy either scheduling estimate.
+to satisfy either scheduling estimate. Pending bytes cover unconsumed files in
+`sources/`, including temporary and retry leftovers; sealed and verified
+artifacts are excluded as they drain. Retained detail caches and quarantined
+`rejected/` audit files are not pending queue work and are not scanned for that
+watermark. They remain on disk and still reduce the actual free space used by
+the unchanged minimum-free-disk admission check.
 
 `cre_run_insights.MAX_ARTIFACT_BYTES` also defaults to 64 MiB, but only the
 optional legacy `--trial-dir` importer uses that raw-artifact read limit.
