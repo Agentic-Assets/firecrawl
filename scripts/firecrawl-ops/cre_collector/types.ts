@@ -321,13 +321,31 @@ export type EssexCurrentInventoryProof = {
   details: Array<[string, string, string, string]>;
 };
 
+export type DaumTenureProof = "sale" | "lease" | "sale_or_lease" | "unknown";
+export type DaumInventoryPass = {
+  index: number;
+  total: number;
+  pages: Array<{
+    endpoint: string; method: "POST"; observedAt: string; responseTextSha256: string;
+    reportedTotal: number; reportedPages: number;
+    members: Array<[string, DaumTenureProof, string | null]>;
+  }>;
+};
+export type DaumCurrentInventoryProof = {
+  schema: "daum-strict-detail-v1"; sourceKey: "daum-commercial"; transaction: Tx;
+  kind: "complete_current_inventory"; generationId: string; generationStartedAt: string;
+  observedAt: string; total: number; passes: DaumInventoryPass[];
+  cohort: Array<[string, string, string, DaumTenureProof, string | null, DaumTenureProof, string | null, Exclude<DaumTenureProof, "unknown">]>;
+  details: Array<[string, string, string, string]>;
+};
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
-  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof;
+  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor

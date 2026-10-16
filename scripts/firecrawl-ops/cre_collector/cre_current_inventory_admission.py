@@ -31,7 +31,7 @@ def configuration(source: str) -> dict:
     from cre_buildout_current_inventory import definitions, registry_path
 
     require(
-        source in {SOURCE, "pyramid-brokerage", "essex-realty"}
+        source in {SOURCE, "pyramid-brokerage", "essex-realty", "daum-commercial"}
         or source in definitions()
     )
     load_source_policy()
@@ -41,7 +41,7 @@ def configuration(source: str) -> dict:
             resolve_policy_path().read_bytes()
         ).hexdigest(),
     }
-    if source not in {SOURCE, "pyramid-brokerage", "essex-realty"}:
+    if source not in {SOURCE, "pyramid-brokerage", "essex-realty", "daum-commercial"}:
         result["buildout_registry_sha256"] = hashlib.sha256(
             registry_path().read_bytes()
         ).hexdigest()
@@ -87,7 +87,7 @@ def validate_options(
         require(not additive_hold and not allow_dirty)
     for source in admitted:
         require(source in selected)
-        if source in {"pyramid-brokerage", "essex-realty"}:
+        if source in {"pyramid-brokerage", "essex-realty", "daum-commercial"}:
             require(selected == [source])
         configuration(source)
 
@@ -441,6 +441,10 @@ def admit(
         from cre_essex_current_inventory import admit as admit_essex
 
         return admit_essex(artifact_path, manifest, report, source=source, **kwargs)
+    if source == "daum-commercial":
+        from cre_daum_current_inventory import admit as admit_daum
+
+        return admit_daum(artifact_path, manifest, report, source=source, **kwargs)
     from cre_buildout_current_inventory import admit as admit_buildout
 
     return admit_buildout(artifact_path, manifest, report, source=source, **kwargs)
