@@ -56,6 +56,15 @@ every other member still requires a valid owned detail URL, and empty or
 archive-only shards fail. Sitemap membership does not establish active status,
 historical identity compatibility or first-seen admission.
 
+Lyon-Stahl may publish availability on a same-page `Product` Offer instead of
+the `RealEstateListing`. When listing offers are absent, require one listing and
+one Product bound to the exact requested canonical URL, Product `@id` equal to
+that URL plus `#product`, and one typed Offer with that exact URL. Apply the
+existing availability enum; missing, blank, unknown, ambiguous or conflicting
+evidence stays held. A present listing Offer is never repaired with secondary
+evidence. The retained primary fallback sample is `SoldOut`; active fallback
+coverage is synthetic and does not prove fresh inventory or source admission.
+
 DAUM and Foundry output keys preserve the validated owned property's literal
 pathname without outer slashes (`property/<slug>`); Lyon-Stahl preserves only
 the final literal slug. Keep case and percent spelling unchanged. Positive

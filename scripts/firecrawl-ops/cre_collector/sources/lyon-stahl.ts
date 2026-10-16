@@ -320,9 +320,50 @@ function firstValue(objects: any[], namePattern: RegExp): string | null {
   return null;
 }
 
-function offerFromListing(listing: any): any | null {
+function offerFromListing(
+  listing: any,
+  nodes: any[],
+  requestedUrl: string,
+  canonicalUrl: string | undefined
+): { offer: any | null; problem?: string } {
   const offers = listing?.offers;
-  return Array.isArray(offers) ? offers[0] ?? null : offers ?? null;
+  const original = Array.isArray(offers) ? offers[0] ?? null : offers ?? null;
+  const products = nodes.filter((node) => ldTypes(node).includes("Product") && (
+    node?.["@id"] === `${requestedUrl}#product`
+    || (Array.isArray(node?.offers) ? node.offers : [node?.offers])
+      .some((offer: any) => offer?.url === requestedUrl)
+  ));
+  if (!products.length) return { offer: original };
+  const fail = (problem: string) => ({ offer: null, problem });
+  if (
+    products.length !== 1
+    || nodes.filter((node) => ldTypes(node).includes("RealEstateListing")).length !== 1
+    || listing?.url !== requestedUrl
+    || canonicalUrl !== requestedUrl
+    || products[0]?.["@id"] !== `${requestedUrl}#product`
+  ) return fail("ambiguous or mismatched same-page Product Offer identity");
+  const productOffers = Array.isArray(products[0].offers)
+    ? products[0].offers : [products[0].offers];
+  const productOffer = productOffers[0];
+  if (
+    productOffers.length !== 1
+    || !ldTypes(productOffer).includes("Offer")
+    || productOffer?.url !== requestedUrl
+  ) return fail("ambiguous or mismatched same-page Product Offer");
+  if (Object.hasOwn(listing, "offers")) {
+    if (Array.isArray(offers) && offers.length !== 1) {
+      return fail("ambiguous listing Offers with Product availability");
+    }
+    const primary = classifyLyonStahlAvailability(original?.availability);
+    const secondary = classifyLyonStahlAvailability(productOffer?.availability);
+    if (
+      primary.disposition === "held"
+      || secondary.disposition === "held"
+      || primary.availability !== secondary.availability
+    ) return fail("blank, unknown or conflicting listing and Product availability");
+    return { offer: original };
+  }
+  return { offer: productOffer };
 }
 
 function lyonStahlPropertyNode(nodes: any[], listing: any): any {
@@ -376,7 +417,11 @@ export function parseLyonStahlDetail(
   if (strict && (!clean(listing.url) || !samePage(String(listing.url), requestedUrl))) {
     return { kind: "rejected", reason: "RealEstateListing identity mismatch" };
   }
-  const offer = offerFromListing(listing);
+  const resolved = offerFromListing(listing, nodes, requestedUrl, $("link[rel='canonical']").attr("href"));
+  if (resolved.problem) {
+    return { kind: "held", availability: null, reason: resolved.problem };
+  }
+  const offer = resolved.offer;
   const availability = classifyLyonStahlAvailability(offer?.availability);
   if (availability.disposition === "terminal") {
     return {
