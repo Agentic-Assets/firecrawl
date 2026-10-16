@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   PYRAMID_LEASE_TERM_ID,
   PYRAMID_INVENTORY_URL,
@@ -12,7 +14,7 @@ import {
   pyramidFetch,
   pyramidInventoryUrl,
 } from "../../../sources/pyramid-brokerage.js";
-import { resetBrokerStateForTests } from "../../../lib/broker.js";
+import { brokers, resetBrokerStateForTests } from "../../../lib/broker.js";
 
 function row(id: number, saleType: number) {
   return {
@@ -47,7 +49,7 @@ const detailHtml = `
       <link rel="shortlink" href="https://www.pyramidbrokerage.com/?p=101">
       <meta property="og:image" content="https://www.pyramidbrokerage.com/listing.jpg">
     </head>
-    <body>
+    <body><main id="content">
       <section class="property-details"><ul>
         <li><span class="name">Property Name:</span><span class="value">Main Warehouse</span></li>
         <li><span class="name">Sale/Lease:</span><span class="value">Sale</span></li>
@@ -55,6 +57,7 @@ const detailHtml = `
         <li><span class="name">Price:</span><span class="value">$4,950,000</span></li>
       </ul></section>
       <div class="property-content"><p>Current detail description.</p></div>
+      <div class="property-gallery"><img src="https://www.pyramidbrokerage.com/listing.jpg"></div>
       <section class="more-info">
         <a href="https://www.pyramidbrokerage.com/flyer.pdf">View flyer</a>
       </section>
@@ -68,7 +71,7 @@ const detailHtml = `
           <a class="mail" href="mailto:jane@example.com?Subject=Website">jane@example.com</a>
         </div>
       </li></ul>
-    </body>
+    </main></body>
   </html>
 `;
 
@@ -401,7 +404,8 @@ test("Pyramid mapper emits strict live freshness on detail and preserves childre
     detail,
     "2026-07-30T18:01:00.000Z"
   );
-  assert.equal(full.id, "101");
+  assert.equal(full.id, "listings/property-101");
+  assert.equal(full.wordpressRecord.id, 101);
   assert.equal(full.salePriceUsd, 4_950_000);
   assert.equal(full.freshnessProvenance.detailScope, "detail_page");
   assert.equal(full.freshnessProvenance.cacheDisposition, "live");
@@ -414,4 +418,105 @@ test("Pyramid mapper emits strict live freshness on detail and preserves childre
   );
   assert.equal(monitor.freshnessProvenance.detailScope, "inventory_only");
   assert.equal(monitor.preserveChildCollections, true);
+});
+
+const publishedPropertyHtml = detailHtml.replace('<main id="content">', `<main id="content">
+    <div class="content-container">
+      <div class="featured-image sale"><img src="https://cdn.photos.sparkplatform.com/cir/featured.jpg"></div>
+      <div class="image-gallery"><ul>
+        <li data-full="https://cdn.photos.sparkplatform.com/cir/large.jpg"><img src="https://cdn.photos.sparkplatform.com/cir/thumb.jpg"></li>
+        <li data-full="https://cdn.photos.sparkplatform.com/cir/second.jpg"></li>
+      </ul></div>
+    </div>
+    <aside><div class="listings-map"><iframe src="https://www.google.com/maps/embed/v1/place?q=100%20Main%20St%2C%20Albany%2C%20NY"></iframe></div></aside>`)
+  .replace("</body>", `<footer><iframe src="https://www.google.com/maps/embed/v1/place?q=Office%20Address"></iframe>
+    <img src="https://cdn.photos.sparkplatform.com/cir/footer-logo.jpg"></footer></body>`);
+
+test("Pyramid canonical keys preserve literal owned paths and native post evidence", () => {
+  const inventory = { ...row(101, PYRAMID_SALE_TERM_ID), link: "https://www.pyramidbrokerage.com/listings/Mixed%20Case/?view=1#photos" };
+  const mapped = mapPyramidListing(inventory, "sale", "2026-07-30T18:00:00Z");
+  assert.equal(mapped.id, "listings/Mixed%20Case");
+  assert.equal(mapped.wordpressRecord.id, 101);
+  assert.equal(mapped.freshnessProvenance.identityMethod, "literal_owned_listing_path+wordpress_post_id");
+  const changedSlug = mapPyramidListing({ ...inventory, link: "https://www.pyramidbrokerage.com/listings/changed/" }, "sale", "2026-07-30T18:00:00Z");
+  assert.notEqual(changedSlug.id, mapped.id);
+  for (const link of ["https://evil.test/listings/x/", "https://www.pyramidbrokerage.com.evil.test/listings/x/", "https://user@www.pyramidbrokerage.com/listings/x/", "https://www.pyramidbrokerage.com/not-listings/x/"]) {
+    assert.throws(() => mapPyramidListing({ ...inventory, link }, "sale", "2026-07-30T18:00:00Z"), /listing URL/);
+  }
+});
+
+test("Pyramid refuses different native posts claiming one canonical path", () => {
+  const first = row(1, PYRAMID_SALE_TERM_ID);
+  assert.throws(() => assertPyramidSnapshot([first, { ...row(2, PYRAMID_LEASE_TERM_ID), link: first.link }], 2, 1), /canonical.*path/);
+});
+
+test("Pyramid retains primary featured and gallery images instead of a page logo", () => {
+  const detail = parsePyramidDetail(publishedPropertyHtml, 101);
+  for (const image of ["featured.jpg", "large.jpg", "second.jpg"]) {
+    assert.ok(detail.photos.includes(`https://cdn.photos.sparkplatform.com/cir/${image}`));
+  }
+  assert.ok(!detail.photos.some((url: string) => /logo|thumb/.test(url)));
+});
+
+test("Pyramid retains the literal property map address and scoped CDN photos", () => {
+  const detail = parsePyramidDetail(publishedPropertyHtml, 101);
+  const mapped = mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", detail, "2026-07-30T18:01:00Z");
+  assert.equal(mapped.street, "100 Main St, Albany, NY");
+  assert.equal(mapped.city, "Albany");
+  assert.equal(mapped.state, "NY");
+  assert.equal(mapped.latitude, undefined);
+  assert.equal(mapped.longitude, undefined);
+  for (const image of ["featured.jpg", "large.jpg", "second.jpg"]) assert.ok(mapped.photos.includes(`https://cdn.photos.sparkplatform.com/cir/${image}`));
+  assert.ok(!mapped.photos.some((url: string) => /logo|thumb/.test(url)));
+  for (const bad of ["http://cdn.photos.sparkplatform.com/x.jpg", "https://cdn.photos.sparkplatform.com.evil.test/x.jpg", "https://user@cdn.photos.sparkplatform.com/x.jpg", "javascript:alert(1)"]) {
+    const invalid = parsePyramidDetail(publishedPropertyHtml.replaceAll("https://cdn.photos.sparkplatform.com/cir/featured.jpg", bad), 101);
+    assert.ok(!invalid.photos.includes(bad));
+  }
+  const officeOnly = parsePyramidDetail(publishedPropertyHtml.replace('class="listings-map"', 'class="office-map"'), 101);
+  assert.equal(mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", officeOnly).street, undefined);
+  const coordinateQuery = parsePyramidDetail(publishedPropertyHtml.replace("100%20Main%20St%2C%20Albany%2C%20NY", "42.1,-73.2"), 101);
+  assert.equal(mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", coordinateQuery).street, undefined);
+  const logoOnly = parsePyramidDetail(detailHtml.replace(/<div class="property-gallery">.*?<\/div>/, "").replace("/listing.jpg", "/footer-logo.jpg"), 101);
+  assert.deepEqual(logoOnly.photos, []);
+});
+
+test("Pyramid mapped historical keys and children survive actual Python staging and merge", () => {
+  resetBrokerStateForTests();
+  const full = mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", parsePyramidDetail(publishedPropertyHtml, 101), "2026-07-30T18:01:00Z");
+  const result = spawnSync("python3", ["-c", [
+    "import json,sys",
+    "from cre_ingest import to_row,merge_rows",
+    "d=json.load(sys.stdin)",
+    "listing=dict(d['listing'],sourceKey='pyramid-brokerage')",
+    "brokers={i:b for i,b in enumerate(d['brokers'])}",
+    "a=to_row(listing,brokers,'2026-07-30T18:02:00Z')",
+    "assert a is not None",
+    "b=merge_rows(a,to_row(listing,brokers,'2026-07-30T18:02:00Z'))",
+    "print(json.dumps({'id':b['external_id'],'address':b['address'],'images':len(b['images']),'contacts':len(b['contacts']),'documents':len(b['documents']),'post_id':b['raw_data']['wordpressRecord']['id']}))",
+  ].join("\n")], { cwd: fileURLToPath(new URL("../../../", import.meta.url)), input: JSON.stringify({ listing: full, brokers }), encoding: "utf8", timeout: 10_000, maxBuffer: 64*1024 });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  const staged = JSON.parse(result.stdout);
+  assert.equal(staged.id, "listings/property-101");
+  assert.equal(staged.post_id, 101);
+  assert.equal(staged.address, "100 Main St, Albany, NY");
+  assert.ok(staged.images >= 3);
+  assert.equal(staged.contacts, 1);
+  assert.equal(staged.documents, 1);
+});
+
+test("Pyramid refuses conflicting property maps and ignores unsafe map origins", () => {
+  const another = '<div class="listings-map"><iframe src="https://www.google.com/maps/embed/v1/place?q=Different%20Property"></iframe></div>';
+  assert.throws(() => parsePyramidDetail(publishedPropertyHtml.replace("</aside>", another + "</aside>"), 101), /conflicting property map addresses/);
+  for (const origin of ["http://www.google.com", "https://www.google.com.evil.test", "https://user@www.google.com"]) {
+    const detail = parsePyramidDetail(publishedPropertyHtml.replace("https://www.google.com/maps/embed/v1/place?q=100", origin + "/maps/embed/v1/place?q=100"), 101);
+    assert.equal(detail.street, null);
+  }
+});
+
+test("Pyramid monitor does not promote site branding without a featured property image", () => {
+  const inventory = row(101, PYRAMID_SALE_TERM_ID);
+  const mapped = mapPyramidListing({ ...inventory, featured_media: 0, _embedded: { "wp:term": inventory._embedded["wp:term"] }, yoast_head_json: { og_image: [{ url: "https://www.pyramidbrokerage.com/logo.png" }] } }, "sale", "2026-07-30T18:00:00Z");
+  assert.deepEqual(mapped.photos ?? [], []);
+  assert.equal(mapped.preserveChildCollections, true);
 });
