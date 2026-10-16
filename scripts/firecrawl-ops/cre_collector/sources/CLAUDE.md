@@ -33,6 +33,15 @@ ordered snapshot convergence; full mode still requires each selected detail page
 The [WordPress REST contract](https://developer.wordpress.org/rest-api/using-the-rest-api/global-parameters/#_embed)
 supports selecting the term relation without broadly embedding other resources.
 
+Pyramid canonical listing keys preserve the validated owned URL's literal pathname
+without surrounding slashes. Do not decode or lowercase that path. Numeric
+WordPress post IDs remain separate inventory/detail-shortlink evidence, and two
+posts claiming the same canonical path fail closed. A changed path is a different
+key, never an automatic rekey. Full detail mapping reads literal property-map
+address text and scoped property photos; only the observed HTTPS image CDN is
+allowed alongside owned images. Detail ownership stays on the Pyramid host.
+No office-map/footer-logo fallback or coordinate inference is permitted.
+
 ## external_id Rules (collector id → ingest)
 
 | Source | Stable `external_id` | Gotcha |

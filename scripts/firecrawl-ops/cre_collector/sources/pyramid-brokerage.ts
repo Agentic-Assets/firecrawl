@@ -29,6 +29,7 @@ export type PyramidSnapshot = {
 
 export type PyramidDetail = {
   postId: number;
+  street: string | null;
   facts: Record<string, string>;
   description: string | null;
   brochures: Array<{ name: string | null; url: string }>;
@@ -58,6 +59,29 @@ function pyramidAbsoluteUrl(value: unknown): string | null {
     ) {
       return null;
     }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function pyramidListingKey(value: unknown): string {
+  const owned = pyramidAbsoluteUrl(value);
+  const path = owned ? new URL(owned).pathname : "";
+  if (!path.startsWith("/listings/") || !path.slice("/listings/".length).replace(/\/+$/g, "")) {
+    throw new Error("Pyramid listing URL has no owned property path");
+  }
+  // Historical keys are the literal URL path: do not decode or fold case.
+  return path.replace(/^\/+|\/+$/g, "");
+}
+
+function pyramidPropertyImageUrl(value: unknown): string | null {
+  const raw = clean(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw, PYRAMID_HOST);
+    if (url.protocol !== "https:" || url.username || url.password || url.port
+        || !["www.pyramidbrokerage.com", "cdn.photos.sparkplatform.com"].includes(url.hostname)) return null;
     return url.toString();
   } catch {
     return null;
@@ -179,6 +203,7 @@ export function assertPyramidSnapshot(
   }
 
   const ids = new Set<number>();
+  const canonicalPaths = new Set<string>();
   let sale = 0;
   let lease = 0;
   for (const row of rows) {
@@ -195,6 +220,11 @@ export function assertPyramidSnapshot(
     if (!link || !new URL(link).pathname.startsWith("/listings/")) {
       throw new Error(`Pyramid WordPress row ${id} has an invalid detail URL`);
     }
+    const canonicalPath = pyramidListingKey(link);
+    if (canonicalPaths.has(canonicalPath)) {
+      throw new Error(`Pyramid inventory contains duplicate canonical listing path ${canonicalPath}`);
+    }
+    canonicalPaths.add(canonicalPath);
     const saleTypes = Array.isArray(row?.["sale-type"]) ? row["sale-type"].map(Number) : [];
     if (saleTypes.length !== 1) {
       throw new Error(`Pyramid WordPress row ${id} has ambiguous sale-type taxonomy`);
@@ -316,6 +346,23 @@ function pyramidFactMap($: cheerio.CheerioAPI): Record<string, string> {
   return facts;
 }
 
+function pyramidPropertyStreet($: cheerio.CheerioAPI): string | null {
+  const addresses = new Set<string>();
+  $("#content .listings-map iframe[src]").each((_, element) => {
+    try {
+      const url = new URL($(element).attr("src") ?? "");
+      if (url.origin !== "https://www.google.com" || url.pathname !== "/maps/embed/v1/place"
+          || url.username || url.password || url.port || url.hash || url.searchParams.getAll("q").length !== 1) return;
+      const address = url.searchParams.get("q")?.trim();
+      if (address && !/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(address)) addresses.add(address);
+    } catch {
+      // An absent/unsupported map does not authorize inferred geography.
+    }
+  });
+  if (addresses.size > 1) throw new Error("Pyramid detail has conflicting property map addresses");
+  return [...addresses][0] ?? null;
+}
+
 export function parsePyramidDetail(html: string, expectedPostId?: number): PyramidDetail {
   const shell = cheerio.load(html);
   const shellTitle = clean(shell("title").text());
@@ -349,20 +396,13 @@ export function parsePyramidDetail(html: string, expectedPostId?: number): Pyram
       .filter(Boolean)
   ).map((url) => ({ name: titleFromFilename(url), url }));
   const photos = dedupeStrings(
-    [
-      $('meta[property="og:image"]').attr("content"),
-      ...$(".property-gallery img, .property-gallery [data-bg-image], .property-slider img")
-        .map(
-          (_, element) =>
-            $(element).attr("src") ??
-            $(element).attr("data-src") ??
-            $(element).attr("data-bg-image")
-        )
-        .get(),
-    ]
+    $("#content .featured-image img, #content .image-gallery [data-full], #content .property-gallery img, #content .property-gallery [data-bg-image], #content .property-slider img")
+      .map((_, element) => $(element).attr("data-full") ?? $(element).attr("src")
+        ?? $(element).attr("data-src") ?? $(element).attr("data-bg-image"))
+      .get()
       .map((value) => {
         const match = clean(value)?.match(/url\(['"]?([^'")]+)['"]?\)/i)?.[1] ?? value;
-        return pyramidAbsoluteUrl(match);
+        return pyramidPropertyImageUrl(match);
       })
       .filter((value): value is string => Boolean(value))
   );
@@ -394,7 +434,7 @@ export function parsePyramidDetail(html: string, expectedPostId?: number): Pyram
     })
     .get()
     .filter((contact) => contact.name || contact.email);
-  return { postId, facts, description, brochures, photos, contacts };
+  return { postId, street: pyramidPropertyStreet($), facts, description, brochures, photos, contacts };
 }
 
 function pyramidShortlinkPostId(value: unknown): number | null {
@@ -434,8 +474,9 @@ function pyramidFeaturedPhoto(row: any): string | null {
   const yoastImage = Array.isArray(row?.yoast_head_json?.og_image)
     ? row.yoast_head_json.og_image[0]?.url
     : null;
-  return pyramidAbsoluteUrl(
-    (Array.isArray(media) ? media[0]?.source_url : null) ?? yoastImage
+  return pyramidPropertyImageUrl(
+    (Array.isArray(media) ? media[0]?.source_url : null)
+      ?? (Number(row?.featured_media) > 0 ? yoastImage : null)
   );
 }
 
@@ -485,7 +526,7 @@ export function mapPyramidListing(
     ? detailObservation("pyramid_direct_detail_html", "live", detailObservedAt)
     : null;
   return prune({
-    id: String(id),
+    id: pyramidListingKey(row?.link),
     name: detail?.facts?.["Property Name"] ?? title,
     headline: title,
     transactionType: tx === "sale" ? "Sale" : "Lease",
@@ -494,6 +535,7 @@ export function mapPyramidListing(
       detail?.facts?.["Major Use"] ??
       pyramidEmbeddedTerms(row, "property-use").join(", "),
     description,
+    street: detail?.street,
     state: pyramidEmbeddedTerms(row, "state")[0],
     city: pyramidEmbeddedTerms(row, "city")[0],
     county: pyramidEmbeddedTerms(row, "county")[0],
@@ -507,7 +549,7 @@ export function mapPyramidListing(
     brokerIds: brokers,
     contactsDetailed: detail?.contacts,
     brochures: detail?.brochures,
-    photos: dedupeStrings([...(detail?.photos ?? []), pyramidFeaturedPhoto(row)].filter(Boolean) as string[]),
+    photos: detail ? detail.photos : dedupeStrings([pyramidFeaturedPhoto(row)].filter(Boolean) as string[]),
     url: pyramidAbsoluteUrl(row?.link),
     canonicalUrl: pyramidAbsoluteUrl(row?.link),
     lastUpdated: clean(row?.modified_gmt ?? row?.modified),
@@ -520,14 +562,14 @@ export function mapPyramidListing(
           generationId: detailObservationValue.generationId,
           method: detailObservationValue.method,
           cacheDisposition: detailObservationValue.cacheDisposition,
-          identityMethod: "wordpress_post_id",
+          identityMethod: "literal_owned_listing_path+wordpress_post_id",
         }
       : {
           detailScope: "inventory_only",
           generationId: refreshGenerationId(),
           method: "pyramid_wordpress_rest_inventory",
           cacheDisposition: "live",
-          identityMethod: "wordpress_post_id",
+          identityMethod: "literal_owned_listing_path+wordpress_post_id",
         },
     preserveChildCollections: detail ? undefined : true,
     wordpressRecord: {
