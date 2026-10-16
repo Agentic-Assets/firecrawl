@@ -249,7 +249,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
     import sys
     import time
     from test_cre_checkpoint_refresh import strict_artifact
-    from cre_owned_processes import OwnedProcessGroup
+    from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
 
     root = tmp_path / "2026-10-15T120000Z"
     root.mkdir()
@@ -267,15 +267,33 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
     owned = {}
     cache_ready = root / "cache-ready"
     release_cache_worker = root / "release-cache-worker"
+    first_compute_started = root / "first-compute-started"
+    fourth_started = root / "fourth-started"
+    first_compute_launched = False
     monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *a: None)
     original_command = refresh.run_command
 
     def command(argv, log, **kwargs):
+        nonlocal first_compute_launched
         if "cre_pipeline_artifact_worker.py" in str(argv[1]):
             # Delay the actual compute process, not parent validation code.
             events.append(("compute", time.monotonic()))
             code = "import runpy,sys,time; time.sleep(0.3); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name='__main__')"
-            argv = [sys.executable, "-c", code, *argv[1:]]
+            if not first_compute_launched:
+                first_compute_launched = True
+                # The real worker stays in flight while its parent's real poll
+                # hook frees the held collector slot and dispatches source four.
+                code = (
+                    "import pathlib,runpy,sys,time; root=pathlib.Path(sys.argv[1]); "
+                    "(root/'first-compute-started').touch(); deadline=time.monotonic()+5\n"
+                    "while not (root/'fourth-started').exists():\n"
+                    " if time.monotonic()>=deadline: raise RuntimeError('fourth fetch not dispatched during compute')\n"
+                    " time.sleep(0.01)\n"
+                    "sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0],run_name='__main__')"
+                )
+                argv = [sys.executable, "-c", code, str(root), *argv[1:]]
+            else:
+                argv = [sys.executable, "-c", code, *argv[1:]]
         return original_command(argv, log, **kwargs)
 
     def start(run_dir, owner, source, **kwargs):
@@ -304,6 +322,17 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
                 " if time.monotonic()>=deadline: raise RuntimeError('independent dispatch withheld')\n"
                 " time.sleep(0.01)\n"
                 "time.sleep(float(sys.argv[1])); pathlib.Path(sys.argv[2]).write_text(sys.argv[3])"
+            )
+        if source == sources[1]:
+            # Fixed child sleeps cannot require compute to begin before both
+            # collection slots refill. Hold one slot until actual worker start.
+            code = (
+                "import pathlib,sys,time; root=pathlib.Path(sys.argv[2]).parent.parent; "
+                "deadline=time.monotonic()+5\n"
+                "while not (root/'first-compute-started').exists():\n"
+                " if time.monotonic()>=deadline: raise RuntimeError('first compute did not start')\n"
+                " time.sleep(0.01)\n"
+                "pathlib.Path(sys.argv[2]).write_text(sys.argv[3])"
             )
         if retained_cache and source == sources[1]:
             assert owned[sources[0]].process.poll() is None
@@ -334,6 +363,8 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
             OwnedProcessGroup.from_spawn(process),
         )
         owned[source] = item
+        if source == sources[3]:
+            fourth_started.touch()
         if retained_cache and source == sources[0]:
             deadline = time.monotonic() + 3
             while not cache_ready.exists():
@@ -361,19 +392,29 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
     monkeypatch.setattr(refresh, "run_command", command)
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
-    assert (
-        pipeline.run_bounded_pipeline(
-            root,
-            manifest,
-            sources,
-            page_cap=400,
-            concurrency=1,
-            attempts_this_run=1,
-            env_file=None,
-            source_workers=2,
+    try:
+        assert (
+            pipeline.run_bounded_pipeline(
+                root,
+                manifest,
+                sources,
+                page_cap=400,
+                concurrency=1,
+                attempts_this_run=1,
+                env_file=None,
+                source_workers=2,
+            )
+            == []
         )
-        == []
-    )
+    finally:
+        first_compute_started.touch()
+        fourth_started.touch()
+        release_cache_worker.touch()
+        groups = [item.owned_group for item in owned.values()]
+        settlement = settle_owned_groups(groups, grace_seconds=1, kill_seconds=2)
+        assert settlement.settled, "private fixture children did not settle"
+        for item in owned.values():
+            item.log_handle.close()
     first_compute = next(event[1] for event in events if event[0] == "compute")
     fourth_start = next(
         event[2] for event in events if event[:2] == ("start", sources[3])
