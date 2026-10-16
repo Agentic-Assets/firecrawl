@@ -54,6 +54,9 @@ checkpoint-manifest readback. Dated docs are operational history.
    [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895);
    use its existing experiment/acceptance children rather than adding an issue
    for each run.
+8. [Brokerage completion playbook](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
+   for primary-source evidence, website variation classification, and adapter
+   regression guidance. The source-specific contract remains in `sources/CLAUDE.md`.
 
 ## Files
 

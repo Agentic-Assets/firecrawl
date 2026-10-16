@@ -25,7 +25,7 @@ A brokerage is complete only when all of these are true:
 1. Start with the source folder:
 
 ```bash
-cd /Users/caymanseagraves/Github/agentic-assets/firecrawl
+# From the repository root on macOS, Linux, or Ubuntu/WSL:
 bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 cd scripts/firecrawl-ops/cre_collector
 npm run typecheck
@@ -51,13 +51,85 @@ serve the local browser path but reject plain urllib.
 4. Build the collector adapter:
 
 - Prefer public JSON APIs over rendered cards.
+- Prefer first-party structured records and semantic fields over selectors tied
+  to card position or visual order. Use DOM or rendered-page fallbacks only when
+  primary evidence shows the required public field is unavailable elsewhere.
 - Use full pagination and cap by `--max-items`.
 - Preserve source raw rows in `raw_data`.
 - Add bounded concurrency and explicit per-listing failure evidence.
 - Exploratory probes may retain a feed row with `detailError`. Strict admission
   fails closed on incomplete required detail. Only an explicitly registered
   authoritative-inventory or scoped contract may preserve existing children.
-- Canonicalize hostnames and relative URLs.
+- Preserve provider IDs and original URLs. Normalize values only for comparison,
+  using the source contract's rules and the same implementation in the mapper
+  and verifier. Case, whitespace, or an optional `www` label is equivalent only
+  where that source contract explicitly permits it; never rewrite an ID or
+  source URL, infer a host alias, or let a comparison normalization change the
+  recorded evidence.
+
+## Website variation and evidence policy
+
+These are expectations for new or changed adapter work, not a claim that every
+existing adapter already meets them or that a pending fix has shipped.
+
+Treat a changed page as a question to classify, not as permission to relax the
+adapter. Separate presentation or transport changes from a provider/feed
+change, host-coordinate drift, identity mismatch, parser vocabulary gap, and a
+coverage or baseline-policy hold. A similar-looking site, hostname, address, or
+brokerage name does not establish that two records or endpoints are the same.
+
+Use first-party provider documentation, the firm's current official site, and
+the exact registered source configuration as primary evidence. Reproduce a
+suspected failure with the current adapter's URL, query, headers, referer,
+redirect policy, and parser before changing behavior. Keep any diagnostic
+request finite and retain its timestamp, status, request metadata, response
+hash, and sanitized fixture privately. A successful page proves only that page;
+prove pagination, declared totals, unique native IDs, and source ownership for
+the complete feed separately. Do not treat an ad-hoc client's response as proof
+of a production adapter failure.
+
+Map fields by meaning, not by DOM position. Use provider field names and
+semantic labels where available; do not infer a field from its visual order or
+silently substitute a default for an essential fact such as transaction type,
+identity, address, or source ownership. Add field aliases or layout fallbacks
+only after primary evidence establishes their meaning and regression tests cover
+the observed variation and its negative cases. For example, a Sublease token
+that the current parser does not recognize is a parser-vocabulary defect; that
+observation alone does not show the provider changed its site.
+
+Use one source-owned normalization rule wherever the mapper and its verifier
+compare the same value. Keep it narrow and explicit: apply only harmless
+case/whitespace handling or optional-`www` equivalence that the source contract
+allows. Keep native IDs and original provider URLs byte-for-byte as captured.
+Do not infer aliases or migrate identities from URL similarity, names,
+addresses, coordinates, or a new hostname. A changed coordinate requires
+current first-party ownership evidence tied to the exact registered source
+configuration; a provider switch requires evidence of the new feed and a
+reviewed identity strategy.
+
+If an essential value is unknown, required pages are missing, or two records
+claim an incompatible identity, fail the affected source's required-member
+proof and preserve the last-known-good data. A source artifact cannot qualify
+as complete while any required member is missing or failed. Diagnostics should
+identify the source key, stage, native provider ID when available, field,
+observed value or shape, expected schema/rule, and receipt or fixture reference
+without exposing credentials or unrestricted response bodies. Continue after a
+source-local failure only through a runner that explicitly supports that
+behavior. Global ownership, resource, evidence, or uncertain-write failures
+stop the run; do not retry an uncertain write. Retry only bounded, classified
+transient failures, not a schema mismatch or an unexplained completeness
+failure.
+
+Build regression fixtures from sanitized, genuinely observed provider responses.
+Test the current layout, each supported variation, and mutations for missing,
+conflicting, malformed, or newly unknown critical fields. Keep fixtures and
+tests on the real production mapper/verifier path rather than duplicating its
+logic. Record meaningful observations, rejected hypotheses, and experiment
+results in the existing [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895)
+and its existing experiment children; do not create a run log or new tracking
+framework. Keep macOS/Linux collection and validation semantics shared; a
+Windows wrapper may forward supported settings but must not create a separate
+provider interpretation.
 
 5. Detail-page enrichment:
 
@@ -98,8 +170,9 @@ a full registry. A supervised production refresh uses
 for the registry, with the CPU resource profile in `START_HERE.md`. Those paths
 bind a clean pushed SHA, freshness generation, source and aggregate gates,
 dry-run, additive ingest, and exact database readback. Lifecycle reconciliation
-is separate and allowed only when the exact source gate reports
-`mark_missing_safe`.
+is separate and requires the exact source gate to report `mark_missing_safe`,
+explicit founder approval for the exact scope, and the applicable operator
+readback. Adapter completion does not grant lifecycle authority.
 
 9. Monitor enablement (when enumeration key matches ingest `external_id`):
 
@@ -116,14 +189,16 @@ return zero monitor rows. Never feed a monitor artifact to `cre_ingest.py`. See
 
 ## Documentation Required Per Brokerage
 
-Each source should have:
-
-- `scripts/firecrawl-ops/cre_scrapers/brokers/<broker>/README.md`
-- Status in `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
-- A dated handoff note for the current work session (the 2026-06 buildout
-  handoff and lessons are archived in `scripts/firecrawl-ops/cre_collector/archive/`)
-- If the source changes counts or coverage, preserve a dated checkpoint/report
-  artifact. Do not hardcode undated live counts in `START_HERE.md`.
+For an adapter change, update the active source contract and its focused tests
+in `scripts/firecrawl-ops/cre_collector/sources/` and
+`scripts/firecrawl-ops/cre_collector/tests/`. Record durable decisions,
+meaningful evidence, and experiment results in the existing AGENTIC-2895 issue
+or its existing children. Keep raw provider responses, credentials, and
+one-session working files out of tracked documentation; use ignored `.scratch/`
+for private evidence. Do not create a legacy scraper README, a dated local
+handoff, or a local backlog solely to document a source run. Durable guides
+should describe the adapter contract and remaining limits, not assert live
+counts without fresh readback.
 
 ## Cushman Pattern To Reuse
 
