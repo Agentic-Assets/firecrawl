@@ -9,7 +9,9 @@
 > launchd jobs, markers, or collector artifacts at that point in time. For
 > current refresh work, use `cre_status.sh`, the strict checkpoint runner, and
 > [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902). The July 11 operator runbook remains historical
-> scheduler-recovery and OM-canary context.
+> scheduler-recovery and OM-canary context. For the target of unattended
+> scheduled operation and its unproven acceptance cases, use the
+> [operating goal](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#unattended-operating-goal).
 
 Multi-source CRE listing collector + Supabase ingestor. This is the
 **production path** for building and refreshing the `credeals` listing

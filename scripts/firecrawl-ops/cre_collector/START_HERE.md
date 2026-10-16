@@ -12,6 +12,8 @@
 > The July 11 operator runbook remains historical scheduler-recovery and
 > OM-canary context only. Always obtain live scheduler, lock, manifest, and
 > database readback evidence before acting.
+> Unattended scheduled operation is a goal, not blanket current acceptance; see
+> [the operating goal and acceptance](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#unattended-operating-goal).
 
 > **Supported production path:** When collection and ingest are enabled, they
 > run here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`, and
