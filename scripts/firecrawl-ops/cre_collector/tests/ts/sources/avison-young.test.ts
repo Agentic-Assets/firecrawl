@@ -42,8 +42,14 @@ import {
   assertAvisonYoungOutputIdentity,
   assertAvisonYoungDetailDoc,
   assertAvisonYoungStrictFeed,
+  AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
+  AvisonYoungHttpStatusError,
+  AvisonYoungTerminalDetailError,
+  AvisonYoungTerminalSourceError,
   fetchAvisonYoungDirectDoc,
   fetchAvisonYoungDirectDocWithRetry,
+  isExclusiveAvisonYoungTerminal404Failure,
+  mapAvisonYoungStrictDetails,
   isAvisonYoungDirectDetailUrl,
   isPublicAvisonYoungAddress,
   enrichAvisonYoungListing,
@@ -1043,6 +1049,156 @@ test("Avison strict direct detail reports the terminal per-page failure", async 
       ),
     /failed after 3 attempt\(s\): Error: HTTP 503/
   );
+});
+
+test("Avison direct transport preserves actual HTTP status as a typed error", async () => {
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDoc(
+        "https://www.avisonyoung.us/properties/missing",
+        30000,
+        async () => ["93.184.216.34"],
+        async () => ({ status: 404, location: null, body: "not found" })
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungHttpStatusError && error.status === 404
+  );
+});
+
+test("Avison terminal 404 is not retried, while typed transient status is retried", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/missing",
+        async () => {
+          calls++;
+          throw new AvisonYoungHttpStatusError(
+            "https://www.avisonyoung.us/properties/missing",
+            404
+          );
+        },
+        3,
+        20,
+        async (milliseconds) => { waits.push(milliseconds); }
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungHttpStatusError && error.status === 404
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(waits, []);
+
+  calls = 0;
+  const transientWaits: number[] = [];
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/transient",
+        async () => {
+          calls++;
+          throw new AvisonYoungHttpStatusError(
+            "https://www.avisonyoung.us/properties/transient",
+            503
+          );
+        },
+        3,
+        20,
+        async (milliseconds) => { transientWaits.push(milliseconds); }
+      ),
+    /failed after 3 attempt\(s\)/
+  );
+  assert.equal(calls, 3);
+  assert.deepEqual(transientWaits, [20, 40]);
+
+  calls = 0;
+  await assert.rejects(
+    () =>
+      fetchAvisonYoungDirectDocWithRetry(
+        "https://www.avisonyoung.us/properties/untyped-404",
+        async () => {
+          calls++;
+          throw new Error("HTTP 404");
+        },
+        3,
+        0
+      ),
+    /failed after 3 attempt\(s\)/
+  );
+  assert.equal(calls, 3);
+});
+
+test("Avison strict mapper stops admission, settles active work, and distinguishes mixed failures", async () => {
+  const started: number[] = [];
+  let rejectSecond!: (error: Error) => void;
+  const second = new Promise<number>((_resolve, reject) => {
+    rejectSecond = reject;
+  });
+  const result = mapAvisonYoungStrictDetails(
+    [0, 1, 2],
+    2,
+    async (_item, index) => {
+      started.push(index);
+      if (index === 0) {
+        throw new AvisonYoungTerminalDetailError({
+          listingId: "17808",
+          role: "external",
+          status: 404,
+        });
+      }
+      return second;
+    }
+  );
+  rejectSecond(new Error("temporary transport failure"));
+  await assert.rejects(result, /temporary transport failure/);
+  assert.deepEqual(started.sort(), [0, 1]);
+
+  const terminalStarted: number[] = [];
+  await assert.rejects(
+    () =>
+      mapAvisonYoungStrictDetails(
+        [0, 1, 2],
+        2,
+        async (_item, index) => {
+          terminalStarted.push(index);
+          throw new AvisonYoungTerminalDetailError({
+            listingId: "id-" + index,
+            role: "sharpLaunch",
+            status: 404,
+          });
+        }
+      ),
+    (error: unknown) =>
+      error instanceof AvisonYoungTerminalSourceError
+      && error.failures.length === 2
+      && error.failures.every((failure) => failure.status === 404)
+  );
+  assert.deepEqual(terminalStarted.sort(), [0, 1]);
+});
+
+test("Avison reserved source exit is limited to an exclusive complete terminal failure", () => {
+  const requestedSources = ["avison-young"];
+  const transactions = ["sale", "lease"];
+  assert.equal(AVISON_YOUNG_TERMINAL_404_EXIT_CODE, 78);
+  assert.equal(
+    isExclusiveAvisonYoungTerminal404Failure({
+      requestedSources,
+      transactions,
+      listingsCollected: 0,
+      terminalFailureTransactions: 2,
+      otherFailureCount: 0,
+    }),
+    true
+  );
+  for (const input of [
+    { requestedSources: ["cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources: ["avison-young", "cbre"], transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 1, terminalFailureTransactions: 2, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 1, otherFailureCount: 0 },
+    { requestedSources, transactions, listingsCollected: 0, terminalFailureTransactions: 2, otherFailureCount: 1 },
+  ]) {
+    assert.equal(isExclusiveAvisonYoungTerminal404Failure(input), false);
+  }
 });
 
 test("Avison direct detail transport rejects unsafe URLs, addresses, and redirects", async (t) => {
