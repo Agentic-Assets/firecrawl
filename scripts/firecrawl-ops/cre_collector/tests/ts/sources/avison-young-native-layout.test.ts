@@ -85,10 +85,20 @@ test("Avison native building identity rejects a non-owned canonical URL and mism
     "1839 S Alma School Rd, Mesa, AZ 85210",
     "900 Other Avenue, Tempe, AZ 85281"
   );
+  const streetNumberSubstring = rawHtml.replace(
+    "1839 S Alma School Rd, Mesa, AZ 85210",
+    "11839 S Alma School Rd, Mesa, AZ 85210"
+  );
+  const citySubstring = rawHtml.replace(
+    "1839 S Alma School Rd, Mesa, AZ 85210",
+    "1839 S Alma School Rd, Mesa Heights, AZ 85210"
+  );
   for (const html of [
     conflictingOgUrl,
     queryMismatchedOgUrl,
     conflictingAddress,
+    streetNumberSubstring,
+    citySubstring,
   ]) {
     assert.throws(
       () => assertAvisonYoungDetailDoc(detail(html), nativeUrl, base),

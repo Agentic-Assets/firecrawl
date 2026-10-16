@@ -464,14 +464,18 @@ export function assertAvisonYoungDetailDoc(
         return false;
       }
     };
+    const containsWholePhrase = (text: string, phrase: string): boolean =>
+      Boolean(phrase) && (` ${text} `).includes(` ${phrase} `);
     const visibleIdentityHeadings = $("h2").map((_index, element) =>
       normalizeIdentityText($(element).text())
     ).get();
     const identityHeadingCandidates = visibleIdentityHeadings.filter((text) =>
-      visibleStreet && text.includes(visibleStreet)
+      containsWholePhrase(text, visibleStreet)
     );
+    const visibleAddress = [visibleStreet, visibleCity, visibleState].join(" ");
     const matchingIdentityHeadings = identityHeadingCandidates.filter((text) =>
-      identityParts.every((part) => text.includes(part))
+      containsWholePhrase(text, visibleName)
+      && containsWholePhrase(text, visibleAddress)
     );
     const visibleIdentityMatches =
       hasCompleteFeedIdentity
