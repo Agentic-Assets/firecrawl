@@ -3686,6 +3686,7 @@ def _cohort_attempt(
         attempt["chunks"] = []
     checkpoint["attempts"].append(attempt)
     checkpoint["state"] = "collecting"
+    checkpoint.pop("pipeline_stage", None)
     save_manifest(run_dir, manifest)
     return attempt, tmp_artifact, attempt_log, attempt_started
 
@@ -4597,7 +4598,8 @@ def collect_source(
             )
             checkpoint["state"] = "artifact_rejected"
             save_manifest(run_dir, manifest)
-            continue
+            # The completed artifact is rejected, not a retryable process exit.
+            return None
         os.replace(tmp_artifact, canonical)
         make_private_artifact(canonical)
         stats["sha256"] = sha256_file(canonical)
@@ -5006,6 +5008,7 @@ def _cohort_needs_collection(
         return False
     if checkpoint.get("state") in {
         "collect_infrastructure_failed",
+        "artifact_rejected",
         "ingesting",
         "ingest_recovery_required",
     }:
