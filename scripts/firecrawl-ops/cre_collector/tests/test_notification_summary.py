@@ -1133,3 +1133,124 @@ def test_actual_pipeline_producer_attempt_and_report_feed_strict_summary(evidenc
     assert output.stat().st_mode & 0o777 == 0o600
     evidence["save"]()
     assert read_pipeline(evidence)["complete"] is True
+
+
+@pytest.mark.parametrize(
+    "outcome", ["failed", "interrupted", "cleanup_unknown", "write_unknown"]
+)
+def test_real_main_terminal_metadata_keeps_verified_partial_summary(
+    evidence, monkeypatch, outcome
+):
+    """Real terminal producer and private-file reader; commands/telemetry are fake."""
+    from contextlib import nullcontext
+
+    import cre_checkpoint_refresh as refresh
+
+    setup = pipeline_evidence(evidence)
+    child = setup["child"]
+    expected_finish = child["finished_at"]
+    child["pipeline"]["commit_outcome_unknown"] = outcome == "write_unknown"
+    cleared = []
+    commands = []
+    template = refresh.new_manifest(
+        evidence["files"]["child"].parent,
+        git_sha=SHA,
+        git_dirty=False,
+        sources=[SOURCE, "cbre"],
+        page_cap=400,
+        concurrency=1,
+        pipeline=True,
+        database_target=child["preflight"]["database_target"],
+    )
+    child["config"] = template["config"]
+    child["config"]["current_inventory_admissions"] = {}
+    child["scope"] = template["scope"]
+    child["schema_version"] = template["schema_version"]
+
+    class OwnedLock:
+        held = False
+
+        def __init__(self, path, *, recovery_required):
+            assert recovery_required
+
+        def __enter__(self):
+            self.held = True
+            return self
+
+        def clear_recovery_requirement(self):
+            cleared.append(True)
+
+        def __exit__(self, *args):
+            self.held = False
+
+    def fail_command(*args, **kwargs):
+        commands.append(args)
+        # main's actual resume path must clear the previous terminal timestamp
+        # before any next command; the new failure must publish a new timestamp.
+        saved = json.loads(evidence["files"]["child"].read_text())
+        assert saved["finished_at"] is None
+        if outcome == "interrupted":
+            raise KeyboardInterrupt
+        if outcome == "cleanup_unknown":
+            raise refresh.ProcessCleanupUnknown("synthetic unsettled child")
+        raise refresh.RefreshError("synthetic source acquisition failure")
+
+    monkeypatch.setattr(refresh, "load_resume_manifest", lambda *a, **k: child)
+    monkeypatch.setattr(refresh, "git_identity", lambda: (SHA, False))
+    monkeypatch.setattr(
+        refresh,
+        "database_target_fingerprint",
+        lambda *a: child["preflight"]["database_target"],
+    )
+    monkeypatch.setattr(
+        refresh, "checkpoint_lock_dir", lambda *a: evidence["series"] / "private-lock"
+    )
+    monkeypatch.setattr(refresh, "SharedLock", OwnedLock)
+    monkeypatch.setattr(
+        refresh, "observe_resource_usage", lambda *a, **k: nullcontext()
+    )
+    monkeypatch.setattr(refresh, "utc_now", lambda: expected_finish)
+    monkeypatch.setattr(refresh, "run_cpu_guard_preflight", lambda *a: 10.0)
+    for guard in (refresh.HostCpuGuard, refresh.HostMemoryGuard):
+        monkeypatch.setattr(guard, "start", lambda *a: None)
+        monkeypatch.setattr(guard, "stop", lambda *a: None)
+    monkeypatch.setattr(refresh.HostMemoryGuard, "preflight", lambda *a: 0)
+    monkeypatch.setattr(refresh, "run_command", fail_command)
+    monkeypatch.setattr(refresh, "save_report", lambda *a: None)
+    argv = [
+        "--resume",
+        str(evidence["files"]["child"].parent),
+        "--sources",
+        SOURCE + ",cbre",
+        "--pipeline",
+    ]
+    if outcome == "interrupted":
+        assert refresh.main(argv) == 130
+    else:
+        with pytest.raises(refresh.RefreshError, match="synthetic"):
+            refresh.main(argv)
+    assert len(commands) == 1
+    saved = json.loads(evidence["files"]["child"].read_text())
+    assert saved["finished_at"] == expected_finish
+    assert saved["status"] == ("interrupted" if outcome == "interrupted" else "failed")
+    assert saved["pipeline"]["units"][0]["state"] == "verified"
+    assert bool(cleared) is (outcome not in {"cleanup_unknown", "write_unknown"})
+    evidence["values"]["child"] = saved
+    for item in setup["parent"]["sources"].values():
+        item["checkpoint_status"] = saved["status"]
+    if outcome in {"cleanup_unknown", "write_unknown"}:
+        # A terminal timestamp is not proof of settlement. Keep the independently
+        # required cleanup confirmation false for uncertain child/write outcomes.
+        evidence["values"]["settlement"]["nested_cleanup_confirmed"] = False
+    evidence["save"]()
+    if outcome in {"interrupted", "cleanup_unknown", "write_unknown"}:
+        with pytest.raises(REFUSED):
+            read_pipeline(evidence)
+    else:
+        result = read_pipeline(evidence)
+        assert result["verified"] is True and result["complete"] is False
+        assert result["per_source_summaries"][0]["verified_listings"] == 3
+        assert result["failed_source_keys"] == ["cbre"]
+        output = evidence["series"] / "produced-partial-summary.json"
+        output.write_text(json.dumps(result))
+        output.chmod(0o600)

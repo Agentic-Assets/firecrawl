@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
@@ -61,6 +62,10 @@ def test_resource_observer_and_report_follow_checkpoint_lifecycle(
             "interrupt": "interrupted",
         }
         assert manifest["status"] == expected[outcome]
+        assert manifest["finished_at"] is not None
+        assert datetime.fromisoformat(
+            manifest["finished_at"]
+        ) >= datetime.fromisoformat(manifest["started_at"])
         events.append("report_saved")
 
     def run_command(argv, _log, **_kwargs):
