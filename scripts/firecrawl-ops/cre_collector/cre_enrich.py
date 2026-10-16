@@ -481,9 +481,8 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
             raise ValueError(f"enriched artifact URL was not claimed: {url!r}")
         if listing.get("sourceKey") != claimed.get("source_key"):
             raise ValueError(f"enriched artifact source key mismatch: {url!r}")
-        if (
-            listing.get("sourceKey") == "hanley"
-            and listing.get("id") != claimed.get("external_id")
+        if listing.get("sourceKey") == "hanley" and listing.get("id") != claimed.get(
+            "external_id"
         ):
             raise ValueError("Hanley enrichment native identity differs from its claim")
         if url in seen_urls:
