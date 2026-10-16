@@ -164,12 +164,14 @@ export function lyonStahlPropertySitemaps(indexXml: string): string[] {
 export function lyonStahlPropertyUrls(propertyXml: string): string[] {
   const locations = sitemapLocations(propertyXml, "urlset", "url", "Lyon Stahl property sitemap");
   const urls = dedupeStrings(
-    locations.map((value, index) => {
+    locations.flatMap((value, index) => {
+      if (value === LYON_STAHL_SOURCE_URL) return [];
       const url = lyonStahlUrl(value, "detail");
       if (!url) throw new Error(`Lyon Stahl property sitemap URL ${index} is invalid`);
-      return url;
+      return [url];
     })
   );
+  if (!urls.length) throw new Error("Lyon Stahl property sitemap has no valid detail URL");
   return urls;
 }
 

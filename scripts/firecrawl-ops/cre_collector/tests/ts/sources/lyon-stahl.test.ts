@@ -145,6 +145,80 @@ test("Lyon Stahl sitemap parsers keep only numbered same-host property sitemaps 
   );
 });
 
+// First three locs from the retained primary shard (SHA256 c37dd421d712d8b5e1ecf5281e28cc46e4b32219e11ed39cc0759aecbfc931e4).
+// Detail HTML below remains synthetic; these URLs do not assert provider IDs/status.
+const archiveAndDetailsSitemap = `
+  <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>https://lyonstahl.com/properties/</loc><lastmod>2026-04-17T18:00:05+00:00</lastmod></url>
+    <url><loc>https://lyonstahl.com/properties/6789-sabado-tarde-rd-goleta-ca-93117/</loc><lastmod>2026-04-17T18:00:05+00:00</lastmod></url>
+    <url><loc>https://lyonstahl.com/properties/2536-atlantic-ave-long-beach-ca-90806/</loc><lastmod>2026-04-17T17:58:04+00:00</lastmod></url>
+  </urlset>`;
+
+test("Lyon Stahl excludes the observed exact listing archive while retaining its detail members", () => {
+  assert.deepEqual(lyonStahlPropertyUrls(archiveAndDetailsSitemap), [
+    "https://lyonstahl.com/properties/6789-sabado-tarde-rd-goleta-ca-93117/",
+    "https://lyonstahl.com/properties/2536-atlantic-ave-long-beach-ca-90806/",
+  ]);
+});
+
+test("Lyon Stahl refuses archive-only or empty detail snapshots", () => {
+  assert.throws(
+    () => lyonStahlPropertyUrls("<urlset><url><loc>https://lyonstahl.com/properties/</loc></url></urlset>"),
+    /no valid detail URL/
+  );
+  assert.throws(() => lyonStahlPropertyUrls("<urlset/>"), /url child/);
+});
+
+test("Lyon Stahl archive exclusion never hides another invalid sitemap member", () => {
+  for (const invalid of [
+    "https://example.com/properties/",
+    "https://www.lyonstahl.com/properties/",
+    "https://lyonstahl.com/properties",
+    "https://lyonstahl.com/properties/?preview=1",
+    "https://lyonstahl.com/properties/#listing",
+    "https://user@lyonstahl.com/properties/",
+    "https://lyonstahl.com/properties/nested/detail/",
+    "https://lyonstahl.com/team/",
+    "https://lyonstahl.com/properties/brochure.pdf",
+    "https://lyonstahl.com:bad/properties/",
+  ]) {
+    assert.throws(
+      () => lyonStahlPropertyUrls(`<urlset>
+        <url><loc>https://lyonstahl.com/properties/</loc></url>
+        <url><loc>https://lyonstahl.com/properties/valid/</loc></url>
+        <url><loc>${invalid}</loc></url>
+      </urlset>`),
+      /URL 2 is invalid/
+    );
+  }
+});
+
+test("Lyon Stahl source fetches details but never the archive member", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  const responses = new Map<string, string>([
+    ["https://lyonstahl.com/sitemap.xml", "<sitemapindex><sitemap><loc>https://lyonstahl.com/properties-sitemap1.xml</loc></sitemap></sitemapindex>"],
+    ["https://lyonstahl.com/properties-sitemap1.xml", archiveAndDetailsSitemap],
+    ["https://lyonstahl.com/properties/6789-sabado-tarde-rd-goleta-ca-93117/", lyonFixture()],
+    ["https://lyonstahl.com/properties/2536-atlantic-ave-long-beach-ca-90806/", lyonFixture({ id: "40000", path: "2536-atlantic-ave-long-beach-ca-90806" })],
+  ]);
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    requests.push(url);
+    assert.ok(responses.has(url), `unexpected source request: ${url}`);
+    return new Response(responses.get(url), {
+      headers: { "content-type": url.endsWith(".xml") ? "application/xml" : "text/html" },
+    });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const result = await srcLyonStahl("sale", Infinity, false);
+  assert.equal(result.totalAvailable, 2);
+  assert.equal(result.truncated, false);
+  assert.deepEqual(result.listings.map((row) => row.id).sort(), ["39858", "40000"]);
+  assert.deepEqual(requests.slice().sort(), [...responses.keys()].sort());
+  assert.equal(requests.includes("https://lyonstahl.com/properties/"), false);
+});
+
 test("Lyon Stahl sitemap parsing rejects malformed structure, unsafe URLs, and empty property snapshots", () => {
   assert.throws(
     () => lyonStahlPropertySitemaps("<urlset><url><loc>https://lyonstahl.com/properties-sitemap1.xml</loc></url></urlset>"),
