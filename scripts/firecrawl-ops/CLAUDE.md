@@ -23,12 +23,18 @@ Two systems live here. **Agents: default to `cre_collector/` for any listing wor
 
 | System | Path | Status |
 |--------|------|--------|
-| CRE listing intelligence (EQUIRE board) | `cre_collector/` | **ACTIVE** — collect, ingest, monitor, launchd |
+| CRE listing intelligence (EQUIRE board) | `cre_collector/` | **ACTIVE** — source adapters, shared checkpoint refresh/series, ingest, and monitor tooling |
 | Legacy Python probes + archives | `cre_scrapers/`, `cre_scrapers/brokers/` | **STALE** — manual experiments and README notes only |
 | Local Firecrawl ops | `firecrawl_*.sh`, `set_model_profile.sh`, etc. | **ACTIVE** — stack health and API |
 
 Do not commit secrets, local artifacts, `out/`, `node_modules/`,
 `__pycache__/`, generated SQL, API keys, service-role keys, or database URLs.
+
+For supervised refresh and series procedures, including opt-in stage overlap and
+the Windows wrapper to the shared WSL checkpoint runner, use
+[`cre_collector/START_HERE.md`](cre_collector/START_HERE.md) and the guarded tier
+guide below. `cre_daily_update.sh` and launchd material are legacy/host-specific
+references, not the default current route.
 
 ## Start Here
 
@@ -112,13 +118,18 @@ cd scripts/firecrawl-ops/cre_collector
 npm run typecheck
 npx tsx collect.ts --source=svn --transaction=both --max-items=6 --out=/tmp/probe.json
 python3 cre_ingest.py --in /tmp/probe.json --dry-run
-bash cre_daily_update.sh --no-mark-missing
 bash cre_status.sh               # run-health heartbeat
 ```
 
-Use `--mark-missing` only after a clean all-source full run and explicit
-go-ahead. While Savills sale is structurally capped, keep daily ingest
-additive with `--no-mark-missing`.
+For supervised refresh and series commands, including opt-in stage overlap and
+the native Windows wrapper to the shared WSL checkpoint-series runner, follow
+[`cre_collector/START_HERE.md`](cre_collector/START_HERE.md) and the
+[guarded tier guide](../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
+These procedures define the current path and its separate source, write, and
+scheduling acceptance gates; they do not claim all registered sources are
+accepted. `cre_daily_update.sh` remains a legacy backstop and is not the default
+supervised or scheduled route. Use it only for an explicitly approved legacy
+recovery described in [`cre_collector/START_HERE.md`](cre_collector/START_HERE.md).
 
 Change tracking (007 tables) runs through a separate observe-only path:
 `collect.ts --monitor` produces a cheap enumeration artifact consumed by
