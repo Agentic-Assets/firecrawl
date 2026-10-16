@@ -1176,6 +1176,28 @@ test("Avison strict mapper stops admission, settles active work, and distinguish
   assert.deepEqual(terminalStarted.sort(), [0, 1]);
 });
 
+test("Avison strict mapper treats undefined rejection as a failure", async () => {
+  await assert.rejects(
+    () => mapAvisonYoungStrictDetails([0], 1, async () => { throw undefined; }),
+    (error: unknown) => error === undefined
+  );
+
+  let rejectSibling!: (error: unknown) => void;
+  const sibling = new Promise<never>((_resolve, reject) => { rejectSibling = reject; });
+  const mixed = mapAvisonYoungStrictDetails([0, 1], 2, async (_item, index) => {
+    if (index === 0) {
+      throw new AvisonYoungTerminalDetailError({
+        listingId: "terminal-id",
+        role: "external",
+        status: 404,
+      });
+    }
+    return sibling;
+  });
+  rejectSibling(undefined);
+  await assert.rejects(mixed, (error: unknown) => error === undefined);
+});
+
 test("Avison reserved source exit is limited to an exclusive complete terminal failure", () => {
   const requestedSources = ["avison-young"];
   const transactions = ["sale", "lease"];

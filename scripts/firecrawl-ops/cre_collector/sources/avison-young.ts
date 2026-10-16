@@ -138,6 +138,7 @@ export async function mapAvisonYoungStrictDetails<T, R>(
   const results: R[] = new Array(items.length);
   const terminalFailures: AvisonYoungTerminalDetailFailure[] = [];
   let firstOtherError: unknown;
+  let hasOtherError = false;
   let next = 0;
   let stopped = false;
 
@@ -150,8 +151,9 @@ export async function mapAvisonYoungStrictDetails<T, R>(
         stopped = true;
         if (error instanceof AvisonYoungTerminalDetailError) {
           terminalFailures.push(error.failure);
-        } else if (firstOtherError === undefined) {
-          firstOtherError = error;
+        } else {
+          if (!hasOtherError) firstOtherError = error;
+          hasOtherError = true;
         }
       }
     }
@@ -160,7 +162,7 @@ export async function mapAvisonYoungStrictDetails<T, R>(
   await Promise.all(
     Array.from({ length: Math.min(limit, items.length) }, () => worker())
   );
-  if (firstOtherError !== undefined) throw firstOtherError;
+  if (hasOtherError) throw firstOtherError;
   if (terminalFailures.length) {
     throw new AvisonYoungTerminalSourceError(terminalFailures);
   }
