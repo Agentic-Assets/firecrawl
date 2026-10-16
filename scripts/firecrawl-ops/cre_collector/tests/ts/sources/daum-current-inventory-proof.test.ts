@@ -52,7 +52,7 @@ test("DAUM strict full producer binds both passes to one complete fresh native/p
  assert.equal(unbound.currentInventoryProof,undefined);
 });
 
-for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","unknownBoth"] as const){
+for(const fault of ["missingCanonical","missingTitle","missingShortlink","wrongCanonical","conflictingTenure","duplicateNative","unknownBoth"] as const){
  test("DAUM strict producer refuses "+fault+" and shares rejection only inside its exact generation",async(t)=>{
   const saved={...process.env},originalFetch=globalThis.fetch,originalTimer=globalThis.setTimeout;
   t.after(()=>{for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimer;});
@@ -71,6 +71,9 @@ for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","un
    if(init?.method!=="GET"||!match)throw Error("UNEXPECTED_OFFLINE_URL_NO_FALLBACK");
    const index=Number(match[1]);let body=daumProofDetail(index);
    if(broken){
+    if(fault==="missingTitle"&&index===0)body=body.replace(/<div class="title-property">[\s\S]*?<\/div>/,"<div class=\"title-property\"></div>");
+    if(fault==="missingShortlink"&&index===0)body=body.replace(/<link rel="shortlink"[^>]+>/,"");
+    if(fault==="wrongCanonical"&&index===0)body=body.replace("https://daumcommercial.com/property/Synthetic-0/", "https://daumcommercial.com/property/Wrong-owned-property/");
     if(fault==="missingCanonical"&&index===0)body=body.replace(/<link rel="canonical"[^>]+>/,"");
     if(fault==="conflictingTenure"&&index===0)body=body.replace('class="title-about">Sale<','class="title-about">Lease<');
     if(fault==="duplicateNative")body=body.replace(/\?p=\d+/,"?p=50000");
@@ -82,6 +85,13 @@ for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","un
   await assert.rejects(srcDaumCommercial("sale",Infinity,false),(error:unknown)=>{
    originalError=error;
    assert.ok(error instanceof Error);
+   if(["missingCanonical","missingTitle","missingShortlink","wrongCanonical"].includes(fault)){
+    assert.match(error.message,/inventoryUrl=https:\/\/daumcommercial[.]com\/property\/Synthetic-0\//);
+    assert.doesNotMatch(error.message,/PRIVATE_BODY_SENTINEL|<html/);
+   }
+   if(fault==="missingTitle")assert.match(error.message,/omitted its property title/);
+   if(fault==="missingShortlink")assert.match(error.message,/omitted its stable WordPress shortlink ID/);
+   if(fault==="wrongCanonical")assert.match(error.message,/detail identity mismatch/);
    if(fault==="unknownBoth"){
     assert.match(error.message,/DAUM strict proof has unresolved tenure/);
     assert.match(error.message,/postId=50003; ordinal=4\/100; inventoryTenure=unknown; inventoryTextPresent=false; detailTenure=unknown; detailTextPresent=false/);
@@ -90,7 +100,7 @@ for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","un
     assert.match(error.message,/detail tenure lease disagrees with inventory tenure sale/);
     assert.match(error.message,/postId=50000; ordinal=1\/100; inventoryTenure=sale; inventoryTextPresent=true; detailTenure=lease; detailTextPresent=true/);
    }
-   if(fault==="unknownBoth"||fault==="conflictingTenure")assert.doesNotMatch(error.message,/<html|Synthetic-|https?:|PRIVATE_BODY_SENTINEL/);
+   if(fault==="unknownBoth"||fault==="conflictingTenure")assert.doesNotMatch(error.message,/<html|PRIVATE_BODY_SENTINEL/);
    return true;
   });
   const failedPosts=posts;broken=false;
@@ -122,3 +132,36 @@ test("DAUM empty lease is derived from a complete all-sale universe",async(t)=>{
  if(lease.currentInventoryProof?.schema!=="daum-strict-detail-v1")throw Error("missing typed proof");
  assert.equal(lease.currentInventoryProof.total,100);
 });
+
+for (const [index, hostileUrl] of [
+  "https://daumcommercial.com/property/Synthetic-0/?private=sentinel",
+  "https://foreign.example/property/Synthetic-0/",
+  "https://user:secret@daumcommercial.com/property/Synthetic-0/",
+].entries()) {
+  test("DAUM refuses unsafe inventory URL before detail context: " + index, async (t) => {
+    const saved = { ...process.env };
+    const originalFetch = globalThis.fetch, originalTimer = globalThis.setTimeout;
+    t.after(() => {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+      globalThis.fetch = originalFetch;
+      globalThis.setTimeout = originalTimer;
+    });
+    Object.assign(process.env, { CRE_REQUIRE_FRESH_DETAILS: "1", CRE_REFRESH_GENERATION: "unsafe-" + hostileUrl,
+      CRE_REFRESH_STARTED_AT: observationNow() });
+    globalThis.setTimeout = ((fn: any, ms?: number, ...args: any[]) =>
+      originalTimer(fn, ms && ms > 0 && ms <= 3000 ? 0 : ms, ...args)) as typeof setTimeout;
+    let detailGets = 0;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (init?.method === "POST" && /^https:\/\/daumcommercial[.]com\/property-search\/(?:page\/2\/)?$/.test(url)) {
+        return new Response(daumProofPage(100, url.endsWith("/page/2/") ? 2 : 1)
+          .replaceAll("https://daumcommercial.com/property/Synthetic-0/", hostileUrl));
+      }
+      detailGets++;
+      throw Error("NO_UNSAFE_DETAIL_DISPATCH");
+    };
+    await assert.rejects(srcDaumCommercial("sale", Infinity, false), /invalid or query-bearing URL/);
+    assert.equal(detailGets, 0);
+  });
+}
