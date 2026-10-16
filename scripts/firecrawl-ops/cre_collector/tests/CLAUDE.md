@@ -16,6 +16,21 @@ before importing or invoking the real source. Where an unsupported test hook
 could fall back to live transport, install a deny-network preload before imports.
 Keep intentional owned-loopback fixtures outside blanket socket denial.
 
+For Linux/WSL full-suite checks alongside a live runtime, an available
+unprivileged network namespace can contain TCP/UDP access while allowing the
+suite's own loopback servers. Verify namespace support first; from the genuine
+standalone QA clone, the command carrier is:
+
+```bash
+unshare -Urn -- sh -c 'ip link set lo up && exec "$@"' qa <test-command> <arguments>
+```
+
+Only the new namespace's loopback is enabled; host services and public routes
+are absent. This does not isolate files or filesystem Unix sockets, and does
+not replace fake transports, database boundaries or the standalone-clone rule.
+Keep normal configuration defaults unless the test deliberately varies them;
+an unrelated URL override or rewritten interpreter argv can break the harness.
+
 For website or provider variations, build fixtures from sanitized, genuinely
 observed responses and call the real mapper and verifier. Cover supported
 layout/value variants plus negative mutations for missing, malformed,
@@ -161,15 +176,14 @@ should import those modules directly, not `config.ts` or `collect.ts`.
 | `lib/parse.test.ts` | `parseLeaseRate`, `parseMoney`, `classify_doc` golden-vector parity |
 | `sources/savills-commercial.test.ts` | `savillsSaleCardIsCommercial`, `mapSavillsLeaseRow`, `savillsTotalItems` |
 
-Full suite: ~**479** TypeScript unit tests (`npm run test:unit`); re-run to
-confirm the exact count rather than trusting this figure.
+Run `npm run test:unit` for the current TypeScript suite and exact test count.
 
 **Argv isolation:** source adapters import `lib/config.ts`; trim `process.argv` to
 `[node, script]` before those imports in test files (see `lib/scrape.test.ts`).
 
-**Still E2E/probe only:** async `src*()` collectors and network-bound enrich/fetch
-orchestrators (`scrapeJson`, `scrapeDoc`, `fetch`, Firecrawl). Golden-file adapter
-output tests remain future work.
+Async `src*()` collectors and enrich/fetch helpers may have contained fixture
+regressions using the transport rules above. Real provider or Firecrawl calls
+remain explicit probes, never ordinary unit-test dependencies.
 
 ## Module Boundaries
 
