@@ -43,6 +43,14 @@ as the existing `Properties` array envelope. Neither shape supplies the source
 total: the separate properties response must still provide a finite integer
 `TotalCount` matching the unique map ActivityIds before detail expansion.
 
+Matthews failed HTTP attempts emit bounded `matthews/http` diagnostics containing
+only request role, attempt/max, header/body/HTTP phase, numeric status when known,
+elapsed milliseconds and the planned cooldown. Successful requests stay quiet;
+URLs, headers, response bodies and exception text are never included in these
+lines. The existing 30-second per-phase deadlines, six attempts, provider pacing
+and all cooldowns remain unchanged. A final cooldown is labeled before failure,
+not as a seventh retry: it may protect the next transaction or outer acquisition.
+
 Pyramid's WordPress inventory requests only `_embed=wp:term`: the mapper needs
 those taxonomy labels for state, city, county and property type. Numeric term IDs
 alone are insufficient. Keep 100-record pages, bounded response bodies and complete
