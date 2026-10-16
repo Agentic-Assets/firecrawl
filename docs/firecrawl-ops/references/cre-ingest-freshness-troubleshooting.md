@@ -24,6 +24,53 @@ strings and bounded non-monetary generation token; do not generate a new clock
 or copy arbitrary provider prose into freshness fields. For merged passes,
 verify each pass's evidence and the persisted-freshness consumer's selection.
 
+## Source visibility is not missing data
+
+An explicit instruction to withhold a value takes precedence over ordinary
+sparse-value retention. A transient parse miss should keep a previously good
+price; a validated current withholding control must prevent that price from
+surviving through the normalized columns, sale/lease merge, current raw data,
+Markdown or child display titles. Trace the actual source, staging, generated
+SQL and database readback instead of checking source omission alone.
+
+The contracts are source-specific. Avison's `hide_price` accepts an absent
+control or the exact numeric values `0` and `1`; strings, booleans, null and
+contradictions refuse. Its `avisonPriceVisibility` envelope retains only the
+versioned control, never a hidden amount or a matching hint. The ingestor
+independently validates the direct source provenance and actual brokerage.
+A marker nested in unrelated metadata cannot grant destructive authority.
+Either withheld sale/lease pass wins their merge; a later valid public detail
+observation can restore a public asking price.
+
+Avison's current normalized clear is limited to `sale_price_usd` and
+`sale_price_per_sf`. Do not copy JLL's broader financial projection: retain
+independently provided lease terms, rent, cap rate, NOI, GRM, per-unit/per-acre
+facts, original area units and useful nonprice metadata. Unfamiliar pricing
+with no established sale-versus-lease meaning remains an explicit ambiguity;
+harmless new metadata is not a reason to reject a record.
+
+The source-owned projection removes asking aliases and sanitizes classified
+prose and child titles. It uses a bounded financial-clause grammar, not an
+assumption that every number or currency expression is asking price. Preserve
+explicit rent bases, independent financial labels, addresses, phones,
+licenses, source IDs and resource URLs. Do not regex-rewrite serialized JSON
+or discard a whole description because one clause contains asking price.
+This is not a claim to classify every possible unlabelled numeric sentence.
+
+For a degraded detail observation, apply the projection to the payload the
+existing retention rules select. Preserve its useful prior detail facts and
+original proof clocks while retaining the current safe inventory control.
+Withholding is not evidence that the detail request succeeded. Retained child
+IDs, URLs and membership stay intact; title cleanup must run after additive
+writes so old labels cannot return through `COALESCE`.
+
+Use producer-to-staging tests, both merge orders and actual generated-SQL
+acceptance for newly withheld values, visible recovery, malformed controls,
+foreign markers and retained raw/Markdown/child paths. Source code proof
+does not establish fresh brokerage acceptance or authorize historical cleanup,
+lifecycle, baseline, OM, schema, scheduling or Mac changes. The bounded Avison
+fix and evidence belong to [AGENTIC-4330](https://linear.app/agenticassets/issue/AGENTIC-4330).
+
 Use a genuine standalone no-hardlinks clone for offline staging comparisons.
 Large artifacts still consume the same host's memory, so bound the comparison's
 CPU and memory and avoid overlapping full suites with production collection.

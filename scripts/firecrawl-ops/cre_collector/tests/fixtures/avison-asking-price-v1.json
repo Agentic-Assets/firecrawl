@@ -1,0 +1,309 @@
+{
+  "synthetic_only": true,
+  "hidden_asking_for_text_vectors": 20,
+  "vectors": [
+    {
+      "role": "narrative",
+      "input": "Asking price $20. Rent $20/SF/YR. NOI $20. Cap rate 20%. Roof replaced 2020.",
+      "expected": "Rent $20/SF/YR. NOI $20. Cap rate 20%. Roof replaced 2020."
+    },
+    {
+      "role": "narrative",
+      "input": "20 SF at 100 Main St; call 555-123-0020",
+      "expected": "20 SF at 100 Main St; call 555-123-0020"
+    },
+    {
+      "role": "narrative",
+      "input": "Excellent frontage. $20 available. Zoned retail.",
+      "expected": "Excellent frontage. Zoned retail."
+    },
+    {
+      "role": "narrative",
+      "input": "Asking price 20; rent 20/SF/YR",
+      "expected": "rent 20/SF/YR"
+    },
+    {
+      "role": "narrative",
+      "input": "Rent $20/SF/YR; asking $20; NOI $20; taxes $20",
+      "expected": "Rent $20/SF/YR; NOI $20; taxes $20"
+    },
+    {
+      "role": "narrative",
+      "input": "20",
+      "expected": ""
+    },
+    {
+      "role": "child-title",
+      "input": "Offering brochure - asking $20",
+      "expected": "Offering brochure"
+    },
+    {
+      "role": "child-title",
+      "input": "Lease schedule $20/SF/YR",
+      "expected": "Lease schedule $20/SF/YR"
+    },
+    {
+      "role": "markdown",
+      "input": "[Brochure asking $20](https://example.test/20.pdf)",
+      "expected": "[Brochure](https://example.test/20.pdf)"
+    },
+    {
+      "role": "identity",
+      "input": {
+        "id": "20",
+        "address": "20 Main St",
+        "url": "https://example.test/20",
+        "phone": "555-123-0020"
+      },
+      "expected": {
+        "id": "20",
+        "address": "20 Main St",
+        "url": "https://example.test/20",
+        "phone": "555-123-0020"
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "newMetadata": {
+          "energyRating": "A",
+          "energyScore": 20,
+          "certifications": [
+            "LEED Gold"
+          ]
+        }
+      },
+      "expected": {
+        "newMetadata": {
+          "energyRating": "A",
+          "energyScore": 20,
+          "certifications": [
+            "LEED Gold"
+          ]
+        }
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "newAskingAmount": 20,
+        "newMetadata": {
+          "ceilingHeight": 20
+        }
+      },
+      "expected": {
+        "newMetadata": {
+          "ceilingHeight": 20
+        }
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "pricing": {
+          "amount": 20,
+          "note": "Asking 20",
+          "newFact": "south-facing"
+        }
+      },
+      "expected": {
+        "pricing": {
+          "newFact": "south-facing"
+        }
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "lease": {
+          "price": 20,
+          "basis": "SF/YR"
+        },
+        "cap_rate": 20,
+        "noi": 20,
+        "grm": 20
+      },
+      "expected": {
+        "lease": {
+          "price": 20,
+          "basis": "SF/YR"
+        },
+        "cap_rate": 20,
+        "noi": 20,
+        "grm": 20
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "rawSharpLaunch": {
+          "hide_price": 1,
+          "hide_price_text": 20,
+          "sale_price": 20,
+          "sale_currency": "USD",
+          "total_surface": 20,
+          "total_surface_unit": "ac"
+        }
+      },
+      "expected": {
+        "rawSharpLaunch": {
+          "hide_price": 1,
+          "sale_currency": "USD",
+          "total_surface": 20,
+          "total_surface_unit": "ac"
+        }
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "rawSharpLaunch": {
+          "hide_price": 1,
+          "hide_price_text": "Contact broker"
+        }
+      },
+      "expected": {
+        "rawSharpLaunch": {
+          "hide_price": 1,
+          "hide_price_text": "Contact broker"
+        }
+      }
+    },
+    {
+      "role": "control",
+      "input": "1",
+      "expected": "REFUSE"
+    },
+    {
+      "role": "control",
+      "input": true,
+      "expected": "REFUSE"
+    },
+    {
+      "role": "control",
+      "input": null,
+      "expected": "REFUSE"
+    },
+    {
+      "role": "control",
+      "input": 2,
+      "expected": "REFUSE"
+    },
+    {
+      "role": "control",
+      "input": 0,
+      "expected": "visible"
+    },
+    {
+      "role": "control",
+      "input": 1,
+      "expected": "withheld"
+    },
+    {
+      "role": "control",
+      "input": {
+        "missing": true
+      },
+      "expected": "absent"
+    },
+    {
+      "role": "raw",
+      "input": {
+        "detailJsonLd": {
+          "offers": {
+            "businessFunction": "sell",
+            "price": 20,
+            "priceCurrency": "USD"
+          }
+        }
+      },
+      "expected": {
+        "detailJsonLd": {
+          "offers": {
+            "businessFunction": "sell",
+            "priceCurrency": "USD"
+          }
+        }
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "detailJsonLd": {
+          "offers": {
+            "businessFunction": "lease",
+            "price": 20,
+            "unitText": "SF/YR"
+          }
+        }
+      },
+      "expected": {
+        "detailJsonLd": {
+          "offers": {
+            "businessFunction": "lease",
+            "price": 20,
+            "unitText": "SF/YR"
+          }
+        }
+      }
+    },
+    {
+      "role": "raw",
+      "input": {
+        "pricing": {
+          "amount": 20,
+          "newFact": "south-facing"
+        }
+      },
+      "expected": "REFUSE_AMBIGUOUS_FINANCIAL_INPUT"
+    },
+    {
+      "role": "narrative",
+      "input": "offered at $20/SF/YR",
+      "expected": "offered at $20/SF/YR"
+    },
+    {
+      "role": "narrative",
+      "input": "offered at $20/SF/MO",
+      "expected": "offered at $20/SF/MO"
+    },
+    {
+      "role": "narrative",
+      "input": "Rent $20/SF/YR; asking price $20",
+      "expected": "Rent $20/SF/YR"
+    },
+    {
+      "role": "narrative",
+      "input": "Rent $20/SF/YR and asking price $20",
+      "expected": "Rent $20/SF/YR"
+    },
+    {
+      "role": "raw",
+      "input": {
+        "detailJsonLd": {
+          "offers": {
+            "businessFunction": "lease-sale",
+            "price": 20
+          }
+        }
+      },
+      "expected": "REFUSE_AMBIGUOUS_FINANCIAL_INPUT"
+    },
+    {
+      "role": "raw",
+      "input": {
+        "newMetadata": {
+          "pricePerUnit": 20
+        }
+      },
+      "expected": "REFUSE_AMBIGUOUS_FINANCIAL_INPUT"
+    }
+  ],
+  "merge_vectors": [
+    "withheld+visible and visible+withheld ->withheld; sanitize both branches; preserve lease facts",
+    "absent+visible ->existing ordinary merge unchanged",
+    "foreign source cannot borrow Avison marker",
+    "malformed/mismatched marker or rawhidecontrol ->REFUSE"
+  ],
+  "asking_amounts_or_hints_in_public_marker": false
+}
