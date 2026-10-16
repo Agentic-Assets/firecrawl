@@ -1,3 +1,5 @@
+Parent: [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
+
 # CRE Brokerage Completion Playbook
 
 Last reviewed: 2026-10-16.
@@ -19,6 +21,83 @@ A brokerage is complete only when all of these are true:
 7. Contacts include visible names, phones, emails when public, profile URLs, avatar URLs, and VCard or contact-card URLs when available.
 8. A target listing is tested against manual expectations for documents, images, contacts, and key facts.
 9. The collector passes typecheck, the ingestor dry-run stages expected rows, and docs record the remaining limits.
+
+## Comprehensive listing fidelity
+
+Collect all useful listing information the permitted public source provides.
+Normalize fields supported by the existing vocabulary and preserve additional
+relevant source information for later use. This is the collection standard,
+not a claim that every adapter or consumer already meets it. Row counts,
+successful requests and a populated UI do not establish semantic completeness.
+Reported JLL or Marcus UI snapshots are investigation leads, not verified
+source facts or evidence that a particular field is missing from the source.
+
+Review descriptions and highlights; spaces, suites and availability; sale/lease
+tenure; asking prices, rent/rate terms, expenses and financial facts; building,
+land and available areas with units; unit counts; amenities; location/geo;
+public broker/contact details; and all relevant image, media and document URLs.
+Preserve original values, text, units, currency, rate period/basis and source
+provenance alongside supported normalization. Never invent values, infer an
+unknown tenure from a missing price, or turn missing values into zero. A sale
+price can be inapplicable to a lease-only offering; an explicit public
+price-withheld control must remain withheld through every downstream channel.
+Keep offered listing tenure and asking rent separate from in-place tenant lease
+facts; tenant rent or lease type does not establish the offered transaction.
+Retention follows source visibility/redaction and shared ownership rules; use
+structured provenance rather than promising complete raw HTML/header retention.
+
+Trace a representative fresh detail record through each existing boundary:
+
+1. Permitted public detail/feed payload: identify the source field, value,
+   unit, URL/record identity and observation time; include relevant variation
+   such as sale, lease, dual tenure, spaces and withheld/unknown values.
+2. Adapter and saved artifact: verify the information survives mapping with
+   original source metadata. Preserve useful long-tail facts through existing
+   `extraFacts` and source-specific metadata rather than discarding them merely
+   because no scalar column exists. Preserve source identity recipes.
+3. `cre_ingest.py` mapping/merge: check supported normalized columns,
+   `markdown`, `extraFacts` → `extra_facts`, and retained source data in
+   `raw_data`; inspect the actual mappings rather than assuming arbitrary
+   metadata is automatically normalized. Verify sale/lease merging retains
+   distinct terms and assets without inventing or narrowing tenure.
+4. Saved database readback: check parent values and the existing contacts,
+   images, media, links and documents children against the same artifact.
+   Respect existing lifecycle, child-preservation and guarded-write contracts.
+5. Consumer query/view and display: verify which stored fields it selects and
+   renders. An empty UI field proves neither an absent source value nor an
+   extraction failure; a value retained only in `raw_data` can still be unmapped
+   or undisplayed.
+
+Use these as evidence/review categories, not new implemented database fields:
+
+| Category | Evidence to retain |
+|---|---|
+| Absent | An inspected applicable source field is explicitly empty or missing; bound this conclusion to that payload/observation. |
+| Not applicable | Source-backed offering/property context makes the field inapplicable, such as sale price for a lease-only offering. |
+| Not exposed | The examined public surface does not expose the value; availability elsewhere remains unknown. |
+| Extraction failed | Acquisition or parsing failed; record the failure rather than claiming source absence. |
+| Not mapped | The captured source/artifact value has no verified normalized destination yet. |
+| Not displayed | The stored value exists but the consumer does not select/render it. |
+
+Use fresh representative saved detail payloads and semantic assertions across
+these boundaries, including optional rich fields and failure cases. Verify
+value meaning, units, text and asset roles, not just non-null or child counts.
+Do not reduce detail coverage, truncate descriptions/galleries or discard rich
+fields to meet a speed target; compare performance with fidelity held constant.
+Document unresolved mapping/display gaps on the existing parent or scoped issue.
+
+Capture document/media URLs through the existing harvester and child contracts;
+do not count a thumbnail, preview image or unrelated listing asset as a document
+or additional evidence of richness. Deduplicate by evidenced asset identity
+without collapsing distinct documents, units or offerings. Keep original URL
+and role provenance where supported. The [dated media capture handoff](../../../scripts/firecrawl-ops/cre_collector/HANDOFF_MEDIA_CAPTURE_2026-06-15.md)
+records the existing mechanisms and historical implementation evidence.
+
+Use permitted public access and provider-aware pacing. Preserve existing
+deployment and guarded-write procedures when adding fields. Retaining a
+document URL does not prove its contents were downloaded or parsed. GetCREdata
+remains the sole production OM extraction writer under the shared CRE ownership
+contract; do not add a collector PDF/OM extraction writer or OM-facts writes.
 
 ## Investigation Workflow
 

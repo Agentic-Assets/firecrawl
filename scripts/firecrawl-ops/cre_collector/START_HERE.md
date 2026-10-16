@@ -26,6 +26,11 @@ For provider, endpoint, or page-layout variations, follow the source-backed
 before changing an adapter. Current runtime and source-specific contracts
 remain in this guide and `sources/CLAUDE.md`.
 
+For adapter completeness and reported UI data gaps, use the
+[comprehensive listing fidelity standard](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity):
+trace fresh public detail through artifacts, normalized/raw fields, children and
+consumer display; counts alone do not prove information fidelity.
+
 ## Agent rule: verify counts before you quote or edit them
 
 Board totals, source counts, test counts, and scheduler state are point-in-time
