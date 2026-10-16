@@ -22,10 +22,7 @@ import { generateCompletions } from "./llmExtract";
 const primaryModel = { modelId: "primary-model" };
 const retryModel = { modelId: "ordinary-retry-model" };
 
-function completionOptions(
-  disableInternalRateLimitRetry: boolean,
-  disableInternalObjectRepair = false,
-) {
+function completionOptions(boundedStructuredOutput: boolean) {
   return {
     logger: {
       debug: vi.fn(),
@@ -43,8 +40,7 @@ function completionOptions(
     markdown: "# Example Domain",
     model: primaryModel,
     retryModel,
-    disableInternalRateLimitRetry,
-    disableInternalObjectRepair,
+    boundedStructuredOutput,
     costTrackingOptions: {
       costTracking: { addCall: vi.fn() },
       metadata: {},
@@ -91,7 +87,7 @@ describe("generateCompletions rate-limit retry control", () => {
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     });
 
-    await generateCompletions(completionOptions(true, true));
+    await generateCompletions(completionOptions(true));
 
     expect(generateObjectMock).toHaveBeenCalledTimes(1);
     expect(
