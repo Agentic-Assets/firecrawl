@@ -1,9 +1,10 @@
 import { observationNow } from "../lib/observation-clock.js";
+import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
-import { detailObservation, refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
+import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshDetails } from "../lib/freshness.js";
 import { parseMoney } from "../lib/parse.js";
 import { clean, prune } from "../lib/util.js";
-import type { SourceResult, Tx } from "../types.js";
+import type { EssexArchiveProof, EssexCurrentInventoryProof, EssexInventoryPass, SourceResult, Tx } from "../types.js";
 
 export const ESSEX_LISTINGS_URL = "https://essexrealtygroup.com/properties/";
 export const ESSEX_CLOSED_URL =
@@ -35,6 +36,19 @@ export type EssexInventory = {
 export type EssexTransport = {
   getText(url: string, maxBytes?: number): Promise<string>;
 };
+
+const textSha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+let completedProof: { key: string; proof: EssexCurrentInventoryProof } | undefined;
+
+function proofPath(url: string): string {
+  const owned = essexUrl(url);
+  if (!owned) throw new Error("Essex proof requires an owned property URL");
+  const parsed = new URL(owned);
+  if (parsed.search || parsed.hash || !/^\/properties\/[^/]+\/$/.test(parsed.pathname)) {
+    throw new Error("Essex proof requires a literal query-free property detail URL");
+  }
+  return parsed.pathname.replace(/^\/+|\/+$/g, "");
+}
 
 const ESSEX_ASSET_QUERY_KEYS = new Set(["ver", "w"]);
 
@@ -312,14 +326,34 @@ export function reconcileEssexInventory(
 export async function fetchEssexInventory(
   transport = createEssexTransport()
 ): Promise<EssexInventory> {
+  return (await fetchEssexInventoryPass(transport)).inventory;
+}
+
+async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
+  inventory: EssexInventory;
+  pass: EssexInventoryPass;
+}> {
   const currentHtml = await transport.getText(ESSEX_LISTINGS_URL);
+  const currentAt = observationNow();
   const closedHtml = await transport.getText(ESSEX_CLOSED_URL);
+  const closedAt = observationNow();
   const sitemapXml = await transport.getText(ESSEX_SITEMAP_URL);
-  return reconcileEssexInventory(
-    parseEssexArchive(currentHtml, "current"),
-    parseEssexArchive(closedHtml, "closed"),
-    parseEssexSitemap(sitemapXml)
-  );
+  const sitemapAt = observationNow();
+  const current = parseEssexArchive(currentHtml, "current");
+  const closed = parseEssexArchive(closedHtml, "closed");
+  const sitemapUrls = parseEssexSitemap(sitemapXml);
+  const archive = (rows: EssexArchiveRow[], endpoint: string, observedAt: string, html: string): EssexArchiveProof => ({
+    endpoint, observedAt, responseTextSha256: textSha256(html), declaredTotal: rows.length,
+    rows: rows.map(row => [row.url, row.lifecycle, row.name, row.location, row.units]),
+  });
+  const pass: EssexInventoryPass = {
+    fingerprint: "",
+    current: archive(current, ESSEX_LISTINGS_URL, currentAt, currentHtml),
+    closed: archive(closed, ESSEX_CLOSED_URL, closedAt, closedHtml),
+    sitemap: { endpoint: ESSEX_SITEMAP_URL, observedAt: sitemapAt, responseTextSha256: textSha256(sitemapXml), urls: sitemapUrls },
+  };
+  pass.fingerprint = textSha256(JSON.stringify([pass.current.rows, pass.closed.rows, sitemapUrls]));
+  return { inventory: reconcileEssexInventory(current, closed, sitemapUrls), pass };
 }
 
 function labeledDetailValue($: cheerio.CheerioAPI, label: RegExp): string | null {
@@ -501,6 +535,7 @@ export function mapEssexDetail(
     freshnessProvenance: {
       ...observation,
       detailScope: "detail_page",
+      identityMethod: "literal_owned_property_path+essex_native_property_id",
     },
     preserveChildCollections: monitor ? true : undefined,
   });
@@ -512,6 +547,11 @@ export async function srcEssexRealty(
   monitor: boolean,
   transport = createEssexTransport()
 ): Promise<SourceResult> {
+  const strict = requireFreshDetails();
+  const generationId = refreshGenerationId();
+  const generationStartedAt = refreshStartedAt();
+  const proofEligible = strict && !monitor && !Number.isFinite(max);
+  const proofKey = JSON.stringify([generationId, generationStartedAt]);
   if (tx === "lease") {
     return {
       company: "Essex Realty Group",
@@ -519,14 +559,27 @@ export async function srcEssexRealty(
       method: "Sale-only source",
       totalAvailable: 0,
       listings: [],
+      ...(proofEligible && generationId && generationStartedAt && completedProof?.key === proofKey
+        ? { currentInventoryProof: { ...structuredClone(completedProof.proof), transaction: "lease" as const,
+            kind: "known_empty_transaction" as const, reason: "sale_only_source" as const, details: [] } }
+        : {}),
     };
   }
-  const strict = requireFreshDetails();
-  const generationId = refreshGenerationId();
   if (strict && !generationId) {
     throw new Error("Essex strict refresh requires CRE_REFRESH_GENERATION");
   }
-  const inventory = await fetchEssexInventory(transport);
+  if (proofEligible && !generationStartedAt) throw new Error("Essex strict proof requires CRE_REFRESH_STARTED_AT");
+  if (proofEligible) completedProof = undefined;
+  const first = await fetchEssexInventoryPass(transport);
+  const passes = [first.pass];
+  let inventory = first.inventory;
+  if (proofEligible) {
+    const second = await fetchEssexInventoryPass(transport);
+    if (first.pass.fingerprint !== second.pass.fingerprint) throw new Error("Essex complete inventory passes drifted");
+    inventory = second.inventory;
+    passes.push(second.pass);
+    for (const url of inventory.sitemapUrls) proofPath(url);
+  }
   const inventoryObservedAt = observationNow();
   const selected = inventory.current.slice(0, Math.max(0, max));
   const listings: any[] = [];
@@ -535,7 +588,8 @@ export async function srcEssexRealty(
     const detailObservedAt = observationNow();
     listings.push(
       mapEssexDetail(
-        parseEssexDetail(html, row.url, row.lifecycle as EssexCurrentLifecycle),
+        { ...parseEssexDetail(html, row.url, row.lifecycle as EssexCurrentLifecycle),
+          ...(proofEligible ? { essexDetailResponseSha256: textSha256(html) } : {}) },
         inventoryObservedAt,
         detailObservedAt,
         generationId,
@@ -550,12 +604,24 @@ export async function srcEssexRealty(
   if (new Set(listings.map((row) => row.id)).size !== listings.length) {
     throw new Error("Essex selected details contain duplicate canonical path identities");
   }
+  let proof: EssexCurrentInventoryProof | undefined;
+  if (proofEligible) {
+    proof = {
+      schema: "essex-strict-detail-v1", sourceKey: "essex-realty", transaction: "sale",
+      kind: "complete_current_inventory", generationId: generationId!, generationStartedAt: generationStartedAt!,
+      observedAt: inventoryObservedAt, total: inventory.current.length, passes,
+      cohort: listings.map(row => [row.essexPropertyId, row.url, proofPath(row.url), row.lifecycle]),
+      details: listings.map(row => [row.essexPropertyId, row.canonicalUrl, row.detailObservedAt, row.essexDetailResponseSha256]),
+    };
+    completedProof = { key: proofKey, proof: structuredClone(proof) };
+  }
   return {
     company: "Essex Realty Group",
     sourceUrl: ESSEX_LISTINGS_URL,
     method: "Direct archive, sitemap, and rate-limited detail HTML (no LLM)",
     totalAvailable: inventory.current.length,
     listings,
+    ...(proof ? { currentInventoryProof: proof } : {}),
     truncated: listings.length < inventory.current.length,
     note:
       `Lifecycle reconciliation: ${inventory.lifecycleCounts.on_market} on market + `
