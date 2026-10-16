@@ -19,7 +19,7 @@ SOURCE = "essex-realty"
 ROOT = Path(cp.__file__).parent
 
 
-def produce(root, total=2, closed=1):
+def produce(root, total=2, closed=1, second_pass="same"):
     start = (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
     generation = "2026-10-15T172001Z-123456abcdef"
     preload = root / "transport.mts"
@@ -35,21 +35,41 @@ const closed=`<a class="allposts">ALL [${archived.length}]</a>`+archived.map(slu
 const sitemap='<urlset>'+[...slugs,...archived].map(slug=>`<url><loc>${base}${slug}/</loc></url>`).join('')+'</urlset>';
 const detail=readFileSync('tests/fixtures/essex-detail.html','utf8');
 const calls=[];
+const mode='__SECOND_PASS__';
+const reads=new Map();
+const changed=(html,url)=>{
+ const count=(reads.get(url)??0)+1;reads.set(url,count);
+ if(count!==2)return html;
+ if(mode==='reorder'){
+  if(url.endsWith('.xml'))return '<urlset>'+[...slugs,...archived].reverse().map(slug=>`<url><loc>${base}${slug}/</loc></url>`).join('')+'</urlset>';
+  const cards=html.match(/<a class="property-card"[\s\S]*?<\/a>/g)??[];
+  return html.slice(0,html.indexOf('<a class="property-card"'))+cards.reverse().join('');
+ }
+ if(url===base){
+  if(mode==='name')return html.replace('Synthetic Current-0','Changed Current-0');
+  if(mode==='lifecycle')return html.replace('ON MARKET','UNDER CONTRACT');
+  if(mode==='location')return html.replace('Synthetic Current-0</span>','Synthetic Current-0</span><span class="property-info__address--address-2">Changed location</span></a>');
+  if(mode==='units')return html.replace('Synthetic Current-0</span>','Synthetic Current-0</span><span class="property-info__units">12 Units</span></a>');
+ }
+ return html;
+};
 // Only remove the source's pacing wait in this offline fake transport process.
 // Its 60-second abort deadline and all real producer/observation code remain.
 const realTimer=globalThis.setTimeout;
 globalThis.setTimeout=(fn,ms,...args)=>realTimer(fn,ms>0&&ms<=10000?0:ms,...args);
 globalThis.fetch=async(input)=>{
  const url=String(input);calls.push(url);
- if(url===base)return new Response(current);
- if(url===base+'?sale_deal_status_id=3')return new Response(closed);
- if(url==='https://essexrealtygroup.com/properties-sitemap.xml')return new Response(sitemap);
+ if(url===base)return new Response(changed(current,url));
+ if(url===base+'?sale_deal_status_id=3')return new Response(changed(closed,url));
+ if(url==='https://essexrealtygroup.com/properties-sitemap.xml')return new Response(changed(sitemap,url));
  const index=slugs.findIndex(slug=>url===base+slug+'/');
  if(index<0)throw Error('Unexpected offline URL');
  return new Response(detail.replaceAll('EXISTING_PROPERTY',slugs[index]).replace('1090741',String(1001+index)).replace('ON MARKET',index%2?'UNDER CONTRACT':'ON MARKET'));
 };
 process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
-""".replace("__TOTAL__", str(total)).replace("__CLOSED__", str(closed))
+""".replace("__TOTAL__", str(total))
+        .replace("__CLOSED__", str(closed))
+        .replace("__SECOND_PASS__", second_pass)
     )
     path = root / "artifact.json"
     env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
@@ -82,6 +102,9 @@ process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
         text=True,
         timeout=30,
     )
+    if second_pass in {"name", "lifecycle", "location", "units"}:
+        assert child.returncode == 1 and "passes drifted" in child.stderr, child.stderr
+        return child
     assert child.returncode == 0, child.stderr
     return json.loads(path.read_text()), child.stderr, start, generation
 
@@ -486,3 +509,62 @@ def test_python_proof_rejects_url_parser_dot_aliases(value):
 
     with pytest.raises(ValueError):
         _path_key(f"https://essexrealtygroup.com/properties/{value}/")
+
+
+def test_reordered_actual_producer_collections_reach_both_admissions(tmp_path):
+    produced = produce(tmp_path, closed=2, second_pass="reorder")
+    artifact, _, _, _ = produced
+    assert artifact["sources"][0].get("currentInventoryProof"), artifact["sources"][0]
+    run = tmp_path / "admission"
+    run.mkdir()
+    _, path, _, manifest, report = setup(run, produced)
+    binding = admit(path, manifest, report)
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
+    assert admit(path, manifest, report, "aggregate") == binding
+    assert binding["staged_count"] == 2
+
+
+@pytest.mark.parametrize("field", ["name", "lifecycle", "location", "units"])
+def test_actual_producer_semantic_inventory_change_remains_refused(
+    tmp_path, produced, field
+):
+    produce(tmp_path, second_pass=field)
+    run = tmp_path / "admission"
+    run.mkdir()
+    _, path, artifact, manifest, report = setup(run, produced)
+    for entry in artifact["sources"]:
+        snapshot = entry["currentInventoryProof"]["passes"][1]
+        row = snapshot["current"]["rows"][0]
+        index, value = {
+            "name": (2, "Changed name"),
+            "lifecycle": (1, "under_contract"),
+            "location": (3, "Changed location"),
+            "units": (4, 12),
+        }[field]
+        row[index] = value
+        payload = [
+            snapshot["current"]["rows"],
+            snapshot["closed"]["rows"],
+            snapshot["sitemap"]["urls"],
+        ]
+        snapshot["fingerprint"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+    refresh(path, artifact, manifest)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report)
+
+
+def test_verifier_canonicalizes_receipt_collections_without_losing_fields(
+    tmp_path, produced
+):
+    _, path, artifact, manifest, report = setup(tmp_path, produced)
+    for entry in artifact["sources"]:
+        snapshot = entry["currentInventoryProof"]["passes"][1]
+        snapshot["current"]["rows"].reverse()
+        snapshot["closed"]["rows"].reverse()
+        snapshot["sitemap"]["urls"].reverse()
+    refresh(path, artifact, manifest)
+    binding = admit(path, manifest, report)
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
+    assert admit(path, manifest, report, "aggregate") == binding

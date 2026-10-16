@@ -94,7 +94,7 @@ def _pass(snapshot, previous, observed):
             for url in urls:
                 _path_key(url)
             require(len(urls) == len(set(urls)))
-            parsed[role] = urls
+            parsed[role] = sorted(urls)
             continue
         rows = page["rows"]
         require(
@@ -119,7 +119,7 @@ def _pass(snapshot, previous, observed):
             require(units is None or (type(units) is int and units > 0))
             urls.append(url)
         require(len(urls) == len(set(urls)))
-        parsed[role] = rows
+        parsed[role] = sorted(rows, key=lambda row: row[0])
     current = {row[0] for row in parsed["current"]}
     closed = {row[0] for row in parsed["closed"]}
     require(not current & closed and current | closed == set(parsed["sitemap"]))

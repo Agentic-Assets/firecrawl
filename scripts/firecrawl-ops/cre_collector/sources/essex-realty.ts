@@ -339,9 +339,10 @@ async function fetchEssexInventoryPass(transport: EssexTransport): Promise<{
   const closedAt = observationNow();
   const sitemapXml = await transport.getText(ESSEX_SITEMAP_URL);
   const sitemapAt = observationNow();
-  const current = parseEssexArchive(currentHtml, "current");
-  const closed = parseEssexArchive(closedHtml, "closed");
-  const sitemapUrls = parseEssexSitemap(sitemapXml);
+  const byUrl = (left: EssexArchiveRow, right: EssexArchiveRow) => left.url < right.url ? -1 : left.url > right.url ? 1 : 0;
+  const current = parseEssexArchive(currentHtml, "current").sort(byUrl);
+  const closed = parseEssexArchive(closedHtml, "closed").sort(byUrl);
+  const sitemapUrls = parseEssexSitemap(sitemapXml).sort();
   const archive = (rows: EssexArchiveRow[], endpoint: string, observedAt: string, html: string): EssexArchiveProof => ({
     endpoint, observedAt, responseTextSha256: textSha256(html), declaredTotal: rows.length,
     rows: rows.map(row => [row.url, row.lifecycle, row.name, row.location, row.units]),
