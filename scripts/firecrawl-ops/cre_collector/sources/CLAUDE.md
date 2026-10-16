@@ -34,8 +34,9 @@ infer a provider change from a parser gap.
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 
 Marcus direct POST and detail HTML requests share a fixed 30-second deadline
-covering response headers and body. A timeout aborts and cancels unread/late
-bodies, without adding transport retries or changing strict detail evidence.
+covering response headers and body. Timeouts abort the request and attempt to
+cancel unread or late response bodies, without adding transport retries or
+changing strict detail evidence.
 The guarded owner's overall work deadline remains a separate bound.
 
 Pyramid's WordPress inventory requests only `_embed=wp:term`: the mapper needs
