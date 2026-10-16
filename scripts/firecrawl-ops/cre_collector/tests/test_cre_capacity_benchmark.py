@@ -4170,7 +4170,14 @@ def test_worker_rechecks_review_grant_immediately_before_popen(tmp_path, monkeyp
 
 @pytest.mark.parametrize(
     "outcome",
-    ["idle", "unknown", "result_write_failure", "arm_failure", "worker_error"],
+    [
+        "idle",
+        "unknown",
+        "result_write_failure",
+        "arm_failure",
+        "worker_error",
+        "prearm_refusal",
+    ],
 )
 def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
     tmp_path, monkeypatch, outcome
@@ -4250,7 +4257,14 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
 
     def write(path, value):
         if path.name == "result.json":
-            assert active_path.is_file()
+            if "armed" in events:
+                assert active_path.is_file()
+            else:
+                # Do not mask a real pre-arm refusal with a missing-marker
+                # assertion: no worker can have launched without arming.
+                assert "first_worker" not in events and "later_worker" not in events
+                assert value["final_settlement"]["state"] == "not_started"
+                assert value["completed"] is False
             if outcome == "result_write_failure":
                 raise OSError("result write failed")
             real_write(path, value)
@@ -4286,6 +4300,26 @@ def test_benchmark_interlock_spans_workers_settlement_and_durable_result(
         "admission_path": tmp_path / "admission.json",
         "timeout_seconds": 60,
     }
+    if outcome == "prearm_refusal":
+
+        def reject_before_arm(_grant):
+            events.append("prearm_refusal")
+            raise benchmark.BenchmarkError("synthetic pre-arm admission refusal")
+
+        monkeypatch.setattr(
+            benchmark, "_validate_review_grant_freshness", reject_before_arm
+        )
+        with pytest.raises(
+            benchmark.BenchmarkError, match="synthetic pre-arm admission refusal"
+        ):
+            benchmark.run_benchmark(**kwargs)
+        assert events == ["prearm_refusal", "durable_result"]
+        result = json.loads((artifact / "result.json").read_text())
+        assert result["interruption_type"] == "BenchmarkError"
+        assert result["final_settlement"]["state"] == "not_started"
+        assert result["completed"] is False
+        assert not lock_path.exists()
+        return
     if outcome in {"result_write_failure", "arm_failure", "worker_error"}:
         with pytest.raises(OSError):
             benchmark.run_benchmark(**kwargs)
