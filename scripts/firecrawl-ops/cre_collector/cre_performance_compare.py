@@ -235,6 +235,14 @@ def compare_reports(current: Mapping, baseline: Mapping) -> dict:
                 "staged_unique": _measurement(
                     now.get("staged_unique"), before.get("staged_unique")
                 ),
+                "verified_current_inventory_unique": _measurement(
+                    now.get("verified_current_inventory_unique"),
+                    before.get("verified_current_inventory_unique"),
+                ),
+                "verified_current_inventory_per_minute": _measurement(
+                    now.get("verified_current_inventory_per_minute"),
+                    before.get("verified_current_inventory_per_minute"),
+                ),
                 "elapsed_seconds": _measurement(
                     now.get("source_elapsed_seconds"),
                     before.get("source_elapsed_seconds"),

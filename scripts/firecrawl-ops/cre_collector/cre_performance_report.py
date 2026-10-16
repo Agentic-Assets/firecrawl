@@ -730,6 +730,7 @@ def _source_report(
     source: str,
     *,
     now: datetime,
+    verified_current_inventory: bool = False,
     command_evidence: tuple | None = None,
 ) -> dict[str, Any]:
     commands, warnings = (
@@ -751,6 +752,18 @@ def _source_report(
         if command["event"] != "started" and seconds is not None:
             phase = command["phase"]
             timing[phase] = round(timing.get(phase, 0.0) + seconds, 3)
+    source_elapsed = (
+        stages["source_elapsed_seconds"]
+        if multi_source or _object(manifest.get("config")).get("pipeline") is True
+        else _duration(manifest.get("started_at"), manifest.get("finished_at"))
+    )
+    verified_count = (
+        artifact.get("staged_unique")
+        if verified_current_inventory
+        and type(artifact.get("staged_unique")) is int
+        and artifact["staged_unique"] >= 0
+        else None
+    )
     return {
         "source": source,
         "run_id": run_dir.name,
@@ -766,9 +779,7 @@ def _source_report(
             else "unknown"
         ),
         "stage_wall_seconds": stages,
-        "source_elapsed_seconds": stages["source_elapsed_seconds"]
-        if multi_source
-        else _duration(manifest.get("started_at"), manifest.get("finished_at")),
+        "source_elapsed_seconds": source_elapsed,
         "timed_command_seconds": timing,
         "collection_seconds": timing.get("collection"),
         "raw_emitted_per_minute": round(
@@ -784,6 +795,17 @@ def _source_report(
         and timing.get("collection", 0) > 0
         else None,
         "staged_unique": _number(artifact.get("staged_unique")),
+        "verified_current_inventory_unique": verified_count,
+        "verified_current_inventory_per_minute": round(
+            verified_count * 60 / source_elapsed, 3
+        )
+        if verified_count is not None
+        and source_elapsed is not None
+        and source_elapsed > 0
+        else None,
+        "verified_current_inventory_basis": "pipeline_source_unit_full_readback"
+        if verified_current_inventory
+        else None,
         "raw_emitted_rows": _number(artifact.get("flat_listings")),
         "fresh_qualified_unique": None,
         "ingested_rows": None,
@@ -842,13 +864,19 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
     if not isinstance(sha, str) or not SHA.fullmatch(sha):
         raise ValueError("manifest collector identity is unavailable")
     rows = []
+    pipeline_unit_caches = {}
     bound_runs = {}
 
-    def source_row(run_dir, child, source):
+    def source_row(run_dir, child, source, **kwargs):
         if run_dir not in bound_runs:
             bound_runs[run_dir] = (child, _commands(run_dir, now=now))
         return _source_report(
-            run_dir, child, source, now=now, command_evidence=bound_runs[run_dir][1]
+            run_dir,
+            child,
+            source,
+            now=now,
+            command_evidence=bound_runs[run_dir][1],
+            **kwargs,
         )
 
     if "series_id" in manifest:
@@ -906,7 +934,41 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
                     )
                 ):
                     raise ValueError("child identity mismatch")
-                rows.append(source_row(child_root, child, source))
+                verified_current_inventory = False
+                parent_target = manifest.get("database_target")
+                child_target = _object(child.get("preflight")).get("database_target")
+                if (
+                    _object(manifest.get("config")).get("pipeline") is True
+                    and _object(child.get("config")).get("pipeline") is True
+                    and _object(checkpoint).get("checkpoint_run")
+                    == f"runs/{child_root.name}"
+                    and isinstance(parent_target, Mapping)
+                    and bool(parent_target)
+                    and child_target == parent_target
+                ):
+                    from cre_checkpoint_series import pipeline_source_qualified
+
+                    attempts = _object(checkpoint).get("attempts")
+                    parent_finished_at = manifest.get("finished_at") or now.isoformat()
+                    if isinstance(attempts, list) and attempts:
+                        cache = pipeline_unit_caches.setdefault(child_root, {})
+                        verified_current_inventory = pipeline_source_qualified(
+                            child,
+                            source,
+                            run_dir=child_root,
+                            parent_started_at=manifest.get("started_at"),
+                            parent_finished_at=parent_finished_at,
+                            unit_cache=cache,
+                            parent_attempts=attempts,
+                        )
+                rows.append(
+                    source_row(
+                        child_root,
+                        child,
+                        source,
+                        verified_current_inventory=verified_current_inventory,
+                    )
+                )
             except (OSError, ValueError, UnicodeError, RecursionError):
                 rows.append(
                     {
@@ -1024,7 +1086,7 @@ def render(report: Mapping[str, Any]) -> str:
         f"Collector SHA    {report['collector_git_sha']}",
         f"Run elapsed     {_display(report.get('run_elapsed_seconds'))}s (wall time; overlapping commands are not summed)",
         "",
-        "Source                Status                     Raw  Staged  Rejected  Readback   Timed commands",
+        "Source                Status                     Raw  Staged  Verified-current  Rejected  Readback   Timed commands",
     ]
     pending = 0
     if report.get("resource_coverage", "").startswith("current_bound_checkpoint"):
@@ -1041,8 +1103,17 @@ def render(report: Mapping[str, Any]) -> str:
         lines.append(
             f"{row['source']:<21} {row.get('status', 'unknown'):<26} "
             f"{_display(row.get('raw_emitted_rows')):>4} {_display(staged):>7} "
+            f"{_display(row.get('verified_current_inventory_unique')):>16} "
             f"{_display(row.get('rejected_by_ingest')):>9} {_display(row.get('database_readback_ok')):>9} {timed:>15}"
         )
+        verified_rate = row.get("verified_current_inventory_per_minute")
+        if row.get("verified_current_inventory_unique") is not None:
+            lines.append(
+                "  Verified current staged inventory: "
+                f"{row['verified_current_inventory_unique']} unique identities; "
+                "collection-to-verified rate="
+                f"{_display(verified_rate)}/min. This is not a new-row or strict-detail count."
+            )
         if timings:
             lines.append(
                 "  Command steps: "
@@ -1135,8 +1206,9 @@ def render(report: Mapping[str, Any]) -> str:
         )
         for item in comparison.get("sources", []):
             duration, rate = item["elapsed_seconds"], item["staged_per_minute"]
+            verified_rate = item["verified_current_inventory_per_minute"]
             lines.append(
-                f"  {item['source']}: elapsed {_display(duration['baseline'])}s -> {_display(duration['current'])}s; staged/min {_display(rate['baseline'])} -> {_display(rate['current'])}; recorded readbacks={item['readbacks_recorded_ok']}."
+                f"  {item['source']}: elapsed {_display(duration['baseline'])}s -> {_display(duration['current'])}s; staged/min {_display(rate['baseline'])} -> {_display(rate['current'])}; verified-current/min {_display(verified_rate['baseline'])} -> {_display(verified_rate['current'])}; recorded readbacks={item['readbacks_recorded_ok']}."
             )
         if comparison.get("context_differences"):
             lines.append(

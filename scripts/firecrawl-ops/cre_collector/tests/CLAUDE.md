@@ -8,6 +8,16 @@
 
 **Re-implementation rule:** Do not duplicate production logic in assertions. Exception: `test_enum_key_invariant.py` defines `monitor_enum_key()` as the explicit contract mirror for enumeration id vs `to_row().external_id`.
 
+For website or provider variations, build fixtures from sanitized, genuinely
+observed responses and call the real mapper and verifier. Cover supported
+layout/value variants plus negative mutations for missing, malformed,
+conflicting, and unknown critical fields. Assert that unsupported identity or
+required-field changes fail closed; do not make a positional-selector fixture
+or a duplicated test parser the acceptance oracle. Run collector suites in a
+standalone `git clone --no-hardlinks` as required by
+[SETUP's isolated verification recipe](../SETUP.md#isolated-verification). See
+the [brokerage completion playbook](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md).
+
 ## Folder-Specific Commands
 
 **Python (ingest, monitor, gate):**

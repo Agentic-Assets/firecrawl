@@ -164,6 +164,9 @@ in `docs/firecrawl-ops/references/model-routing.md`.
   - `local-pdf-ocr-research-agent-plan.md` — profile/page-break/raw-JSON/QA roadmap for research-paper OCR agents
   - `model-routing.md` — model strategy and escalation rules
   - `ops-playbook.md` — health checks, debugging, safe ops
+  - [`cre-performance-telemetry.md`](docs/firecrawl-ops/references/cre-performance-telemetry.md) — automatic run measurements, metric boundaries, matched comparisons and the central [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895); do not create an issue per run or a second metrics service
+  - [`cre-brokerage-completion-playbook.md`](docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md) — source-backed website-variation handling,
+    adapter evidence, and regression-test guidance
   - `partner-orbstack-onboarding.md` — fresh-clone setup checklist for another Mac/business partner
   - `cayman-use-cases-and-playbooks.md` — mapped workflows (research/CRE/coding)
   - `cre-access-matrix.md` — CRE platform scrapability matrix (CBRE/Cushman accessible; CoStar/LoopNet blocked)

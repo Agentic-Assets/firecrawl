@@ -28,7 +28,9 @@ is **stale** for production; README/archive there is reference-only).
 | Broker endpoint research notes | read `../cre_scrapers/brokers/*/README.md` | do not treat as runtime code |
 
 Adapted from the Prometheus cloud collector reference in `../prometheus/`.
-Runs entirely against the local self-hosted Firecrawl API.
+Uses source-specific public feeds and direct HTTP where configured, and the
+local self-hosted Firecrawl API where required. No hosted Firecrawl API key is
+required for the collector.
 
 ## Live counts and run-health (agents)
 
@@ -48,6 +50,15 @@ checkpoint-manifest readback. Dated docs are operational history.
 6. [slack-setup.md](slack-setup.md) for the CRE Slack channel, private webhook
    file, no-network configuration check and delivery verification. Root Docker
    `.env` does not configure native Windows task notifications.
+7. [CRE performance evidence](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md)
+   for automatic run reports, verified-current versus staged counts and matched
+   comparisons. Record meaningful findings in the existing
+   [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895);
+   use its existing experiment/acceptance children rather than adding an issue
+   for each run.
+8. [Brokerage completion playbook](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
+   for primary-source evidence, website variation classification, and adapter
+   regression guidance. The source-specific contract remains in `sources/CLAUDE.md`.
 
 ## Files
 
