@@ -1,6 +1,6 @@
 # CRE Brokerage Completion Playbook
 
-Last reviewed: 2026-07-31.
+Last reviewed: 2026-10-16.
 
 Use this playbook when upgrading one brokerage website from shallow coverage to
 complete public-feed coverage for EQUIRE. It is adapter-development guidance,
@@ -60,76 +60,12 @@ serve the local browser path but reject plain urllib.
 - Exploratory probes may retain a feed row with `detailError`. Strict admission
   fails closed on incomplete required detail. Only an explicitly registered
   authoritative-inventory or scoped contract may preserve existing children.
-- Preserve provider IDs and original URLs. Normalize values only for comparison,
-  using the source contract's rules and the same implementation in the mapper
-  and verifier. Case, whitespace, or an optional `www` label is equivalent only
-  where that source contract explicitly permits it; never rewrite an ID or
-  source URL, infer a host alias, or let a comparison normalization change the
-  recorded evidence.
-
-## Website variation and evidence policy
-
-These are expectations for new or changed adapter work, not a claim that every
-existing adapter already meets them or that a pending fix has shipped.
-
-Treat a changed page as a question to classify, not as permission to relax the
-adapter. Separate presentation or transport changes from a provider/feed
-change, host-coordinate drift, identity mismatch, parser vocabulary gap, and a
-coverage or baseline-policy hold. A similar-looking site, hostname, address, or
-brokerage name does not establish that two records or endpoints are the same.
-
-Use first-party provider documentation, the firm's current official site, and
-the exact registered source configuration as primary evidence. Reproduce a
-suspected failure with the current adapter's URL, query, headers, referer,
-redirect policy, and parser before changing behavior. Keep any diagnostic
-request finite and retain its timestamp, status, request metadata, response
-hash, and sanitized fixture privately. A successful page proves only that page;
-prove pagination, declared totals, unique native IDs, and source ownership for
-the complete feed separately. Do not treat an ad-hoc client's response as proof
-of a production adapter failure.
-
-Map fields by meaning, not by DOM position. Use provider field names and
-semantic labels where available; do not infer a field from its visual order or
-silently substitute a default for an essential fact such as transaction type,
-identity, address, or source ownership. Add field aliases or layout fallbacks
-only after primary evidence establishes their meaning and regression tests cover
-the observed variation and its negative cases. For example, a Sublease token
-that the current parser does not recognize is a parser-vocabulary defect; that
-observation alone does not show the provider changed its site.
-
-Use one source-owned normalization rule wherever the mapper and its verifier
-compare the same value. Keep it narrow and explicit: apply only harmless
-case/whitespace handling or optional-`www` equivalence that the source contract
-allows. Keep native IDs and original provider URLs byte-for-byte as captured.
-Do not infer aliases or migrate identities from URL similarity, names,
-addresses, coordinates, or a new hostname. A changed coordinate requires
-current first-party ownership evidence tied to the exact registered source
-configuration; a provider switch requires evidence of the new feed and a
-reviewed identity strategy.
-
-If an essential value is unknown, required pages are missing, or two records
-claim an incompatible identity, fail the affected source's required-member
-proof and preserve the last-known-good data. A source artifact cannot qualify
-as complete while any required member is missing or failed. Diagnostics should
-identify the source key, stage, native provider ID when available, field,
-observed value or shape, expected schema/rule, and receipt or fixture reference
-without exposing credentials or unrestricted response bodies. Continue after a
-source-local failure only through a runner that explicitly supports that
-behavior. Global ownership, resource, evidence, or uncertain-write failures
-stop the run; do not retry an uncertain write. Retry only bounded, classified
-transient failures, not a schema mismatch or an unexplained completeness
-failure.
-
-Build regression fixtures from sanitized, genuinely observed provider responses.
-Test the current layout, each supported variation, and mutations for missing,
-conflicting, malformed, or newly unknown critical fields. Keep fixtures and
-tests on the real production mapper/verifier path rather than duplicating its
-logic. Record meaningful observations, rejected hypotheses, and experiment
-results in the existing [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895)
-and its existing experiment children; do not create a run log or new tracking
-framework. Keep macOS/Linux collection and validation semantics shared; a
-Windows wrapper may forward supported settings but must not create a separate
-provider interpretation.
+- Preserve raw provider IDs and original URLs as captured in provenance, and
+  keep each source's documented canonical external-ID recipe (for example, a
+  prefix, hash, path key, or proven provider suffix rule). Apply source-contract
+  comparison normalization consistently in the mapper and verifier; case,
+  whitespace, or optional `www` equivalence is allowed only where that contract
+  says so. Do not change an identity recipe as a harmless normalization.
 
 5. Detail-page enrichment:
 
@@ -186,6 +122,70 @@ Sources whose persisted id is detail-derived (`jll`, `jll-investor`,
 `cbre-dealflow`, `colliers` SalesTracker) must stay on full-sweep cadence and
 return zero monitor rows. Never feed a monitor artifact to `cre_ingest.py`. See
 `cre-monitor-subsystem.md` and `sources/CLAUDE.md` (monitor matrix).
+
+## Website variation and evidence policy
+
+These are expectations for new or changed adapter work, not a claim that every
+existing adapter already meets them or that a pending fix has shipped.
+
+Treat a changed page as a question to classify, not as permission to relax the
+adapter. Separate presentation or transport changes from a provider/feed
+change, host-coordinate drift, identity mismatch, parser vocabulary gap, and a
+coverage or baseline-policy hold. A similar-looking site, hostname, address, or
+brokerage name does not establish that two records or endpoints are the same.
+
+Use first-party provider documentation, the firm's current official site, and
+the exact registered source configuration as primary evidence. Reproduce a
+suspected failure with the current adapter's URL, query, headers, referer,
+redirect policy, and parser before changing behavior. Keep any diagnostic
+request finite and retain its timestamp, status, request metadata, response
+hash, and sanitized fixture privately. A successful page proves only that page;
+prove pagination, declared totals, unique native IDs, and source ownership for
+the complete feed separately. Do not treat an ad-hoc client's response as proof
+of a production adapter failure.
+
+Map fields by meaning, not by DOM position. Use provider field names and
+semantic labels where available; do not infer a field from its visual order or
+silently substitute a default for an essential source-contract fact, such as
+transaction type, identity, or ownership (and address where the source requires
+it). Add field aliases or layout fallbacks
+only after primary evidence establishes their meaning and regression tests cover
+the observed variation and its negative cases. For example, a Sublease token
+that the current parser does not recognize is a parser-vocabulary defect; that
+observation alone does not show the provider changed its site.
+
+Use one source-owned normalization rule wherever the mapper and verifier
+compare the same value. This comparison rule does not replace or alter the
+source's documented canonical external-ID recipe. Keep raw native IDs and
+original provider URLs byte-for-byte in provenance. Do not infer aliases or
+migrate identities from URL similarity, names, addresses, coordinates, or a
+new hostname. A changed coordinate requires current first-party ownership
+evidence tied to the exact registered source configuration; a provider switch
+requires evidence of the new feed and a reviewed identity strategy.
+
+If a source-policy-required value is unknown, required pages are missing, or
+two records claim an incompatible identity, fail the affected source's
+required-member proof and preserve the last-known-good data. A source artifact
+cannot qualify as complete while any required member is missing or failed.
+Diagnostics should identify the source key, stage, native provider ID when
+available, field, observed value or shape, expected schema/rule, and receipt or
+fixture reference without exposing credentials or unrestricted response
+bodies. Continue after a source-local failure only through a runner that
+explicitly supports that behavior. Global ownership, resource, evidence, or
+uncertain-write failures stop the run; do not retry an uncertain write. Retry
+only bounded, classified transient failures, not a schema mismatch or an
+unexplained completeness failure.
+
+Build regression fixtures from sanitized, genuinely observed provider responses.
+Test the current layout, each supported variation, and mutations for missing,
+conflicting, malformed, or newly unknown critical fields. Keep fixtures and
+tests on the real production mapper/verifier path rather than duplicating its
+logic. Record meaningful observations, rejected hypotheses, and experiment
+results in the existing [AGENTIC-2895 learning log and scorecard](https://linear.app/agenticassets/issue/AGENTIC-2895)
+and its existing experiment children; do not create a run log or new tracking
+framework. Keep macOS/Linux collection and validation semantics shared; a
+Windows wrapper may forward supported settings but must not create a separate
+provider interpretation.
 
 ## Documentation Required Per Brokerage
 

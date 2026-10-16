@@ -28,7 +28,9 @@ is **stale** for production; README/archive there is reference-only).
 | Broker endpoint research notes | read `../cre_scrapers/brokers/*/README.md` | do not treat as runtime code |
 
 Adapted from the Prometheus cloud collector reference in `../prometheus/`.
-Runs entirely against the local self-hosted Firecrawl API.
+Uses source-specific public feeds and direct HTTP where configured, and the
+local self-hosted Firecrawl API where required. No hosted Firecrawl API key is
+required for the collector.
 
 ## Live counts and run-health (agents)
 

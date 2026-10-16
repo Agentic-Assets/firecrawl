@@ -18,6 +18,11 @@
 > `cre_daily_update.sh`). `../cre_scrapers/brokers/` is legacy reference code,
 > not a source of board updates.
 
+For provider, endpoint, or page-layout variations, follow the source-backed
+[brokerage completion and evidence guidance](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
+before changing an adapter. Current runtime and source-specific contracts
+remain in this guide and `sources/CLAUDE.md`.
+
 ## Agent rule: verify counts before you quote or edit them
 
 Board totals, source counts, test counts, and scheduler state are point-in-time
