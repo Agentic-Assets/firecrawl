@@ -29,11 +29,17 @@ export type PyramidSnapshot = {
   passes: PyramidInventoryPass[];
 };
 
+type PyramidInventoryPageBinding = [number, string, string];
+type PyramidTransactionEvidence =
+  | { kind: "html_property_fact"; transaction: Tx; value: string }
+  | { kind: "wordpress_sale_type"; transaction: Tx; inventoryPage: PyramidInventoryPageBinding };
+
 export type PyramidDetail = {
   postId: number;
   canonicalUrl: string | null;
   street: string | null;
   facts: Record<string, string>;
+  transactionFacts: string[];
   description: string | null;
   brochures: Array<{ name: string | null; url: string }>;
   photos: string[];
@@ -365,6 +371,38 @@ export function pyramidDetailTransaction(value: unknown, postId: number, expecte
   return transaction;
 }
 
+function pyramidTenureLabel(value: string): boolean {
+  return value.trim().replace(/:\s*$/, "").replace(/\s+/g, "").toLowerCase() === "sale/lease";
+}
+
+function pyramidSaleTypeTerms(row: any): any[] {
+  const groups = row?._embedded?.["wp:term"];
+  return Array.isArray(groups) ? groups.flat().filter((term: any) => term?.taxonomy === "sale-type")
+    .map(({ id, taxonomy, name, slug }: any) => ({ id, taxonomy, name, slug })) : [];
+}
+
+function pyramidTransactionEvidence(row: any, detail: PyramidDetail, tx: Tx,
+  inventoryPage?: PyramidInventoryPageBinding): PyramidTransactionEvidence {
+  const id = Number(row.id);
+  if (detail.transactionFacts.length) {
+    if (detail.transactionFacts.length !== 1) throw new Error(`Pyramid detail ${id} has duplicate Sale/Lease facts`);
+    const value = detail.transactionFacts[0];
+    return { kind: "html_property_fact", transaction: pyramidDetailTransaction(value, id, tx), value };
+  }
+  const terms = pyramidSaleTypeTerms(row);
+  const term = terms[0];
+  const expectedId = tx === "sale" ? PYRAMID_SALE_TERM_ID : PYRAMID_LEASE_TERM_ID;
+  if (!inventoryPage || row.status !== "publish" || row.type !== "pbc-listings"
+      || detail.postId !== id || detail.canonicalUrl !== pyramidAbsoluteUrl(row.link)
+      || !Array.isArray(row["sale-type"]) || row["sale-type"].length !== 1
+      || row["sale-type"][0] !== expectedId || terms.length !== 1 || term.id !== expectedId
+      || typeof term.name !== "string" || term.name.trim().toLowerCase() !== tx
+      || typeof term.slug !== "string" || term.slug.trim().toLowerCase() !== tx) {
+    throw new Error(`Pyramid detail ${id} absent Sale/Lease fact lacks bound literal WordPress tenure evidence`);
+  }
+  return { kind: "wordpress_sale_type", transaction: tx, inventoryPage };
+}
+
 function pyramidFactMap($: cheerio.CheerioAPI): Record<string, string> {
   const facts: Record<string, string> = {};
   $(".property-details li").each((_, element) => {
@@ -414,9 +452,17 @@ export function parsePyramidDetail(html: string, expectedPostId?: number): Pyram
     throw new Error(`Pyramid detail identity mismatch: expected ${expectedPostId}, observed ${postId}`);
   }
   const facts = pyramidFactMap($);
-  if (!facts["Sale/Lease"]) {
-    throw new Error(`Pyramid detail ${postId} omitted its Sale/Lease fact`);
-  }
+  const transactionFacts: string[] = [];
+  $(".property-details li").each((_, element) => {
+    const labels = $(element).find(".name");
+    if (!labels.toArray().some((label) => pyramidTenureLabel($(label).text()))) return;
+    const values = $(element).find(".value");
+    if (labels.length !== 1 || values.length !== 1) {
+      throw new Error(`Pyramid detail ${postId} has malformed Sale/Lease property fact`);
+    }
+    transactionFacts.push(values.text().trim());
+  });
+  if (!Object.keys(facts).length) throw new Error(`Pyramid detail ${postId} omitted property facts`);
   const description = clean($(".property-content").first().text());
   const brochures = dedupeStrings(
     $(".more-info a[href]")
@@ -463,7 +509,7 @@ export function parsePyramidDetail(html: string, expectedPostId?: number): Pyram
     })
     .get()
     .filter((contact) => contact.name || contact.email);
-  return { postId, canonicalUrl: pyramidAbsoluteUrl($('link[rel="canonical"]').attr("href")), street: pyramidPropertyStreet($), facts, description, brochures, photos, contacts };
+  return { postId, canonicalUrl: pyramidAbsoluteUrl($('link[rel="canonical"]').attr("href")), street: pyramidPropertyStreet($), facts, transactionFacts, description, brochures, photos, contacts };
 }
 
 function pyramidShortlinkPostId(value: unknown): number | null {
@@ -523,15 +569,14 @@ export function mapPyramidListing(
   tx: Tx,
   inventoryObservedAt: string,
   detail?: PyramidDetail,
-  detailObservedAt?: string
+  detailObservedAt?: string,
+  inventoryPage?: PyramidInventoryPageBinding
 ): any {
   const id = Number(row?.id);
   if (pyramidTransaction(row) !== tx) {
     throw new Error(`Pyramid row ${id} does not belong to requested ${tx} inventory`);
   }
-  if (detail) {
-    pyramidDetailTransaction(detail.facts["Sale/Lease"], id, tx);
-  }
+  const transactionEvidence = detail ? pyramidTransactionEvidence(row, detail, tx, inventoryPage) : undefined;
   const title = clean(stripHtmlText(String(row?.title?.rendered ?? "")));
   const description =
     detail?.description ?? clean(stripHtmlText(String(row?.content?.rendered ?? "")));
@@ -600,6 +645,10 @@ export function mapPyramidListing(
     preserveChildCollections: detail ? undefined : true,
     wordpressRecord: {
       id,
+      link: row?.link,
+      status: row?.status,
+      type: row?.type,
+      saleTypeTerms: pyramidSaleTypeTerms(row),
       slug: clean(row?.slug),
       modified: clean(row?.modified_gmt ?? row?.modified),
       saleType: row?.["sale-type"],
@@ -609,6 +658,8 @@ export function mapPyramidListing(
       state: row?.state,
     },
     detailFacts: detail?.facts,
+    detailTransactionFacts: detail ? { count: detail.transactionFacts.length, values: detail.transactionFacts } : undefined,
+    transactionEvidence,
   });
 }
 
@@ -658,8 +709,9 @@ export async function srcPyramidBrokerage(
     const observedAt = new Date().toISOString();
     const detail = parsePyramidDetail(html, Number(row.id));
     if (proofEnabled && detail.canonicalUrl !== url) throw new Error("Pyramid detail canonical URL disagrees with inventory");
-    if (proofEnabled) pyramidDetailTransaction(detail.facts["Sale/Lease"], Number(row.id), tx);
-    const mapped = mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt);
+    const page = proofEnabled ? snapshot.passes[1].pages.find((page) => page[6].includes(Number(row.id))) : undefined;
+    const mapped = mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt,
+      page ? [page[0], page[2], page[3]] : undefined);
     if (proofEnabled) {
       if (![mapped.state, mapped.city, mapped.assetType].every((value) => typeof value === "string" && value.trim())) {
         throw new Error("Pyramid strict proof lacks named location/property taxonomy");

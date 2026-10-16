@@ -62,6 +62,68 @@ def _path_key(value):
     return url.path.strip("/")
 
 
+def _transaction_evidence(listing, tx, url, post, pages):
+    record = listing.get("wordpressRecord")
+    require(isinstance(record, dict))
+    expected_id = 246 if tx == "sale" else 249
+    require(
+        record.get("id") == post
+        and record.get("link") == url
+        and record.get("status") == "publish"
+        and record.get("type") == "pbc-listings"
+        and record.get("saleType") == [expected_id]
+    )
+    facts = listing.get("detailFacts")
+    capture = listing.get("detailTransactionFacts")
+    evidence = listing.get("transactionEvidence")
+    require(isinstance(facts, dict) and bool(facts))
+    require(isinstance(capture, dict) and isinstance(evidence, dict))
+    count = capture.get("count")
+    require(type(count) is int and count in (0, 1))
+    tenure = [
+        value
+        for label, value in facts.items()
+        if re.sub(r"\s+", "", label.strip().removesuffix(":")).lower() == "sale/lease"
+    ]
+    if count == 1:
+        values = capture.get("values")
+        require(isinstance(values, list) and len(values) == 1)
+        value = values[0]
+        require(isinstance(value, str) and tenure == [value])
+        normalized = value.strip().lower()
+        derived = {"sale": "sale", "lease": "lease", "sublease": "lease"}.get(
+            normalized
+        )
+        require(derived == tx)
+        require(
+            evidence
+            == {"kind": "html_property_fact", "transaction": tx, "value": value}
+        )
+    else:
+        require(not tenure and capture.get("values", []) == [])
+        terms = record.get("saleTypeTerms")
+        require(isinstance(terms, list) and len(terms) == 1)
+        term = terms[0]
+        require(isinstance(term, dict) and type(term.get("id")) is int)
+        require(term["id"] == expected_id and term.get("taxonomy") == "sale-type")
+        require(
+            all(
+                isinstance(term.get(k), str) and term[k].strip().lower() == tx
+                for k in ("name", "slug")
+            )
+        )
+        page = next((page for page in pages if post in page[6]), None)
+        require(page is not None)
+        require(
+            evidence
+            == {
+                "kind": "wordpress_sale_type",
+                "transaction": tx,
+                "inventoryPage": [page[0], page[2], page[3]],
+            }
+        )
+
+
 def admit(
     artifact_path: Path,
     manifest: dict,
@@ -274,6 +336,7 @@ def admit(
             and provenance.get("identityMethod")
             == "literal_owned_listing_path+wordpress_post_id"
         )
+        _transaction_evidence(listing, tx, url, post, passes[1]["pages"])
         transformed = to_row(listing, {}, meta["finishedAt"])
         require(
             transformed is not None

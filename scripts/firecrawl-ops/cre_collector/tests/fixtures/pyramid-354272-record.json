@@ -1,0 +1,23 @@
+{
+  "id": 354272,
+  "status": "publish",
+  "type": "pbc-listings",
+  "link": "https://www.pyramidbrokerage.com/listings/22-verizon-lane-lansing-ny-g7203/",
+  "modified": "2026-03-31T19:01:21",
+  "modified_gmt": "2026-03-31T19:01:21",
+  "sale-type": [
+    249
+  ],
+  "_embedded": {
+    "wp:term": [
+      [
+        {
+          "taxonomy": "sale-type",
+          "id": 249,
+          "name": "Lease",
+          "slug": "lease"
+        }
+      ]
+    ]
+  }
+}

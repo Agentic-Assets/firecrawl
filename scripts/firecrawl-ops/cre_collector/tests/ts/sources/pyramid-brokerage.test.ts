@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import {
   PYRAMID_LEASE_TERM_ID,
   PYRAMID_INVENTORY_URL,
@@ -243,8 +244,8 @@ test("Pyramid detail parser rejects missing shells and mismatched shortlink iden
   assert.throws(() => parsePyramidDetail("<html>Page not found</html>", 101), /shell/);
   assert.throws(() => parsePyramidDetail(detailHtml, 102), /identity mismatch/);
   assert.throws(
-    () => parsePyramidDetail(detailHtml.replace("Sale/Lease:", "Tenure:"), 101),
-    /omitted its Sale\/Lease/
+    () => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", parsePyramidDetail(detailHtml.replace("Sale/Lease:", "Tenure:"), 101)),
+    /absent Sale\/Lease fact lacks/
   );
   for (const shortlink of [
     "https://example.com/?p=101",
@@ -584,6 +585,7 @@ test("Pyramid classifies only known exact transaction facts without defaulting t
     assert.throws(() => pyramidDetailTransaction(value, 119152), /119152.*unsupported Sale\/Lease fact/);
     const detail = parsePyramidDetail(detailHtml);
     detail.facts["Sale/Lease"] = value as string;
+    detail.transactionFacts = [value as string];
     assert.throws(() => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", detail), /unsupported Sale\/Lease fact/);
   }
   assert.throws(() => pyramidDetailTransaction("unknown\n".repeat(100), 119152), (error: Error) => error.message.length < 600 && !error.message.includes("\n"));
@@ -598,4 +600,37 @@ test("Pyramid harmless nested fact markup and field order retain Sublease, with 
   assert.equal(mapped.transactionType, "Lease");
   assert.equal(mapped.detailFacts["Sale/Lease"], "SUBLEASE");
   assert.throws(() => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", detail), /disagrees/);
+});
+
+
+test("Pyramid actual Price-only primary detail uses only bound record-owned tenure", () => {
+  const html = readFileSync(new URL("../../fixtures/pyramid-354272-detail.html", import.meta.url), "utf8");
+  const record = JSON.parse(readFileSync(new URL("../../fixtures/pyramid-354272-record.json", import.meta.url), "utf8"));
+  const detail = parsePyramidDetail(html, record.id);
+  const page: [number, string, string] = [1, "2026-10-15T00:00:00Z", "a".repeat(64)];
+  const map = (r = record, d = detail, binding: typeof page | undefined = page) => mapPyramidListing(r, "lease", page[1], d, page[1], binding);
+  const mapped = map();
+  assert.deepEqual(detail.transactionFacts, []);
+  assert.deepEqual(mapped.detailFacts, { Price: "Contact Agent" });
+  assert.deepEqual(mapped.transactionEvidence, { kind: "wordpress_sale_type", transaction: "lease", inventoryPage: page });
+  assert.equal(mapped.transactionType, "Lease");
+  assert.throws(() => mapPyramidListing(record, "lease", page[1], detail), /lacks bound/);
+  for (const changed of [
+    { status: "draft" }, { type: "page" }, { link: record.link + "changed/" },
+    { "sale-type": [249, 246] }, { "sale-type": ["249"] },
+    { _embedded: {} },
+    ...[ { id: 246 }, { taxonomy: "global-filter" }, { name: "Both" }, { slug: "sublease" } ].map((change) => ({ _embedded: { "wp:term": [[{ ...record._embedded["wp:term"][0][0], ...change }]] } })),
+    { _embedded: { "wp:term": [[...record._embedded["wp:term"][0], ...record._embedded["wp:term"][0]]] } },
+  ]) assert.throws(() => map({ ...record, ...changed }), /Pyramid/);
+  const price = html.match(/<li>\s*<span class="name">Price:<\/span>[\s\S]*?<\/li>/)![0];
+  // A hidden property fact is still present, unlike the unrelated global filter.
+  for (const value of ["", "Both", "unrecognized", "For Lease", "Sale"]) {
+    const fact = `<li hidden><span class="name"> sale / lease : </span><span class="value">${value}</span></li>`;
+    const changed = parsePyramidDetail(html.replace(price, price + fact), record.id);
+    assert.equal(changed.transactionFacts.length, 1);
+    assert.throws(() => map(record, changed), /unsupported|disagrees/);
+  }
+  const fact = '<li><span class="name">Sale/Lease:</span><span class="value">Lease</span></li>';
+  assert.throws(() => map(record, parsePyramidDetail(html.replace(price, price + fact + fact), record.id)), /duplicate/);
+  assert.throws(() => parsePyramidDetail(html.replace(price, price + '<li><span class="name">Sale/Lease:</span></li>'), record.id), /malformed/);
 });

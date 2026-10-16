@@ -62,6 +62,17 @@ nonempty generation+start; monitor, capped and standalone calls do not populate
 or consume it. Receipts retain two consecutive equal full-payload passes and
 each fresh detail's native ID, owned canonical URL, observation and body digest.
 No missing detail or absent taxonomy label is covered by an inventory receipt.
+When the fresh detail has property facts but genuinely no Sale/Lease field, only
+that generation's complete inventory row may supply tenure: its published
+`pbc-listings` identity/link and single record-owned embedded `sale-type` term
+must agree literally (246/Sale/sale or 249/Lease/lease), bound to the second
+converged page receipt. `detailTransactionFacts` records presence separately;
+`transactionEvidence` identifies the HTML fact or bound WordPress term without
+inventing a detail fact. Python source and aggregate admission independently
+check this evidence. Present blank, unknown, duplicate/hidden or conflicting
+property facts still fail. Global search filters, a numeric taxonomy ID alone,
+content modification clocks and descriptions never establish tenure. This
+adds no per-post inventory requests and leaves every fresh detail required.
 
 ## external_id Rules (collector id → ingest)
 
