@@ -18,6 +18,7 @@ import {
   parseDaumDetail,
   parseDaumSearchPage,
   resolveDaumTenure,
+  srcDaumCommercial,
 } from "../../../sources/daum-commercial.js";
 import { resetBrokerStateForTests } from "../../../lib/broker.js";
 
@@ -430,7 +431,7 @@ test("DAUM polite transport rejects redirects and oversized bodies", async () =>
   assert.ok(DAUM_MAX_RESPONSE_BYTES > 283_608);
 });
 
-test("DAUM identity convergence signature is ordered and field-change agnostic", () => {
+test("DAUM identity convergence signature compares literal URL and tenure membership", () => {
   const one = inventory();
   const two = inventory({
     url: "https://daumcommercial.com/property/second/",
@@ -440,9 +441,15 @@ test("DAUM identity convergence signature is ordered and field-change agnostic",
     daumSnapshotIdentitySignature([one, two]),
     `${one.url}\t${one.tenure}\n${two.url}\t${two.tenure}`
   );
-  assert.notEqual(
+  assert.equal(
     daumSnapshotIdentitySignature([one, two]),
     daumSnapshotIdentitySignature([two, one])
+  );
+  assert.notEqual(daumSnapshotIdentitySignature([one]), daumSnapshotIdentitySignature([one, two]));
+  assert.notEqual(daumSnapshotIdentitySignature([one]), daumSnapshotIdentitySignature([two]));
+  assert.notEqual(
+    daumSnapshotIdentitySignature([one]),
+    daumSnapshotIdentitySignature([{ ...one, url: "https://daumcommercial.com/property/Main-street/" }])
   );
   assert.equal(
     daumSnapshotIdentitySignature([one]),
@@ -535,4 +542,56 @@ test("DAUM full-pass convergence fails closed after its bounded pass budget", as
     fetchDaumSnapshot({ post: async () => searchHtml() } as any, 1),
     /integer from 2 to 5/
   );
+});
+
+test("DAUM full sale and lease collection converges when complete members reorder", async (t) => {
+  resetBrokerStateForTests();
+  t.after(resetBrokerStateForTests);
+  const rows = [
+    { url: "https://daumcommercial.com/property/main-street/", tenure: "Sale- Investment" },
+    { url: "https://daumcommercial.com/property/second/", tenure: "Lease" },
+  ];
+  const page = (items: typeof rows): string => {
+    const data = items.map(({ url }) => ({
+      title: "100 Main Street", address: "100 Main Street, Phoenix, AZ, 85001",
+      single_post_link: url, "link-to": url, lat: "33.4484", lng: "-112.0740",
+      image: "https://daumcommercial.com/wp-content/uploads/main.jpg",
+      totalsqft: "12,500", "property-type": "Industrial",
+    }));
+    return '<html><body><div class="results-list-controls"><div class="results">2 Results Showing</div></div>'
+      + '<div class="results-list wrap-row">'
+      + items.map(({ url, tenure }) =>
+        '<div class="item"><a class="photo" href="' + url + '"></a>'
+        + '<div class="content"><p class="listing-type">' + tenure + '</p>'
+        + '<a class="red-text" href="' + url + '">100 Main Street</a>'
+        + '<p class="info-location">Phoenix | AZ | 85001</p></div></div>').join("")
+      + '</div><script>var propertySearchData = ' + JSON.stringify(data) + ';</script></body></html>';
+  };
+  let posts = 0;
+  const details: string[] = [];
+  t.mock.method(DaumPoliteTransport.prototype, "post", async (url: string) => {
+    assert.equal(url, daumPageUrl(1));
+    return page(posts++ % 2 === 0 ? rows : [...rows].reverse());
+  });
+  t.mock.method(DaumPoliteTransport.prototype, "get", async (url: string) => {
+    details.push(url);
+    if (url === rows[0].url) return detailHtml;
+    assert.equal(url, rows[1].url);
+    return detailHtml.replaceAll("main-street", "second").replace("50388", "50389")
+      .replace("Sale- Investment", "Lease");
+  });
+  const sale = await srcDaumCommercial("sale", Infinity, false);
+  const lease = await srcDaumCommercial("lease", Infinity, false);
+  assert.equal(posts, 4);
+  assert.deepEqual(details, [rows[0].url, rows[1].url]);
+  assert.deepEqual([sale.totalAvailable, lease.totalAvailable], [1, 1]);
+  assert.deepEqual([sale.truncated, lease.truncated], [false, false]);
+  assert.deepEqual(sale.listings.map(row => [row.id, row.daumPostId, row.transactionType]),
+    [["property/main-street", "50388", "Sale"]]);
+  assert.deepEqual(lease.listings.map(row => [row.id, row.daumPostId, row.transactionType]),
+    [["property/second", "50389", "Lease"]]);
+  for (const row of [...sale.listings, ...lease.listings]) {
+    assert.ok(Number.isFinite(Date.parse(row.inventoryObservedAt)));
+    assert.ok(Number.isFinite(Date.parse(row.detailObservedAt)));
+  }
 });
