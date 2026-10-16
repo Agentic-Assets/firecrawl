@@ -492,6 +492,58 @@ test("extractAvisonYoungContactUrls collects profile and vcard links", () => {
   assert.deepEqual(vcardLinks, [vcard]);
 });
 
+for (const [host, accepted] of [
+  ["www.avisonyoung.us", true],
+  ["avisonyoung.us", true],
+  ["www.avisonyoung.us.invalid", false],
+  ["regional.avisonyoung.us", false],
+  ["example.sharplaunch.com", false],
+] as const) {
+  test(`Avison contact profiles retain only exact official hosts: ${host}`, () => {
+    const profile = `https://${host}/professionals/-/ayp/view/jane-q-public`;
+    const docs = [
+      {
+        url: `${AVISON_YOUNG_HOST}/properties/dallas-tower`,
+        doc: doc(`<a href="${profile}">Jane Q. Public</a>`),
+      },
+    ];
+    const { profileLinks } = extractAvisonYoungContactUrls(docs);
+    assert.deepEqual(
+      profileLinks.map((link) => link.url),
+      accepted ? [profile] : []
+    );
+    const [enriched] = enrichAvisonYoungContacts(
+      [{ name: "Jane Q. Public" }],
+      docs
+    );
+    assert.equal(enriched.profileUrl, accepted ? profile : undefined);
+    const existing = `${AVISON_YOUNG_HOST}/professionals/-/ayp/view/existing-profile`;
+    const [preserved] = enrichAvisonYoungContacts(
+      [{ name: "Jane Q. Public", profileUrl: existing }],
+      docs
+    );
+    assert.equal(preserved.profileUrl, existing);
+  });
+}
+
+test("Avison relative contact profiles retain their observed official base host", () => {
+  const base = "https://avisonyoung.us/properties/dallas-tower";
+  const docs = [
+    {
+      url: base,
+      doc: doc('<a href="/professionals/-/ayp/view/jane-q-public">Jane Q. Public</a>'),
+    },
+  ];
+  const [enriched] = enrichAvisonYoungContacts(
+    [{ name: "Jane Q. Public" }],
+    docs
+  );
+  assert.equal(
+    enriched.profileUrl,
+    "https://avisonyoung.us/professionals/-/ayp/view/jane-q-public"
+  );
+});
+
 test("avisonYoungLongestMarkdown picks the longest non-empty page markdown", () => {
   assert.equal(
     avisonYoungLongestMarkdown([
