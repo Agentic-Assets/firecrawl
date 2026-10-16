@@ -38,6 +38,10 @@ covering response headers and body. Timeouts abort the request and attempt to
 cancel unread or late response bodies, without adding transport retries or
 changing strict detail evidence.
 The guarded owner's overall work deadline remains a separate bound.
+Strict map inventory recognizes the native `Results: [...]` envelope as well
+as the existing `Properties` array envelope. Neither shape supplies the source
+total: the separate properties response must still provide a finite integer
+`TotalCount` matching the unique map ActivityIds before detail expansion.
 
 Pyramid's WordPress inventory requests only `_embed=wp:term`: the mapper needs
 those taxonomy labels for state, city, county and property type. Numeric term IDs
