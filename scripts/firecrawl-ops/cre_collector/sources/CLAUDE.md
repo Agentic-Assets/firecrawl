@@ -112,7 +112,9 @@ Tenure refusals include the validated native post ID, ordinal and normalized
 inventory/detail tenure with text-presence flags in the local collection log.
 Use that bounded context to inspect the exact provider record; it neither
 establishes that the website changed nor permits guessing missing tenure.
-Raw page bodies, URLs and unparsed tenure text are excluded from that diagnostic.
+Strict fresh-detail parse and validation errors also retain the already validated
+literal inventory URL. Raw page bodies and unparsed tenure text remain excluded;
+transport, cancellation and rejection-sharing behavior is unchanged.
 Within one collector process, the exact generation ID and start time share one
 complete acquisition across sale and lease, including a rejected acquisition.
 A second transaction cannot turn that failure into accepted proof or download
