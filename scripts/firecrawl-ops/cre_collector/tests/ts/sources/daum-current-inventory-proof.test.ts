@@ -53,7 +53,7 @@ test("DAUM strict full producer binds both passes to one complete fresh native/p
 });
 
 for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","unknownBoth"] as const){
- test("DAUM strict producer refuses "+fault+" and does not cache failed cohorts",async(t)=>{
+ test("DAUM strict producer refuses "+fault+" and shares rejection only inside its exact generation",async(t)=>{
   const saved={...process.env},originalFetch=globalThis.fetch,originalTimer=globalThis.setTimeout;
   t.after(()=>{for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimer;});
   Object.assign(process.env,{CRE_REQUIRE_FRESH_DETAILS:"1",CRE_REFRESH_GENERATION:"fault-"+fault,CRE_REFRESH_STARTED_AT:observationNow()});
@@ -78,7 +78,9 @@ for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","un
    }
    return new Response(body+"<!--PRIVATE_BODY_SENTINEL-->");
   };
+  let originalError:unknown;
   await assert.rejects(srcDaumCommercial("sale",Infinity,false),(error:unknown)=>{
+   originalError=error;
    assert.ok(error instanceof Error);
    if(fault==="unknownBoth"){
     assert.match(error.message,/DAUM strict proof has unresolved tenure/);
@@ -92,9 +94,12 @@ for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","un
    return true;
   });
   const failedPosts=posts;broken=false;
+  await assert.rejects(srcDaumCommercial("lease",Infinity,false),error=>error===originalError);
+  assert.equal(posts,failedPosts,"same-generation rejection must not reacquire another transaction");
+  process.env.CRE_REFRESH_GENERATION += "-fresh-retry";
   const result=await srcDaumCommercial("lease",Infinity,false);
   assert.equal(result.currentInventoryProof?.schema,"daum-strict-detail-v1");
-  assert.equal(posts,failedPosts+4,"failed cohorts must never supply another transaction proof");
+  assert.equal(posts,failedPosts+4,"a fresh generation reacquires rather than accepting failed proof");
  });
 }
 
