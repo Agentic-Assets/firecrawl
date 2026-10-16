@@ -239,6 +239,9 @@ when the registered official wrapper uses a descriptive marketing headline.
 This still requires coherent visible identity, one structured listing and exact
 page metadata/URL bindings. Literal IDs, URLs and raw addresses are unchanged;
 the existing property-detail child-preserving mode remains unchanged.
+SharpLaunch `sale_unit_price` has no proven per-square-foot unit: retain it in
+`rawSharpLaunch` and `saleUnitPrice`, without promoting it to `salePricePerSf`.
+Canonical ingestion can derive per-square-foot price from known total and area.
 
 ## Monitor Mode Matrix
 

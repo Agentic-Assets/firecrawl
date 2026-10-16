@@ -704,11 +704,13 @@ test("avisonYoungBaseListing emits units from rawSharpLaunch.units", () => {
   assert.equal(avisonYoungBaseListing(rowNoUnits, emptyTeam()).units, undefined);
 });
 
-test("avisonYoungBaseListing emits salePricePerSf from rawSharpLaunch.sale_unit_price", () => {
+test("avisonYoungBaseListing retains untyped saleUnitPrice without assigning salePricePerSf", () => {
   const fixtures = loadFixture();
   // Row 18653 has sale_unit_price=2500000
   const rowSale = fixtures.find((f) => f.external_id === "18653")!.rawSharpLaunch;
-  assert.equal(avisonYoungBaseListing(rowSale, emptyTeam()).salePricePerSf, 2500000);
+  const listing = avisonYoungBaseListing(rowSale, emptyTeam());
+  assert.equal(listing.saleUnitPrice, 2500000);
+  assert.equal(listing.salePricePerSf, undefined);
   // Row 17808 has no sale_unit_price -> salePricePerSf absent after prune
   const rowLease = fixtures.find((f) => f.external_id === "17808")!.rawSharpLaunch;
   assert.equal(avisonYoungBaseListing(rowLease, emptyTeam()).salePricePerSf, undefined);
@@ -1593,4 +1595,22 @@ test("strict Avison fails on detail admission errors while non-strict preserves 
   );
   const fallback = await enrichAvisonYoungListing(base, false);
   assert.match(fallback.detailError, /HTTP 503/);
+});
+
+test("untyped sale unit prices retain raw value without asserting a per-SF basis", () => {
+  for (const fields of [
+    { sale_unit_price: 2300000, sale_price: 2300000, total_surface_sqft: 117612, total_surface: 2.7, total_surface_unit: "ac" },
+    { sale_unit_price: 20, sale_price: 2300000, total_surface_sqft: 117612 },
+    { sale_unit_price: 20, sale_price: 2300000 },
+    { sale_unit_price: 20, total_surface_sqft: 117612 },
+  ]) {
+    const feed = { id: "untyped-price-contract", transaction: ["sale"], sale_currency: "USD", ...fields };
+    const listing = avisonYoungBaseListing(feed, new Map());
+    assert.equal(listing.salePricePerSf, undefined, "untyped feed price must not gain a per-SF unit");
+    assert.equal(listing.saleUnitPrice, fields.sale_unit_price);
+    assert.equal(listing.salePriceUsd, fields.sale_price);
+    assert.equal(listing.buildingSizeSqft, fields.total_surface_sqft);
+    assert.equal(listing.transactionType, "Sale");
+    assert.deepEqual(listing.rawSharpLaunch, feed);
+  }
 });

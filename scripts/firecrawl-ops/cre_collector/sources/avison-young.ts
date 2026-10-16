@@ -1307,9 +1307,6 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
   const units = num(row.units);
 
   // capRatePct: already set below from row.cap_rate; no change needed.
-  // salePricePerSf: SharpLaunch "sale_unit_price" is a per-SF price on some sale rows.
-  const salePricePerSf = num(row.sale_unit_price);
-
   // leaseRateMin / leaseRateMax: derive from the feed's clean numeric availability
   // rent fields via parseLeaseRate so the AY $5000/SF/YR anomaly guard fires.
   // Construct the canonical rate text ($/SF/YR) so parseLeaseRate can evaluate it.
@@ -1353,6 +1350,7 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     sourceFeedUrl: `${AVISON_YOUNG_API_BASE}?entity=website&status=active`,
     lastUpdated: clean(row.updated_at)?.slice(0, 10) ?? clean(row.on_market_at)?.slice(0, 10),
     rawSubtypes: rawTypes,
+    // The feed does not declare a per-SF basis for this value. Retain it untyped.
     saleUnitPrice: num(row.sale_unit_price),
     availableMinSqft: num(row.availabilities_min_surface_sqft),
     availableMaxSqft: num(row.availabilities_max_surface_sqft),
@@ -1372,7 +1370,6 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     buildingClass,
     submarket,
     units,
-    salePricePerSf,
     preserveChildCollections: true,
     detailUnavailable: true,
     detailUnavailableReason: "base feed row; current detail page not yet fetched",
