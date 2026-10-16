@@ -81,7 +81,11 @@ The native singular `-AdmitCurrentInventorySource daum-commercial` forwards
 this entry with `-Pipeline -Sources`; other sources cannot supply DAUM proof.
 It requires two consecutive complete public POST inventory
 passes with the same literal URL/tenure membership, followed by every fresh
-canonical detail. The source/aggregate verifier reconciles both transaction sets
+canonical detail. Strict acquisition resolves inventory-tenure-unknown members
+first in their original relative order, then the remaining members. Diagnostic
+ordinals and the complete final cohort/output retain original inventory order;
+unknown tenure still refuses and no partial proof is emitted. Fully known
+inventories retain their original request order. The source/aggregate verifier reconciles both transaction sets
 and their unique union (at least 100); a property offered both ways counts once.
 Known inventory tenure may resolve an absent detail tenure, but contradictions
 or unresolved tenure refuse. Positive shortlink IDs remain separate provenance;

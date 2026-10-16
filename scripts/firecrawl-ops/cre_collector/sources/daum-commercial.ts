@@ -852,8 +852,10 @@ async function completeDaumCohort(key: string, transport: DaumPoliteTransport): 
 
 async function fetchCompleteDaumCohort(transport: DaumPoliteTransport): Promise<DaumCompleteCohort> {
   const snapshot = await fetchDaumSnapshot(transport);
-  const details: DaumCompleteCohort["details"] = [];
-  for (const inventory of snapshot.rows) {
+  const work = snapshot.rows.map((inventory, index) => ({ inventory, index }))
+    .sort((a, b) => Number(b.inventory.tenure === "unknown") - Number(a.inventory.tenure === "unknown"));
+  const acquired: Array<{ index: number; row: DaumCompleteCohort["details"][number] }> = [];
+  for (const { inventory, index } of work) {
     const html = await transport.get(inventory.url);
     const observedAt = observationNow();
     const detail = parseDaumDetail(html, inventory.url);
@@ -862,12 +864,13 @@ async function fetchCompleteDaumCohort(transport: DaumPoliteTransport): Promise<
       if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown") throw new Error("DAUM strict proof has unresolved tenure");
     } catch (error) {
       if (error instanceof Error) {
-        error.message += ` [postId=${detail.postId}; ordinal=${details.length + 1}/${snapshot.rows.length}; inventoryTenure=${inventory.tenure}; inventoryTextPresent=${Boolean(inventory.tenureText)}; detailTenure=${detail.tenure}; detailTextPresent=${Boolean(detail.tenureText)}]`;
+        error.message += ` [postId=${detail.postId}; ordinal=${index + 1}/${snapshot.rows.length}; inventoryTenure=${inventory.tenure}; inventoryTextPresent=${Boolean(inventory.tenureText)}; detailTenure=${detail.tenure}; detailTextPresent=${Boolean(detail.tenureText)}]`;
       }
       throw error;
     }
-    details.push({ inventory, detail, observedAt, bodySha256: textSha256(html) });
+    acquired.push({ index, row: { inventory, detail, observedAt, bodySha256: textSha256(html) } });
   }
+  const details = acquired.sort((a, b) => a.index - b.index).map(entry => entry.row);
   assertDaumUniqueProviderIds(details.map(row => ({ id: daumListingId(row.inventory.url), daumPostId: row.detail.postId })));
   return { snapshot, details };
 }
