@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // AGENTIC-2900: bounded no-write capacity cells, separate from the governed C10
 // and 128-detail benchmark contracts. The foreground coordinator owns the CRE
 // lock, host guards, process deadline, runtime admission and remote settlement.
@@ -176,6 +177,7 @@ export async function runMatchedCapacityCell(options: {
   if (signal.aborted) abort();
   const started = performance.now();
   const wallStarted = Date.now();
+  const observationStartedAt = observationNow();
   let next = 0;
   let active = 0;
   let peak = 0;
@@ -227,7 +229,7 @@ export async function runMatchedCapacityCell(options: {
     const quantile = (percent: number) => latencies[Math.ceil(latencies.length * percent) - 1]!;
     return {
       fidelitySchema: MATCHED_FIDELITY_SCHEMA, source: cohort.source, cohortSha256, generationId,
-      startedAt: new Date(wallStarted).toISOString(), finishedAt: new Date().toISOString(),
+      startedAt: observationStartedAt, finishedAt: observationNow(),
       requestedConcurrency: concurrency,
       peakActiveEnrichments: peak, elapsedMs, freshRowsPerMinute: rows.length * 60000 / elapsedMs,
       latencyMs: { p50: quantile(0.5), p95: quantile(0.95), p99: quantile(0.99), maximum: latencies.at(-1)! },

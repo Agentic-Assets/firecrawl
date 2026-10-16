@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { CONCURRENCY } from "../lib/config.js";
 import { refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
@@ -431,7 +432,7 @@ export async function srcFoundryCommercial(
   });
   const urls = dedupeStrings(propertySnapshots.flat());
 
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const take = Number.isFinite(max) ? urls.slice(0, Math.max(0, max)) : urls;
   let fetchFailures = 0;
   const outcomes = await pmap(take, FOUNDRY_DETAIL_CONCURRENCY, async (url) => {
@@ -439,7 +440,7 @@ export async function srcFoundryCommercial(
       const html = await foundryFetchText(url, "html");
       return parseFoundryCommercialDetail(html, url, tx, {
         inventoryObservedAt,
-        detailObservedAt: new Date().toISOString(),
+        detailObservedAt: observationNow(),
       });
     } catch (error) {
       fetchFailures++;

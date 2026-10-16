@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/cbre-dealflow.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
@@ -1051,7 +1052,7 @@ export async function srcCbreDealflow(tx: Tx, max: number, monitor: boolean): Pr
     }
     return listing;
   });
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const listings = enriched.map((listing) => {
     if (listing?.inventoryOnly) {
       // These rows are intentionally source-index-only evidence. Do not attach

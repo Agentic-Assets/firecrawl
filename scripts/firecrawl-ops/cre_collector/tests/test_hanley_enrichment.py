@@ -18,6 +18,65 @@ HERE = Path(__file__).resolve().parents[1]
 URL = "https://hanleyinvestmentgroup.com/listings/?id=H-1"
 
 
+def test_targeted_envelope_orders_source_observation_after_backward_wall_step(tmp_path):
+    html = (
+        '<script>var rethink_properties = [{"id":"H-1","name":"Synthetic sale",'
+        '"visibility":"Public","dealRecordType":"Seller_Rep"}];</script>'
+        '<div id="rethink-properties-container"><article data-id="H-1" '
+        'data-result="true"></article></div>'
+    )
+    preload = tmp_path / "clock.mjs"
+    preload.write_text(
+        "const ActualDate=Date;let offset=0;"
+        "class Clock extends ActualDate {constructor(...args){if(args.length)super(...args);"
+        "else super(ActualDate.now()+offset);}static now(){return ActualDate.now()+offset;}}"
+        "globalThis.Date=Clock;globalThis.fetch=async(input)=>{"
+        "if(String(input)!=='https://hanleyinvestmentgroup.com/listings/')"
+        "throw Error('unexpected offline request');offset=-1000;return new Response("
+        + json.dumps(html)
+        + ",{status:200});};"
+    )
+    claims = tmp_path / "claims.json"
+    claims.write_text(
+        json.dumps(
+            {"items": [{"sourceKey": "hanley", "externalId": "H-1", "url": URL}]}
+        )
+    )
+    output = tmp_path / "artifact.json"
+    child = subprocess.run(
+        [
+            shutil.which("node") or "node",
+            "--import",
+            "tsx",
+            "--import",
+            str(preload),
+            "collect.ts",
+            "--enrich-input",
+            str(claims),
+            "--out",
+            str(output),
+        ],
+        cwd=HERE,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("CRE_")
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    artifact = json.loads(output.read_text())
+    assert artifact["runMeta"]["mode"] == "enrich"
+    assert [row["id"] for row in artifact["listings"]] == ["H-1"]
+    assert (
+        artifact["runMeta"]["startedAt"]
+        <= artifact["listings"][0]["inventoryObservedAt"]
+        <= artifact["runMeta"]["finishedAt"]
+    )
+
+
 def node_json(script):
     result = subprocess.run(
         [

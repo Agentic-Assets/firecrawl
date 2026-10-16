@@ -31,7 +31,15 @@ def produced(tmp_path_factory):
     return produce(tmp_path_factory.mktemp("pyramid-producer"))
 
 
-def produce(root, total=100, *, lease_html=None):
+def produce(
+    root,
+    total=100,
+    *,
+    lease_html=None,
+    clock_step_ms=0,
+    clock_before_ms=0,
+    expected_error=None,
+):
     start = (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
     run_id = "2026-10-15T172001Z-123456abcdef"
     preload = root / "transport.mts"
@@ -57,6 +65,22 @@ process.on("exit",()=>console.error(`OFFLINE_COUNTS ${inventory} ${details}`));"
                 "https://www.pyramidbrokerage.com/listings/99-garnsey-road-pittsford-ny-r6580/"
             )
             + ",rows[id-1].link));return new Response(",
+        )
+    if clock_step_ms or clock_before_ms:
+        transport += """
+const ActualDate=globalThis.Date;let clockOffset=0;
+class AdjustedClock extends ActualDate {
+ constructor(...args){if(args.length)super(...args);else super(ActualDate.now()+clockOffset);}
+ static now(){return ActualDate.now()+clockOffset;}
+}
+globalThis.Date=AdjustedClock;
+const fakeTransport=globalThis.fetch;
+globalThis.fetch=async(input,options)=>{
+ if(STEP && new URL(String(input)).pathname.endsWith('/property-73/'))clockOffset=STEP;
+ return fakeTransport(input,options);
+};
+""".replace("STEP", str(clock_step_ms)).replace(
+            "clockOffset=0", f"clockOffset={clock_before_ms}"
         )
     preload.write_text(transport)
     path = root / "artifact.json"
@@ -92,6 +116,11 @@ process.on("exit",()=>console.error(`OFFLINE_COUNTS ${inventory} ${details}`));"
         text=True,
         timeout=30,
     )
+    if expected_error is not None:
+        assert child.returncode == 1, child.stderr
+        assert expected_error in child.stderr
+        assert not path.exists()
+        return None, child.stderr, start, run_id
     assert child.returncode == 0, child.stderr
     return json.loads(path.read_text()), child.stderr, start, run_id
 
@@ -706,3 +735,33 @@ def test_absent_tenure_proof_independently_refuses_mutation(
     for phase in ("source", "aggregate"):
         with pytest.raises((ValueError, KeyError, TypeError)):
             admit(path, manifest, report, phase)
+
+
+@pytest.mark.parametrize("step_ms", [-1000, 1000])
+def test_actual_producer_observation_clock_orders_small_wall_steps(tmp_path, step_ms):
+    produced = produce(tmp_path, clock_step_ms=step_ms)
+    (tmp_path / "admission").mkdir()
+    _, path, artifact, manifest, report = setup(tmp_path / "admission", produced)
+    assert artifact["totalListings"] == 100
+    assert "OFFLINE_COUNTS 2 100" in produced[1]
+    binding = admit(path, manifest, report)
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
+    assert admit(path, manifest, report, "aggregate") == binding
+
+
+@pytest.mark.parametrize("step_ms", [-310000, 310000])
+def test_actual_producer_refuses_large_wall_drift(tmp_path, step_ms):
+    artifact, stderr, _, _ = produce(
+        tmp_path, clock_step_ms=step_ms, expected_error="Observation clock wall drift"
+    )
+    assert artifact is None
+    assert "OFFLINE_COUNTS 2" in stderr
+
+
+def test_pre_anchor_step_cannot_repair_a_different_process_generation(tmp_path):
+    produced = produce(tmp_path, clock_before_ms=-60000)
+    assert produced[0]["totalListings"] == 100
+    (tmp_path / "admission").mkdir()
+    _, path, _, manifest, report = setup(tmp_path / "admission", produced)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report)

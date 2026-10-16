@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/colliers.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -691,7 +692,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
     }
     return listing;
   });
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const listings = enriched.map((listing) => {
     if (listing?.inventoryOnly) {
       // An unlinked or failed SLP card is only provisional source-index

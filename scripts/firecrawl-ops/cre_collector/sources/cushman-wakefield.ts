@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/cushman-wakefield.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
@@ -556,7 +557,7 @@ export function baseCushmanListing(row: any, tx: Tx): any {
 export function cushmanBaseRefreshListing(
   row: any,
   tx: Tx,
-  inventoryObservedAt = new Date().toISOString(),
+  inventoryObservedAt = observationNow(),
   strict = requireFreshDetails()
 ): any {
   const observed = detailObservation(
@@ -585,7 +586,7 @@ export function cushmanBaseRefreshListing(
 export async function enrichCushmanListing(
   row: any,
   tx: Tx,
-  inventoryObservedAt = new Date().toISOString()
+  inventoryObservedAt = observationNow()
 ): Promise<any> {
   const base = baseCushmanListing(row, tx);
   if (!base.url) {
@@ -751,7 +752,7 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
     (strict ? collectedRows.length < total : collectedRows.length < want)
     || want < total;
   const rows = collectedRows.slice(0, want);
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   let done = 0;
   // Strict refreshes, monitor mode, and explicit API-base mode skip rendered
   // detail pages. Strict mode admits the fully reconciled public API as an

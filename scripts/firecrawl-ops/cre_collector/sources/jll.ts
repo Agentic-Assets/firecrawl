@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/jll.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import {
@@ -1167,7 +1168,7 @@ export function writeJllDetailCache(url: string, doc: ScrapedDoc): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
   const observed =
-    doc.detailObservation?.observedAt ?? new Date().toISOString();
+    doc.detailObservation?.observedAt ?? observationNow();
   writeFileSync(
     tmp,
     JSON.stringify(
@@ -2031,7 +2032,7 @@ export async function srcJll(
   }
   if (!listings.length)
     throw new Error("no listing cards found on JLL search page");
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   for (const listing of listings) {
     listing.inventoryObservedAt = inventoryObservedAt;
   }

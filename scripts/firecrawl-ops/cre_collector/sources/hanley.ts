@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import {
   generationMatches,
@@ -307,7 +308,7 @@ async function loadHanleyInventory(strict: boolean, generationId: string | null,
     if (!parsed.rows.length) throw new Error("Hanley: rethink_properties array not found or empty");
     hanleyCache = {
       rows: parsed.publicRows,
-      inventoryObservedAt: new Date().toISOString(),
+      inventoryObservedAt: observationNow(),
       generationId,
       strictValidated: strict,
     };

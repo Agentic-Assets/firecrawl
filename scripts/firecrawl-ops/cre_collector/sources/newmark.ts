@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/newmark.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { CONCURRENCY } from "../lib/config.js";
 import { detailObservation, requireFreshDetails } from "../lib/freshness.js";
@@ -398,7 +399,7 @@ export async function srcNewmarkAlgoliaLegacy(
       `  newmark/${tx}: WARNING recovered ${hitMap.size}/${Math.min(max, total)} expected Algolia hits; coverage truncated`
     );
   }
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const sourceObservation = detailObservation(
     "newmark_algolia_public_record",
     "live",
@@ -1025,7 +1026,7 @@ export async function srcNewmark(
     );
   }
 
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const usListings = globalRows
     .map((record) =>
       mapNewmarkNimListing(record, tx, inventoryObservedAt, strict)

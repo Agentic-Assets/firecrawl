@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // AGENTIC-2898/2900: opt-in short-lived evaluator. The coordinator owns the
 // canonical lock, independent guards, deadline, runtime and remote settlement.
 import { createHash } from "node:crypto";
@@ -226,7 +227,7 @@ export async function executeJllPairWorker(
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   signal.addEventListener("abort", abort, { once: true });
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
   const started = performance.now();
   const direct = new Map<string, ScrapedDoc>();
   let failureCode = "direct_acquisition_failed";
@@ -281,7 +282,7 @@ export async function executeJllPairWorker(
     controller.abort();
     signal.removeEventListener("abort", abort);
   }
-  const finishedAt = new Date().toISOString();
+  const finishedAt = observationNow();
   const elapsedMs = performance.now() - started;
   signal.throwIfAborted();
   const cache = join(output, "offline-direct-cache");
@@ -312,7 +313,7 @@ export async function executeJllPairWorker(
           sampleId: member.sampleId,
           calibration: {
             startedAt: cell.startedAt,
-            finishedAt: new Date().toISOString(),
+            finishedAt: observationNow(),
           },
           direct: captured,
           rendered: rendered.get(member.sampleId)!,
@@ -325,7 +326,7 @@ export async function executeJllPairWorker(
         pairs.push(audit);
         if (!audit.equivalent) fail("pair_fidelity_regression");
       }
-      const normalizedFinishedAt = new Date().toISOString();
+      const normalizedFinishedAt = observationNow();
       const acceptedNormalizedElapsedMs = performance.now() - started;
       const result = {
         kind: "jll_paired_transport_observation_not_admission",

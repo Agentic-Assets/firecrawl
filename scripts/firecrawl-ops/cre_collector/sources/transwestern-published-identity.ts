@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import { refreshGenerationId, refreshStartedAt } from "../lib/freshness.js";
 import { ScrapedDoc } from "../types.js";
 import {
@@ -55,7 +56,7 @@ export async function proveTranswesternPublishedIdentity(
     throw new Error("Transwestern published property did not match the complete feed identity");
   }
   if (generationId !== refreshGenerationId()) throw new Error("Transwestern published identity generation changed");
-  return { url, sitemapUrl, identitySha256, generationId, verifiedAt: new Date().toISOString() };
+  return { url, sitemapUrl, identitySha256, generationId, verifiedAt: observationNow() };
 }
 
 export function requireCurrentTranswesternPublishedProof(

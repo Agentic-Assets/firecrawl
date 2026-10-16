@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/transwestern.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -549,7 +550,7 @@ export async function enrichTranswesternListing(
   bucket: string,
   tx: Tx,
   monitor: boolean,
-  inventoryObservedAt = new Date().toISOString(),
+  inventoryObservedAt = observationNow(),
   publishedProof?: TranswesternPublishedIdentityProof
 ): Promise<any> {
   if (publishedProof) requireCurrentTranswesternPublishedProof(publishedProof, row, inventoryObservedAt);
@@ -710,7 +711,7 @@ export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Pr
       throw new Error(`Transwestern ${tx}/${bucket} feed returned a non-array payload`);
     }
     const rows = data;
-    const observedAt = new Date().toISOString();
+    const observedAt = observationNow();
     bucketCounts[bucket] = rows.length;
     console.error(`  transwestern/${tx}/${bucket}: ${rows.length} feed rows`);
     for (const row of rows) {

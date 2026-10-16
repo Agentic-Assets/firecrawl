@@ -714,6 +714,10 @@ def test_worker_source_is_hashable_and_imports_real_jll_adapter(tmp_path: Path) 
     source = benchmark._worker_source(repo)
 
     assert "sources/jll.ts" in source
+    assert "lib/observation-clock.ts" in source
+    assert "__OBSERVATION_CLOCK_IMPORT__" not in source
+    assert "const startedAt = observationNow()" in source
+    assert "finished_at: observationNow()" in source
     assert "enrichJllListing" in source
     assert "providerStop !== null" in source
     assert "performanceHas429" in source

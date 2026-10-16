@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
@@ -211,7 +212,7 @@ export async function srsFetchAll(max: number): Promise<SrsInventoryResult> {
     items,
     total,
     truncated: failed > 0 || wantPages < allPages,
-    inventoryObservedAt: new Date().toISOString(),
+    inventoryObservedAt: observationNow(),
     generationId,
     strictValidated: strict,
   };
