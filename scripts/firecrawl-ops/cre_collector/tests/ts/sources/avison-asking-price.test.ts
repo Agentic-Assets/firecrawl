@@ -139,3 +139,16 @@ test('asking notes cannot reclassify independently typed NOI and rent amounts',(
  assert.deepEqual(projectAvisonAskingValue({noi:{amount:20,currency:'USD',note:'Asking price $20'},lease:{amount:20,basis:'SF/YR',note:'Asking price $20'}},[20]),{noi:{amount:20,currency:'USD'},lease:{amount:20,basis:'SF/YR'}});
  assert.deepEqual(projectAvisonAskingValue({pricing:{amount:20,note:'Asking price $20'}},[20]),{pricing:{}});
 });
+
+test('shared explicit currency grammar omits ambiguous clauses and preserves independent money and measurements',()=>{
+ for(const money of ['$30','USD 30','30 USD','30 dollars','30 million']) {
+  assert.equal(sanitizeAvisonAskingText(`Retail frontage. ${money} available. Zoned retail.`,[20]),'Retail frontage. Zoned retail.');
+  assert.equal(sanitizeAvisonAskingText(`Rent ${money}; NOI ${money}`,[20]),`Rent ${money}; NOI ${money}`);
+ }
+ assert.equal(sanitizeAvisonAskingText('Area 30 million SF. Zoned retail.',[20]),'Area 30 million SF. Zoned retail.');
+});
+
+test('parking-space quantity survives without exposing the same known asking number',()=>{
+ assert.equal(sanitizeAvisonAskingText('20 parking spaces. Asking price 20.',[20]),'20 parking spaces.');
+ assert.equal(sanitizeAvisonAskingText('20 available. Asking price 20.',[20]),'');
+});

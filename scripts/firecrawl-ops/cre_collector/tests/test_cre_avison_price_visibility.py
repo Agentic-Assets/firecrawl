@@ -191,9 +191,76 @@ def postgres_vector_sql():
             },
         }
     )
+    extra += [
+        {
+            "role": "narrative",
+            "input": "Retail frontage. " + amount + " available. Zoned retail.",
+            "expected": "Retail frontage. Zoned retail.",
+        }
+        for amount in ("30 dollars", "USD 30", "30 USD", "¥30", "30 CAD")
+    ]
+    extra += [
+        {
+            "role": "narrative",
+            "input": "Rent USD 30/SF/YR. NOI 30 dollars. 30 million SF.",
+            "expected": "Rent USD 30/SF/YR. NOI 30 dollars. 30 million SF.",
+        },
+        {
+            "role": "raw",
+            "input": {
+                "newLabel": "  phase 20  ",
+                "energy": {"value": 20, "unit": "kWh"},
+            },
+            "expected": {
+                "newLabel": "  phase 20  ",
+                "energy": {"value": 20, "unit": "kWh"},
+            },
+        },
+    ]
+    extra += [
+        {
+            "role": "narrative",
+            "input": "Excellent frontage. " + text + " available. Zoned retail.",
+            "amounts": [amount],
+            "expected": "Excellent frontage. Zoned retail.",
+        }
+        for amount, text in (
+            (100000, "100,000.00"),
+            (100000.5, "100,000.50"),
+            (100000.5, "100000.50"),
+            (100000, "100.00K"),
+            (100000, "0.100M"),
+        )
+    ]
+    extra += [
+        {
+            "role": "narrative",
+            "input": "30 million SF. 20K SF.",
+            "amounts": [30000000, 20000],
+            "expected": "30 million SF. 20K SF.",
+        },
+        {
+            "role": "narrative",
+            "input": "1100000 available. 1,100,000.00 available.",
+            "amounts": [100000],
+            "expected": "1100000 available. 1,100,000.00 available.",
+        },
+    ]
+    extra.append(
+        {
+            "role": "narrative",
+            "input": "20 parking spaces. Asking price 20.",
+            "expected": "20 parking spaces.",
+        }
+    )
     for index, vector in enumerate(_vectors() + extra):
         value, expected, role = vector["input"], vector["expected"], vector["role"]
         encoded = ingest.sql_lit(json.dumps(value)) + "::jsonb"
+        amounts = (
+            "ARRAY["
+            + ",".join(str(x) for x in vector.get("amounts", [20]))
+            + "]::numeric[]"
+        )
         if role == "control":
             feed = {} if value == {"missing": True} else {"hide_price": value}
             raw = {"sourceKey": "avison-young", "rawSharpLaunch": feed}
@@ -203,12 +270,14 @@ def postgres_vector_sql():
                 + "::jsonb))"
             )
         elif role in {"raw", "identity"}:
-            expr = f"pg_temp.avison_asking_raw({encoded},ARRAY[20]::numeric[])"
+            expr = f"pg_temp.avison_asking_raw({encoded},{amounts})"
         else:
             expr = (
                 "to_jsonb(pg_temp.avison_asking_text("
                 + ingest.sql_lit(value)
-                + ",ARRAY[20]::numeric[],"
+                + ","
+                + amounts
+                + ","
                 + ingest.sql_lit(role)
                 + "))"
             )
@@ -223,7 +292,7 @@ def postgres_vector_sql():
                 f"DO $test$ BEGIN IF {expr} IS DISTINCT FROM {wanted} THEN RAISE EXCEPTION 'vector {index} mismatch: %', {expr}; END IF; END $test$;"
             )
     statements.append(
-        "ROLLBACK;\\echo 'Avison 32 shared + 8 adversarial PostgreSQL parity passed'"
+        "ROLLBACK;\\echo 'Avison 32 shared + 23 adversarial PostgreSQL parity passed'"
     )
     return "\n".join(statements)
 
@@ -325,7 +394,7 @@ def postgres_contract_sql():
 UPDATE credeals.cre_listings SET
  raw_data=jsonb_build_object('sourceKey','avison-young','rawSharpLaunch',jsonb_build_object('hide_price',0),
  'description','Safe old facts. 100000. Rent $20/SF/YR.', 'bodySha256',repeat('a',64),'detailObservedAt','2026-10-16T20:00:00Z'),
- markdown='Roof replaced 2020. 100000. Rent $20/SF/YR.'
+ markdown='Roof replaced 2020. 100,000.00 available. Rent $20/SF/YR.'
 WHERE external_id='old-column';
 CREATE TEMP TABLE protected_foreign AS SELECT to_jsonb(t) data FROM credeals.cre_listings t WHERE external_id='foreign';
 CREATE TEMP TABLE old_state AS SELECT id, external_id, scraped_at, status, deleted_at FROM credeals.cre_listings;
@@ -564,3 +633,81 @@ def test_malformed_second_direct_pass_is_checked_even_after_hidden_first():
     raw["secondary_pass"] = listing("1")
     with pytest.raises(ValueError, match="Avison"):
         ingest.to_row(raw, {}, None)
+
+
+@pytest.mark.parametrize(
+    "amount,text",
+    [
+        (100000, "100,000.00"),
+        (100000.5, "100,000.50"),
+        (100000.5, "100000.50"),
+        (100000, "100.00K"),
+        (100000, "0.100M"),
+    ],
+)
+def test_known_asking_equivalent_decimal_variants_are_suppressed(amount, text):
+    import cre_avison_price_visibility as visibility
+
+    assert (
+        visibility.sanitize_text(
+            "Excellent frontage. " + text + " available. Zoned retail.", [amount]
+        )
+        == "Excellent frontage. Zoned retail."
+    )
+
+
+@pytest.mark.parametrize("text", ["30 dollars", "USD 30", "30 USD", "¥30", "30 CAD"])
+def test_unqualified_currency_clause_is_omitted(text):
+    import cre_avison_price_visibility as visibility
+
+    assert (
+        visibility.sanitize_text(
+            "Retail frontage. " + text + " available. Zoned retail.", [20]
+        )
+        == "Retail frontage. Zoned retail."
+    )
+
+
+def test_independent_currency_and_scaled_quantity_stay_public():
+    import cre_avison_price_visibility as visibility
+
+    text = "Rent USD 30/SF/YR. NOI 30 dollars. 30 million SF."
+    assert visibility.sanitize_text(text, [20]) == text
+
+
+def test_harmless_new_unknown_text_is_retained_literally():
+    import cre_avison_price_visibility as visibility
+
+    raw = {"newLabel": "  phase 20  ", "energy": {"value": 20, "unit": "kWh"}}
+    assert visibility.project_value(raw, [20]) == raw
+
+
+def test_scaled_measurements_preserved_when_equal_to_known_asking():
+    import cre_avison_price_visibility as visibility
+
+    text = "30 million SF. 20K SF."
+    assert visibility.sanitize_text(text, [30000000, 20000]) == text
+
+
+def test_known_amount_cannot_match_suffix_of_larger_grouped_number():
+    import cre_avison_price_visibility as visibility
+
+    text = "1100000 available. 1,100,000.00 available."
+    assert visibility.sanitize_text(text, [100000]) == text
+
+
+def test_parking_quantity_preserved_but_bare_asking_number_is_not():
+    import cre_avison_price_visibility as visibility
+
+    assert (
+        visibility.sanitize_text("20 parking spaces. Asking price 20.", [20])
+        == "20 parking spaces."
+    )
+    assert visibility.sanitize_text("20 available. Asking price 20.", [20]) == ""
+
+
+def test_incomplete_merge_wrapper_without_direct_source_authority_refuses():
+    import cre_avison_price_visibility as visibility
+
+    with pytest.raises(ValueError, match="Avison"):
+        visibility.effective_control({"primary": listing(1)})

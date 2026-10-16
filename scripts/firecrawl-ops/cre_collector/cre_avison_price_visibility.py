@@ -32,8 +32,14 @@ ASK_LABEL = r"\b(?:asking(?:\s+price)?|sale\s+price|purchase\s+price|offered\s+a
 OTHER_LABEL = r"\b(?:rent|lease\s+rate|noi|net\s+operating\s+income|cap\s+rate|grm|tax(?:es)?|operating\s+expenses)\b"
 LABEL = f"(?:{ASK_LABEL}|{OTHER_LABEL})"
 LEASE_BASIS = r"/\s*sf\s*/\s*(?:yr|year|mo|month)\b"
-MONEY = r"(?:[$€£¥]\s*\d|\b(?:USD|CAD|EUR|GBP)\s*\d|\d\s*(?:USD|CAD|EUR|GBP)\b)"
-PROTECTED_TEXT = r"https?://[^\s<>]+|[\w.+-]+@[\w.-]+|\b\d{3}[- .]\d{3}[- .]\d{4}\b|\b\d+(?:\.\d+)?\s*(?:%|SF\b|sq\.?\s*(?:ft|feet|meters?)\b|acres?\b|ac\b|feet\b|ft\b|years?\b|spaces?\b|units?\b|rooms?\b|doors?\b)"
+MONEY = (
+    r"(?:[$€£¥]\s*\d|\b(?:USD|CAD|EUR|GBP|AUD|JPY|CNY|CHF)\s*\d|"
+    r"\b\d[\d,.]*\s*(?:USD|CAD|EUR|GBP|AUD|JPY|CNY|CHF|dollars?)\b|"
+    r"\b\d[\d,.]*\s*(?:million|thousand)\b"
+    r"(?!\s*(?:SF\b|sq\.?\s*(?:ft|feet|meters?)\b|acres?\b|ac\b|ft\b|feet\b|years?\b|(?:parking\s+)?spaces?\b|units?\b|rooms?\b|doors?\b)))"
+)
+
+PROTECTED_TEXT = r"https?://[^\s<>]+|[\w.+-]+@[\w.-]+|\b\d{3}[- .]\d{3}[- .]\d{4}\b|\b\d+(?:\.\d+)?\s*(?:(?:million|thousand|[kKmM])\s*)?(?:%|SF\b|sq\.?\s*(?:ft|feet|meters?)\b|acres?\b|ac\b|feet\b|ft\b|years?\b|(?:parking\s+)?spaces?\b|units?\b|rooms?\b|doors?\b)"
 PROTECTED_TEXT += r"|\b(?:built|since|year|replaced)\s+\d{4}\b|\b\d+\s+\w+(?:\s+\w+)?\s+(?:St(?:reet)?|Rd|Road|Ave(?:nue)?|Blvd|Drive|Dr)\b"
 
 
@@ -67,6 +73,8 @@ def asking_control(feed):
 
 def _direct(raw):
     if not isinstance(raw, dict):
+        return []
+    if "sourceKey" not in raw and not {"primary", "secondary_pass"} <= raw.keys():
         return []
     leaves = []
     if "sourceKey" in raw:
@@ -174,12 +182,16 @@ def _amount_pattern(amounts):
                 else format(number / scale, "f")
             )
             variants.append(
-                re.escape(text) + (r"(?:\.0+)?" if "." not in text else "") + suffix
+                re.escape(text) + (r"(?:\.0+)?" if "." not in text else "0*") + suffix
             )
-        if number == number.to_integral_value():
-            variants.append(re.escape(f"{int(number):,}"))
+        grouped = format(number, ",f")
+        if "." in grouped:
+            grouped = grouped.rstrip("0").rstrip(".")
+        variants.append(re.escape(grouped) + ("0*" if "." in grouped else r"(?:\.0+)?"))
     return (
-        r"(?<![\w.])(?:" + "|".join(variants) + r")(?![\w.])" if variants else r"(?!)"
+        r"(?<![\w.])(?<!\d,)(?:" + "|".join(variants) + r")(?![\w.]|,\d)"
+        if variants
+        else r"(?!)"
     )
 
 
@@ -263,7 +275,15 @@ def project_value(value, amounts=(), context="", role="raw"):
     if isinstance(value, list):
         return [project_value(item, amounts, context, role) for item in value]
     if not isinstance(value, dict):
-        return sanitize_text(value, amounts, role) if isinstance(value, str) else value
+        if isinstance(value, str):
+            if (
+                role == "unknown"
+                and not context
+                and not re.search(f"{ASK_LABEL}|{MONEY}", value, re.I)
+            ):
+                return value
+            return sanitize_text(value, amounts, role)
+        return value
     context = _context(value, context)
     projected = {}
     for key, item in value.items():
@@ -500,14 +520,18 @@ BEGIN
   FOREACH scale IN ARRAY ARRAY[1,1000,1000000]::numeric[] LOOP
    n:=(a/scale)::text;
    IF strpos(n,'.')>0 THEN n:=rtrim(rtrim(n,'0'),'.'); END IF;
+   probe:=CASE WHEN strpos(n,'.')>0 THEN '0*' ELSE '(\.0+)?' END;
    n:=replace(n,'.','\.');
-   IF scale=1 THEN variants:=array_append(variants,n||'(\.0+)?');
-   ELSIF scale=1000 THEN variants:=array_append(variants,n||'(\.0+)?[kK]');
-   ELSE variants:=array_append(variants,n||'(\.0+)?([mM]|[ ]+million)'); END IF;
+   IF scale=1 THEN variants:=array_append(variants,n||probe);
+   ELSIF scale=1000 THEN variants:=array_append(variants,n||probe||'[kK]');
+   ELSE variants:=array_append(variants,n||probe||'([mM]|[ ]+million)'); END IF;
   END LOOP;
-  IF a=trunc(a) THEN variants:=array_append(variants,to_char(a,'FM999,999,999,999,990')); END IF;
+  n:=a::text; IF strpos(n,'.')>0 THEN n:=rtrim(rtrim(n,'0'),'.'); END IF;
+  probe:=CASE WHEN strpos(n,'.')>0 THEN '0*' ELSE '(\.0+)?' END;
+  n:=reverse(regexp_replace(reverse(split_part(n,'.',1)),'([0-9]{3})(?=[0-9])','\1,','g')) || CASE WHEN strpos(n,'.')>0 THEN '.'||split_part(n,'.',2) ELSE '' END;
+  variants:=array_append(variants,replace(n,'.','\.')||probe);
  END LOOP;
- amount_pattern:='(^|[^[:alnum:]_.])('||array_to_string(variants,'|')||')($|[^[:alnum:]_.])';
+ amount_pattern:='(?<![[:alnum:]_.])(?<![0-9],)('||array_to_string(variants,'|')||')(?![[:alnum:]_.]|,[0-9])';
  FOR m IN SELECT regexp_matches(t,'(.*?)([;\n•]+[[:space:]]*|[.!?](?=[[:space:]]|$)[[:space:]]*|$)','g') LOOP
   clause:=m[1]; delimiter:=m[2]; joined:='';
   FOR part IN SELECT regexp_split_to_table(clause,'(?='||__LABEL__||')','i') LOOP
@@ -538,7 +562,9 @@ BEGIN
   END LOOP;
   RETURN result;
  ELSIF jsonb_typeof(v)<>'object' THEN
-  IF jsonb_typeof(v)='string' THEN RETURN to_jsonb(pg_temp.avison_asking_text(v#>>'{}',amounts,role)); END IF;
+  IF jsonb_typeof(v)='string' THEN
+   IF role='unknown' AND context='' AND NOT v#>>'{}' ~* __ASK__ AND NOT v#>>'{}' ~* __MONEY__ THEN RETURN v; END IF;
+   RETURN to_jsonb(pg_temp.avison_asking_text(v#>>'{}',amounts,role)); END IF;
   RETURN v;
  END IF;
  function:=v->>'businessFunction';

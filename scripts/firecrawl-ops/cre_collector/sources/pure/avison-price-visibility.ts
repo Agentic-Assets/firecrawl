@@ -13,7 +13,7 @@ const ASK_LABEL = /\b(?:asking(?:\s+price)?|sale\s+price|purchase\s+price|for\s+
 const INDEPENDENT_LABEL = /\b(?:rent|lease\s+rate|NOI|net\s+operating\s+income|cap\s+rate|GRM|tax(?:es)?|operating\s+expenses)\b/i;
 const LABEL_BOUNDARY = /(?:\s+(?:and|-)\s+)?(?=\b(?:asking(?:\s+price)?|sale\s+price|purchase\s+price|for\s+sale\s+at|offered\s+at|rent|lease\s+rate|NOI|net\s+operating\s+income|cap\s+rate|GRM|tax(?:es)?|operating\s+expenses)\b)/i;
 const LEASE_BASIS = /\/\s*SF\s*\/\s*(?:YR|MO)\b/i;
-const MONEY = /[$€£]\s*\d|\b\d[\d,.]*\s*(?:USD|dollars?|million|thousand)\b/i;
+const MONEY = /[$€£¥]\s*\d|\b(?:USD|CAD|EUR|GBP|AUD|JPY|CNY|CHF)\s*\d|\b\d[\d,.]*\s*(?:USD|CAD|EUR|GBP|AUD|JPY|CNY|CHF|dollars?)\b|\b\d[\d,.]*\s*(?:million|thousand)\b(?!\s*(?:SF\b|sq\.?\s*(?:ft|feet|meters?)\b|acres?\b|ac\b|ft\b|feet\b|years?\b|(?:parking\s+)?spaces?\b|units?\b|rooms?\b|doors?\b))/i;
 
 export function avisonAskingControl(feed: any): AvisonAskingControl {
   if (!object(feed)) throw new Error("Avison asking control requires a feed object");
@@ -32,7 +32,7 @@ function knownAskingNumber(text: string, amounts: readonly number[]): boolean {
     const token = match[0];
     const after = prose.slice(match.index! + token.length);
     const before = prose.slice(0, match.index);
-    if (/^\s*(?:%|SF\b|sq\.?\s*(?:ft|feet|meters?)\b|acres?\b|ac\b|ft\b|feet\b|years?\b|spaces?\b|units?\b|rooms?\b|doors?\b)/i.test(after)) continue;
+    if (/^\s*(?:%|SF\b|sq\.?\s*(?:ft|feet|meters?)\b|acres?\b|ac\b|ft\b|feet\b|years?\b|(?:parking\s+)?spaces?\b|units?\b|rooms?\b|doors?\b)/i.test(after)) continue;
     if (/^\s+\w+(?:\s+\w+)?\s+(?:St(?:reet)?|Rd|Road|Ave(?:nue)?|Blvd|Drive|Dr)\b/i.test(after)) continue;
     if (/\b(?:built|since|year|replaced)\s*$/i.test(before)) continue;
     const number = Number(token.replace(/,/g, "").replace(/\s*(million|thousand|[KM])$/i, ""));
