@@ -379,16 +379,29 @@ export function assertAvisonYoungDetailDoc(
     }
   }
 
+  const normalizeIdentityText = (value: any): string =>
+    (clean(value) ?? "")
+      .toLowerCase()
+      .replace(/\broad\b/g, "rd")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const nativeInfo = $(".building__property-info-box");
+  const nativeInfoRows = nativeInfo.find("li").filter((_index, element) => {
+    const values = $(element).find("span").map((_spanIndex, span) =>
+      clean($(span).text())
+    ).get().filter(Boolean);
+    return values.length >= 2;
+  });
   const headingText = $("h1, h2").map((_index, element) =>
     clean($(element).text())?.toLowerCase() ?? ""
   ).get();
-  const hasSharpLaunchBuildingLayout = Boolean(
-    $(".building__property-info-box").length > 0
+  const hasLegacySharpLaunchBuildingLayout = Boolean(
+    nativeInfo.length > 0
     && $(".availability-card-v2").length > 0
     && headingText.includes("building")
     && headingText.includes("availabilities")
   );
-  if (hasSharpLaunchBuildingLayout) {
+  if (hasLegacySharpLaunchBuildingLayout) {
     const visibleName = clean(base?.name)?.toLowerCase() ?? "";
     const visibleStreet = clean(base?.street)?.toLowerCase() ?? "";
     const visibleCity = clean(base?.city)?.toLowerCase() ?? "";
@@ -400,6 +413,73 @@ export function assertAvisonYoungDetailDoc(
       && visibleHeading === visibleName
       && bodyText.includes(visibleStreet)
       && headingText.includes(visibleCity + ", " + visibleState);
+
+    if (!requestedSharpLaunchMatch || !urlMatches || !visibleIdentityMatches) {
+      throw new Error(
+        "Avison Young detail identity does not match the requested property"
+      );
+    }
+    return listing;
+  }
+
+  const hasSharpLaunchBuildingLayout =
+    nativeInfo.length > 0
+    && nativeInfoRows.length > 0
+    && $(".hero__sub-title").length > 0
+    && $('meta[property="og:url"]').length > 0;
+  if (hasSharpLaunchBuildingLayout) {
+    const visibleName = normalizeIdentityText(base?.name);
+    const visibleStreet = normalizeIdentityText(base?.street);
+    const visibleCity = normalizeIdentityText(base?.city);
+    const visibleState = normalizeIdentityText(base?.state);
+    const identityParts = [visibleName, visibleStreet, visibleCity, visibleState];
+    const hasCompleteFeedIdentity = identityParts.every(Boolean);
+    const title = normalizeIdentityText($("title").first().text());
+    const ogTitle = normalizeIdentityText(
+      $('meta[property="og:title"]').first().attr("content")
+    );
+    const ogUrl = avisonYoungAbsoluteUrl(
+      $('meta[property="og:url"]').first().attr("content"),
+      requested ?? AVISON_YOUNG_HOST
+    );
+    const sameOwnedPageUrl = (candidate: string | null): boolean => {
+      if (!requested || !candidate) return false;
+      try {
+        const requestedParsed = new URL(requested);
+        const candidateParsed = new URL(candidate);
+        return requestedParsed.protocol === "https:"
+          && candidateParsed.protocol === "https:"
+          && !requestedParsed.username
+          && !requestedParsed.password
+          && !candidateParsed.username
+          && !candidateParsed.password
+          && requestedParsed.hostname.toLowerCase()
+            === candidateParsed.hostname.toLowerCase()
+          && requestedParsed.port === candidateParsed.port
+          && requestedParsed.pathname.replace(/\/+$/, "").toLowerCase()
+            === candidateParsed.pathname.replace(/\/+$/, "").toLowerCase()
+          && requestedParsed.search === candidateParsed.search
+          && requestedParsed.hash === candidateParsed.hash;
+      } catch {
+        return false;
+      }
+    };
+    const visibleIdentityHeadings = $("h2").map((_index, element) =>
+      normalizeIdentityText($(element).text())
+    ).get();
+    const identityHeadingCandidates = visibleIdentityHeadings.filter((text) =>
+      visibleStreet && text.includes(visibleStreet)
+    );
+    const matchingIdentityHeadings = identityHeadingCandidates.filter((text) =>
+      identityParts.every((part) => text.includes(part))
+    );
+    const visibleIdentityMatches =
+      hasCompleteFeedIdentity
+      && title === visibleName
+      && ogTitle === visibleName
+      && sameOwnedPageUrl(ogUrl)
+      && identityHeadingCandidates.length > 0
+      && matchingIdentityHeadings.length === identityHeadingCandidates.length;
 
     if (!requestedSharpLaunchMatch || !urlMatches || !visibleIdentityMatches) {
       throw new Error(
