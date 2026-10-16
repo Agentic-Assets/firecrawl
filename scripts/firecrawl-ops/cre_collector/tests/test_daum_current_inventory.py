@@ -186,11 +186,11 @@ def test_refuses_incomplete_or_drifted_evidence(prepared, case):
         helpers.admit(path, manifest, report)
 
 
-def test_configuration_remains_explicit_singleton():
+def test_configuration_remains_explicit_and_serial_singleton():
     admission.validate_options([SOURCE], [SOURCE], ["sale", "lease"], pipeline=True)
     with pytest.raises(ValueError):
         admission.validate_options(
-            [SOURCE], [SOURCE, "pyramid-brokerage"], ["sale", "lease"], pipeline=True
+            [SOURCE], [SOURCE, "pyramid-brokerage"], ["sale", "lease"]
         )
 
 

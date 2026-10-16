@@ -150,7 +150,12 @@ def admit(
     require(source == SOURCE and phase in {"source", "aggregate"})
     config = manifest["config"]
     require(
-        config["sources"] == [SOURCE] and config["transactions"] == ["sale", "lease"]
+        (
+            config.get("pipeline") is True
+            and SOURCE in config["sources"]
+            or config["sources"] == [SOURCE]
+        )
+        and config["transactions"] == ["sale", "lease"]
     )
     require(admission_configuration(config, SOURCE) == configuration(SOURCE))
     require(

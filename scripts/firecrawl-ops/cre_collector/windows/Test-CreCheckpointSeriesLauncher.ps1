@@ -108,6 +108,7 @@ $pipelineBase = @('-Tier','series','-Sources','cbre,jll','-Pipeline','-ExpectedS
     '-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
 $cases += @{Name='pipeline-concurrency'; Args=$pipelineBase + @('-SourceWorkers','2','-Concurrency','6'); Exit=0; Dispatch=$true; Workers=2; Concurrency=6}
 $cases += @{Name='pipeline-default'; Args=$pipelineBase; Exit=0; Dispatch=$true; Workers=2}
+$cases += @{Name='daum-pipeline'; Args=@('-Tier','series','-Pipeline','-Sources','daum-commercial,transwestern','-AdmitCurrentInventorySource','daum-commercial','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=0; Dispatch=$true; Workers=2; Selected='daum-commercial,transwestern'; Admission='daum-commercial'}
 foreach ($workers in @(1,2,3,4)) {
     $cases += @{Name=('pipeline-' + $workers); Args=($pipelineBase + @('-SourceWorkers',"$workers")); Exit=0; Dispatch=$true; Workers=$workers}
 }
@@ -196,14 +197,15 @@ foreach ($case in $cases) {
         $resolvedConcurrency = if ($case.ContainsKey('Concurrency')) { [string]$case.Concurrency } else { '1' }
         Assert-True (($forwarded -join '|').Contains('--concurrency|' + $resolvedConcurrency + '|--nice|15|--page-cap|400|--attempts-per-source|3|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
         Assert-True (-not ($forwarded -contains '/usr/bin/nice') -and ($forwarded -join '|').Contains('NAI_ENUMERATION_CONCURRENCY=1|python3|')) 'Coordinator must inherit caller priority; canonical --nice supplies the only checkpoint adjustment.'
-        $selectedSource = if ($case.Name -eq 'savills-hold') { 'savills' } elseif ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'daum-current') { 'daum-commercial' } elseif ($case.Name -eq 'essex-current') { 'essex-realty' } elseif ($case.Name -eq 'pyramid-current') { 'pyramid-brokerage' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
+        $selectedSource = if ($case.ContainsKey('Selected')) { $case.Selected } elseif ($case.Name -eq 'savills-hold') { 'savills' } elseif ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'daum-current') { 'daum-commercial' } elseif ($case.Name -eq 'essex-current') { 'essex-realty' } elseif ($case.Name -eq 'pyramid-current') { 'pyramid-brokerage' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
         $budget = if ($case.Name -eq 'savills-hold') { '30' } elseif ($case.ContainsKey('Workers')) { '30' } elseif ($case.Name -in @('selected', 'interra-current', 'buildout-current', 'pyramid-current', 'essex-current', 'daum-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
         Assert-True (($forwarded -join '|').Contains('--sources|' + $selectedSource + '|') -and ($forwarded -join '|').Contains('--work-deadline-seconds|' + $budget + '|')) 'Selected source and exact finite work budget must be forwarded.'
         if ($case.ContainsKey('Workers')) {
             Assert-True (($forwarded -join '|').Contains('--pipeline|--source-workers|' + $case.Workers)) 'Resolved worker setting crosses actual native argv boundary.'
         }
-        if ($case.Name -in @('interra-current', 'buildout-current', 'pyramid-current', 'essex-current', 'daum-current')) {
-            Assert-True (($forwarded -join '|').EndsWith('--admit-current-inventory-source|' + $selectedSource)) 'Explicit source admission must survive the actual native argv boundary.'
+        if ($case.ContainsKey('Admission') -or $case.Name -in @('interra-current', 'buildout-current', 'pyramid-current', 'essex-current', 'daum-current')) {
+            $admittedSource = if ($case.ContainsKey('Admission')) { $case.Admission } else { $selectedSource }
+            Assert-True (($forwarded -join '|').EndsWith('--admit-current-inventory-source|' + $admittedSource)) 'Explicit source admission must survive the actual native argv boundary.'
         } else {
             Assert-True (-not ($forwarded -contains '--admit-current-inventory-source')) 'Default runs must not acquire current-inventory admission.'
         }
