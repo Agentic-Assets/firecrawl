@@ -351,6 +351,20 @@ export async function fetchPyramidSnapshot(
   );
 }
 
+export function pyramidDetailTransaction(value: unknown, postId: number, expected?: Tx): Tx {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const transaction = normalized === "sale" ? "sale"
+    : normalized === "lease" || normalized === "sublease" ? "lease" : null;
+  const literal = JSON.stringify(String(value).slice(0, 80));
+  if (!transaction) {
+    throw new Error(`Pyramid detail ${postId} has unsupported Sale/Lease fact ${literal}`);
+  }
+  if (expected && transaction !== expected) {
+    throw new Error(`Pyramid detail ${postId} Sale/Lease fact ${literal} disagrees with its WordPress taxonomy (${expected})`);
+  }
+  return transaction;
+}
+
 function pyramidFactMap($: cheerio.CheerioAPI): Record<string, string> {
   const facts: Record<string, string> = {};
   $(".property-details li").each((_, element) => {
@@ -516,10 +530,7 @@ export function mapPyramidListing(
     throw new Error(`Pyramid row ${id} does not belong to requested ${tx} inventory`);
   }
   if (detail) {
-    const observedTx = /lease/i.test(detail.facts["Sale/Lease"] ?? "") ? "lease" : "sale";
-    if (observedTx !== tx) {
-      throw new Error(`Pyramid detail ${id} transaction disagrees with its WordPress taxonomy`);
-    }
+    pyramidDetailTransaction(detail.facts["Sale/Lease"], id, tx);
   }
   const title = clean(stripHtmlText(String(row?.title?.rendered ?? "")));
   const description =
@@ -647,9 +658,7 @@ export async function srcPyramidBrokerage(
     const observedAt = new Date().toISOString();
     const detail = parsePyramidDetail(html, Number(row.id));
     if (proofEnabled && detail.canonicalUrl !== url) throw new Error("Pyramid detail canonical URL disagrees with inventory");
-    if (proofEnabled && !["sale", "lease"].includes(detail.facts["Sale/Lease"].trim().toLowerCase())) {
-      throw new Error("Pyramid strict proof has ambiguous detail transaction");
-    }
+    if (proofEnabled) pyramidDetailTransaction(detail.facts["Sale/Lease"], Number(row.id), tx);
     const mapped = mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt);
     if (proofEnabled) {
       if (![mapped.state, mapped.city, mapped.assetType].every((value) => typeof value === "string" && value.trim())) {

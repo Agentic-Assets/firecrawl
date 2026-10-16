@@ -12,6 +12,7 @@ import {
   mapPyramidListing,
   parsePyramidDetail,
   pyramidFetch,
+  pyramidDetailTransaction,
   pyramidInventoryUrl,
   srcPyramidBrokerage,
 } from "../../../sources/pyramid-brokerage.js";
@@ -573,4 +574,28 @@ test("Pyramid proof cache is immutable, generation-local and never used for moni
   delete process.env.CRE_REFRESH_GENERATION;
   assert.equal((await srcPyramidBrokerage("lease", Infinity, false)).currentInventoryProof, undefined);
   assert.equal(inventory, 12);
+});
+
+
+test("Pyramid classifies only known exact transaction facts without defaulting to sale", () => {
+  for (const value of ["Sale", " sale ", "SALE", "\tSale\n"]) assert.equal(pyramidDetailTransaction(value, 119152), "sale");
+  for (const value of ["Lease", " lease ", "LEASE", "Sublease", " SUBLEASE ", "\tSublease\n", "\u00a0Sublease\u00a0"]) assert.equal(pyramidDetailTransaction(value, 119152), "lease");
+  for (const value of ["Both", "Sale/Lease", "For Lease", "unknown", "prelease", "wholesale", "", null, undefined]) {
+    assert.throws(() => pyramidDetailTransaction(value, 119152), /119152.*unsupported Sale\/Lease fact/);
+    const detail = parsePyramidDetail(detailHtml);
+    detail.facts["Sale/Lease"] = value as string;
+    assert.throws(() => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", detail), /unsupported Sale\/Lease fact/);
+  }
+  assert.throws(() => pyramidDetailTransaction("unknown\n".repeat(100), 119152), (error: Error) => error.message.length < 600 && !error.message.includes("\n"));
+});
+
+test("Pyramid harmless nested fact markup and field order retain Sublease, with conflicts refused", () => {
+  const original = '<li><span class="name">Sale/Lease:</span><span class="value">Sale</span></li>';
+  const equivalent = '<li><div class="name"><strong>  Sale/Lease : </strong></div><div class="value"><em>  SUBLEASE  </em></div></li>';
+  const html = detailHtml.replace(original, "").replace("</ul>", equivalent + "</ul>");
+  const detail = parsePyramidDetail(html);
+  const mapped = mapPyramidListing(row(101, PYRAMID_LEASE_TERM_ID), "lease", "2026-10-15T00:00:00Z", detail);
+  assert.equal(mapped.transactionType, "Lease");
+  assert.equal(mapped.detailFacts["Sale/Lease"], "SUBLEASE");
+  assert.throws(() => mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-10-15T00:00:00Z", detail), /disagrees/);
 });

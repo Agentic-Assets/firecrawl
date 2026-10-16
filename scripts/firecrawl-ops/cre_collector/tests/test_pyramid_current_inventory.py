@@ -31,7 +31,7 @@ def produced(tmp_path_factory):
     return produce(tmp_path_factory.mktemp("pyramid-producer"))
 
 
-def produce(root, total=100):
+def produce(root, total=100, *, lease_html=None):
     start = (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
     run_id = "2026-10-15T172001Z-123456abcdef"
     preload = root / "transport.mts"
@@ -47,6 +47,17 @@ process.on("exit",()=>console.error(`OFFLINE_COUNTS ${inventory} ${details}`));"
         'Response.json(rows,{headers:{"X-WP-Total":"100","X-WP-TotalPages":"1"}})',
         f'Response.json(rows.slice((Number(url.searchParams.get("page"))-1)*100,Number(url.searchParams.get("page"))*100),{{headers:{{"X-WP-Total":"{total}","X-WP-TotalPages":"{(total + 99) // 100}"}}}})',
     )
+    if lease_html is not None:
+        transport = transport.replace(
+            "details++;return new Response(",
+            "details++;if(id>50)return new Response("
+            + json.dumps(lease_html)
+            + '.replaceAll("119152",String(id)).replaceAll('
+            + json.dumps(
+                "https://www.pyramidbrokerage.com/listings/99-garnsey-road-pittsford-ny-r6580/"
+            )
+            + ",rows[id-1].link));return new Response(",
+        )
     preload.write_text(transport)
     path = root / "artifact.json"
     env = {
@@ -531,3 +542,49 @@ def test_actual_producer_admission_worker_artifact_reaches_strict_summary(
     assert {
         k: result["transaction_breakdown"][k] for k in ("sale", "lease", "both")
     } == {"sale": 50, "lease": 50, "both": 0}
+
+
+def test_primary_sublease_survives_actual_producer_proof_and_staging(tmp_path):
+    from cre_ingest import to_row
+
+    primary = (ROOT / "tests/fixtures/pyramid-sublease-detail.html").read_text()
+    result = produce(tmp_path, lease_html=primary)
+    artifact = result[0]
+    assert len(artifact["listings"]) == 100
+    leases = [r for r in artifact["listings"] if r["transactionMode"] == "lease"]
+    assert len(leases) == 50
+    assert all(r["detailFacts"]["Sale/Lease"] == "Sublease" for r in leases)
+    assert all(r["transactionType"] == "Lease" for r in leases)
+    assert all(
+        to_row(r, {}, artifact["runMeta"]["finishedAt"])["transaction_type"] == "lease"
+        for r in leases
+    )
+    admission_root = tmp_path / "admission"
+    admission_root.mkdir()
+    run, path, artifact, manifest, report = setup(admission_root, result)
+    binding = admit(path, manifest, report)
+    assert binding["staged_count"] == 100
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
+    aggregate = admit(path, manifest, report, phase="aggregate")
+    assert aggregate["staged_count"] == 100
+
+
+@pytest.mark.parametrize("fact", ["Both", "wholesale", "prelease"])
+def test_unknown_primary_transaction_cannot_default_or_enter_proof(tmp_path, fact):
+    primary = (
+        (ROOT / "tests/fixtures/pyramid-sublease-detail.html")
+        .read_text()
+        .replace("Sublease", fact)
+    )
+    result = produce(tmp_path, lease_html=primary)
+    artifact = result[0]
+    assert len(artifact["listings"]) == 50
+    failed = next(s for s in artifact["sources"] if s["transaction"] == "lease")
+    assert "Pyramid detail 51" in failed["error"]
+    assert "unsupported Sale/Lease fact" in failed["error"]
+    assert fact in failed["error"]
+    admission_root = tmp_path / "admission"
+    admission_root.mkdir()
+    _, path, _, manifest, report = setup(admission_root, result)
+    with pytest.raises(ValueError):
+        admit(path, manifest, report)
