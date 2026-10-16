@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { observationNow } from "../../../lib/observation-clock.js";
 import {
   type JllBenchmarkMember,
   type JllBenchmarkTransport,
@@ -63,7 +64,7 @@ function projection(member: JllBenchmarkMember = members[0]!) {
     brokers: [],
     acquisition: {
       method: "jll_detail",
-      observedAt: new Date().toISOString(),
+      observedAt: observationNow(),
       generationId: "fixture",
       cacheDisposition: "live" as const,
     },
@@ -78,7 +79,7 @@ function captureFixture(
   const captured = { ...doc(member), ...overrides };
   const observation = {
     method: transport === "direct" ? "jll_direct_candidate" : "jll_detail",
-    observedAt: new Date().toISOString(),
+    observedAt: observationNow(),
     generationId: context.armId,
     cacheDisposition: "live" as const,
   };
@@ -225,6 +226,30 @@ test("matrix captures the same cold cohort at C1/2/4/8 and measures actual clien
     [1, 2, 4, 8],
   );
 });
+for (const stale of [false, true]) {
+  test(`JLL own-arm chronology under a forward wall step: stale=${stale}`, async () => {
+    const originalNow = Date.now;
+    Date.now = () => originalNow() + 2000;
+    try {
+      const result = await runJllTransportMatrix({
+        cohort: cohort([members[0]!]),
+        signal: new AbortController().signal,
+        capture: async (transport, member, _signal, context) => {
+          const row = captureFixture(transport, member, context);
+          if (stale) {
+            row.doc.detailObservation!.observedAt = new Date(Date.parse(context.startedAt) - 1).toISOString();
+            row.projection.acquisition.observedAt = row.doc.detailObservation!.observedAt;
+            row.projection.documentSha256 = jllDocumentSha256(row.doc);
+          }
+          return row;
+        },
+      });
+      assert.equal(result.complete, !stale);
+      if (stale) assert.equal(result.failure, "capture_failed_or_cancelled");
+    } finally { Date.now = originalNow; }
+  });
+}
+
 test("cohort hash covers original inventory controls and callbacks cannot mutate later cells", async () => {
   const fixed = cohort();
   let captures = 0;

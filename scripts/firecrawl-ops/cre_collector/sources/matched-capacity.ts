@@ -176,7 +176,6 @@ export async function runMatchedCapacityCell(options: {
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
   const started = performance.now();
-  const wallStarted = Date.now();
   const observationStartedAt = observationNow();
   let next = 0;
   let active = 0;
@@ -203,7 +202,7 @@ export async function runMatchedCapacityCell(options: {
           const client = captured.client;
           if (String(row?.id) !== item.providerId || row?.url !== item.canonicalUrl
               || row?.detailError || row?.skip || row?.preserveChildCollections) reject("detail_identity_or_quality");
-          if (!Number.isFinite(observed) || observed < wallStarted || observed > Date.now() + 1000
+          if (!Number.isFinite(observed) || observed < Date.parse(observationStartedAt) || observed > Date.now() + 1000
               || row?.freshnessProvenance?.generationId !== generationId
               || row?.freshnessProvenance?.cacheDisposition !== "live"
               || row?.freshnessProvenance?.detailScope !== "detail_page") reject("detail_freshness");

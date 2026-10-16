@@ -265,11 +265,13 @@ for (const fault of ["missing canonical", "wrong canonical", "redirect", "wrong 
   });
 }
 
-test("actual isolated worker writes standard strict-freshness input and private capture once", async () => {
+for (const wallStepMs of [0, 2000]) {
+test(`actual isolated worker writes strict input through a ${wallStepMs}ms forward wall step`, async () => {
   await withWorkerEnvironment("marcus-millichap", async () => {
     const root = process.env.JLL_DETAIL_CACHE_DIR!;
     const output = join(root, "output"); mkdirSync(output, { mode: 0o700 });
     const original = globalThis.fetch;
+    const originalNow = Date.now;
     const previousStartedAt = process.env.CRE_REFRESH_STARTED_AT;
     const sample = cohort();
     process.env.CRE_REFRESH_STARTED_AT = sample.inventoryStartedAt;
@@ -279,6 +281,9 @@ test("actual isolated worker writes standard strict-freshness input and private 
       return response;
     };
     try {
+      // The observation singleton retains its original clock reference. Move
+      // the raw wall boundary only; newly produced evidence keeps its domain.
+      Date.now = () => originalNow() + wallStepMs;
       const inventoryArtifact = join(root, "inventory.json");
       const raw = JSON.stringify({ runMeta: { mode: "monitor", startedAt: sample.inventoryStartedAt,
         finishedAt: sample.inventoryFinishedAt }, listings: sample.members.map((member) => member.baseRow) });
@@ -307,11 +312,26 @@ test("actual isolated worker writes standard strict-freshness input and private 
       chmodSync(path, 0o644);
       assert.throws(() => readWorkerInput(path), /private_input/);
     } finally {
+      Date.now = originalNow;
       globalThis.fetch = original;
       if (previousStartedAt === undefined) delete process.env.CRE_REFRESH_STARTED_AT;
       else process.env.CRE_REFRESH_STARTED_AT = previousStartedAt;
     }
   });
+});
+}
+
+test("forward wall step never admits an observation older than its own cell", async () => {
+  const originalNow = Date.now;
+  Date.now = () => originalNow() + 2000;
+  try {
+    const options = cellOptions("before-own-cell");
+    await assert.rejects(runMatchedCapacityCell({ ...options, capture: async (member) => {
+      const captured = detail(member, options.generationId);
+      captured.listing.detailObservedAt = "2000-01-01T00:00:00Z";
+      return captured;
+    } }), /detail_freshness/);
+  } finally { Date.now = originalNow; }
 });
 
 test("worker rejects forged cohort binding before importing or dispatching a source", async () => {
