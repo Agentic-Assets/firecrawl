@@ -67,7 +67,7 @@ def test_current_inventory_admission_windows_allowlists_match_shared_registry():
         # Pyramid and Essex are reviewed singleton one-shot extensions, not scheduler
         # installation or plural-admission rollout.
         allowed = (
-            expected | {"pyramid-brokerage", "essex-realty"}
+            expected | {"pyramid-brokerage", "essex-realty", "daum-commercial"}
             if name == "Invoke-CreGuardedTier.ps1"
             else expected
         )

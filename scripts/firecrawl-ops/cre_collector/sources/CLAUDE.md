@@ -65,6 +65,18 @@ source pass; changed paths never authorize aliases or rekeys. These recipes do
 not establish current availability, change strict detail/lifecycle checks or
 admit absent-baseline writes. Foundry's missing explicit status remains held.
 
+DAUM's explicit absent-baseline additive admission requires an uncapped strict
+singleton sale+lease generation: two consecutive complete public POST inventory
+passes with the same literal URL/tenure membership, followed by every fresh
+canonical detail. The source/aggregate verifier reconciles both transaction sets
+and their unique union (at least 100); a property offered both ways counts once.
+Known inventory tenure may resolve an absent detail tenure, but contradictions
+or unresolved tenure refuse. Positive shortlink IDs remain separate provenance;
+the pre-DML guard refuses conflicting historical URL/path/known-native claims,
+including soft-deleted parents. Raw first_seen, baseline absence and additive
+scope remain; this grants no missing/status/retirement authority or fresh
+production acceptance.
+
 ## Transport & Scrape Primitives
 
 | Transport | Sources |
