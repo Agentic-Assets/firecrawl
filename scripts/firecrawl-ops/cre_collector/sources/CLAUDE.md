@@ -42,6 +42,13 @@ address text and scoped property photos; only the observed HTTPS image CDN is
 allowed alongside owned images. Detail ownership stays on the Pyramid host.
 No office-map/footer-logo fallback or coordinate inference is permitted.
 
+Pyramid mapping and strict verification share exact detail transaction classification:
+`Sale` maps to sale; `Lease` and `Sublease` map to lease, ignoring surrounding
+whitespace and case while retaining the literal `detailFacts` value. Unknown or
+ambiguous values and disagreement with inventory taxonomy fail with post ID and
+bounded raw fact. Do not guess from descriptions or default unfamiliar labels
+to sale; validate observed labels without loosening ownership or detail proof.
+
 Pyramid strict first-seen proof is singleton full/uncapped sale+lease only. A
 successful immutable complete snapshot may be reused only within the exact
 nonempty generation+start; monitor, capped and standalone calls do not populate
