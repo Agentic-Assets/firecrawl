@@ -214,5 +214,38 @@ foreach ($key in 1..51) {
 $manySummary = [pscustomobject]@{per_source_summaries=$many; failed_source_keys=@(); pending_source_keys=@(); complete=$true}
 $manyText = Get-CreNotificationText $partialRecord 'Terminal' 0 $manySummary
 Assert-Cre ($manyText.StartsWith("`n$successMark *CRE pipeline | Completed*`n`n") -and $manyText.Contains("*Both:* 465`n`n$bullet *Newmark:* 4,535") -and $manyText.Contains('31 additional verified brokerages') -and [Text.Encoding]::UTF8.GetByteCount((@{text=$manyText}|ConvertTo-Json -Compress)) -lt 4096) 'Long terminal summaries space broker blocks and retain the unchanged sender payload bound and omitted-member disclosure.'
+$Pipeline = $false
+$Source = 'cbre-dealflow'
+$selectedSourceArgument = $Source
+$indexed = New-Summary
+$indexed['verified_inventory_only'] = 538
+Save-Summary $indexed
+$indexedRead = Get-CreVerifiedSummary (New-Record) 'indexed-serial'
+$indexedText = Get-CreNotificationText (New-Record) 'Terminal' 0 $indexedRead
+Assert-Cre ($null -ne $indexedRead -and $indexedRead.verified_listings -eq 4535 -and $indexedText.Contains('*Property listings verified:* 4,535') -and $indexedText.Contains('*Additional inventory:* 538 records checked separately; property details not refreshed.') -and $indexedText.Contains('*For sale:* 3,000')) 'Serial inventory entries stay separate from property listings and their transaction counts.'
+foreach ($bad in @($true, '538', -1, 0, $null)) {
+    $indexed['verified_inventory_only'] = $bad
+    Save-Summary $indexed
+    Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) ('invalid-index-'+[Guid]::NewGuid().ToString('N')))) 'Malformed optional inventory scope refuses the entire summary.'
+}
+$Pipeline = $true
+$selectedSourceKeys = @('cbre','cbre-dealflow')
+$selectedSourceArgument = $selectedSourceKeys -join ','
+$actualScope = New-Summary
+$actualScope['selected_source_keys'] = $selectedSourceKeys
+$actualScope['per_source_summaries'] = @(
+    [ordered]@{source_key='cbre';verified_listings=19501;transaction_breakdown=[ordered]@{sale=6199;lease=15022;both=1720;measurement='current_staged_inventory_transaction_types'}},
+    [ordered]@{source_key='cbre-dealflow';verified_listings=1390;verified_inventory_only=538;transaction_breakdown=[ordered]@{sale=1379;lease=11;both=0;measurement='current_staged_inventory_transaction_types'}}
+)
+$actualScope['failed_source_keys'] = @()
+$actualScope['pending_source_keys'] = @()
+$actualScope['complete'] = $true
+Save-Summary $actualScope
+$actualRead = Get-CreVerifiedSummary (New-Record) 'indexed-pipeline'
+$actualText = Get-CreNotificationText (New-Record) 'Terminal' 0 $actualRead
+Assert-Cre ($null -ne $actualRead -and $actualText.Contains('19,501 listings verified') -and $actualText.Contains('1,390 property listings verified') -and $actualText.Contains('*For sale:* 6,199 | *For lease:* 15,022 | *Both:* 1,720') -and $actualText.Contains('*For sale:* 1,379 | *For lease:* 11 | *Both:* 0') -and $actualText.Contains('*Additional inventory:* 538 records checked separately; property details not refreshed.') -and $actualText -notmatch '1,928 canonical|20,891') 'Mixed pipeline displays exact canonical transaction counts separately from index cards without a cross-source total.'
+$actualScope['per_source_summaries'][1].verified_inventory_only = $true
+Save-Summary $actualScope
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'invalid-pipeline-index')) 'Malformed pipeline inventory count cannot become verified scope.'
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV
 Write-Output "Readable CRE notification PASS: $script:checks assertions; proof=$ProofDirectory"
