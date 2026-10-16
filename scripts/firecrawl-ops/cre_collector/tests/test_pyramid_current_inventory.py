@@ -465,13 +465,13 @@ def test_2069_member_actual_producer_and_worker_protocol_stay_bounded(
 
 
 def test_actual_producer_admission_worker_artifact_reaches_strict_summary(
-    tmp_path, produced, summary_evidence, monkeypatch
+    tmp_path, absent_produced, summary_evidence, monkeypatch
 ):
     import cre_checkpoint_series as series
     import test_notification_summary as support
     import cre_pipeline_artifact_worker as worker
 
-    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    run, path, artifact, manifest, report = setup(tmp_path, absent_produced)
     binding = admit(path, manifest, report)
     manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
     monkeypatch.setattr(
