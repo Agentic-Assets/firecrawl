@@ -64,7 +64,14 @@ def test_current_inventory_admission_windows_allowlists_match_shared_registry():
             r"\[ValidateSet\(([^)]+)\)\]\[string\]\$AdmitCurrentInventorySource", text
         )
         assert match is not None
-        assert set(re.findall(r"'([^']+)'", match[1])) == expected
+        # Pyramid is a reviewed singleton one-shot extension, not a scheduler
+        # installation or plural-admission rollout.
+        allowed = (
+            expected | {"pyramid-brokerage"}
+            if name == "Invoke-CreGuardedTier.ps1"
+            else expected
+        )
+        assert set(re.findall(r"'([^']+)'", match[1])) == allowed
 
 
 def _collector_switch_source_keys():
