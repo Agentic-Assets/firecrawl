@@ -164,7 +164,8 @@ const routeGuard =
       console.log(hostname);
       return route.abort();
     }
-    return route.continue();
+    // Keep the security guard first, then allow earlier opt-in media routes.
+    return route.fallback();
   };
 
 /** Runs context setup, bounded by the scrape deadline when one is given. */
