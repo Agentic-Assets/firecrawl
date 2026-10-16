@@ -852,7 +852,19 @@ broad child-preservation marker. Its strict ingest dry run and a real
 production-schema transaction ending in an explicit `ROLLBACK` passed with
 zero canonical-price/rate, child-count, or contact-contract violations. The
 source-specific image transition guard compares
-normalized underlying assets because the legacy 234,284 image rows include
+normalized underlying assets. A checkpoint-controlled first-party ingest emits
+one versioned outcome only after COMMIT; its private log and checkpoint bind
+the artifact bytes/hash, generation, database target and ingest attempt. Final
+validation requires that known-successful receipt and exact whole-active raw
+before/after count reconciliation before using the existing semantic retention
+threshold for Colliers Main images alone. Retained-old and newly active image
+counts are distinguished; every current staged property still requires an
+image. Raw audit counts remain intact, and all other source/child regressions
+retain their ordinary checks. Missing, ambiguous, changed or uncertain evidence
+cannot qualify this transition. Historical failed runs without this outcome
+remain failed; old image IDs/digests cannot reconstruct old asset URLs.
+
+The legacy 234,284 image rows include
 malformed URL entities, rendition suffixes, and cross-listing carousel images.
 This proof admits the opt-in path for a supervised additive refresh only; it
 does not authorize scheduling, status activation, or mark-missing.

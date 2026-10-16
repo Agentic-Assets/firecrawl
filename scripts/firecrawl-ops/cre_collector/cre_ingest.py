@@ -3694,6 +3694,7 @@ def build_sql(
     colliers_first_party_transition=False,
     skip_post_commit_summary=False,
     matthews_targeted_targets=None,
+    image_transition_binding=None,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
@@ -3731,6 +3732,48 @@ def build_sql(
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
     live_source_key_sql = source_key_sql("l", "b")
+    if image_transition_binding is not None:
+        from cre_colliers_image_transition import valid_binding
+        if not colliers_first_party_transition or not valid_binding(image_transition_binding):
+            raise ValueError("invalid Colliers transition binding")
+    image_outcome_table_sql = (
+        "CREATE TEMP TABLE _colliers_image_outcome (payload jsonb) ON COMMIT PRESERVE ROWS;"
+        if image_transition_binding is not None else ""
+    )
+    image_outcome_sql = ""
+    if image_transition_binding is not None:
+        image_outcome_sql = f"""
+    INSERT INTO _colliers_image_outcome
+    SELECT jsonb_build_object(
+      'schema', 'colliers-image-transition-v1', 'source_key', 'colliers-main',
+      'binding', {sql_lit(json.dumps(image_transition_binding))}::jsonb,
+      'semantic_before', colliers_images_before,
+      'semantic_retained_after', colliers_images_after,
+      'raw_before', (SELECT coalesce(sum(child_count),0) FROM _child_counts_by_listing_before
+                    WHERE source_key='colliers-main' AND child_type='images'),
+      'raw_retained_after', (SELECT coalesce(sum(child_count),0) FROM _child_counts_after
+                            WHERE source_key='colliers-main' AND child_type='images'),
+      'raw_after', whole.image_count,
+      'raw_new_after', whole.image_count -
+                    (SELECT coalesce(sum(child_count),0) FROM _child_counts_after
+                     WHERE source_key='colliers-main' AND child_type='images'),
+      'raw_retired_before', (SELECT coalesce(sum(old.child_count),0)
+                            FROM _child_counts_by_listing_before old
+                            WHERE old.source_key='colliers-main' AND old.child_type='images'
+                              AND NOT EXISTS (SELECT 1 FROM _retained_child_scope_after kept
+                                              WHERE kept.listing_id=old.listing_id)),
+      'staged_current', (SELECT count(*) FROM _src s
+                        JOIN credeals.cre_brokerages b ON b.id=s.brokerage_id
+                        WHERE {staged_source_key_sql}='colliers-main'),
+      'current_without_images', 0
+    )
+    FROM (SELECT count(i.id) AS image_count
+          FROM credeals.cre_listings l
+          JOIN credeals.cre_brokerages b ON b.id=l.brokerage_id
+          JOIN credeals.cre_listing_images i ON i.listing_id=l.id
+          WHERE l.deleted_at IS NULL AND {live_source_key_sql}='colliers-main') whole;
+"""
+
     colliers_transition_sql = "true" if colliers_first_party_transition else "false"
     colliers_transition_row_sql = f"""(
       {colliers_transition_sql}
@@ -4140,6 +4183,7 @@ GROUP BY a.listing_id, a.source_key;
 -- the distinct underlying asset baseline before any child replacement so the
 -- one reviewed first-party transition can reject real asset loss without
 -- protecting known row-multiplication defects.
+{image_outcome_table_sql}
 CREATE TEMP TABLE _colliers_semantic_images_before ON COMMIT DROP AS
 SELECT count(DISTINCT regexp_replace(
          regexp_replace(lower(i.url), '&quot;+$', ''),
@@ -5794,11 +5838,21 @@ BEGIN
       RAISE EXCEPTION
         'checkpoint Colliers first-party image transition left a current property without an image';
     END IF;
+{image_outcome_sql}
   END IF;
 END $$;
 
 COMMIT;
 """)
+    if image_transition_binding is not None:
+        # The temp table is created in this transaction: ROLLBACK removes it,
+        # so no successful post-COMMIT outcome can be emitted after rollback.
+        w(r"""\pset format unaligned
+\pset tuples_only on
+SELECT 'CRE_COLLIERS_IMAGE_TRANSITION ' || payload::text
+FROM _colliers_image_outcome;
+\pset format aligned
+\pset tuples_only off""")
     if not skip_post_commit_summary:
         w("""\\echo ''
 \\echo '=== credeals.cre_listings after ingest ==='
@@ -6314,6 +6368,7 @@ def main():
     )
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -6396,8 +6451,13 @@ def main():
         finally:
             os.close(directory)
     for path in args.inputs:
-        with open(path) as f:
-            data = json.load(f)
+        if args.checkpoint_ingest_attempt is not None:
+            with open(path, "rb") as f:
+                image_transition_input = f.read()
+            data = json.loads(image_transition_input)
+        else:
+            with open(path) as f:
+                data = json.load(f)
         if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
             sys.exit(
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "
@@ -6660,6 +6720,30 @@ def main():
         f"{'ENABLED' if colliers_first_party_transition else 'OFF'}",
         file=sys.stderr,
     )
+    image_transition_binding = None
+    if args.checkpoint_ingest_attempt is not None and colliers_first_party_transition:
+        if (len(args.inputs) != 1
+                or not args.expected_db_target_sha256 or args.mark_missing
+                or activate_status):
+            sys.exit("refusing unbound Colliers image transition")
+        from cre_colliers_image_transition import valid_binding
+        from pathlib import Path
+        input_bytes = Path(args.inputs[0]).read_bytes()
+        if (input_bytes != image_transition_input
+                or artifact_run_key != artifact_run_identity_from_digests(
+                    [hashlib.sha256(input_bytes).hexdigest()])[0]):
+            sys.exit("Colliers transition input changed")
+        generation = data["runMeta"]["freshness"]
+        image_transition_binding = {
+            "artifact_sha256": hashlib.sha256(input_bytes).hexdigest(),
+            "artifact_bytes": len(input_bytes), "artifact_run_key": artifact_run_key,
+            "generation_id": generation["generationId"],
+            "generation_started_at": generation["generationStartedAt"],
+            "database_target_sha256": args.expected_db_target_sha256,
+            "attempt_id": args.checkpoint_ingest_attempt,
+        }
+        if not valid_binding(image_transition_binding):
+            sys.exit("invalid Colliers image transition binding")
     sql = build_sql(
         rows,
         job_meta,
@@ -6673,6 +6757,7 @@ def main():
         colliers_first_party_transition=colliers_first_party_transition,
         skip_post_commit_summary=args.skip_post_commit_summary,
         matthews_targeted_targets=targeted_targets,
+        image_transition_binding=image_transition_binding,
     )
 
     print(
