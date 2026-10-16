@@ -929,7 +929,7 @@ export function extractAvisonYoungContactUrls(docs: Array<{ doc: ScrapedDoc; url
       if (!href) return;
       try {
         const u = new URL(href);
-        if (u.hostname !== "www.avisonyoung.us") return;
+        if (u.hostname !== "www.avisonyoung.us" && u.hostname !== "avisonyoung.us") return;
         const slug = clean(u.pathname.match(/\/professionals\/-\/ayp\/view\/([^/]+)/i)?.[1] ?? null);
         profileLinks.push({ url: u.toString(), text: clean($(el).text()), slug });
       } catch {
