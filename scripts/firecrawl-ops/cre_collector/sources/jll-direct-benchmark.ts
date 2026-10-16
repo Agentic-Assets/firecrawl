@@ -354,7 +354,6 @@ export async function runJllTransportMatrix(options: {
       const abort = () => controller.abort(signal.reason);
       signal.addEventListener("abort", abort, { once: true });
       const started = performance.now();
-      const wallStarted = Date.now();
       const context: JllArmContext = {
         armId: `${transport}:c${concurrency}`,
         clientConcurrency: concurrency,
@@ -409,7 +408,7 @@ export async function runJllTransportMatrix(options: {
                       observation.method !== expectedMethod ||
                       !observation.generationId?.trim() ||
                       !Number.isFinite(observed) ||
-                      observed < wallStarted ||
+                      observed < Date.parse(context.startedAt) ||
                       observed > Date.now() + 1000
                     )
                       throw new Error("capture_observation_not_bound_to_arm");

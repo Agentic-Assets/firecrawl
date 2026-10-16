@@ -24,6 +24,18 @@ and verification. Preserve raw source IDs and URLs in provenance; add only
 primary-evidenced aliases or layout fallbacks with regression tests. Do not
 infer a provider change from a parser gap.
 
+Essex listing keys preserve the validated owned property's literal URL pathname
+without outer slashes, decoding or lowercasing, matching the historical
+`properties/<slug>` namespace. The validated numeric `currentPropertyId` remains
+separate `essexPropertyId` provenance. Duplicate provider IDs or output paths fail
+closed; a changed path never authorizes a rekey. Canonical detail and lifecycle
+checks remain required. This identity rule does not admit first-seen writes,
+change the source minimum, or authorize closed/missing lifecycle updates.
+Current Essex inventory includes on-market and under-contract properties only;
+the closed archive reconciles coverage but never inflates current counts. With
+no baseline the raw gate reports `first_seen` before the default 100-row floor;
+Essex current-inventory proof admission remains unimplemented and unauthorized.
+
 ## Transport & Scrape Primitives
 
 | Transport | Sources |

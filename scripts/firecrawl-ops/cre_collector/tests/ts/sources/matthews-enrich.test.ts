@@ -7,6 +7,7 @@ import test, { type TestContext } from "node:test";
 import { groupEnrichItems, resolveEnricher, runEnrichGroups, type EnrichItem } from "../../../lib/enrich.js";
 import { firecrawl } from "../../../lib/scrape.js";
 import { MATTHEWS_FETCH_TIMEOUT_MS } from "../../../sources/matthews.js";
+import { observationNow } from "../../../lib/observation-clock.js";
 
 const sale = "https://www.matthews.com/properties/example-sale";
 const lease = "https://www.matthews.com/properties/leasing-example";
@@ -39,7 +40,7 @@ async function route(t: TestContext, items: EnrichItem[], response: (url: string
 
 for (const [url, id, tx] of [[sale, "example-sale", "sale"], [lease, "leasing-example", "lease"]] as const) {
   test(`Matthews targeted ${tx} uses canonical DOM and actual detail time only`, async (t) => {
-    const before = Date.now();
+    const before = Date.parse(observationNow());
     const result = await route(t, [item(url, id, tx)], async (requested, options) => {
       assert.equal(requested, url);
       assert.equal(options.redirect, "manual");
@@ -58,7 +59,7 @@ for (const [url, id, tx] of [[sale, "example-sale", "sale"], [lease, "leasing-ex
     assert.equal(row.transactionMode, tx);
     assert.equal(row.transactionType, tx === "sale" ? "Sale" : "Lease");
     assert.equal(tx === "sale" ? row.salePriceUsd : row.leaseRateText, tx === "sale" ? 3000000 : "$3,000,000");
-    assert.ok(Date.parse(row.detailObservedAt) >= before && Date.parse(row.detailObservedAt) <= Date.now());
+    assert.ok(Date.parse(row.detailObservedAt) >= before && Date.parse(row.detailObservedAt) <= Date.parse(observationNow()));
     assert.equal(Object.hasOwn(row, "inventoryObservedAt"), false);
     assert.equal(Object.hasOwn(row, "freshnessProvenance"), false);
     assert.equal(Object.hasOwn(row, "generationId"), false);

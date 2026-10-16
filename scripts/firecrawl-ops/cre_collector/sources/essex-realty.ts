@@ -351,7 +351,9 @@ export function parseEssexDetail(
   expectedLifecycle: EssexCurrentLifecycle
 ): any {
   const canonicalUrl = essexUrl(requestedUrl);
-  if (!canonicalUrl) throw new Error("Essex detail requested URL is invalid");
+  if (!canonicalUrl || !/^\/properties\/[^/]+\/?$/.test(new URL(canonicalUrl).pathname)) {
+    throw new Error("Essex detail requested URL is invalid");
+  }
   if (
     !html.trim()
     || /verify you are human|attention required|cf-chl-|access denied|page not found|404 error/i.test(
@@ -453,7 +455,8 @@ export function parseEssexDetail(
     });
   });
   return {
-    id,
+    id: new URL(canonicalUrl).pathname.replace(/^\/+|\/+$/g, ""),
+    essexPropertyId: id,
     name,
     lifecycle,
     statusBadge: lifecycle === "under_contract" ? "Under Contract" : "On Market",
@@ -540,9 +543,12 @@ export async function srcEssexRealty(
       )
     );
   }
-  const ids = new Set(listings.map((row) => row.id));
+  const ids = new Set(listings.map((row) => row.essexPropertyId));
   if (ids.size !== listings.length) {
     throw new Error("Essex selected details contain duplicate currentPropertyId values");
+  }
+  if (new Set(listings.map((row) => row.id)).size !== listings.length) {
+    throw new Error("Essex selected details contain duplicate canonical path identities");
   }
   return {
     company: "Essex Realty Group",

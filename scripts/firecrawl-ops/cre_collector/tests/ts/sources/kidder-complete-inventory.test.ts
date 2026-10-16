@@ -3,6 +3,7 @@ import { createServer, type RequestListener } from "node:http";
 import { once } from "node:events";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
+import { observationNow } from "../../../lib/observation-clock.js";
 import {
   assertKidderCompleteInventory,
   kidderFetchAll,
@@ -182,14 +183,14 @@ test("legacy 50-row request stays unchanged; strict cache is generation-bound an
     assert.equal(calls, 1);
     process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
     process.env.CRE_REFRESH_GENERATION = "kidder-complete-one";
-    const before = Date.now();
+    const before = Date.parse(observationNow());
     const first = await kidderFetchAll(Infinity);
     assert.equal(calls, 2, "a legacy cache cannot satisfy strict freshness");
     assert.equal(first.strictValidated, true);
     assert.equal(first.truncated, false);
     assert.equal(first.generationId, "kidder-complete-one");
     assert(Date.parse(first.inventoryObservedAt) >= before);
-    assert(Date.parse(first.inventoryObservedAt) <= Date.now());
+    assert(Date.parse(first.inventoryObservedAt) <= Date.parse(observationNow()));
     const cached = await kidderFetchAll(Infinity);
     assert.equal(calls, 2);
     assert.equal(cached.inventoryObservedAt, first.inventoryObservedAt);
