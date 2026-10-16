@@ -65,6 +65,14 @@ evidence stays held. A present listing Offer is never repaired with secondary
 evidence. The retained primary fallback sample is `SoldOut`; active fallback
 coverage is synthetic and does not prove fresh inventory or source admission.
 
+Lyon's fresh REST `Closed` category can conflict with the same property's HTML
+`InStock` Offer; keep that conflict held under
+[AGENTIC-4308](https://linear.app/agenticassets/issue/AGENTIC-4308).
+WordPress `publish` is publication state, not market status. A `closing_date`,
+or its absence, is not a reliable market-status rule; standard REST metadata
+does not resolve the conflict. Parser compatibility does not establish
+current-inventory admission.
+
 DAUM and Foundry output keys preserve the validated owned property's literal
 pathname without outer slashes (`property/<slug>`); Lyon-Stahl preserves only
 the final literal slug. Keep case and percent spelling unchanged. Positive
@@ -193,6 +201,13 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | nai-global | `infabode:{id}` (prefixed in adapter) | Bulk public `publicPosts` detail fields; full and monitor share the conservative `FOR_SALE_ON_MARKET` source-eligibility rule. Do not activate provider status. |
 | Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
+
+NAI Infabode post IDs identify observations; a stable property key remains
+unproved under [AGENTIC-4284](https://linear.app/agenticassets/issue/AGENTIC-4284).
+The same `urlOriginal` can carry different content or images, so do not collapse
+posts by URL. Preserve exact `propertyId` routing parameters on NAI Global
+`/listings/?propertyId=...` links; a generic shell's canonical URL dropping the
+query does not establish property identity.
 
 Avison detail identity supports feed-bound SharpLaunch street-as-name headings with a separate city/state location (full US state names and postal abbreviations), including location-suffixed titles. A registered `www.avisonyoung.us/properties/` wrapper can instead bind one unambiguous `RealEstateListing` name/address/URL to coherent visible name/location and page metadata. Map/script text alone is not street evidence for these layouts. Unsupported native pages may still use a validated official alternate through the existing property-detail child-preserving mode; explicit strict mode continues to require every selected URL.
 
