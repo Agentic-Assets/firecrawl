@@ -196,6 +196,8 @@ def verified_checkpoint(run_dir, manifest):
             or ingest.get("status_activation") is not False
         ):
             return None
+        if ingest["log"] != "logs/colliers-main-ingest.log":
+            return None
         evidence = ingest["image_transition"]
         observed = read_outcome(Path(run_dir) / ingest["log"])
         if (

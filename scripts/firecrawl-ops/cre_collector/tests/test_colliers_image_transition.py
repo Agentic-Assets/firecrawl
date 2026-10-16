@@ -144,7 +144,7 @@ def checkpoint_fixture(tmp_path):
                     "rc": 0,
                     "started_at": "2026-10-16T00:00:01Z",
                     "finished_at": "2026-10-16T00:00:02Z",
-                    "log": "ingest.log",
+                    "log": "logs/colliers-main-ingest.log",
                     "mark_missing": False,
                     "status_activation": False,
                 },
@@ -153,7 +153,8 @@ def checkpoint_fixture(tmp_path):
     }
     receipt = outcome()
     receipt["binding"] = transition.expected_binding(tmp_path, manifest, "c" * 32)
-    log = tmp_path / "ingest.log"
+    log = tmp_path / "logs/colliers-main-ingest.log"
+    log.parent.mkdir(exist_ok=True)
     log.write_text(transition.PREFIX + json.dumps(receipt) + "\ningest complete\n")
     manifest["sources"]["colliers-main"]["ingest"]["image_transition"] = (
         transition.read_outcome(log)
@@ -240,7 +241,7 @@ def test_real_checkpoint_ingest_captures_only_known_zero_result(tmp_path, monkey
     # builds argv, writes state and parses the actual bounded outcome carrier.
     monkeypatch.setattr(refresh, "save_manifest", lambda *args: None)
     monkeypatch.setattr(refresh.secrets, "token_hex", lambda size: "c" * 32)
-    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs").mkdir(exist_ok=True)
 
     def command(argv, output, **kwargs):
         assert "--checkpoint-ingest-attempt" in argv
@@ -318,7 +319,7 @@ def test_checkpoint_nonzero_after_receipt_still_requires_recovery(
     manifest, receipt, artifact, log = checkpoint_fixture(tmp_path)
     monkeypatch.setattr(refresh, "save_manifest", lambda *args: None)
     monkeypatch.setattr(refresh, "poll_hook", lambda: lambda: None)
-    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs").mkdir(exist_ok=True)
 
     def command(argv, output, **kwargs):
         output.write_text(transition.PREFIX + json.dumps(receipt) + "\n")
@@ -338,3 +339,22 @@ def test_duplicate_json_keys_are_ambiguous_even_with_one_outcome_line(tmp_path):
     log.write_text(transition.PREFIX + '{"schema":"old","schema":"new"}\n')
     with pytest.raises(ValueError, match="duplicate"):
         transition.read_outcome(log)
+
+
+@pytest.mark.parametrize("path_kind", ["wrong_relative", "escaping", "absolute"])
+def test_fixed_log_path_rejects_byte_identical_alternate_locations(tmp_path, path_kind):
+    import cre_colliers_image_transition as transition
+
+    manifest, receipt, artifact, log = checkpoint_fixture(tmp_path)
+    if path_kind == "wrong_relative":
+        alternate = tmp_path / "other.log"
+        alternate.write_bytes(log.read_bytes())
+        pointer = "other.log"
+    elif path_kind == "escaping":
+        alternate = tmp_path.parent / (tmp_path.name + "-outside.log")
+        alternate.write_bytes(log.read_bytes())
+        pointer = "../" + alternate.name
+    else:
+        pointer = str(log)
+    manifest["sources"]["colliers-main"]["ingest"]["log"] = pointer
+    assert transition.verified_checkpoint(tmp_path, manifest) is None
