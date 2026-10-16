@@ -64,6 +64,9 @@ checkpoint-manifest readback. Dated docs are operational history.
 8. [Brokerage completion playbook](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
    for primary-source evidence, website variation classification, and adapter
    regression guidance. The source-specific contract remains in `sources/CLAUDE.md`.
+9. [DAUM verified subset](../../../docs/firecrawl-ops/references/daum-verified-subset.md)
+   for its separate opt-in, typed tenure holds, transaction preservation and
+   partial acceptance. Never count that scope as complete brokerage coverage.
 
 ## Files
 

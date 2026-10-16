@@ -13,3 +13,16 @@ export function daumListingId(value: unknown): string {
   return new URL(url).pathname.replace(/^\/+|\/+$/g, "");
 }
 export function daumTenure(value: unknown): DaumTenure { const text = clean(value)?.toLowerCase(); if (!text) return "unknown"; if (text === "lease or sale" || text === "sale or lease") return "sale_or_lease"; if (text === "lease" || text === "sublease") return "lease"; if (text === "sale- user" || text === "sale- investment" || text === "sale") return "sale"; throw new Error(`DAUM inventory contains unknown transaction type ${JSON.stringify(value)}`); }
+
+export function resolveDaumTenure(
+  inventoryTenure: DaumTenure,
+  detailTenure: DaumTenure
+): DaumTenure {
+  if (inventoryTenure === "unknown") return detailTenure;
+  if (detailTenure === "unknown" || detailTenure === inventoryTenure) {
+    return inventoryTenure;
+  }
+  throw new Error(
+    `DAUM detail tenure ${detailTenure} disagrees with inventory tenure ${inventoryTenure}`
+  );
+}

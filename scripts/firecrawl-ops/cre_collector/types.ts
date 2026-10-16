@@ -339,13 +339,22 @@ export type DaumCurrentInventoryProof = {
   details: Array<[string, string, string, string]>;
 };
 
+// A separate opt-in scope never establishes whole-source completeness.
+export type DaumVerifiedSubsetInventoryProof = Omit<DaumCurrentInventoryProof, "schema" | "kind" | "cohort"> & {
+  schema: "daum-verified-subset-v1";
+  kind: "verified_subset_with_holds";
+  cohort: Array<[string, string, string, DaumTenureProof, string | null, DaumTenureProof, string | null, DaumTenureProof]>;
+  // Complete URL-sorted cohort partition: only unknown/unknown may be held.
+  held: Array<[string, "unknown_inventory_and_detail_tenure"]>;
+};
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
-  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof;
+  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor
