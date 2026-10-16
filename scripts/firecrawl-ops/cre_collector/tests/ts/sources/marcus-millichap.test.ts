@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   marcusUrl,
+  fetchMarcusMapRows,
   parseMarcusLocation,
   parseMarcusAddress,
   extractCssUrl,
@@ -524,4 +525,48 @@ test("parseMarcusContactLicense returns null when contact has no license field",
   const lamoreaux = contacts.find((c: any) => c.name === "Luke D. Lamoreaux");
   assert.ok(lamoreaux, "Lamoreaux contact must exist in fixture");
   assert.equal(parseMarcusContactLicense(lamoreaux.license), null);
+});
+
+// Exact two-record projection of the saved public mapproperties response.
+// Primary body SHA25694928849b07d14f6ae319047bb55ebfe8bbd60cf47a03a8ee54deb7ebd222fb4.
+const nativeMapEnvelope = JSON.parse(readFileSync(join(__dirname, "../../fixtures/marcus-map-results-array.json"), "utf8"));
+
+test("strict Marcus map accepts native wrapped Results array without changing row fields", () => {
+  const rows = parseMarcusMapRowsResponse(nativeMapEnvelope, true);
+  assert.deepEqual(rows, nativeMapEnvelope.Results);
+  assert.doesNotThrow(() => assertMarcusInventoryCount(nativeMapEnvelope.Results.length, rows, true));
+});
+
+test("actual Marcus map caller accepts captured envelope and preserves request shape", async () => {
+  const original = globalThis.fetch, fresh = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  let calls = 0;
+  globalThis.fetch = (async (url: any, init: any) => {
+    calls++;
+    assert.equal(String(url), "https://www.marcusmillichap.com/api/contentsearch/mapproperties");
+    assert.equal(init.method, "POST");
+    assert.equal(JSON.parse(init.body).pageSize, 1);
+    return new Response(JSON.stringify(nativeMapEnvelope), {status: 200});
+  }) as typeof fetch;
+  try { assert.deepEqual(await fetchMarcusMapRows(), nativeMapEnvelope.Results); assert.equal(calls, 1); }
+  finally { globalThis.fetch = original; if (fresh === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS; else process.env.CRE_REQUIRE_FRESH_DETAILS = fresh; }
+});
+
+test("native map envelope retains unique-ID and independent total reconciliation", () => {
+  const first = nativeMapEnvelope.Results[0];
+  const rows = parseMarcusMapRowsResponse({Results: [first, {...first}, {ActivityId: " "}]}, true);
+  assert.deepEqual(rows, [first]);
+  assert.throws(() => assertMarcusInventoryCount(3, rows, true), /inventory mismatch/);
+  for (const count of [null, undefined, NaN, Infinity, -1, 1.5]) {
+    assert.throws(() => assertMarcusInventoryCount(count as any, rows, true), /finite nonnegative integer/);
+  }
+  assert.doesNotThrow(() => assertMarcusInventoryCount(1, rows, true));
+});
+
+test("strict native envelope recognition refuses malformed, error and unproven raw-array shapes", () => {
+  for (const malformed of [null, {}, {Results: null}, {Results: "error"}, {Results: {Error: "unavailable"}}, {Results: {Properties: {}}}, nativeMapEnvelope.Results]) {
+    assert.throws(() => parseMarcusMapRowsResponse(malformed, true), /mapproperties response has no Properties array/);
+  }
+  assert.deepEqual(parseMarcusMapRowsResponse({Results: []}, true), []);
+  assert.deepEqual(parseMarcusMapRowsResponse(nativeMapEnvelope.Results, false), nativeMapEnvelope.Results);
 });

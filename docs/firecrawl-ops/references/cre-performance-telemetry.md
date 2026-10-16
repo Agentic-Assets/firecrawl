@@ -138,6 +138,27 @@ guard log. A count of high samples is not a contiguous high-CPU duration.
 
 ## Resource interpretation and older trials
 
+Treat artifact and IPC byte caps, dispatch backpressure, host-pressure guards,
+provider concurrency and request deadlines as distinct controls. Byte caps bound
+evidence transfer, backpressure moderates queued work, host guards protect the
+operating envelope, and concurrency and deadlines bound remote activity. An
+engineering default is not evidence that a limit fits every source or workload.
+
+Calibrate a limit against representative complete workloads, measured size or
+latency at the relevant stage, and available capacity with headroom. Preserve
+all required identities, fields, children and quality evidence: a bound must
+never silently truncate records or turn incomplete work into success. If it
+prevents a complete result, retain the failure and identify the stage and
+effective limit. Increasing every cap is not a substitute for locating the
+constraint or measuring its consequences.
+
+Record effective settings, observed sizes and latencies, work scope and
+measurement gaps alongside each experiment. Leave unmeasured values unknown;
+retain failed trials as well as successful ones. Use the existing
+[AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900) experiments
+and [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895) Learning
+log for evidence and interpretation before proposing a targeted adjustment.
+
 A phase manifest changes when the coordinator records a phase transition; it
 is not a continuous process heartbeat. During a long detail pass, compare fresh
 scrape counters, command/process evidence and required guard timestamps before

@@ -33,6 +33,16 @@ infer a provider change from a parser gap.
 
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 
+Marcus direct POST and detail HTML requests share a fixed 30-second deadline
+covering response headers and body. Timeouts abort the request and attempt to
+cancel unread or late response bodies, without adding transport retries or
+changing strict detail evidence.
+The guarded owner's overall work deadline remains a separate bound.
+Strict map inventory recognizes the native `Results: [...]` envelope as well
+as the existing `Properties` array envelope. Neither shape supplies the source
+total: the separate properties response must still provide a finite integer
+`TotalCount` matching the unique map ActivityIds before detail expansion.
+
 Pyramid's WordPress inventory requests only `_embed=wp:term`: the mapper needs
 those taxonomy labels for state, city, county and property type. Numeric term IDs
 alone are insufficient. Keep 100-record pages, bounded response bodies and complete

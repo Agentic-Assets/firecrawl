@@ -47,14 +47,60 @@ export function marcusMapDetailBody(activityId: string): Record<string, any> {
   return pureMarcusMapDetailBody(activityId);
 }
 
-export async function marcusPost(path: string, body: Record<string, any>): Promise<any> {
-  const res = await fetch(`${MARCUS_BASE}${path}`, {
+export const MARCUS_FETCH_TIMEOUT_MS = 30_000;
+
+// One deadline covers headers AND body. Race explicitly even if a transport
+// ignores abort; cancel unread/late bodies without waiting on a stuck cancel.
+async function marcusResponse<T>(
+  url: string, init: RequestInit, errorPrefix: string,
+  consume: (response: Response) => Promise<T>, timeoutMs: number
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("Invalid Marcus request timeout");
+  const controller = new AbortController();
+  let response: Response | undefined;
+  let complete = false;
+  const cancelBody = () => {
+    // Native fetch abort closes a locked body; cancel also handles unread and
+    // late responses. Neither a locked nor a stuck cancel may extend deadline.
+    void response?.body?.cancel().catch(() => {});
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${errorPrefix} timed out after ${timeoutMs}ms`));
+      controller.abort();
+      cancelBody();
+    }, timeoutMs);
+  });
+  try {
+    const operation = (async () => {
+      response = await fetch(url, { ...init, signal: controller.signal });
+      if (controller.signal.aborted) {
+        cancelBody();
+        throw new Error(`${errorPrefix} response arrived after its deadline`);
+      }
+      if (!response.ok) throw new Error(`${errorPrefix} HTTP ${response.status}`);
+      // Keep the existing response methods: matched-capacity observers wrap
+      // json()/text() to bind raw evidence and release request permits.
+      const value = await consume(response);
+      complete = true;
+      return value;
+    })();
+    return await Promise.race([operation, deadline]);
+  } finally {
+    clearTimeout(timer);
+    if (!complete) { controller.abort(); cancelBody(); }
+  }
+}
+
+export async function marcusPost(
+  path: string, body: Record<string, any>, timeoutMs = MARCUS_FETCH_TIMEOUT_MS
+): Promise<any> {
+  return marcusResponse(`${MARCUS_BASE}${path}`, {
     method: "POST",
     headers: marcusHeaders(),
     body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`Marcus & Millichap ${path} HTTP ${res.status}`);
-  return res.json();
+  }, `Marcus & Millichap ${path}`, response => response.json(), timeoutMs);
 }
 
 export function marcusUrl(href: string | null | undefined): string | null {
@@ -248,16 +294,16 @@ export function marcusCapTruncated(
   return Number.isFinite(max) && selected < knownInventory;
 }
 
-export async function fetchMarcusDetailHtml(url: string): Promise<string> {
-  const res = await fetch(url, {
+export async function fetchMarcusDetailHtml(
+  url: string, timeoutMs = MARCUS_FETCH_TIMEOUT_MS
+): Promise<string> {
+  return marcusResponse(url, {
     headers: {
       accept: "text/html,*/*",
       referer: MARCUS_PROPERTIES_URL,
       "user-agent": "Mozilla/5.0 CRE collector",
     },
-  });
-  if (!res.ok) throw new Error(`Marcus & Millichap detail HTTP ${res.status}`);
-  return res.text();
+  }, "Marcus & Millichap detail", response => response.text(), timeoutMs);
 }
 
 export function marcusDetailHtmlIsUsable(html: string): boolean {
