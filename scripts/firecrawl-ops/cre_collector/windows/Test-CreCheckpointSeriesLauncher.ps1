@@ -71,6 +71,10 @@ $cases = @(
     @{ Name = 'monitor'; Args = @('-Source', 'hanley', '-ExpectedSha', $sha); Exit = 0; Dispatch = $true },
     @{ Name = 'enrich'; Args = @('-Tier', 'enrich', '-Source', 'hanley', '-ExpectedSha', $sha, '-Apply', '-Batch', '3', '-DeadlineSeconds', '90'); Exit = 0; Dispatch = $true },
     @{ Name = 'check-only'; Args = @('-Tier', 'series', '-CheckOnly', '-AlertWebhookFile', 'MISSING-SECRET-CANARY'); Exit = 0; Dispatch = $false; Check = $true },
+    @{ Name = 'cpu-recovery'; Args = $series; Exit = 0; Dispatch = $true; CpuRecovery = $true },
+    @{ Name = 'cpu-recovery-native124'; Args = $series; Exit = 124; Dispatch = $true; CpuRecovery = $true; Native = '124' },
+    @{ Name = 'cpu-telemetry-error'; Args = $series; Exit = 1; Dispatch = $false; Denied = $true; TelemetryError = $true },
+    @{ Name = 'cpu-wait-audit-failure'; Args = $series; Exit = 1; Dispatch = $false; Denied = $true; CpuRecovery = $true; AuditFailure = $true },
     @{ Name = 'denied'; Args = $series; Exit = 1; Dispatch = $false; Denied = $true },
     @{ Name = 'readiness-unavailable'; Args = $series; Exit = 1; Dispatch = $false; ReadinessDenied = $true },
     @{ Name = 'bad-budget'; Args = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '29', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
@@ -121,17 +125,31 @@ foreach ($case in $cases) {
     $env:CRE_TEST_ARGV = $argvPath
     $env:CRE_TEST_EXIT = if ($case.ContainsKey('Native')) { $case.Native } else { '0' }
     $admitted = if ($case.ContainsKey('Denied')) { '$false' } else { '$true' }
-    $stub = "function Get-CreAdmission { if (-not `$CheckOnly -and -not [IO.File]::Exists('" + $readinessPath.Replace("'", "''") + "')) { throw 'Readiness must precede fresh admission' }; [IO.File]::WriteAllText('" + $admissionPath.Replace("'", "''") + "','sampled'); return [ordered]@{ admitted = $admitted; scope = 'synthetic' } }"
+    $counter = "`$n=0; if ([IO.File]::Exists('" + $admissionPath.Replace("'", "''") + "')) { `$n=[int][IO.File]::ReadAllText('" + $admissionPath.Replace("'", "''") + "') }; `$n++; [IO.File]::WriteAllText('" + $admissionPath.Replace("'", "''") + "',[string]`$n);"
+    $observation = "return [ordered]@{ admitted = $admitted; admissionReason='memory_pressure'; scope = 'synthetic' }"
+    if ($case.ContainsKey('CpuRecovery')) {
+        $observation = "return [ordered]@{ admitted=(`$n -ge 2); admissionReason=`$(if (`$n -ge 2) {'admitted'} else {'cpu_pressure'}); scope='synthetic' }"
+    }
+    if ($case.ContainsKey('TelemetryError')) { $observation = "throw 'Synthetic telemetry failure'" }
+    $stub = "function Get-CreAdmission { if (-not `$CheckOnly -and -not [IO.File]::Exists('" + $readinessPath.Replace("'", "''") + "')) { throw 'Readiness must precede fresh admission' }; " + $counter + $observation + " }"
     $stub += "`nfunction Get-Command { param(`$Name, `$CommandType, `$ErrorAction) if (`$Name -ne 'wsl.exe') { throw 'Unexpected executable resolution' }; [IO.File]::WriteAllText('" + $resolverPath.Replace("'", "''") + "','resolved'); [pscustomobject]@{ Source='" + $fixtureExe.Replace("'", "''") + "' } }"
     $source = $launcherText.Substring(0, $admission.Extent.StartOffset) + $stub + $launcherText.Substring($admission.Extent.EndOffset)
     $ready = if ($case.ContainsKey('ReadinessDenied')) { '$false' } else { '$true' }
     $readyStub = "function Wait-CreLocalApi { [IO.File]::WriteAllText('" + $readinessPath.Replace("'", "''") + "','probed'); return [ordered]@{ ready = $ready; scope = 'synthetic' } }"
     $source = $source.Replace($readiness.Extent.Text, $readyStub)
+    if ($case.ContainsKey('AuditFailure')) {
+        $source = $source.Replace('    $temporary = $Path +', "    if (`$Record.status -ceq 'startup_admission_waiting') { throw 'Synthetic waiting audit failure' }`n    `$temporary = `$Path +")
+    }
     $scriptFile = Join-Path $caseWindows 'Invoke-CreGuardedTier.ps1'
     [IO.File]::WriteAllText($scriptFile, $source, (New-Object Text.UTF8Encoding($true)))
     $result = [CreWindowsCapture.Capture]::Run($hostExecutable, (@('-NoProfile', '-NonInteractive', '-File', $scriptFile) + $case.Args), (Join-Path $caseRoot 'stdout'), (Join-Path $caseRoot 'stderr'), $null)
     Assert-True (-not $result.Failed -and $result.NativeExitCode -eq $case.Exit) ("Unexpected host result: " + $case.Name)
     Assert-True ([IO.File]::Exists($argvPath) -eq $case.Dispatch) ("Unexpected dispatch: " + $case.Name)
+    if ($case.ContainsKey('CpuRecovery')) {
+        $sampleCount = [int][IO.File]::ReadAllText($admissionPath)
+        $expectedSamples = if ($case.ContainsKey('AuditFailure')) { 1 } else { 2 }
+        Assert-True ($sampleCount -eq $expectedSamples) 'CPU recovery must not retry after dispatch or failed audit.'
+    }
     if (-not $case.Dispatch) {
         Assert-True (-not [IO.File]::Exists($resolverPath)) ("Refusal/CheckOnly must precede WSL resolution: " + $case.Name)
         if ($case.ContainsKey('Check')) { Assert-True (-not [IO.Directory]::Exists((Join-Path $caseRoot 'out'))) 'CheckOnly writes no audit/log files.' }
@@ -147,6 +165,10 @@ foreach ($case in $cases) {
         continue
     }
     Assert-True ([IO.File]::Exists($readinessPath) -and [IO.File]::Exists($admissionPath)) 'Dispatch requires readiness followed by fresh resource admission.'
+    $admissionAudit = [IO.File]::ReadAllText(@(Get-ChildItem (Join-Path $caseRoot 'out/windows-launcher') -Filter '*.json')[0].FullName) | ConvertFrom-Json
+    $createdAt = if ($admissionAudit.createdAt -is [DateTime]) { [DateTimeOffset]::new($admissionAudit.createdAt) } else { [DateTimeOffset]::Parse($admissionAudit.createdAt) }
+    Assert-True ($admissionAudit.windowsAdmissionUnixMs -ge $createdAt.ToUnixTimeMilliseconds()) 'Admission timestamp is generated only after startup admission.'
+    Assert-True ($admissionAudit.startupAdmission.reason -ceq 'admitted') 'Dispatched audit must retain qualified startup admission.'
     $reader = New-Object IO.BinaryReader([IO.File]::OpenRead($argvPath), (New-Object Text.UTF8Encoding($false)))
     try { $count = $reader.ReadInt32(); $forwarded = @(for ($i = 0; $i -lt $count; $i++) { $reader.ReadString() }) } finally { $reader.Dispose() }
     Assert-True (($forwarded[0..5] -join '|') -ceq '-d|Ubuntu-24.04|-u|cayman|--exec|env') 'Fixed WSL executable boundary must remain separate argv.'

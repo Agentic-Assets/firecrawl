@@ -425,12 +425,18 @@ End and forced `wsl.exe` termination remain insufficient settlement evidence.
 
 ## Windows Task Scheduler installation and acceptance
 
-Before dispatch, the launcher waits at most 90 seconds for an anonymous HTTP
-200 response from `http://127.0.0.1:3002/`, with requests capped at two seconds.
-It then takes a fresh Windows CPU/memory admission sample. This handles an API
-startup race but never starts or restarts Docker. Failure records
-`local_api_not_ready_no_dispatch` and starts no Linux work. `-CheckOnly` remains
-a resource-telemetry check and makes no API request.
+Before dispatch, the launcher shares one 90-second startup budget between
+anonymous HTTP 200 readiness at `http://127.0.0.1:3002/` (two-second request
+limit) and fresh Windows CPU/memory admission. Valid CPU pressure may wait and
+recheck both readiness and telemetry within that same budget; low memory or
+invalid/stale telemetry refuses immediately. A CPU sample cannot admit after
+the deadline. The existing audit records wait reasons, attempt counts and
+elapsed time. API failure records `local_api_not_ready_no_dispatch`; exhausted
+startup admission records `startup_admission_deadline_no_dispatch`. Neither
+starts Linux work or Docker. Once dispatch begins, this startup wait never
+replays it, including after a nonzero exit or uncertain settlement.
+`-CheckOnly` remains a one-shot resource-telemetry check with no API request or
+audit write. This behavior does not create or enable a scheduler.
 
 The opt-in installer from [AGENTIC-4265](https://linear.app/agenticassets/issue/AGENTIC-4265)
 creates a visible task under `\Agentic Assets\CRE\`, calling the existing

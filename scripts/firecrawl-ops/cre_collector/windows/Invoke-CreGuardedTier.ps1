@@ -158,6 +158,8 @@ function Get-CreAdmission {
         throw 'Whole-Windows memory telemetry is unavailable or invalid.'
     }
     $admitted = $busy -lt 90 -and $memory.AvailablePhysical -ge 8GB
+    $reason = if ($memory.AvailablePhysical -lt 8GB) { 'memory_pressure' }
+        elseif ($busy -ge 90) { 'cpu_pressure' } else { 'admitted' }
     return [ordered]@{
         observedAt = [DateTime]::UtcNow.ToString('o')
         scope = 'whole_windows_host_start_time_only'
@@ -167,6 +169,7 @@ function Get-CreAdmission {
         maxCpuPercent = 90
         minAvailablePhysicalGiB = 8
         admitted = $admitted
+        admissionReason = $reason
     }
 }
 
@@ -227,6 +230,67 @@ function Wait-CreLocalApi {
         attempts=$attempts; elapsedMilliseconds=[Math]::Round($clock.Elapsed.TotalMilliseconds);
         budgetSeconds=$BudgetSeconds; requestTimeoutMilliseconds=$RequestTimeoutMilliseconds;
         lastHttpStatus=$lastStatus; scope='local_api_root_only' }
+}
+
+function Wait-CreStartupAdmission {
+    param([System.Collections.IDictionary]$Record, [string]$AuditPath)
+    # One startup budget, not a retry of the launcher or dispatched Linux work.
+    $budgetSeconds = 90
+    $startedAt = [DateTime]::UtcNow
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $startup = [ordered]@{ budgetSeconds=$budgetSeconds; attempts=0;
+        startedAt=$startedAt.ToString('o'); deadlineAt=$startedAt.AddSeconds($budgetSeconds).ToString('o');
+        cpuPressureSamples=0; elapsedMilliseconds=0; reason='readiness_pending'; initialAdmission=$null }
+    $Record['startupAdmission'] = $startup
+    try {
+        while ($clock.Elapsed.TotalSeconds -lt $budgetSeconds) {
+            $Record.status = 'startup_admission_pending'
+            $startup.elapsedMilliseconds = [Math]::Round($clock.Elapsed.TotalMilliseconds)
+            Write-CreAudit $AuditPath $Record
+            $remaining = $budgetSeconds - $clock.Elapsed.TotalSeconds
+            if ($remaining -lt 0.1) { break }
+            $Record['localApiReadiness'] = Wait-CreLocalApi -BudgetSeconds $remaining
+            if (-not $Record.localApiReadiness.ready) {
+                $Record.status = 'local_api_not_ready_no_dispatch'
+                $startup.reason = 'api_not_ready'
+                return $false
+            }
+            # A valid CPU sample can take up to five seconds. Never start one
+            # without that reserve or admit if it finishes after the deadline.
+            if (($budgetSeconds - $clock.Elapsed.TotalSeconds) -lt 5) { break }
+            $startup.attempts++
+            try { $admission = Get-CreAdmission }
+            catch { $startup.reason = 'telemetry_invalid'; throw }
+            if ($startup.attempts -eq 1) { $startup.initialAdmission = $admission }
+            foreach ($key in $admission.Keys) { $Record[$key] = $admission[$key] }
+            $startup.elapsedMilliseconds = [Math]::Round($clock.Elapsed.TotalMilliseconds)
+            if ($clock.Elapsed.TotalSeconds -ge $budgetSeconds) { break }
+            if ($admission.admitted) {
+                $startup.reason = 'admitted'
+                return $true
+            }
+            # This reason comes from the actual unrounded telemetry predicate.
+            # Low memory and telemetry exceptions never enter the wait loop.
+            if ($admission.admissionReason -cne 'cpu_pressure') {
+                $Record.status = 'admission_refused'
+                $startup.reason = $admission.admissionReason
+                return $false
+            }
+            $startup.cpuPressureSamples++
+            $startup.reason = 'cpu_pressure'
+            $Record.status = 'startup_admission_waiting'
+            Write-CreAudit $AuditPath $Record
+            $delay = [int][Math]::Min(1000, [Math]::Max(0,
+                ($budgetSeconds - $clock.Elapsed.TotalSeconds) * 1000))
+            if ($delay -gt 0) { Start-Sleep -Milliseconds $delay }
+        }
+        $Record.status = 'startup_admission_deadline_no_dispatch'
+        $startup.reason = 'startup_deadline'
+        return $false
+    } finally {
+        $clock.Stop()
+        $startup.elapsedMilliseconds = [Math]::Round($clock.Elapsed.TotalMilliseconds)
+    }
 }
 
 function Write-CreAudit {
@@ -575,17 +639,7 @@ try {
         }
     }
     Set-CreNotification $record $basename 0 -Phase Start
-    $record.status = 'local_api_readiness_pending'
-    Write-CreAudit $auditPath $record
-    $record['localApiReadiness'] = Wait-CreLocalApi
-    if (-not $record.localApiReadiness.ready) {
-        $record.status = 'local_api_not_ready_no_dispatch'
-        throw 'Local API readiness deadline expired.'
-    }
-    $admission = Get-CreAdmission
-    foreach ($key in $admission.Keys) { $record[$key] = $admission[$key] }
-    if (-not $admission.admitted) {
-        $record.status = 'admission_refused'
+    if (-not (Wait-CreStartupAdmission $record $auditPath)) {
         # Preserve ordinary launch refusal exit 1; CheckOnly still uses 75.
     } else {
         $record.status = 'admitted'

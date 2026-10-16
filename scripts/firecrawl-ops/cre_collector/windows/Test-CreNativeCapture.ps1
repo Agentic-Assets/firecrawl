@@ -127,7 +127,7 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
         $faultSource = [IO.File]::ReadAllText($helper).Replace('result.NativeExitCode = process.ExitCode;', 'if (process.Id > 0) throw new InvalidOperationException("synthetic post-start fault"); result.NativeExitCode = process.ExitCode;')
         [IO.File]::WriteAllText((Join-Path $caseWindows 'CreNativeCapture.cs'), $faultSource)
     }
-    $stub = "function Get-CreAdmission { return [ordered]@{ admitted = `$true; cpuPercent = 10; scope = 'synthetic'; availablePhysicalGiB = 20 } }"
+    $stub = "function Get-CreAdmission { return [ordered]@{ admitted = `$true; admissionReason = 'memory_pressure'; cpuPercent = 10; scope = 'synthetic'; availablePhysicalGiB = 20 } }"
     if ($scenario -in @('denied', 'check-denied')) { $stub = $stub.Replace('admitted = $true', 'admitted = $false') }
     if ($scenario -in @('telemetry-error', 'check-error')) { $stub = "function Get-CreAdmission { throw 'CREDENTIAL_CANARY_DO_NOT_LOG' }" }
     $selectedExecutable = $executable
@@ -192,7 +192,7 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
         Assert-True ([IO.File]::ReadAllText($caseOut).Contains($receipt.stdoutPath)) 'Log paths must be visible to the foreground operator.'
         Assert-True ($receipt.captureHelperSha256 -ceq (Get-FileHash $helper -Algorithm SHA256).Hash.ToLowerInvariant()) 'Helper hash must bind the bytes compiled, not a separately reread file.'
         $admissionPending = [IO.File]::ReadAllText($caseScript).IndexOf("Write-CreAudit `$auditPath `$record")
-        $sampleCall = [IO.File]::ReadAllText($caseScript).LastIndexOf('$admission = Get-CreAdmission')
+        $sampleCall = [IO.File]::ReadAllText($caseScript).LastIndexOf('Wait-CreStartupAdmission $record $auditPath')
         Assert-True ($admissionPending -ge 0 -and $admissionPending -lt $sampleCall) 'Initial audit publication must precede admission telemetry.'
     } elseif ($scenario -eq 'native-nonzero') {
         Assert-True ($launched.NativeExitCode -eq 23 -and $receipt.nativeExitCode -eq 23 -and $receipt.wrapperExitCode -eq 23 -and $receipt.status -ceq 'returned') 'Native failure must preserve its actual exit separately from successful capture.'

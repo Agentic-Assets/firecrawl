@@ -48,7 +48,7 @@ Assert-Cre ($errors.Count -eq 0) 'Launcher must parse.'
 $admission=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-CreAdmission'},$true))[0]
 $readiness=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Wait-CreLocalApi'},$true))[0]
 $hostExe=(Get-Process -Id $PID).Path
-$cases=@('success','native-failed','notification-failed','bad-endpoint','denied','not-ready','invalid-scope','invalid-mode','unconfigured','initial-audit-error','terminal-audit-error','notification-audit-error','persistent-audit-error','run-conflict','check-only','check-denied','check-error','default-success')
+$cases=@('success','cpu-recovery','native-failed','notification-failed','bad-endpoint','denied','not-ready','invalid-scope','invalid-mode','unconfigured','initial-audit-error','terminal-audit-error','notification-audit-error','persistent-audit-error','run-conflict','check-only','check-denied','check-error','default-success')
 foreach ($case in $cases) {
     $root=Join-Path $ProofDirectory $case; $windows=Join-Path $root 'windows'
     [void](New-Item -ItemType Directory -Path $windows -Force)
@@ -67,8 +67,10 @@ foreach ($case in $cases) {
     $env:CRE_TEST_NOTIFICATION_EVENTS=$eventFile
     $eventLiteral=$eventFile.Replace("'","''")
     $admitted=if($case -eq 'denied' -or $case -eq 'check-denied'){'$false'}else{'$true'}
-    $body=if($case -eq 'check-error'){ "throw 'synthetic admission error'" }else{ "return [ordered]@{admitted=$admitted}" }
+    $body=if($case -eq 'check-error'){ "throw 'synthetic admission error'" }else{ "return [ordered]@{admitted=$admitted;admissionReason='memory_pressure'}" }
+    if($case -eq 'cpu-recovery') { $body="`$script:admissionSamples++; return [ordered]@{admitted=(`$script:admissionSamples -gt 1);admissionReason=`$(if (`$script:admissionSamples -gt 1) {'admitted'}else{'cpu_pressure'})}" }
     $stub="function Get-CreAdmission { [IO.File]::AppendAllText('$eventLiteral',('admit'+[Environment]::NewLine)); $body }"
+    if($case -eq 'cpu-recovery') { $stub="`$script:admissionSamples=0`n"+$stub }
     $resolverMarker=($fakeCurl+'.resolved').Replace("'","''")
     $stub+="`nfunction Get-Command { param(`$Name,`$CommandType,`$ErrorAction) if (`$Name -eq 'curl.exe') { [IO.File]::WriteAllText('$resolverMarker','resolved'); [pscustomobject]@{Source='"+$fakeCurl.Replace("'","''")+"'} } else { [pscustomobject]@{Source='"+$fakeWorker.Replace("'","''")+"'} } }"
     $source=$launcher.Substring(0,$admission.Extent.StartOffset)+$stub+$launcher.Substring($admission.Extent.EndOffset)
@@ -95,20 +97,23 @@ foreach ($case in $cases) {
     $calls=@(if([IO.File]::Exists($fakeCurl+'.calls.jsonl')){[IO.File]::ReadAllLines($fakeCurl+'.calls.jsonl')|ForEach-Object{$_|ConvertFrom-Json}})
     $expected=if($case -in @('bad-endpoint','invalid-mode','unconfigured','check-only','check-denied','check-error','default-success')){0}elseif($case -in @('invalid-scope','initial-audit-error')){1}else{2}
     Assert-Cre ($calls.Count -eq $expected) "$case must attempt each eligible phase once."
-    $exit=if($case -in @('success','notification-failed','notification-audit-error','run-conflict','check-only','default-success')){0}elseif($case -eq 'native-failed'){23}elseif($case -eq 'check-denied'){75}else{1}
+    $exit=if($case -in @('success','cpu-recovery','notification-failed','notification-audit-error','run-conflict','check-only','default-success')){0}elseif($case -eq 'native-failed'){23}elseif($case -eq 'check-denied'){75}else{1}
     Assert-Cre ($execution.NativeExitCode -eq $exit) "$case notification must preserve the original operation exit."
     foreach($call in $calls){
         Assert-Cre (-not $call.secretArg -and $call.hasUrl -and $call.hasData) "$case secret/data must use stdin exclusively."
         Assert-Cre ($call.readableBrokerage -and -not $call.technicalSpam) "$case must name the brokerage without technical log spam."
     }
     $events=@(if([IO.File]::Exists($eventFile)){[IO.File]::ReadAllLines($eventFile)})
+    if($case -eq 'cpu-recovery') { Assert-Cre (@($events|Where-Object {$_ -ceq 'admit'}).Count -eq 2 -and @($events|Where-Object {$_ -ceq 'ready'}).Count -eq 2) 'CPU recovery must repeat fresh admission, not lifecycle notifications.' }
     if($expected -eq 2){
         Assert-Cre ($calls[0].started -and $calls[0].noDispatchClaim -and -not $calls[1].started) "$case start must accurately precede Linux dispatch."
         Assert-Cre (-not $calls[0].attemptId -and -not $calls[1].attemptId) "$case technical attempt IDs must remain in the audit rather than channel text."
         Assert-Cre (($events -join ',').StartsWith('audit-1,notify-start,audit-2,ready')) "$case start must follow durable initial audit and precede readiness/admission."
         $terminalAudit=if($case -in @('denied','not-ready')){'audit-3'}else{'audit-4'}
         Assert-Cre ([Array]::IndexOf($events,$terminalAudit) -ge 0 -and [Array]::IndexOf($events,'notify-terminal') -gt [Array]::IndexOf($events,$terminalAudit)) "$case terminal send must follow terminal audit attempt."
-        Assert-Cre ($calls[1].finished -eq ($exit -eq 0) -and $calls[1].failed -eq ($exit -ne 0)) "$case terminal outcome must reflect wrapper exit."
+        # Synthetic native0 has no qualified source summary, so it must not
+        # claim completion merely because the worker returned successfully.
+        Assert-Cre (-not $calls[1].finished -and $calls[1].unverified -eq ($exit -eq 0) -and $calls[1].failed -eq ($exit -ne 0)) "$case terminal outcome must preserve unverified success or failure."
         if($case -in @('terminal-audit-error','persistent-audit-error')){Assert-Cre $calls[1].auditFailure "$case must explicitly identify failed terminal audit."}
         if($case -in @('success','run-conflict')){Assert-Cre (-not $calls[1].informationalRun) 'Technical run references remain in the local audit.'}
     }

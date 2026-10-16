@@ -22,8 +22,9 @@ public static class NotificationFixture {
         }
         string attempt = Regex.Match(config, "CRE Windows attempt ([0-9]{8}T[0-9]{6}Z-[0-9a-f]{32})").Groups[1].Value;
         bool start = config.Contains(" started (tier=") || config.Contains(" started."),
-            finish = config.Contains(" finished (tier=") || config.Contains(" run finished") || config.Contains(" refresh completed"),
-            failed = config.Contains(" failed (tier=") || config.Contains(" needs attention");
+            finish = config.Contains(" finished (tier=") || config.Contains(" run finished") || config.Contains(" refresh completed") || config.Contains(" | Completed*"),
+            failed = config.Contains(" failed (tier=") || config.Contains(" needs attention") || config.Contains(" | Needs attention*"),
+            unverified = config.Contains(" | Could not be verified*");
         string events = Environment.GetEnvironmentVariable("CRE_TEST_NOTIFICATION_EVENTS");
         if (!String.IsNullOrEmpty(events)) File.AppendAllText(events, start ? "notify-start\n" : "notify-terminal\n");
         string record = "{\"secretArg\":" + secretArg.ToString().ToLowerInvariant() +
@@ -36,6 +37,7 @@ public static class NotificationFixture {
             ",\"hasData\":" + config.Contains("data = \"{\\\"text\\\":").ToString().ToLowerInvariant() +
             ",\"attemptId\":\"" + attempt + "\",\"started\":" + start.ToString().ToLowerInvariant() +
             ",\"finished\":" + finish.ToString().ToLowerInvariant() + ",\"failed\":" + failed.ToString().ToLowerInvariant() +
+            ",\"unverified\":" + unverified.ToString().ToLowerInvariant() +
             ",\"noDispatchClaim\":" + (config.Contains("Linux dispatch has not been attempted") || config.Contains("collection has not started")).ToString().ToLowerInvariant() +
             ",\"auditFailure\":" + (config.Contains("status=windows_terminal_audit_failed_linux_settlement_unverified") || config.Contains("audit could not be saved")).ToString().ToLowerInvariant() +
             ",\"informationalRun\":" + config.Contains("reference (informational): 2026-10-15T123456Z").ToString().ToLowerInvariant() +
