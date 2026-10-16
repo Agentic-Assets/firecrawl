@@ -17,6 +17,13 @@
 - **`monitor=true`**: cheap enumeration only. Skip detail unless the feed is already complete.
 - Folded sub-sources get ingest prefixes (`dealflow:`, `investor:`, `main:`), not adapter prefixes. `colliers-main` emits bare `usa#####`; ingest adds `main:`.
 
+For provider or page variations, use the [brokerage completion playbook](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
+for evidence and fail-closed rules. Keep the source-specific canonical
+external-ID recipe, and use one source-owned comparison normalizer in mapping
+and verification. Preserve raw source IDs and URLs in provenance; add only
+primary-evidenced aliases or layout fallbacks with regression tests. Do not
+infer a provider change from a parser gap.
+
 ## Transport & Scrape Primitives
 
 | Transport | Sources |

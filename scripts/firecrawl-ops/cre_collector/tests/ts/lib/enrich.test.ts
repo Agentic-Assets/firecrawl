@@ -39,6 +39,7 @@ test("ENRICHERS registry uses targeted source paths and excludes cbre", () => {
       "avison-young",
       "colliers-main",
       "jll-investor",
+      "hanley",
       "kidder-mathews",
       "lee-associates",
       "marcus-millichap",
