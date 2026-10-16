@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { groupEnrichItems, resolveEnricher, runEnrichGroups } from "../../../lib/enrich.js";
 import { firecrawl } from "../../../lib/scrape.js";
-import { MATTHEWS_FETCH_TIMEOUT_MS } from "../../../sources/matthews.js";
+import { MATTHEWS_FETCH_TIMEOUT_MS, matthewsFreshInventory } from "../../../sources/matthews.js";
 
 const sale = "https://www.matthews.com/properties/target-sale";
 const lease = "https://www.matthews.com/properties/leasing-target";
@@ -168,4 +168,48 @@ test("targeted fresh sitemap preserves valid optional leaf metadata", async t =>
   const result = await run([seed(sale, "target-sale", "sale")], header);
   assert.equal(result.listings.length, 1);
   assert.deepEqual(evidence.requested, [sitemapUrl, sale]);
+});
+
+test("targeted resolver ignores careers queries and owned non-property routes without dispatch", async t => {
+  const header = context();
+  const evidence = await setup(t, header, sitemap([
+    "https://careers.matthews.com/jobs?department=research",
+    "https://www.matthews.com/news?category=research",
+    sale,
+  ]));
+  const result = await run([seed(sale, "target-sale", "sale")], header);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].freshnessProvenance.generationId, header.generationId);
+  assert.deepEqual(evidence.requested, [sitemapUrl, sale]);
+});
+
+for (const [name, inventory] of [
+  ["malformed foreign entry", `<urlset><url><loc>https://careers.matthews.com/jobs?department=research</url><url><loc>${sale}</loc></url></urlset>`],
+  ["ambiguous foreign loc", `<urlset><url><loc>https://careers.matthews.com/jobs</loc><loc>https://elsewhere.invalid/jobs</loc></url><url><loc>${sale}</loc></url></urlset>`],
+  ["apex www slash selected duplicate", sitemap([sale, sale.replace("www.", "") + "/"])],
+] as const) {
+  test(`targeted scope filtering still refuses ${name} before detail dispatch`, async t => {
+    const header = context(); const evidence = await setup(t, header, inventory);
+    const result = await run([seed()], header);
+    assert.deepEqual(result.listings, []);
+    assert.deepEqual(evidence.requested, [sitemapUrl]);
+  });
+}
+
+test("mixed-case property routes retain strict query refusal before scope filtering", async t => {
+  const header = context();
+  const mixed = sale.replace("/properties/", "/Properties/") + "?tracking=1";
+  const evidence = await setup(t, header, sitemap([sale, mixed]));
+  const result = await run([seed()], header);
+  assert.deepEqual(result.listings, []);
+  assert.deepEqual(evidence.requested, [sitemapUrl]);
+});
+
+test("targeted inventory reader retains supported mixed-case property routes", async t => {
+  const header = context();
+  const mixed = sale.replace("/properties/", "/Properties/");
+  const evidence = await setup(t, header, sitemap([mixed]));
+  const result = await matthewsFreshInventory(true);
+  assert.deepEqual(result.detailUrls, [mixed]);
+  assert.deepEqual(evidence.requested, [sitemapUrl]);
 });

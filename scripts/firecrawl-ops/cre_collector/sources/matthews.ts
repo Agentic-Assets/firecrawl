@@ -783,8 +783,11 @@ export async function matthewsFreshInventory(targeted = false): Promise<{
       if (!raw || !raw.startsWith("https://")) continue;
       const rawUrl = new URL(raw);
       if (
+        rawUrl.hostname.toLowerCase().replace(/^www\./, "") !== "matthews.com"
+        || !/^\/properties\//i.test(rawUrl.pathname)
+      ) continue;
+      if (
         rawUrl.protocol !== "https:"
-        || rawUrl.hostname.toLowerCase().replace(/^www\./, "") !== "matthews.com"
         || rawUrl.username || rawUrl.password || rawUrl.port || rawUrl.search || rawUrl.hash
       ) throw new Error("Matthews targeted: invalid raw sitemap location authority");
       const normalized = normalizedMatthewsPropertyUrl(raw, MATTHEWS_HOST);
