@@ -532,8 +532,11 @@ root=Path(sys.argv[2])
 with SeriesOwnershipLock(root/'.series.lock') as lock:
     owner=SeriesControl(root, lock, 600)
     with owner.handlers():
-        owner.publish_running()
         try:
+            owner.publish_running()
+            # The parent may stop immediately after the flushed readiness hint.
+            # Keep that post-publication interval inside the real signal handler.
+            time.sleep(0.1)
             while True: time.sleep(0.01)
         except SeriesWorkStopped:
             owner.finish('interrupted')
