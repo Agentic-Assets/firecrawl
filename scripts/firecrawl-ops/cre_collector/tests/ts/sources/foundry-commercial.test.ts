@@ -207,10 +207,10 @@ test("Foundry asset URLs preserve benign queries and reject unsafe or sensitive 
 
 test("Foundry emitted provider IDs must be unique", () => {
   assert.doesNotThrow(() =>
-    assertFoundryUniqueProviderIds([{ id: "1" }, { id: "2" }])
+    assertFoundryUniqueProviderIds([{ id: "property/first", foundryPostId: "1" }, { id: "property/second", foundryPostId: "2" }])
   );
   assert.throws(
-    () => assertFoundryUniqueProviderIds([{ id: "1" }, { id: "1" }]),
+    () => assertFoundryUniqueProviderIds([{ id: "property/first", foundryPostId: "1" }, { id: "property/second", foundryPostId: "1" }]),
     /duplicate provider ID 1/
   );
 });
@@ -428,7 +428,8 @@ test("Foundry parser combines stable identity, JSON-LD, and provider DOM without
   });
   assert.equal(outcome.kind, "accepted");
   if (outcome.kind !== "accepted") return;
-  assert.equal(outcome.listing.id, "23716");
+  assert.equal(outcome.listing.id, "property/offices-at-wade-park-wade-ii");
+  assert.equal(outcome.listing.foundryPostId, "23716");
   assert.equal(outcome.listing.name, "Offices at Wade Park | Wade II");
   assert.equal(outcome.listing.transactionType, "Lease");
   assert.equal(outcome.listing.assetType, "Office");
@@ -580,7 +581,8 @@ test("Foundry source holds unknown status, marks coverage incomplete, and never 
   const result = await srcFoundryCommercial("sale", Infinity, false);
   assert.equal(result.totalAvailable, 2);
   assert.equal(result.listings.length, 1);
-  assert.equal(result.listings[0].id, "30001");
+  assert.equal(result.listings[0].id, "property/active-sale");
+  assert.equal(result.listings[0].foundryPostId, "30001");
   assert.equal(result.truncated, true);
   assert.match(result.note ?? "", /1 detail page\(s\) held/);
   assert.equal(calls.some((url) => /\.pdf(?:$|[?#])/i.test(url)), false);
