@@ -293,9 +293,15 @@ $reviewedSha = '<approved deployed 40-character SHA>'
 
 The foreground wrapper defaults shared acquisition `-Concurrency` to 1 and
 accepts an explicit 1–6 for series only; adapters retain their own caps/pacing.
-JLL/JLL Investor/Cushman detail and NAI enumeration concurrency stay 1, and
-the reviewed Colliers Coveo path uses
-detail concurrency 1, a 3000 ms start interval and 60000 ms challenge cooldown.
+The default and explicit `1` retain JLL/JLL Investor detail concurrency 1;
+explicit `2`–`6` select detail concurrency 2 for those adapters. This bounded
+mapping retains rendered transport and wait times and enables a supervised C2
+trial; it is not live capacity or throughput acceptance. JLL and JLL Investor
+share one acquisition exclusion lane, so pipeline mode does not collect them
+simultaneously. Brokerage slots and per-source detail requests are separate.
+Cushman detail and NAI enumeration remain 1. The reviewed Colliers Coveo path
+retains detail concurrency 1, a 3000 ms start interval and 60000 ms challenge
+cooldown.
 It pins page cap 400, three attempts per source and zero CPU recovery replays.
 The coordinator inherits caller priority; canonical `--nice 15` adds 15 to
 each checkpoint child's inherited nice value (15 from an ordinary nice-0

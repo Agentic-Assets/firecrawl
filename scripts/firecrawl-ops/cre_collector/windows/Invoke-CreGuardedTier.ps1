@@ -698,7 +698,7 @@ try {
         if ($Tier -eq 'series') {
             $arguments = @('-d', $Distro, '-u', $LinuxUser, '--exec', 'env',
                 'FIRECRAWL_API_URL=http://127.0.0.1:3002',
-                'JLL_DETAIL_CONCURRENCY=1', 'JLL_INVESTOR_DETAIL_CONCURRENCY=1',
+                "JLL_DETAIL_CONCURRENCY=$([Math]::Min($Concurrency, 2))", "JLL_INVESTOR_DETAIL_CONCURRENCY=$([Math]::Min($Concurrency, 2))",
                 'CUSHMAN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_COVEO_ENABLE=1',
                 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000',
                 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1',
