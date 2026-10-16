@@ -90,7 +90,7 @@ foreach ($creParameter in $creFunction[0].Body.ParamBlock.Parameters) {
 }
 Assert-CreReadiness ($creDefaults.BudgetSeconds -eq 90 -and $creDefaults.RequestTimeoutMilliseconds -eq 2000 -and $creDefaults.Endpoint -ceq 'http://127.0.0.1:3002/') 'Production defaults must retain the fixed endpoint and 90-second/2-second bounds.'
 $creProductionCalls=@($creAst.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Wait-CreLocalApi' },$true))
-Assert-CreReadiness ($creProductionCalls.Count -eq 1 -and $creProductionCalls[0].CommandElements.Count -eq 1) 'The actual launcher must use fixed readiness defaults without a public endpoint override.'
+Assert-CreReadiness ($creProductionCalls.Count -eq 1 -and $creProductionCalls[0].Extent.Text -ceq 'Wait-CreLocalApi -BudgetSeconds $remaining') 'The startup gate may only shorten the fixed readiness budget; endpoint/request defaults remain fixed.'
 foreach ($creOverrides in @(@{BudgetSeconds=91},@{RequestTimeoutMilliseconds=2001},@{RetryDelayMilliseconds=1001})) {
     $creRefused=$false
     try { Wait-CreLocalApi @creOverrides | Out-Null } catch { $creRefused=$true }

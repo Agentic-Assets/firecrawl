@@ -12,8 +12,9 @@ $assignments = @($ast.FindAll({
     $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
         $node.Left.Extent.Text -eq '$wsl'
 }, $true))
-if ($assignments.Count -ne 1) { throw 'Expected one WSL executable resolution.' }
-$expression = [ScriptBlock]::Create($assignments[0].Right.Extent.Text)
+if ($assignments.Count -ne 2) { throw 'Expected dispatch and read-only summary WSL executable resolutions.' }
+foreach ($assignment in $assignments) {
+$expression = [ScriptBlock]::Create($assignment.Right.Extent.Text)
 
 foreach ($count in @(1, 2)) {
     & {
@@ -40,4 +41,5 @@ foreach ($count in @(1, 2)) {
     try { & $expression | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw 'Missing WSL must fail closed.' }
 } $expression
-Write-Output 'PowerShell launcher resolution: PASS (one path, two paths, missing executable)'
+}
+Write-Output 'PowerShell launcher resolution: PASS (dispatch + read-only summary; one path, two paths, missing executable)'
