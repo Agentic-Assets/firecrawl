@@ -74,11 +74,23 @@ for(const fault of ["missingCanonical","conflictingTenure","duplicateNative","un
     if(fault==="missingCanonical"&&index===0)body=body.replace(/<link rel="canonical"[^>]+>/,"");
     if(fault==="conflictingTenure"&&index===0)body=body.replace('class="title-about">Sale<','class="title-about">Lease<');
     if(fault==="duplicateNative")body=body.replace(/\?p=\d+/,"?p=50000");
-    if(fault==="unknownBoth"&&index===0)body=body.replace('class="title-about">Sale<','class="title-about"><');
+    if(fault==="unknownBoth"&&index===3)body=body.replace('class="title-about">Sale<','class="title-about"><');
    }
-   return new Response(body);
+   return new Response(body+"<!--PRIVATE_BODY_SENTINEL-->");
   };
-  await assert.rejects(srcDaumCommercial("sale",Infinity,false));
+  await assert.rejects(srcDaumCommercial("sale",Infinity,false),(error:unknown)=>{
+   assert.ok(error instanceof Error);
+   if(fault==="unknownBoth"){
+    assert.match(error.message,/DAUM strict proof has unresolved tenure/);
+    assert.match(error.message,/postId=50003; ordinal=4\/100; inventoryTenure=unknown; inventoryTextPresent=false; detailTenure=unknown; detailTextPresent=false/);
+   }
+   if(fault==="conflictingTenure"){
+    assert.match(error.message,/detail tenure lease disagrees with inventory tenure sale/);
+    assert.match(error.message,/postId=50000; ordinal=1\/100; inventoryTenure=sale; inventoryTextPresent=true; detailTenure=lease; detailTextPresent=true/);
+   }
+   if(fault==="unknownBoth"||fault==="conflictingTenure")assert.doesNotMatch(error.message,/<html|Synthetic-|https?:|PRIVATE_BODY_SENTINEL/);
+   return true;
+  });
   const failedPosts=posts;broken=false;
   const result=await srcDaumCommercial("lease",Infinity,false);
   assert.equal(result.currentInventoryProof?.schema,"daum-strict-detail-v1");

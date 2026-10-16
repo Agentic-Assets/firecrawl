@@ -851,7 +851,14 @@ async function completeDaumCohort(key: string, transport: DaumPoliteTransport): 
     const observedAt = observationNow();
     const detail = parseDaumDetail(html, inventory.url);
     if (detail.observedCanonicalUrl !== inventory.url) throw new Error("DAUM strict proof requires observed canonical identity");
-    if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown") throw new Error("DAUM strict proof has unresolved tenure");
+    try {
+      if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown") throw new Error("DAUM strict proof has unresolved tenure");
+    } catch (error) {
+      if (error instanceof Error) {
+        error.message += ` [postId=${detail.postId}; ordinal=${details.length + 1}/${snapshot.rows.length}; inventoryTenure=${inventory.tenure}; inventoryTextPresent=${Boolean(inventory.tenureText)}; detailTenure=${detail.tenure}; detailTextPresent=${Boolean(detail.tenureText)}]`;
+      }
+      throw error;
+    }
     details.push({ inventory, detail, observedAt, bodySha256: textSha256(html) });
   }
   assertDaumUniqueProviderIds(details.map(row => ({ id: daumListingId(row.inventory.url), daumPostId: row.detail.postId })));
