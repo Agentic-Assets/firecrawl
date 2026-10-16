@@ -48,8 +48,10 @@ never the runtime checkout or its worktrees. Follow the dependency-complete
 
 Use `cre_checkpoint_refresh.py` for an operator-requested full refresh. It
 collects, validates, gates, and dry-runs each source into a resumable manifest.
-It stops on the first non-`ok` source gate, runs one aggregate gate over the
-complete prepared artifact set, and only then begins additive live ingest. The
+Default serial mode stops on a refused source gate and requires the complete
+prepared artifact set to pass its aggregate gate before additive live ingest.
+Opt-in pipeline mode applies those gates to each sealed unit before its serial
+writes and full audit, while other sources may collect. The
 monolithic `cre_daily_update.sh` is a legacy backstop, not the proof path for a
 source-fresh detail sweep or a new Windows schedule. For explicit-source,
 bounded inventory/enrichment trials, see the
@@ -59,7 +61,7 @@ Scheduling and full-source acceptance remain separately gated.
 ### Opt-in stage overlap
 
 The same foreground pipeline runs on macOS and Linux/WSL. Serial behavior is
-still the default on both hosts. Opt in with `--pipeline`; its one acquisition
+still the default on both hosts. Opt in with `--pipeline`; its brokerage-slot
 setting is `--source-workers` (1–4, default 2). Changing this setting changes
 collection capacity only. Database transactions remain serial.
 
@@ -75,8 +77,10 @@ This example performs additive database writes when run. Use an explicitly
 approved finite source selection and reviewed clean SHA. Every source requiring
 current-inventory admission needs its own repeated exact key. Family names and
 `all` never grant admission. Existing historical-baseline certificates retain
-all existing requirements. Resume with the identical source order, pipeline
-flag, worker setting, admissions, target and generation.
+all existing requirements. Serial resume requires the identical source order,
+worker setting, admissions, target and generation. Once pipeline state is
+recorded, `--resume` refuses mixed-stage replay; settle and reconcile the exact
+generation and any uncertain writes before deciding the next invocation.
 
 One refresh owner keeps collecting while owned artifact inspection and database
 commands wait. Buildout shares one acquisition lane; existing JLL/CBRE family
@@ -102,6 +106,8 @@ The manifest records sealed membership, audit report bindings and exact
 that same refresh run; partial completion cannot publish all-source last-good
 health. `cre_series_status.py` exposes stage counts and the resolved worker
 setting. Terminal Slack messages report only qualified brokerage counts.
+Supported inventory-only index records are counted separately; they do not
+increase property-listing or sale/lease totals or claim refreshed parent details.
 No scheduler or Mac configuration is activated by selecting this mode.
 
 For concise scheduled-run messages, see [Slack setup](slack-setup.md). It owns
@@ -127,7 +133,7 @@ python3 cre_checkpoint_refresh.py \
   --sources svn,lee-associates,franklin-street \
   --env-file "$HOME/.config/cre/equire.env"
 
-# Resume the exact run after interruption. Keep the same source list, page cap,
+# Resume the exact serial run after interruption. Keep the same source list, page cap,
 # concurrency, source-worker count, attempts, collector SHA, and environment:
 python3 cre_checkpoint_refresh.py \
   --resume out/checkpoint-refresh/<run-id> \
@@ -245,8 +251,9 @@ before starting a fresh generation so performance diagnostics can bind to the
 actual publication; do not relax the runtime identity check or rewrite an
 existing generation to hide missing evidence.
 
-This is a safe stop with an exact resume point, not a background monitor or an
-automatic pause/resume service. `logs/host-cpu-guard.jsonl` records samples;
+This is a safe stop, not a background monitor or an automatic pause/resume
+service. Serial mode retains an exact resume point; pipeline mode requires
+[exact-generation reconciliation](#opt-in-stage-overlap) before another invocation. `logs/host-cpu-guard.jsonl` records samples;
 `logs/cpu-incidents.jsonl` records one best-effort, sanitized process and
 container snapshot when a high window begins. Incident capture is evidence
 only; the watchdog makes the stop decision.
@@ -878,8 +885,15 @@ generation-backed inventory/property-detail contract described below. A
 stops at `gate_blocked`. Neither state reaches dry-run or live ingest through
 the ordinary baseline-backed route. The explicit, source-specific
 [current-inventory admission](#opt-in-stage-overlap) can admit supported
-Interra/Buildout sources with complete fresh proof and an absent baseline;
+Interra/Buildout and DAUM sources with complete fresh proof and an absent baseline;
 it does not waive a hold for a source with an existing baseline.
+
+DAUM's `--admit-current-inventory-source daum-commercial` remains singleton
+in serial mode; pipeline mode may combine its exact admitted source entry with
+ordinary sources. It still requires uncapped sale+lease, two consecutive complete
+matching public POST inventories, every fresh canonical detail and at least 100
+unique staged identities. Raw `first_seen`, baseline absence, namespace guards
+and full audit/readback remain mandatory; see [the source contract](sources/CLAUDE.md).
 
 Essex's explicit singleton `--admit-current-inventory-source essex-realty`
 (`-AdmitCurrentInventorySource essex-realty` on the native series launcher) uses
@@ -1199,8 +1213,12 @@ For an ingest that exits zero but fails generation acceptance, see
 It separates missing identities from provenance lost during staging and explains
 why a corrective replay differs from an ordinary checkpoint resume.
 
+The following resume and parent-reconciliation procedure applies to serial
+runs only. Recorded pipeline state refuses mixed-stage replay; follow the
+[stage-overlap recovery contract](#opt-in-stage-overlap) instead.
+
 The manifest records `ingesting` before launching a live write. If execution
-stops in that window, resume performs a generation-exact database readback and
+stops in that window, serial resume performs a generation-exact database readback and
 never automatically replays an ambiguous ingest. Recovery distinguishes an
 exact committed generation from an exact rollback: rollback requires both zero
 rows for the expected generation and zero scrape jobs for the immutable

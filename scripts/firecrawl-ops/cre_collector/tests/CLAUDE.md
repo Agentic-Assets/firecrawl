@@ -2,11 +2,19 @@
 
 ## Most Critical Rule
 
-**Pure-transform, no-network tests only.** Import and call real functions from `cre_ingest.py`, `cre_gate.py`, and `cre_monitor.py`. No live DB, Supabase, or Firecrawl. Use synthetic JSON and temp files unless a file header says otherwise.
+**No live providers, production DB, Supabase or Firecrawl calls.** Prefer pure
+transforms with real production functions and synthetic JSON/temp files. Owned
+loopback-server fixtures and the explicit disposable PostgreSQL contracts below
+are separate supported test boundaries.
 
 **Observe-only SQL invariant:** `build_write_sql` (`cre_monitor.py`) and `build_baseline_sql` (`cre_gate.py`) must never assign `cre_listings.status` or `cre_listings.deleted_at`. Tests grep generated SQL (non-comment lines) to enforce this. `cre_ingest.py` mark-missing SQL is out of scope here.
 
 **Re-implementation rule:** Do not duplicate production logic in assertions. Exception: `test_enum_key_invariant.py` defines `monitor_enum_key()` as the explicit contract mirror for enumeration id vs `to_row().external_id`.
+
+For offline collector subprocesses, prove that the injected transport is used
+before importing or invoking the real source. Where an unsupported test hook
+could fall back to live transport, install a deny-network preload before imports.
+Keep intentional owned-loopback fixtures outside blanket socket denial.
 
 For website or provider variations, build fixtures from sanitized, genuinely
 observed responses and call the real mapper and verifier. Cover supported
@@ -115,8 +123,10 @@ authoritative current set rather than trusting this table.
 
 ## TypeScript unit tests (`tests/ts/`)
 
-**Pure-transform, no-network tests only.** Import and call real functions from
-`lib/`, `sources/`, or `types.ts`. No live Firecrawl, no `collect.ts` E2E runs.
+Prefer pure transforms calling real functions from `lib/`, `sources/`, or
+`types.ts`. Owned loopback fixtures and contained `collect.ts` subprocess
+regressions with verified injected transports are supported. No live providers
+or Firecrawl calls; preserve the transport-containment rules above.
 
 **Import gotcha:** `lib/config.ts` runs `parseArgs()` at import time from
 `process.argv`. Tests that need scrape/util helpers without CLI side effects

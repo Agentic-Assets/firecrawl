@@ -274,8 +274,10 @@ python3 cre_ingest.py --in /tmp/interra-probe.json --dry-run
 ```
 
 For a supervised high-volume refresh, do not invoke `cre_daily_update.sh`
-directly. Apply the resource profile, recreate `api` and `playwright-service`,
-then use the CPU-guarded checkpoint-series procedure in `START_HERE.md`.
+directly. Verify the existing reviewed resource profile and readiness, then
+follow the checkpoint-series procedure in `START_HERE.md` (the native wrapper
+on Windows). Resource changes and container recreation are separate operator
+actions, not a required step before every refresh.
 Do **not** load launchd schedules on the dev machine; scheduling belongs on the
 approved target host.
 
@@ -297,7 +299,7 @@ approved target host.
 
 ## Related docs
 
-- `START_HERE.md` - live counts, per-source status, current run state
+- `START_HERE.md` - runtime and source procedures; current execution evidence lives on AGENTIC-2902
 - `CLAUDE.md` - collector/ingestor reference
 - `launchd/README.md` - tier gates, install, logs, portable-lock model
 - `cre_status.sh` - read-only run-health heartbeat (schedules, staleness, last-run verdict, stack/env/TCC)
