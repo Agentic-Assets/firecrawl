@@ -44,9 +44,9 @@ $series = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDea
 $quotedRepo = '/home/synthetic space/quote''s "directory"/firecrawl'
 $quotedEnv = '/tmp/synthetic space/quote''s "env".env'
 $cases = @(
-    @{ Name = 'essex-current'; Args = @('-Tier', 'series', '-Source', 'essex-brokerage', '-AdmitCurrentInventorySource', 'essex-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
-    @{ Name = 'essex-wrong-source'; Args = @('-Tier', 'series', '-Source', 'hanley', '-AdmitCurrentInventorySource', 'essex-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
-    @{ Name = 'essex-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'essex-brokerage', '-AdmitCurrentInventorySource', 'essex-brokerage', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
+    @{ Name = 'essex-current'; Args = @('-Tier', 'series', '-Source', 'essex-realty', '-AdmitCurrentInventorySource', 'essex-realty', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
+    @{ Name = 'essex-wrong-source'; Args = @('-Tier', 'series', '-Source', 'hanley', '-AdmitCurrentInventorySource', 'essex-realty', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
+    @{ Name = 'essex-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'essex-realty', '-AdmitCurrentInventorySource', 'essex-realty', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
     @{ Name = 'pyramid-current'; Args = @('-Tier', 'series', '-Source', 'pyramid-brokerage', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'pyramid-wrong-source'; Args = @('-Tier', 'series', '-Source', 'hanley', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'pyramid-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'pyramid-brokerage', '-AdmitCurrentInventorySource', 'pyramid-brokerage', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
