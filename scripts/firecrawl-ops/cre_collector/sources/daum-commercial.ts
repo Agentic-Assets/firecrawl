@@ -598,7 +598,7 @@ export class DaumPoliteTransport {
 }
 
 export function daumSnapshotIdentitySignature(rows: DaumInventoryRow[]): string {
-  return rows.map((row) => `${row.url}\t${row.tenure}`).join("\n");
+  return rows.map((row) => `${row.url}\t${row.tenure}`).sort().join("\n");
 }
 
 export function assertDaumUniqueProviderIds(listings: Array<{ id?: unknown; daumPostId?: unknown }>): void {
