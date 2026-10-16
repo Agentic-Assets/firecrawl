@@ -58,6 +58,10 @@ import { firecrawl } from "../../../lib/scrape.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dir = dirname(__filename);
 const FIXTURE_PATH = join(__dir, "../../fixtures/raw_data/avison-young.json");
+const SHARP_LAUNCH_LAYOUT_FIXTURE_PATH = join(
+  __dir,
+  "../../fixtures/raw_data/avison-young-sharplaunch-detail.html"
+);
 
 /** Load the avison-young.json fixture (array of {external_id, rawSharpLaunch} blobs). */
 function loadFixture(): Array<{ external_id: string; rawSharpLaunch: any }> {
@@ -778,6 +782,177 @@ test("Avison detail admission rejects challenge and wrong-property shells", () =
   );
 });
 
+test("Avison recognizes the observed SharpLaunch property layout only with bound visible identity", () => {
+  const rawHtml = readFileSync(SHARP_LAUNCH_LAYOUT_FIXTURE_PATH, "utf8");
+  const nativeUrl = "https://fixture-property.sharplaunch.com";
+  const base = {
+    id: "fixture-59679",
+    name: "Fixture Commerce Center",
+    street: "159 Example Street",
+    city: "Brooklyn",
+    state: "NY",
+    zip: "11206",
+    sharpLaunchUrl: nativeUrl,
+  };
+  const nativeDoc = {
+    ...doc(rawHtml),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, base)
+  );
+
+  const olderRecognizedNativePage = {
+    ...doc(
+      "<html><main class=\"property-detail\"><h1>Fixture Commerce Center</h1>" +
+        "<p>159 Example Street, Brooklyn, NY</p></main></html>"
+    ),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.doesNotThrow(() =>
+    assertAvisonYoungDetailDoc(olderRecognizedNativePage, nativeUrl, base)
+  );
+
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        name: "Different Property",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        street: "900 Other Avenue",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        city: "Queens",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        state: "NJ",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, nativeUrl, {
+        ...base,
+        street: "",
+      }),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc(rawHtml.replace(
+            "<h1>Fixture Commerce Center</h1>",
+            "<h1>Fixture Commerce Center</h1><h1>Other Property</h1>"
+          )),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(nativeDoc, "https://other.sharplaunch.com", base),
+    /identity/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        nativeDoc,
+        "https://fixture-property.sharplaunch.com",
+        { ...base, sharpLaunchUrl: "https://fixture-property.avisonyoung.us" }
+      ),
+    /identity/
+  );
+
+  const incompleteNativeTemplate = {
+    ...doc(rawHtml.replaceAll("availability-card-v2", "unrelated-card")),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.throws(
+    () => assertAvisonYoungDetailDoc(incompleteNativeTemplate, nativeUrl, base),
+    /structure/
+  );
+
+  const unrelatedTemplate = {
+    ...doc(rawHtml.replaceAll("building__property-info-box", "unrelated-info-box")
+      .replaceAll("availability-card-v2", "unrelated-card")
+      .replaceAll("<main>", "<div>").replaceAll("</main>", "</div>")),
+    metadata: { sourceURL: nativeUrl, statusCode: 200 },
+  };
+  assert.throws(
+    () => assertAvisonYoungDetailDoc(unrelatedTemplate, nativeUrl, base),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><h1>Fixture Commerce Center</h1><div>Provider template</div></html>"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><body><h1>Fixture Commerce Center</h1><section"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /structure/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc(rawHtml),
+          metadata: { sourceURL: nativeUrl, statusCode: 404 },
+        },
+        nativeUrl,
+        base
+      ),
+    /HTTP 404/
+  );
+  assert.throws(
+    () =>
+      assertAvisonYoungDetailDoc(
+        {
+          ...doc("<html><title>Just a moment...</title><div>captcha</div></html>"),
+          metadata: { sourceURL: nativeUrl, statusCode: 200 },
+        },
+        nativeUrl,
+        base
+      ),
+    /challenge or error shell/
+  );
+});
+
 test("Avison direct detail transport captures current HTML, links, images, and identity metadata", async (t) => {
   const url =
     "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease";
@@ -1031,6 +1206,54 @@ test("strict Avison detail scrape is uncached, complete, and generation-bound", 
   assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
   assert.equal(listing.preserveChildCollections, undefined);
   assert.equal(listing.detailError, undefined);
+});
+
+test("strict Avison still fetches and validates both SharpLaunch and external detail URLs", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: string[] = [];
+  const nativeUrl = "https://fixture-property.sharplaunch.com";
+  const externalUrl = "https://www.avisonyoung.us/properties/fixture-commerce-center";
+  const rawSharpLaunchHtml = readFileSync(SHARP_LAUNCH_LAYOUT_FIXTURE_PATH, "utf8");
+  (firecrawl as any).scrape = async (url: string) => {
+    calls.push(url);
+    return {
+      rawHtml: url === nativeUrl
+        ? rawSharpLaunchHtml
+        : "<html><main class=\"property-detail\"><h1>Fixture Commerce Center</h1>" +
+          "<p>159 Example Street, Brooklyn, NY</p></main></html>",
+      markdown: "# Fixture Commerce Center\n159 Example Street, Brooklyn, NY",
+      links: [],
+      metadata: { sourceURL: url, statusCode: 200 },
+    };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "avison-all-detail-urls-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+
+  const enriched = await enrichAvisonYoungListing(
+    {
+      id: "fixture-59679",
+      name: "Fixture Commerce Center",
+      street: "159 Example Street",
+      city: "Brooklyn",
+      state: "NY",
+      sharpLaunchUrl: nativeUrl,
+      externalUrl,
+    },
+    true
+  );
+
+  assert.deepEqual(calls, [nativeUrl, externalUrl]);
+  assert.equal(enriched.detailError, undefined);
+  assert.equal(enriched.preserveChildCollections, undefined);
 });
 
 test("degraded non-strict detail refresh preserves prior child collections", async (t) => {

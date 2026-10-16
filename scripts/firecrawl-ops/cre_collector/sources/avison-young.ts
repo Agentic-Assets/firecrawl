@@ -255,6 +255,73 @@ export function assertAvisonYoungDetailDoc(
     .filter((value): value is string => Boolean(value && value.length >= 4))
     .map((value) => value.toLowerCase());
   const contentMatches = identityValues.some((value) => bodyText.includes(value));
+  const sharpLaunchUrl = avisonYoungAbsoluteUrl(base?.sharpLaunchUrl);
+  let requestedSharpLaunchMatch = false;
+  let requestedOnSharpLaunchHost = false;
+  if (requested) {
+    try {
+      const requestedParsed = new URL(requested);
+      requestedOnSharpLaunchHost =
+        requestedParsed.protocol === "https:"
+        && requestedParsed.hostname.toLowerCase().endsWith(".sharplaunch.com");
+      if (sharpLaunchUrl) {
+        const sharpLaunchParsed = new URL(sharpLaunchUrl);
+        requestedSharpLaunchMatch =
+          requestedOnSharpLaunchHost
+          && requestedParsed.hostname.toLowerCase()
+            === sharpLaunchParsed.hostname.toLowerCase()
+          && requestedParsed.pathname.replace(/\/+$/, "").toLowerCase()
+            === sharpLaunchParsed.pathname.replace(/\/+$/, "").toLowerCase();
+      }
+    } catch {
+      requestedSharpLaunchMatch = false;
+      requestedOnSharpLaunchHost = false;
+    }
+  }
+
+  const headingText = $("h1, h2").map((_index, element) =>
+    clean($(element).text())?.toLowerCase() ?? ""
+  ).get();
+  const hasSharpLaunchBuildingLayout = Boolean(
+    $(".building__property-info-box").length > 0
+    && $(".availability-card-v2").length > 0
+    && headingText.includes("building")
+    && headingText.includes("availabilities")
+  );
+  if (hasSharpLaunchBuildingLayout) {
+    const visibleName = clean(base?.name)?.toLowerCase() ?? "";
+    const visibleStreet = clean(base?.street)?.toLowerCase() ?? "";
+    const visibleCity = clean(base?.city)?.toLowerCase() ?? "";
+    const visibleState = clean(base?.state)?.toLowerCase() ?? "";
+    const visibleHeading = clean($("h1").first().text())?.toLowerCase() ?? "";
+    const visibleIdentityMatches =
+      $("h1").length === 1
+      && Boolean(visibleName && visibleStreet && visibleCity && visibleState)
+      && visibleHeading === visibleName
+      && bodyText.includes(visibleStreet)
+      && headingText.includes(visibleCity + ", " + visibleState);
+
+    if (!requestedSharpLaunchMatch || !urlMatches || !visibleIdentityMatches) {
+      throw new Error(
+        "Avison Young detail identity does not match the requested property"
+      );
+    }
+    return listing;
+  }
+
+  const hasPartialSharpLaunchBuildingMarkers =
+    $(".building__property-info-box").length > 0
+    || $(".availability-card-v2").length > 0;
+  if (
+    requestedOnSharpLaunchHost
+    && requestedSharpLaunchMatch
+    && !listing
+    && hasPartialSharpLaunchBuildingMarkers
+    && !hasSharpLaunchBuildingLayout
+  ) {
+    throw new Error("Avison Young detail structure was not recognized");
+  }
+
   const hasStructure = Boolean(
     listing
     || (
@@ -267,7 +334,10 @@ export function assertAvisonYoungDetailDoc(
       )
     )
   );
-  if (!hasStructure || (!urlMatches && !contentMatches)) {
+  if (!hasStructure) {
+    throw new Error("Avison Young detail structure was not recognized");
+  }
+  if (!urlMatches && !contentMatches) {
     throw new Error(
       "Avison Young detail identity does not match the requested property"
     );
