@@ -112,6 +112,24 @@ def compute_root(path: Path) -> Path:
     return _COMPUTE_ROOT.get() or path.parent
 
 
+@contextmanager
+def artifact_compute_scope(root: Path) -> Iterator[None]:
+    """Isolate pure inspection for an already-held owner, without polling work.
+
+    This scope conveys no lock or database authority. Worker subprocesses and
+    unscoped offline callers retain local computation, preventing recursion.
+    """
+    token = _COMPUTE_ROOT.set(root)
+    try:
+        yield
+    finally:
+        _COMPUTE_ROOT.reset(token)
+
+
+def artifact_compute_enabled() -> bool:
+    return _COMPUTE_ROOT.get() is not None or poll_hook() is not None
+
+
 def run_artifact_compute(root: Path, action: str, arguments: dict) -> dict:
     """Run pure heavy work in one owned subprocess; consume bounded metadata."""
     import cre_checkpoint_refresh as refresh
