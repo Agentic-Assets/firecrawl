@@ -27,6 +27,12 @@
 
 ## Integration & Gotchas
 
+- Hanley enrichment reuses the source's complete validated public inventory and
+  mapper, selects exact claimed native IDs and canonical URLs, and preserves
+  existing child collections. Ordinary enrichment records the actual feed
+  observation; it does not certify a full-source strict generation. Worker and
+  direct-ingest admission refuse generic/thin Hanley enrichment payloads.
+
 - One `broker.ts` table per `collect.ts` run across all sources.
 - Importing `config.ts` parses argv; tests needing scrape/util alone should avoid it.
 - `num()` drops zero; `parseJsonBody` handles Chrome JSON viewer and bad quotes.

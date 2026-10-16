@@ -1,12 +1,11 @@
 """Enrichment target binding must precede claims and survive child env drift."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
-import pytest
-
 import cre_enrich
+import pytest
 from cre_ingest import database_target_fingerprint_from_url
-
 
 URL = "postgresql://worker:private@db.example.test:5432/postgres"
 TARGET = database_target_fingerprint_from_url(URL)["value"]
@@ -53,7 +52,16 @@ def test_ingest_receives_same_expected_target(monkeypatch, tmp_path, ingest_rc):
     monkeypatch.setattr(
         cre_enrich,
         "_psql_query",
-        lambda *_: [("row1", "hanley", "id1", "https://example.test/1", "new", "0")],
+        lambda *_: [
+            (
+                "row1",
+                "hanley",
+                "id1",
+                "https://hanleyinvestmentgroup.com/listings/?id=id1",
+                "new",
+                "0",
+            )
+        ],
     )
     mutations = []
     monkeypatch.setattr(cre_enrich, "_psql_exec", lambda *a: mutations.append(a))
@@ -64,7 +72,21 @@ def test_ingest_receives_same_expected_target(monkeypatch, tmp_path, ingest_rc):
         if "collect.ts" in argv:
             payload = {
                 "runMeta": {"mode": "enrich"},
-                "listings": [{"sourceKey": "hanley", "url": "https://example.test/1"}],
+                "listings": [
+                    {
+                        "sourceKey": "hanley",
+                        "id": "id1",
+                        "url": "https://hanleyinvestmentgroup.com/listings/?id=id1",
+                        "canonicalUrl": "https://hanleyinvestmentgroup.com/listings/?id=id1",
+                        "preserveChildCollections": True,
+                        "rawHanley": {"id": "id1", "visibility": "Public"},
+                        "inventoryObservedAt": datetime.now(timezone.utc).isoformat(),
+                        "freshnessProvenance": {
+                            "detailScope": "authoritative_inventory_feed",
+                            "method": "hanley_embedded_inventory_feed",
+                        },
+                    }
+                ],
             }
             with open(argv[argv.index("--out") + 1], "w", encoding="utf-8") as handle:
                 json.dump(payload, handle)

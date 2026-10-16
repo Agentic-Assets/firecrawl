@@ -1655,6 +1655,56 @@ def _matthews_enrichment_preserves_collections(listing):
     return False
 
 
+def validate_hanley_enrichment_artifact(data, *, now=None):
+    """Ordinary Hanley refreshes retain children and source-backed identity.
+
+    This is not a strict-generation/full-source completion certificate.
+    """
+    run_meta = data.get("runMeta")
+    if not isinstance(run_meta, dict) or run_meta.get("mode") != "enrich":
+        return
+    latest_allowed = (now or datetime.now(timezone.utc)) + MAX_FUTURE_CLOCK_SKEW
+    for listing in data.get("listings") or []:
+        if not isinstance(listing, dict) or listing.get("sourceKey") != "hanley":
+            continue
+        raw = listing.get("rawHanley")
+        raw_id = raw.get("id") if isinstance(raw, dict) else None
+        identity = (
+            str(raw_id).strip()
+            if isinstance(raw_id, (str, int, float)) and not isinstance(raw_id, bool)
+            else ""
+        )
+        url = f"https://hanleyinvestmentgroup.com/listings/?id={identity}"
+        provenance = listing.get("freshnessProvenance")
+        if (
+            listing.get("preserveChildCollections") is not True
+            or not identity
+            or listing.get("id") != identity
+            or listing.get("url") != url
+            or listing.get("canonicalUrl") != url
+            or not str(raw.get("visibility") or "").strip().lower().startswith("public")
+            or not isinstance(provenance, dict)
+            or provenance.get("detailScope") != "authoritative_inventory_feed"
+            or provenance.get("method") != "hanley_embedded_inventory_feed"
+        ):
+            raise ValueError(
+                "Hanley enrichment requires child-preserving authoritative feed identity"
+            )
+        try:
+            observed = parse_strict_freshness_timestamp(
+                listing.get("inventoryObservedAt"),
+                field="Hanley enrichment inventoryObservedAt",
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Hanley enrichment requires an actual inventory observation: {exc}"
+            ) from exc
+        if observed > latest_allowed:
+            raise ValueError(
+                "Hanley enrichment inventory observation exceeds clock-skew allowance"
+            )
+
+
 def validate_strict_artifact_freshness(
     data,
     *,
@@ -1689,6 +1739,7 @@ def validate_strict_artifact_freshness(
             "does not assert requireFreshDetails=true"
         )
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    validate_hanley_enrichment_artifact(data, now=current)
     latest_allowed = current + MAX_FUTURE_CLOCK_SKEW
     for field in ("startedAt", "finishedAt"):
         value = run_meta.get(field) if isinstance(run_meta, dict) else None
