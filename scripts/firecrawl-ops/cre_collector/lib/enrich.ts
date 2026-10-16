@@ -35,6 +35,7 @@ import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-yo
 import { enrichMarcusListing } from "../sources/marcus-millichap.js";
 import { enrichMatthewsListing, enrichMatthewsTargetedBatch, validateMatthewsTargetedRefresh, type MatthewsTargetedRefresh } from "../sources/matthews.js";
 import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
+import { enrichHanleyListings } from "../sources/hanley.js";
 import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidder-mathews.js";
 import type { SourceKey } from "../types.js";
 
@@ -212,6 +213,8 @@ export const srsEnricher: SourceEnricher = {
   },
 };
 
+export const hanleyEnricher: SourceEnricher = { enrich: enrichHanleyListings };
+
 export const kidderMathewsEnricher: SourceEnricher = {
   async enrich(items: EnrichItem[]): Promise<any[]> {
     const { items: sourceRows } = await kidderFetchAll(Number.POSITIVE_INFINITY);
@@ -311,6 +314,7 @@ export const ENRICHERS: Partial<Record<SourceKey, SourceEnricher>> = {
   matthews: matthewsEnricher,
   "avison-young": avisonYoungEnricher,
   srs: srsEnricher,
+  hanley: hanleyEnricher,
   "kidder-mathews": kidderMathewsEnricher,
   ...REGISTERED_BUILDOUT_ENRICHERS,
 };

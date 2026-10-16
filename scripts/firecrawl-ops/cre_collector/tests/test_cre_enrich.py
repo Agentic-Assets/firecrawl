@@ -445,6 +445,7 @@ def test_enricher_set_includes_all_current_detail_source_paths():
     assert keys == {
         "colliers-main",
         "jll-investor",
+        "hanley",
         "svn",
         "lee-associates",
         "marcus-millichap",

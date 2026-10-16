@@ -86,6 +86,7 @@ from cre_ingest import (  # noqa: E402
     psql_connection_args,
     psql_connection_env,
     sql_lit,
+    validate_hanley_enrichment_artifact,
     validate_matthews_targeted_artifact,
     validate_matthews_targeted_claims,
     validate_strict_artifact_freshness,
@@ -469,6 +470,7 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
     listings = artifact.get("listings")
     if not isinstance(listings, list):
         raise ValueError("enriched artifact must contain a listings array")
+    validate_hanley_enrichment_artifact(artifact)
     claimed_by_url = {row.get("url"): row for row in claimed_rows if row.get("url")}
     safe = []
     seen_urls = set()
@@ -479,6 +481,11 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
             raise ValueError(f"enriched artifact URL was not claimed: {url!r}")
         if listing.get("sourceKey") != claimed.get("source_key"):
             raise ValueError(f"enriched artifact source key mismatch: {url!r}")
+        if (
+            listing.get("sourceKey") == "hanley"
+            and listing.get("id") != claimed.get("external_id")
+        ):
+            raise ValueError("Hanley enrichment native identity differs from its claim")
         if url in seen_urls:
             raise ValueError(f"enriched artifact contains duplicate URL: {url!r}")
         seen_urls.add(url)
