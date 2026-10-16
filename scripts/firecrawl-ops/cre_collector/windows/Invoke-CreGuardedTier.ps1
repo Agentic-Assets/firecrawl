@@ -374,6 +374,10 @@ function Get-CreVerifiedSummary {
                 if ($selectedSourceKeys -cnotcontains $entry.source_key -or
                     -not ($entry.verified_listings -is [int] -or $entry.verified_listings -is [long]) -or
                     $entry.verified_listings -lt 0 -or $entry.verified_listings -gt 500000) { return $null }
+                $inventoryProperty = $entry.PSObject.Properties['verified_inventory_only']
+                if ($null -ne $inventoryProperty -and
+                    (-not ($inventoryProperty.Value -is [int] -or $inventoryProperty.Value -is [long]) -or
+                     $inventoryProperty.Value -le 0)) { return $null }
                 $breakdownProperty = $entry.PSObject.Properties['transaction_breakdown']
                 if ($null -ne $breakdownProperty) {
                     $breakdown = $breakdownProperty.Value
@@ -416,6 +420,10 @@ function Get-CreVerifiedSummary {
     if ((Get-Variable -Name AdmitBaselineHoldAdditively -ValueOnly -ErrorAction SilentlyContinue) -and ($summary.PSObject.Properties['whole_source_coverage'] -eq $null -or
         $summary.whole_source_coverage -isnot [bool] -or $summary.whole_source_coverage -or
         $summary.PSObject.Properties['baseline_hold_retained'] -eq $null -or $summary.baseline_hold_retained -isnot [bool])) { return $null }
+    $inventoryProperty = $summary.PSObject.Properties['verified_inventory_only']
+    if ($null -ne $inventoryProperty -and
+        (-not ($inventoryProperty.Value -is [int] -or $inventoryProperty.Value -is [long]) -or
+         $inventoryProperty.Value -le 0)) { return $null }
     $breakdownProperty = $summary.PSObject.Properties['transaction_breakdown']
     if ($null -ne $breakdownProperty) {
         $breakdown = $breakdownProperty.Value
@@ -469,14 +477,19 @@ function Get-CreNotificationText {
             $firstMember = $false
             $broker = (Get-CreBrokerageName $entry.source_key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
             $count = ([long]$entry.verified_listings).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $scopeLabel = if ($null -ne $entry.PSObject.Properties['verified_inventory_only']) { 'property listings' } else { 'listings' }
             $breakdownProperty = $entry.PSObject.Properties['transaction_breakdown']
             if ($null -ne $breakdownProperty -and $null -ne $breakdownProperty.Value) {
                 $sale = ([long]$breakdownProperty.Value.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $lease = ([long]$breakdownProperty.Value.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $both = ([long]$breakdownProperty.Value.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
-                $lines += "$bullet *${broker}:* $count listings verified by database readback`n    *For sale:* $sale | *For lease:* $lease | *Both:* $both"
+                $lines += "$bullet *${broker}:* $count $scopeLabel verified by database readback`n    *For sale:* $sale | *For lease:* $lease | *Both:* $both"
             } else {
-                $lines += "$bullet *${broker}:* $count listings verified by database readback`n    *For sale / lease / both:* unavailable"
+                $lines += "$bullet *${broker}:* $count $scopeLabel verified by database readback`n    *For sale / lease / both:* unavailable"
+            }
+            if ($null -ne $entry.PSObject.Properties['verified_inventory_only']) {
+                $indexCount = ([long]$entry.verified_inventory_only).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                $lines += "    *Additional inventory:* $indexCount records checked separately; property details not refreshed."
             }
         }
         if ($members.Count -gt 20) {
@@ -518,8 +531,15 @@ function Get-CreNotificationText {
         if ($null -ne $Summary.PSObject.Properties['baseline_hold_retained'] -and $Summary.baseline_hold_retained -eq $true) {
             $coverageLine = "`n$bullet *Coverage:* historical baseline hold retained; additive refresh only."
         }
+        $inventoryLine = ''
+        $countLabel = 'Listings verified'
+        if ($null -ne $Summary.PSObject.Properties['verified_inventory_only']) {
+            $countLabel = 'Property listings verified'
+            $indexCount = ([long]$Summary.verified_inventory_only).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            $inventoryLine = "`n$bullet *Additional inventory:* $indexCount records checked separately; property details not refreshed."
+        }
         $success = [char]::ConvertFromUtf32(0x2705)
-        return "`n$success *$name | Completed*`n`n$bullet *Duration:* $duration`n$bullet *Listings verified:* $count unique properties`n$transactionLine`n$bullet *Database readback:* passed; no quality regression.$coverageLine"
+        return "`n$success *$name | Completed*`n`n$bullet *Duration:* $duration`n$bullet *${countLabel}:* $count unique properties`n$transactionLine`n$bullet *Database readback:* passed; no quality regression.$inventoryLine$coverageLine"
     }
     $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
     return "`n$warning *$name | Could not be verified*`n`n$bullet *Duration:* $duration`n$bullet Verified listing total and sale/lease counts are unavailable. Check the local CRE audit for details."

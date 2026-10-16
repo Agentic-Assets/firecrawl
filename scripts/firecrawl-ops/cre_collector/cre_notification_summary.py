@@ -39,6 +39,48 @@ def require(condition):
         raise SummaryUnavailable("verified summary unavailable")
 
 
+def _verified_inventory_only(source, artifact, readback, started_at):
+    """Qualify index entries separately; they never increase canonical counts."""
+    count = artifact.get("inventory_only")
+    require(type(count) is int and 0 <= count <= MAX_ARTIFACT_BINDING_BYTES)
+    index = readback.get("inventory_only")
+    if count == 0:
+        if index is not None:
+            require(
+                isinstance(index, dict)
+                and type(index.get("expected_active")) is int
+                and index["expected_active"] == 0
+                and index.get("ok") is True
+            )
+        return 0
+    from cre_source_policy import load_source_policy
+
+    policy = load_source_policy()[source]
+    require(
+        policy["inventory_only_namespace"] is not None
+        and readback.get("evidence_class") == policy["evidence_class"]
+        and artifact.get("path") == f"sources/{source}.json"
+        and isinstance(artifact.get("sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
+        and type(artifact.get("bytes")) is int
+        and artifact["bytes"] > 0
+        and isinstance(index, dict)
+        and index.get("ok") is True
+        and index.get("reason") is None
+    )
+    require(
+        all(
+            type(index.get(key)) is int and index[key] == count
+            for key in ("expected_active", "active", "latest_batch_active")
+        )
+    )
+    for key in ("latest_enumerated_at", "scope_watermark_at"):
+        require(
+            int(timestamp(started_at)) <= timestamp(index[key]) <= time.time() + 300
+        )
+    return count
+
+
 def _pipeline_admissions(config, selected_sources):
     """Validate the finite admitted subset without requiring every source admitted."""
     admissions = config.get("current_inventory_admissions")
@@ -416,14 +458,14 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             readback.get("ok") is True
             and readback.get("latest_inventory_batch_active") == count
         )
-        require(
-            artifact.get("staged_unique") == count
-            and artifact.get("inventory_only") == 0
-        )
+        require(artifact.get("staged_unique") == count)
         require(artifact.get("rejected_by_ingest") == 0)
         require(
             isinstance(readback.get("generation_id"), str)
             and readback["generation_id"] == run_id
+        )
+        inventory_only = _verified_inventory_only(
+            source, artifact, readback, child["started_at"]
         )
         transaction_started = time.monotonic()
         transaction_breakdown = None
@@ -534,9 +576,13 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
                 transaction_started,
             ),
         }
+        if inventory_only:
+            result["verified_inventory_only"] = inventory_only
         if config.get("admit_baseline_hold_additively") is True:
             result["whole_source_coverage"] = False
-            result["baseline_hold_retained"] = child.get("status") == "additive_scope_complete_coverage_hold"
+            result["baseline_hold_retained"] = (
+                child.get("status") == "additive_scope_complete_coverage_hold"
+            )
         if transaction_breakdown is not None:
             result["transaction_breakdown"] = transaction_breakdown
         return result
@@ -779,7 +825,14 @@ def verified_pipeline_summary(
             if result is None:
                 require(
                     parent_entry.get("state")
-                    in {"pending", "collecting", "candidate", "validated", "gated", "dry_run_passed"}
+                    in {
+                        "pending",
+                        "collecting",
+                        "candidate",
+                        "validated",
+                        "gated",
+                        "dry_run_passed",
+                    }
                 )
                 require(checkpoint.get("state") not in {"ingested", "complete"})
                 pending.append(source)
@@ -817,7 +870,12 @@ def verified_pipeline_summary(
                     unit_fd, "validation.json", limit=MAX_VALIDATION_REPORT_BYTES
                 )
                 snapshots.append(
-                    (unit_fd, "validation.json", MAX_VALIDATION_REPORT_BYTES, validation_raw)
+                    (
+                        unit_fd,
+                        "validation.json",
+                        MAX_VALIDATION_REPORT_BYTES,
+                        validation_raw,
+                    )
                 )
                 total_validation_bytes += len(validation_raw)
                 require(total_validation_bytes <= MAX_TOTAL_VALIDATION_REPORT_BYTES)
@@ -854,18 +912,22 @@ def verified_pipeline_summary(
                 and readback.get("generation_id") == run_id
                 and artifact.get("path") == f"sources/{source}.json"
                 and artifact.get("staged_unique") == count
-                and artifact.get("inventory_only") == 0
                 and artifact.get("rejected_by_ingest") == 0
             )
-            qualified.append((source, count, checkpoint, unit))
+            inventory_only = _verified_inventory_only(
+                source, artifact, readback, child["started_at"]
+            )
+            qualified.append((source, count, checkpoint, unit, inventory_only))
 
         for descriptor, name, limit, raw in snapshots:
             require(safe._read_at(descriptor, name, limit)[0] == raw)
 
         result_rows = []
         total_artifact_bytes = 0
-        for source, count, checkpoint, unit in qualified:
+        for source, count, checkpoint, unit, inventory_only in qualified:
             row = {"source_key": source, "verified_listings": count}
+            if inventory_only:
+                row["verified_inventory_only"] = inventory_only
             breakdown = None
             started_breakdown = time.monotonic()
             artifact = checkpoint["artifact"]
@@ -912,7 +974,12 @@ def verified_pipeline_summary(
                         limit=MAX_TRANSACTION_ARTIFACT_BYTES,
                     )
                     snapshots.append(
-                        (sources_fd, f"{source}.json", MAX_TRANSACTION_ARTIFACT_BYTES, raw)
+                        (
+                            sources_fd,
+                            f"{source}.json",
+                            MAX_TRANSACTION_ARTIFACT_BYTES,
+                            raw,
+                        )
                     )
                     require(observed.st_size == artifact_bytes)
                     require(hashlib.sha256(raw).hexdigest() == artifact_sha)

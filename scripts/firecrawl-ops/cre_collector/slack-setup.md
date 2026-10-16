@@ -143,8 +143,7 @@ Its read-only Linux helper checks safe owned files, matching series/child
 control identities, exact Windows admission timestamp, source and reviewed
 SHA, successful ingest, final query/readback and no-regression outcomes, and
 confirmed local process cleanup. Evidence must be stable and no more than five
-minutes past terminal control publication. Inventory-only mixtures and missing
-or zero canonical counts currently fall back to an unavailable summary.
+minutes past terminal control publication. Missing or zero canonical counts currently fall back to an unavailable summary.
 
 Optional **For sale** and **For lease** figures count unique canonical property
 IDs by their normalized staged `transaction_type`. Current producers compute
@@ -209,3 +208,5 @@ guaranteed outage-paging service.
 ## Pipeline terminal counts
 
 Opt-in pipeline invocations emit one terminal summary listing only brokerages whose sealed database unit passed the full audit and exact member readback. Partial terminal results name failed/pending counts and never claim all-source completion or sum brokerage counts into a global unique-property total. See [Start Here](START_HERE.md#opt-in-stage-overlap).
+
+Policy-supported inventory-only index entries are verified separately by their exact generation-bound readback. Canonical property totals and sale/lease counts exclude those entries; index entries make no parent-detail refresh claim. Missing or failed index evidence keeps the summary unavailable.
