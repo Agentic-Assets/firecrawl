@@ -198,7 +198,7 @@ def admit(
                 and url.netloc == HOST
                 and url.path == urlsplit(ENDPOINT).path
                 and not url.fragment
-                and parse_qs(url.query, strict_parsing=True)
+                and parse_qs(url.query, strict_parsing=True, keep_blank_values=True)
                 == {
                     "per_page": ["100"],
                     "orderby": ["id"],

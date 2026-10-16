@@ -4199,6 +4199,55 @@ BEGIN
     END IF;
 END $$;
 
+-- Pyramid preserves historical literal path identities. Inspect the actual
+-- staged cohort and every historical parent, including soft-deleted rows,
+-- before an upsert can overwrite a contradictory URL or create a duplicate.
+-- Literal comparisons deliberately do not invent aliases or repair old keys.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    WITH incoming_pyramid AS MATERIALIZED (
+      SELECT s.brokerage_id, s.external_id, s.source_url
+      FROM _src s
+      WHERE jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
+      )
+    )
+    SELECT count(*) INTO conflicting_rows
+    FROM incoming_pyramid s
+    JOIN credeals.cre_listings t
+      ON t.brokerage_id = s.brokerage_id
+     AND (
+       (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
+       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
+     );
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Pyramid identity contradiction in % historical row(s); refusing mutation',
+        conflicting_rows;
+    END IF;
+    WITH incoming_pyramid AS MATERIALIZED (
+      SELECT s.brokerage_id, s.external_id, s.source_url
+      FROM _src s
+      WHERE jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
+      )
+    )
+    SELECT count(*) INTO conflicting_rows
+    FROM incoming_pyramid s
+    JOIN incoming_pyramid other
+      ON other.brokerage_id = s.brokerage_id
+     AND (
+       (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
+       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
+     );
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Pyramid identity contradiction within incoming cohort; refusing mutation';
+    END IF;
+END $$;
+
 -- The transaction-wide lifecycle advisory lock above serializes every generated
 -- bulk ingest and reviewed reconciliation. Do not also retain one advisory lock
 -- per identity: a complete high-volume source can exceed PostgreSQL's shared

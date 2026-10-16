@@ -333,6 +333,7 @@ def test_below_floor_unique_cohort_refused(tmp_path, produced):
         "page_ids",
         "page_count",
         "page_endpoint",
+        "blank_unknown_parameter",
         "pass_clock",
         "detail_clock",
         "proof_type",
@@ -349,6 +350,10 @@ def test_malformed_receipts_refuse(tmp_path, produced, fault):
         proof["passes"][0]["pages"][0][5] = True
     elif fault == "page_endpoint":
         proof["passes"][0]["pages"][0][1] += "&unknown=1"
+    elif fault == "blank_unknown_parameter":
+        for entry in artifact["sources"]:
+            for snapshot in entry["currentInventoryProof"]["passes"]:
+                snapshot["pages"][0][1] += "&unsupported="
     elif fault == "pass_clock":
         proof["passes"][0]["pages"][0][2] = "2020-01-01T00:00:00Z"
     elif fault == "detail_clock":

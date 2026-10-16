@@ -866,12 +866,14 @@ receipts, policy/code/target/artifact bindings, absent baseline and the normal
 source-wide unique floor100. This is not inventory-only or a historical-baseline
 certificate; strict-detail child replacement and severe-loss/quality gates remain.
 
-Before a Pyramid writer, the operator must compare a fresh target-bound parent,
-five-child and baseline snapshot against the exact fresh staged IDs/source URLs
-under canonical ownership. Refuse sameURL/differentID, sameID/differentURL or
-duplicate claims; no fuzzy or changed-slug rekey. The existing SQL URL collision
-guard is Interra-specific and does not perform this Pyramid check. Preserve the
-preimage and all14-family/no-regression/generation-exact readback receipts.
+Pyramid's pre-upsert transaction guard compares the actual staged cohort against
+all same-brokerage historical parents, including soft-deleted rows. It refuses
+sameURL/differentID, sameID/different literal URL and contradictory incoming
+claims under the existing lifecycle transaction lock. It performs no alias
+normalization, changed-slug rekey or repair; Interra's separate guard is unchanged.
+The operator must still obtain a fresh target-bound parent/five-child/baseline
+preimage under canonical ownership for preservation acceptance, then retain the
+after snapshot and all14-family/no-regression/generation-exact readback receipts.
 Keep baseline writes, source-derived activation and mark-missing off. Ordinary
 upsert revival remains possible and must be disclosed if observed.
 
