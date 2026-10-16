@@ -275,6 +275,13 @@ scope, cache policy, code and quality outcome; otherwise it remains unknown.
 
 ## Compare improvements without sacrificing data
 
+Start with existing timings and request/retry/cache counts. If they leave a
+material Python CPU or allocation cost unexplained, profile a bounded
+representative path with stdlib `cProfile` or `tracemalloc` before adding
+dependencies. For uncertain provider or library behavior, use targeted Exa or
+Context7 research to reach current primary documentation, then check it against
+the actual code or saved response fixture.
+
 Compare the same source, transaction scope, formats and freshness policy. Keep
 the collector SHA, configured concurrency/pacing, runtime resource limits and
 cache policy with each experiment. Check request failures, latency and CPU
