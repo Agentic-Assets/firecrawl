@@ -16,6 +16,7 @@ param(
     [switch]$Pipeline,
     [switch]$AdmitBaselineHoldAdditively,
     [ValidateRange(1, 4)][int]$SourceWorkers,
+    [ValidateRange(1, 6)][int]$Concurrency = 1,
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
     [ValidateRange(1, 50)][int]$Batch = 50,
@@ -40,6 +41,9 @@ if ($env:OS -ne 'Windows_NT') { throw 'Run this launcher on Windows.' }
 # Pure selection validation runs before readiness, telemetry or notification work.
 if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
     throw '-Sources requires pipeline series and conflicts with -Source.'
+}
+if ($PSBoundParameters.ContainsKey('Concurrency') -and $Tier -ne 'series') {
+    throw '-Concurrency requires series.'
 }
 if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
@@ -625,7 +629,7 @@ try {
                 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000',
                 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1',
                 'python3', "$collector/cre_checkpoint_series.py",
-                '--sources', $selectedSourceArgument, '--concurrency', '1', '--nice', '15',
+                '--sources', $selectedSourceArgument, '--concurrency', [string]$Concurrency, '--nice', '15',
                 '--page-cap', '400', '--attempts-per-source', '3', '--max-resource-recoveries-per-source', '0',
                 '--max-host-cpu-percent', '90', '--cpu-sustain-seconds', '30', '--cpu-sample-seconds', '2',
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',

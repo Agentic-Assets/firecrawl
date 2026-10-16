@@ -582,6 +582,16 @@ serial behavior remains the default. Windows series launchers and task previews
 forward `-Pipeline -SourceWorkers 2 -Sources interra-realty,faris-lee` and explicit
 `-AdmitCurrentInventorySources interra-realty,faris-lee`. `-Sources` accepts finite
 comma-separated exact keys only and conflicts with singleton `-Source`.
+`-Concurrency` optionally forwards the existing shared series `--concurrency`
+setting (1–6); its Windows default stays 1. It controls per-source acquisition
+capacity where the source adapter uses that shared setting. An explicit value
+is valid only with `-Tier series`; monitor/enrich refuse it before effects.
+`-SourceWorkers` controls the number of collecting brokerages, independently.
+Provider-specific caps and pacing still apply. Changing either knob does not
+admit a source, change resource guards or prove a performance gain; use a matched
+fidelity-preserving calibration before selecting a higher operational value.
+Existing scheduled task definitions and Mac/shared defaults are unchanged.
+
 `-SourceWorkers` supports 1–4 and defaults to 2 only with `-Pipeline`; changing that
 one value controls acquisition capacity without changing database concurrency.
 Keep the existing reviewed SHA, finite work budget, database-write acknowledgement,

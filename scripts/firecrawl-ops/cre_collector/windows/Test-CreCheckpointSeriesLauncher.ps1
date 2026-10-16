@@ -78,6 +78,17 @@ $cases = @(
     @{ Name = 'source-list'; Args = @('-Tier', 'series', '-Source', 'jll,hanley', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'bad-sha'; Args = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', 'main', '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false }
 )
+foreach ($concurrency in @(1,2,6)) {
+    $cases += @{Name=('concurrency-' + $concurrency); Args=$series + @('-Concurrency', "$concurrency"); Exit=0; Dispatch=$true; Concurrency=$concurrency}
+}
+foreach ($invalid in @(0,7)) {
+    $cases += @{Name=('concurrency-invalid-' + $invalid); Args=$series + @('-Concurrency', "$invalid"); Exit=1; Dispatch=$false}
+}
+foreach ($tier in @('monitor','enrich')) {
+    $cases += @{Name=('concurrency-' + $tier); Args=@('-Tier',$tier,'-Source','hanley','-ExpectedSha',$sha,'-Concurrency','1'); Exit=1; Dispatch=$false}
+}
+$cases += @{Name='concurrency-denied'; Args=$series + @('-Concurrency','2'); Exit=1; Dispatch=$false; Denied=$true}
+$cases += @{Name='concurrency-readiness-unavailable'; Args=$series + @('-Concurrency','6'); Exit=1; Dispatch=$false; ReadinessDenied=$true}
 $savills = @('-Tier','series','-Source','savills','-AdmitBaselineHoldAdditively','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
 $cases += @{Name='savills-hold'; Args=$savills; Exit=0; Dispatch=$true}
 foreach ($bad in @(@('-Tier','monitor','-Source','savills'), @('-Tier','series','-Source','hanley'), @('-Tier','series','-Source','all'), @('-Tier','series','-Source','savills','-Pipeline'), @('-Tier','series','-Source','savills','-AdmitCurrentInventorySource','interra-realty'))) {
@@ -85,6 +96,7 @@ foreach ($bad in @(@('-Tier','monitor','-Source','savills'), @('-Tier','series',
 }
 $pipelineBase = @('-Tier','series','-Sources','cbre,jll','-Pipeline','-ExpectedSha',$sha,
     '-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
+$cases += @{Name='pipeline-concurrency'; Args=$pipelineBase + @('-SourceWorkers','2','-Concurrency','6'); Exit=0; Dispatch=$true; Workers=2; Concurrency=6}
 $cases += @{Name='pipeline-default'; Args=$pipelineBase; Exit=0; Dispatch=$true; Workers=2}
 foreach ($workers in @(1,2,3,4)) {
     $cases += @{Name=('pipeline-' + $workers); Args=($pipelineBase + @('-SourceWorkers',"$workers")); Exit=0; Dispatch=$true; Workers=$workers}
@@ -153,7 +165,8 @@ foreach ($case in $cases) {
         foreach ($expected in @('JLL_DETAIL_CONCURRENCY=1', 'JLL_INVESTOR_DETAIL_CONCURRENCY=1', 'CUSHMAN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_COVEO_ENABLE=1', 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000', 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1', 'python3', ($expectedRepo + '/scripts/firecrawl-ops/cre_collector/cre_checkpoint_series.py'))) {
             Assert-True ($forwarded -contains $expected) ('Missing conservative profile argv: ' + $expected)
         }
-        Assert-True (($forwarded -join '|').Contains('--concurrency|1|--nice|15|--page-cap|400|--attempts-per-source|3|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
+        $resolvedConcurrency = if ($case.ContainsKey('Concurrency')) { [string]$case.Concurrency } else { '1' }
+        Assert-True (($forwarded -join '|').Contains('--concurrency|' + $resolvedConcurrency + '|--nice|15|--page-cap|400|--attempts-per-source|3|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
         Assert-True (-not ($forwarded -contains '/usr/bin/nice') -and ($forwarded -join '|').Contains('NAI_ENUMERATION_CONCURRENCY=1|python3|')) 'Coordinator must inherit caller priority; canonical --nice supplies the only checkpoint adjustment.'
         $selectedSource = if ($case.Name -eq 'savills-hold') { 'savills' } elseif ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'pyramid-current') { 'pyramid-brokerage' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
         $budget = if ($case.Name -eq 'savills-hold') { '30' } elseif ($case.ContainsKey('Workers')) { '30' } elseif ($case.Name -in @('selected', 'interra-current', 'buildout-current', 'pyramid-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }
