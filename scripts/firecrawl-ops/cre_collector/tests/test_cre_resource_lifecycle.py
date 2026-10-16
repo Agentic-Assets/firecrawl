@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from itertools import count
 from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
@@ -19,6 +20,15 @@ from cre_validate import CHECKPOINT_PREFLIGHT_QUERY_NAMES
 def test_resource_observer_and_report_follow_checkpoint_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
+    # This fixture tests ownership/order, not host clock synchronization. Real
+    # UTC can step backwards; keep the asserted terminal ordering deterministic.
+    clock_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    clock_ticks = count()
+    monkeypatch.setattr(
+        refresh,
+        "utc_now",
+        lambda: (clock_start + timedelta(milliseconds=next(clock_ticks))).isoformat(),
+    )
     events: list[str] = []
 
     class OwnedLock:

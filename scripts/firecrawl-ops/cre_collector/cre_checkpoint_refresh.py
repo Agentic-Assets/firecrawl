@@ -4908,7 +4908,11 @@ def ingest_source(
         require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
         expected_db_target_sha256=manifest_database_target_sha256(manifest),
     )
+    attempt_id = secrets.token_hex(16)
+    if source == "colliers-main":
+        argv.extend(["--checkpoint-ingest-attempt", attempt_id])
     checkpoint["ingest"] = {
+        **({"attempt_id": attempt_id} if source == "colliers-main" else {}),
         "started_at": started,
         "finished_at": None,
         "rc": None,
@@ -4935,6 +4939,13 @@ def ingest_source(
             raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
         return
+    if source == "colliers-main":
+        from cre_colliers_image_transition import read_outcome
+        try:
+            checkpoint["ingest"]["image_transition"] = read_outcome(log_path)
+        except (OSError, ValueError, TypeError):
+            # Missing/invalid evidence never disables the raw final audit.
+            checkpoint["ingest"]["image_transition"] = None
     checkpoint["state"] = "ingested"
     save_manifest(run_dir, manifest)
 
@@ -6219,7 +6230,9 @@ def run_final_validation(
             raise GlobalStageError(
                 "pre-refresh validation profile is incomplete"
             ) from exc
-    quality = compare_validation_quality(before, result)
+    from cre_colliers_image_transition import verified_checkpoint
+    transition = verified_checkpoint(run_dir, manifest)
+    quality = compare_validation_quality(before, result, image_transition=transition)
     absolute_quality = verify_absolute_validation_quality(result)
     readback = (
         verify_validation_readback(run_dir, manifest, result)
@@ -6232,6 +6245,7 @@ def run_final_validation(
         "query_execution_ok": result.get("ok") is True,
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
+        "image_transition": quality.get("image_transition"),
         "absolute_quality_ok": absolute_quality["ok"],
         "absolute_quality_failures": absolute_quality["failures"],
         "readback_ok": readback["ok"],
@@ -6270,7 +6284,7 @@ def _rows_by(
 
 
 def compare_validation_quality(
-    before: Mapping[str, Any], after: Mapping[str, Any]
+    before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None
 ) -> dict[str, Any]:
     """Reject newly introduced hard defects or severe child-data loss."""
     try:
@@ -6343,6 +6357,10 @@ def compare_validation_quality(
         old_count = _int_value(prior.get("count"))
         new_count = _int_value(new_children.get(identity, {}).get("count"))
         if child_count_regressed(old_count, new_count):
+            if identity == ("colliers-main", "images") and image_transition is not None:
+                from cre_colliers_image_transition import matches_reports
+                if matches_reports(image_transition, old_count, new_count):
+                    continue
             failures.append(
                 f"child_counts/{identity} fell more than 30%: {old_count}->{new_count}"
             )
@@ -6350,7 +6368,14 @@ def compare_validation_quality(
     for row in after_queries.get("search_smoke") or []:
         if isinstance(row, dict) and _int_value(row.get("rows")) <= 0:
             failures.append(f"search_smoke/{row.get('smoke')} returned zero rows")
-    return {"ok": not failures, "failures": failures}
+    outcome = {"ok": not failures, "failures": failures}
+    if image_transition is not None:
+        from cre_colliers_image_transition import matches_reports
+        key = ("colliers-main", "images")
+        if matches_reports(image_transition, _int_value(old_children.get(key, {}).get("count")),
+                           _int_value(new_children.get(key, {}).get("count"))):
+            outcome["image_transition"] = image_transition
+    return outcome
 
 
 ABSOLUTE_LISTING_QUALITY_FIELDS = (
