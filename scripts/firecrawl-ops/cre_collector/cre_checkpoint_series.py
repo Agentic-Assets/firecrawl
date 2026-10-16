@@ -174,6 +174,7 @@ def series_config(
     memory_sustain_seconds: float = DEFAULT_MEMORY_SUSTAIN_SECONDS,
     memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     admit_current_inventory_source: str | Sequence[str] | None = None,
+    admit_daum_verified_subset: bool = False,
     pipeline: bool = False,
     source_workers: int | None = None,
     admit_baseline_hold_additively: bool = False,
@@ -182,7 +183,7 @@ def series_config(
 
     admissions = ([admit_current_inventory_source] if isinstance(admit_current_inventory_source, str)
                   else list(admit_current_inventory_source or ()))
-    current_inventory.validate_options(admissions, sources, ("sale", "lease"), pipeline=pipeline)
+    current_inventory.validate_options(admissions, sources, ("sale", "lease"), pipeline=pipeline, daum_verified_subset=admit_daum_verified_subset)
     if admit_baseline_hold_additively and (list(sources) != ["savills"] or pipeline or admissions):
         raise ValueError("baseline-hold admission requires a Savills-only serial series without other admissions")
     workers = (2 if pipeline else 1) if source_workers is None else source_workers
@@ -222,12 +223,19 @@ def series_config(
         config["admit_baseline_hold_additively"] = True
     if pipeline:
         config["pipeline"] = True
-        config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources)
+        config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources, daum_verified_subset=admit_daum_verified_subset)
         if recovery_config.max_recoveries_per_source:
             raise ValueError("pipeline resource failures require a hard stop; automatic recovery is disabled")
+    elif admit_daum_verified_subset:
+        config["current_inventory_admission"] = current_inventory.subset_configuration()
     elif admissions:
         config["current_inventory_admission"] = current_inventory.configuration(admissions[0])
     return config
+
+
+def current_subset(config: Mapping[str, Any]) -> bool:
+    import cre_current_inventory_admission as current_inventory
+    return current_inventory.is_verified_subset(config)
 
 
 def new_manifest(
@@ -277,6 +285,8 @@ def new_manifest(
             "kind": "collector_registry_additive_current_inventory",
             "whole_source_coverage": False,
         }
+    if current_subset(config):
+        result["scope"] = {"kind": "collector_registry_verified_subset", "whole_source_coverage": False}
     if config.get("admit_baseline_hold_additively") is True:
         result["scope"] = {"kind": "collector_registry_additive_coverage_hold", "whole_source_coverage": False}
     return result
@@ -577,15 +587,20 @@ def build_checkpoint_argv(
     ]
     if config.get("pipeline"):
         argv.append("--pipeline")
-        for key in config.get("current_inventory_admissions", {}):
-            argv.extend(["--admit-current-inventory-source", key])
+        for key, entry in config.get("current_inventory_admissions", {}).items():
+            if entry.get("admission_scope") == "daum_verified_subset_v1":
+                argv.append("--admit-daum-verified-subset")
+            else:
+                argv.extend(["--admit-current-inventory-source", key])
     if resume_run is not None:
         argv.extend(["--resume", str(resume_run)])
     elif fresh_run_id is not None:
         argv.extend(["--run-id", fresh_run_id])
     if env_file:
         argv.extend(["--env-file", env_file])
-    if "current_inventory_admission" in config:
+    if current_subset(config) and not config.get("pipeline"):
+        argv.append("--admit-daum-verified-subset")
+    elif "current_inventory_admission" in config:
         argv.extend(
             ["--admit-current-inventory-source", config["current_inventory_admission"]["source_key"]]
         )
@@ -921,6 +936,15 @@ def _child_succeeded(
             and aggregate.get("baseline_advisory_holds") == ["savills"]
             and aggregate.get("mark_missing_safe_brokerages") == []
         )
+    if current_subset(config):
+        scope = child_manifest.get("scope")
+        return (
+            isinstance(scope, Mapping)
+            and child_manifest.get("status") == "qualified_partial_subset"
+            and scope.get("kind") == "collector_registry_verified_subset"
+            and scope.get("whole_source_coverage") is False
+            and _exact_json_equal(child_manifest.get("config"), _expected_child_config("daum-commercial", config))
+        )
     admission = config.get("current_inventory_admission")
     if admission is None:
         return child_manifest.get("status") == SUCCESS_STATUS
@@ -957,7 +981,7 @@ def _reconciled_state(
 ) -> str:
     status = child_manifest.get("status")
     if _child_succeeded(child_manifest, config or {}):
-        return "complete"
+        return "qualified_partial_subset" if current_subset(config or {}) else "complete"
     if status == RESOURCE_GUARD_STATUS:
         return "resource_guard_interrupted"
     if status == "interrupted":
@@ -1032,6 +1056,7 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
             terminal = child.get("status") in {
                 SUCCESS_STATUS,
                 "additive_scope_complete_current_inventory",
+        "qualified_partial_subset",
                 "additive_scope_complete_coverage_hold",
                 RESOURCE_GUARD_STATUS,
                 "interrupted",
@@ -1619,6 +1644,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     if child.get("status") not in {
         SUCCESS_STATUS,
         "additive_scope_complete_current_inventory",
+        "qualified_partial_subset",
         "failed",
         "interrupted",
         RESOURCE_GUARD_STATUS,
@@ -1649,7 +1675,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state="complete"
+            state=("qualified_partial_subset" if current_subset(manifest["config"]) and key == "daum-commercial" else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -1924,6 +1950,14 @@ def pipeline_source_qualified(
         for key in members:
             checkpoint = child["sources"][key]
             proof = results[key]
+            if current_subset(child.get("config") or {}) and key == "daum-commercial":
+                if (proof.get("qualification") != "qualified_partial_subset"
+                    or proof.get("partial") is not True
+                    or proof.get("whole_source_coverage") is not False
+                    or child.get("scope", {}).get("kind") != "collector_registry_verified_subset"):
+                    return False
+            elif proof.get("partial") is True:
+                return False
             artifact = checkpoint["artifact"]
             artifact_digest = artifact["sha256"]
             if (
@@ -1976,6 +2010,30 @@ def run_pipeline_series(
     root.mkdir(parents=True, exist_ok=True)
     logs = series_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    if current_subset(config) and all(
+        manifest["sources"][key].get("state") in {"complete", "qualified_partial_subset"}
+        for key in sources
+    ):
+        # A handled partial is not another collection/apply opportunity.
+        # Reuse the same independent bound report qualification as reconciliation.
+        refs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
+        if len(refs) != 1 or not isinstance(next(iter(refs)), str):
+            raise SeriesError("handled subset has no exact shared owner")
+        relative = Path(next(iter(refs)))
+        if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 2 or relative.parts[0] != "runs":
+            raise SeriesError("handled subset owner path is invalid")
+        _, child = _load_child_manifest(root, before=set(), source=",".join(sources),
+            git_sha=manifest["collector_git_sha"], expected_path=series_dir/relative/"manifest.json",
+            expected_config=_expected_child_config(",".join(sources), config))
+        cache = {}
+        if child.get("status") != "qualified_partial_subset" or any(
+            not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
+                parent_started_at=manifest["started_at"],parent_finished_at=manifest["finished_at"],
+                unit_cache=cache,parent_attempts=manifest["sources"][key]["attempts"])
+            for key in sources
+        ):
+            raise SeriesError("handled subset evidence no longer qualifies")
+        return 0
     prior_runs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
     resume = None
     if prior_runs != {None}:
@@ -2096,7 +2154,7 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="complete", error=None)
+            row.update(state="qualified_partial_subset" if current_subset(config) and key == "daum-commercial" else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
         else:
             state = child.get("sources", {}).get(key, {}).get("state")
@@ -2126,7 +2184,7 @@ def run_pipeline_series(
         row["checkpoint_status"] = child.get("status")
     success = rc == 0 and len(qualified) == len(sources)
     manifest.update(
-        status="complete" if success else "failed",
+        status=("qualified_partial_subset" if current_subset(config) else "complete") if success else "failed",
         finished_at=utc_now(),
         error=None
         if success
@@ -2164,7 +2222,7 @@ def run_series(
     for index, source in enumerate(config["sources"], start=1):
         checkpoint = manifest["sources"][source]
         prior_state = checkpoint["state"]
-        if prior_state == "complete":
+        if prior_state in {"complete", "qualified_partial_subset"}:
             continue
         if prior_state == "failed_source" and not retry_failed:
             continue
@@ -2424,7 +2482,7 @@ def run_series(
             checkpoint["error"] = child_manifest.get("error")
 
             if rc == 0 and _child_succeeded(child_manifest, config):
-                checkpoint["state"] = "complete"
+                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) else "complete"
                 save_manifest(series_dir, manifest)
                 break
             if rc == 75 or child_manifest.get("status") == RESOURCE_GUARD_STATUS:
@@ -2500,7 +2558,7 @@ def run_series(
         if checkpoint["state"] == "failed_source"
     ]
     manifest["status"] = (
-        "complete_with_source_failures" if failed_sources else "complete"
+        "complete_with_source_failures" if failed_sources else ("qualified_partial_subset" if current_subset(config) else "complete")
     )
     manifest["error"] = (
         "source-local failures: " + ", ".join(failed_sources)
@@ -2677,6 +2735,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"(maximum: {MAX_SERIES_COOLDOWN_SECONDS:g}s)"
         ),
     )
+    parser.add_argument("--admit-daum-verified-subset", action="store_true")
     parser.add_argument("--nice", type=int, default=10)
     args = parser.parse_args(argv)
 
@@ -2695,7 +2754,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         import cre_current_inventory_admission as current_inventory
 
         current_inventory.validate_options(
-            args.admit_current_inventory_source, sources, ("sale", "lease"), pipeline=args.pipeline
+            args.admit_current_inventory_source, sources, ("sale", "lease"), pipeline=args.pipeline,
+            daum_verified_subset=args.admit_daum_verified_subset
         )
         if args.admit_baseline_hold_additively and (sources != ("savills",) or args.pipeline or args.admit_current_inventory_source):
             raise ValueError("baseline-hold admission requires a Savills-only serial series without other admissions")
@@ -2778,6 +2838,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         nice=args.nice,
         recovery=recovery_config,
         admit_current_inventory_source=args.admit_current_inventory_source,
+        admit_daum_verified_subset=args.admit_daum_verified_subset,
         admit_baseline_hold_additively=args.admit_baseline_hold_additively,
         pipeline=args.pipeline,
         source_workers=args.source_workers,

@@ -44,6 +44,13 @@ $series = @('-Tier', 'series', '-Source', 'all', '-ExpectedSha', $sha, '-WorkDea
 $quotedRepo = '/home/synthetic space/quote''s "directory"/firecrawl'
 $quotedEnv = '/tmp/synthetic space/quote''s "env".env'
 $cases = @(
+    @{ Name = 'daum-subset'; Args = @('-Tier','series','-Source','daum-commercial','-AdmitDaumVerifiedSubset','-ExpectedSha',$sha,'-WorkDeadlineSeconds','3600','-AcknowledgeDatabaseWrites'); Exit=0; Dispatch=$true; Selected='daum-commercial'; Subset=$true },
+    @{ Name = 'daum-subset-pipeline'; Args = @('-Tier','series','-Pipeline','-Sources','daum-commercial,transwestern','-AdmitDaumVerifiedSubset','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=0; Dispatch=$true; Workers=2; Selected='daum-commercial,transwestern'; Subset=$true },
+    @{ Name = 'daum-subset-conflict'; Args = @('-Tier','series','-Source','daum-commercial','-AdmitDaumVerifiedSubset','-AdmitCurrentInventorySource','daum-commercial','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=1; Dispatch=$false },
+    @{ Name = 'daum-subset-wrong-source'; Args = @('-Tier','series','-Source','hanley','-AdmitDaumVerifiedSubset','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=1; Dispatch=$false },
+    @{ Name = 'daum-subset-wrong-tier'; Args = @('-Tier','monitor','-Source','daum-commercial','-AdmitDaumVerifiedSubset','-ExpectedSha',$sha); Exit=1; Dispatch=$false },
+    @{ Name = 'daum-subset-limited'; Args = @('-Tier','series','-Source','daum-commercial','-AdmitDaumVerifiedSubset','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites','-Batch','1'); Exit=1; Dispatch=$false },
+    @{ Name = 'daum-subset-dirty-escape'; Args = @('-Tier','series','-Source','daum-commercial','-AdmitDaumVerifiedSubset','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites','-AllowDirty'); Exit=1; Dispatch=$false },
     @{ Name = 'daum-current'; Args = @('-Tier', 'series', '-Source', 'daum-commercial', '-AdmitCurrentInventorySource', 'daum-commercial', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 0; Dispatch = $true },
     @{ Name = 'daum-wrong-source'; Args = @('-Tier', 'series', '-Source', 'hanley', '-AdmitCurrentInventorySource', 'daum-commercial', '-ExpectedSha', $sha, '-WorkDeadlineSeconds', '30', '-AcknowledgeDatabaseWrites'); Exit = 1; Dispatch = $false },
     @{ Name = 'daum-wrong-tier'; Args = @('-Tier', 'monitor', '-Source', 'daum-commercial', '-AdmitCurrentInventorySource', 'daum-commercial', '-ExpectedSha', $sha); Exit = 1; Dispatch = $false },
@@ -210,6 +217,7 @@ foreach ($case in $cases) {
         } else {
             Assert-True (-not ($forwarded -contains '--admit-current-inventory-source')) 'Default runs must not acquire current-inventory admission.'
         }
+        Assert-True (($forwarded -contains '--admit-daum-verified-subset') -eq ($case.ContainsKey('Subset') -and $case.Subset)) 'Only explicit DAUM subset permission crosses the native boundary.'
         Assert-True (($forwarded -contains '--admit-baseline-hold-additively') -eq ($case.Name -eq 'savills-hold')) 'Only explicit Savills admission crosses the native boundary.'
         if ($case.Name -eq 'quoted-paths') { Assert-True ($forwarded -contains $quotedEnv -and $forwarded -contains ($quotedRepo + '/scripts/firecrawl-ops/cre_collector/cre_checkpoint_series.py')) 'Spaces and literal quotes must survive the native argv boundary without a shell.' }
         Assert-True (-not ($forwarded -contains '--apply') -and -not ($forwarded -contains '--batch') -and -not ($forwarded -contains '--resume')) 'Series has no incremental apply/batch or automatic replay.'

@@ -434,6 +434,7 @@ def stop_series(series_dir, invocation_id, wait_seconds=60):
             not in {
                 "complete",
                 "complete_with_source_failures",
+                "qualified_partial_subset",
                 "failed",
                 "interrupted",
                 "deadline_interrupted",
@@ -448,7 +449,9 @@ def stop_series(series_dir, invocation_id, wait_seconds=60):
         result.update(
             local_settlement=terminal["local_settlement"],
             terminal_status=terminal["status"],
-            outcome="completed"
+            outcome="qualified_partial_subset"
+            if terminal["status"] == "qualified_partial_subset"
+            else "completed"
             if terminal["status"] in {"complete", "complete_with_source_failures"}
             else "terminal_local_settlement_confirmed",
         )

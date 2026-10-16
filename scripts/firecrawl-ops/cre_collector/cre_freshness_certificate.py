@@ -289,6 +289,13 @@ def _validate_run(
         _failure(failures, "source_scope", "scope.source_keys must exactly match config.sources", run_path=run_path)
     if scope.get("kind") != "collector_registry":
         _failure(failures, "subset_scope", "certificate rejects a non-registry source scope", run_path=run_path)
+    from cre_current_inventory_admission import is_verified_subset
+    try:
+        subset = is_verified_subset(config)
+    except (KeyError, TypeError, ValueError):
+        subset = True
+    if subset:
+        _failure(failures, "verified_subset", "certificate rejects DAUM verified-subset admission even with zero holds", run_path=run_path)
     if config.get("transactions") != list(TRANSACTIONS):
         _failure(failures, "subset_scope", "certificate requires both sale and lease transactions", run_path=run_path)
     if config.get("max_items") != 0:

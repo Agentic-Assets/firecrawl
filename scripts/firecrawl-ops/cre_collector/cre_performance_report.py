@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import cre_current_inventory_admission as current_inventory
 import hashlib
 import json
 import math
@@ -75,6 +76,7 @@ STATUSES = {
     "selected_transaction_scope_complete",
     "additive_scope_complete_coverage_hold",
     "additive_scope_complete_current_inventory",
+    "qualified_partial_subset",
     "failed",
     "failed_source",
     "failed_global",
@@ -849,6 +851,11 @@ def _source_report(
         if multi_source or _object(manifest.get("config")).get("pipeline") is True
         else _duration(manifest.get("started_at"), manifest.get("finished_at"))
     )
+    from cre_current_inventory_admission import is_verified_subset
+    subset_qualified = is_verified_subset(manifest.get("config") or {}, source) and (
+        manifest.get("status") == "qualified_partial_subset"
+        or _object(_object(_object(manifest.get("pipeline")).get("source_results")).get(source)).get("qualification") == "qualified_partial_subset"
+    )
     verified_count = (
         artifact.get("staged_unique")
         if verified_current_inventory
@@ -859,7 +866,7 @@ def _source_report(
     return {
         "source": source,
         "run_id": run_dir.name,
-        "status": (
+        "status": "qualified_partial_subset" if subset_qualified else (
             checkpoint.get("state")
             if _member(checkpoint.get("state"), CHILD_STATES)
             else "unknown"
@@ -1127,6 +1134,7 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
             "max_items": _number(_object(manifest.get("config")).get("max_items")),
             "pipeline": _object(manifest.get("config")).get("pipeline") is True,
             "freshness_policy": "checkpoint_generation_bound",
+            "admission_scope": "daum_verified_subset_v1" if current_inventory.is_verified_subset(manifest.get("config") or {}) else None,
         },
         "computed_at": now.isoformat(),
         "sources": rows,

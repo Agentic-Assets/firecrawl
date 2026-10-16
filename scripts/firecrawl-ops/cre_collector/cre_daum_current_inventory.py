@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -29,6 +30,10 @@ from cre_source_policy import load_source_policy
 
 SOURCE = "daum-commercial"
 SCHEMA = "daum-strict-detail-v1"
+SUBSET_SCHEMA = "daum-verified-subset-v1"
+SUBSET_SCOPE = "daum_verified_subset_v1"
+SUBSET_VERDICT = "ok_additive_verified_subset"
+SUBSET_REASON = "verified subset admitted additively with explicit tenure holds; whole source remains unqualified"
 BASE = "https://daumcommercial.com/property-search/"
 REASON = (
     "complete current inventory admitted additively; historical baseline remains absent"
@@ -137,7 +142,71 @@ def _pass(snapshot, previous, observed, total):
     return members, previous
 
 
-def admit(
+def subset_source_scope(data):
+    """Exact emitted artifact shape, without granting full-source authority."""
+    require(isinstance(data, dict))
+    meta = data.get("runMeta")
+    require(isinstance(meta, dict))
+    require(
+        meta.get("mode") == "full"
+        and meta.get("transactions") == ["sale", "lease"]
+        and meta.get("maxItemsPerSource") is None
+    )
+    require(_time(meta.get("startedAt")) <= _time(meta.get("finishedAt")))
+    entries, listings = data.get("sources"), data.get("listings")
+    require(
+        isinstance(entries, list)
+        and len(entries) == 2
+        and isinstance(listings, list)
+        and type(data.get("totalListings")) is int
+        and data["totalListings"] == len(listings)
+    )
+    require(
+        all(
+            isinstance(entry, dict) and entry.get("sourceKey") == SOURCE
+            for entry in entries
+        )
+    )
+    require(sorted(entry.get("transaction") for entry in entries) == ["lease", "sale"])
+    for entry in entries:
+        proof = entry.get("currentInventoryProof")
+        require(
+            isinstance(proof, dict)
+            and proof.get("schema") == SUBSET_SCHEMA
+            and proof.get("kind") == "verified_subset_with_holds"
+            and isinstance(proof.get("held"), list)
+        )
+        require(
+            entry.get("supported") is True
+            and entry.get("error") is None
+            and entry.get("truncated") is bool(proof["held"])
+            and type(entry.get("listingsCollected")) is int
+            and type(entry.get("totalAvailableOnSource")) is int
+        )
+        require(
+            all(
+                isinstance(row, dict)
+                and row.get("sourceKey") == SOURCE
+                and row.get("transactionMode") in {"sale", "lease"}
+                for row in listings
+            )
+        )
+        require(
+            sum(row["transactionMode"] == entry["transaction"] for row in listings)
+            == entry["listingsCollected"]
+        )
+    return {"entries": entries, "listings": listings}
+
+
+def admit(artifact_path, manifest, report, **kwargs):
+    return _admit(artifact_path, manifest, report, subset=False, **kwargs)
+
+
+def admit_subset(artifact_path, manifest, report, **kwargs):
+    return _admit(artifact_path, manifest, report, subset=True, **kwargs)
+
+
+def _admit(
     artifact_path: Path,
     manifest: dict,
     report: dict,
@@ -146,6 +215,7 @@ def admit(
     current_git_dirty: bool,
     phase: str,
     source=SOURCE,
+    subset=False,
 ) -> dict:
     require(source == SOURCE and phase in {"source", "aggregate"})
     config = manifest["config"]
@@ -157,7 +227,18 @@ def admit(
         )
         and config["transactions"] == ["sale", "lease"]
     )
-    require(admission_configuration(config, SOURCE) == configuration(SOURCE))
+    expected_configuration = configuration(SOURCE)
+    if subset:
+        expected_configuration = {
+            **expected_configuration,
+            "admission_scope": SUBSET_SCOPE,
+        }
+    require(admission_configuration(config, SOURCE) == expected_configuration)
+    schema, scope_kind, verdict, reason = (
+        (SUBSET_SCHEMA, SUBSET_SCOPE, SUBSET_VERDICT, SUBSET_REASON)
+        if subset
+        else (SCHEMA, SCOPE, VERDICT, REASON)
+    )
     require(
         config.get("additive") is True
         and config.get("mark_missing") is False
@@ -198,7 +279,11 @@ def admit(
     digest = hashlib.sha256(raw).hexdigest()
     require(digest == info["sha256"] and len(raw) == info["bytes"])
     artifact = json.loads(raw)
-    scope = strict_full_source_scope(artifact, SOURCE)
+    scope = (
+        subset_source_scope(artifact)
+        if subset
+        else strict_full_source_scope(artifact, SOURCE)
+    )
     require(
         len(artifact["sources"]) == 2
         and len(artifact["listings"]) == len(scope["listings"])
@@ -220,10 +305,13 @@ def admit(
     for tx, item in zip(("sale", "lease"), proofs, strict=True):
         require(
             isinstance(item, dict)
-            and item.get("schema") == SCHEMA
+            and item.get("schema") == schema
             and item.get("sourceKey") == SOURCE
             and item.get("transaction") == tx
-            and item.get("kind") == "complete_current_inventory"
+            and item.get("kind")
+            == (
+                "verified_subset_with_holds" if subset else "complete_current_inventory"
+            )
             and item.get("generationId") == manifest["run_id"]
             and _time(item.get("generationStartedAt")) == start
         )
@@ -254,7 +342,7 @@ def admit(
         require(post not in native and key == _path_key(url) and key not in keys)
         require(url in second and (inv, inv_raw) == second[url])
         require(detail == _tenure(detail_raw) and resolved == _resolved(inv, detail))
-        require(resolved != "unknown")
+        require(subset or resolved != "unknown")
         native[post] = (url, key, inv, inv_raw, detail, detail_raw, resolved)
         keys.add(key)
         urls.append(url)
@@ -268,6 +356,18 @@ def admit(
         require(observed <= _time(clock) <= end)
         _digest(body_hash)
         details[post] = (canonical, clock, body_hash)
+    held = [
+        [post, "unknown_inventory_and_detail_tenure"]
+        for post, row in native.items()
+        if row[-1] == "unknown"
+    ]
+    if subset:
+        require(proof.get("held") == held)
+        require(
+            all(native[post][2] == native[post][4] == "unknown" for post, _ in held)
+        )
+    emitted_total = total - len(held)
+    require(emitted_total >= 100)
     listings = scope["listings"]
     staged, emitted = {}, {"sale": set(), "lease": set()}
     expected = {
@@ -323,7 +423,7 @@ def admit(
             staged[key] = merge_rows(staged[key], transformed)
         else:
             staged[key] = transformed
-    require(emitted == expected and len(staged) == total)
+    require(emitted == expected and len(staged) == emitted_total)
     for tx in ("sale", "lease"):
         require(
             entries[tx]["listingsCollected"] == len(expected[tx])
@@ -354,7 +454,7 @@ def admit(
         and summary.get("baseline_updated") is False
         and summary.get("baseline_update_sources") == []
     )
-    rechecking = phase == "aggregate" and gate.get("verdict") == VERDICT
+    rechecking = (phase == "aggregate" or subset) and gate.get("verdict") == verdict
     require(
         (gate.get("raw_verdict") if rechecking else gate.get("verdict")) == "first_seen"
         and (gate.get("raw_reason") if rechecking else gate.get("reason"))
@@ -369,8 +469,8 @@ def admit(
         and gate["current_active"] == len(listings)
     )
     binding = {
-        "schema": SCHEMA,
-        "scope": SCOPE,
+        "schema": schema,
+        "scope": scope_kind,
         "artifact_sha256": digest,
         "collector_git_sha": current_code_sha,
         "database_target_sha256": target["value"],
@@ -381,11 +481,21 @@ def admit(
         "passes_sha256": _sha(passes),
         "cohort_sha256": _sha(cohort),
         "detail_receipts_sha256": _sha(proof["details"]),
-        "emitted_count": total,
+        "emitted_count": emitted_total,
         "flat_emitted_count": len(listings),
         "staged_count": len(staged),
         "staged_identities_sha256": _sha(staged_identities),
     }
+    if subset:
+        binding.update(
+            inventory_count=total,
+            held_count=len(held),
+            held_sha256=_sha(held),
+            sale_count=len(expected["sale"]),
+            lease_count=len(expected["lease"]),
+            whole_source_coverage=False,
+            whole_lease_coverage="unknown" if held else "proved",
+        )
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
@@ -394,26 +504,89 @@ def admit(
     if rechecking:
         require(
             gate.get("current_inventory_proof") == binding
-            and gate.get("admission_scope") == SCOPE
-            and gate.get("reason") == REASON
+            and gate.get("admission_scope") == scope_kind
+            and gate.get("reason") == reason
         )
     gate.update(
         raw_verdict="first_seen",
         raw_reason="no baseline row; cannot gate (first sight)",
-        verdict=VERDICT,
-        reason=REASON,
+        verdict=verdict,
+        reason=reason,
         mark_missing_safe=False,
-        admission_scope=SCOPE,
+        admission_scope=scope_kind,
         current_inventory_proof=binding,
     )
     report["scope"] = {
-        "kind": SCOPE,
+        "kind": "collector_registry_verified_subset" if subset else SCOPE,
         "transactions": ["sale", "lease"],
         "whole_source_coverage": False,
     }
     summary.update(mark_missing_safe_sources=[], mark_missing_safe_brokerages=[])
     manifest["scope"].update(
-        kind="collector_registry_additive_current_inventory",
+        kind="collector_registry_verified_subset"
+        if subset
+        else "collector_registry_additive_current_inventory",
         whole_source_coverage=False,
     )
     return binding
+
+
+def ingest_subset_context(
+    artifact_path,
+    envelope,
+    *,
+    current_code_sha,
+    current_git_dirty,
+    expected_database_target_sha256,
+    attempt_id,
+):
+    """Reprove both sealed gate decisions at the final ingest boundary."""
+    require(
+        isinstance(envelope, dict)
+        and set(envelope)
+        == {"manifest", "source_report", "aggregate_report", "binding", "attempt_id"}
+    )
+    require(
+        isinstance(attempt_id, str)
+        and re.fullmatch(r"[a-f0-9]{32}", attempt_id)
+        and envelope["attempt_id"] == attempt_id
+    )
+    manifest = copy.deepcopy(envelope["manifest"])
+    require(
+        manifest["preflight"]["database_target"]
+        == {"algorithm": "sha256", "value": expected_database_target_sha256}
+    )
+    binding = envelope["binding"]
+    require(isinstance(binding, dict) and binding.get("scope") == SUBSET_SCOPE)
+    for phase, key in (("source", "source_report"), ("aggregate", "aggregate_report")):
+        report = copy.deepcopy(envelope[key])
+        require(report["per_source"][SOURCE].get("current_inventory_proof") == binding)
+        require(
+            admit_subset(
+                Path(artifact_path),
+                manifest,
+                report,
+                current_code_sha=current_code_sha,
+                current_git_dirty=current_git_dirty,
+                phase=phase,
+            )
+            == binding
+        )
+    raw = Path(artifact_path).read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == binding["artifact_sha256"])
+    proof = json.loads(raw)["sources"][0]["currentInventoryProof"]
+    held = {member[0] for member in proof["held"]}
+    return {
+        "schema": SUBSET_SCHEMA,
+        "binding": binding,
+        "attempt_id": attempt_id,
+        "members": [
+            {
+                "native_id": row[0],
+                "source_url": row[1],
+                "external_id": row[2],
+                "emitted": row[0] not in held,
+            }
+            for row in proof["cohort"]
+        ],
+    }

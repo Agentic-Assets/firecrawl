@@ -4441,7 +4441,7 @@ def test_advance_source_blocks_non_ok_gate_before_dry_run_or_ingest(
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     def gate(*_args):
@@ -4490,7 +4490,7 @@ def test_advance_source_prepares_without_live_ingest(tmp_path, monkeypatch):
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     def gate(*_args):
@@ -4931,7 +4931,7 @@ def test_two_resumes_preserve_ingest_then_refresh_first_seen_without_reingest(
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     verdicts = iter(["first_seen", "ok"])
@@ -5014,7 +5014,7 @@ def test_ingest_admitted_sources_ingests_prepared_artifact(tmp_path, monkeypatch
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
     calls = []
     monkeypatch.setattr(
@@ -5052,7 +5052,7 @@ def test_advance_source_recovers_ingesting_state_before_preparation(
     monkeypatch.setattr(
         refresh,
         "_checkpoint_artifact_valid",
-        lambda *_args: (artifact_path, {"staged_unique": 2}),
+        lambda *_args, **_kwargs: (artifact_path, {"staged_unique": 2}),
     )
 
     calls = []
@@ -5136,7 +5136,7 @@ def test_ingesting_with_invalid_artifact_never_recollects_or_replays(
             "state": "ingesting",
         }
     )
-    monkeypatch.setattr(refresh, "_checkpoint_artifact_valid", lambda *_args: None)
+    monkeypatch.setattr(refresh, "_checkpoint_artifact_valid", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         refresh,
         "collect_source",

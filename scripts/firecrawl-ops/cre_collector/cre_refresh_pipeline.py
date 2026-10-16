@@ -263,6 +263,9 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
                 if generation_bound
                 else None,
                 "expected_transactions": manifest["config"]["transactions"],
+                "daum_verified_subset": refresh.current_inventory.is_verified_subset(
+                    manifest["config"], source
+                ),
             },
         },
     )
@@ -467,7 +470,7 @@ def run_database_unit(
         artifact = run_dir / checkpoint["artifact"]["path"]
         refresh.gate_source(run_dir, manifest, source, artifact, env_file)
         if not refresh.gate_verdict_is_admitted(
-            manifest, (checkpoint.get("gate") or {}).get("verdict")
+            manifest, (checkpoint.get("gate") or {}).get("verdict"), source=source
         ):
             raise refresh.GlobalStageError(f"sealed source gate refused: {source}")
         if not refresh.dry_run_source(run_dir, manifest, source, artifact):
@@ -855,6 +858,11 @@ def run_bounded_pipeline(
                             "generation_id": manifest["run_id"],
                             "artifact_sha256": checkpoint["artifact"]["sha256"],
                         }
+                        if refresh.current_inventory.is_verified_subset(manifest["config"], source):
+                            state["source_results"][source].update(
+                                qualification="qualified_partial_subset", partial=True,
+                                whole_source_coverage=False,
+                            )
                     sealed = ()
                     state["active_unit"] = None
                     counts()

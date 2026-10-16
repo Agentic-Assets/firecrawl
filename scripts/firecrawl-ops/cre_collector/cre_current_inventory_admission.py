@@ -18,6 +18,9 @@ ENDPOINT = "https://interrarealty.com/wp-json/filtered-loop/v1/posts?post_type=t
 SCHEMA = "interra-current-inventory-v1"
 VERDICT = "ok_additive_current_inventory"
 SCOPE = "additive_current_inventory"
+DAUM_SUBSET_SCOPE = "daum_verified_subset_v1"
+DAUM_SUBSET_STATUS = "qualified_partial_subset"
+DAUM_SUBSET_VERDICT = "ok_additive_verified_subset"
 
 
 def require(condition: object) -> None:
@@ -48,6 +51,16 @@ def configuration(source: str) -> dict:
     return result
 
 
+def subset_configuration() -> dict:
+    """The separately approved DAUM-only partial scope; complete is unchanged."""
+    return {**configuration("daum-commercial"), "admission_scope": DAUM_SUBSET_SCOPE}
+
+
+def is_verified_subset(config: dict, source: str = "daum-commercial") -> bool:
+    entry = admission_configuration(config, source)
+    return bool(entry and entry.get("admission_scope") == DAUM_SUBSET_SCOPE)
+
+
 def validate_option(
     source: str | None, sources, transactions, *, additive_hold=False, allow_dirty=False
 ) -> None:
@@ -66,10 +79,18 @@ def validate_options(
     pipeline=False,
     additive_hold=False,
     allow_dirty=False,
+    daum_verified_subset=False,
 ) -> None:
     """Admit only explicit exact keys inside the selected source set."""
     admitted = list(admitted_sources or ())
     selected = list(sources)
+    require(type(daum_verified_subset) is bool)
+    if daum_verified_subset:
+        require("daum-commercial" in selected and "daum-commercial" not in admitted)
+        require(tuple(transactions) == ("sale", "lease"))
+        require(not additive_hold and not allow_dirty)
+        if not pipeline:
+            require(selected == ["daum-commercial"] and not admitted)
     require(len(selected) == len(set(selected)))
     require(len(admitted) == len(set(admitted)))
     if not pipeline:
@@ -92,9 +113,18 @@ def validate_options(
         configuration(source)
 
 
-def configuration_map(admitted_sources, sources) -> dict:
-    validate_options(admitted_sources, sources, ("sale", "lease"), pipeline=True)
-    return {source: configuration(source) for source in admitted_sources}
+def configuration_map(admitted_sources, sources, *, daum_verified_subset=False) -> dict:
+    validate_options(
+        admitted_sources,
+        sources,
+        ("sale", "lease"),
+        pipeline=True,
+        daum_verified_subset=daum_verified_subset,
+    )
+    result = {source: configuration(source) for source in admitted_sources}
+    if daum_verified_subset:
+        result["daum-commercial"] = subset_configuration()
+    return result
 
 
 def admission_configuration(config: dict, source: str) -> dict | None:
@@ -112,7 +142,14 @@ def admission_configuration(config: dict, source: str) -> dict | None:
             additive_hold=config.get("admit_baseline_hold_additively"),
         )
         for key, entry in entries.items():
-            require(entry == configuration(key))
+            require(isinstance(entry, dict))
+            expected = (
+                subset_configuration()
+                if key == "daum-commercial"
+                and entry.get("admission_scope") == DAUM_SUBSET_SCOPE
+                else configuration(key)
+            )
+            require(entry == expected)
         return entries.get(source)
     if legacy is None:
         return None
@@ -124,7 +161,15 @@ def admission_configuration(config: dict, source: str) -> dict | None:
         config["transactions"],
         additive_hold=config.get("admit_baseline_hold_additively"),
     )
-    require(legacy == configuration(key))
+    require(
+        legacy
+        == (
+            subset_configuration()
+            if key == "daum-commercial"
+            and legacy.get("admission_scope") == DAUM_SUBSET_SCOPE
+            else configuration(key)
+        )
+    )
     return legacy if key == source else None
 
 
@@ -442,9 +487,11 @@ def admit(
 
         return admit_essex(artifact_path, manifest, report, source=source, **kwargs)
     if source == "daum-commercial":
-        from cre_daum_current_inventory import admit as admit_daum
-
-        return admit_daum(artifact_path, manifest, report, source=source, **kwargs)
+        if is_verified_subset(manifest["config"], source):
+            from cre_daum_current_inventory import admit_subset as handler
+        else:
+            from cre_daum_current_inventory import admit as handler
+        return handler(artifact_path, manifest, report, source=source, **kwargs)
     from cre_buildout_current_inventory import admit as admit_buildout
 
     return admit_buildout(artifact_path, manifest, report, source=source, **kwargs)

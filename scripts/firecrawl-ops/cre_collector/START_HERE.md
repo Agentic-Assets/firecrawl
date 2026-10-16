@@ -895,6 +895,17 @@ matching public POST inventories, every fresh canonical detail and at least 100
 unique staged identities. Raw `first_seen`, baseline absence, namespace guards
 and full audit/readback remain mandatory; see [the source contract](sources/CLAUDE.md).
 
+DAUM also has a separately authorized verified-subset scope selected by
+`--admit-daum-verified-subset` (`-AdmitDaumVerifiedSubset` on Windows).
+It verifies the complete fresh inventory and every detail before holding only
+records whose inventory and detail tenure are both unknown. All identity,
+staging, lifecycle-preservation and database checks remain mandatory. The result
+is explicitly partial, including when no records are held, and cannot advance
+complete-source receipts or certificates. The complete admission flag above
+never implies this permission. See the
+[DAUM subset contract](../../../docs/firecrawl-ops/references/daum-verified-subset.md)
+for counts, transaction guards and production acceptance.
+
 Essex's explicit singleton `--admit-current-inventory-source essex-realty`
 (`-AdmitCurrentInventorySource essex-realty` on the native series launcher) uses
 this same carrier for uncapped full sale+lease. It requires two matching complete

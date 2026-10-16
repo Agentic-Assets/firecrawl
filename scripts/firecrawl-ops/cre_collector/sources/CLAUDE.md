@@ -92,7 +92,8 @@ passes with the same literal URL/tenure membership, followed by every fresh
 canonical detail. Strict acquisition resolves inventory-tenure-unknown members
 first in their original relative order, then the remaining members. Diagnostic
 ordinals and the complete final cohort/output retain original inventory order;
-unknown tenure still refuses and no partial proof is emitted. Fully known
+in the default complete scope, unknown tenure still refuses and no partial
+proof is emitted. Fully known
 inventories retain their original request order. The source/aggregate verifier reconciles both transaction sets
 and their unique union (at least 100); a property offered both ways counts once.
 Known inventory tenure may resolve an absent detail tenure, but contradictions
@@ -113,6 +114,18 @@ A second transaction cannot turn that failure into accepted proof or download
 the same cohort again. A new generation/start or a fresh collector process
 reacquires; the coordinator's existing bounded fresh-process retry remains.
 Limited, monitor and non-fresh paths cannot borrow this strict cohort proof.
+
+The separate `--admit-daum-verified-subset` permission uses versioned
+`daum-verified-subset-v1` proof, never the complete proof above. It still proves
+two matching complete inventories and valid fresh details for every member;
+only inventory-unknown AND detail-unknown tenure may become a typed hold.
+Conflicts, malformed details, ownership or identity uncertainty fail the attempt.
+All-member historical compatibility and emitted lifecycle preconditions run
+before unchanged upserts. Held parents/children/index remain untouched; this
+scope stays partial even with zero holds and grants no complete watermark,
+baseline or certificate. Cache identity includes scope, generation and start.
+Use the [DAUM subset contract](../../../../docs/firecrawl-ops/references/daum-verified-subset.md)
+for exact counts, preservation and qualification requirements.
 
 ## Transport & Scrape Primitives
 

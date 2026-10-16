@@ -22,12 +22,16 @@ suite's own loopback servers. Verify namespace support first; from the genuine
 standalone QA clone, the command carrier is:
 
 ```bash
-unshare -Urn -- sh -c 'ip link set lo up && exec "$@"' qa <test-command> <arguments>
+unshare --user --map-current-user --net --keep-caps -- sh -c 'ip link set lo up && exec "$@"' qa <test-command> <arguments>
 ```
 
 Only the new namespace's loopback is enabled; host services and public routes
 are absent. This does not isolate files or filesystem Unix sockets, and does
 not replace fake transports, database boundaries or the standalone-clone rule.
+Preserve the real non-root UID: `--map-root-user`/`-r` makes capacity-approval
+tests correctly refuse the apparent root account. Verify UID/EUID and an owned
+loopback bind before the suite. Install the sidecar's pinned Node dependencies
+as described in SETUP; Python's C10 loopback fixtures use its `tsx` package.
 Keep normal configuration defaults unless the test deliberately varies them;
 an unrelated URL override or rewritten interpreter argv can break the harness.
 
@@ -55,6 +59,7 @@ bash tests/run_listing_lifecycle_postgres_contract.sh  # opt-in local PostgreSQL
 bash tests/run_cre_validate_timing_postgres_contract.sh  # opt-in native psql timing contract
 bash tests/run_ingest_institutional_postgres_contract.sh  # opt-in disposable institutional UPDATE contract
 bash tests/run_cre_quality_postgres_contract.sh  # opt-in active/historical scope + bounded financial fallback contract
+python3 tests/run_daum_subset_postgres_contract.py "$(mktemp -d)/proof"  # opt-in WSL/Linux DAUM subset transaction contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
@@ -80,6 +85,13 @@ The institutional UPDATE contract executes the generated optional Phase-2
 statement against synthetic CBRE, JLL and marker-collision rows in an isolated
 PostgreSQL 17 container. It uses a cached image, publishes no ports, and removes
 only its recorded owned container.
+
+The DAUM subset contract runs the actual generated ingest SQL in a uniquely
+owned, unexposed cached PostgreSQL 17 container on Linux/WSL. It accepts only a
+new proof-directory path, never a database URL. It tests whole-transaction
+refusals, held parent/five-child/index preservation, unchanged lifecycle and
+baseline/OM data, missing-index/new-insert cases, and bounded fresh replacement
+of emitted children. Preserve its checks and container-settlement receipts.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing

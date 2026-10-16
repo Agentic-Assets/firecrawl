@@ -20,11 +20,12 @@ from typing import Any
 COLLECTOR_DIR = Path(__file__).resolve().parent
 DEFAULT_SERIES_ROOT = COLLECTOR_DIR / "out" / "checkpoint-series"
 SCHEMA_VERSION = 1
-HANDLED_STATES = {"complete", "failed_source"}
+HANDLED_STATES = {"complete", "failed_source", "qualified_partial_subset"}
 SOURCE_STATES = {
     "pending",
     "running",
     "complete",
+    "qualified_partial_subset",
     "failed_source",
     "failed_global",
     "interrupted",
@@ -34,6 +35,7 @@ SERIES_STATES = {
     "running",
     "cooling_down",
     "complete",
+    "qualified_partial_subset",
     "complete_with_source_failures",
     "failed",
     "interrupted",
@@ -61,6 +63,7 @@ CHILD_STATES = {
     "ingest_recovery_required",
     "ingested",
     "complete",
+    "qualified_partial_subset",
     "failed",
     "collect_infrastructure_failed",
     "collect_failed",
@@ -379,6 +382,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if series_state not in SERIES_STATES:
         raise TypeError(f"invalid series state in manifest: {path}")
     inconsistent = (
+        (series_state == "qualified_partial_subset" and ("qualified_partial_subset" not in states or any(state not in HANDLED_STATES for state in states))) or
         (series_state == "complete" and any(state != "complete" for state in states))
         or (
             series_state == "complete_with_source_failures"
@@ -422,6 +426,7 @@ def build_snapshot(
     )
     total = len(sources)
     complete = counts["complete"]
+    qualified_partial_subsets = counts["qualified_partial_subset"]
     handled = sum(counts[state] for state in HANDLED_STATES)
     running = [
         name
@@ -485,6 +490,7 @@ def build_snapshot(
         "pipeline_progress": pipeline_progress(manifest, manifest_path),
         "total": total,
         "complete": complete,
+        "qualified_partial_subsets": qualified_partial_subsets,
         "handled": handled,
         "failed": failed,
         "running": counts["running"],
