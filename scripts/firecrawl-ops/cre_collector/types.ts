@@ -270,13 +270,34 @@ export type BuildoutCurrentInventoryProof = {
   pages: BuildoutInventoryProofPage[];
 };
 
+// Compact tuples keep complete strict-detail proof out of worker metadata.
+export type PyramidInventoryPass = {
+  fingerprint: string;
+  pages: Array<[number, string, string, string, number, number, number[]]>;
+};
+export type PyramidCurrentInventoryProof = {
+  schema: "pyramid-strict-detail-v1";
+  sourceKey: "pyramid-brokerage";
+  transaction: Tx;
+  generationId: string;
+  generationStartedAt: string;
+  total: number;
+  totalPages: number;
+  observedAt: string;
+  passes: PyramidInventoryPass[];
+  // native post, literal owned URL, canonical path key, transaction
+  cohort: Array<[number, string, string, Tx]>;
+  // post, validated canonical URL, detail observation, decoded body SHA256
+  details: Array<[number, string, string, string]>;
+};
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
-  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof;
+  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor

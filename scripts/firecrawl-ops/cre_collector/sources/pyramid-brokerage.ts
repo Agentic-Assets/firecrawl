@@ -1,8 +1,9 @@
 import * as cheerio from "cheerio";
+import { createHash } from "node:crypto";
 import { brokerRef } from "../lib/broker.js";
-import { detailObservation, refreshGenerationId, requireFreshPropertyDetails } from "../lib/freshness.js";
+import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshPropertyDetails } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
-import { SourceResult, Tx } from "../types.js";
+import { PyramidCurrentInventoryProof, PyramidInventoryPass, SourceResult, Tx } from "../types.js";
 import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
 
 export const PYRAMID_HOST = "https://www.pyramidbrokerage.com";
@@ -25,10 +26,12 @@ export type PyramidSnapshot = {
   totalPages: number;
   observedAt: string;
   rows: any[];
+  passes: PyramidInventoryPass[];
 };
 
 export type PyramidDetail = {
   postId: number;
+  canonicalUrl: string | null;
   street: string | null;
   facts: Record<string, string>;
   description: string | null;
@@ -254,10 +257,15 @@ function pyramidSnapshotFingerprint(rows: any[]): string {
   return JSON.stringify(stableJsonValue(rows));
 }
 
+function textSha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 async function fetchPyramidSnapshotPass(
   fetchImpl: FetchLike = fetch
 ): Promise<PyramidSnapshot & { fingerprint: string }> {
   const first = await pyramidFetch(pyramidInventoryUrl(1), fetchImpl);
+  const firstObservedAt = new Date().toISOString();
   const total = requiredPositiveHeader(first.headers, "X-WP-Total");
   const totalPages = requiredPositiveHeader(first.headers, "X-WP-TotalPages");
   let firstRows: any;
@@ -291,10 +299,11 @@ async function fetchPyramidSnapshotPass(
       if (!Array.isArray(value) || value.length === 0) {
         throw new Error(`Pyramid inventory page ${page}/${totalPages} returned no rows`);
       }
-      return value;
+      return { rows: value, body: response.body, observedAt: new Date().toISOString() };
     }
   );
-  const rows = [...firstRows, ...pages.flat()];
+  const captured = [{ rows: firstRows, body: first.body, observedAt: firstObservedAt }, ...pages];
+  const rows = captured.flatMap((page) => page.rows);
   assertPyramidSnapshot(rows, total, totalPages);
   rows.sort((left, right) => Number(left.id) - Number(right.id));
   return {
@@ -303,6 +312,11 @@ async function fetchPyramidSnapshotPass(
     observedAt: new Date().toISOString(),
     rows,
     fingerprint: pyramidSnapshotFingerprint(rows),
+    passes: [{
+      fingerprint: textSha256(pyramidSnapshotFingerprint(rows)),
+      pages: captured.map((page, index) => [index + 1, pyramidInventoryUrl(index + 1), page.observedAt,
+        textSha256(page.body), total, totalPages, page.rows.map((row: any) => Number(row.id))]),
+    }],
   };
 }
 
@@ -327,6 +341,7 @@ export async function fetchPyramidSnapshot(
         totalPages: current.totalPages,
         observedAt: current.observedAt,
         rows: current.rows,
+        passes: [...previous.passes, ...current.passes],
       };
     }
     previous = current;
@@ -434,7 +449,7 @@ export function parsePyramidDetail(html: string, expectedPostId?: number): Pyram
     })
     .get()
     .filter((contact) => contact.name || contact.email);
-  return { postId, street: pyramidPropertyStreet($), facts, description, brochures, photos, contacts };
+  return { postId, canonicalUrl: pyramidAbsoluteUrl($('link[rel="canonical"]').attr("href")), street: pyramidPropertyStreet($), facts, description, brochures, photos, contacts };
 }
 
 function pyramidShortlinkPostId(value: unknown): number | null {
@@ -594,7 +609,17 @@ export async function srcPyramidBrokerage(
   if (monitor && requireFreshPropertyDetails()) {
     throw new Error("Pyramid fresh property details require full mode, not monitor mode");
   }
-  const snapshot = await fetchPyramidSnapshot();
+  const generationId = refreshGenerationId();
+  const generationStartedAt = refreshStartedAt();
+  const proofEnabled = !monitor && !Number.isFinite(max) && Boolean(generationId && generationStartedAt);
+  const key = proofEnabled ? JSON.stringify([generationId, generationStartedAt]) : null;
+  const snapshot = key && generationSnapshot?.key === key
+    ? generationSnapshot.snapshot : await fetchPyramidSnapshot();
+  if (key && generationSnapshot?.key !== key) {
+    // Publish only a successful immutable complete snapshot, never a promise.
+    freezeSnapshot(snapshot);
+    generationSnapshot = { key, snapshot };
+  }
   const eligible = snapshot.rows.filter((row) => pyramidTransaction(row) === tx);
   const selected = eligible.slice(0, Math.min(max, eligible.length));
   const truncated = selected.length < eligible.length;
@@ -613,6 +638,7 @@ export async function srcPyramidBrokerage(
     };
   }
 
+  const details: PyramidCurrentInventoryProof["details"] = [];
   const listings = await pmap(selected, 4, async (row) => {
     const url = pyramidAbsoluteUrl(row.link);
     if (!url) throw new Error(`Pyramid row ${row.id} has no valid detail URL`);
@@ -620,7 +646,20 @@ export async function srcPyramidBrokerage(
     const html = response.body;
     const observedAt = new Date().toISOString();
     const detail = parsePyramidDetail(html, Number(row.id));
-    return mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt);
+    if (proofEnabled && detail.canonicalUrl !== url) throw new Error("Pyramid detail canonical URL disagrees with inventory");
+    if (proofEnabled && !["sale", "lease"].includes(detail.facts["Sale/Lease"].trim().toLowerCase())) {
+      throw new Error("Pyramid strict proof has ambiguous detail transaction");
+    }
+    const mapped = mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt);
+    if (proofEnabled) {
+      if (![mapped.state, mapped.city, mapped.assetType].every((value) => typeof value === "string" && value.trim())) {
+        throw new Error("Pyramid strict proof lacks named location/property taxonomy");
+      }
+      const digest = textSha256(html);
+      mapped.wordpressRecord.detailResponseSha256 = digest;
+      details.push([Number(row.id), detail.canonicalUrl!, observedAt, digest]);
+    }
+    return mapped;
   });
   return {
     company: "Cushman & Wakefield | Pyramid Brokerage Company",
@@ -629,8 +668,24 @@ export async function srcPyramidBrokerage(
     totalAvailable: eligible.length,
     truncated,
     listings,
+    ...(proofEnabled ? { currentInventoryProof: {
+      schema: "pyramid-strict-detail-v1" as const, sourceKey: "pyramid-brokerage" as const,
+      transaction: tx, generationId: generationId!, generationStartedAt: generationStartedAt!,
+      total: snapshot.total, totalPages: snapshot.totalPages, observedAt: snapshot.observedAt,
+      passes: snapshot.passes,
+      cohort: snapshot.rows.map((row) => [Number(row.id), pyramidAbsoluteUrl(row.link)!, pyramidListingKey(row.link), pyramidTransaction(row)] as [number, string, string, Tx]),
+      details: details.sort((a, b) => a[0] - b[0]),
+    } } : {}),
     note:
       `exact ${snapshot.total}-record/${snapshot.totalPages}-page WordPress snapshot; ` +
       "disappearance is eligible only when truncated=false",
   };
+}
+
+let generationSnapshot: { key: string; snapshot: PyramidSnapshot } | null = null;
+
+function freezeSnapshot(value: any): void {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return;
+  for (const child of Object.values(value)) freezeSnapshot(child);
+  Object.freeze(value);
 }

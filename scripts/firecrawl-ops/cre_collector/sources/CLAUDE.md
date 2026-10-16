@@ -42,6 +42,13 @@ address text and scoped property photos; only the observed HTTPS image CDN is
 allowed alongside owned images. Detail ownership stays on the Pyramid host.
 No office-map/footer-logo fallback or coordinate inference is permitted.
 
+Pyramid strict first-seen proof is singleton full/uncapped sale+lease only. A
+successful immutable complete snapshot may be reused only within the exact
+nonempty generation+start; monitor, capped and standalone calls do not populate
+or consume it. Receipts retain two consecutive equal full-payload passes and
+each fresh detail's native ID, owned canonical URL, observation and body digest.
+No missing detail or absent taxonomy label is covered by an inventory receipt.
+
 ## external_id Rules (collector id → ingest)
 
 | Source | Stable `external_id` | Gotcha |

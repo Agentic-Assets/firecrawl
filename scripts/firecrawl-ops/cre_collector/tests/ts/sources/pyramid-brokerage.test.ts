@@ -13,6 +13,7 @@ import {
   parsePyramidDetail,
   pyramidFetch,
   pyramidInventoryUrl,
+  srcPyramidBrokerage,
 } from "../../../sources/pyramid-brokerage.js";
 import { brokers, resetBrokerStateForTests } from "../../../lib/broker.js";
 
@@ -519,4 +520,57 @@ test("Pyramid monitor does not promote site branding without a featured property
   const mapped = mapPyramidListing({ ...inventory, featured_media: 0, _embedded: { "wp:term": inventory._embedded["wp:term"] }, yoast_head_json: { og_image: [{ url: "https://www.pyramidbrokerage.com/logo.png" }] } }, "sale", "2026-07-30T18:00:00Z");
   assert.deepEqual(mapped.photos ?? [], []);
   assert.equal(mapped.preserveChildCollections, true);
+});
+
+test("Pyramid proof cache is immutable, generation-local and never used for monitor or caps", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const old = [process.env.CRE_REFRESH_GENERATION, process.env.CRE_REFRESH_STARTED_AT];
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    for (const [index, key] of ["CRE_REFRESH_GENERATION", "CRE_REFRESH_STARTED_AT"].entries()) {
+      if (old[index] === undefined) delete process.env[key]; else process.env[key] = old[index];
+    }
+  });
+  process.env.CRE_REFRESH_GENERATION = "pyramid-cache-test";
+  process.env.CRE_REFRESH_STARTED_AT = new Date(Date.now() - 1000).toISOString();
+  const rows = [row(1, PYRAMID_SALE_TERM_ID), row(2, PYRAMID_LEASE_TERM_ID)];
+  let inventory = 0;
+  let wrongCanonical = false;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith("/wp-json/")) {
+      inventory++;
+      return Response.json(rows, { headers: { "X-WP-Total": "2", "X-WP-TotalPages": "1" } });
+    }
+    const id = Number(url.pathname.match(/property-(\d+)/)?.[1]);
+    let html = detailHtml.replaceAll("101", String(id));
+    if (id === 2) html = html.replace('class="value">Sale<', 'class="value">Lease<');
+    html = html.replace("<head>", `<head><link rel="canonical" href="${wrongCanonical ? rows[1].link : rows[id - 1].link}">`);
+    return new Response(html);
+  };
+  const sale = await srcPyramidBrokerage("sale", Infinity, false);
+  assert.equal(inventory, 2);
+  assert.throws(() => (sale.currentInventoryProof as any).passes[0].pages.pop(), TypeError);
+  const lease = await srcPyramidBrokerage("lease", Infinity, false);
+  assert.equal(inventory, 2);
+  assert.deepEqual((sale.currentInventoryProof as any).cohort, (lease.currentInventoryProof as any).cohort);
+  assert.match((sale.currentInventoryProof as any).details[0][3], /^[a-f0-9]{64}$/);
+  await srcPyramidBrokerage("sale", 1, false);
+  assert.equal(inventory, 4);
+  // Monitor may be explicitly refused by strict env; use its normal supported mode.
+  const strict = process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
+  try { assert.equal((await srcPyramidBrokerage("sale", Infinity, true)).currentInventoryProof, undefined); }
+  finally { if (strict !== undefined) process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS = strict; }
+  assert.equal(inventory, 6);
+  process.env.CRE_REFRESH_STARTED_AT = new Date().toISOString();
+  await srcPyramidBrokerage("lease", Infinity, false);
+  assert.equal(inventory, 8);
+  process.env.CRE_REFRESH_GENERATION = "other-pyramid-generation";
+  wrongCanonical = true;
+  await assert.rejects(() => srcPyramidBrokerage("sale", Infinity, false), /canonical URL/);
+  assert.equal(inventory, 10);
+  delete process.env.CRE_REFRESH_GENERATION;
+  assert.equal((await srcPyramidBrokerage("lease", Infinity, false)).currentInventoryProof, undefined);
+  assert.equal(inventory, 12);
 });
