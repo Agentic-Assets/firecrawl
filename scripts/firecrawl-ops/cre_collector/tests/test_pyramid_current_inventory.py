@@ -36,7 +36,7 @@ def produce(root, total=100, *, lease_html=None):
     run_id = "2026-10-15T172001Z-123456abcdef"
     preload = root / "transport.mts"
     preload.write_text(r"""let inventory=0,details=0;
-const rows=Array.from({length:100},(_,i)=>({id:i+1,status:"publish",type:"pbc-listings",link:`https://www.pyramidbrokerage.com/listings/property-${i+1}/`,"sale-type":[i<50?246:249],"property-use":[1],city:[2],state:[3],title:{rendered:"Synthetic property"},_embedded:{"wp:term":[[{taxonomy:"property-use",name:"Industrial"}],[{taxonomy:"city",name:"Albany"}],[{taxonomy:"state",name:"NY"}]]}}));
+const rows=Array.from({length:100},(_,i)=>({id:i+1,status:"publish",type:"pbc-listings",link:`https://www.pyramidbrokerage.com/listings/property-${i+1}/`,"sale-type":[i<50?246:249],"property-use":[1],city:[2],state:[3],title:{rendered:"Synthetic property"},_embedded:{"wp:term":[[{id:i<50?246:249,taxonomy:"sale-type",name:i<50?"Sale":"Lease",slug:i<50?"sale":"lease"}],[{taxonomy:"property-use",name:"Industrial"}],[{taxonomy:"city",name:"Albany"}],[{taxonomy:"state",name:"NY"}]]}}));
 globalThis.fetch=async(input)=>{const url=new URL(String(input));if(url.hostname!=="www.pyramidbrokerage.com")throw Error("Unexpected offline endpoint");if(url.pathname==="/wp-json/wp/v2/pbc-listings"){inventory++;return Response.json(rows,{headers:{"X-WP-Total":"100","X-WP-TotalPages":"1"}})}const id=Number(url.pathname.match(/property-(\d+)/)?.[1]);if(!id)throw Error("Unexpected detail");details++;return new Response(`<html><head><title>Property</title><link rel="shortlink" href="https://www.pyramidbrokerage.com/?p=${id}"><link rel="canonical" href="${rows[id-1].link}"></head><body><main id="content"><section class="property-details"><ul><li><span class="name">Sale/Lease:</span><span class="value">${id<=50?"Sale":"Lease"}</span></li></ul></section><div class="property-content">Current property</div><div class="featured-image"><img src="https://cdn.photos.sparkplatform.com/cir/property.jpg"></div></main></body></html>`)};
 process.on("exit",()=>console.error(`OFFLINE_COUNTS ${inventory} ${details}`));""")
     transport = preload.read_text().replace("length:100", f"length:{total}")
@@ -385,7 +385,7 @@ def test_2069_member_actual_producer_and_worker_protocol_stay_bounded(
 ):
     large = tmp_path / "large"
     large.mkdir()
-    produced = produce(large, total=2069)
+    produced = produce(large, total=2069, lease_html=absent_tenure_html())
     assert "OFFLINE_COUNTS 42 2069" in produced[1]
     run, path, _, manifest, report = setup(tmp_path, produced)
     binding = admit(path, manifest, report)
@@ -465,13 +465,13 @@ def test_2069_member_actual_producer_and_worker_protocol_stay_bounded(
 
 
 def test_actual_producer_admission_worker_artifact_reaches_strict_summary(
-    tmp_path, produced, summary_evidence, monkeypatch
+    tmp_path, absent_produced, summary_evidence, monkeypatch
 ):
     import cre_checkpoint_series as series
     import test_notification_summary as support
     import cre_pipeline_artifact_worker as worker
 
-    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    run, path, artifact, manifest, report = setup(tmp_path, absent_produced)
     binding = admit(path, manifest, report)
     manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
     monkeypatch.setattr(
@@ -588,3 +588,121 @@ def test_unknown_primary_transaction_cannot_default_or_enter_proof(tmp_path, fac
     _, path, _, manifest, report = setup(admission_root, result)
     with pytest.raises(ValueError):
         admit(path, manifest, report)
+
+
+def absent_tenure_html():
+    record = json.loads(
+        (ROOT / "tests/fixtures/pyramid-354272-record.json").read_text()
+    )
+    html = (ROOT / "tests/fixtures/pyramid-354272-detail.html").read_text()
+    return html.replace(str(record["id"]), "119152").replace(
+        record["link"],
+        "https://www.pyramidbrokerage.com/listings/99-garnsey-road-pittsford-ny-r6580/",
+    )
+
+
+def test_absent_html_tenure_requires_record_owned_literal_evidence(tmp_path):
+    html = absent_tenure_html()
+    produced = produce(tmp_path, lease_html=html)
+    artifact = produced[0]
+    assert artifact["totalListings"] == 100
+    (tmp_path / "admission").mkdir()
+    run, path, artifact, manifest, report = setup(tmp_path / "admission", produced)
+    binding = admit(path, manifest, report)
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": binding}
+    assert admit(path, manifest, report, "aggregate") == binding
+    lease = next(
+        row for row in artifact["listings"] if row["transactionMode"] == "lease"
+    )
+    assert lease["detailFacts"] == {"Price": "Contact Agent"}
+    assert lease["detailTransactionFacts"] == {"count": 0}
+    assert lease["transactionEvidence"]["kind"] == "wordpress_sale_type"
+    assert lease["transactionType"] == "Lease"
+
+
+@pytest.fixture(scope="module")
+def absent_produced(tmp_path_factory):
+    return produce(
+        tmp_path_factory.mktemp("pyramid-absent"), lease_html=absent_tenure_html()
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "record_link",
+        "record_id",
+        "status",
+        "type",
+        "numeric_only",
+        "term_id",
+        "term_taxonomy",
+        "term_name",
+        "term_slug",
+        "duplicate_term",
+        "multiple_ids",
+        "missing_capture",
+        "blank",
+        "unknown",
+        "duplicate",
+        "present",
+        "page_hash",
+        "page_time",
+        "page_number",
+        "wrong_kind",
+        "wrong_tx",
+        "missing_evidence",
+    ],
+)
+def test_absent_tenure_proof_independently_refuses_mutation(
+    tmp_path, absent_produced, fault
+):
+    _, path, artifact, manifest, report = setup(tmp_path, absent_produced)
+    listing = next(r for r in artifact["listings"] if r["transactionMode"] == "lease")
+    record = listing["wordpressRecord"]
+    evidence = listing["transactionEvidence"]
+    if fault == "record_link":
+        record["link"] += "other/"
+    elif fault == "record_id":
+        record["id"] = 1
+    elif fault == "status":
+        record["status"] = "draft"
+    elif fault == "type":
+        record["type"] = "page"
+    elif fault == "numeric_only":
+        record.pop("saleTypeTerms")
+    elif fault.startswith("term_"):
+        record["saleTypeTerms"][0][fault[5:]] = {
+            "id": 246,
+            "taxonomy": "filter",
+            "name": "Both",
+            "slug": "sublease",
+        }[fault[5:]]
+    elif fault == "duplicate_term":
+        record["saleTypeTerms"] *= 2
+    elif fault == "multiple_ids":
+        record["saleType"] = [249, 246]
+    elif fault == "missing_capture":
+        listing.pop("detailTransactionFacts")
+    elif fault in ("blank", "unknown", "present"):
+        value = {"blank": "", "unknown": "Both", "present": "Lease"}[fault]
+        listing["detailFacts"]["Sale/Lease"] = value
+        listing["detailTransactionFacts"] = {"count": 1, "values": [value]}
+    elif fault == "duplicate":
+        listing["detailTransactionFacts"] = {"count": 2, "values": ["Lease", "Lease"]}
+    elif fault == "page_hash":
+        evidence["inventoryPage"][2] = "b" * 64
+    elif fault == "page_time":
+        evidence["inventoryPage"][1] = manifest["started_at"]
+    elif fault == "page_number":
+        evidence["inventoryPage"][0] = 2
+    elif fault == "wrong_kind":
+        evidence["kind"] = "html_property_fact"
+    elif fault == "wrong_tx":
+        evidence["transaction"] = "sale"
+    elif fault == "missing_evidence":
+        listing.pop("transactionEvidence")
+    refresh(path, artifact, manifest)
+    for phase in ("source", "aggregate"):
+        with pytest.raises((ValueError, KeyError, TypeError)):
+            admit(path, manifest, report, phase)
