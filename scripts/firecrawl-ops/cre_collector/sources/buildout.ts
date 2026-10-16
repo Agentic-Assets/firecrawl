@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/buildout.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -285,7 +286,7 @@ type BuildoutPageObservation = {
 
 function observeBuildoutPage(data: any, endpoint: string, transport: "direct_json" | "firecrawl_json"): any {
   return annotateBuildoutPage(data, {
-    observedAt: new Date().toISOString(),
+    observedAt: observationNow(),
     generationId: refreshGenerationId(),
     cacheDisposition: "live",
     endpoint,
@@ -387,7 +388,7 @@ export function writeBuildoutPageCache(
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
   const observation = data.__creFreshness as BuildoutPageObservation | undefined;
-  const cachedAt = observation?.observedAt ?? new Date().toISOString();
+  const cachedAt = observation?.observedAt ?? observationNow();
   writeFileSync(
     tmp,
     JSON.stringify(
@@ -636,7 +637,7 @@ export async function buildoutInventory(
           assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
           if (!d?.__creFreshness) {
             annotateBuildoutPage(d, {
-              observedAt: new Date().toISOString(),
+              observedAt: observationNow(),
               generationId: refreshGenerationId(),
               cacheDisposition: "live",
             });

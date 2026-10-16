@@ -1,3 +1,4 @@
+import { observationNow } from "./lib/observation-clock.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -175,7 +176,7 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
 }
 
 async function main() {
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
   const sources: any[] = [];
   const listings: any[] = [];
   const avisonTerminalFailures: Array<{
@@ -307,7 +308,7 @@ async function main() {
       pageCap: PAGE_CAP,
       mode: MONITOR ? "monitor" : "full",
       startedAt,
-      finishedAt: new Date().toISOString(),
+      finishedAt: observationNow(),
       freshness: {
         generationId: refreshGenerationId(),
         generationStartedAt: refreshStartedAt() ?? startedAt,
@@ -371,7 +372,7 @@ const ENRICH_COMPANY: Partial<Record<SourceKey, string>> = {
 // and emit the standard artifact with runMeta.mode="enrich". cre_ingest.py
 // consumes this artifact unchanged.
 async function enrichMain(claimPath: string): Promise<void> {
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
   const raw = readFileSync(claimPath, "utf8");
   const parsed = JSON.parse(raw) as { items?: EnrichItem[]; matthewsTargetedRefresh?: unknown };
   const items = Array.isArray(parsed.items) ? parsed.items : [];
@@ -411,7 +412,7 @@ async function enrichMain(claimPath: string): Promise<void> {
         },
       } : {}),
       startedAt,
-      finishedAt: new Date().toISOString(),
+      finishedAt: observationNow(),
     },
     sources,
     listings,

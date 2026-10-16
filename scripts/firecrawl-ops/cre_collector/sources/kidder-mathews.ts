@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import {
@@ -253,7 +254,7 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
       items: data.results,
       total: data.totalResultCount,
       truncated: false,
-      inventoryObservedAt: new Date().toISOString(),
+      inventoryObservedAt: observationNow(),
       generationId,
       strictValidated: true,
     };
@@ -289,7 +290,7 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
     items,
     total,
     truncated: failed > 0 || wantPages < allPages,
-    inventoryObservedAt: new Date().toISOString(),
+    inventoryObservedAt: observationNow(),
     generationId,
     strictValidated: strict,
   };

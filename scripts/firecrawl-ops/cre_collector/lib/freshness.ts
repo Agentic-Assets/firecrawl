@@ -1,3 +1,4 @@
+import { observationNow } from "./observation-clock.js";
 import { CacheDisposition, DetailObservation } from "../types.js";
 
 export function refreshGenerationId(): string | null {
@@ -31,7 +32,7 @@ export function generationMatches(generationId: unknown): boolean {
 export function detailObservation(
   method: string,
   cacheDisposition: CacheDisposition,
-  observedAt = new Date().toISOString(),
+  observedAt = observationNow(),
   extra: Partial<DetailObservation> = {}
 ): DetailObservation {
   return {

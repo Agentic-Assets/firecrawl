@@ -370,3 +370,9 @@ per attempt and roughly 1.9 KiB per final snapshot. One narrow runtime inspect
 completed in 260 ms. These are low-overhead evidence, not measured full-pipeline
 overhead percentages or production throughput. Local raw proof remains under
 `tasks/tmp/cre-performance-2026-09-13/`.
+
+## Observation clock and elapsed time
+
+NEW collector-owned observations and full/targeted run envelopes use the shared process UTC-plus-monotonic clock. This preserves within-process ordering through small system wall-clock adjustments. Provider modification dates, explicit timestamps and cached historical evidence retain their original values; pacing, TTL and duration uses of `Date.now()` are unchanged.
+
+The clock produces no messages for ordinary small drift. Invalid monotonic samples or wall drift beyond the existing five-minute outer ceiling stop new evidence publication with a bounded actionable error. Existing generation, cross-process and stricter admission/future-clock checks remain authoritative; this mechanism neither synchronizes hosts nor repairs historical artifacts.

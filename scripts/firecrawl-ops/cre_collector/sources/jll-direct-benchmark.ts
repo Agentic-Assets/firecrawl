@@ -3,6 +3,7 @@
  * No provider, API, cache, filesystem or database connection is opened here.
  */
 import { createHash } from "node:crypto";
+import { observationNow } from "../lib/observation-clock.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { stripHtmlText } from "../lib/html.js";
 import type { ScrapedDoc } from "../types.js";
@@ -357,7 +358,7 @@ export async function runJllTransportMatrix(options: {
       const context: JllArmContext = {
         armId: `${transport}:c${concurrency}`,
         clientConcurrency: concurrency,
-        startedAt: new Date(wallStarted).toISOString(),
+        startedAt: observationNow(),
       };
       let armGeneration: string | null = null;
       const rows: JllBenchmarkCapture[] = new Array(members.length);

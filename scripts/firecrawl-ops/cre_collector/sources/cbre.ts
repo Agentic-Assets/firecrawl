@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/cbre.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { createHash, randomUUID } from "node:crypto";
 
@@ -607,7 +608,7 @@ async function fetchCbreSnapshotPass(
     total: documents.length,
     documents,
     reportedTotals,
-    observedAt: new Date().toISOString(),
+    observedAt: observationNow(),
     fingerprint: cbreSnapshotFingerprint(documents),
     identityFingerprint: cbreIdentityFingerprint(documents),
   };
@@ -791,7 +792,7 @@ export async function srcCbre(
   const observed = detailObservation(
     "cbre_listings_api",
     strict ? "live" : "generation_cache",
-    snapshotObservedAt ?? new Date().toISOString(),
+    snapshotObservedAt ?? observationNow(),
   );
   const text = (loc: any) =>
     Array.isArray(loc) && loc.length ? clean(loc[0]["Common.Text"]) : null;

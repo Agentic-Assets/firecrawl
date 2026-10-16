@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
 import { detailObservation, refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
@@ -316,7 +317,7 @@ export async function srcInterraRealty(
     throw new Error("Interra strict refresh requires CRE_REFRESH_GENERATION");
   }
   const inventory = await fetchInterraInventory(fetchImpl);
-  const observedAt = new Date().toISOString();
+  const observedAt = observationNow();
   const active = inventory.rows.filter((row) =>
     ["available", "under_contract"].includes(
       clean(row.meta?.listing_status)?.toLowerCase() ?? ""

@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/jll-investor.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { brokerRef, brokers } from "../lib/broker.js";
@@ -475,7 +476,7 @@ async function collectJllInvestorSearchPass(): Promise<JllInvestorSearchSnapshot
   }
   return {
     count: first.count,
-    observedAt: new Date().toISOString(),
+    observedAt: observationNow(),
     pages,
     rows,
   };

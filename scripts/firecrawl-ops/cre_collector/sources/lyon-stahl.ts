@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
@@ -625,14 +626,14 @@ export async function srcLyonStahl(
   });
   const urls = dedupeStrings(propertySnapshots.flat());
 
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const take = Number.isFinite(max) ? urls.slice(0, Math.max(0, max)) : urls;
   const outcomes = await pmap(take, LYON_STAHL_DETAIL_CONCURRENCY, async (url) => {
     try {
       const html = await lyonStahlFetchText(url, "html");
       return parseLyonStahlDetail(html, url, tx, {
         inventoryObservedAt,
-        detailObservedAt: new Date().toISOString(),
+        detailObservedAt: observationNow(),
       });
     } catch (error) {
       console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);

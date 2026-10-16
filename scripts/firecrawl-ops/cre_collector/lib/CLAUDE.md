@@ -43,3 +43,9 @@
 - `../sources/CLAUDE.md` (adapters, monitor, `external_id`)
 - `../CLAUDE.md` (orchestration, ingest, daily ops)
 - `../../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`
+
+## Own observation timestamps
+
+Use `observationNow()` from `observation-clock.ts` for NEW collector-owned observation and run-envelope timestamps. One process UTC anchor plus monotonic elapsed time keeps these stamps ordered through small wall-clock adjustments. Do not replace provider modification dates, explicit passed timestamps, or cached historical observations; keep `Date.now()` pacing, TTL and duration behavior unchanged.
+
+The shared clock refuses invalid/regressing monotonic samples or wall drift beyond the existing five-minute outer bound with a bounded numeric error. Small drift emits no diagnostic. This is not cross-process synchronization: existing generation/attempt chronology and stricter source future-time checks still apply, and may refuse earlier. Never reanchor, clamp to generation start or restamp old evidence to make validation pass.

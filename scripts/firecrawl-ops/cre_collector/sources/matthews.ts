@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { Agent, fetch as undiciFetch } from "undici";
 import { brokerRef } from "../lib/broker.js";
@@ -684,7 +685,7 @@ async function enrichMatthewsObservedListing(item: {
     const listing = parseMatthewsDetail(response.html, normalized, tx, {
       strict: true,
       inventoryObservedAt,
-      detailObservedAt: new Date().toISOString(),
+      detailObservedAt: observationNow(),
     });
     if (!listing || listing.id !== item.externalId) return null;
     return prune({ ...listing, url: item.url });
@@ -743,7 +744,7 @@ export async function matthewsFreshInventory(targeted = false): Promise<{
   if (!sitemap.html) throw new Error("Matthews: sitemap did not return an XML response body");
   const xml = sitemap.html;
   // Legacy full/monitor keeps its existing receipt instant and URL projection.
-  const receivedAt = new Date().toISOString();
+  const receivedAt = observationNow();
   const duplicateComparisons = new Set<string>();
   let detailUrls: string[];
   if (targeted) {
@@ -798,7 +799,7 @@ export async function matthewsFreshInventory(targeted = false): Promise<{
   }
   return {
     detailUrls,
-    inventoryObservedAt: targeted ? new Date().toISOString() : receivedAt,
+    inventoryObservedAt: targeted ? observationNow() : receivedAt,
     duplicateComparisons,
   };
 }
@@ -961,7 +962,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       }
       const listing = parseMatthewsDetail(html, url, tx, {
         inventoryObservedAt,
-        detailObservedAt: new Date().toISOString(),
+        detailObservedAt: observationNow(),
       });
       if (!listing) {
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);

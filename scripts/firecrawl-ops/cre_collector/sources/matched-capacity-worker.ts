@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // Short-lived foreground child only. The Python coordinator owns the canonical
 // lock, host guards, process deadline, exact runtime and remote settlement.
 import { constants, fstatSync, openSync, closeSync, readSync, writeFileSync,
@@ -107,7 +108,7 @@ export async function executeMatchedWorker(input: WorkerInput, output: string, s
   await verifyInventory(input);
   const captured = new Map<string, CapturedDetail>();
   let captureBytes = 0;
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
   const result = await withProductionMatchedCapture({ source: input.cohort.source, generationId: input.generationId,
     onCaptured: (member, value) => {
       // Private evidence shares this real rendered result with AGENTIC-2898.
@@ -129,7 +130,7 @@ export async function executeMatchedWorker(input: WorkerInput, output: string, s
   const transactions = [...new Set(listings.map((row) => row.transactionMode))];
   writeWorkerOutput(join(output, "collector.json"), {
     description: "Bounded no-write matched detail sample; not a full inventory sweep",
-    runMeta: { mode: "enrich", startedAt, finishedAt: new Date().toISOString(), transactions,
+    runMeta: { mode: "enrich", startedAt, finishedAt: observationNow(), transactions,
       freshness: { generationId: input.generationId, generationStartedAt: input.cohort.inventoryStartedAt,
         requireFreshDetails: true, requireFreshPropertyDetails: true } },
     sources: transactions.map((transaction) => ({ sourceKey: source, transaction, company, supported: true,
@@ -150,7 +151,7 @@ export async function prepareJllInventory(input: PreparationInput, output: strin
   const jll = await import("./jll.js");
   if (!(jll.JLL_PROPERTY_TYPES as readonly string[]).includes(input.propertyType)) throw new MatchedCapacityError("preparation_scope");
   const originalFetch = globalThis.fetch;
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
   let dispatches = 0;
   let nativeBody: string | undefined;
   globalThis.fetch = async (url, init) => {
@@ -170,10 +171,10 @@ export async function prepareJllInventory(input: PreparationInput, output: strin
   try {
     const page = await jll.fetchJllSearchPage(input.transaction, input.propertyType, 1);
     if (signal.aborted || dispatches !== 1 || nativeBody === undefined || page.listings.length < input.members) throw new MatchedCapacityError("preparation_incomplete");
-    const observedAt = new Date().toISOString();
+    const observedAt = observationNow();
     const listings = page.listings.map((row) => ({ ...row, sourceKey: "jll", sourceCompany: "JLL",
       transactionMode: input.transaction, inventoryObservedAt: observedAt }));
-    const finishedAt = new Date().toISOString();
+    const finishedAt = observationNow();
     const artifact = { kind: "cre_matched_inventory", runMeta: { mode: "enumeration_only", startedAt, finishedAt },
       scope: { source: "jll", transaction: input.transaction, propertyType: input.propertyType,
         page: 1, clientDispatches: dispatches, fullInventory: false },
@@ -197,7 +198,7 @@ export async function prepareMarcusInventory(members: number, output: string, si
   let active = 0;
   let peak = 0;
   const bodies: { url: string; body: string; sha256: string }[] = [];
-  const startedAt = new Date().toISOString();
+  const startedAt = observationNow();
   globalThis.fetch = async (url, init) => {
     const address = String(url);
     if (signal.aborted || dispatches++ >= members + 2 || init?.method !== "POST"
@@ -230,7 +231,7 @@ export async function prepareMarcusInventory(members: number, output: string, si
         || bodies.length !== dispatches || source.listings.some((row: any) => row.detailError || row.detailObservedAt || !row.id || !row.url)) throw new MatchedCapacityError("preparation_incomplete");
     const listings = source.listings.map((row: any) => ({ ...row, sourceKey: "marcus-millichap",
       sourceCompany: source.company, transactionMode: "sale" }));
-    const finishedAt = new Date().toISOString();
+    const finishedAt = observationNow();
     const artifact = { runMeta: { mode: "monitor", startedAt, finishedAt },
       scope: { fullInventory: false, maximumMembers: members, actualClientCap: 2, observedClientPeak: peak,
         clientDispatches: dispatches, heavyDetailsRequested: false },

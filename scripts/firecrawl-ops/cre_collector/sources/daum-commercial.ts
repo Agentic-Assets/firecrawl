@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { detailObservation } from "../lib/freshness.js";
@@ -680,7 +681,7 @@ export async function fetchDaumSnapshot(
         rows: current.rows,
         lifecycleExact: true,
         reportedTotals: current.reportedTotals,
-        observedAt: new Date().toISOString(),
+        observedAt: observationNow(),
       };
     }
     if (previous) {
@@ -831,7 +832,7 @@ export async function srcDaumCommercial(
   let resolvedToOtherPass = 0;
   for (const row of selected) {
     const html = await transport.get(row.url);
-    const detailObservedAt = new Date().toISOString();
+    const detailObservedAt = observationNow();
     const detail = parseDaumDetail(html, row.url);
     const resolvedTenure = resolveDaumTenure(row.tenure, detail.tenure);
     if (resolvedTenure === "unknown") {

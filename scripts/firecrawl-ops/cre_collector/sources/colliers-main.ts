@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/colliers-main.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -551,7 +552,7 @@ export function mapColliersMainCoveoListing(
     .map((v) => typeof v === "string" ? v : `${v?.Name ?? ""} ${v?.Value ?? ""}`);
   const zoning = clean(facts.find((v) => /^zoning\s*:/i.test(v))?.replace(/^zoning\s*:\s*/i, ""));
   const yearBuilt = Number(facts.join(" ").match(/Year Built\s*:\s*((?:18|19|20)\d{2})/i)?.[1] ?? 0) || null;
-  const observedAt = new Date().toISOString();
+  const observedAt = observationNow();
   const listing = prune({
     id: entry.id, name: clean(raw.propertyz32xtitle) ?? entry.id, headline: clean(raw.propertyz32xtitle),
     transactionType, assetType: clean(raw.primarypropertytype ?? raw.propertytypescomputed?.[0]),
@@ -896,7 +897,7 @@ export async function fetchColliersMainEntries(
       const propsXml = await raw(propsSitemap, scrapeOpts);
       const seen = new Set<string>();
       const entries: ColliersMainEntry[] = [];
-      const inventoryObservedAt = new Date().toISOString();
+      const inventoryObservedAt = observationNow();
       const sitemapEntries = extractSitemapUrlEntries(propsXml);
       if (!sitemapEntries.length) {
         throw new Error("Colliers main: ?type=properties sitemap had no URL rows");
@@ -1385,7 +1386,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
       listing = undefined;
     }
     if (listing) {
-      const validatedAt = entry.inventoryObservedAt ?? new Date().toISOString();
+      const validatedAt = entry.inventoryObservedAt ?? observationNow();
       listing = {
         ...listing,
         inventoryObservedAt: validatedAt,
@@ -1410,7 +1411,7 @@ export async function colliersMainEnrichAll(max: number): Promise<any[]> {
       fetchBudget--;
       try {
         const docDoc = await scrapeColliersMainDetailDoc(entry.url);
-        const observed = detailObservation("colliers_main_detail", "live", new Date().toISOString(), {
+        const observed = detailObservation("colliers_main_detail", "live", observationNow(), {
           sourceRevision: entry.lastmod,
         });
         listing = {

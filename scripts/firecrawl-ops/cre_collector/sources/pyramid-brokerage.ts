@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
 import { brokerRef } from "../lib/broker.js";
@@ -271,7 +272,7 @@ async function fetchPyramidSnapshotPass(
   fetchImpl: FetchLike = fetch
 ): Promise<PyramidSnapshot & { fingerprint: string }> {
   const first = await pyramidFetch(pyramidInventoryUrl(1), fetchImpl);
-  const firstObservedAt = new Date().toISOString();
+  const firstObservedAt = observationNow();
   const total = requiredPositiveHeader(first.headers, "X-WP-Total");
   const totalPages = requiredPositiveHeader(first.headers, "X-WP-TotalPages");
   let firstRows: any;
@@ -305,7 +306,7 @@ async function fetchPyramidSnapshotPass(
       if (!Array.isArray(value) || value.length === 0) {
         throw new Error(`Pyramid inventory page ${page}/${totalPages} returned no rows`);
       }
-      return { rows: value, body: response.body, observedAt: new Date().toISOString() };
+      return { rows: value, body: response.body, observedAt: observationNow() };
     }
   );
   const captured = [{ rows: firstRows, body: first.body, observedAt: firstObservedAt }, ...pages];
@@ -315,7 +316,7 @@ async function fetchPyramidSnapshotPass(
   return {
     total,
     totalPages,
-    observedAt: new Date().toISOString(),
+    observedAt: observationNow(),
     rows,
     fingerprint: pyramidSnapshotFingerprint(rows),
     passes: [{
@@ -706,7 +707,7 @@ export async function srcPyramidBrokerage(
     if (!url) throw new Error(`Pyramid row ${row.id} has no valid detail URL`);
     const response = await pyramidFetch(url, fetch);
     const html = response.body;
-    const observedAt = new Date().toISOString();
+    const observedAt = observationNow();
     const detail = parsePyramidDetail(html, Number(row.id));
     if (proofEnabled && detail.canonicalUrl !== url) throw new Error("Pyramid detail canonical URL disagrees with inventory");
     const page = proofEnabled ? snapshot.passes[1].pages.find((page) => page[6].includes(Number(row.id))) : undefined;

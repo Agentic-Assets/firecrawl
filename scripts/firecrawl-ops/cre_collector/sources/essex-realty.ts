@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { detailObservation, refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
 import { parseMoney } from "../lib/parse.js";
@@ -523,12 +524,12 @@ export async function srcEssexRealty(
     throw new Error("Essex strict refresh requires CRE_REFRESH_GENERATION");
   }
   const inventory = await fetchEssexInventory(transport);
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const selected = inventory.current.slice(0, Math.max(0, max));
   const listings: any[] = [];
   for (const row of selected) {
     const html = await transport.getText(row.url, ESSEX_MAX_DETAIL_BYTES);
-    const detailObservedAt = new Date().toISOString();
+    const detailObservedAt = observationNow();
     listings.push(
       mapEssexDetail(
         parseEssexDetail(html, row.url, row.lifecycle as EssexCurrentLifecycle),

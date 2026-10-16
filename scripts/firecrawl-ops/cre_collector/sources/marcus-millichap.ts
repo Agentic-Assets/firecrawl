@@ -1,3 +1,4 @@
+import { observationNow } from "../lib/observation-clock.js";
 // sources/marcus-millichap.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { createHash, randomUUID } from "node:crypto";
@@ -607,7 +608,7 @@ export function prepareMarcusDetailCache(path: string, attemptId: string): void 
     kind: "marcus-detail-cache",
     schemaVersion: MARCUS_DETAIL_CACHE_SCHEMA_VERSION,
     attemptId,
-    createdAt: new Date().toISOString(),
+    createdAt: observationNow(),
   };
   // Every collector process is a distinct freshness attempt. Reusing a sidecar
   // from a prior retry would make a newly timestamped artifact stale, so reset
@@ -692,7 +693,7 @@ export function appendMarcusDetailCache(
       attemptId,
       key,
       baseIdentity,
-      fetchedAt: new Date().toISOString(),
+      fetchedAt: observationNow(),
       listing,
     })}\n`
   );
@@ -855,7 +856,7 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
   const mapRows = await fetchMarcusMapRows();
   if (!mapRows.length) throw new Error("Marcus & Millichap public mapproperties API returned no rows");
   assertMarcusInventoryCount(total, mapRows);
-  const inventoryObservedAt = new Date().toISOString();
+  const inventoryObservedAt = observationNow();
   const observedMapRows = mapRows.map((row) => ({
     ...row,
     __creInventoryObservedAt: inventoryObservedAt,

@@ -7337,6 +7337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifest["status"] = "interrupted"
         manifest["resource_stop"] = None
         manifest["error"] = "operator interruption"
+        manifest["finished_at"] = utc_now()
         persist_terminal()
         return 130
     except Exception as exc:
@@ -7346,6 +7347,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifest["status"] = "failed"
         manifest["resource_stop"] = None
         manifest["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+        manifest["finished_at"] = utc_now()
         persist_terminal()
         raise
     finally:
