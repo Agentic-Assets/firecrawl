@@ -309,19 +309,6 @@ export function assertAvisonYoungDetailDoc(
     return listing;
   }
 
-  const hasPartialSharpLaunchBuildingMarkers =
-    $(".building__property-info-box").length > 0
-    || $(".availability-card-v2").length > 0;
-  if (
-    requestedOnSharpLaunchHost
-    && requestedSharpLaunchMatch
-    && !listing
-    && hasPartialSharpLaunchBuildingMarkers
-    && !hasSharpLaunchBuildingLayout
-  ) {
-    throw new Error("Avison Young detail structure was not recognized");
-  }
-
   const hasStructure = Boolean(
     listing
     || (
@@ -334,6 +321,19 @@ export function assertAvisonYoungDetailDoc(
       )
     )
   );
+  const hasPartialSharpLaunchBuildingMarkers =
+    $(".building__property-info-box").length > 0
+    || $(".availability-card-v2").length > 0;
+  if (
+    requestedOnSharpLaunchHost
+    && requestedSharpLaunchMatch
+    && !listing
+    && hasPartialSharpLaunchBuildingMarkers
+    && !hasSharpLaunchBuildingLayout
+    && !hasStructure
+  ) {
+    throw new Error("Avison Young detail structure was not recognized");
+  }
   if (!hasStructure) {
     throw new Error("Avison Young detail structure was not recognized");
   }

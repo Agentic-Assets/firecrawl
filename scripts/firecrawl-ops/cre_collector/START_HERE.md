@@ -15,10 +15,11 @@
 > Unattended scheduled operation is a goal, not blanket current acceptance; see
 > [the operating goal and acceptance](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#unattended-operating-goal).
 
-> **Supported production path:** When collection and ingest are enabled, they
-> run here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`, and
-> `cre_daily_update.sh`). `../cre_scrapers/brokers/` is legacy reference code,
-> not a source of board updates.
+> **Collector implementation:** Source adapters and ingest implementation live
+> here (`collect.ts`, `sources/*.ts`, `cre_ingest.py`). For supervised refreshes,
+> use `cre_checkpoint_refresh.py` or `cre_checkpoint_series.py`; `cre_daily_update.sh`
+> is a legacy backstop, not the default supervised entrypoint. `../cre_scrapers/brokers/`
+> is legacy reference code, not a source of board updates.
 
 For provider, endpoint, or page-layout variations, follow the source-backed
 [brokerage completion and evidence guidance](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)

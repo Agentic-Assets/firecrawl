@@ -813,6 +813,22 @@ test("Avison recognizes the observed SharpLaunch property layout only with bound
   assert.doesNotThrow(() =>
     assertAvisonYoungDetailDoc(olderRecognizedNativePage, nativeUrl, base)
   );
+  for (const incidentalMarker of [
+    "building__property-info-box",
+    "availability-card-v2",
+  ]) {
+    const legacyPageWithIncidentalMarker = {
+      ...doc(
+        '<html><main class="property-detail"><h1>Fixture Commerce Center</h1>' +
+          '<p>159 Example Street, Brooklyn, NY</p>' +
+          '<div class="' + incidentalMarker + '">Legacy markup</div></main></html>'
+      ),
+      metadata: { sourceURL: nativeUrl, statusCode: 200 },
+    };
+    assert.doesNotThrow(() =>
+      assertAvisonYoungDetailDoc(legacyPageWithIncidentalMarker, nativeUrl, base)
+    );
+  }
 
   assert.throws(
     () =>
@@ -885,7 +901,10 @@ test("Avison recognizes the observed SharpLaunch property layout only with bound
   );
 
   const incompleteNativeTemplate = {
-    ...doc(rawHtml.replaceAll("availability-card-v2", "unrelated-card")),
+    ...doc(rawHtml
+      .replaceAll("availability-card-v2", "unrelated-card")
+      .replace("<main>", "<div>")
+      .replace("</main>", "</div>")),
     metadata: { sourceURL: nativeUrl, statusCode: 200 },
   };
   assert.throws(
