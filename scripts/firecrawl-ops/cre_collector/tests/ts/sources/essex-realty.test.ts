@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import {
+  createPerformanceRecorder,
+  resetPerformanceRecorderForTests,
+  setPerformanceRecorderForTests,
+  withPerformanceSource,
+} from "../../../lib/performance.js";
 import {
   createEssexTransport,
   essexAssetUrl,
@@ -361,6 +370,166 @@ test("Essex transport enforces host, byte bound, and Crawl-delay serially", asyn
     assert.equal(cancelled, true);
   } finally {
     Date.now = realNow;
+  }
+});
+
+test("Essex transport records bounded direct outcomes and pacing without changing errors", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "essex-direct-performance-"));
+  const path = join(dir, "performance.json");
+  let monotonic = 0;
+  let wall = 1_000;
+  const realDateNow = Date.now;
+  const timeoutError = new DOMException("The request was aborted", "AbortError");
+  const recorder = createPerformanceRecorder({
+    path,
+    runId: "2026-09-13T120000Z-abcdef123456",
+    commandId: "0123456789abcdef0123456789abcdef",
+    monotonicMs: () => monotonic,
+    nowIso: () => new Date(Date.UTC(2026, 8, 13, 12) + monotonic).toISOString(),
+    processResources: () => ({ rssBytes: 100, cpuUserMicros: 10, cpuSystemMicros: 5 }),
+  });
+  assert.ok(recorder);
+  const calls: string[] = [];
+  const transport = createEssexTransport(
+    async (input) => {
+      const url = String(input);
+      calls.push(url);
+      monotonic += 5;
+      if (url === "https://essexrealtygroup.com/properties/") {
+        return new Response("archive", { status: 200 });
+      }
+      if (url === "https://essexrealtygroup.com/properties/?sale_deal_status_id=3") {
+        return new Response("upstream", { status: 503 });
+      }
+      if (url === "https://essexrealtygroup.com/properties-sitemap.xml") {
+        throw timeoutError;
+      }
+      return new Response("", { status: 200, headers: { "content-length": "20" } });
+    },
+    async (ms) => {
+      wall += ms;
+      monotonic += ms;
+    },
+    10
+  );
+  Date.now = () => wall;
+  setPerformanceRecorderForTests(recorder);
+  try {
+    await withPerformanceSource("essex-realty", "sale", async () => {
+      assert.equal(await transport.getText("https://essexrealtygroup.com/properties/"), "archive");
+      await assert.rejects(
+        () => transport.getText("https://essexrealtygroup.com/properties/?sale_deal_status_id=3"),
+        /HTTP 503/
+      );
+      await assert.rejects(
+        () => transport.getText("https://essexrealtygroup.com/properties-sitemap.xml"),
+        (error) => error === timeoutError
+      );
+      await assert.rejects(
+        () => transport.getText("https://essexrealtygroup.com/properties/detail/", 1),
+        /exceeds 1 bytes/
+      );
+    });
+    recorder.flush(true);
+    const snapshot = JSON.parse(readFileSync(path, "utf8"));
+    const rows = snapshot.metrics.direct_provider_requests.by_source_transaction_role;
+    const row = (role: string) => rows.find((entry: any) => entry.role === role);
+    assert.deepEqual(calls, [
+      "https://essexrealtygroup.com/properties/",
+      "https://essexrealtygroup.com/properties/?sale_deal_status_id=3",
+      "https://essexrealtygroup.com/properties-sitemap.xml",
+      "https://essexrealtygroup.com/properties/detail/",
+    ]);
+    assert.deepEqual(
+      [row("current_archive").succeeded, row("current_archive").status_counts["200"]],
+      [1, 1]
+    );
+    assert.deepEqual(
+      [row("closed_archive").failed, row("closed_archive").status_counts["503"], row("closed_archive").error_categories.http_5xx],
+      [1, 1, 1]
+    );
+    assert.equal(row("sitemap").error_categories.timeout, 1);
+    assert.deepEqual(
+      [row("detail").error_categories.response_too_large, row("detail").status_counts["200"]],
+      [1, 1]
+    );
+    for (const role of ["closed_archive", "sitemap", "detail"]) {
+      assert.equal(row(role).pacing_waits_completed, 1);
+      assert.equal(row(role).pacing_wait_ms_scheduled, 10);
+      assert.equal(row(role).pacing_wait_ms_elapsed, 10);
+    }
+    assert.equal(snapshot.metrics.requests.attempts_started, 0);
+    assert.doesNotMatch(JSON.stringify(snapshot), /https?:\/\/|upstream/);
+  } finally {
+    Date.now = realDateNow;
+    resetPerformanceRecorderForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Essex pending direct request is visible in the real snapshot before completion", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "essex-direct-active-"));
+  const path = join(dir, "performance.json");
+  let monotonic = 0;
+  let releaseFetch: ((response: Response) => void) | undefined;
+  let notifyFetchStarted: (() => void) | undefined;
+  const fetchStarted = new Promise<void>((resolve) => { notifyFetchStarted = resolve; });
+  const recorder = createPerformanceRecorder({
+    path,
+    runId: "2026-09-13T120000Z-abcdef123456",
+    commandId: "0123456789abcdef0123456789abcdef",
+    monotonicMs: () => monotonic,
+    nowIso: () => new Date(Date.UTC(2026, 8, 13, 12) + monotonic).toISOString(),
+    processResources: () => ({ rssBytes: 100, cpuUserMicros: 10, cpuSystemMicros: 5 }),
+  });
+  assert.ok(recorder);
+  const transport = createEssexTransport(
+    async () => {
+      notifyFetchStarted?.();
+      return new Promise<Response>((resolve) => { releaseFetch = resolve; });
+    },
+    async () => {},
+    0
+  );
+  setPerformanceRecorderForTests(recorder);
+  try {
+    recorder.recordSourceStarted({ source: "essex-realty", transaction: "sale" });
+    const pending = withPerformanceSource("essex-realty", "sale", () =>
+      transport.getText("https://essexrealtygroup.com/properties/")
+    );
+    await fetchStarted;
+
+    const inProgress = JSON.parse(readFileSync(path, "utf8"));
+    const current = inProgress.metrics.direct_provider_requests.by_source_transaction_role
+      .find((row: any) => row.role === "current_archive");
+    assert.equal(inProgress.terminal, false);
+    assert.equal(current.attempts_started, 1);
+    assert.equal(current.attempts_completed, 0);
+    assert.equal(current.active_locally_awaited, 1);
+    assert.deepEqual(current.latency_histogram, {
+      bounds_ms: [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000],
+      counts: Array(11).fill(0),
+    });
+
+    monotonic = 25_000;
+    releaseFetch?.(new Response("archive", { status: 200 }));
+    assert.equal(await pending, "archive");
+    recorder.recordSourceCompleted(
+      { source: "essex-realty", transaction: "sale" },
+      "succeeded",
+      0
+    );
+    recorder.flush(true);
+    const terminal = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(terminal.terminal, true);
+    const completed = terminal.metrics.direct_provider_requests.by_source_transaction_role
+      .find((row: any) => row.role === "current_archive");
+    assert.equal(completed.attempts_completed, 1);
+    assert.equal(completed.active_locally_awaited, 0);
+    assert.equal(completed.status_counts["200"], 1);
+  } finally {
+    resetPerformanceRecorderForTests();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

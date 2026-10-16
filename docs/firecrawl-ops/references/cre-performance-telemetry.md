@@ -69,7 +69,7 @@ strict-detail counts are not inferred by the performance report.
 |---|---|---|
 | Command journal | `logs/COMMAND.performance.jsonl` | Start, terminal outcome and monotonic duration of collection, health, validation, gate and ingest subprocesses. Each invocation has a distinct ID, including repeated uses of the same log during resume. |
 | Validation query timings | `pre-validation.json` and `validation.json` under top-level `query_timings` | Per-query psql client elapsed milliseconds, keyed by the existing validation query name. This includes client-side result handling and is not pure server execution time. |
-| Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, client attempts, retry/backoff, latency histogram, locally awaited concurrency, JLL detail cache, source outcomes and sampled Node resources. |
+| Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, Firecrawl client attempts, retry/backoff, latency histogram, locally awaited concurrency, Essex direct-provider requests, JLL detail cache, source outcomes and sampled Node resources. |
 | Initial runtime configuration | `runtime-performance.json` | Known API/browser container IDs, image IDs and configured CPU/memory/PID/shared-memory/port limits, plus available host CPU/RAM configuration. One narrow read before the guard starts; not current usage. |
 | Resource timeline | `resource-usage.jsonl` | Five-second platform-specific CPU/load, memory/pressure/swap, filesystem capacity, owned process RSS and selected Compose API/browser container usage, limits and OOM/restart snapshots. Each resume has a distinct session ID and monotonic clock. |
 | Required guards | `logs/host-cpu-guard.jsonl`, `logs/host-memory-guard.jsonl` | Platform-selected CPU and memory-pressure stop decisions. Darwin uses Mach/sysctl; Linux uses `/proc`, PSI and visible cgroup evidence. Under WSL these cover the Linux VM, not aggregate Windows load. Memory warning defaults to 20 seconds; critical stops immediately; missing/stale required telemetry fails closed. |
@@ -87,6 +87,15 @@ and bounded HTTP status counts for later analysis. It does not contain URLs,
 page bodies, broker/contact records, exception messages, command-line secrets
 or environment values. Sensitive raw business artifacts stay in their existing
 governed artifact locations, not in the optimization log.
+
+Direct-provider telemetry is separate from Firecrawl helper requests. Current
+coverage is limited to Essex's current archive, closed archive, sitemap and
+detail roles, grouped by transaction and role; other direct adapters remain
+unknown. Its request latency covers the direct fetch and bounded body read, not
+the local pacing interval. Pacing records the requested delay and observed
+elapsed wait separately. These aggregate counts and finite status/error
+categories describe transport work only; they do not establish parsing,
+inventory completeness, detail quality or a performance improvement.
 
 Runtime configuration resolves the selected Compose project and services,
 checks the API loopback endpoint binding and reads narrow Docker inspect fields,

@@ -36,6 +36,14 @@ export type PerformanceErrorCategory =
 export type RetryLayer = "http_helper" | "json_parse";
 export type JllCacheEvent = "hit" | "miss" | "refresh_bypass";
 export type LogicalScrapeKind = "raw" | "doc" | "json";
+export type DirectProviderRequestRole =
+  | "current_archive"
+  | "closed_archive"
+  | "sitemap"
+  | "detail";
+
+export type DirectProviderErrorCategory = PerformanceErrorCategory | "response_too_large";
+type DirectProviderTransaction = Tx | "unknown";
 
 type SourceContext = {
   source: SourceKey;
@@ -45,6 +53,19 @@ type SourceContext = {
 export type ClientAttemptToken = {
   readonly startedMs: number;
   readonly sourceContext: SourceContext | undefined;
+  completed: boolean;
+};
+
+export type DirectProviderAttemptToken = {
+  readonly key: string;
+  readonly startedMs: number;
+  completed: boolean;
+};
+
+export type DirectProviderPacingToken = {
+  readonly key: string;
+  readonly startedMs: number;
+  readonly scheduledMs: number;
   completed: boolean;
 };
 
@@ -66,6 +87,28 @@ type SourceRunCounts = SourceContext & {
   listings_emitted: number;
   elapsed_ms: number;
   active_started_ms: number | null;
+};
+
+type DirectProviderRequestCounts = {
+  source: "essex-realty";
+  transaction: DirectProviderTransaction;
+  role: DirectProviderRequestRole;
+  attempts_started: number;
+  attempts_completed: number;
+  succeeded: number;
+  failed: number;
+  active_locally_awaited: number;
+  max_active_locally_awaited: number;
+  summed_latency_ms: number;
+  latency_histogram: number[];
+  error_categories: Record<DirectProviderErrorCategory, number>;
+  status_counts: Map<number, number>;
+  other_valid_statuses: number;
+  pacing_waits_started: number;
+  pacing_waits_completed: number;
+  pacing_waits_active: number;
+  pacing_wait_ms_scheduled: number;
+  pacing_wait_ms_elapsed: number;
 };
 
 type RetryCounts = {
@@ -118,6 +161,18 @@ function emptyRequestCounts(): RequestCounts {
 
 function emptyRetryCounts(): RetryCounts {
   return { retry_attempts: 0, backoff_ms: 0, terminal_backoff_ms: 0 };
+}
+
+function emptyDirectProviderErrors(): Record<DirectProviderErrorCategory, number> {
+  return {
+    timeout: 0,
+    http_4xx: 0,
+    http_5xx: 0,
+    transport: 0,
+    empty_response: 0,
+    response_too_large: 0,
+    unknown: 0,
+  };
 }
 
 function validRunId(value: string): boolean {
@@ -283,6 +338,7 @@ export class PerformanceRecorder {
   private otherValidStatuses = 0;
   private readonly sourceRequests = new Map<string, SourceRequestCounts>();
   private readonly sourceRuns = new Map<string, SourceRunCounts>();
+  private readonly directProviderRequests = new Map<string, DirectProviderRequestCounts>();
   private activeLocallyAwaited = 0;
   private maxActiveLocallyAwaited = 0;
   private summedLatencyMs = 0;
@@ -333,6 +389,144 @@ export class PerformanceRecorder {
       this.sourceRequests.set(key, counts);
     }
     return counts;
+  }
+
+  private directProviderCountsFor(
+    role: DirectProviderRequestRole,
+    context?: SourceContext
+  ): DirectProviderRequestCounts {
+    const transaction: DirectProviderTransaction =
+      context?.source === "essex-realty" ? context.transaction : "unknown";
+    const key = `${transaction}\u0000${role}`;
+    let counts = this.directProviderRequests.get(key);
+    if (!counts) {
+      counts = {
+        source: "essex-realty",
+        transaction,
+        role,
+        attempts_started: 0,
+        attempts_completed: 0,
+        succeeded: 0,
+        failed: 0,
+        active_locally_awaited: 0,
+        max_active_locally_awaited: 0,
+        summed_latency_ms: 0,
+        latency_histogram: Array.from({ length: LATENCY_BOUNDS_MS.length + 1 }, () => 0),
+        error_categories: emptyDirectProviderErrors(),
+        status_counts: new Map<number, number>(),
+        other_valid_statuses: 0,
+        pacing_waits_started: 0,
+        pacing_waits_completed: 0,
+        pacing_waits_active: 0,
+        pacing_wait_ms_scheduled: 0,
+        pacing_wait_ms_elapsed: 0,
+      };
+      this.directProviderRequests.set(key, counts);
+    }
+    return counts;
+  }
+
+  recordDirectProviderAttemptStarted(
+    role: DirectProviderRequestRole,
+    context?: SourceContext
+  ): DirectProviderAttemptToken {
+    const startedMs = this.readMonotonic();
+    const counts = this.directProviderCountsFor(role, context);
+    counts.attempts_started = safeAdd(counts.attempts_started);
+    counts.active_locally_awaited = safeAdd(counts.active_locally_awaited);
+    counts.max_active_locally_awaited = Math.max(
+      counts.max_active_locally_awaited,
+      counts.active_locally_awaited
+    );
+    const token = {
+      key: `${counts.transaction}\u0000${role}`,
+      startedMs,
+      completed: false,
+    };
+    this.flush(false, true);
+    return token;
+  }
+
+  recordDirectProviderAttemptCompleted(
+    token: DirectProviderAttemptToken,
+    options: {
+      outcome: "succeeded" | "failed";
+      status?: number;
+      error?: unknown;
+      errorCategory?: DirectProviderErrorCategory;
+    }
+  ): void {
+    if (token.completed) return;
+    const elapsed = this.readMonotonic() - token.startedMs;
+    const counts = this.directProviderRequests.get(token.key);
+    token.completed = true;
+    if (!counts) return;
+    counts.attempts_completed = safeAdd(counts.attempts_completed);
+    counts[options.outcome] = safeAdd(counts[options.outcome]);
+    counts.active_locally_awaited = Math.max(0, counts.active_locally_awaited - 1);
+    counts.summed_latency_ms = safeAdd(counts.summed_latency_ms, elapsed);
+    const bucket = LATENCY_BOUNDS_MS.findIndex((bound) => elapsed <= bound);
+    const bucketIndex = bucket === -1 ? LATENCY_BOUNDS_MS.length : bucket;
+    counts.latency_histogram[bucketIndex] = safeAdd(
+      counts.latency_histogram[bucketIndex] ?? 0
+    );
+    if (typeof options.status === "number" && Number.isInteger(options.status)
+      && options.status >= 100 && options.status <= 599) {
+      const current = counts.status_counts.get(options.status);
+      if (current !== undefined || counts.status_counts.size < MAX_STATUS_KEYS) {
+        counts.status_counts.set(options.status, safeAdd(current ?? 0));
+      } else {
+        counts.other_valid_statuses = safeAdd(counts.other_valid_statuses);
+      }
+    }
+    if (options.outcome === "failed") {
+      const category = options.errorCategory
+        ?? (typeof options.status === "number" && options.status >= 500 && options.status <= 599
+          ? "http_5xx"
+          : typeof options.status === "number" && options.status >= 400 && options.status <= 499
+            ? "http_4xx"
+            : classifyPerformanceError(options.error).category);
+      counts.error_categories[category] = safeAdd(counts.error_categories[category]);
+    }
+    this.maybeFlush();
+  }
+
+  recordDirectProviderPacingWaitStarted(
+    role: DirectProviderRequestRole,
+    scheduledMs: number,
+    context?: SourceContext
+  ): DirectProviderPacingToken {
+    const startedMs = this.readMonotonic();
+    const counts = this.directProviderCountsFor(role, context);
+    const boundedScheduledMs = Number.isFinite(scheduledMs) && scheduledMs > 0
+      ? scheduledMs
+      : 0;
+    counts.pacing_waits_started = safeAdd(counts.pacing_waits_started);
+    counts.pacing_waits_active = safeAdd(counts.pacing_waits_active);
+    counts.pacing_wait_ms_scheduled = safeAdd(
+      counts.pacing_wait_ms_scheduled,
+      boundedScheduledMs
+    );
+    const token = {
+      key: `${counts.transaction}\u0000${role}`,
+      startedMs,
+      scheduledMs: boundedScheduledMs,
+      completed: false,
+    };
+    this.flush(false, true);
+    return token;
+  }
+
+  recordDirectProviderPacingWaitCompleted(token: DirectProviderPacingToken): void {
+    if (token.completed) return;
+    const elapsed = this.readMonotonic() - token.startedMs;
+    const counts = this.directProviderRequests.get(token.key);
+    token.completed = true;
+    if (!counts) return;
+    counts.pacing_waits_completed = safeAdd(counts.pacing_waits_completed);
+    counts.pacing_waits_active = Math.max(0, counts.pacing_waits_active - 1);
+    counts.pacing_wait_ms_elapsed = safeAdd(counts.pacing_wait_ms_elapsed, elapsed);
+    this.maybeFlush();
   }
 
   private sourceRunCountsFor(context: SourceContext): SourceRunCounts {
@@ -542,6 +736,24 @@ export class PerformanceRecorder {
         `${right.source}\u0000${right.transaction}`
       )
     );
+    const directProviderRequests = [...this.directProviderRequests.values()]
+      .sort((left, right) =>
+        `${left.source}\u0000${left.transaction}\u0000${left.role}`.localeCompare(
+          `${right.source}\u0000${right.transaction}\u0000${right.role}`
+        )
+      )
+      .map(({ status_counts: directStatuses, latency_histogram, ...counts }) => ({
+        ...counts,
+        latency_histogram: {
+          bounds_ms: [...LATENCY_BOUNDS_MS],
+          counts: [...latency_histogram],
+        },
+        status_counts: Object.fromEntries(
+          [...directStatuses.entries()]
+            .sort(([left], [right]) => left - right)
+            .map(([status, count]) => [String(status), count])
+        ),
+      }));
     const statusCounts = Object.fromEntries(
       [...this.statusCounts.entries()]
         .sort(([left], [right]) => left - right)
@@ -584,13 +796,20 @@ export class PerformanceRecorder {
           by_source_transaction: bySourceTransaction,
         },
         source_runs: sourceRuns,
+        direct_provider_requests: {
+          by_source_transaction_role: directProviderRequests,
+        },
         cache: {
           jll_detail: { ...this.jllCache },
         },
       },
       coverage: {
         client_requests: "firecrawl_scrape_only",
-        direct_provider_requests: "unknown_uninstrumented",
+        direct_provider_requests: "essex_only_other_direct_sources_unknown",
+        direct_provider_request_sources: {
+          "essex-realty": "instrumented",
+          other_direct_adapters: "unknown_uninstrumented",
+        },
         jll_detail_cache: "instrumented",
         other_caches: "unknown_uninstrumented",
         request_concurrency: "locally_awaited_attempts_only",
@@ -607,7 +826,7 @@ export class PerformanceRecorder {
     this.flush(false);
   }
 
-  flush(terminal: boolean): void {
+  flush(terminal: boolean, force = false): void {
     let nowMs: number;
     try {
       nowMs = this.readMonotonic();
@@ -615,7 +834,7 @@ export class PerformanceRecorder {
       this.diagnosticFailure();
       return;
     }
-    if (!terminal && nowMs - this.lastFlushMs < this.flushIntervalMs) return;
+    if (!terminal && !force && nowMs - this.lastFlushMs < this.flushIntervalMs) return;
     this.lastFlushMs = nowMs;
     let tmp = "";
     let ownsTmp = false;
@@ -788,6 +1007,69 @@ export function recordClientAttemptCompleted(
   if (!recorder) return;
   try {
     recorder.recordClientAttemptCompleted(token, options.outcome, options.error);
+  } catch {
+    recorder.diagnosticFailure();
+  }
+}
+
+export function recordDirectProviderAttemptStarted(
+  role: DirectProviderRequestRole
+): DirectProviderAttemptToken | undefined {
+  const recorder = performanceRecorder();
+  if (!recorder) return undefined;
+  try {
+    return recorder.recordDirectProviderAttemptStarted(role, sourceContext.getStore());
+  } catch {
+    recorder.diagnosticFailure();
+    return undefined;
+  }
+}
+
+export function recordDirectProviderAttemptCompleted(
+  token: DirectProviderAttemptToken | undefined,
+  options: {
+    outcome: "succeeded" | "failed";
+    status?: number;
+    error?: unknown;
+    errorCategory?: DirectProviderErrorCategory;
+  }
+): void {
+  if (!token) return;
+  const recorder = performanceRecorder();
+  if (!recorder) return;
+  try {
+    recorder.recordDirectProviderAttemptCompleted(token, options);
+  } catch {
+    recorder.diagnosticFailure();
+  }
+}
+
+export function recordDirectProviderPacingWaitStarted(
+  role: DirectProviderRequestRole,
+  scheduledMs: number
+): DirectProviderPacingToken | undefined {
+  const recorder = performanceRecorder();
+  if (!recorder) return undefined;
+  try {
+    return recorder.recordDirectProviderPacingWaitStarted(
+      role,
+      scheduledMs,
+      sourceContext.getStore()
+    );
+  } catch {
+    recorder.diagnosticFailure();
+    return undefined;
+  }
+}
+
+export function recordDirectProviderPacingWaitCompleted(
+  token: DirectProviderPacingToken | undefined
+): void {
+  if (!token) return;
+  const recorder = performanceRecorder();
+  if (!recorder) return;
+  try {
+    recorder.recordDirectProviderPacingWaitCompleted(token);
   } catch {
     recorder.diagnosticFailure();
   }
