@@ -608,6 +608,16 @@ hand, and do not use this flag as a normal retry mechanism.
 Use `--retry-failed` only after repairing or reviewing the recorded
 source-local failures. Resume configuration and collector SHA must match.
 
+For a manual Windows/WSL resume, preserve the launcher's explicit environment,
+including `FIRECRAWL_API_URL=http://127.0.0.1:3002` from
+[`Invoke-CreGuardedTier.ps1`](windows/Invoke-CreGuardedTier.ps1), alongside the
+original source concurrency and wait settings. Keep each Mac's admitted endpoint
+when resuming there. Substituting `localhost` on an IPv4-only binding can produce
+`api_port_mismatch` and unavailable optional container-usage figures even when
+scraping works. See the [runtime telemetry binding contract](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md)
+for address-family checks; missing optional figures do not establish a required
+CPU/memory guard failure or justify changing guards.
+
 #### Optional reviewed-code and Windows startup admission
 
 AGENTIC-4173 adds optional `--expected-sha <lowercase-full-40>` and
