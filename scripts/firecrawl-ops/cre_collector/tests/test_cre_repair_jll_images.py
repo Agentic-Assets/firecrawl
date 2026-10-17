@@ -41,6 +41,62 @@ def test_runner_inspect_does_not_classify_daemon_failure_as_absence(monkeypatch)
         runner.inspect("qa-id")
 
 
+def _runner_owned_record(name="codex-jll-repair-qa-test", owner="owner", container_id="a" * 64):
+    return {
+        "Id": container_id,
+        "Name": f"/{name}",
+        "Config": {
+            "Labels": {
+                runner.LABEL_QA: "isolated-test-only",
+                runner.LABEL_OWNER: owner,
+            },
+            "Image": runner.IMAGE,
+        },
+        "HostConfig": {
+            "NetworkMode": "none",
+            "NanoCpus": 500_000_000,
+            "Memory": 2 * 1024**3,
+            "PidsLimit": 64,
+            "Tmpfs": {"/var/lib/postgresql/data": "rw,nosuid,nodev,size=1536m"},
+            "PortBindings": None,
+            "Binds": None,
+        },
+        "NetworkSettings": {"Ports": {"5432/tcp": None}},
+    }
+
+
+def test_runner_cleanup_daemon_failure_before_rm_is_uncertain_and_non_destructive(monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "inspect",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("Docker daemon unavailable")),
+    )
+    monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not rm"))
+    state, detail = runner.cleanup_owned_container("codex-jll-repair-qa-test", "owner", None)
+    assert state == "cleanup_uncertain"
+    assert "Docker daemon unavailable" in detail
+
+
+def test_runner_cleanup_daemon_failure_after_uncertain_rm_does_not_claim_absence(monkeypatch):
+    name = "codex-jll-repair-qa-test"
+    record = _runner_owned_record(name)
+
+    def inspect_side_effect(target):
+        if target == name:
+            return record
+        raise RuntimeError("Docker daemon unavailable while reconciling rm")
+
+    monkeypatch.setattr(runner, "inspect", inspect_side_effect)
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "Docker daemon unavailable"),
+    )
+    state, detail = runner.cleanup_owned_container(name, "owner", record["Id"])
+    assert state == "cleanup_uncertain"
+    assert "while reconciling rm" in detail
+
+
 def test_runner_extracts_full_scale_phase_timing_as_json(tmp_path):
     log = tmp_path / "runner.log"
     log.write_text(
