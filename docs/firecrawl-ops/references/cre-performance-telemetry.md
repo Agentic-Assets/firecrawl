@@ -65,6 +65,20 @@ new database rows, strict-detail records or a full-registry quality result.
 Unqualified and legacy runs keep these values unknown. Inserted-row and
 strict-detail counts are not inferred by the performance report.
 
+Complete serial checkpoints use the same saved-generation evidence for the
+`serial_generation_full_readback` metric: immutable artifact identity, exact
+recorded scope and gates, successful ingest, full validation/no-regression and
+canonical generation-exact readback. Direct and series reports share one
+read-only qualifier. Missing or inconsistent evidence remains unknown; staged
+rows alone never supply the count. Historical metrics retain their original
+generation and observation window, rather than claiming freshness today.
+Serial reports without an original validation digest use contained stable
+saved bytes, profile and original execution clocks; this is not a cryptographic
+attestation of an unavailable historical hash. Partial subsets and coverage
+holds retain their separate status and receive no complete-source metric credit.
+This count is neither inserted/new properties nor strict-detail refreshes, and
+does not replace native settlement checks or the whole-registry certificate.
+
 | Evidence | Location within each checkpoint | What it measures |
 |---|---|---|
 | Command journal | `logs/COMMAND.performance.jsonl` | Start, terminal outcome and monotonic duration of collection, health, validation, gate and ingest subprocesses. Each invocation has a distinct ID, including repeated uses of the same log during resume. |

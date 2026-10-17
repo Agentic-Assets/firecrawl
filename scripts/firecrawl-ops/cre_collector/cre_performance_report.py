@@ -818,6 +818,14 @@ def _validation_timings(run_dir: Path, manifest: Mapping[str, Any]) -> list[dict
     return result
 
 
+def _verified_subset_scope(config, source=None):
+    """Malformed saved policy cannot turn a body-free report into an exception."""
+    try:
+        return current_inventory.is_verified_subset(config, source)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
 def _source_report(
     run_dir: Path,
     manifest: Mapping[str, Any],
@@ -851,8 +859,7 @@ def _source_report(
         if multi_source or _object(manifest.get("config")).get("pipeline") is True
         else _duration(manifest.get("started_at"), manifest.get("finished_at"))
     )
-    from cre_current_inventory_admission import is_verified_subset
-    subset_qualified = is_verified_subset(manifest.get("config") or {}, source) and (
+    subset_qualified = _verified_subset_scope(manifest.get("config") or {}, source) and (
         manifest.get("status") == "qualified_partial_subset"
         or _object(_object(_object(manifest.get("pipeline")).get("source_results")).get(source)).get("qualification") == "qualified_partial_subset"
     )
@@ -902,8 +909,11 @@ def _source_report(
         and source_elapsed is not None
         and source_elapsed > 0
         else None,
-        "verified_current_inventory_basis": "pipeline_source_unit_full_readback"
-        if verified_current_inventory
+        "verified_current_inventory_basis": (
+            "pipeline_source_unit_full_readback"
+            if _object(manifest.get("config")).get("pipeline") is True
+            else "serial_generation_full_readback"
+        ) if verified_current_inventory
         else None,
         "raw_emitted_rows": _number(artifact.get("flat_listings")),
         "fresh_qualified_unique": None,
@@ -1060,6 +1070,12 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
                             unit_cache=cache,
                             parent_attempts=attempts,
                         )
+                if not _object(manifest.get("config")).get("pipeline"):
+                    from cre_serial_qualification import serial_source_qualified
+
+                    verified_current_inventory = serial_source_qualified(
+                        child_root, child, source, parent=manifest,
+                    )
                 rows.append(
                     source_row(
                         child_root,
@@ -1093,7 +1109,15 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
             or generation != root.name
         ):
             raise ValueError("expected a checkpoint generation")
-        rows.extend(source_row(root, manifest, source) for source in sources)
+        from cre_serial_qualification import serial_source_qualified
+
+        rows.extend(
+            source_row(
+                root, manifest, source,
+                verified_current_inventory=serial_source_qualified(root, manifest, source),
+            )
+            for source in sources
+        )
     if not isinstance(generation, str) or not RUN_ID.fullmatch(generation):
         raise ValueError("invalid generation identity")
     collection_intervals = []
@@ -1134,7 +1158,7 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
             "max_items": _number(_object(manifest.get("config")).get("max_items")),
             "pipeline": _object(manifest.get("config")).get("pipeline") is True,
             "freshness_policy": "checkpoint_generation_bound",
-            "admission_scope": "daum_verified_subset_v1" if current_inventory.is_verified_subset(manifest.get("config") or {}) else None,
+            "admission_scope": "daum_verified_subset_v1" if _verified_subset_scope(manifest.get("config") or {}) else None,
         },
         "computed_at": now.isoformat(),
         "sources": rows,
