@@ -398,6 +398,14 @@ complete artifact. No partial admission, retirement or cache-generation rewrite
 is implied. [AGENTIC-4357](https://linear.app/agenticassets/issue/AGENTIC-4357)
 owns this bounded recovery.
 
+JLL Investor ingestion refuses new exact `source_url` conflict pairs before
+committed writes, including non-Investor counterparts in the same brokerage.
+The prospective comparison models staged URL moves and soft-deleted revival;
+unchanged historical pairs remain visible without being repaired or waived.
+A complete current feed does not authorize rekeying, merging or retiring older
+identities that share a URL. [AGENTIC-4360](https://linear.app/agenticassets/issue/AGENTIC-4360)
+owns the preventive guard and separately approved historical decision.
+
 ## Buildout (`buildout.ts`) - Shared Adapter
 
 - **Diagnose the actual adapter before changing its transport.** From a clean,
