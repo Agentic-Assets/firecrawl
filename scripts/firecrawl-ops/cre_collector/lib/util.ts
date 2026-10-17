@@ -1,3 +1,5 @@
+import { setImmediate } from "node:timers/promises";
+
 // lib/util.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 
 
@@ -56,6 +58,7 @@ export async function pmap<T, R>(items: T[], limit: number, fn: (t: T, i: number
       const i = next++;
       try {
         results[i] = await fn(items[i], i);
+        await setImmediate();
       } catch (error) {
         failed = true;
         throw error;
