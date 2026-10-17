@@ -138,6 +138,11 @@ using `pwsh.exe -NoProfile -File <launcher-path> ...` or
 a normal invocation publishes an atomic `admission_pending` audit and prints
 its audit, stdout and stderr paths. Read a running stream with
 `Get-Content -LiteralPath <stdout-path> -Wait`; stderr has its own file. The
+helper flushes retained chunks while the native process runs. Custom .NET
+readers must open with `FileAccess.Read` and `FileShare.ReadWrite` to coexist
+with the writer; `File.ReadAllLines` uses incompatible sharing on an active log.
+Treat only complete lines as output, and keep reads bounded. A live reference is
+a locator, not owner or settlement authority. The
 sidecars share the existing flat audit basename. `-CheckOnly` writes none of
 these files. Parser and parameter-binding failures occur before the script body
 and therefore cannot publish an audit.

@@ -211,6 +211,11 @@ namespace CreWindowsCapture {
                         if (keep > 0 && !result.WriteFailed) {
                             try { sink.Write(bytes, 0, keep); Interlocked.Add(ref result.CapturedBytes, keep); }
                             catch { result.WriteFailed = true; }
+                            // Publish small live output without waiting for native EOF.
+                            // Terminal FinishSink retains the durable FileStream flush.
+                            if (!result.WriteFailed) {
+                                try { sink.Flush(); } catch { result.FlushFailed = true; }
+                            }
                         }
                         if (prefix != null) {
                             int length = decoder.GetChars(bytes, 0, count, chars, 0, false);
