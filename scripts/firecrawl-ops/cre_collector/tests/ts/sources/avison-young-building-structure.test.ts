@@ -67,6 +67,36 @@ const cases = [
     "postalCode": "38118",
     "sharpLaunchUrl": "https://ayusdelpdistributioncenter.sharplaunch.com",
     "expected": false
+  },
+  {
+    "ordinal": 62972,
+    "name": "2.0 Acres of Land for Sale",
+    "street": "451 West Mesquite Boulevard",
+    "city": "Mesquite",
+    "state": "NV",
+    "postalCode": "89027",
+    "sharpLaunchUrl": "https://20acresoflandforsale.sharplaunch.com",
+    "expected": true
+  },
+  {
+    "ordinal": 62973,
+    "name": "2.17 Acres of Land for Sale",
+    "street": "454 West Mesquite Boulevard",
+    "city": "Mesquite",
+    "state": "NV",
+    "postalCode": "89027",
+    "sharpLaunchUrl": "https://217acresoflandforsale.sharplaunch.com",
+    "expected": true
+  },
+  {
+    "ordinal": 62971,
+    "name": "0.97 Acres of Land for Sale",
+    "street": "421 West Mesquite Boulevard",
+    "city": "Mesquite",
+    "state": "NV",
+    "postalCode": "89027",
+    "sharpLaunchUrl": "https://097acresforsale.sharplaunch.com",
+    "expected": false
   }
 ].map(row => ({
   ...row,
@@ -148,6 +178,76 @@ for (const row of cases) {
       }
       if (mutation === "challenge") $("body").append("Verify you are human");
       assert.throws(() => check(base, $.html()), /identity|structure|challenge/);
+    });
+  }
+}
+
+// Existing complete-visible identity keeps unknown ZIPs distinct from a known
+// contradiction. These observed Building pages use marketing SEO descriptions.
+for (const row of cases.filter(row => row.ordinal === 62972 || row.ordinal === 62973)) {
+  const legacyInfo = (html: string) => {
+    const $ = cheerio.load(html);
+    const fact = $(".property-features-box > .px-body-2").first().text();
+    assert.ok(fact.trim());
+    const box = $('<div class="building__property-info-box"><li><span>Property feature</span><span class="actual-fact"></span></li></div>');
+    box.find(".actual-fact").text(fact);
+    $("section#building .building").append(box);
+    return $.html();
+  };
+  for (const missing of ["feed-zip", "hero-zip"]) {
+    test(`Avison visible Building ${row.ordinal} retains existing ${missing} semantics`, () => {
+      const base = { ...row };
+      const $ = cheerio.load(row.html);
+      if (missing === "feed-zip") base.postalCode = "";
+      else $(".hero__sub-title").text($(".hero__sub-title").text().replace(row.postalCode, ""));
+      assert.doesNotThrow(() => check(base, legacyInfo($.html())));
+      assert.doesNotThrow(() => check(base, $.html()));
+    });
+  }
+  test(`Avison visible Building ${row.ordinal} city-only hero needs the full description witness`, () => {
+    const $ = cheerio.load(row.html);
+    $(".hero__sub-title").text(`${row.city}, ${row.state}`);
+    assert.throws(() => check(row, $.html()), /identity|structure/);
+    const full = `${row.name}, ${row.street}, ${row.city}, ${row.state} ${row.postalCode}`;
+    $('meta[name="description"], meta[name="twitter:description"], meta[property="og:description"]').attr("content", full);
+    assert.doesNotThrow(() => check(row, $.html()));
+    assert.throws(() => check({ ...row, postalCode: "" }, $.html()), /identity|structure/);
+    assert.throws(() => check({ ...row, postalCode: "00000" }, $.html()), /identity|structure/);
+  });
+  for (const mutation of ["og-title", "canonical-query", "duplicate-structured", "structured-address"]) {
+    test(`Avison visible Building ${row.ordinal} refuses ${mutation}`, () => {
+      const $ = cheerio.load(row.html);
+      if (mutation === "og-title") $('meta[property="og:title"]').attr("content", "Unrelated Property");
+      if (mutation === "canonical-query") $("head").append(`<link rel="canonical" href="${row.sharpLaunchUrl}?foreign=1">`);
+      if (mutation === "duplicate-structured") {
+        const record = { "@type": "RealEstateListing", name: row.name, url: row.sharpLaunchUrl };
+        $("head").append('<script type="application/ld+json">' + JSON.stringify([record, record]) + '</script>');
+      }
+      if (mutation === "structured-address") $("head").append('<script type="application/ld+json">' + JSON.stringify({
+        "@type": "RealEstateListing", name: row.name, url: row.sharpLaunchUrl,
+        address: { streetAddress: "999 Other Street", addressLocality: row.city, addressRegion: row.state, postalCode: row.postalCode },
+      }) + '</script>');
+      assert.throws(() => check(row, $.html()), /identity|structure/);
+    });
+  }
+}
+
+// Diagnostic categories distinguish populated native property content without a
+// complete identity witness from an empty or unrecognized template.
+test("Avison visible Building actual 62971 reports identity refusal", () => {
+  const row = cases.find(row => row.ordinal === 62971)!;
+  assert.throws(() => check(row), {
+    name: "Error", message: "Avison Young detail identity does not match the requested property",
+  });
+});
+for (const row of cases.filter(row => row.ordinal === 62972 || row.ordinal === 62973)) {
+  for (const text of ["", "   "]) {
+    test(`Avison visible Building ${row.ordinal} ${JSON.stringify(text)} overview reports structure refusal`, () => {
+      const $ = cheerio.load(row.html);
+      $(".building__overview-text p, .building__overview-text li").text(text);
+      assert.throws(() => check(row, $.html()), {
+        name: "Error", message: "Avison Young detail structure was not recognized",
+      });
     });
   }
 }

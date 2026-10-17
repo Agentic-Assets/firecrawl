@@ -264,14 +264,21 @@ require one coherent property name/URL and every supplied full address before
 promoting its description, date or media; conflicting/duplicate records refuse.
 These are comparison/layout rules, not address rewrites or identity aliases.
 A native Building section may supply substantive structure without the older
-property-info box: require the complete description identity with known ZIP,
-plus populated overview paragraphs/list items inside
+property-info box: use the existing complete visible-address identity (exact
+H1/name, full address hero, title/OG and owned URLs), or require the complete
+description identity with known ZIP when it supplies the missing street.
+Known displayed ZIP conflicts refuse; absent hero ZIP or unknown feed ZIP keeps
+the existing complete-visible family's semantics. Both paths require
+populated overview paragraphs/list items inside
 `.page-content > section#building .building` plus populated feature fact children
 or the existing availability title/value fields. This is only a structure
 alternative in the complete native identity branch; all name, full-address,
 known-ZIP, heading, metadata, structured-subject and owned-URL checks remain.
 Empty/heading-only overviews and overview-only pages gain no acceptance from
-this alternative. It grants no current inventory, freshness or source acceptance.
+this alternative. Populated native Building content without a complete identity
+witness is diagnosed as an identity refusal, which need not mean the property is
+wrong; empty or unrecognized templates retain the structure-refusal diagnosis.
+It grants no current inventory, freshness or source acceptance.
 
 Street comparison also recognizes `Highway/Hwy` and `Drive/Dr`; those rules
 apply to a property name/title only when the feed names the property by its

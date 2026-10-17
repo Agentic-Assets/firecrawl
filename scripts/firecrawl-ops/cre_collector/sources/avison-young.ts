@@ -550,8 +550,9 @@ export function assertAvisonYoungDetailDoc(
     .toArray().some((element) => clean($(element).text()));
   const hasBuildingFacts = building.find(".building__property-features-boxes .property-features-box > .px-body-2")
     .toArray().some((element) => clean($(element).text()));
-  const hasBuildingSections = completeDescriptionIdentity && hasBuildingOverview
-    && (hasBuildingFacts || hasAvailabilityFields);
+  const hasBuildingContent = hasBuildingOverview && (hasBuildingFacts || hasAvailabilityFields);
+  const hasBuildingSections = hasBuildingContent
+    && (completeDescriptionIdentity || (identityMetadataMatches && addressHeroIdentity));
   const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
   const namedDescriptionIdentity = completeDescriptionIdentity && identityMetadataMatches
     && heroLocations.length === 1 && heroLocations[0] === true;
@@ -733,7 +734,9 @@ export function assertAvisonYoungDetailDoc(
     )
   );
   if (!hasStructure) {
-    throw new Error("Avison Young detail structure was not recognized");
+    throw new Error(requestedSharpLaunchMatch && hasBuildingContent
+      ? "Avison Young detail identity does not match the requested property"
+      : "Avison Young detail structure was not recognized");
   }
   if (!urlMatches && !contentMatches) {
     throw new Error(
