@@ -980,6 +980,20 @@ export function buildoutScalarFields(raw: {
   };
 }
 
+// Availability-space text is a literal long-tail fact, not units or parking.
+function buildoutSpaceFacts(attributes: unknown): Record<string, string> | undefined {
+  if (!Array.isArray(attributes)) return undefined;
+  const values = new Set<string>();
+  for (const pair of attributes) {
+    if (!Array.isArray(pair) || pair[0] !== "# of Spaces") continue;
+    if (pair.length !== 2 || typeof pair[1] !== "string") return undefined;
+    const value = clean(pair[1]);
+    if (!value) return undefined;
+    values.add(value);
+  }
+  return values.size === 1 ? { number_of_spaces: [...values][0] } : undefined;
+}
+
 export async function srcBuildout(
   company: string,
   pluginKey: string,
@@ -1014,6 +1028,7 @@ export async function srcBuildout(
       // dropped available / divisible square-foot signal. Only non-null parsed
       // values are spread in, so a row without an Available attr is unchanged.
       const availSf = buildoutAvailableSf(attrs.get("Available"));
+      const spaceFacts = buildoutSpaceFacts(x.index_attributes);
       const brokerIds = (x.broker_contacts ?? [])
         .map((b: any) =>
           brokerRef({
@@ -1085,6 +1100,7 @@ export async function srcBuildout(
         canonicalUrl,
         statusBadge,
         ...availSf,
+        ...(spaceFacts ? { extraFacts: spaceFacts } : {}),
         brokerIds,
         brochures: x.pdf_url ? [{ name: "Listing brochure (PDF)", url: x.pdf_url }] : [],
         photos: [x.photo_url, x.large_thumbnail_url].filter(Boolean).slice(0, 1),

@@ -380,6 +380,11 @@ performance/transport admission remain unchanged.
   complete inventory still requires every declared page and unique-ID
   reconciliation. Reproduce the failure in the unchanged adapter and isolate
   the cause before adding URL variants, headers, cache changes or HTML parsing.
+- Preserve an unambiguous native `# of Spaces` string as literal
+  `extraFacts.number_of_spaces`. Equivalent whitespace-cleaned repeats agree;
+  blank, malformed or conflicting values supply no fact. This availability text
+  is not a building-unit or parking count. Other mappings and the native page
+  cache remain unchanged.
 - **No server-side sale/lease filter**; one inventory fetch per `pluginKey`, `buildoutCache` shared across sale+lease passes.
 - Current-inventory receipts preserve literal owned HTTP(S) listing URLs, including
   one nonempty `propertyId` alongside empty template parameters and meaningful

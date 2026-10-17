@@ -184,8 +184,8 @@ Key behavior:
 - Dedup key `(brokerage_id, external_id)`; sub-sources fold into the parent
   brokerage with prefixed ids (`dealflow:`, `investor:`, `main:`). Missing ids get
   `url:<sha1-16>` from the listing URL; Buildout (`svn`, `lee-associates`)
-  prefers URL `propertyId` with `-sale`/`-lease` stripped first. Buildout sources:
-  `svn`, `lee-associates`, `franklin-street`.
+  prefers URL `propertyId` with `-sale`/`-lease` stripped first. Buildout source definitions live in `sources/buildout-registry.ts` and the
+  existing `BUILDOUT_SOURCE_INVENTORY_OPTS` in `sources/buildout.ts`.
 - Sale + lease passes merge to `transaction_type='sale_or_lease'`.
 - Provider cards without a canonical listing URL are not written to
   `cre_listings`. Complete CBRE Deal Flow and Colliers SalesTracker snapshots
