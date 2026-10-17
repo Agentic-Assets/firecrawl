@@ -224,7 +224,7 @@ def _derive_transaction_breakdown(data, source, expected_count, scraped_at, dead
     }
 
 
-def _staged_transaction_breakdown(artifact, source, expected_count, generation_id):
+def bound_staged_transaction_breakdown(artifact, source, expected_count, generation_id):
     """Validate producer-computed transaction counts bound to this artifact."""
     breakdown = artifact.get("transaction_breakdown")
     if breakdown is None:
@@ -257,11 +257,7 @@ def _staged_transaction_breakdown(artifact, source, expected_count, generation_i
         and breakdown.get("artifact_sha256") == artifact_sha
         and breakdown.get("artifact_bytes") == artifact_bytes
         and breakdown.get("generation_id") == generation_id
-        and breakdown.get("measurement")
-        == "current_staged_inventory_transaction_types"
-    )
-    require(
-        0 <= time.time() - timestamp(artifact.get("finished_at")) <= 86400
+        and breakdown.get("measurement") == "current_staged_inventory_transaction_types"
     )
     sale, lease, both = (
         breakdown.get("sale"),
@@ -283,6 +279,15 @@ def _staged_transaction_breakdown(artifact, source, expected_count, generation_i
         "both": both,
         "measurement": "current_staged_inventory_transaction_types",
     }
+
+
+def _staged_transaction_breakdown(artifact, source, expected_count, generation_id):
+    breakdown = bound_staged_transaction_breakdown(
+        artifact, source, expected_count, generation_id
+    )
+    if breakdown is not None:
+        require(0 <= time.time() - timestamp(artifact.get("finished_at")) <= 86400)
+    return breakdown
 
 
 def _breakdown_status(breakdown, basis, reason, started):
