@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import cre_checkpoint_refresh as refresh
 import cre_checkpoint_series as series
 import cre_current_inventory_admission as admission
+import cre_gate
 import cre_performance_report as performance
 import cre_validate
 import pytest
@@ -21,7 +22,7 @@ def write(path, value):
     path.write_text(json.dumps(value))
 
 
-def fixture(tmp_path, *, source="interra-realty", parent=False):
+def fixture(tmp_path, *, source="interra-realty", parent=False, mode_counts=None):
     if source == "interra-realty":
         run, artifact_path, payload, manifest, gate = interra_setup(tmp_path)
         policy = admission.configuration(source)
@@ -47,7 +48,39 @@ def fixture(tmp_path, *, source="interra-realty", parent=False):
             database_target={"algorithm": "sha256", "value": "b" * 64},
         )
         manifest["started_at"] = "2026-07-29T12:00:00+00:00"
-        payload = strict_artifact(source=source, generation=run.name)
+        payload = strict_artifact(
+            source=source,
+            generation=run.name,
+            detail_scope="first_party_detail_api"
+            if source == "colliers-main"
+            else "authoritative_inventory_feed",
+        )
+        if mode_counts:
+            sale, lease, both = mode_counts
+            template = payload["listings"][0]
+            payload["listings"] = [
+                {
+                    **template,
+                    "id": f"usa{index}",
+                    "url": f"https://www.colliers.com/en/properties/fixture/usa{index}",
+                    "transactionMode": mode,
+                }
+                for mode, ids in (
+                    ("sale", range(sale)),
+                    ("lease", range(sale - both, sale + lease - both)),
+                )
+                for index in ids
+            ]
+            payload["totalListings"] = sale + lease
+            for entry in payload["sources"]:
+                count = sale if entry["transaction"] == "sale" else lease
+                entry["listingsCollected"] = count
+                entry["freshness"].update(
+                    listings=count,
+                    inventoryObserved=count,
+                    detailObserved=count,
+                    authoritativeInventoryFeed=0,
+                )
         artifact_path = run / "artifact.json"
         write(artifact_path, payload)
         stats = refresh.validate_source_artifact(
@@ -67,7 +100,9 @@ def fixture(tmp_path, *, source="interra-realty", parent=False):
             "per_source": {
                 source: {
                     "verdict": "ok",
-                    "current_active": 2,
+                    "current_active": cre_gate.count_artifacts(
+                        [artifact_path], quiet=True
+                    )[0][source],
                     "mark_missing_safe": False,
                 }
             },
@@ -81,6 +116,7 @@ def fixture(tmp_path, *, source="interra-realty", parent=False):
         policy = None
     started = datetime.fromisoformat(manifest["started_at"])
     artifact = manifest["sources"][source]["artifact"]
+    staged_count = artifact["staged_unique"]
     observed = artifact["finished_at"]
     finished = datetime.fromisoformat(observed.replace("Z", "+00:00")) + timedelta(
         seconds=20
@@ -141,6 +177,7 @@ def fixture(tmp_path, *, source="interra-realty", parent=False):
         freshness_generation_row(
             source,
             generation_id=run.name,
+            active=staged_count,
             earliest_inventory_observed_at=payload["listings"][0][
                 "inventoryObservedAt"
             ],
@@ -151,17 +188,17 @@ def fixture(tmp_path, *, source="interra-realty", parent=False):
         {
             "source_key": source,
             "latest_inventory_observed_at": observed,
-            "latest_inventory_batch_active": "2",
+            "latest_inventory_batch_active": str(staged_count),
             "latest_scraped_at": observed,
-            "latest_batch_active": "2",
+            "latest_batch_active": str(staged_count),
         }
     ]
     validation["queries"]["inventory_generation_fingerprints"] = [
         {
             "source_key": key,
-            "row_count": "2" if key == source else "0",
-            "active_row_count": "2",
-            "classified_row_count": "2",
+            "row_count": str(staged_count) if key == source else "0",
+            "active_row_count": str(staged_count),
+            "classified_row_count": str(staged_count),
             "unclassified_row_count": "0",
             "max_observation_at": observed,
             "max_row_updated_at": observed,
@@ -618,3 +655,64 @@ def test_compact_extraction_preserves_live_notification_age_gate(tmp_path, monke
         with pytest.raises(notification.SummaryUnavailable):
             notification._staged_transaction_breakdown(*args)
         assert notification.bound_staged_transaction_breakdown(*args) is not None
+
+
+def test_main_dual_tenure_gate_counts_flat_passes_but_metric_counts_unique(tmp_path):
+    run, manifest, finished = fixture(
+        tmp_path, source="colliers-main", mode_counts=(6268, 10970, 1180)
+    )
+    stats = manifest["sources"]["colliers-main"]["artifact"]
+    assert (stats["flat_listings"], stats["staged_unique"]) == (17238, 16058)
+    assert stats["transaction_breakdown"]["both"] == 1180
+    for relative in ("gates/colliers-main.json", "aggregate-gate.json"):
+        assert (
+            json.loads((run / relative).read_text())["per_source"]["colliers-main"][
+                "current_active"
+            ]
+            == 17238
+        )
+    row = performance.build_report(run, now=finished)["sources"][0]
+    assert row["verified_current_inventory_unique"] == 16058
+    assert row["verified_current_inventory_basis"] == "serial_generation_full_readback"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "source_unique",
+        "aggregate_unique",
+        "flat_bool",
+        "flat_missing",
+        "flat_below_unique",
+        "wrong_readback",
+    ],
+)
+def test_dual_tenure_count_domain_tampering_never_qualifies(tmp_path, fault):
+    run, manifest, finished = fixture(
+        tmp_path, source="colliers-main", mode_counts=(2, 2, 1)
+    )
+    checkpoint = manifest["sources"]["colliers-main"]
+    if fault in {"source_unique", "aggregate_unique"}:
+        relative = (
+            "gates/colliers-main.json"
+            if fault == "source_unique"
+            else "aggregate-gate.json"
+        )
+        gate = json.loads((run / relative).read_text())
+        gate["per_source"]["colliers-main"]["current_active"] = 3
+        write(run / relative, gate)
+    elif fault == "flat_bool":
+        checkpoint["artifact"]["flat_listings"] = True
+    elif fault == "flat_missing":
+        checkpoint["artifact"].pop("flat_listings")
+    elif fault == "flat_below_unique":
+        checkpoint["artifact"]["flat_listings"] = 2
+    else:
+        checkpoint["readback"]["expected_staged_unique"] = 4
+    write(run / "manifest.json", manifest)
+    assert (
+        performance.build_report(run, now=finished)["sources"][0][
+            "verified_current_inventory_unique"
+        ]
+        is None
+    )
