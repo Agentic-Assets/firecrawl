@@ -70,6 +70,27 @@ evidence stays held. A present listing Offer is never repaired with secondary
 evidence. The retained primary fallback sample is `SoldOut`; active fallback
 coverage is synthetic and does not prove fresh inventory or source admission.
 
+Lyon detail parsing selects explicit same-property `For Sale` / `For Lease`
+Offers for the requested transaction; Offer order and the other transaction's
+legitimate status do not determine that result. Missing, foreign or ambiguous
+requested Offers and unknown requested availability remain held. Supplied
+non-string name/URL/business-function values cannot masquerade as absent
+authority; no new JSON-LD transaction vocabulary is inferred. The existing
+unlabelled single-Offer sale compatibility and Product identity/conflict rules
+remain parser behavior, not current-market authority. Complete own Offer
+objects survive source and collector pruning in `extraFacts.providerOffers`,
+including literal false/null/empty values. A lease row never copies the page's
+sale price into rent; unqualified Offer amounts/bases stay raw for future mapping.
+
+Lease **acquisition** is still unimplemented and explicitly incomplete; parsing
+an observed lease Offer does not prove a complete lease inventory. Do not launch
+a new historical sitemap crawl to manufacture that proof. Complete repeated
+native/frontend reconciliation, provider pacing (the observed robots delay was
+10 seconds), all current details/status/tenure and ordinary admission gates
+remain [AGENTIC-4308](https://linear.app/agenticassets/issue/AGENTIC-4308) work.
+The last robots diagnostic stopped on a managed challenge; no bypass or blind
+retry is authorized. This change grants no source, lifecycle or full51 acceptance.
+
 Lyon's fresh REST `Closed` category can conflict with the same property's HTML
 `InStock` Offer; keep that conflict held under
 [AGENTIC-4308](https://linear.app/agenticassets/issue/AGENTIC-4308).

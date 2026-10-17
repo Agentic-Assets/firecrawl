@@ -29,7 +29,7 @@ import { srcInterraRealty } from "./sources/interra-realty.js";
 import { preserveJllSubleaseFact, srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcKidderMathews } from "./sources/kidder-mathews.js";
-import { srcLyonStahl } from "./sources/lyon-stahl.js";
+import { preserveLyonStahlOffers, srcLyonStahl } from "./sources/lyon-stahl.js";
 import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
 import { srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
@@ -217,6 +217,7 @@ async function main() {
         });
         for (const l of res.listings) {
           const listing = prune({ sourceKey: key, sourceCompany: res.company, transactionMode: tx, ...l });
+          if (key === "lyon-stahl") preserveLyonStahlOffers(listing, l.extraFacts?.providerOffers);
           listings.push(key === "jll"
             ? preserveJllSubleaseFact(listing, l.jllDetail?.isSubleaseOnly)
             : listing);

@@ -67,11 +67,11 @@ test("Lyon applies the existing availability enum to a synthetic same-page curre
   assert.equal(current.kind, "accepted");
 });
 
-test("Lyon Product fallback retains identity, challenge and sale scope checks", () => {
+test("Lyon Product fallback retains identity, challenge and unlabeled lease refusal checks", () => {
   assert.equal(parse(fixture.replace('rel="canonical" href="' + url, 'rel="canonical" href="https://example.com/')).kind, "rejected");
   assert.equal(parse(fixture.replace(/rel="shortlink"[^>]+/, 'rel="shortlink" href="https://example.com/?p=1"')).kind, "rejected");
   assert.equal(parse(fixture.replace("<h1>11863 Nebraska Ave</h1>", "<h1>Access denied</h1>")).kind, "rejected");
-  assert.equal(parseLyonStahlDetail(fixture, url, "lease", { strict: true }).kind, "rejected");
+  assert.equal(parseLyonStahlDetail(fixture, url, "lease", { strict: true }).kind, "held");
   assert.equal(parse(mutate(n => { n.splice(1); })).kind, "held");
 });
 

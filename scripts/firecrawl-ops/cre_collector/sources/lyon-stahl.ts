@@ -324,8 +324,9 @@ function offerFromListing(
   listing: any,
   nodes: any[],
   requestedUrl: string,
-  canonicalUrl: string | undefined
-): { offer: any | null; problem?: string } {
+  canonicalUrl: string | undefined,
+  tx: Tx
+): { offer: any | null; ownOffers?: any[]; problem?: string } {
   const offers = listing?.offers;
   const original = Array.isArray(offers) ? offers[0] ?? null : offers ?? null;
   const products = nodes.filter((node) => ldTypes(node).includes("Product") && (
@@ -333,37 +334,85 @@ function offerFromListing(
     || (Array.isArray(node?.offers) ? node.offers : [node?.offers])
       .some((offer: any) => offer?.url === requestedUrl)
   ));
-  if (!products.length) return { offer: original };
   const fail = (problem: string) => ({ offer: null, problem });
-  if (
-    products.length !== 1
-    || nodes.filter((node) => ldTypes(node).includes("RealEstateListing")).length !== 1
-    || listing?.url !== requestedUrl
-    || canonicalUrl !== requestedUrl
-    || products[0]?.["@id"] !== `${requestedUrl}#product`
-  ) return fail("ambiguous or mismatched same-page Product Offer identity");
-  const productOffers = Array.isArray(products[0].offers)
-    ? products[0].offers : [products[0].offers];
-  const productOffer = productOffers[0];
-  if (
-    productOffers.length !== 1
-    || !ldTypes(productOffer).includes("Offer")
-    || productOffer?.url !== requestedUrl
-  ) return fail("ambiguous or mismatched same-page Product Offer");
-  if (Object.hasOwn(listing, "offers")) {
-    if (Array.isArray(offers) && offers.length !== 1) {
-      return fail("ambiguous listing Offers with Product availability");
-    }
-    const primary = classifyLyonStahlAvailability(original?.availability);
-    const secondary = classifyLyonStahlAvailability(productOffer?.availability);
+  let selected = original;
+  if (products.length) {
     if (
-      primary.disposition === "held"
-      || secondary.disposition === "held"
-      || primary.availability !== secondary.availability
-    ) return fail("blank, unknown or conflicting listing and Product availability");
-    return { offer: original };
+      products.length !== 1
+      || nodes.filter((node) => ldTypes(node).includes("RealEstateListing")).length !== 1
+      || listing?.url !== requestedUrl
+      || canonicalUrl !== requestedUrl
+      || products[0]?.["@id"] !== `${requestedUrl}#product`
+    ) return fail("ambiguous or mismatched same-page Product Offer identity");
+    const productOffers = Array.isArray(products[0].offers)
+      ? products[0].offers : [products[0].offers];
+    const productOffer = productOffers[0];
+    if (
+      productOffers.length !== 1
+      || !ldTypes(productOffer).includes("Offer")
+      || productOffer?.url !== requestedUrl
+    ) return fail("ambiguous or mismatched same-page Product Offer");
+    if (Object.hasOwn(listing, "offers")) {
+      if (Array.isArray(offers) && offers.length !== 1) {
+        return fail("ambiguous listing Offers with Product availability");
+      }
+      const primary = classifyLyonStahlAvailability(original?.availability);
+      const secondary = classifyLyonStahlAvailability(productOffer?.availability);
+      if (
+        primary.disposition === "held"
+        || secondary.disposition === "held"
+        || primary.availability !== secondary.availability
+      ) return fail("blank, unknown or conflicting listing and Product availability");
+      selected = original;
+    } else {
+      selected = productOffer;
+    }
   }
-  return { offer: productOffer };
+  const candidates = Object.hasOwn(listing, "offers")
+    ? (Array.isArray(offers) ? offers : [offers]) : [selected];
+  if (candidates.some((offer) => offer?.name != null && typeof offer.name !== "string")) {
+    return fail("malformed transaction Offer name");
+  }
+  const named = candidates.some((offer) => clean(offer?.name));
+  if (named) {
+    const wanted = tx === "sale" ? "for sale" : "for lease";
+    const matches = candidates.filter((offer) => clean(offer?.name)?.toLowerCase() === wanted);
+    if (matches.length !== 1) return fail("missing or ambiguous requested transaction Offer");
+    selected = matches[0];
+    if (!ldTypes(selected).includes("Offer") || selected.url !== requestedUrl) {
+      return fail("requested transaction Offer identity mismatch");
+    }
+  } else if (tx !== "sale" || candidates.length !== 1) {
+    return fail("missing explicit requested transaction Offer");
+  }
+  if (["url", "businessFunction"].some((field) =>
+    selected?.[field] != null && typeof selected[field] !== "string")) {
+    return fail("malformed requested Offer authority");
+  }
+  if (clean(selected?.businessFunction)) {
+    return fail("unverified requested Offer business function");
+  }
+  if ((clean(selected?.url) && selected.url !== requestedUrl)
+      || (selected && Object.hasOwn(selected, "@type") && !ldTypes(selected).includes("Offer"))) {
+    return fail("requested Offer identity or type mismatch");
+  }
+  // Opposite-tenure availability is not the requested Offer's status.
+  // Preserve every own-property Offer verbatim for future field mapping.
+  const ownOffers = [...(Object.hasOwn(listing, "offers") ? candidates : []), ...products.flatMap((product) =>
+    Array.isArray(product.offers) ? product.offers : [product.offers])].filter((offer) =>
+    offer && typeof offer === "object"
+    && (offer.url == null || (typeof offer.url === "string"
+      && (!clean(offer.url) || offer.url === requestedUrl))));
+  return { offer: selected, ownOffers };
+}
+
+// Source-owned raw Offer preservation after parser and outer collector prune.
+export function preserveLyonStahlOffers(listing: any, offers: unknown): any {
+  if (Array.isArray(offers) && offers.length) {
+    listing.extraFacts ??= {};
+    listing.extraFacts.providerOffers = structuredClone(offers);
+  }
+  return listing;
 }
 
 function lyonStahlPropertyNode(nodes: any[], listing: any): any {
@@ -390,9 +439,6 @@ export function parseLyonStahlDetail(
   tx: Tx,
   context: LyonStahlParseContext = {}
 ): LyonStahlParseOutcome {
-  if (tx !== "sale") {
-    return { kind: "rejected", reason: "Lyon Stahl is an investment-sales source" };
-  }
   const strict = context.strict ?? requireFreshDetails();
   const identity = lyonStahlProviderIdentity(html, requestedUrl);
   if (!identity) return { kind: "rejected", reason: "canonical or WordPress shortlink identity mismatch" };
@@ -417,7 +463,7 @@ export function parseLyonStahlDetail(
   if (strict && (!clean(listing.url) || !samePage(String(listing.url), requestedUrl))) {
     return { kind: "rejected", reason: "RealEstateListing identity mismatch" };
   }
-  const resolved = offerFromListing(listing, nodes, requestedUrl, $("link[rel='canonical']").attr("href"));
+  const resolved = offerFromListing(listing, nodes, requestedUrl, $("link[rel='canonical']").attr("href"), tx);
   if (resolved.problem) {
     return { kind: "held", availability: null, reason: resolved.problem };
   }
@@ -520,7 +566,7 @@ export function parseLyonStahlDetail(
           }
         : undefined,
     name,
-    transactionType: "Sale",
+    transactionType: tx === "sale" ? "Sale" : "Lease",
     assetType:
       clean(property?.accommodationCategory)
       ?? (ldTypes(property).some((type) => /Apartment|Residence/i.test(type))
@@ -534,8 +580,8 @@ export function parseLyonStahlDetail(
     country: clean(address?.addressCountry) ?? "US",
     latitude: finiteNumber(property?.geo?.latitude),
     longitude: finiteNumber(property?.geo?.longitude),
-    salePriceUsd: price,
-    salePriceText: price ? `$${price.toLocaleString("en-US")}` : null,
+    salePriceUsd: tx === "sale" ? price : null,
+    salePriceText: tx === "sale" && price ? `$${price.toLocaleString("en-US")}` : null,
     capRatePct,
     buildingSizeSqft,
     yearBuilt,
@@ -548,6 +594,7 @@ export function parseLyonStahlDetail(
     canonicalUrl: lyonStahlUrl(requestedUrl, "detail"),
     lastUpdated: metaContent($, "og:updated_time"),
   });
+  preserveLyonStahlOffers(row, resolved.ownOffers);
   return {
     kind: "accepted",
     listing: row,
@@ -659,10 +706,11 @@ export async function srcLyonStahl(
     return {
       company: "Lyon Stahl",
       sourceUrl: LYON_STAHL_SOURCE_URL,
-      method: "Investment-sales only; no public lease inventory",
-      totalAvailable: 0,
+      method: "Complete current lease acquisition not implemented",
+      totalAvailable: null,
       listings: [],
-      note: "Lyon Stahl publishes sale listings only.",
+      truncated: true,
+      note: "Complete current lease acquisition is not implemented; explicit lease detail parsing does not prove inventory coverage (AGENTIC-4308).",
     };
   }
 

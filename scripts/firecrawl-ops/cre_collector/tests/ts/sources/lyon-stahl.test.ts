@@ -617,7 +617,7 @@ test("Lyon Stahl parser excludes terminal rows and holds missing or novel availa
   );
 });
 
-test("Lyon Stahl lease pass is explicitly empty and performs no network calls", async (t) => {
+test("Lyon Stahl lease acquisition is explicitly incomplete and performs no network calls", async (t) => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = (async () => {
@@ -629,7 +629,8 @@ test("Lyon Stahl lease pass is explicitly empty and performs no network calls", 
   });
 
   const result = await srcLyonStahl("lease", Infinity, false);
-  assert.equal(result.totalAvailable, 0);
+  assert.equal(result.totalAvailable, null);
+  assert.equal(result.truncated, true);
   assert.deepEqual(result.listings, []);
   assert.equal(calls, 0);
 });
