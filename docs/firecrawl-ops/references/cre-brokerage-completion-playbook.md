@@ -257,6 +257,15 @@ new hostname. A changed coordinate requires current first-party ownership
 evidence tied to the exact registered source configuration; a provider switch
 requires evidence of the new feed and a reviewed identity strategy.
 
+Distinguish a publisher's post, an observation of that post, the physical
+property and the particular offering. A shared property ID or URL does not
+prove identical offerings or supersession. Test conflicting price/currency,
+sale/lease terms, contacts and assets before proposing a consolidation, and
+inspect actual parent-overwrite and child-refresh behavior before claiming
+that storing `raw_data` or `extraFacts` preserves every publication's history.
+NAI's unresolved association contract is tracked in
+[AGENTIC-4284](https://linear.app/agenticassets/issue/AGENTIC-4284).
+
 If a source-policy-required value is unknown, required pages are missing, or
 two records claim an incompatible identity, fail the affected source's
 required-member proof and preserve the last-known-good data. A source artifact

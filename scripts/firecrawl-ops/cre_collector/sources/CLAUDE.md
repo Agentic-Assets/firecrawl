@@ -262,12 +262,23 @@ repeats agree. Publication `contentType` is not `assetType`; it remains in the
 unchanged raw post alongside the full content. Tags/prose are not inferred
 physical facts. Feed fallback and bulk-detail monitor selection stay unchanged.
 
-NAI Infabode post IDs identify observations; a stable property key remains
+NAI Infabode post IDs identify publications; a stable property/offering key remains
 unproved under [AGENTIC-4284](https://linear.app/agenticassets/issue/AGENTIC-4284).
 The same `urlOriginal` can carry different content or images, so do not collapse
 posts by URL. Preserve exact `propertyId` routing parameters on NAI Global
 `/listings/?propertyId=...` links; a generic shell's canonical URL dropping the
 query does not establish property identity.
+
+Keep publication identity, a timestamped observation of that publication,
+physical-property identity and sale/lease offering identity distinct. Even an
+exact site-native property ID does not prove that two publications describe
+the same offering or that the newer one supersedes the older economics and
+assets. The current parent `raw_data` overwrite, shallow `extra_facts` merge
+and child refresh are not a lossless publication-history store. Retain the
+separate saved observations while the association is unresolved; do not append
+conflicting publications to an ordinary ingest and claim history is preserved.
+Require a provider-supported association/supersession contract and exact
+historical compatibility proof before proposing a merge, rekey or retirement.
 
 Avison detail identity supports feed-bound SharpLaunch street-as-name headings with a separate city/state location (full US state names and postal abbreviations), including location-suffixed titles. A registered `www.avisonyoung.us/properties/` wrapper can instead bind one unambiguous `RealEstateListing` name/address/URL to coherent visible name/location and page metadata. Map/script text alone is not street evidence for these layouts. Unsupported native pages may still use a validated official alternate through the existing property-detail child-preserving mode; explicit strict mode continues to require every selected URL.
 
