@@ -11,6 +11,7 @@ import {
 import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
 import { SourceResult, Tx } from "../types.js";
 import { matthewsTenureFromUrl } from "./pure/matthews-identity.js";
+import { matthewsSpaceFacts } from "./pure/matthews-space-facts.js";
 
 const MATTHEWS_HOST = "https://www.matthews.com";
 const MATTHEWS_SOURCE_URL = `${MATTHEWS_HOST}/listings`;
@@ -639,6 +640,7 @@ export function parseMatthewsDetail(
     salePriceText: tx === "sale" ? realPrice : null,
     capRatePct,
     leaseRateText: tx === "lease" ? realPrice ?? priceText ?? null : null,
+    extraFacts: matthewsSpaceFacts($),
     sizeText: leasableText ? `${leasableText} SF` : null,
     buildingSizeSqft,
     lotSizeAcres,
