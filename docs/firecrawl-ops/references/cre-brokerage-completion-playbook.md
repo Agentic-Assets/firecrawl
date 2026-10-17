@@ -117,6 +117,13 @@ npm run typecheck
 - Record GET endpoints first. Treat POST-only or consent-gated paths as blocked until a repeatable safe path is found.
 - Save endpoint shape, required query params, page size, and total-count fields.
 
+Published keyword, geography and property-type filters do not by themselves
+prove exhaustive or disjoint inventory partitions. Test matched known
+multi-state, portfolio and hierarchical-type members, then reconcile the full
+native identity union before using those filters for sharding. A filtered
+omission alone does not establish the cause of a count gap or offering status;
+see [AGENTIC-4297](https://linear.app/agenticassets/issue/AGENTIC-4297).
+
 3. Test endpoints through local Firecrawl:
 
 ```bash
