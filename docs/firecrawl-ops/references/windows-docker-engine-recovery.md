@@ -84,6 +84,42 @@ recovery; record that test separately when actually observed.
 
 See Docker's [restart policy documentation](https://docs.docker.com/engine/containers/start-containers-automatically/).
 
+## Distinguish WSL observation timeouts from workload failure
+
+`Wsl/Service/WSAETIMEDOUT` on a new CLI connection does not establish that an
+existing Linux workload or Docker engine died. Microsoft defines Winsock
+[`WSAETIMEDOUT` (10060)](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2)
+as a connection timeout; the code alone does not identify the underlying cause.
+Preserve the original running command handle and the failed observation's
+arguments, timestamps, stderr and native exit code. Let that bounded observation
+settle before considering another observation; do not accumulate hung probes.
+
+Do not restart a source, Docker or WSL, shut down distributions, or reset the
+host solely because an observation timed out. Require advancing evidence from
+the exact run log and current guards, alongside the existing engine/container
+identity and state. A live PID or a distribution labeled `Running` alone does
+not demonstrate useful progress or health.
+
+Native PowerShell read-only access to an exact known log through
+`\\wsl.localhost\<distribution>\...` may still work when new CLI connections fail.
+It is not guaranteed. Keep reads bounded and preserve their own failures; never
+execute, edit or copy runtime code through that UNC path. File observations do
+not bypass canonical write, AFTER-capture, ownership or settlement gates.
+
+Capture `$LASTEXITCODE` immediately after the native command, before later
+PowerShell commands can obscure its result. On October 17, an outer observation
+handle (`88216`) returned zero despite the contained WSL failure; that outer
+result did not prove the Linux observation succeeded.
+
+In the October 17, 2026 observation on `85110e`, new CLI connections timed out
+twice at 12:56–12:58 UTC while original source handle `31597` remained live.
+The exact saved run log advanced from 1,500 to 1,700 sale details by 12:59:06;
+API/browser start identities were unchanged, restart counts were zero and OOM
+flags false. Existing 12:59:53 Linux evidence recorded normal memory and 13.9%
+CPU. These observations establish continued work, not a root cause, CLI recovery
+or a guaranteed UNC workaround. Consult [Microsoft's WSL troubleshooting guide](https://learn.microsoft.com/en-us/windows/wsl/troubleshooting-guide)
+before proposing a separately reviewed repair.
+
 ## Observed recovery and limits
 
 On October 13, 2026, Docker Desktop 4.95.0 reported a stopped Linux engine.
