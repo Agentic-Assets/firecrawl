@@ -10,6 +10,15 @@ public static class CaptureFixture {
         string mode = args.Length == 0 ? "default" : args[0];
         if (mode == "holder") { Thread.Sleep(4000); return 0; }
         if (mode == "marker") { File.WriteAllText(args[1], "dispatched"); return 0; }
+        if (mode == "live-output") {
+            Console.WriteLine("{\"series_dir\":\"/synthetic/series\",\"invocation_id\":\"0123456789abcdef0123456789abcdef\"}");
+            Console.Error.WriteLine("synthetic live stderr");
+            Console.Out.Flush(); Console.Error.Flush();
+            File.WriteAllText(args[2], "emitted");
+            Stopwatch deadline = Stopwatch.StartNew();
+            while (!File.Exists(args[1]) && deadline.ElapsedMilliseconds < 10000) Thread.Sleep(10);
+            return File.Exists(args[1]) ? 0 : 17;
+        }
         string name = Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().MainModule.FileName);
         if (name == "nonzero" || name == "held-pipes" || name == "flood") mode = name;
         if (mode == "held-pipes") {

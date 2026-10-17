@@ -97,6 +97,12 @@ When making changes to the API:
    - The full suite is slow, so run only the relevant tests locally and record exactly what you ran.
 4. Push to a branch and open a PR. Hosted GitHub Actions are disabled on this fork (the repo Actions setting is off, and only five manual `workflow_dispatch` image deploy and cleanup workflows remain), so no CI runs and there is no hosted signal. Local proof is required: `pnpm build` (tsc typecheck), `pnpm knip`, and the relevant `pnpm harness vitest run <pattern>` tests for `apps/api`; `npx tsc --noEmit -p .` and `pnpm test` for `apps/playwright-service-ts`; and `python3 -m unittest discover -s scripts/firecrawl-ops/tests` for `scripts/firecrawl-ops`. The `scripts/firecrawl-ops/cre_collector` suites (`npm test`, `python3 -m pytest tests/ -q`) must run only from a separate `git clone --no-hardlinks`, never a worktree, because their lock lookup resolves to the live checkout's `out/daily/.cre.lock`. Put the commands and results under `## Proof` in the PR body.
 
+On Windows, run the POSIX ops unit suite inside Ubuntu/WSL with Linux Python
+and a POSIX `PATH`; do not mix Windows `python.exe` with WSL `bash` for shell
+fixtures. For native capture changes, also run
+`scripts/firecrawl-ops/cre_collector/windows/Test-CreNativeCapture.ps1` in fresh
+PowerShell 7 and Windows PowerShell 5.1 processes.
+
 Useful `apps/api` scripts (see `apps/api/package.json` for the full list):
 - `pnpm test:snips` — just the snips/E2E suite
 - `pnpm dev` — tsx-based dev server via the harness

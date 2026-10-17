@@ -11,8 +11,10 @@ if (-not $ProofDirectory) {
 New-Item -ItemType Directory -Path $ProofDirectory -Force | Out-Null
 $ProofDirectory = [IO.Path]::GetFullPath($ProofDirectory)
 $helper = Join-Path $PSScriptRoot 'CreNativeCapture.cs'
-Add-Type -TypeDefinition ([IO.File]::ReadAllText($helper))
-Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'tests/CaptureTestStreams.cs')))
+$testStreams = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'tests/CaptureTestStreams.cs'))
+# Compile the test-only background caller beside the unchanged shipped helper.
+# Its source has its own using directives, so keep each in a separate namespace.
+Add-Type -TypeDefinition (([IO.File]::ReadAllText($helper)) + "`nnamespace CreCaptureTestSupport {`n" + $testStreams + "`n}")
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 $executable = Join-Path $ProofDirectory 'synthetic child.exe'
 & $compiler /nologo /target:exe "/out:$executable" (Join-Path $PSScriptRoot 'tests/CaptureFixture.cs')
@@ -26,6 +28,42 @@ function Invoke-Capture([string[]]$ChildArguments) {
     $capture = [CreWindowsCapture.Capture]::Run($executable, $ChildArguments, "$stem.out", "$stem.err", '/synthetic/out/guarded-tiers/')
     return [pscustomobject]@{ Result = $capture; Output = "$stem.out"; Error = "$stem.err" }
 }
+# A child-flushed line smaller than FileStream's buffer must be readable before
+# exit. Always release and join the synthetic child, including on a RED run.
+$liveStem = Join-Path $ProofDirectory ([Guid]::NewGuid().ToString('N'))
+$liveOut = $liveStem + '.stdout.log'
+$liveErr = $liveStem + '.stderr.log'
+$release = $liveStem + '.release'
+$emitted = $liveStem + '.emitted'
+$live = New-Object CreCaptureTestSupport.CreCaptureTests.BackgroundCapture($executable, @('live-output', $release, $emitted), $liveOut, $liveErr)
+$visible = $false
+$joined = $false
+$live.Start()
+try {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while ($clock.ElapsedMilliseconds -lt 5000 -and $live.IsAlive) {
+        if ([IO.File]::Exists($emitted)) {
+            $texts = @()
+            foreach ($path in @($liveOut, $liveErr)) {
+                $stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+                try {
+                    $bytes = New-Object byte[] ([int][Math]::Min(1024, $stream.Length))
+                    $count = $stream.Read($bytes, 0, $bytes.Length)
+                    $texts += [Text.Encoding]::UTF8.GetString($bytes, 0, $count)
+                } finally { $stream.Dispose() }
+            }
+            $visible = $texts[0].Contains('"invocation_id":"0123456789abcdef0123456789abcdef"') -and $texts[0].EndsWith("`n") -and $texts[1].Contains('synthetic live stderr') -and $texts[1].EndsWith("`n") -and -not [IO.File]::Exists($release) -and $live.IsAlive
+            if ($visible) { break }
+        }
+        Start-Sleep -Milliseconds 10
+    }
+} finally {
+    [IO.File]::WriteAllText($release, 'release')
+    $joined = $live.Join(5000)
+    [ordered]@{ visibleBeforeRelease=$visible; joinedAfterRelease=$joined; captureError=if($live.Error){$live.Error.GetType().FullName}else{$null}; nativeExit=if($live.Result){$live.Result.NativeExitCode}else{$null} } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ProofDirectory 'live-visibility.json')
+}
+Assert-True ($joined -and -not $live.Error -and $live.Result.NativeExitCode -eq 0) 'Synthetic live-output child must settle after marker release.'
+Assert-True $visible 'Small stdout control JSON and stderr must be visible while the native child is still waiting.'
 $test = Invoke-Capture @('flood')
 Assert-True (-not $test.Result.Failed -and $test.Result.NativeExitCode -eq 0) 'Flood must return without deadlock.'
 foreach ($stream in @($test.Result.Stdout, $test.Result.Stderr)) {
@@ -58,10 +96,13 @@ $exclusive = [IO.File]::Open($preopenOut, [IO.FileMode]::Open, [IO.FileAccess]::
 $exclusive.Dispose()
 Assert-True ((Get-Item $preopenOut).Length -eq 0) 'Preopened first sink must close on second-sink failure.'
 foreach ($fault in @('write', 'flush', 'close')) {
-    $out = New-Object CreCaptureTests.FaultStream($fault); $err = New-Object IO.MemoryStream
+    $out = New-Object CreCaptureTestSupport.CreCaptureTests.FaultStream($fault); $err = New-Object IO.MemoryStream
     $failed = [CreWindowsCapture.Capture]::RunWithStreams($executable, @('flood'), $out, $err, $null, 2000)
     Assert-True ($failed.Failed -and $failed.NativeExitCode -eq 0 -and $failed.Stdout.ObservedBytes -eq 2621440 -and $failed.Stdout.Eof) 'Sink failure must keep draining and retain native exit.'
     Assert-True ($failed.Stdout.($fault.Substring(0,1).ToUpper() + $fault.Substring(1) + 'Failed')) 'Exact sink fault must be reported.'
+    if ($fault -eq 'flush') {
+        Assert-True ($out.FirstFlushWriteCalls -eq 1 -and $out.WritesAfterFlushFailure -gt 0 -and -not $failed.Stdout.WriteFailed) 'Midstream flush failure must remain separate and continue draining subsequent writes.'
+    }
 }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $out = New-Object IO.MemoryStream; $err = New-Object IO.MemoryStream
@@ -72,7 +113,7 @@ Assert-True ($clock.Elapsed.TotalSeconds -lt 3) 'Inherited pipes must not block 
 Assert-True (-not $held.Stdout.ReaderDidNotStop -and -not $held.Stderr.ReaderDidNotStop) 'Exact reader cancellation must join in this fixture.'
 $readerType = [CreWindowsCapture.Capture].GetNestedType('Reader', [Reflection.BindingFlags]::NonPublic)
 $state = New-Object CreWindowsCapture.StreamResult
-$inputStream = New-Object CreCaptureTests.ChunkStream
+$inputStream = New-Object CreCaptureTestSupport.CreCaptureTests.ChunkStream
 $outputStream = New-Object IO.MemoryStream
 $reader = $readerType.GetConstructors()[0].Invoke([object[]]@($inputStream.PSObject.BaseObject, $outputStream.PSObject.BaseObject, $state.PSObject.BaseObject, '/synthetic/'))
 $reader.Start(); $reader.Join(2000); $reader.ReleaseHandle()
@@ -216,7 +257,7 @@ foreach ($scenario in @('admitted', 'native-nonzero', 'launch-failure', 'held-pi
 # A managed blocking sink is deliberately not cancelled by CancelSynchronousIo.
 # Do not reuse a host with unjoined resources, even if the operator invoked the
 # launcher interactively and its `exit` returned to an outer caller.
-$blocked = New-Object CreCaptureTests.BlockingStream
+$blocked = New-Object CreCaptureTestSupport.CreCaptureTests.BlockingStream
 $clock = [Diagnostics.Stopwatch]::StartNew()
 try {
     $uncertain = [CreWindowsCapture.Capture]::RunWithStreams($executable, @('default'), $blocked, (New-Object IO.MemoryStream), $null, 100)
