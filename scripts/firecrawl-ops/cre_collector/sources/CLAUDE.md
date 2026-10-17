@@ -187,7 +187,7 @@ Matthews retains each owned availability card's literal label/value pairs in
 `extraFacts.matthewsLeasingSpaces`. Combined and individual spaces can overlap;
 do not sum their areas, select a property-wide rate, or infer rate units/periods.
 Only the unique owned property section's observed Spaces Available group supplies
-these facts. Malformed or ambiguous cards retain their text in
+these facts; nested sections are excluded before card or fallback-text extraction. Malformed or ambiguous cards retain their text in
 `matthewsUnparsedLeasingSpaces` without claiming a structured association.
 This field retention does not resolve inventory completeness or tenure authority.
 

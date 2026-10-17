@@ -88,6 +88,38 @@ test("space retention does not change unrelated mapped output", () => {
   assert.equal(parseMatthewsDetail(fixture.replace('rel="canonical"', 'rel="untrusted"'), url, "lease", { strict: true }), null);
 });
 
+
+function foreignSection($: cheerio.CheerioAPI) {
+  const group = $("h3").parent().clone();
+  group.find(".key-info-value").text("FOREIGN PROPERTY");
+  return $("<section data-property='foreign'></section>").append(group);
+}
+
+test("equivalent direct article card retains the complete observed tuple", () => {
+  const row = parse(mutate(($) => {
+    const card = $("h3").next();
+    card.replaceWith($("<article></article>").append(card.contents()));
+  }));
+  assert.deepEqual(row.extraFacts?.matthewsLeasingSpaces, expected);
+});
+
+for (const mode of ["foreign only", "own and foreign", "inside card", "ambiguous fallback"]) {
+  test(`nested foreign section contributes no structured or raw facts: ${mode}`, () => {
+    const row = parse(mutate(($) => {
+      const foreign = foreignSection($);
+      if (mode === "foreign only") $("h3").parent().replaceWith(foreign);
+      else if (mode === "inside card" || mode === "ambiguous fallback") {
+        if (mode === "ambiguous fallback") $(".key-info-value").first().text(" ");
+        $("h3").next().append(foreign);
+      } else $("#propertyTitle").parent().append(foreign);
+    }));
+    assert.equal(JSON.stringify(row.extraFacts ?? {}).includes("FOREIGN PROPERTY"), false);
+    assert.deepEqual(row.extraFacts?.matthewsLeasingSpaces,
+      mode === "foreign only" ? undefined : mode === "ambiguous fallback" ? expected.slice(1) : expected);
+    if (mode === "ambiguous fallback") assert.equal(row.extraFacts.matthewsUnparsedLeasingSpaces.length, 1);
+  });
+}
+
 test("actual ordinary collect CLI serialization and Python staging preserve the suite facts", () => {
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const dir = mkdtempSync(join(tmpdir(), "matthews-space-cli-"));

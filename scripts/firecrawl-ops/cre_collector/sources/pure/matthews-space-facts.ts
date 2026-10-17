@@ -6,7 +6,8 @@ import { clean } from "../../lib/util.js";
 export function matthewsSpaceFacts($: CheerioAPI) {
   const title = $("#propertyTitle");
   if (title.length !== 1) return undefined;
-  const section = title.closest("section");
+  const section = title.closest("section").clone();
+  section.find("section").remove(); // Nested sections are not the owned property subject.
   const groups = section.find("h3").filter((_, heading) =>
     /^\d+\s+Spaces?\s+Available$/i.test(clean($(heading).text()) ?? "")
   );
@@ -17,7 +18,7 @@ export function matthewsSpaceFacts($: CheerioAPI) {
 
   const spaces: Array<Array<{ label: string; value: string }>> = [];
   const unparsed: string[] = [];
-  groups.parent().children("div").each((_, card) => {
+  groups.parent().children().not(groups).each((_, card) => {
     const facts: Array<{ label: string; value: string }> = [];
     const seen = new Set<string>();
     let ambiguous = false;
