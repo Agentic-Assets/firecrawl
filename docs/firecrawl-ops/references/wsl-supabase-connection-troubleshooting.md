@@ -88,6 +88,21 @@ Keep passwords out of command arguments and logs. Use the repository's
 `cre_ingest.psql_connection_env` and `psql_connection_args` helpers for bounded
 diagnostics, rather than invoking `psql` with a credential-bearing URL.
 
+## Distinguish the two TLS connections
+
+With a pooler, client-to-pooler and pooler-to-Postgres are separate connections.
+[PostgreSQL's `pg_stat_ssl`](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-SSL-VIEW)
+reports the connection observed by the database backend; it does not report the
+external client's separate pooler connection. A saved `server_connection_ssl=false`
+must remain visible, but alone does not prove client TLS is disabled.
+For the approved collector snapshot path, require client `PGSSLMODE=verify-full`,
+the trusted CA and hostname verification, and successful SSL `\conninfo` evidence.
+Do not replace those checks with a backend `ssl=true` prerequisite or weaken them
+because the backend value is false. Client proof alone does not establish encryption
+on the pooler-to-Postgres leg. This distinction follows the [Supabase connection
+model](https://supabase.com/docs/guides/database/connecting-to-postgres) and prior
+[AGENTIC-2895 learning](https://linear.app/agenticassets/issue/AGENTIC-2895#comment-c4248f93-1909-4e27-a10a-1bb0fda547a8).
+
 ## Preserve checkpoint target identity
 
 Shared Supabase pooler host/port/database values do not uniquely identify a
