@@ -133,9 +133,19 @@ normal output small. Browser page capacity is not inferred from CPU limits.
 
 Request success means a shared Firecrawl helper returned usable content. It is
 not a valid-property, field-accuracy, ingestion or freshness count. JSON parsing
-can fail after a successful HTTP/helper attempt. Retries scheduled to make
-another attempt and the existing final-attempt sleep are recorded separately.
-Backoff is scheduled delay, not an assertion that an interrupted sleep finished.
+can fail after a successful HTTP/helper attempt. Logical `scrapeJson` calls
+delegate to `scrapeRaw`; do not sum raw and JSON calls as independent requests.
+`requests.attempts_*` counts instrumented helper/client attempts, not necessarily
+physical HTTP requests: the cancellable client can retry HTTP502 internally
+within one instrumented attempt. Browser subresource traffic is not counted.
+
+The [shared helpers](../../../scripts/firecrawl-ops/cre_collector/lib/scrape.ts)
+record retry backoff separately from terminal backoff. Current `scrapeRaw` and
+`scrapeDoc` sleep only before another attempt, with no final-attempt sleep.
+`scrapeJson` still sleeps after its final unparseable body and records that as
+terminal `json_parse` backoff. Older reports may also include the former HTTP
+helper terminal sleep. Backoff is scheduled delay, not proof that an interrupted
+sleep finished.
 
 Validator query results and timings use separate psql output channels inside the
 same repeatable-read, read-only transaction. Each report uses one psql process
@@ -152,8 +162,11 @@ Request latency excludes backoff. Histogram percentiles are approximate upper
 bounds; overflow has no finite upper bound and is unknown in the summary.
 Throughput uses monotonic elapsed time, not the sum of parallel request durations.
 `max_active_locally_awaited` is client concurrency, not Docker/server concurrency.
-The existing request deadline does not cancel its SDK promise, so its possible
-remote continuation is recorded as unknown rather than assumed settled.
+Current helper deadlines pass an `AbortSignal` through the
+[cancellable client](../../../scripts/firecrawl-ops/cre_collector/lib/scrape_transport.ts)
+to local fetch, response-body consumption and internal HTTP502 backoff. Client
+cancellation does not prove that the remote API/browser stopped or settled;
+remote continuation remains unknown until the existing settlement checks pass.
 
 JLL cache hits mean an accepted cached detail document was returned. Misses and
 explicit refresh bypasses are separate. Cache age/freshness still comes from
