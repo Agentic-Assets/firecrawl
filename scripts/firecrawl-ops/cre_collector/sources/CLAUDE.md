@@ -245,6 +245,16 @@ the visible address heading independently binds the same full name, street,
 city and state, with matching title/OG and owned page URLs. A complete visible
 `street, city, state` hero can bind a legacy availability layout with matching
 property-name metadata; it need not repeat city/state in a separate heading.
+A native offering headline may use a bounded property-family `for sale/lease`
+role (or `build-to-suit`) only with one exact visible full-address hero and
+coherent property-name/location title, OG and owned URL. A range property may
+instead bind its exact visible feed name and city/state to unambiguous description
+metadata containing the complete feed name, full street range, city/state and known
+ZIP. All supplied identity descriptions must agree; a range endpoint alone, a
+metadata-only match or an arbitrary property/address headline cannot satisfy this
+compound witness. Numeric ranges and units remain unchanged. If structured listing data is present,
+require one coherent property name/URL and every supplied full address before
+promoting its description, date or media; conflicting/duplicate records refuse.
 These are comparison/layout rules, not address rewrites or identity aliases.
 Do not replace a missing street with a matching city, map/script text or a
 marketing headline. Retain wrong-number, ambiguous-heading, metadata, URL and
