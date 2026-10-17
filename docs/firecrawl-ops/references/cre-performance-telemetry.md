@@ -217,10 +217,12 @@ constraint or measuring its consequences.
 
 Record effective settings, observed sizes and latencies, work scope and
 measurement gaps alongside each experiment. Leave unmeasured values unknown;
-retain failed trials as well as successful ones. Use the existing
-[AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900) experiments
-and [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895) Learning
-log for evidence and interpretation before proposing a targeted adjustment.
+retain failed trials as well as successful ones. Keep completed
+[AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900) calibration
+as historical evidence; route new measured improvements through the
+[AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895) Learning log
+and a deduplicated actionable child, such as
+[AGENTIC-4363](https://linear.app/agenticassets/issue/AGENTIC-4363).
 
 A phase manifest changes when the coordinator records a phase transition; it
 is not a continuous process heartbeat. During a long detail pass, compare fresh
@@ -340,9 +342,10 @@ Record useful findings in the existing
 and scorecard as observation, linked evidence, interpretation/limits, then next
 action. Link the existing automatic reports and bound run artifacts with their
 code SHA, generation and work scope. Label measured outcomes, unproven
-hypotheses and refuted ideas explicitly. Use the existing
-[AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900) experiments
-for controlled follow-up; search before creating an actionable child. Keep
+hypotheses and refuted ideas explicitly. Retain completed
+[AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900) calibration
+as history; route controlled follow-up through the 2895 scorecard and the
+appropriate existing child, searching before creating an actionable child. Keep
 measurements in the existing reports and decisions in Linear rather than adding
 a separate service, logger or local backlog.
 

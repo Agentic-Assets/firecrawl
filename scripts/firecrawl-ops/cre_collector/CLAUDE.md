@@ -187,6 +187,12 @@ Key behavior:
   prefers URL `propertyId` with `-sale`/`-lease` stripped first. Buildout source definitions live in `sources/buildout-registry.ts` and the
   existing `BUILDOUT_SOURCE_INVENTORY_OPTS` in `sources/buildout.ts`.
 - Sale + lease passes merge to `transaction_type='sale_or_lease'`.
+- The optional Phase-2 institutional update uses one effective projection for
+  SET and its no-op guard. It skips the second parent UPDATE only when all 18
+  current/final serialized values match, including NUMERIC/JSONB scale. Native
+  assignments, source-bound withholding, sparse keeps and JSONB merges stay
+  unchanged. The main upsert still refreshes clocks; this does not skip details,
+  children, history, jobs or required validation/readback.
 - Provider cards without a canonical listing URL are not written to
   `cre_listings`. Complete CBRE Deal Flow and Colliers SalesTracker snapshots
   persist them as explicitly provisional `cre_source_index` rows under
