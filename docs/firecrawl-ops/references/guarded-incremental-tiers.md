@@ -141,6 +141,10 @@ its audit, stdout and stderr paths. Read a running stream with
 helper flushes retained chunks while the native process runs. Custom .NET
 readers must open with `FileAccess.Read` and `FileShare.ReadWrite` to coexist
 with the writer; `File.ReadAllLines` uses incompatible sharing on an active log.
+Read-only readers of atomically replaced JSON audit/control files must also grant
+`FileShare.Delete`; denying it can block `File.Replace` and fail the producer's
+publication. Keep `FileAccess.Read`, bounded complete-JSON handling, and the
+existing private-control authority checks.
 Treat only complete lines as output, and keep reads bounded. A live reference is
 a locator, not owner or settlement authority. The
 sidecars share the existing flat audit basename. `-CheckOnly` writes none of
