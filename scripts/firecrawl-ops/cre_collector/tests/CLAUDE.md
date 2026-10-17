@@ -60,6 +60,7 @@ bash tests/run_cre_validate_timing_postgres_contract.sh  # opt-in native psql ti
 bash tests/run_ingest_institutional_postgres_contract.sh  # opt-in disposable institutional UPDATE contract
 bash tests/run_cre_quality_postgres_contract.sh  # opt-in active/historical scope + bounded financial fallback contract
 python3 tests/run_daum_subset_postgres_contract.py "$(mktemp -d)/proof"  # opt-in WSL/Linux DAUM subset transaction contract
+python3 tests/run_jll_image_repair_postgres_contract.py  # opt-in exact-reference repair SQL contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
@@ -92,6 +93,14 @@ new proof-directory path, never a database URL. It tests whole-transaction
 refusals, held parent/five-child/index preservation, unchanged lifecycle and
 baseline/OM data, missing-index/new-insert cases, and bounded fresh replacement
 of emitted children. Preserve its checks and container-settlement receipts.
+
+The JLL image-repair contract runs the actual repair SQL against synthetic data
+in an owned, unexposed, bounded cached PostgreSQL container. It checks default
+read-only comparison, exact delete/rollback/restore, all-table preservation and
+concurrent-writer refusals. `--full-scale` adds one synthetic 345,440-image /
+9,985-parent case. It never accepts production credentials or a database URL;
+see the [operator guide](../../../../docs/firecrawl-ops/references/jll-image-reference-repair.md#isolated-verification)
+for the distinct evidence and execution-receipt boundaries.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing
