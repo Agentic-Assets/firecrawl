@@ -310,6 +310,20 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `buildout-registry.ts` | Governed single-token Buildout source definitions |
 | `savills.ts` | Sale and lease: structured `__NEXT_DATA__`; provider `NextUrl` pagination; direct fetch with validated Firecrawl fallback |
 
+JLL child harvesting uses a working DOM projection to exclude positively
+identified other-property recommendation assets, map tile images, proven srcset
+fragments, consent-widget images and native-contact broker-card portraits.
+Exact native/base gallery-prefix or retained target-DOM references win when an
+asset is shared. Complete comma-bearing srcset candidates remain eligible target
+supplements. Unrecognized or ambiguous recommendation scopes retain legacy
+harvesting with `jllDetail.harvestScope: "unknown"`; no new collection failure or
+NEXT-only fallback is implied. Original raw/cache observations, Markdown and
+useful location context remain intact. Scrape lengths/counts describe that
+original document. Native/base primary and ordering follow4164, including legacy
+order when no anchor exists. [AGENTIC-4342](https://linear.app/agenticassets/issue/AGENTIC-4342)
+owns this source boundary; production child-retention guards and separate
+performance/transport admission remain unchanged.
+
 ## Buildout (`buildout.ts`) - Shared Adapter
 
 - **Diagnose the actual adapter before changing its transport.** From a clean,
