@@ -191,6 +191,8 @@ def main():
                 "-i",
                 container,
                 "psql",
+                "-h",
+                "127.0.0.1",
                 "-X",
                 "-qAt",
                 "-v",
@@ -298,10 +300,11 @@ def main():
                 indent=2,
             )
         )
+        # The temporary bootstrap server accepts Unix sockets before restarting.
         for _ in range(60):
             if (
                 command(
-                    ["docker", "exec", container, "pg_isready", "-U", "postgres"]
+                    ["docker", "exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
                 ).returncode
                 == 0
             ):
