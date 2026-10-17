@@ -101,8 +101,10 @@ check every staged channel: a changed URL may be a publication substitution or
 the asset may remain under a typed floorplan/document role. This proves only
 reference continuity; do not infer a global CDN basename alias or identical
 remote bytes. Raw child counts alone prove neither richness nor asset loss.
-Historical cleanup must follow the [existing exact approved repair process](https://linear.app/agenticassets/issue/AGENTIC-4371),
-preserve valid and ambiguous references, and leave global quality guards intact.
+Malformed-reference cleanup must preserve valid and ambiguous references, use
+the existing repair approval and locking gates, and leave quality guards intact.
+The [JLL repair preparation](https://linear.app/agenticassets/issue/AGENTIC-4371)
+records a pending case, not approval to delete production rows.
 
 Use permitted public access and provider-aware pacing. Preserve existing
 deployment and guarded-write procedures when adding fields. Retaining a
