@@ -35,6 +35,7 @@ import {
   detailObservation,
   generationMatches,
   refreshGenerationId,
+  refreshStartedAt,
   requireFreshDetails,
 } from "../lib/freshness.js";
 import {
@@ -1614,7 +1615,18 @@ export function jllStrandedStructured(property: any): Record<string, any> {
   );
 }
 
-export async function enrichJllListing(base: any): Promise<any> {
+// Ordinary prune removes false; this native boolean must retain both states.
+export function preserveJllSubleaseFact(listing: any, value: unknown): any {
+  if (typeof value === "boolean" && listing?.jllDetail) {
+    listing.jllDetail.isSubleaseOnly = value;
+  }
+  return listing;
+}
+
+export async function enrichJllListing(
+  base: any,
+  options: { refresh?: boolean; onCompletedNative404?: () => void } = {},
+): Promise<any> {
   if (!base.url) return base;
   // A listing can carry the same provider control at its top level and inside
   // jllSearchResult. Establish that boundary before a cached detail payload is
@@ -1626,7 +1638,7 @@ export async function enrichJllListing(base: any): Promise<any> {
   const basePriceWithheld = jllPriceWithheld(baseWithholdingControl);
   let failurePricing: Record<string, unknown> | null = null;
   try {
-    let doc = await scrapeJllDetailDoc(base.url);
+    let doc = await scrapeJllDetailDoc(base.url, { refresh: options.refresh });
     let next = jllNextData(doc.rawHtml);
     let pageProps = next?.props?.pageProps;
     let property = pageProps?.property;
@@ -1640,6 +1652,25 @@ export async function enrichJllListing(base: any): Promise<any> {
       property = pageProps?.property;
     }
     if (!property) {
+      // Only the LAST completed document can authorize a late pass. A cached
+      // 404 followed by a timeout reaches catch instead and is never eligible.
+      const startedAt = refreshStartedAt();
+      if (
+        requireFreshDetails() &&
+        refreshGenerationId() &&
+        startedAt &&
+        clean(base.id) &&
+        jllCachedAtMeetsBoundary(base.inventoryObservedAt, startedAt) &&
+        generationMatches(doc.detailObservation?.generationId) &&
+        jllCachedAtMeetsBoundary(doc.detailObservation?.observedAt, startedAt) &&
+        next?.page === "/404" &&
+        doc.metadata?.statusCode === 404 &&
+        doc.metadata?.sourceURL === base.url &&
+        doc.metadata?.url === base.url &&
+        !/captcha|verify (?:that )?you are human|access denied|cf-chl-|just a moment|you have been blocked/i.test(doc.rawHtml)
+      ) {
+        options.onCompletedNative404?.();
+      }
       return prune({
         ...(basePriceWithheld
           ? jllWithheldPublicProjection(base)
@@ -1794,7 +1825,7 @@ export async function enrichJllListing(base: any): Promise<any> {
     // normalized detail values too.
     const description = jllDescription(property) ?? base.description;
     const markdown = doc.markdown || base.markdown;
-    return prune({
+    const listing = prune({
       ...publicBase,
       detailObservedAt: doc.detailObservation?.observedAt,
       freshnessProvenance: {
@@ -1914,6 +1945,7 @@ export async function enrichJllListing(base: any): Promise<any> {
         },
       },
     });
+    return preserveJllSubleaseFact(listing, property.isSubleaseOnly);
   } catch (err) {
     console.error(`  jll: detail failed for ${base.url}: ${err}`);
     // The error path is also a visibility boundary.  Redact recursively so a
@@ -2070,11 +2102,14 @@ export async function srcJll(
     coverageTruncated = true;
   }
   let enrichedCount = 0;
+  const completedNative404: number[] = [];
   const enriched = await pmap(
     listings,
     JLL_DETAIL_CONCURRENCY,
-    async (listing) => {
-      const row = await enrichJllListing(listing);
+    async (listing, index) => {
+      const row = await enrichJllListing(listing, {
+        onCompletedNative404: () => completedNative404.push(index),
+      });
       enrichedCount++;
       if (enrichedCount % 100 === 0 || enrichedCount === listings.length) {
         console.error(
@@ -2084,6 +2119,22 @@ export async function srcJll(
       return row;
     },
   );
+  // One late pass, using the same bounded reader/fallback and original bases.
+  // Skip doomed recovery if any other failure would still refuse the artifact.
+  // No callback here: persistent failures cannot schedule another pass.
+  if (completedNative404.length === enriched.filter((row) => row.detailError).length) {
+    await pmap(completedNative404, JLL_DETAIL_CONCURRENCY, async (index) => {
+      const listing = listings[index];
+      console.error(
+        `  jll/${tx}: late detail retry ${listing.id} ${listing.url} (completed native404)`,
+      );
+      const row = await enrichJllListing(listing, { refresh: true });
+      console.error(
+        `  jll/${tx}: late detail retry ${listing.id} ${listing.url}: ${row.detailError ? "failed" : "validated"}`,
+      );
+      enriched[index] = row;
+    });
+  }
   const totalEvidence = JLL_PROPERTY_TYPES.map(
     (propertyType) => `${propertyType}=${filterTotals[propertyType] ?? "?"}`,
   ).join(", ");

@@ -367,6 +367,37 @@ order when no anchor exists. [AGENTIC-4342](https://linear.app/agenticassets/iss
 owns this source boundary; production child-retention guards and separate
 performance/transport admission remain unchanged.
 
+Matched JLL detail retains strictly boolean `property.isSubleaseOnly` in
+`jllDetail.isSubleaseOnly`, including `false` and price-withheld records. Absent,
+null or malformed values supply no fact. This preserves the native sublease
+flag: `false` means not exclusively sublease, not proof of direct lease. Do not
+infer net/gross lease terms, numeric rent or a canonical lease subtype; native ID/URL and asking-price visibility checks remain unchanged.
+
+For JLL native search diagnostics, use the current producer's Node `fetch`
+transport and literal published `SearchResults` operation, variables and request
+options. A different HTTP client's access-denied response alone does not prove
+provider outage, native-record retirement or a detail-layout change. Retain
+both observations and their exact request/response evidence; different client
+outcomes do not isolate TLS, User-Agent or edge routing as the cause. A native
+query that still advertises a detail URL does not establish that the detail
+page currently validates; qualify that separately with the actual detail reader.
+
+Strict fresh JLL collections make at most one source-local late pass after the
+initial detail pass, only for the latest completed native `__NEXT_DATA__` 404
+with exact requested response URLs and current generation/inventory evidence.
+Eligibility is established after the existing render fallback: an older cached
+404 never overrides a later timeout, abort, challenge or identity conflict.
+If any first-pass error is ineligible, skip the entire late pass: those errors
+would still refuse the artifact. The late pass reuses original inventory bases
+and the same detail concurrency, cache reader and refresh fallback; successful
+first-pass rows and their clocks are untouched. One late pass can make both
+primary and fallback requests; it is not a one-HTTP-request limit. Local retry
+start/outcome logs retain the initial completed-404 evidence without saving a
+second body archive. Persistent failures remain `detailError` and still refuse the
+complete artifact. No partial admission, retirement or cache-generation rewrite
+is implied. [AGENTIC-4357](https://linear.app/agenticassets/issue/AGENTIC-4357)
+owns this bounded recovery.
+
 ## Buildout (`buildout.ts`) - Shared Adapter
 
 - **Diagnose the actual adapter before changing its transport.** From a clean,

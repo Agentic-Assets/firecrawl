@@ -2537,6 +2537,9 @@ def _safe_jll_withheld_projection(value, pricing):
     else:
         projected.pop("freshnessProvenance", None)
     projected["jllDetail"] = {"pricing": pricing} if pricing else {}
+    detail = raw.get("jllDetail")
+    if isinstance(detail, dict) and isinstance(detail.get("isSubleaseOnly"), bool):
+        projected["jllDetail"]["isSubleaseOnly"] = detail["isSubleaseOnly"]
     return projected
 
 
