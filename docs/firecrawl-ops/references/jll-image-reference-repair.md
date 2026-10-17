@@ -125,6 +125,23 @@ A durable positive receipt identifies `checked_read_only`, `verified_rollback`,
 `applied` or `restored`. Inspect the exact requested operation, code and evidence
 pins and actual database readback before reporting success.
 
+For preservation captures, distinguish server statement timeouts, client
+deadlines, result-transfer failures and outer shell failures. Preserve failed
+receipts, each layer's exit status and bounded owner-private diagnostics; a
+successful query does not establish a successful enclosing command. Measure
+hashing, ordered aggregation, object construction and transfer separately before
+changing bounds. Keep these distinctions in the
+[AGENTIC-2895 performance evidence](https://linear.app/agenticassets/issue/AGENTIC-2895)
+and the [AGENTIC-4371 repair evidence](https://linear.app/agenticassets/issue/AGENTIC-4371).
+
+Full-row identity digests and snapshot output representation are separate
+contracts: changing output assembly from `jsonb` to `json` must preserve the
+existing `md5(to_jsonb(row)::text)` digests and every scoped identity. Before such
+an optimization, prove parsed JSON equivalence, duplicate-group counting and
+rejection, empty-map behavior and null OM identities. Size bounds from measured
+complete evidence; never omit records or fields to make a
+capture pass. A local fixture's completion time is not production performance.
+
 A timeout, interruption, client failure or missing positive terminal result
 leaves the mutation unverified and retains the recovery fence. Local process
 settlement does not prove whether a remote transaction committed. Inspect the
