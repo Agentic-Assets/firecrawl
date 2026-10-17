@@ -226,9 +226,10 @@ function absoluteUrl(value: string, base: string): string {
   }
 }
 
-// Match scrapeDoc's full-page capture, including every structured attribute
-// selector. Like Avison Young, use Turndown for durable direct HTML Markdown;
-// retain tables as HTML because plain Turndown would discard their structure.
+// Experimental reconstruction, not scrapeDoc-equivalent capture: images use
+// img[src] only, and plain Turndown differs from the API's conversion pipeline.
+// Matching attribute selectors does not prove full document fidelity. Keep this
+// transport unadmitted until ordered content and target assets pass AGENTIC-2898.
 export function jllDirectHtmlDoc(rawHtml: string, url: string): ScrapedDoc {
   const $ = cheerio.load(rawHtml);
   const values = (selector: string, attribute: string) =>
