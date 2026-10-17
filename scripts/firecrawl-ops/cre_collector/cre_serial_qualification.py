@@ -195,6 +195,8 @@ def serial_source_qualified(
             not artifact_path.is_file()
             or type(stats["staged_unique"]) is not int
             or stats["staged_unique"] <= 0
+            or type(stats.get("flat_listings")) is not int
+            or stats["flat_listings"] < stats["staged_unique"]
             or type(stats["bytes"]) is not int
             or stats["bytes"] != artifact_before.st_size
             or sha256_file(artifact_path) != stats["sha256"]
@@ -247,7 +249,8 @@ def serial_source_qualified(
                 or type(gate["summary"].get("torow_errors")) is not int
                 or gate["summary"]["torow_errors"] != 0
                 or type(row.get("current_active")) is not int
-                or row["current_active"] != stats["staged_unique"]
+                # Gates count accepted flat transaction passes, before identity merge.
+                or row["current_active"] != stats["flat_listings"]
                 or gate["summary"].get("hold_sources") != []
                 or gate.get("generated_for_artifact") != str(artifact_path)
             ):

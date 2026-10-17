@@ -79,6 +79,13 @@ holds retain their separate status and receive no complete-source metric credit.
 This count is neither inserted/new properties nor strict-detail refreshes, and
 does not replace native settlement checks or the whole-registry certificate.
 
+Source and aggregate gate `current_active` counts are accepted flat listing
+entries before canonical identity merging. A property appearing in both sale
+and lease passes can therefore contribute twice to a gate count. The verified
+inventory metric uses merged unique properties confirmed by the bound staged
+breakdown and generation readback, rather than that flat count. Missing or
+inconsistent qualification evidence still leaves the metric unknown.
+
 | Evidence | Location within each checkpoint | What it measures |
 |---|---|---|
 | Command journal | `logs/COMMAND.performance.jsonl` | Start, terminal outcome and monotonic duration of collection, health, validation, gate and ingest subprocesses. Each invocation has a distinct ID, including repeated uses of the same log during resume. |
