@@ -263,6 +263,22 @@ and units remain unchanged. If structured listing data is present,
 require one coherent property name/URL and every supplied full address before
 promoting its description, date or media; conflicting/duplicate records refuse.
 These are comparison/layout rules, not address rewrites or identity aliases.
+Street comparison also recognizes `Highway/Hwy` and `Drive/Dr`; those rules
+apply to a property name/title only when the feed names the property by its
+street. The eight standard terminal street postdirections can compare with
+their abbreviations; interior direction words, opposing pairs and unit values
+are not rewritten. City comparison recognizes `Saint/St.` only in city fields and the
+city portion of a title/location, never as `Street` or a property-name alias.
+A named native property can use the same complete-description witness: exact
+visible feed name and city/state, complete description name/street/city/state
+and known five-digit ZIP (including names/streets containing commas only when
+one exact field boundary matches), coherent title/OG/owned URLs and substantive property
+sections. Missing or conflicting witness fields refuse. For complete native identities,
+property highlights plus populated availability fields can establish structure
+without the older property-info box. A redundant exact street-only heading
+need not repeat independently bound city/state; contradictory identity headings
+or structured subjects still refuse. Repeated coherent canonical URLs are one
+unambiguous authority; foreign, malformed or differing path/query values refuse.
 Do not replace a missing street with a matching city, map/script text or a
 marketing headline. Retain wrong-number, ambiguous-heading, metadata, URL and
 challenge refusals in regression tests.

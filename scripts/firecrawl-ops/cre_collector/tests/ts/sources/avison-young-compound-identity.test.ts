@@ -11,7 +11,7 @@ const cases = [
 function check(html:string,base:any) { const doc:ScrapedDoc={rawHtml:html,markdown:"",links:[],metadata:{statusCode:200,sourceURL:base.sharpLaunchUrl}};return assertAvisonYoungDetailDoc(doc,base.sharpLaunchUrl,base); }
 for (const row of cases) {
  test(`Avison compound ${row.key} exact observed identity accepts without changing incoming fields`,()=>{const before=structuredClone(row);assert.doesNotThrow(()=>check(row.html,row));assert.deepEqual(row,before);});
- for(const mutation of ["wrong-h1","unknown-offering","address-h1","duplicate-h1","wrong-name","wrong-street","wrong-city","wrong-state","wrong-zip","title","og-title","og-url","canonical","duplicate-title","duplicate-og","missing-hero","duplicate-hero","conflict-h2","description-conflict","duplicate-canonical","challenge"]){
+ for(const mutation of ["wrong-h1","unknown-offering","address-h1","duplicate-h1","wrong-name","wrong-street","wrong-city","wrong-state","wrong-zip","title","og-title","og-url","canonical","duplicate-title","duplicate-og","missing-hero","duplicate-hero","conflict-h2","description-conflict","challenge"]){
   test(`Avison compound ${row.key} ${mutation === "description-conflict" && row.key === "offering" ? "retains advisory" : "refuses"} ${mutation}`,()=>{const $=cheerio.load(row.html);const base={...row};
    if(mutation==="wrong-h1")$("h1").text("Different Property");
    if(mutation==="unknown-offering")$("h1").text("Unrecognized Property for Sale");
@@ -124,6 +124,17 @@ for (const row of cases) {
   } finally {
    if (previous === undefined) delete process.env.AVISON_YOUNG_DETAIL_TRANSPORT;
    else process.env.AVISON_YOUNG_DETAIL_TRANSPORT = previous;
+  }
+ });
+}
+for (const row of cases) {
+ test(`Avison compound ${row.key} accepts coherent repeated canonical authority`, () => {
+  const $ = cheerio.load(row.html);
+  $("head").append(`<link rel="canonical" href="${row.sharpLaunchUrl}/"><link rel="canonical" href="${row.sharpLaunchUrl}">`);
+  assert.doesNotThrow(() => check($.html(), row));
+  for (const extra of ["https://foreign.sharplaunch.com/", row.sharpLaunchUrl + "/other", row.sharpLaunchUrl + "/?other=1", "invalid URL"]) {
+   const mixed = cheerio.load($.html()); mixed("head").append(`<link rel="canonical" href="${extra}">`);
+   assert.throws(() => check(mixed.html(), row), /identity|structure/);
   }
  });
 }

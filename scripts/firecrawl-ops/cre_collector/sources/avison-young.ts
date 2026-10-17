@@ -388,6 +388,23 @@ export function assertAvisonYoungDetailDoc(
       .replace(/\bboulevard\b/g, "blvd")
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
+  const postDirectionals: Record<string, string> = {
+    north: "n", northeast: "ne", east: "e", southeast: "se",
+    south: "s", southwest: "sw", west: "w", northwest: "nw",
+  };
+  const normalizeStreet = (value: any): string => {
+    const text = normalizeIdentityText(value).replace(/\bhighway\b/g, "hwy").replace(/\bdrive\b/g, "dr");
+    // Only a terminal street postdirection; do not combine opposing words.
+    return /\b(?:north|south|east|west) (?:north|south|east|west)$/.test(text)
+      || /\b(?:unit|suite|ste|apt|floor|fl|building|bldg|lot) .+$/.test(text)
+      || /#\s*\S/.test(clean(value) ?? "") ? text
+      : text.replace(/\b(north|northeast|east|southeast|south|southwest|west|northwest)$/, (word) => postDirectionals[word]!);
+  };
+  const normalizeCity = (value: any): string =>
+    normalizeIdentityText(value).replace(/^st\b/, "saint");
+  // A property named by its street uses street comparison, never a city alias.
+  const normalizeName = normalizeStreet(base?.name) === normalizeStreet(base?.street)
+    ? normalizeStreet : normalizeIdentityText;
   const nativeInfo = $(".building__property-info-box");
   const nativeInfoRows = nativeInfo.find("li").filter((_index, element) => {
     const values = $(element).find("span").map((_spanIndex, span) =>
@@ -419,9 +436,9 @@ export function assertAvisonYoungDetailDoc(
     const index = stateNames.findIndex((name) => normalizeIdentityText(name) === text);
     return index >= 0 ? stateCodes[index]! : stateCodes.includes(text) ? text : "";
   };
-  const name = normalizeIdentityText(base?.name);
-  const street = normalizeIdentityText(base?.street);
-  const city = normalizeIdentityText(base?.city);
+  const name = normalizeName(base?.name);
+  const street = normalizeStreet(base?.street);
+  const city = normalizeCity(base?.city);
   const state = normalizeState(base?.state);
   const matchesStateLocation = (value: string): boolean => {
     const text = value.trim();
@@ -432,40 +449,46 @@ export function assertAvisonYoungDetailDoc(
   const heroLocations = $(".hero__sub-title").map((_index, element) => {
     const parts = (clean($(element).text()) ?? "").split(",");
     return parts.length === 2
-      && normalizeIdentityText(parts[0]) === city
+      && normalizeCity(parts[0]) === city
       && matchesStateLocation(parts[1]!);
   }).get();
   const heroIdentityParts = $(".hero__sub-title").text().split("|");
   const heroAddressParts = heroIdentityParts[1]?.split(",") ?? [];
   const combinedHeroIdentity = $(".hero__sub-title").length === 1
-    && heroIdentityParts.length === 2 && normalizeIdentityText(heroIdentityParts[0]) === name
-    && heroAddressParts.length === 3 && normalizeIdentityText(heroAddressParts[0]) === street
-    && normalizeIdentityText(heroAddressParts[1]) === city && matchesStateLocation(heroAddressParts[2]!);
+    && heroIdentityParts.length === 2 && normalizeName(heroIdentityParts[0]) === name
+    && heroAddressParts.length === 3 && normalizeStreet(heroAddressParts[0]) === street
+    && normalizeCity(heroAddressParts[1]) === city && matchesStateLocation(heroAddressParts[2]!);
   // These observed hero forms still need the complete visible identity witness:
   // an address hero plus matching H1/metadata, or a named H2 below.
   const addressHeroParts = $(".hero__sub-title").text().split(",");
   const addressHeroIdentity = $(".hero__sub-title").length === 1
-    && addressHeroParts.length === 3 && normalizeIdentityText(addressHeroParts[0]) === street
-    && normalizeIdentityText(addressHeroParts[1]) === city && matchesStateLocation(addressHeroParts[2]!);
+    && addressHeroParts.length === 3 && normalizeStreet(addressHeroParts[0]) === street
+    && normalizeCity(addressHeroParts[1]) === city && matchesStateLocation(addressHeroParts[2]!);
   const namedHeroLocation = heroIdentityParts[1]?.split(",") ?? [];
   const namedHeroIdentity = $(".hero__sub-title").length === 1
-    && heroIdentityParts.length === 2 && normalizeIdentityText(heroIdentityParts[0]) === name
-    && namedHeroLocation.length === 2 && normalizeIdentityText(namedHeroLocation[0]) === city
+    && heroIdentityParts.length === 2 && normalizeName(heroIdentityParts[0]) === name
+    && namedHeroLocation.length === 2 && normalizeCity(namedHeroLocation[0]) === city
     && matchesStateLocation(namedHeroLocation[1]!);
-  const normalizedTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")]
-    .map(normalizeIdentityText);
-  const titleLocationPrefix = [name, city, ""].join(" ");
-  const titleMatches = (title: string): boolean => title === name
-    || (title.startsWith(titleLocationPrefix)
-      && normalizeState(title.slice(titleLocationPrefix.length)) === state);
+  const pageTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")];
+  const titleMatches = (value: any): boolean => {
+    if (normalizeName(value) === name) return true;
+    // Existing aliases keep token counts. Separate the known name field before
+    // comparing city/state so a street postdirection remains terminal.
+    const words = (clean(value) ?? "").toLowerCase().replace(/#\s+/g, "#")
+      .replace(/[^a-z0-9#]+/g, " ").trim().split(/\s+/);
+    const nameWords = name.split(" ").length;
+    const location = normalizeCity(words.slice(nameWords).join(" "));
+    return normalizeName(words.slice(0, nameWords).join(" ")) === name
+      && location.startsWith(city + " ") && normalizeState(location.slice(city.length + 1)) === state;
+  };
   const canonicalUrls = $('link[rel="canonical"]').map((_index, element) => $(element).attr("href")).get();
   const identityMetadataMatches = Boolean(name && street && city && state)
     && $("h1").length === 1
-    && ((normalizeIdentityText($("h1").text()) === name
+    && ((normalizeName($("h1").text()) === name
       && ((heroLocations.length === 1 && heroLocations[0] === true) || addressHeroIdentity))
       || combinedHeroIdentity)
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
-    && normalizedTitles.every(titleMatches)
+    && pageTitles.every(titleMatches)
     && $('meta[property="og:url"]').length === 1
     && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
     && canonicalUrls.every((value) => sameIdentityUrl(value, requested));
@@ -480,8 +503,10 @@ export function assertAvisonYoungDetailDoc(
     .test(normalizeIdentityText($("h1").text()));
   const matchesAddressHeading = (value: string, expectedStreet: string): boolean => {
     const parts = value.split(",");
-    return parts.length === 3 && normalizeIdentityText(parts[0]) === expectedStreet
-      && normalizeIdentityText(parts[1]) === city && matchesStateLocation(parts[2]!);
+    const region = parts.pop();
+    const locality = parts.pop();
+    return parts.length > 0 && normalizeStreet(parts.join(",")) === normalizeStreet(expectedStreet)
+      && normalizeCity(locality) === city && matchesStateLocation(region ?? "");
   };
   const descriptionSelectors = [
     'meta[name="description"]', 'meta[name="twitter:description"]',
@@ -492,42 +517,61 @@ export function assertAvisonYoungDetailDoc(
     && descriptionSelectors.every((selector) => $(selector).length <= 1)
     && descriptionNodes.every((element) => {
       const value = clean($(element).attr("content")) ?? "";
+      if (value.length > 1000) return false;
       const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
-      const parts = fields.length === 3 && name === street ? [fields[0], ...fields] : fields;
-      const location = /^(.*?)\s+(\d{5})$/.exec(parts[3]?.trim() ?? "");
-      return value.length <= 1000 && parts.length === 4
-        && normalizeIdentityText(parts[0]) === name
-        && normalizeIdentityText(parts[1]) === street
-        && normalizeIdentityText(parts[2]) === city
+      const location = /^(.*?)\s+(\d{5})$/.exec(fields.pop()?.trim() ?? "");
+      const locality = fields.pop();
+      // Feed names/streets can themselves contain commas. Require exactly one
+      // boundary that matches both complete known fields; never drop tokens.
+      const matches = fields.length === 1 && normalizeName(fields[0]) === name
+        && normalizeStreet(fields[0]) === street ? 1
+        : fields.slice(1).filter((_field, index) =>
+          normalizeName(fields.slice(0, index + 1).join(",")) === name
+          && normalizeStreet(fields.slice(index + 1).join(",")) === street
+        ).length;
+      return matches === 1 && normalizeCity(locality) === city
         && location !== null && normalizeState(location[1]) === state
         && (!clean(base?.postalCode) || location[2] === clean(base?.postalCode));
     });
+  const completeDescriptionIdentity = /^\d{5}$/.test(clean(base?.postalCode) ?? "") && descriptionIdentity;
   const rangeDescriptionIdentity = /^\d+\s*-\s*\d+\s+.+$/.test(clean(base?.street) ?? "")
-    && /^\d{5}$/.test(clean(base?.postalCode) ?? "") && descriptionIdentity;
-  const visibleIdentityStreet = addressHeroIdentity ? street : name;
-  const nativeOfferingIdentity = requestedSharpLaunchMatch && urlMatches
+    && completeDescriptionIdentity;
+  const visibleIdentityStreet = rangeDescriptionIdentity && !addressHeroIdentity ? normalizeStreet(name) : street;
+  const propertySections = $(".page-content section");
+  const hasPropertySections = propertySections.find("h2").toArray().some((element) =>
+    /^(?:property |building )?highlights$/i.test(clean($(element).text()) ?? "")
+  ) && propertySections.find(".availability-card-v2 .availability-card-info-item").toArray().some((element) =>
+    clean($(element).find(".availability-card-info-item-title").text())
+    && clean($(element).find(".availability-card-info-item-value").text())
+  );
+  const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
+  const namedDescriptionIdentity = completeDescriptionIdentity && identityMetadataMatches
+    && heroLocations.length === 1 && heroLocations[0] === true;
+  const nativeCompleteIdentity = requestedSharpLaunchMatch && urlMatches
     && Boolean(name && street && city && state)
-    && nativeInfo.length > 0 && nativeInfoRows.length > 0
-    && $("h1").length === 1 && offeringHeading && $(".hero__sub-title").length === 1
-    && (addressHeroIdentity || (rangeDescriptionIdentity
-      && matchesAddressHeading($(".hero__sub-title").text(), name)))
+    && ((nativeInfo.length > 0 && nativeInfoRows.length > 0) || hasPropertySections)
+    && $("h1").length === 1 && $(".hero__sub-title").length === 1
+    && (visiblePropertyIdentity || namedDescriptionIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
+      && matchesAddressHeading($(".hero__sub-title").text(), name)))))
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
-    && normalizedTitles.every(titleMatches) && $('meta[property="og:url"]').length === 1
+    && pageTitles.every(titleMatches) && $('meta[property="og:url"]').length === 1
     && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
-    && canonicalUrls.length <= 1 && canonicalUrls.every((value) => sameIdentityUrl(value, requested))
-    && $("h2").toArray().filter((element) =>
-      normalizeIdentityText($(element).text()).includes(visibleIdentityStreet)
-    ).every((element) => matchesAddressHeading($(element).text(), visibleIdentityStreet));
-  if (nativeOfferingIdentity) {
+    && canonicalUrls.every((value) => sameIdentityUrl(value, requested));
+  if (nativeCompleteIdentity) {
+    const addressHeadingsAgree = $("h2").toArray().filter((element) =>
+      normalizeStreet($(element).text().split(",").length >= 3
+        ? $(element).text().split(",").slice(0, -2).join(",") : $(element).text()).includes(visibleIdentityStreet)
+    ).every((element) => normalizeStreet($(element).text()) === visibleIdentityStreet
+      || matchesAddressHeading($(element).text(), visibleIdentityStreet));
     const records = jsonLdObjects(doc.rawHtml).filter((object) =>
       [object["@type"]].flat().some((type) => String(type).toLowerCase() === "realestatelisting")
     );
     const record = records[0];
     const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
-    if (records.length > 1 || (record && (
-      normalizeIdentityText(record.name) !== name || !sameIdentityUrl(record.url, requested)
-      || !addresses.every((address) => normalizeIdentityText(address.streetAddress) === street
-        && normalizeIdentityText(address.addressLocality) === city
+    if (!addressHeadingsAgree || records.length > 1 || (record && (
+      normalizeName(record.name) !== name || !sameIdentityUrl(record.url, requested)
+      || !addresses.every((address) => normalizeStreet(address.streetAddress) === street
+        && normalizeCity(address.addressLocality) === city
         && normalizeState(address.addressRegion) === state
         && (!clean(address.postalCode) || !clean(base?.postalCode)
           || clean(address.postalCode) === clean(base?.postalCode)))
@@ -548,24 +592,21 @@ export function assertAvisonYoungDetailDoc(
     const record = records[0];
     const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
     const structuredIdentityMatches = records.length === 1
-      && normalizeIdentityText(record?.name) === name
+      && normalizeName(record?.name) === name
       && sameIdentityUrl(record?.url, requested)
       && addresses.length > 0 && addresses.every((address) =>
-        normalizeIdentityText(address.streetAddress) === street
-        && normalizeIdentityText(address.addressLocality) === city
+        normalizeStreet(address.streetAddress) === street
+        && normalizeCity(address.addressLocality) === city
         && normalizeState(address.addressRegion) === state);
     if (!identityMetadataMatches || !structuredIdentityMatches || !urlMatches) {
       throw new Error("Avison Young detail identity does not match the requested property");
     }
     return record;
   }
-  // The captured sale template uses its complete street as the property name.
-  // A named building without a visible street still needs another validated page.
+  // A recognized street-named native page that failed the common proof must
+  // not fall through to the more general legacy recognition below.
   if (capturedBuildingStructure && requestedSharpLaunchMatch && name === street) {
-    if (!identityMetadataMatches || !urlMatches || !sameIdentityUrl(requested, sharpLaunchUrl)) {
-      throw new Error("Avison Young detail identity does not match the requested property");
-    }
-    return listing;
+    throw new Error("Avison Young detail identity does not match the requested property");
   }
 
   const hasLegacySharpLaunchBuildingLayout = Boolean(
