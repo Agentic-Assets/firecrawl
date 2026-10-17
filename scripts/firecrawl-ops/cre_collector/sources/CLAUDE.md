@@ -174,6 +174,15 @@ as the existing `Properties` array envelope. Neither shape supplies the source
 total: the separate properties response must still provide a finite integer
 `TotalCount` matching the unique map ActivityIds before detail expansion.
 
+Matthews published keyword/state filters are not proven exhaustive or disjoint
+inventory partitions. A matched multi-state subject appeared in a keyword
+query but was absent with the same keyword plus the IL filter. This observed
+exclusion exposes a partition-completeness risk, not a proven provider defect
+or cause of the broader count gap. Before relying on sharding,
+test known multi-state, portfolio and hierarchical-type members and reconcile
+the full native identity union; display state is not proven filter authority.
+See [AGENTIC-4297](https://linear.app/agenticassets/issue/AGENTIC-4297).
+
 Matthews failed HTTP attempts emit bounded `matthews/http` diagnostics containing
 only request role, attempt/max, header/body/HTTP phase, numeric status when known,
 elapsed milliseconds and the planned cooldown. Successful requests stay quiet;
