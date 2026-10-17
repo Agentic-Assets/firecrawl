@@ -211,7 +211,7 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | colliers (ST) | SLP `summary.ProjectId` | Index-paired card id ≠ ProjectId (~45%); **lease skipped**; monitor disabled |
 | colliers-main | `main:` + `usa#####` | Monitor: sale pass only; full pass filters tx after enrich |
 | jll | detail `property.id` (numeric) | URL slug ≠ id; monitor disabled |
-| jll-investor | `investor:` + Salesforce `listing.id` | Sitemap slug ≠ id; US filter post-detail; no coords |
+| jll-investor | `investor:` + Salesforce `listing.id` | Stable U.S. search snapshots + exact detail ID/alias; no coords |
 | cushman-wakefield | `url:v1:` + first 32 hex characters of normalized public-URL SHA-256 | Provider GUID is observational, not canonical identity; strict inventory preserves detail-only fields and children |
 | transwestern | `PageUrl` slug | Invalid rows fail closed. The provider-published `-` slug requires fresh unique official-sitemap membership and an exact primary name/full-address match, including in monitor mode. |
 | newmark | Algolia `slug` | Algolia 1000-hit cap per query; state+type sub-split |
@@ -337,7 +337,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `nai-global.ts` | Infabode GraphQL `publicPosts` bulk detail feed; identical conservative eligibility on full and monitor paths |
 | `marcus-millichap.ts` | Map ActivityId tiles + detail HTML; JSONL detail cache |
 | `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/`; strict runs set `JLL_DETAIL_CACHE_MIN_CACHED_AT` |
-| `jll-investor.ts` | US sitemap + detail; sale only |
+| `jll-investor.ts` | Two matching complete U.S. search snapshots + fresh structured detail; sale only |
 | `colliers-main.ts` | XML sitemap + JSON-LD; resumable JSONL cache; live sitemap `lastmod` controls reuse; CF challenge retries |
 | `buildout.ts` | Shared fail-closed inventory adapter |
 | `buildout-registry.ts` | Governed single-token Buildout source definitions |
@@ -430,7 +430,7 @@ success alone does not prove source-gate or database acceptance.
 | `CUSHMAN_QUERY` | cushman | Targeted API probe |
 | `CUSHMAN_DETAIL_MODE` | cushman | `full` renders detail pages; `base` refreshes API inventory and explicitly preserves existing child collections |
 | `COLLIERS_MAIN_*` | colliers-main | Detail concurrency, wait, challenge retries, `MAX_FETCHES_PER_RUN`, and run-scoped `DETAIL_CACHE_PATH` |
-| `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, minimum cache timestamp, sitemap scan limit |
+| `JLL_DETAIL_*` / `JLL_INVESTOR_*` | jll, jll-investor | Detail concurrency, wait, cache dir, minimum cache timestamp; legacy Investor sitemap-limit helper is unused by the current search collector |
 | `SAVILLS_DIRECT_LIST_TIMEOUT_MS` | savills | Direct public list-page timeout (default 25s; bounded 5–60s; two attempts) |
 | `SAVILLS_LIST_TIMEOUT_MS` | savills | Firecrawl fallback list-page timeout (default 30s; bounded 10–90s) |
 | `NAI_GRAPHQL_TIMEOUT_MS` / `NAI_SOURCE_BATCH_SIZE` / `NAI_PAGE_SIZE` / `NAI_ENUMERATION_CONCURRENCY` | nai-global | Bound each `publicPosts` GraphQL body read (default 30s), split source-office filters (default 40), request up to 100 bulk-detail rows per page, and enumerate unlimited batches at a bounded fan-out of two. A timeout or page cap fails closed for monitor coverage. |

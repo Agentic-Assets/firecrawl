@@ -1223,12 +1223,17 @@ explicitly outside this repair and must not be fabricated.
 
 JLL uses the public `SearchResults` GraphQL API for complete U.S. inventory
 enumeration, then requires each rendered detail payload to match the enumerated
-provider ID and normalized URL before detail freshness is admitted. JLL Investor
-Center keeps its public sitemap as the discovery surface and reads each public
-Next.js structured-detail JSON payload; it does not use the robots-disallowed
-filtered search index. Explicit non-U.S. detail is excluded, and unresolved
-country, identity, alias, or build-rotation failures make the strict pass
-truncated.
+provider ID and normalized URL before detail freshness is admitted. The current
+[JLL Investor adapter](sources/jll-investor.ts) uses two consecutive matching,
+complete United States search snapshots, then reconciles each fresh public
+Next.js structured detail against its exact Salesforce ID and URL alias. Its
+search snapshot is authoritative; sitemap membership alone is insufficient.
+Explicit non-U.S. search evidence is excluded before enrichment. Detail country
+evidence must not conflict; missing detail country can use the exact U.S. search
+membership. Unresolved detail errors, duplicate identities,
+incomplete enumeration, or confirmed not-found candidates make the strict pass
+truncated. This describes the adapter, not fresh whole-source acceptance or
+permission to change provider access boundaries.
 
 For an ingest that exits zero but fails generation acceptance, see
 [ingest freshness troubleshooting](../../../docs/firecrawl-ops/references/cre-ingest-freshness-troubleshooting.md).
