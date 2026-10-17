@@ -87,6 +87,7 @@ checkpoint-manifest readback. Dated docs are operational history.
 | `cre_setup.sh` | One-command preflight + bootstrap for a fresh clone (toolchain, deps, env, optional network smoke); run first. See `SETUP.md` |
 | `cre_validate.py` | Post-ingest Supabase validation (`npm run validate:supabase`); not in daily script |
 | `cre_repair_colliers_derived_psf.py` | One-row, exact-generation repair for the 2026-09-10 Colliers derived-PSF regression. Read-only by default; apply requires the canonical filesystem and database lifecycle locks, a rollback-proved transaction, and owner-only pre/post/rollback evidence. |
+| `cre_repair_jll_images.py` | Dedicated exact-manifest JLL malformed image-reference repair and restoration. Default read-only; [operator guide](../../../docs/firecrawl-ops/references/jll-image-reference-repair.md) covers private evidence, transaction checks and recovery. |
 | `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated on go-ahead; `011` DDL now applied 2026-06-15 (only the media backfill RUN remains gated). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
 | `cre_parse.py` | Python mirror of `lib/parse.ts`: shared CRE text parsers (price/sqft/cap-rate/address). Imported by `cre_ingest.py` and the raw_data backfill; verifiably identical to the TS side via a shared golden test-vector table |
 | `cre_geo.py` | Offline ZIP->county+CBSA crosswalk resolver (`data/zip_cbsa_crosswalk.csv`). `ZipCbsaCrosswalk` + `derive_geo()`; used by `cre_geo_backfill.py` and optionally `cre_ingest.py`. Pure, stdlib-only, no network |
@@ -281,6 +282,16 @@ zip/CBSA crosswalk tables) plus three additive backfills (`cre_backfill_raw_data
 `om_classify_existing`, `cre_geo_backfill`); `status` was never touched. Current
 coverage requires fresh validation and exact checkpoint-manifest readback; record
 execution evidence on [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
+
+## Authorized maintenance
+
+Cayman's [standing CRE maintenance direction](https://linear.app/agenticassets/issue/AGENTIC-2895#comment-e988227e-0ff0-482b-941b-5d4220d3921c)
+authorizes well-researched, well-tested fixes within this pipeline task. Proceed
+through implementation, meaningful regression tests, independent review and the
+normal release procedure without repeatedly asking for routine design approval.
+Keep exact production target/manifest/preimage and recovery checks, source/data
+ownership, and the instruction to leave the Mac setup unchanged. This does not
+authorize a broader deletion predicate, relaxed validation or unrelated work.
 
 ## Major-phase code quality review
 

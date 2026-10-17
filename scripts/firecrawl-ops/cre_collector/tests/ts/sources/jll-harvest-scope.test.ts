@@ -1,7 +1,7 @@
 process.argv = [process.argv[0]!, process.argv[1]!];
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { enrichJllListing, jllGraphqlItemToListing } from "../../../sources/jll.js";
@@ -49,6 +49,62 @@ function project(body: string, images: string[] = [], links: string[] = [], nati
   const scoped = jllPropertyHarvestDoc(doc,url,native);
   assert.deepEqual(doc, original);
   return {...scoped, harvested:harvestDetail(scoped.doc,{baseUrl:url})};
+}
+
+// Reduced DOM sections from the saved 729123/540259 detail observations.
+const taxonomyFixtures = ["729123", "540259"].map(id => ({id,
+  html: readFileSync(new URL(`../fixtures/jll-taxonomy-${id}.html`, import.meta.url), "utf8"),
+}));
+const placeholderUrls = [640,750,828,1080,1200,1920,2048,3840].map(width =>
+  `https://property.jll.com/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fdefault-img-small%402x.04d80bb3.jpg&w=${width}&q=75`);
+
+for (const {id,html} of taxonomyFixtures) {
+  test(`JLL saved ${id} taxonomy placeholders do not become target photos`, async t => {
+    const {row,doc} = await enrich(t, `<img src="${target}">${html}`, [...placeholderUrls,target], [], []);
+    assert.deepEqual(row.photos, [target]);
+    assert.equal(row.transactionType, "Lease");
+    assert.equal(doc.markdown, "Airport is 7.2 miles away. Full useful context.");
+    assert(doc.rawHtml.includes("Image Unavailable"));
+    const scoped=project(html,placeholderUrls);
+    assert.deepEqual(scoped.harvested.images, []);
+    assert(scoped.doc.rawHtml?.includes(id === "729123" ? "/rent-industrial/portland" : "/rent-office/durham"));
+  });
+}
+
+test("JLL native assets, retained target gallery and document covers override taxonomy exclusion", () => {
+  const html=taxonomyFixtures[0]!.html;
+  const shared=placeholderUrls[0]!;
+  for (const retained of [`<img src="${shared}">`, `<a href="/target.pdf" style="background-image:url('${shared}')">Cover</a>`]) {
+    const scoped=project(html+retained,placeholderUrls);
+    assert.deepEqual(scoped.harvested.images,[shared]);
+  }
+  assert.deepEqual(project(html,placeholderUrls,[],[shared]).harvested.images,[shared]);
+});
+
+test("JLL observed taxonomy placeholder role survives a static build hash rotation", () => {
+  const html=taxonomyFixtures[0]!.html.replaceAll("04d80bb3", "a1b2c3d4");
+  const images=placeholderUrls.map(image=>image.replace("04d80bb3", "a1b2c3d4"));
+  assert.deepEqual(project(html,images).harvested.images,[]);
+});
+
+for (const [name,change] of [
+  ["target gallery", (html: string) => html.replace("/rent-industrial/portland", "/listings/target-property")],
+  ["foreign taxonomy", (html: string) => html.replace("/rent-industrial/portland", "https://elsewhere.example/rent-industrial/portland")],
+  ["unknown heading", (html: string) => html.replace("Similar Industrials in Portland", "Property gallery")],
+  ["unknown layout", (html: string) => html.replaceAll("embla-slide", "unknown-slide")],
+  ["heading/route mismatch", (html: string) => html.replace("Similar Industrials in Portland", "Similar Offices in Portland")],
+  ["missing visible role", (html: string) => html.replace(">Image Unavailable</div>", ">Property photograph</div>")],
+  ["ambiguous srcset", (html: string) => html.replace('srcset="', 'srcset="https://assets.example/real.jpg ambiguous, ')],
+  ["mixed real srcset", (html: string) => html.replace('srcset="', 'srcset="https://assets.example/real.jpg 320w, ')],
+  ["ordinary image", (html: string) => html.replaceAll("Image Unavailable", "Property photograph")],
+  ["different image asset", (html: string) => html.replaceAll("default-img-small%402x.04d80bb3.jpg", "real-property.jpg")],
+] as const) {
+  test(`JLL does not infer taxonomy placeholder exclusion from ${name}`, () => {
+    const html=change(taxonomyFixtures[0]!.html);
+    const scoped=project(html,placeholderUrls);
+    assert(placeholderUrls.every(image=>scoped.harvested.images.includes(image)));
+    assert(scoped.doc.rawHtml?.includes("<img"));
+  });
 }
 
 test("JLL preserves supplemental target images and shared native/retained resources", () => {

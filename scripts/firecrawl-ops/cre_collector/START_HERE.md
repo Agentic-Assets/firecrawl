@@ -1231,6 +1231,12 @@ description. Some bad detail ingests also removed existing child collections,
 but no defensible child preimage exists. Child restoration is therefore
 explicitly outside this repair and must not be fabricated.
 
+For the exceptional exact-manifest malformed image-reference repair, use the
+[JLL image-reference repair guide](../../../docs/firecrawl-ops/references/jll-image-reference-repair.md)
+and its current reviewed issue evidence. It is not an ordinary refresh or a
+quality-guard exception; production execution and subsequent source acceptance
+require their own concrete evidence.
+
 JLL uses the public `SearchResults` GraphQL API for complete U.S. inventory
 enumeration, then requires each rendered detail payload to match the enumerated
 provider ID and normalized URL before detail freshness is admitted. The current
