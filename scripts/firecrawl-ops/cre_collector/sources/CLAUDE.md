@@ -222,6 +222,16 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
 
+NAI physical facts come only from unambiguous exact `Year Built` and
+`Property Type` two-cell rows in the selected public-post content, outside
+nested tables and only without a detail error. Years are exact four-digit
+numbers within the canonical ingest bounds. Physical types stay literal for
+the existing ingest normalizer; unknown literals retain its existing `other`
+behavior. Missing/conflicting labels supply no typed fact, while equivalent
+repeats agree. Publication `contentType` is not `assetType`; it remains in the
+unchanged raw post alongside the full content. Tags/prose are not inferred
+physical facts. Feed fallback and bulk-detail monitor selection stay unchanged.
+
 NAI Infabode post IDs identify observations; a stable property key remains
 unproved under [AGENTIC-4284](https://linear.app/agenticassets/issue/AGENTIC-4284).
 The same `urlOriginal` can carry different content or images, so do not collapse
