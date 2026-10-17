@@ -538,18 +538,26 @@ export function assertAvisonYoungDetailDoc(
     && completeDescriptionIdentity;
   const visibleIdentityStreet = rangeDescriptionIdentity && !addressHeroIdentity ? normalizeStreet(name) : street;
   const propertySections = $(".page-content section");
-  const hasPropertySections = propertySections.find("h2").toArray().some((element) =>
-    /^(?:property |building )?highlights$/i.test(clean($(element).text()) ?? "")
-  ) && propertySections.find(".availability-card-v2 .availability-card-info-item").toArray().some((element) =>
+  const hasAvailabilityFields = propertySections.find(".availability-card-v2 .availability-card-info-item").toArray().some((element) =>
     clean($(element).find(".availability-card-info-item-title").text())
     && clean($(element).find(".availability-card-info-item-value").text())
   );
+  const hasPropertySections = hasAvailabilityFields && propertySections.find("h2").toArray().some((element) =>
+    /^(?:property |building )?highlights$/i.test(clean($(element).text()) ?? "")
+  );
+  const building = $(".page-content > section#building .building");
+  const hasBuildingOverview = building.find(".building__overview-text p, .building__overview-text li")
+    .toArray().some((element) => clean($(element).text()));
+  const hasBuildingFacts = building.find(".building__property-features-boxes .property-features-box > .px-body-2")
+    .toArray().some((element) => clean($(element).text()));
+  const hasBuildingSections = completeDescriptionIdentity && hasBuildingOverview
+    && (hasBuildingFacts || hasAvailabilityFields);
   const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
   const namedDescriptionIdentity = completeDescriptionIdentity && identityMetadataMatches
     && heroLocations.length === 1 && heroLocations[0] === true;
   const nativeCompleteIdentity = requestedSharpLaunchMatch && urlMatches
     && Boolean(name && street && city && state)
-    && ((nativeInfo.length > 0 && nativeInfoRows.length > 0) || hasPropertySections)
+    && ((nativeInfo.length > 0 && nativeInfoRows.length > 0) || hasPropertySections || hasBuildingSections)
     && $("h1").length === 1 && $(".hero__sub-title").length === 1
     && (visiblePropertyIdentity || namedDescriptionIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
       && matchesAddressHeading($(".hero__sub-title").text(), name)))))
