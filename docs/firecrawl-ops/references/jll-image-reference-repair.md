@@ -92,6 +92,20 @@ operator decision. The isolated receipt must distinguish synthetic transaction
 tests from validation of the actual private evidence; it is not a production
 execution result. Follow the current issue for concrete reviewed bindings.
 
+The verification receipt must bind `postgres_terminal_proof_path` and
+`postgres_terminal_proof_sha256` to the actual runner's `terminal-proof.json`.
+Keep an exact-byte owner-private copy for execution. The tool verifies successful
+exit, settled container cleanup and matching executor, test and runner hashes;
+a self-declared successful verification object is insufficient.
+
+For restoration, the current execution approval also supplies
+`applied_receipt_sha256`. This must identify the exact original positive apply
+receipt passed through `--receipt`, including its committed delete result and
+code/approval provenance. A genuine receipt from an older reviewed executor is
+allowed when its entire hash is explicitly bound by the current restoration
+approval. This does not permit newer parent or image-cohort state to be
+overwritten.
+
 Before dispatch, the tool fsyncs complete six-column image restoration preimages
 and an intent record. All modes take the canonical host lease. DML modes also
 take the shared database lifecycle transaction lock, then deterministic

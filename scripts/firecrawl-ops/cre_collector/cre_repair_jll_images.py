@@ -675,7 +675,74 @@ def verify_stage(evidence):
     return file_hash(manifest_path)
 
 
-def verify_approval(path, verification_path, evidence, *, operation, collector_sha):
+def verify_postgres_terminal(verification, executor):
+    path = verification.get("postgres_terminal_proof_path")
+    require(
+        isinstance(path, str) and Path(path).is_absolute(),
+        "PostgreSQL terminal proof path absent",
+    )
+    with private_input(
+        path, verification.get("postgres_terminal_proof_sha256"), MAX_METADATA_BYTES
+    ) as stream:
+        terminal = json.load(stream)
+    tests = Path(__file__).parent / "tests"
+    require(
+        terminal.get("schema") == "jll-image-repair-postgres-runner/v1"
+        and type(terminal.get("exit_code")) is int
+        and terminal["exit_code"] == 0
+        and "error" in terminal
+        and terminal.get("error") is None
+        and terminal.get("container_removed_or_absent") is True
+        and terminal.get("container_cleanup")
+        in {"absent", "removed", "removed_after_uncertain_cli_result"}
+        and terminal.get("source_sha256") == executor
+        and terminal.get("test_sha256")
+        == file_hash(tests / "test_cre_repair_jll_images.py", private=False)
+        and terminal.get("runner_sha256")
+        == file_hash(
+            tests / "run_jll_image_repair_postgres_contract.py", private=False
+        ),
+        "PostgreSQL terminal proof failed, unsettled or from different code",
+    )
+
+
+def verify_applied_receipt(path, expected_hash, evidence):
+    require(path is not None, "exact prior applied receipt required")
+    with private_input(path, expected_hash, MAX_METADATA_BYTES) as stream:
+        receipt = json.load(stream)
+    result = receipt.get("result")
+    require(
+        receipt.get("status") == "applied"
+        and receipt.get("operation") == "delete"
+        and receipt.get("evidence_pins") == evidence.pins
+        and receipt.get("staged_manifest_sha256") == verify_stage(evidence)
+        and receipt.get("database_target_sha256") == EXPECTED_DB_TARGET_SHA256
+        and digest(receipt.get("executor_sha256"))
+        and digest(receipt.get("collector_sha"), 40)
+        and digest(receipt.get("approval_sha256"))
+        and receipt.get("local_client_settled") is True
+        and receipt.get("remote_sql_rollback_claim") is False
+        and isinstance(result, dict)
+        and result.get("committed") is True
+        and type(result.get("matched")) is int
+        and receipt.get("result")
+        == {
+            "operation": "delete",
+            "committed": True,
+            "matched": evidence.candidate_count,
+            "status": "passed",
+        },
+        "prior receipt does not prove the exact committed apply",
+    )
+    # The approved whole-file hash binds older code provenance when restoration
+    # uses a newer reviewed executor. Current live cohort/generation CAS still applies.
+    completed = datetime.fromisoformat(receipt.get("completed_at", ""))
+    require(completed.utcoffset() is not None, "prior apply completion clock absent")
+
+
+def verify_approval(
+    path, verification_path, evidence, *, operation, collector_sha, applied_receipt=None
+):
     """A separate exact execution contract; design approval is insufficient."""
     require(
         path is not None and verification_path is not None,
@@ -715,6 +782,13 @@ def verify_approval(path, verification_path, evidence, *, operation, collector_s
         and verification.get("evidence_pins") == evidence.pins,
         "isolated PostgreSQL verification does not bind executor/evidence",
     )
+    verify_postgres_terminal(verification, executor)
+    if operation == "restore":
+        verify_applied_receipt(
+            applied_receipt, approval.get("applied_receipt_sha256"), evidence
+        )
+    else:
+        require(applied_receipt is None, "applied receipt is only valid for restore")
     return file_hash(path)
 
 
@@ -908,18 +982,7 @@ def main(argv=None):
             evidence,
             operation=scope,
             collector_sha=args.expected_sha,
-        )
-    if args.restore:
-        with private_input(
-            args.receipt, file_hash(args.receipt), MAX_METADATA_BYTES
-        ) as stream:
-            receipt = json.load(stream)
-        require(
-            receipt.get("status") == "applied"
-            and receipt.get("evidence_pins") == evidence.pins
-            and receipt.get("staged_manifest_sha256") == stage_sha
-            and receipt.get("database_target_sha256") == EXPECTED_DB_TARGET_SHA256,
-            "restore receipt does not bind exact applied cohort",
+            applied_receipt=args.receipt,
         )
     from cre_checkpoint_refresh import SharedLock, canonical_shared_lock_dir
     from cre_ingest import assert_expected_database_target, load_db_url

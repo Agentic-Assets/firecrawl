@@ -33,11 +33,32 @@ def contract(tmp_path):
         },
     )
     executor = repair.file_hash(Path(repair.__file__), private=False)
+    tests = Path(repair.__file__).parent / "tests"
+    terminal_path = tmp_path / "postgres-terminal-proof.json"
+    repair.write_json(
+        terminal_path,
+        {
+            "schema": "jll-image-repair-postgres-runner/v1",
+            "exit_code": 0,
+            "error": None,
+            "container_removed_or_absent": True,
+            "container_cleanup": "removed",
+            "source_sha256": executor,
+            "test_sha256": repair.file_hash(
+                tests / "test_cre_repair_jll_images.py", private=False
+            ),
+            "runner_sha256": repair.file_hash(
+                tests / "run_jll_image_repair_postgres_contract.py", private=False
+            ),
+        },
+    )
     verification = {
         "status": "passed",
         "isolated_postgres": True,
         "executor_sha256": executor,
         "evidence_pins": evidence.pins,
+        "postgres_terminal_proof_path": str(terminal_path),
+        "postgres_terminal_proof_sha256": repair.file_hash(terminal_path),
     }
     verification_path = tmp_path / "verification.json"
     repair.write_json(verification_path, verification)
