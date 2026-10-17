@@ -54,7 +54,12 @@ def sha256_file(path: Path) -> str:
 def write_terminal_proof(proof_dir: Path, record: dict) -> None:
     path = proof_dir / "terminal-proof.json"
     temporary = proof_dir / ".terminal-proof.json.tmp"
-    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+    fd = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+    )
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(record, handle, sort_keys=True, indent=2)
         handle.write("\n")
         handle.flush()
