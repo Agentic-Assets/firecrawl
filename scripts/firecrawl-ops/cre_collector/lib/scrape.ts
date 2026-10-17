@@ -271,9 +271,10 @@ export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): P
     const body = await scrapeRaw(url, opts);
     const parsed = parseJsonBody(body);
     if (parsed !== null) return parsed;
+    if (attempt >= attempts) break;
     console.error(`non-JSON body from ${url} (attempt ${attempt}); backing off`);
     const delayMs = backoffMs * attempt;
-    recordRetry("json_parse", delayMs, attempt < attempts);
+    recordRetry("json_parse", delayMs, true);
     await new Promise((r) => setTimeout(r, delayMs));
   }
   throw new Error(`response from ${url} contained no parseable JSON object`);
