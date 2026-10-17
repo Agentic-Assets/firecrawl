@@ -33,6 +33,12 @@
   observation; it does not certify a full-source strict generation. Worker and
   direct-ingest admission refuse generic/thin Hanley enrichment payloads.
 
+- `pmap()` yields to the event loop after each completed item so immediately
+  resolved cache work cannot starve timers or network I/O. It keeps ordered
+  results and the configured concurrency, stops dispatch after the first
+  rejection, and drains all started workers (including a pending yield) before
+  rejecting. This is scheduling fairness, not a provider pacing or timeout rule.
+
 - One `broker.ts` table per `collect.ts` run across all sources.
 - Importing `config.ts` parses argv; tests needing scrape/util alone should avoid it.
 - `num()` drops zero; `parseJsonBody` handles Chrome JSON viewer and bad quotes.
