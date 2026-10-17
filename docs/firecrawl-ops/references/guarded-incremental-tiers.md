@@ -483,9 +483,12 @@ acceptance are recorded on AGENTIC-3752, register a disabled task:
 Adding both `-Register -Enable` instead enables that newly created task only
 after its disabled definition passes readback. Registration is create-only:
 any existing task collision refuses rather than replacing a definition. To
-change a pinned revision or cadence, disable the exact old task, settle any
-active Linux work, inspect and unregister that exact task, then preview and
-register its replacement. Never auto-fetch/pull code from a scheduled action.
+change cadence, disable the exact old task, settle any active Linux work,
+inspect and unregister that exact task, then preview and register its
+replacement. For an approved code-only handoff, update the existing task's
+expected SHA while preserving its settings as described in the
+[development and runtime checkout guide](development-and-runtime-checkouts.md).
+Never auto-fetch/pull code from a scheduled action.
 
 Inspect the actual definition, status and last result from Task Scheduler or
 PowerShell:
@@ -496,6 +499,13 @@ Export-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh
 Get-ScheduledTaskInfo -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh'
 Disable-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh'
 ```
+
+When comparing a saved definition before and after a handoff, use the same
+PowerShell version and this exact `-TaskPath`/`-TaskName` export form. Exporting
+with `-InputObject` reserializes the CIM task and can change XML length,
+identity representation, defaults and context even when the maintained task
+definition is unchanged. Do not normalize those differences or re-register a
+task solely to make the exported formats match.
 
 Disabling prevents future launches. For active work, correlate the task run
 with `out/windows-launcher/` audit and stream paths, then use the exact
