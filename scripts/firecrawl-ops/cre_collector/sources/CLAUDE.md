@@ -416,6 +416,17 @@ order when no anchor exists. [AGENTIC-4342](https://linear.app/agenticassets/iss
 owns this source boundary; production child-retention guards and separate
 performance/transport admission remain unchanged.
 
+`jll-direct.ts` is an experimental candidate, not the ordinary `jll.ts` detail
+route. Its `img[src]`-only capture and plain Turndown conversion are not equivalent
+to `scrapeDoc`. Saved rendered-HTML conversion experiments do not establish
+native HTTP completeness or full direct-document fidelity: links and attributes
+must be regenerated, and target-gallery order and the primary photo must remain
+correct, including when the native gallery is empty. Any canonical converter
+reuse needs an explicit portable dependency/build contract; copied runtime
+binaries are diagnostic evidence, not collector dependencies. Keep routing and
+admission unchanged until [AGENTIC-2898](https://linear.app/agenticassets/issue/AGENTIC-2898)
+qualifies the actual document mapper and transport.
+
 Matched JLL detail retains strictly boolean `property.isSubleaseOnly` in
 `jllDetail.isSubleaseOnly`, including `false` and price-withheld records. Absent,
 null or malformed values supply no fact. This preserves the native sublease
