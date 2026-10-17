@@ -26,7 +26,7 @@ import { srcFoundryCommercial } from "./sources/foundry-commercial.js";
 import { srcFranklinStreet } from "./sources/franklin-street.js";
 import { srcHanley } from "./sources/hanley.js";
 import { srcInterraRealty } from "./sources/interra-realty.js";
-import { srcJll } from "./sources/jll.js";
+import { preserveJllSubleaseFact, srcJll } from "./sources/jll.js";
 import { srcJllInvestor } from "./sources/jll-investor.js";
 import { srcKidderMathews } from "./sources/kidder-mathews.js";
 import { srcLyonStahl } from "./sources/lyon-stahl.js";
@@ -216,9 +216,10 @@ async function main() {
           freshness,
         });
         for (const l of res.listings) {
-          listings.push(
-            prune({ sourceKey: key, sourceCompany: res.company, transactionMode: tx, ...l })
-          );
+          const listing = prune({ sourceKey: key, sourceCompany: res.company, transactionMode: tx, ...l });
+          listings.push(key === "jll"
+            ? preserveJllSubleaseFact(listing, l.jllDetail?.isSubleaseOnly)
+            : listing);
         }
         console.error(
           `  ${key}/${tx}: ${res.listings.length} listings (source total: ${res.totalAvailable ?? "unknown"})`

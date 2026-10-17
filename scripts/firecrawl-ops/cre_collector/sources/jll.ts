@@ -1614,6 +1614,14 @@ export function jllStrandedStructured(property: any): Record<string, any> {
   );
 }
 
+// Ordinary prune removes false; this native boolean must retain both states.
+export function preserveJllSubleaseFact(listing: any, value: unknown): any {
+  if (typeof value === "boolean" && listing?.jllDetail) {
+    listing.jllDetail.isSubleaseOnly = value;
+  }
+  return listing;
+}
+
 export async function enrichJllListing(base: any): Promise<any> {
   if (!base.url) return base;
   // A listing can carry the same provider control at its top level and inside
@@ -1794,7 +1802,7 @@ export async function enrichJllListing(base: any): Promise<any> {
     // normalized detail values too.
     const description = jllDescription(property) ?? base.description;
     const markdown = doc.markdown || base.markdown;
-    return prune({
+    const listing = prune({
       ...publicBase,
       detailObservedAt: doc.detailObservation?.observedAt,
       freshnessProvenance: {
@@ -1914,6 +1922,7 @@ export async function enrichJllListing(base: any): Promise<any> {
         },
       },
     });
+    return preserveJllSubleaseFact(listing, property.isSubleaseOnly);
   } catch (err) {
     console.error(`  jll: detail failed for ${base.url}: ${err}`);
     // The error path is also a visibility boundary.  Redact recursively so a
