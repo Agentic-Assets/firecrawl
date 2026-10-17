@@ -1,5 +1,6 @@
 // sources/nai-global.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { createHash } from "node:crypto";
+import * as cheerio from "cheerio";
 import { PAGE_CAP } from "../lib/config.js";
 import { stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
@@ -577,6 +578,40 @@ export function harvestNai(row: any, detail: any): {
   return { media: r.media, links: r.links, documents: r.documents, images: r.images };
 }
 
+/** Explicit property facts in the Infabode post's two-cell editor tables. */
+function naiPhysicalFacts(content: unknown): { yearBuilt?: number; assetType?: string } {
+  if (typeof content !== "string" || !content.trim()) return {};
+  const $ = cheerio.load(content);
+  const facts = new Map<string, Map<string, string>>();
+  $("table tr").each((_, row) => {
+    const cells = $(row).children("td,th");
+    // Nested tables are not one unambiguous label/value pair.
+    if (
+      cells.length !== 2 || $(row).parents("table").length !== 1 || cells.find("table").length
+    ) return;
+    const label = cells.eq(0).text().replace(/\s+/g, " ").trim()
+      .replace(/\s*:\s*$/, "").toLowerCase();
+    if (label !== "year built" && label !== "property type") return;
+    const value = clean(cells.eq(1).text().replace(/\s+/g, " "));
+    if (!value) return;
+    const values = facts.get(label) ?? new Map<string, string>();
+    const key = value.toLowerCase();
+    if (!values.has(key)) values.set(key, value);
+    facts.set(label, values);
+  });
+  const unique = (label: string): string | undefined => {
+    const values = facts.get(label);
+    return values?.size === 1 ? values.values().next().value : undefined;
+  };
+  const year = unique("year built");
+  return {
+    yearBuilt: year && /^\d{4}$/.test(year) && Number(year) > 1700 && Number(year) < 2100
+      ? Number(year)
+      : undefined,
+    assetType: unique("property type"),
+  };
+}
+
 export function naiListingFromFeed(
   row: any,
   tx: Tx,
@@ -588,6 +623,7 @@ export function naiListingFromFeed(
   // The publicPosts feed carries the public listing detail fields, including
   // price, size, contacts, documents, and the provider status label.
   const scalarSource = detail ?? (useFeedScalars ? row : null);
+  const physicalFacts = !detailError ? naiPhysicalFacts(scalarSource?.content) : {};
   const id = Number(row?.id);
   const sourceLocations = Array.isArray(detail?.locations) && detail.locations.length ? detail.locations : row?.locations;
   const loc = naiLocation(Array.isArray(sourceLocations) ? sourceLocations : []);
@@ -648,7 +684,9 @@ export function naiListingFromFeed(
     id: Number.isFinite(id) ? `infabode:${id}` : null,
     name: clean(detail?.title ?? row?.title),
     transactionType: tx === "sale" ? "Sale" : "Lease",
-    assetType: clean(detail?.contentType?.name ?? row?.contentType?.name),
+    // contentType is a publication category, retained verbatim in the raw post.
+    assetType: physicalFacts.assetType,
+    yearBuilt: physicalFacts.yearBuilt,
     description: stripHtmlText(detail?.content) ?? clean(detail?.summary ?? row?.summary),
     city: loc.city,
     state: loc.state,
