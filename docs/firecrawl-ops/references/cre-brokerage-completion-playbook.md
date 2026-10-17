@@ -233,6 +233,14 @@ the observed variation and its negative cases. For example, a Sublease token
 that the current parser does not recognize is a parser-vocabulary defect; that
 observation alone does not show the provider changed its site.
 
+Validate the property facts together rather than requiring an incidental
+heading arrangement. A source-evidenced street abbreviation or a complete
+address combined into one heading can be equivalent to separately labeled
+fields. Require the same full property identity and owned page bindings, keep
+raw values unchanged, and test a different street number, missing visible
+address, conflicting metadata and ambiguous identity containers. A matching
+city or marketing headline alone must never substitute for the street witness.
+
 Use one source-owned normalization rule wherever the mapper and verifier
 compare the same value. This comparison rule does not replace or alter the
 source's documented canonical external-ID recipe. Keep raw native IDs and
