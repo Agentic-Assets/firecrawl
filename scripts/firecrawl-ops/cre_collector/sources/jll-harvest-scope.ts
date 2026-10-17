@@ -40,6 +40,7 @@ export function jllPropertyHarvestDoc(
     } catch { return null; }
   };
   const $ = cheerio.load(doc.rawHtml ?? "");
+  const baseOrigin = new URL(baseUrl).origin;
   const headings = $("h2").filter((_, node) => $(node).text().trim() === "Related properties");
   const excluded = new Set<string>();
   const protectedUrls = new Set(nativeAssets.map(resolve).filter((url): url is string => url !== null));
@@ -87,6 +88,36 @@ export function jllPropertyHarvestDoc(
       scope = "recommendations_scoped";
     }
   }
+  // Observed city taxonomy cards are not property galleries. Require their
+  // heading, carousel/card, route, unavailable label and static asset together;
+  // a placeholder basename or a generic carousel never supplies authority.
+  $("h2").each((_, node) => {
+    const heading = $(node);
+    const match = /^Similar (Industrials|Offices) in .+$/.exec(heading.text().trim());
+    if (!match) return;
+    const carousel = heading.next("div").children(".embla");
+    if (carousel.length !== 1) return;
+    const route = match[1] === "Industrials" ? "rent-industrial" : "rent-office";
+    carousel.find('.embla-container > .embla-slide a[href] img[alt="Image Unavailable"]').each((_, node) => {
+      const image = $(node);
+      const href = resolve(image.closest("a[href]").attr("href") ?? "");
+      if (!href) return;
+      const link = new URL(href);
+      if (link.origin !== baseOrigin || !new RegExp(`^/${route}/[^/]+/?$`).test(link.pathname)) return;
+      if (!image.siblings("div").toArray().some(label => $(label).text().trim() === "Image Unavailable")) return;
+      const srcset = image.attr("srcset") ?? "";
+      if (srcset.trim() && !srcsetUrls(srcset, resolve).candidates.length) return;
+      const urls = new Set<string>();
+      collect(image, urls);
+      if (!urls.size || ![...urls].every(value => {
+        const asset = new URL(value);
+        return asset.origin === baseOrigin && asset.pathname === "/_next/image"
+          && /^\/_next\/static\/media\/default-img-small@2x\.[a-f0-9]+\.jpg$/.test(asset.searchParams.get("url") ?? "");
+      })) return;
+      for (const value of urls) excluded.add(value);
+      image.remove();
+    });
+  });
   // These images have explicit non-gallery roles. Broker portraits remain in
   // contacts; consent UI stays in the original capture. Do not classify by CDN
   // basename, a person's name alone, or a generic logo/face heuristic.

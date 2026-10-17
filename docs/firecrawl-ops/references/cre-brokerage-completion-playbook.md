@@ -103,8 +103,17 @@ reference continuity; do not infer a global CDN basename alias or identical
 remote bytes. Raw child counts alone prove neither richness nor asset loss.
 Malformed-reference cleanup must preserve valid and ambiguous references, use
 the existing repair approval and locking gates, and leave quality guards intact.
-The [JLL repair preparation](https://linear.app/agenticassets/issue/AGENTIC-4371)
-records a pending case, not approval to delete production rows.
+The [JLL repair issue](https://linear.app/agenticassets/issue/AGENTIC-4371)
+owns the concrete evidence, tested repair scope and executed-operation proof;
+linking that issue alone does not authorize deleting production rows.
+
+For placeholder imagery, establish the observed resource role before filtering.
+A category-card placeholder can share a valid URL with an independently retained
+reference. Preserve explicit native assets and retained references; neither an
+"Image Unavailable" label nor a static-image filename alone establishes that
+every occurrence is unrelated. Test the actual card layout, a native-gallery
+control, a shared-reference control and an unknown layout before changing the
+source-owned scope helper. Keep original captures intact.
 
 Use permitted public access and provider-aware pacing. Preserve existing
 deployment and guarded-write procedures when adding fields. Retaining a

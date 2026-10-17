@@ -282,6 +282,16 @@ zip/CBSA crosswalk tables) plus three additive backfills (`cre_backfill_raw_data
 coverage requires fresh validation and exact checkpoint-manifest readback; record
 execution evidence on [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
 
+## Authorized maintenance
+
+Cayman's [standing CRE maintenance direction](https://linear.app/agenticassets/issue/AGENTIC-2895#comment-e988227e-0ff0-482b-941b-5d4220d3921c)
+authorizes well-researched, well-tested fixes within this pipeline task. Proceed
+through implementation, meaningful regression tests, independent review and the
+normal release procedure without repeatedly asking for routine design approval.
+Keep exact production target/manifest/preimage and recovery checks, source/data
+ownership, and the instruction to leave the Mac setup unchanged. This does not
+authorize a broader deletion predicate, relaxed validation or unrelated work.
+
 ## Major-phase code quality review
 
 After a major implementation or phase completes, have a separate agent apply
