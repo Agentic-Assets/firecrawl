@@ -126,6 +126,18 @@ $cases += @{Name='pipeline-duplicate'; Args=($series + @('-Pipeline','-Sources',
 $cases += @{Name='pipeline-unknown'; Args=@('-Tier','series','-Pipeline','-Sources','jll,unknown','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=1; Dispatch=$false}
 $cases += @{Name='pipeline-source-conflict'; Args=($series + @('-Pipeline','-Sources','cbre,jll')); Exit=1; Dispatch=$false}
 $cases += @{Name='serial-workers'; Args=($series + @('-SourceWorkers','2')); Exit=1; Dispatch=$false}
+$seriesAttempts = @('-Tier','series','-Source','all','-ExpectedSha',$sha,'-WorkDeadlineSeconds','3600','-AcknowledgeDatabaseWrites')
+foreach ($attempts in @(1, 4, [int]::MaxValue)) {
+    $cases += @{Name=('attempts-' + $attempts); Args=($seriesAttempts + @('-AttemptsPerSource', [string]$attempts)); Attempts=$attempts; Exit=0; Dispatch=$true}
+}
+foreach ($invalid in @('0', '-1', '1.5', '2147483648', 'not-an-integer')) {
+    $cases += @{Name=('invalid-attempts-' + $cases.Count); Args=($seriesAttempts + @('-AttemptsPerSource', $invalid)); Exit=1; Dispatch=$false}
+}
+foreach ($tier in @('monitor', 'enrich')) {
+    $cases += @{Name=('attempts-nonseries-' + $tier); Args=@('-Tier',$tier,'-Source','hanley','-ExpectedSha',$sha,'-AttemptsPerSource','3'); Exit=1; Dispatch=$false}
+}
+$cases += @{Name='attempts-check-only'; Args=($seriesAttempts + @('-AttemptsPerSource','1','-CheckOnly')); Exit=1; Dispatch=$false}
+
 foreach ($case in $cases) {
     $caseRoot = Join-Path $ProofDirectory $case.Name
     $caseWindows = Join-Path $caseRoot 'windows'
@@ -203,7 +215,8 @@ foreach ($case in $cases) {
         foreach ($expected in @("JLL_DETAIL_CONCURRENCY=$jllDetailConcurrency", "JLL_INVESTOR_DETAIL_CONCURRENCY=$jllDetailConcurrency", 'CUSHMAN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_COVEO_ENABLE=1', 'COLLIERS_MAIN_DETAIL_CONCURRENCY=1', 'COLLIERS_MAIN_DETAIL_START_INTERVAL_MS=3000', 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1', 'python3', ($expectedRepo + '/scripts/firecrawl-ops/cre_collector/cre_checkpoint_series.py'))) {
             Assert-True ($forwarded -contains $expected) ('Missing conservative profile argv: ' + $expected)
         }
-        Assert-True (($forwarded -join '|').Contains('--concurrency|' + $resolvedConcurrency + '|--nice|15|--page-cap|400|--attempts-per-source|3|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
+        $resolvedAttempts = if ($case.ContainsKey('Attempts')) { [int]$case.Attempts } else { 3 }
+        Assert-True (($forwarded -join '|').Contains('--concurrency|' + $resolvedConcurrency + '|--nice|15|--page-cap|400|--attempts-per-source|' + $resolvedAttempts + '|--max-resource-recoveries-per-source|0|--max-host-cpu-percent|90|--cpu-sustain-seconds|30|--cpu-sample-seconds|2|--memory-sustain-seconds|20|--memory-sample-seconds|2|')) 'Series page/retry and CPU/memory guards must be explicit without resource replay.'
         Assert-True (-not ($forwarded -contains '/usr/bin/nice') -and ($forwarded -join '|').Contains('NAI_ENUMERATION_CONCURRENCY=1|python3|')) 'Coordinator must inherit caller priority; canonical --nice supplies the only checkpoint adjustment.'
         $selectedSource = if ($case.ContainsKey('Selected')) { $case.Selected } elseif ($case.Name -eq 'savills-hold') { 'savills' } elseif ($case.ContainsKey('Workers')) { 'cbre,jll' } elseif ($case.Name -eq 'daum-current') { 'daum-commercial' } elseif ($case.Name -eq 'essex-current') { 'essex-realty' } elseif ($case.Name -eq 'pyramid-current') { 'pyramid-brokerage' } elseif ($case.Name -eq 'interra-current') { 'interra-realty' } elseif ($case.Name -eq 'buildout-current') { 'faris-lee' } elseif ($case.Name -in @('selected', 'max-budget')) { 'hanley' } else { 'all' }
         $budget = if ($case.Name -eq 'savills-hold') { '30' } elseif ($case.ContainsKey('Workers')) { '30' } elseif ($case.Name -in @('selected', 'interra-current', 'buildout-current', 'pyramid-current', 'essex-current', 'daum-current')) { '30' } elseif ($case.Name -eq 'max-budget') { '86400' } else { '3600' }

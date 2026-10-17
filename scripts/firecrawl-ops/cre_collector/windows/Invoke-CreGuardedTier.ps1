@@ -18,6 +18,7 @@ param(
     [switch]$AdmitDaumVerifiedSubset,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
+    [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedSha,
     [ValidateRange(1, 50)][int]$Batch = 50,
@@ -40,6 +41,9 @@ $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'Run this launcher on Windows.' }
 
 # Pure selection validation runs before readiness, telemetry or notification work.
+if ($PSBoundParameters.ContainsKey('AttemptsPerSource') -and ($Tier -ne 'series' -or $CheckOnly)) {
+    throw '-AttemptsPerSource requires series execution and conflicts with -CheckOnly.'
+}
 if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
     throw '-Sources requires pipeline series and conflicts with -Source.'
 }
@@ -785,7 +789,7 @@ try {
                 'COLLIERS_MAIN_CHALLENGE_COOLDOWN_MS=60000', 'NAI_ENUMERATION_CONCURRENCY=1',
                 'python3', "$collector/cre_checkpoint_series.py",
                 '--sources', $selectedSourceArgument, '--concurrency', [string]$Concurrency, '--nice', '15',
-                '--page-cap', '400', '--attempts-per-source', '3', '--max-resource-recoveries-per-source', '0',
+                '--page-cap', '400', '--attempts-per-source', [string][int]$AttemptsPerSource, '--max-resource-recoveries-per-source', '0',
                 '--max-host-cpu-percent', '90', '--cpu-sustain-seconds', '30', '--cpu-sample-seconds', '2',
                 '--memory-sustain-seconds', '20', '--memory-sample-seconds', '2',
                 '--expected-sha', $ExpectedSha, '--windows-admission-unix-ms', "$admissionUnixMs",

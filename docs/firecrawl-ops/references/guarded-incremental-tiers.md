@@ -592,6 +592,12 @@ comma-separated exact keys only and conflicts with singleton `-Source`.
 setting (1–6); its Windows default stays 1. It controls per-source acquisition
 capacity where the source adapter uses that shared setting. An explicit value
 is valid only with `-Tier series`; monitor/enrich refuse it before effects.
+`-AttemptsPerSource` forwards the existing shared series `--attempts-per-source`
+budget and defaults to 3. Use `-AttemptsPerSource 1` for one complete fresh
+source attempt when separately authorized; native positive integers (1–2147483647)
+are accepted. Explicit use requires `-Tier series` and rejects `-CheckOnly` before
+admission. It changes no per-item retry, pacing, resource guard or write policy.
+
 `-SourceWorkers` controls the number of collecting brokerages, independently.
 Provider-specific caps and pacing still apply. Changing either knob does not
 admit a source, change resource guards or prove a performance gain; use a matched
