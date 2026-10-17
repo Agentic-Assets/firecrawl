@@ -1,3 +1,4 @@
+import { jllPropertyHarvestDoc } from "./jll-harvest-scope.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/jll.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
@@ -1723,6 +1724,7 @@ export async function enrichJllListing(base: any): Promise<any> {
     // so a url present in BOTH brochures and documents would insert twice).
     const rawBrochures = jllNativeAssetUrls(property.brochures, "brochures");
     const images = jllNativeAssetUrls(property.images, "images");
+    const photoPrefix = dedupeStrings(images.length ? images : (base.photos ?? []));
     const url = normalizedJllListingUrl(base.url);
     const floorPlanDocuments = jllStrandedDocs(property);
 
@@ -1736,9 +1738,16 @@ export async function enrichJllListing(base: any): Promise<any> {
     const harvestDoc: ScrapedDoc = Array.isArray(doc.images)
       ? doc
       : { ...doc, images };
-    const harvested = harvestDetail(harvestDoc, {
+    const nativeMedia = jllStrandedMedia(property);
+    const scopedHarvest = jllPropertyHarvestDoc(harvestDoc, url, [
+      ...photoPrefix, ...rawBrochures,
+      ...floorPlanDocuments.map(item => item.url),
+      ...nativeMedia.flatMap(item => typeof item === "string" ? [item]
+        : [item.url, item.embedUrl].filter((value): value is string => Boolean(value))),
+    ], contactsDetailed.map(contact => contact.name ?? ""));
+    const harvested = harvestDetail(scopedHarvest.doc, {
       baseUrl: url,
-      extraMedia: jllStrandedMedia(property),
+      extraMedia: nativeMedia,
       extraDocs: floorPlanDocuments,
       extraImages: images,
     });
@@ -1769,9 +1778,6 @@ export async function enrichJllListing(base: any): Promise<any> {
           jllSanitizeHiddenChildMetadata(item, "artifact"),
         )
       : harvested.media;
-    const photoPrefix = dedupeStrings(
-      images.length ? images : (base.photos ?? []),
-    );
     // Native extraction can return the same image set in different orders.
     // Preserve the gallery/base primary and ranks; stabilize only extra images.
     // With no usable prefix, retain legacy ordering rather than pick a primary.
@@ -1896,6 +1902,7 @@ export async function enrichJllListing(base: any): Promise<any> {
         virtualTours: hiddenPrice ? undefined : property.virtualTours,
         view360URLs: hiddenPrice ? undefined : property.view360URLs,
         floorPlans: hiddenPrice ? undefined : property.floorPlans,
+        harvestScope: scopedHarvest.scope,
         floorPlanAssetCount: floorPlanDocuments.length,
         brokerCount: contactsDetailed.length,
         brochureCount: documentChannels.brochures.length,
