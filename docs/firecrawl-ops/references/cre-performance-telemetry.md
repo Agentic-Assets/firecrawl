@@ -140,12 +140,11 @@ physical HTTP requests: the cancellable client can retry HTTP502 internally
 within one instrumented attempt. Browser subresource traffic is not counted.
 
 The [shared helpers](../../../scripts/firecrawl-ops/cre_collector/lib/scrape.ts)
-record retry backoff separately from terminal backoff. Current `scrapeRaw` and
-`scrapeDoc` sleep only before another attempt, with no final-attempt sleep.
-`scrapeJson` still sleeps after its final unparseable body and records that as
-terminal `json_parse` backoff. Older reports may also include the former HTTP
-helper terminal sleep. Backoff is scheduled delay, not proof that an interrupted
-sleep finished.
+record retry backoff separately from terminal backoff. Current `scrapeRaw`,
+`scrapeDoc` and `scrapeJson` sleep only before another attempt, with no
+final-attempt sleep. Older reports may include the former HTTP helper or
+`json_parse` terminal sleep; the terminal-backoff field remains for historical
+reports. Backoff is scheduled delay, not proof that an interrupted sleep finished.
 
 Validator query results and timings use separate psql output channels inside the
 same repeatable-read, read-only transaction. Each report uses one psql process

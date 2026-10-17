@@ -809,3 +809,27 @@ test("JLL cache telemetry observes accepted hits, attempted misses, and refresh 
     rmSync(cacheDir, { recursive: true, force: true });
   }
 });
+
+test("terminal JSON rejection records no retry or terminal backoff", async t => {
+  const fixture = recorderFixture();
+  setPerformanceRecorderForTests(fixture.recorder);
+  t.after(resetPerformanceRecorderForTests);
+  const originalSetTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", ((callback: (...args: any[]) => void, _delay?: number, ...args: any[]) =>
+    originalSetTimeout(callback, 0, ...args)) as typeof setTimeout);
+  t.mock.method(console, "error", () => undefined);
+  t.mock.method(firecrawl, "scrape", async () => ({ rawHtml: "not JSON" }));
+  await assert.rejects(
+    scrapeJson("https://example.com/terminal-json", { jsonAttempts: 1 }),
+    /contained no parseable JSON object/,
+  );
+  fixture.recorder.flush(true);
+  const metrics = fixture.fs.snapshot().metrics;
+  assert.deepEqual(metrics.requests.retry.json_parse, {
+    retry_attempts: 0,
+    backoff_ms: 0,
+    terminal_backoff_ms: 0,
+  });
+  assert.equal(metrics.requests.attempts_started, 1);
+  assert.deepEqual(metrics.logical_scrape_calls, { raw: 1, doc: 0, json: 1 });
+});

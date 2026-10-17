@@ -3,6 +3,7 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { setImmediate } from "node:timers/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
@@ -13,6 +14,7 @@ import {
   repairUnescapedJsonStringQuotes,
   scrapeRetryDelayMs,
   scrapeRaw,
+  scrapeJson,
   withRequestDeadline,
 } from "../../../lib/scrape.js";
 
@@ -156,4 +158,84 @@ describe("repairUnescapedJsonStringQuotes", () => {
     const input = '{"msg":"already \\"fine\\""}';
     assert.equal(repairUnescapedJsonStringQuotes(input), input);
   });
+});
+
+describe("JSON parse backoff", () => {
+  for (const attempts of [1, 3]) {
+    it(`rejects after ${attempts} invalid bodies without a terminal wait`, async t => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let calls = 0;
+      let settled = false;
+      let failure: unknown;
+      const logs: string[] = [];
+      t.mock.method(console, "error", (...parts: unknown[]) => logs.push(parts.join(" ")));
+      t.mock.method(firecrawl, "scrape", async () => {
+        calls++;
+        return { rawHtml: "not JSON" };
+      });
+      t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network"); });
+      const pending = scrapeJson("https://example.com/json-backoff", attempts === 1 ? { jsonAttempts: 1 } : {})
+        .catch(error => { settled = true; failure = error; });
+      await setImmediate();
+      assert.equal(calls, 1);
+      if (attempts === 3) {
+        assert.equal(settled, false);
+        t.mock.timers.tick(7999);
+        await setImmediate();
+        assert.equal(calls, 1);
+        t.mock.timers.tick(1);
+        await setImmediate();
+        assert.equal(calls, 2);
+        assert.equal(settled, false);
+        t.mock.timers.tick(15999);
+        await setImmediate();
+        assert.equal(calls, 2);
+        t.mock.timers.tick(1);
+        await setImmediate();
+        assert.equal(calls, 3);
+      }
+      assert.equal(settled, true, "no final JSON parse delay may remain pending");
+      assert.match(String(failure), /contained no parseable JSON object/);
+      assert.equal(logs.filter(line => line.includes("backing off")).length, attempts - 1);
+      await pending;
+    });
+  }
+
+  for (const successAttempt of [1, 2]) {
+    it(`preserves a valid JSON result on attempt ${successAttempt}`, async t => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let calls = 0;
+      t.mock.method(console, "error", () => undefined);
+      t.mock.method(firecrawl, "scrape", async () => ({
+        rawHtml: ++calls === successAttempt ? '{"ok":true}' : "not JSON",
+      }));
+      const pending = scrapeJson("https://example.com/json-success");
+      await setImmediate();
+      if (successAttempt === 2) {
+        assert.equal(calls, 1);
+        t.mock.timers.tick(8000);
+        await setImmediate();
+      }
+      assert.deepEqual(await pending, { ok: true });
+      assert.equal(calls, successAttempt);
+    });
+  }
+
+  for (const name of ["Error", "AbortError"]) {
+    it(`propagates ${name} without a JSON parse retry`, async t => {
+      const previous = process.env.CRE_SCRAPE_MAX_ATTEMPTS;
+      process.env.CRE_SCRAPE_MAX_ATTEMPTS = "1";
+      t.after(() => {
+        if (previous === undefined) delete process.env.CRE_SCRAPE_MAX_ATTEMPTS;
+        else process.env.CRE_SCRAPE_MAX_ATTEMPTS = previous;
+      });
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const failure = Object.assign(new Error("synthetic transport failure"), { name });
+      let calls = 0;
+      t.mock.method(console, "error", () => undefined);
+      t.mock.method(firecrawl, "scrape", async () => { calls++; throw failure; });
+      await assert.rejects(scrapeJson("https://example.com/json-error"), error => error === failure);
+      assert.equal(calls, 1);
+    });
+  }
 });
