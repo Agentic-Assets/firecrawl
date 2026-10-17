@@ -4264,6 +4264,62 @@ BEGIN
     END IF;
 END $$;
 
+""")
+    w(f"""
+-- JLL Investor prospective URL collision pairs include every live brokerage
+-- counterpart. Staged rows replace prior URL/deleted state exactly as the upsert
+-- does; unchanged historical pairs are not a new collision or a repair waiver.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    WITH investor_brokerages AS MATERIALIZED (
+      SELECT DISTINCT s.brokerage_id
+      FROM _src s JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+      WHERE {staged_source_key_sql} = 'jll-investor'
+    ), before_rows AS MATERIALIZED (
+      SELECT t.brokerage_id, t.external_id, t.source_url,
+             'stored:' || t.id::text AS row_key
+      FROM credeals.cre_listings t
+      JOIN investor_brokerages ib ON ib.brokerage_id = t.brokerage_id
+      WHERE t.deleted_at IS NULL
+    ), prospective_rows AS MATERIALIZED (
+      SELECT t.brokerage_id, t.source_url, t.row_key, false AS investor_stage
+      FROM before_rows t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM _src s
+        WHERE s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id
+      )
+      UNION ALL
+      SELECT s.brokerage_id, s.source_url,
+             COALESCE('stored:' || t.id::text, 'new:' || s.external_id),
+             {staged_source_key_sql} = 'jll-investor'
+      FROM _src s JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+      JOIN investor_brokerages ib ON ib.brokerage_id = s.brokerage_id
+      LEFT JOIN credeals.cre_listings t
+        ON t.brokerage_id = s.brokerage_id AND t.external_id = s.external_id
+    )
+    SELECT count(*) INTO conflicting_rows FROM (
+      SELECT a.brokerage_id, a.source_url, a.row_key, b.row_key
+      FROM prospective_rows a JOIN prospective_rows b
+        ON b.brokerage_id = a.brokerage_id AND b.source_url = a.source_url
+       AND a.row_key < b.row_key
+      WHERE a.investor_stage OR b.investor_stage
+      EXCEPT
+      SELECT a.brokerage_id, a.source_url, a.row_key, b.row_key
+      FROM before_rows a JOIN before_rows b
+        ON b.brokerage_id = a.brokerage_id AND b.source_url = a.source_url
+       AND a.row_key < b.row_key
+    ) added_pairs;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'JLL Investor URL collision growth (% new pair(s)); reviewed identity reconciliation required',
+        conflicting_rows;
+    END IF;
+END $$;
+
+""")
+    w("""
 -- Interra switched from legacy listing/<slug> keys to native WordPress IDs.
 -- Exact URL overlap across those namespaces requires a reviewed identity repair,
 -- not an additive INSERT beside the existing row. Match the validator's exact
