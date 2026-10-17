@@ -65,6 +65,23 @@ new database rows, strict-detail records or a full-registry quality result.
 Unqualified and legacy runs keep these values unknown. Inserted-row and
 strict-detail counts are not inferred by the performance report.
 
+Do not derive new-versus-updated listing counts from validation totals or
+timestamps. The existing `source_counts`, `freshness_generations` and
+`inventory_generation_fingerprints` queries return aggregate counts and clocks,
+not complete parent-ID sets; the inventory fingerprint is not a content digest.
+Likewise, comparing ingest's `_prior_vals` with `_up` does not establish physical
+INSERT versus UPDATE counts if another writer can insert an absent identity
+between the prior snapshot and `ON CONFLICT`. The lifecycle advisory lock
+coordinates generated ingest/reconciliation writers, not DML that ignores it.
+Keep operation counts unknown without authoritative committed outcome evidence
+bound to the source and generation; staged counts and an uncertain commit do
+not supply that evidence.
+
+A refreshed existing row is also not necessarily a changed business record.
+The current upsert updates existing rows and their `updated_at` even when the
+listing facts are unchanged. Keep refreshed listings, new parent rows and
+changed facts distinct in reports and Slack summaries.
+
 Complete serial checkpoints use the same saved-generation evidence for the
 `serial_generation_full_readback` metric: immutable artifact identity, exact
 recorded scope and gates, successful ingest, full validation/no-regression and
