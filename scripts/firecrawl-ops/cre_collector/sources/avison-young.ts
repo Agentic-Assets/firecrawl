@@ -474,9 +474,10 @@ export function assertAvisonYoungDetailDoc(
   // A marketing heading is not property-name authority. These native shapes
   // instead bind the complete visible address, or a visible feed name plus an
   // exact full-range description; neither equates a range with its endpoint.
-  const offeringHeading = /^(?:hospitality|industrial|land|multifamily|office|retail|special purpose|build to suit) for (?:sale|lease)$/.test(
-    normalizeIdentityText($("h1").text())
-  );
+  const offeringPropertyFamily = "(?:hospitality|industrial|land|multifamily|office|retail|special purpose|build to suit)";
+  const offeringHeading = new RegExp("^" + offeringPropertyFamily
+    + "(?: (?:and )?" + offeringPropertyFamily + "){0,2} for (?:sale(?: or lease)?|lease(?: or sale)?)$")
+    .test(normalizeIdentityText($("h1").text()));
   const matchesAddressHeading = (value: string, expectedStreet: string): boolean => {
     const parts = value.split(",");
     return parts.length === 3 && normalizeIdentityText(parts[0]) === expectedStreet
@@ -508,7 +509,6 @@ export function assertAvisonYoungDetailDoc(
     && Boolean(name && street && city && state)
     && nativeInfo.length > 0 && nativeInfoRows.length > 0
     && $("h1").length === 1 && offeringHeading && $(".hero__sub-title").length === 1
-    && (descriptionNodes.length === 0 || descriptionIdentity)
     && (addressHeroIdentity || (rangeDescriptionIdentity
       && matchesAddressHeading($(".hero__sub-title").text(), name)))
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
