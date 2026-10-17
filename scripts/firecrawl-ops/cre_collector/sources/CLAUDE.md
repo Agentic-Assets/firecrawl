@@ -183,6 +183,14 @@ test known multi-state, portfolio and hierarchical-type members and reconcile
 the full native identity union; display state is not proven filter authority.
 See [AGENTIC-4297](https://linear.app/agenticassets/issue/AGENTIC-4297).
 
+Matthews retains each owned availability card's literal label/value pairs in
+`extraFacts.matthewsLeasingSpaces`. Combined and individual spaces can overlap;
+do not sum their areas, select a property-wide rate, or infer rate units/periods.
+Only the unique owned property section's observed Spaces Available group supplies
+these facts. Malformed or ambiguous cards retain their text in
+`matthewsUnparsedLeasingSpaces` without claiming a structured association.
+This field retention does not resolve inventory completeness or tenure authority.
+
 Matthews failed HTTP attempts emit bounded `matthews/http` diagnostics containing
 only request role, attempt/max, header/body/HTTP phase, numeric status when known,
 elapsed milliseconds and the planned cooldown. Successful requests stay quiet;
