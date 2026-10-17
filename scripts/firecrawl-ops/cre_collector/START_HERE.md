@@ -323,8 +323,14 @@ python3 cre_checkpoint_series.py \
 
 ### Supervised accelerated profile
 
-The 2026-09-13 browser-only calibration below supersedes the one-page browser
-capacity for supervised JLL runs; conservative defaults remain available.
+**Historical capacity recipe, not current JLL C4 admission.** The dated
+measurements and command below do not establish current listing-field fidelity
+or authorize that production profile. Follow the current reviewed source and
+provider settings on [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895)
+and [AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900).
+
+The 2026-09-13 browser-only calibration below compared capacity for
+supervised JLL runs at that time; conservative defaults remain available.
 
 The conservative profile above remains the default. On 2026-09-09, supervised
 production observations plus Cayman's tuning authorization established the
@@ -336,7 +342,7 @@ following evidence and decision record:
 | CBRE API page size 500, snapshot concurrency 2, no render wait | Live lease proof reconciled 15,044 unique IDs and URLs across two complete passes with an exact 44-row terminal page and empty sentinel; full TypeScript suite passed | Current strict unlimited CBRE profile |
 | CBRE API page size 1,000 or 2,000 | High-offset requests stalled or failed transport | Rejected; do not use |
 | JLL detail concurrency 1 | Exact and stable; observed cache-write interarrival mean 3.846 seconds and median 3.704 seconds over 230 current rows | Conservative fallback |
-| JLL detail concurrency 4 | Bounded no-database proof completed 200/200 fresh sale details in 496.69 seconds, including enumeration, with zero detail errors and zero duplicate or missing IDs, URLs, or canonical URLs | Current supervised accelerated profile; fall back to 2, then 1, on provider errors or resource pressure |
+| JLL detail concurrency 4 | Bounded no-database proof completed 200/200 fresh sale details in 496.69 seconds, including enumeration, with zero detail errors and zero duplicate or missing IDs, URLs, or canonical URLs | Historical capacity result; not current production C4 admission |
 | Direct JLL HTML | Exact structured property and broker payload in one sample, about 6x faster, but not yet equivalent for rendered Markdown, links, images, and attributes | Not admitted for production |
 | Host CPU ceiling 55% for 10 seconds | Correctly interrupted once when unrelated local application builds sustained 65-81% total host CPU | Conservative shared-host profile |
 | Host CPU ceiling 75% for 10 seconds | Cayman-authorized supervised calibration target; the guard, serial source checkpoints, and fail-closed telemetry remain enabled | Use only with live operator supervision and the constrained container profile |
@@ -1733,6 +1739,7 @@ historical launchd recovery commands below to create or restart a job.
   dispatcher keeps 24 `monitor_*.json` + 24 `monitor_*.log` under `out/monitor/`
   and caps the launchd `cre-*.{out,err}.log` files), so growth is bounded
   without intervention. `cre_status.sh` warns past ~4GB (`out/daily`) / ~8GB
-  (`out/monitor`). If a crash left orphaned artifacts, they are safe to delete
-  manually (`out/` is gitignored); the durable source caches under
-  `out/cache/` are the only artifacts worth preserving for resumable runs.
+  (`out/monitor`). Preserve referenced generation artifacts, source observations,
+  manifests, validation/readback, audit and recovery evidence until the owner has
+  reviewed reconciliation and applicable retention. Use only the existing scoped
+  pruning; Git ignore status does not authorize blanket `out/` deletion.
