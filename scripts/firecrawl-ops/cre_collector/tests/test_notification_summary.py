@@ -296,7 +296,8 @@ def pipeline_evidence(evidence, primary_source=SOURCE, second_source="cbre"):
         current_inventory_admissions={},
     )
     parent["status"] = "failed"
-    evidence["values"]["control"]["status"] = "failed"
+    if evidence["values"]["control"]["status"] == "complete":
+        evidence["values"]["control"]["status"] = "failed"
     parent["sources"][primary_source]["state"] = "complete"
     parent["sources"][primary_source]["pipeline_result"] = {
         "state": "verified",
@@ -421,7 +422,8 @@ def qualify_pipeline_second_source(evidence, setup):
     parent["sources"][primary]["checkpoint_status"] = "supported_scope_complete"
     child["status"] = "supported_scope_complete"
     parent["status"] = "complete"
-    evidence["values"]["control"]["status"] = "complete"
+    if evidence["values"]["control"]["status"] == "failed":
+        evidence["values"]["control"]["status"] = "complete"
     child["pipeline"]["status"] = "complete"
     evidence["save"]()
     return second_path
