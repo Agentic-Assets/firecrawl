@@ -455,6 +455,9 @@ no hard termination. Linux owns the finite work deadline and settlement;
 Task Scheduler has no competing execution timeout. Docker Desktop and its
 reviewed containers must already be available. The task cannot run while this
 user is logged out, and catchup does not prove Docker or API readiness.
+`IgnoreNew` applies only to repeated instances of the same task. Late catchup
+can collide with another CRE task; the shared owner must refuse overlapping
+work, not force-clear a lock or promise a queued retry.
 
 Preview an exact source and reviewed, deployed SHA from PowerShell:
 
@@ -478,19 +481,42 @@ $taskOptions = @{
 Preview starts no task, WSL, provider or database work. `DailyAt` accepts one
 to four distinct local `HH:mm` values in a single comma-separated string.
 Add `WeeklyOn = 'Saturday'` and use, for example, `DailyAt = '03:00'` for a
-weekly task. Each task selects one source, or `all` for a qualified series;
-the Interra admission opt-in requires its exact single source. A schedule does
-not expand source eligibility or remove baseline and quality requirements.
+weekly task. A task can select one `Source`, or a finite comma-separated
+`Sources` list with `Tier = 'series'`, `Pipeline = $true` and
+`SourceWorkers = 2`. `Sources` conflicts with `Source`; each required
+current-inventory admission must name an exact selected, supported key in
+`AdmitCurrentInventorySources`. The singular admission option remains available
+for its selected source. `Source = 'all'` never grants admissions. A schedule
+does not expand source eligibility or remove baseline and quality requirements.
 
-After the source's supervised live pilot, registry approval and scheduling
-acceptance are recorded on AGENTIC-3752, register a disabled task:
+The installer does not accept or forward `Concurrency` or `AttemptsPerSource`.
+Its scheduled action inherits the launcher's defaults: concurrency **1** and
+**3 whole-source attempts**, within the explicit work deadline. Provider
+per-request retries and pacing remain separate. Qualify the actual scheduled
+action, not a manual command with different attempt limits.
+
+After the supervised source pilot, record the exact scheduling decision and
+planned/disabled registry scope on
+[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752).
+Then register a disabled task and read back its complete definition:
 
 ```powershell
 & scripts/firecrawl-ops/cre_collector/windows/Install-CreScheduledTask.ps1 @taskOptions -Register
 ```
 
-Adding both `-Register -Enable` instead enables that newly created task only
-after its disabled definition passes readback. Registration is create-only:
+Run the exact disabled task's action as a supervised pilot at a settled owner
+boundary. After its full validation, generation readbacks, settlement and
+notification delivery qualify, record bounded enablement for a natural clock.
+Enable before observing that clock; a disabled task cannot prove a trigger.
+The natural run must qualify separately before unattended acceptance is claimed.
+Include the new task in the
+[whole-CRE handoff inventory](development-and-runtime-checkouts.md#moving-a-reviewed-build-to-a-runtime)
+before enabling it. Standing maintenance approval does not replace these
+recorded scope and acceptance checks.
+
+The installer also supports `-Register -Enable`, enabling only that newly
+created task after disabled-definition readback; that flag combination alone
+does not qualify a pilot or natural clock. Registration is create-only:
 any existing task collision refuses rather than replacing a definition. To
 change cadence, disable the exact old task, settle any active Linux work,
 inspect and unregister that exact task, then preview and register its
@@ -607,11 +633,11 @@ serial behavior remains the default. Windows series launchers and task previews
 forward `-Pipeline -SourceWorkers 2 -Sources interra-realty,faris-lee` and explicit
 `-AdmitCurrentInventorySources interra-realty,faris-lee`. `-Sources` accepts finite
 comma-separated exact keys only and conflicts with singleton `-Source`.
-`-Concurrency` optionally forwards the existing shared series `--concurrency`
-setting (1–6); its Windows default stays 1. It controls per-source acquisition
-capacity where the source adapter uses that shared setting. An explicit value
+The guarded launcher accepts `-Concurrency` to forward the shared series
+`--concurrency` setting (1–6); its Windows default stays 1. It controls per-source
+acquisition capacity where the source adapter uses that shared setting. An explicit value
 is valid only with `-Tier series`; monitor/enrich refuse it before effects.
-`-AttemptsPerSource` forwards the existing shared series `--attempts-per-source`
+Its `-AttemptsPerSource` forwards the shared series `--attempts-per-source`
 budget and defaults to 3. Use `-AttemptsPerSource 1` for one complete fresh
 source attempt when separately authorized; native positive integers (1–2147483647)
 are accepted. Explicit use requires `-Tier series` and rejects `-CheckOnly` before

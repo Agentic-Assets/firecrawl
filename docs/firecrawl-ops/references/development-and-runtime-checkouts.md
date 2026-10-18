@@ -63,22 +63,31 @@ enable a schedule, or change a runtime.
 After the candidate has passed its isolated checks and is merged or otherwise selected through
 the approved release path:
 
-1. Record the reviewed commit SHA and verify the development tree is clean. Save the exact task
-   definitions and prior pins. Prevent new scheduled launches and prove existing owned processes
-   are settled with no unresolved recovery fence before changing either runtime tree.
+1. Record the reviewed commit SHA and verify the development tree is clean. Enumerate **all CRE
+   task definitions targeting either checkout**, including finite-cohort tasks and disabled tasks;
+   save their identities, full definitions, prior pins and enabled states. Prevent new launches
+   from every affected task and prove existing owned processes are settled with no unresolved
+   recovery fence before changing either runtime tree.
 2. Under the existing ownership procedure, fast-forward the stable native launcher checkout and the intended ext4 runtime checkout to
    the selected commit using ordinary Git history. Do not force-reset either checkout. Keep all
    host-local dependencies and credentials in place.
-3. Update each existing task's expected SHA to the same reviewed commit, preserving its other
-   settings and cadence. Keep scheduling disabled until both clean checkout SHAs and pins agree.
+3. Update every inventoried task's expected SHA to the same reviewed commit, preserving its other
+   settings and cadence. Read back each complete definition and pin. Keep scheduling disabled
+   until both clean checkout SHAs and all affected pins agree.
    At the target host, run the read-only dependency check (`bash cre_setup.sh --check`) and
    runtime checks in cre_status.sh and START HERE. Recheck the expected source definitions and
    exact code SHA; the selected task SHA is only the code pin and grants no runtime or data
    admission.
 4. Run only under the existing foreground-owner, database, and scheduler gates in [START
-   HERE](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md). Restore the scheduler to
-   its recorded prior state after the supervised operation; do not turn a previously disabled
-   scheduler on as part of a code handoff.
+   HERE](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md). Restore each affected task to
+   its recorded prior enabled state after the supervised operation; do not enable a previously
+   disabled task as part of a code handoff.
+
+Before enabling an additional CRE task, include it in the reviewed handoff tooling and inventory.
+Historical packets sealed for only Interra and Newmark remain immutable evidence for those two
+definitions; they do not cover a later cohort task. Do not reuse such a packet to change runtime
+code while leaving another task's pin, launch window or prior state unaccounted for. The exact
+surface and activation decision belong on [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752).
 
 This is a coordinated update across Windows and Linux, not an atomic deployment. Keep the saved
 definitions and previous commits for recovery at another proven settled boundary; never force-reset
