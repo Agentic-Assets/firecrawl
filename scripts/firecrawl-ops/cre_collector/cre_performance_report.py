@@ -1298,6 +1298,33 @@ def render(report: Mapping[str, Any]) -> str:
             + ". This is subprocess wall-time overlap, not request concurrency."
         )
     lines.extend(_render_resources(_object(report.get("resources"))))
+    checkpoint_resources = report.get("checkpoint_resources")
+    if isinstance(checkpoint_resources, list) and checkpoint_resources:
+        for item in checkpoint_resources:
+            if not isinstance(item, Mapping):
+                continue
+            run_id = item.get("run_id")
+            if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
+                continue
+            source_names = sorted(
+                {
+                    row["source"]
+                    for row in report["sources"]
+                    if isinstance(row, Mapping)
+                    and row.get("run_id") == run_id
+                    and isinstance(row.get("source"), str)
+                }
+            )
+            resource_lines = _render_resources(
+                _object(item.get("resources")),
+                heading=f"Shared checkpoint resources ({run_id})",
+            )
+            if source_names:
+                resource_lines.insert(
+                    2,
+                    "  Sources sharing this checkpoint: " + ", ".join(source_names),
+                )
+            lines.extend(resource_lines)
     for item in report.get("validation_query_timings", []):
         queries = _object(item.get("queries"))
         measured = [
@@ -1314,7 +1341,10 @@ def render(report: Mapping[str, Any]) -> str:
                 )
                 + "; all measured families in JSON."
             )
-    if _object(report.get("resources")).get("state") != "observed":
+    if (
+        not checkpoint_resources
+        and _object(report.get("resources")).get("state") != "observed"
+    ):
         for row in report["sources"]:
             if _object(row.get("resources")).get("state") == "observed":
                 lines.append(f"Checkpoint resource evidence for {row['source']}:")
@@ -1367,8 +1397,12 @@ def _cpu_line(label: str, summary: Mapping[str, Any]) -> str:
     return f"  {label}: mean/p50/p95={_display(summary.get('mean'))}/{_display(summary.get('p50'))}/{_display(summary.get('p95'))}%; sampled peak={_display(summary.get('sampled_max'))}%; duration-weighted estimate={_display(summary.get('duration_weighted_estimate'))}%; samples={_display(summary.get('sample_count'))}, window={_display(summary.get('window_seconds'))}s, covered={_display(summary.get('covered_seconds'))}s, gaps={_display(summary.get('uncovered_gap_seconds'))}s."
 
 
-def _render_resources(resources: Mapping[str, Any]) -> list[str]:
-    lines = ["", "Shared resources (sampled; no inferred speedup)"]
+def _render_resources(
+    resources: Mapping[str, Any],
+    *,
+    heading: str = "Shared resources (sampled; no inferred speedup)",
+) -> list[str]:
+    lines = ["", heading]
     if resources.get("state") != "observed":
         return lines + ["  Resource usage unknown: saved telemetry unavailable."]
     sessions = resources.get("sessions", [])

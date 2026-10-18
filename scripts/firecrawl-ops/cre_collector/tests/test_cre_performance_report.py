@@ -1184,3 +1184,74 @@ def test_coordinator_overlap_counts_duration_and_ignores_nonterminal_commands(tm
     assert measured["seconds_by_active_sources"] == {"1": 20, "2": 10}
     assert measured["summed_source_collection_seconds"] == 40
     assert "subprocess wall-time overlap" in report.render(result)
+
+
+def test_pipeline_text_report_renders_shared_checkpoint_resources_once():
+    shared = "2026-10-18T045739Z-aaaaaaaaaaaa"
+    second = "2026-10-18T045740Z-bbbbbbbbbbbb"
+    missing = "2026-10-18T045741Z-cccccccccccc"
+
+    def resource_session(sample_count, cpu_mean=None):
+        metrics = {"host_cpu_percent": {"mean": cpu_mean}} if cpu_mean else {}
+        return {
+            "sample_count": sample_count,
+            "memory_pressure_samples": {},
+            "runtime_availability_samples": {},
+            "runtime_gap_code_samples": {},
+            "metrics": metrics,
+            "containers": [],
+        }
+
+    rows = [
+        {
+            "source": source,
+            "run_id": run_id,
+            "status": "ingested",
+            "timed_command_seconds": {},
+            "commands": [],
+            "warnings": [],
+            "resources": {"scope": "shared_coordinator", "state": "see_run_resources"},
+        }
+        for source, run_id in (
+            ("faris-lee", shared),
+            ("hanley", shared),
+            ("jll", second),
+            ("cbre", missing),
+        )
+    ]
+    report_data = {
+        "generation_id": "2026-10-18T045739Z",
+        "collector_git_sha": SHA,
+        "run_elapsed_seconds": 146.725,
+        "resource_coverage": "current_bound_checkpoint_per_source_prior_failed_or_recovery_attempts_not_aggregated",
+        "sources": rows,
+        "resources": {"state": "unavailable"},
+        "checkpoint_resources": [
+            {
+                "run_id": shared,
+                "resources": {
+                    "state": "observed",
+                    "sessions": [resource_session(29, 11.5)],
+                },
+            },
+            {
+                "run_id": second,
+                "resources": {"state": "observed", "sessions": [resource_session(7)]},
+            },
+            {"run_id": missing, "resources": {"state": "unavailable", "sessions": []}},
+        ],
+        "collection_overlap": {},
+        "validation_query_timings": [],
+        "comparison": {"state": "unavailable"},
+    }
+
+    rendered = report.render(report_data)
+
+    assert f"Shared checkpoint resources ({shared})" in rendered
+    assert "Sources sharing this checkpoint: faris-lee, hanley" in rendered
+    assert rendered.count("29 observations") == 1
+    assert "mean/p50/p95=11.5/unknown/unknown%" in rendered
+    assert f"Shared checkpoint resources ({second})" in rendered
+    assert "7 observations" in rendered
+    assert f"Shared checkpoint resources ({missing})" in rendered
+    assert rendered.count("Resource usage unknown: saved telemetry unavailable.") == 2
