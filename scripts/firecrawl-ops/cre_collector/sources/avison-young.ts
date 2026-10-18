@@ -544,6 +544,27 @@ export function assertAvisonYoungDetailDoc(
       && location !== null && normalizeState(location[1]) === state
       && (!clean(base?.postalCode) || location[2] === clean(base?.postalCode));
   };
+  let isRegisteredOfficialWrapper = false;
+  try {
+    const parsed = new URL(requested ?? "");
+    isRegisteredOfficialWrapper = parsed.origin === AVISON_YOUNG_HOST
+      && parsed.pathname.startsWith("/properties/")
+      && sameIdentityUrl(requested, base?.externalUrl);
+  } catch { /* no registered official URL */ }
+  const records = jsonLdObjects(doc.rawHtml).filter((object) =>
+    [object["@type"]].flat().some((type) => String(type).toLowerCase() === "realestatelisting")
+  );
+  const record = records[0];
+  const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
+  const structuredIdentityMatches = records.length === 1
+    && subjectMatches(record?.name)
+    && sameIdentityUrl(record?.url, requested)
+    && addresses.length > 0 && addresses.every((address) =>
+      normalizeStreet(address.streetAddress) === street
+      && normalizeCity(address.addressLocality) === city
+      && normalizeState(address.addressRegion) === state
+      && (!clean(address.postalCode) || !clean(base?.postalCode)
+        || clean(address.postalCode) === clean(base?.postalCode)));
   const descriptionIdentity = descriptionNodes.length > 0
     && descriptionSelectors.every((selector) => $(selector).length <= 1)
     && descriptionNodes.every((element) => descriptionMatches(element));
@@ -570,9 +591,6 @@ export function assertAvisonYoungDetailDoc(
     return Boolean(usesHeadlineAlias) && identityFields.length >= 1
       && !descriptionMatches(element, true);
   });
-  if (descriptionConflicts) {
-    throw new Error("Avison Young detail identity does not match the requested property");
-  }
   const completeDescriptionIdentity = /^\d{5}$/.test(clean(base?.postalCode) ?? "") && descriptionIdentity;
   const rangeDescriptionIdentity = /^\d+\s*-\s*\d+\s+.+$/.test(clean(base?.street) ?? "")
     && completeDescriptionIdentity;
@@ -593,6 +611,41 @@ export function assertAvisonYoungDetailDoc(
   const hasBuildingContent = hasBuildingOverview && (hasBuildingFacts || hasAvailabilityFields);
   const hasBuildingSections = hasBuildingContent
     && (completeDescriptionIdentity || (identityMetadataMatches && addressHeroIdentity));
+  // A one-way scope description is not general endpoint/range equivalence.
+  // It needs an independently complete registered official physical anchor.
+  const officialPhysicalAnchor = isRegisteredOfficialWrapper && urlMatches && ownedIdentityMetadata
+    && structuredIdentityMatches && addressHeroIdentity && /^\d{5}$/.test(clean(base?.postalCode) ?? "")
+    && /\s\d{5}$/.test(addressHeroParts[2]?.trim() ?? "")
+    && addresses.every((address) => clean(address.postalCode) === clean(base?.postalCode));
+  const streetRole = /\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|highway|hwy|drive|dr|lane|ln|court|ct|parkway|pkwy)\b/i;
+  const ambiguousScopeRole = /[&/#]|\b(?:and|at|nwc|nec|swc|sec|suite|ste|unit|apt|floor|building|bldg|lot)\b/i;
+  const endpoint = ambiguousScopeRole.test(clean(base?.street) ?? "") ? null : /^(\d+) ([a-z ]+)$/.exec(street);
+  const scopeRanges = descriptionNodes.map((element) => {
+    const value = clean($(element).attr("content")) ?? "";
+    if (!value || value.length > 1000 || !endpoint) return null;
+    const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
+    const region = /^(.*?)\s+(\d{5})$/.exec(fields.pop()?.trim() ?? "");
+    const locality = fields.pop();
+    const boundaries = fields.slice(1).map((_field, index) => ({
+      subject: fields.slice(0, index + 1).join(","),
+      range: /^(\d+)\s*[-–]\s*(\d+)\s+(.+)$/.exec(fields.slice(index + 1).join(",").trim()),
+    })).filter(({ subject, range }) => subjectMatches(subject) && range && !ambiguousScopeRole.test(range[3]!)
+      && range[1] === endpoint[1] && Number.isSafeInteger(Number(range[2]))
+      && Number(range[2]) > Number(range[1]) && normalizeStreet(range[3]) === endpoint[2]);
+    return boundaries.length === 1 && normalizeCity(locality) === city && region
+      && normalizeState(region[1]) === state && region[2] === clean(base?.postalCode)
+      ? boundaries[0]!.range!.slice(1).map(normalizeStreet).join("|") : null;
+  });
+  const officialRangeScopeWitness = officialPhysicalAnchor && hasPropertySections
+    && $("h1").length === 1 && subjectMatches($("h1").text())
+    && endpoint !== null
+    && descriptionNodes.length > 0 && descriptionSelectors.every((selector) => $(selector).length <= 1)
+    && scopeRanges.every((range) => range !== null) && new Set(scopeRanges).size === 1
+    && $("h2").toArray().filter((element) => /^\d+(?:\s*[-–]\s*\d+)?\s+/.test(clean($(element).text()) ?? "") && streetRole.test($(element).text()))
+      .every((element) => normalizeStreet($(element).text()) === street || matchesAddressHeading($(element).text(), street));
+  if (descriptionConflicts && !officialRangeScopeWitness) {
+    throw new Error("Avison Young detail identity does not match the requested property");
+  }
   const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
   const namedDescriptionIdentity = completeDescriptionIdentity && identityMetadataMatches
     && heroLocations.length === 1 && heroLocations[0] === true;
@@ -658,11 +711,6 @@ export function assertAvisonYoungDetailDoc(
         ? $(element).text().split(",").slice(0, -2).join(",") : $(element).text()).includes(visibleIdentityStreet)
     ).every((element) => normalizeStreet($(element).text()) === visibleIdentityStreet
       || matchesAddressHeading($(element).text(), visibleIdentityStreet));
-    const records = jsonLdObjects(doc.rawHtml).filter((object) =>
-      [object["@type"]].flat().some((type) => String(type).toLowerCase() === "realestatelisting")
-    );
-    const record = records[0];
-    const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
     if (!addressHeadingsAgree || records.length > 1 || (record && (
       !subjectMatches(record.name) || !sameIdentityUrl(record.url, requested)
       || !addresses.every((address) => normalizeStreet(address.streetAddress) === street
@@ -673,28 +721,7 @@ export function assertAvisonYoungDetailDoc(
     ))) throw new Error("Avison Young detail identity does not match the requested property");
     return listing;
   }
-  let isRegisteredOfficialWrapper = false;
-  try {
-    const parsed = new URL(requested ?? "");
-    isRegisteredOfficialWrapper = parsed.origin === AVISON_YOUNG_HOST
-      && parsed.pathname.startsWith("/properties/")
-      && sameIdentityUrl(requested, base?.externalUrl);
-  } catch { /* no registered official URL */ }
-  if (capturedBuildingStructure && isRegisteredOfficialWrapper) {
-    const records = jsonLdObjects(doc.rawHtml).filter((object) =>
-      [object["@type"]].flat().some((type) => String(type).toLowerCase() === "realestatelisting")
-    );
-    const record = records[0];
-    const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
-    const structuredIdentityMatches = records.length === 1
-      && subjectMatches(record?.name)
-      && sameIdentityUrl(record?.url, requested)
-      && addresses.length > 0 && addresses.every((address) =>
-        normalizeStreet(address.streetAddress) === street
-        && normalizeCity(address.addressLocality) === city
-        && normalizeState(address.addressRegion) === state
-        && (!clean(address.postalCode) || !clean(base?.postalCode)
-          || clean(address.postalCode) === clean(base?.postalCode)));
+  if ((capturedBuildingStructure || officialRangeScopeWitness) && isRegisteredOfficialWrapper) {
     // Complete registered structured identity can own the subject while H1 and
     // hero carry marketing/financial display text. A price is never location proof.
     const coherentHeroDisplay = namedHeroIdentity || addressHeroIdentity
@@ -703,7 +730,25 @@ export function assertAvisonYoungDetailDoc(
     const structuredDisplayIdentity = ownedIdentityMetadata && completeDescriptionIdentity
       && coherentDisplayHeading && $(".hero__sub-title").length === 1
       && coherentHeroDisplay && addresses.every((address) => clean(address.postalCode) === clean(base?.postalCode));
-    if (!(identityMetadataMatches || structuredDisplayIdentity) || !structuredIdentityMatches || !urlMatches) {
+    // The registered official page can supply two complete physical witnesses
+    // while its description remains marketing prose and H1 an offering role.
+    // Neither a price-only hero nor a generic display heading supplies this proof.
+    const physicalDescriptionsAgree = descriptionSelectors.every((selector) => $(selector).length <= 1)
+      && descriptionNodes.every((element) => {
+        const fields = (clean($(element).attr("content")) ?? "").split(",");
+        // An address-bearing comma tuple ending in a postal region is a claim,
+        // even without the optional "For lease -" introduction. Keep the older
+        // visible families' optional SEO behavior outside this new witness.
+        const region = /^(.*?)\s+(\d[\d-]*)$/.exec(fields.at(-1)?.trim() ?? "");
+        const claimsAddress = fields.length >= 3 && region
+          && (normalizeState(region[1]) || /^[a-z]{2}$/i.test(region[1]!))
+          && fields.slice(0, -2).some((field) => /\d/.test(field) || streetRole.test(field) || normalizeStreet(field) === street);
+        return !claimsAddress || descriptionMatches(element, true);
+      });
+    const structuredPhysicalIdentity = officialPhysicalAnchor && (offeringHeading || marketingOfferingHeading)
+      && $("h1").length === 1 && physicalDescriptionsAgree;
+    if (!(identityMetadataMatches || structuredDisplayIdentity || structuredPhysicalIdentity || officialRangeScopeWitness)
+      || !structuredIdentityMatches || !urlMatches) {
       throw new Error("Avison Young detail identity does not match the requested property");
     }
     return record;
