@@ -147,6 +147,11 @@ the [identity-preserving network containment recipe](tests/CLAUDE.md) and enable
 only that namespace's loopback; root-mapped test identities fail the legitimate
 non-root capacity-approval checks.
 
+For local receipt-to-observation ordering tests, stamp both events with the
+shared `observationNow()` clock; compare their canonical timestamps strictly.
+Use raw `Date.now()` for intentional stale/future wall-clock fixtures, not as
+an independent ordering baseline for the UTC-anchor/monotonic observation clock.
+
 On WSL, load `~/.agentic-assets/env` when canonical agent context has been
 installed. Use `bash cre_status.sh --scheduler external` for artifacts and API
 readiness; this mode does not verify an external scheduler. macOS retains the

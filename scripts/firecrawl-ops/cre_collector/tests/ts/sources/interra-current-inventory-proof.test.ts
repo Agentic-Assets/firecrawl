@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
+import { observationNow } from "../../../lib/observation-clock.js";
 import { INTERRA_INVENTORY_URL, srcInterraRealty } from "../../../sources/interra-realty.js";
 
 const generationId = "interra-proof-generation";
@@ -29,7 +30,7 @@ test("strict Interra source retains actual terminal text hash, complete native l
   const fetchImpl: typeof fetch = async (url, options) => {
     assert.equal(String(url), INTERRA_INVENTORY_URL);
     assert.equal(options?.cache, "no-store"); assert.equal(options?.redirect, "error");
-    calls++; received = Date.now(); return new Response(body);
+    calls++; received = Date.parse(observationNow()); return new Response(body);
   };
   const result = await srcInterraRealty("sale", Infinity, false, fetchImpl);
   const proof = (result as any).currentInventoryProof;
