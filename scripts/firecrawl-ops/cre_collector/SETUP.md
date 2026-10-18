@@ -118,17 +118,25 @@ runtime checkout, then use a venv (also avoids Ubuntu's system-pip restriction):
 
 ```bash
 # From the repository root; choose a new destination outside the runtime clone.
-git clone --no-hardlinks . ~/code/firecrawl-tests
-cd ~/code/firecrawl-tests/scripts/firecrawl-ops/cre_collector
+git -c core.autocrlf=false clone --no-hardlinks --config core.autocrlf=false . ~/code/firecrawl-tests
+cd ~/code/firecrawl-tests
+python3 -m venv .venv
+.venv/bin/python -m pip install pytest
+cd scripts/firecrawl-ops/cre_collector
 npm ci --ignore-scripts
 # Python integration tests also execute Node/tsx in the browser sidecar.
 # This version must match apps/playwright-service-ts/package.json.
 (cd ../../../apps/playwright-service-ts && npx --yes pnpm@11.4.0 install --frozen-lockfile)
-python3 -m venv .venv
-.venv/bin/python -m pip install pytest
-.venv/bin/python -m pytest tests/ -q
+../../../.venv/bin/python -m pytest tests/ -q
 npm test
 ```
+
+On Linux/WSL, set clone-local `core.autocrlf=false` before checkout as shown,
+so a global Windows-style setting cannot create attribute-normalization changes
+that the real clean-Git admission guard rejects. The root `.venv` is already
+ignored; a nested collector `.venv` is not. Check `git status --short` after
+installing prerequisites; it must be empty. No global Git change, source
+normalization or hidden-file flag is needed.
 
 Both suites run only in that standalone clone. The Node packages above are
 test prerequisites, not additional production services. Recheck the sidecar's

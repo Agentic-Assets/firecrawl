@@ -722,7 +722,11 @@ def verified_pipeline_summary(
             == safe._identity(os.fstat(private))
         )
         require(
-            control.get("status") == ("qualified_partial_subset" if current_inventory.is_verified_subset(config) and parent.get("status") == "qualified_partial_subset" else "complete")
+            control.get("status") == (
+                "failed" if parent.get("status") == "failed" else
+                "qualified_partial_subset" if current_inventory.is_verified_subset(config)
+                and parent.get("status") == "qualified_partial_subset" else "complete"
+            )
             and control.get("local_settlement") == "confirmed"
         )
         started, finished = control["started_unix_ms"], control["finished_unix_ms"]
@@ -819,13 +823,26 @@ def verified_pipeline_summary(
         pipeline = child.get("pipeline")
         require(isinstance(pipeline, dict))
         pipeline_status = pipeline.get("status")
-        require(pipeline_status in {"complete", "partial", "failed"})
+        require(pipeline_status in {"complete", "partial", "failed", "reconciliation_required"})
+        # A global pre-write failure also requests reconciliation. Only settled,
+        # known-outcome units can supply notification counts; never run-wide success.
+        if pipeline_status == "reconciliation_required":
+            require(parent.get("status") == "failed" and child.get("status") == "failed")
+            require(pipeline.get("commit_outcome_unknown") is False)
+        else:
+            require(pipeline.get("commit_outcome_unknown", False) is False)
+        require(pipeline.get("active_unit") is None)
         source_results = pipeline.get("source_results")
         units = pipeline.get("units")
         require(isinstance(source_results, dict) and isinstance(units, list))
         require(set(source_results) <= set(selected_sources))
         checkpoints = child.get("sources")
         require(isinstance(checkpoints, dict) and set(checkpoints) == set(selected_sources))
+        require(all(
+            isinstance(checkpoint, dict)
+            and checkpoint.get("state") not in {"ingesting", "ingest_recovery_required"}
+            for checkpoint in checkpoints.values()
+        ))
         units_by_id = {}
         unit_memberships = {source: [] for source in selected_sources}
         for unit in units:
