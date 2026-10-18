@@ -1,0 +1,50 @@
+[
+  {
+    "id": 17384,
+    "name": "333 Medical Building",
+    "meta_title": "333 Medical Building",
+    "address": "333 W. Thomas Road",
+    "city": "Phoenix",
+    "state": "AZ",
+    "zip": "85013",
+    "country": "US",
+    "url": "https://ayus333medicalbuilding.sharplaunch.com",
+    "external_url": "https://www.avisonyoung.us/properties/333-Medical-Building",
+    "description": "",
+    "meta_description": "For lease - 333 Medical Building, 333 W. Thomas Road, Phoenix, AZ 85013",
+    "type": [
+      "office.medical"
+    ],
+    "sale_currency": "USD",
+    "availabilities_min_rent": 19.5,
+    "availabilities_max_rent": 19.5,
+    "transaction": [
+      "lease"
+    ],
+    "status": "active"
+  },
+  {
+    "id": 18005,
+    "name": "Red Lion Harrisburg Hershey",
+    "meta_title": "Bank Controlled Sale - 274 Room Hotel Re-Development",
+    "address": "4751 LINDLE RD",
+    "city": "HARRISBURG",
+    "state": "PA",
+    "zip": "17111",
+    "country": "US",
+    "url": "https://ayusbankcontrolledsale274roomhotelredevelopment.sharplaunch.com",
+    "external_url": "https://www.avisonyoung.us/properties/4751-lindle-rd-harrisburg-sale",
+    "description": "<p>Avison Young has been retained as exclusive listing agent to solicit offers from prospective buyers for the purchase of the Red Lion Hotel Harrisburg Hershey Hotel (hereinafter “Property” or “Hotel”), a full-service hotel located at 4751 Lindle Ro",
+    "meta_description": "For sale - Bank Controlled Sale - 274 Room Hotel Re-Development, 4751 LINDLE RD, HARRISBURG, PA 17111",
+    "type": [
+      "hospitality.full_service"
+    ],
+    "sale_price": 14500000,
+    "sale_currency": "USD",
+    "sale_unit_price": 14500000,
+    "transaction": [
+      "sale"
+    ],
+    "status": "active"
+  }
+]

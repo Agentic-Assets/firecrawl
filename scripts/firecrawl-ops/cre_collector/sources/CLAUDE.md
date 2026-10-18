@@ -296,6 +296,19 @@ historical compatibility proof before proposing a merge, rekey or retirement.
 
 Avison detail identity supports feed-bound SharpLaunch street-as-name headings with a separate city/state location (full US state names and postal abbreviations), including location-suffixed titles. A registered `www.avisonyoung.us/properties/` wrapper can instead bind one unambiguous `RealEstateListing` name/address/URL to coherent visible name/location and page metadata. Map/script text alone is not street evidence for these layouts. Unsupported native pages may still use a validated official alternate through the existing property-detail child-preserving mode; explicit strict mode continues to require every selected URL.
 
+Exact feed `name` and `headline` (`meta_title`) are known subject labels for
+owned title/OG, complete description and structured-subject comparisons. A
+marketing H1 is not itself subject authority. The stronger native named-location
+witness needs an exact comma/pipe name-city-state tuple, complete known-ZIP
+description, owned metadata and coherent heading. A registered official wrapper
+may instead use its unique full structured address/known ZIP plus those metadata,
+description and heading checks. A recognized monetary hero is display text only;
+it cannot supply a native location witness. Keep every validated alternate's
+contacts/resources and the existing child-preserving fallback. Identity acceptance
+does not change feed/page price precedence: raw page wording and raw feed facts
+remain alongside the existing typed feed prices; hidden-price projection remains
+mandatory.
+
 Avison identity comparison recognizes the evidenced `Road`/`Rd`, `Avenue`/`Ave`
 and `Boulevard`/`Blvd` spellings at word boundaries, plus a state followed by a
 five-digit ZIP. When both page and
