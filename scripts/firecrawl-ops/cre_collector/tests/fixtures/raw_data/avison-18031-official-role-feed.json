@@ -1,0 +1,51 @@
+{
+  "country": "US",
+  "state_long": "South Carolina",
+  "featured": false,
+  "city": "Laurens",
+  "total_surface_sqft": 5101747.2,
+  "off_market_at": "2026-05-01T00:00:00.000Z",
+  "description": "<p>The site, which is adjacent to exit 9 on I-385, is ideally situated for distribution warehouse or manufacturing as the site is just 30 minutes from Greenville and less than an hour from Columbia. A 12” water line and an 8” gravity fed sewer line r",
+  "type": [
+    "land.industrial",
+    "land.other"
+  ],
+  "external_url": "https://www.avisonyoung.us/properties/hwy-221-laurens-industrial-land-sale",
+  "on_market_at": "2024-08-19T00:00:00.000Z",
+  "updated_at": "2026-07-23T13:46:35.000Z",
+  "sale_currency": "USD",
+  "id": 18031,
+  "state": "SC",
+  "team_member_ids": [
+    5659,
+    5660,
+    6997
+  ],
+  "slug": "hwy-221-laurens-industrial-land-sale",
+  "zip": "29360",
+  "total_surface": 117.12,
+  "address": "Hwy 221",
+  "meta_title": "Hwy 221 - Laurens ",
+  "submarket": "",
+  "sale_price": 4099200,
+  "url": "https://ayushwy221laurens.sharplaunch.com",
+  "yearbuilt": null,
+  "total_surface_unit": "ac",
+  "meta_description": "±117 acres of flat or slighly rolling land in Laurens County available for sale or build-to-suit, less than 1 mile from I-385, close proximity to major distribution outlets",
+  "locales": [
+    "en-CA"
+  ],
+  "image_path": "v2/client-10/704bff57a8f7e3a/DJI_0339.jpg",
+  "name": "Hwy 221 - Laurens",
+  "location": {
+    "lng": -82.001803,
+    "lat": 34.55637
+  },
+  "order_id": 18031,
+  "transaction": [
+    "sale"
+  ],
+  "sale_unit_price": 35000,
+  "username": "ayushwy221laurens",
+  "status": "active"
+}

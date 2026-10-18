@@ -1,0 +1,49 @@
+{
+  "availabilities_max_surface_sqft": 2087,
+  "country": "US",
+  "availabilities_max_rent": 2000,
+  "state_long": "Missouri",
+  "featured": true,
+  "city": "Saint Louis",
+  "total_surface_sqft": 21133,
+  "off_market_at": "2024-10-22T00:00:00.000Z",
+  "description": "",
+  "type": [
+    "industrial.warehouse_distribution"
+  ],
+  "availabilities_min_rent": 2000,
+  "external_url": "https://www.avisonyoung.us/properties/10745-10767-indian-head-industrial-boulevard-saint-louis-lease",
+  "on_market_at": "2026-03-05T00:00:00.000Z",
+  "updated_at": "2026-03-24T09:47:46.000Z",
+  "sale_currency": "USD",
+  "id": 17418,
+  "state": "MO",
+  "team_member_ids": [
+    5405
+  ],
+  "slug": "10745-10767-indian-head-industrial-boulevard-saint-louis-lease",
+  "zip": "63132",
+  "total_surface": 21133,
+  "availabilities_min_surface_sqft": 2087,
+  "address": "10745 - 10767 Indian Head Industrial Boulevard",
+  "submarket": "",
+  "url": "https://ayus1074510767indianheadindustrialboulevard.sharplaunch.com",
+  "yearbuilt": 1973,
+  "total_surface_unit": "sqft",
+  "meta_description": "For lease - 10745 - 10767 Indian Head Industrial Boulevard, Saint Louis, MO 63132",
+  "locales": [
+    "en-CA"
+  ],
+  "image_path": "v2/client-10/40736a6776fc1f4/IMG_8673_edited.jpg",
+  "name": "10745 - 10767 Indian Head Industrial Boulevard",
+  "location": {
+    "lng": -90.3975217,
+    "lat": 38.689683
+  },
+  "order_id": 17418,
+  "transaction": [
+    "lease"
+  ],
+  "username": "ayus1074510767indianheadindustrialboulevard",
+  "status": "active"
+}

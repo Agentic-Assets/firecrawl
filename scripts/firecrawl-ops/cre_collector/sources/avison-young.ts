@@ -594,6 +594,25 @@ export function assertAvisonYoungDetailDoc(
   const completeDescriptionIdentity = /^\d{5}$/.test(clean(base?.postalCode) ?? "") && descriptionIdentity;
   const rangeDescriptionIdentity = /^\d+\s*-\s*\d+\s+.+$/.test(clean(base?.street) ?? "")
     && completeDescriptionIdentity;
+  // One native layout shortens only the terminal street descriptor in its
+  // hero. Permit that display role only when the separate complete known-ZIP
+  // description and owned metadata bind the entire ordered feed range.
+  const nativeTerminalDescriptorOmission = (() => {
+    const rawStreet = clean(base?.street) ?? "";
+    const range = /^(\d+)\s*-\s*(\d+)\s+(.+?)\s+(?:boulevard|blvd)$/i.exec(rawStreet);
+    if (!range || Number(range[2]) <= Number(range[1]) || !/^\d{5}$/.test(clean(base?.postalCode) ?? "")
+      || !completeDescriptionIdentity || !ownedIdentityMetadata || !offeringHeading
+      || $("h1").length !== 1 || $(".hero__sub-title").length !== 1
+      || /[&#/]|\b(?:and|at|nwc|nec|swc|sec|suite|ste|unit|apt|floor|building|bldg|lot)\b/i.test(rawStreet)) return false;
+    const parts = $(".hero__sub-title").text().split(",");
+    const terminalDescriptor = /\s+(?:boulevard|blvd)$/i;
+    const displayRange = /^(\d+)\s*-\s*(\d+)\s+(.+)$/.exec(clean(parts[0]) ?? "");
+    const expectedStem = range[3]!.trim().toLowerCase().replace(/\s+/g, " ");
+    const displayedStem = displayRange?.[3]?.trim().toLowerCase().replace(/\s+/g, " ");
+    return parts.length === 3 && terminalDescriptor.test(rawStreet)
+      && displayRange?.[1] === range[1] && displayRange[2] === range[2] && displayedStem === expectedStem
+      && normalizeCity(parts[1]) === city && matchesStateLocation(parts[2]!);
+  })();
   const visibleIdentityStreet = rangeDescriptionIdentity && !addressHeroIdentity ? normalizeStreet(name) : street;
   const propertySections = $(".page-content section");
   const hasAvailabilityFields = propertySections.find(".availability-card-v2 .availability-card-info-item").toArray().some((element) =>
@@ -699,8 +718,9 @@ export function assertAvisonYoungDetailDoc(
     && Boolean(name && street && city && state)
     && ((nativeInfo.length > 0 && nativeInfoRows.length > 0) || hasPropertySections || hasBuildingSections)
     && $("h1").length === 1 && $(".hero__sub-title").length === 1
-    && (visiblePropertyIdentity || namedDescriptionIdentity || physicalAddressIdentity || namedLocationIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
-      && matchesAddressHeading($(".hero__sub-title").text(), name)))))
+    && (visiblePropertyIdentity || namedDescriptionIdentity || physicalAddressIdentity || namedLocationIdentity
+      || nativeTerminalDescriptorOmission || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
+        && matchesAddressHeading($(".hero__sub-title").text(), name)))))
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
     && pageTitles.every((value) => titleMatches(value)) && $('meta[property="og:url"]').length === 1
     && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
@@ -745,9 +765,23 @@ export function assertAvisonYoungDetailDoc(
           && fields.slice(0, -2).some((field) => /\d/.test(field) || streetRole.test(field) || normalizeStreet(field) === street);
         return !claimsAddress || descriptionMatches(element, true);
       });
+    const streetAcreageHeading = (() => {
+      if ($("h1").length !== 1) return false;
+      const match = /^(.*?)\s+-\s+([1-9]\d*(?:,\d{3})*(?:\.\d+)?)\s+acres?$/i.exec(clean($("h1").text()) ?? "");
+      const quantity = match ? Number(match[2]!.replaceAll(",", "")) : NaN;
+      const headingStreet = match?.[1]?.trim().toLowerCase().replace(/\s+/g, " ");
+      const feedStreet = clean(base?.street)?.trim().toLowerCase().replace(/\s+/g, " ");
+      return Boolean(match && Number.isFinite(quantity) && quantity > 0 && headingStreet === feedStreet);
+    })();
+    const officialStreetAcreageWitness = isRegisteredOfficialWrapper && ownedIdentityMetadata
+      && structuredIdentityMatches && urlMatches && $("h1").length === 1 && streetAcreageHeading
+      && heroLocations.length === 1 && heroLocations[0] === true && /^\d{5}$/.test(clean(base?.postalCode) ?? "")
+      && addresses.every((address) => clean(address.postalCode) === clean(base?.postalCode))
+      && physicalDescriptionsAgree;
     const structuredPhysicalIdentity = officialPhysicalAnchor && (offeringHeading || marketingOfferingHeading)
       && $("h1").length === 1 && physicalDescriptionsAgree;
-    if (!(identityMetadataMatches || structuredDisplayIdentity || structuredPhysicalIdentity || officialRangeScopeWitness)
+    if (!(identityMetadataMatches || structuredDisplayIdentity || structuredPhysicalIdentity
+      || officialStreetAcreageWitness || officialRangeScopeWitness)
       || !structuredIdentityMatches || !urlMatches) {
       throw new Error("Avison Young detail identity does not match the requested property");
     }

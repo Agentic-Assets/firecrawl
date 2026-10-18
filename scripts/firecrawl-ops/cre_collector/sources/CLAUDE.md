@@ -427,7 +427,14 @@ or structured subjects still refuse. Repeated coherent canonical URLs are one
 unambiguous authority; foreign, malformed or differing path/query values refuse.
 Do not replace a missing street with a matching city, map/script text or a
 marketing headline. Retain wrong-number, ambiguous-heading, metadata, URL and
-challenge refusals in regression tests.
+challenge refusals in regression tests. After repeated acceptance failures, keep a selected-identity-to-validated-route
+map and classify unresolved cases before another manual full acceptance trial;
+this is investigation guidance, not a per-run prerequisite. Preservation proves unchanged data, not
+route coverage, and native-only replay does not prove official fallback or full
+source acceptance. Keep dated counts in the owning issue, not as live thresholds.
+For Avison, retain `on_market_at` and `off_market_at` as raw source facts; an
+`off_market_at` value alone may be historical when `on_market_at` is later, so
+do not infer eligibility or lifecycle from timestamp presence alone.
 SharpLaunch `sale_unit_price` has no proven per-square-foot unit: retain it in
 `rawSharpLaunch` and `saleUnitPrice`, without promoting it to `salePricePerSf`.
 Canonical ingestion can derive per-square-foot price from known total and area.
