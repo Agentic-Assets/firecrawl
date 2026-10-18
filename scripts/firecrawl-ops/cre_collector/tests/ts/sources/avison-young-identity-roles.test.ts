@@ -100,3 +100,42 @@ test("Avison supported alternate keeps hotel feed/page facts without granting we
   assert.equal(result.detailScrape.urls.length, 1);
   assert.match(JSON.stringify(result), /identity/);
 });
+
+const conflictFeed = feeds.find((row: any) => row.id === 19955);
+const conflictBase = avisonYoungBaseListing(conflictFeed, new Map());
+const conflictHtml = readFileSync(new URL("../../fixtures/raw_data/avison-young-identity-description-conflict.html", import.meta.url), "utf8");
+const conflictRow = { page: 5, base: conflictBase, url: conflictBase.sharpLaunchUrl, html: conflictHtml };
+test("Avison actual explicit description ZIP conflict overrides otherwise matching visible identity", () => {
+  assert.throws(() => check(conflictRow), /identity/);
+});
+for (const variant of ["agreeing", "absent", "marketing", "mixed-marketing", "footer", "missing-zip", "other-property", "wrong-street", "wrong-city", "wrong-state", "range", "unit"]) test(`Avison optional descriptions preserve role boundary: ${variant}`, () => {
+  const $ = cheerio.load(conflictHtml);
+  const tags = $('meta[name="description"], meta[name="twitter:description"], meta[property="og:description"]');
+  tags.attr("content", "For lease - Century Center Building F, 1610 Century Center Pkwy, Memphis, TN 38134");
+  if (variant === "absent") tags.remove();
+  if (variant === "marketing") tags.attr("content", "Flexible industrial space available. Contact our team.");
+  if (variant === "mixed-marketing") tags.first().attr("content", "Flexible industrial space available. Contact our team.");
+  if (variant === "footer") $("body").append("<footer>Other Property, 999 Other Road, Dallas, TX 99999</footer>");
+  if (variant === "missing-zip") tags.attr("content", "For lease - Century Center Building F, 1610 Century Center Pkwy, Memphis, TN");
+  if (variant === "other-property") tags.attr("content", "For lease - Other Property, 1610 Century Center Pkwy, Memphis, TN 38134");
+  if (variant === "wrong-street") tags.attr("content", "For lease - Century Center Building F, 999 Other Road, Memphis, TN 38134");
+  if (variant === "wrong-city") tags.attr("content", "For lease - Century Center Building F, 1610 Century Center Pkwy, Dallas, TN 38134");
+  if (variant === "wrong-state") tags.attr("content", "For lease - Century Center Building F, 1610 Century Center Pkwy, Memphis, TX 38134");
+  if (variant === "range") tags.attr("content", "For lease - Century Center Building F, 1610-1620 Century Center Pkwy, Memphis, TN 38134");
+  if (variant === "unit") tags.attr("content", "For lease - Century Center Building F, 1610 Century Center Pkwy SuiteB, Memphis, TN 38134");
+  if (["agreeing", "absent", "marketing", "mixed-marketing", "footer"].includes(variant)) assert.doesNotThrow(() => check(conflictRow, $.html()));
+  else assert.throws(() => check(conflictRow, $.html()), /identity/);
+});
+
+for (const [description, accepted] of [
+  ["For lease - 1610 Century Center Pkwy, Memphis, TN 38134", true],
+  ["For lease - 1610 Century Center Pkwy, Memphis, TN 38116", false],
+  ["For lease - 999 Other Road, Memphis, TN 38134", false],
+  ["For lease - 1610 Century Center Pkwy, Other City, TN 38134", false],
+  ["For lease - 1610 Century Center Pkwy, Memphis, TX 38134", false],
+] as const) test(`Avison headline-alias admission cannot borrow optional address-only SEO drift: ${description}`, () => {
+  const $ = cheerio.load(conflictHtml);
+  $('meta[name="description"], meta[name="twitter:description"], meta[property="og:description"]').attr("content", description);
+  if (accepted) assert.doesNotThrow(() => check(conflictRow, $.html()));
+  else assert.throws(() => check(conflictRow, $.html()), /identity/);
+});

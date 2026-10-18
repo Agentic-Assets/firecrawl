@@ -46,5 +46,26 @@
       "sale"
     ],
     "status": "active"
+  },
+  {
+    "id": 19955,
+    "name": "Century Center Business Park Building F",
+    "meta_title": "Century Center Building F",
+    "address": "1610 Century Center Pkwy",
+    "city": "Memphis",
+    "state": "TN",
+    "zip": "38134",
+    "country": "US",
+    "url": "https://ayuscenturycenterbuildingf.sharplaunch.com",
+    "external_url": "https://www.avisonyoung.us/properties/1610-century-center-lease",
+    "description": "<h3>Property Highlights</h3><ul><li>Close proximity to Shelby Farms </li><li>Convenient access to Bartlett, Cordova, and East Memphis</li><li>24/7 property-dedicated roving security plus SkyCop cameras in place</li><li>Business park setting with top-",
+    "meta_description": "For lease - Century Center Building F, 1610 Century Center Pkwy, Memphis, TN 38116",
+    "type": [
+      "industrial.flex_space"
+    ],
+    "transaction": [
+      "lease"
+    ],
+    "status": "active"
   }
 ]

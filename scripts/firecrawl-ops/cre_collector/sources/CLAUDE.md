@@ -307,7 +307,13 @@ it cannot supply a native location witness. Keep every validated alternate's
 contacts/resources and the existing child-preserving fallback. Identity acceptance
 does not change feed/page price precedence: raw page wording and raw feed facts
 remain alongside the existing typed feed prices; hidden-price projection remains
-mandatory.
+mandatory. Present metadata descriptions declaring a `For sale/lease -`
+property/location tuple must agree with the exact feed subject and full address;
+an otherwise matching visible family cannot override an explicit contradiction.
+The prior exact-name visible family retains its documented optional address-only
+SEO behavior; a newly used headline alias cannot inherit contradictory address-only
+SEO. Absent or unstructured marketing descriptions remain optional in that prior
+family.
 
 Avison identity comparison recognizes the evidenced `Road`/`Rd`, `Avenue`/`Ave`
 and `Boulevard`/`Blvd` spellings at word boundaries, plus a state followed by a

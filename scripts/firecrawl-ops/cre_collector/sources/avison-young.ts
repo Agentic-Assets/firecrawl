@@ -476,13 +476,13 @@ export function assertAvisonYoungDetailDoc(
     && normalizeCity(namedHeroParts.at(-2)) === city
     && matchesStateLocation(namedHeroParts.at(-1) ?? "");
   const pageTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")];
-  const titleMatches = (value: any): boolean => {
-    if (subjectMatches(value)) return true;
+  const titleMatches = (value: any, subjects = knownNames): boolean => {
+    if (subjects.includes(normalizeName(value))) return true;
     // Existing aliases keep token counts. Separate the known name field before
     // comparing city/state so a street postdirection remains terminal.
     const words = (clean(value) ?? "").toLowerCase().replace(/#\s+/g, "#")
       .replace(/[^a-z0-9#]+/g, " ").trim().split(/\s+/);
-    return knownNames.some((subject) => {
+    return subjects.some((subject) => {
       const nameWords = subject.split(" ").length;
       const location = normalizeCity(words.slice(nameWords).join(" "));
       return normalizeName(words.slice(0, nameWords).join(" ")) === subject
@@ -492,7 +492,7 @@ export function assertAvisonYoungDetailDoc(
   const canonicalUrls = $('link[rel="canonical"]').map((_index, element) => $(element).attr("href")).get();
   const ownedIdentityMetadata = Boolean(name && street && city && state)
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
-    && pageTitles.every(titleMatches)
+    && pageTitles.every((value) => titleMatches(value))
     && $('meta[property="og:url"]').length === 1
     && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
     && canonicalUrls.every((value) => sameIdentityUrl(value, requested))
@@ -523,26 +523,45 @@ export function assertAvisonYoungDetailDoc(
     'meta[property="og:description"]',
   ];
   const descriptionNodes = descriptionSelectors.flatMap((selector) => $(selector).get());
+  const descriptionMatches = (element: typeof descriptionNodes[number], allowAddressOnly = false): boolean => {
+    const value = clean($(element).attr("content")) ?? "";
+    if (value.length > 1000) return false;
+    const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
+    const location = /^(.*?)\s+(\d{5})$/.exec(fields.pop()?.trim() ?? "");
+    const locality = fields.pop();
+    // Feed names/streets can themselves contain commas. Require exactly one
+    // boundary that matches both complete known fields; never drop tokens.
+    const matches = fields.length === 1 && (allowAddressOnly || subjectMatches(fields[0]))
+      && normalizeStreet(fields[0]) === street ? 1
+      : fields.slice(1).filter((_field, index) =>
+        subjectMatches(fields.slice(0, index + 1).join(","))
+        && normalizeStreet(fields.slice(index + 1).join(",")) === street
+      ).length;
+    return matches === 1 && normalizeCity(locality) === city
+      && location !== null && normalizeState(location[1]) === state
+      && (!clean(base?.postalCode) || location[2] === clean(base?.postalCode));
+  };
   const descriptionIdentity = descriptionNodes.length > 0
     && descriptionSelectors.every((selector) => $(selector).length <= 1)
-    && descriptionNodes.every((element) => {
-      const value = clean($(element).attr("content")) ?? "";
-      if (value.length > 1000) return false;
-      const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
-      const location = /^(.*?)\s+(\d{5})$/.exec(fields.pop()?.trim() ?? "");
-      const locality = fields.pop();
-      // Feed names/streets can themselves contain commas. Require exactly one
-      // boundary that matches both complete known fields; never drop tokens.
-      const matches = fields.length === 1 && subjectMatches(fields[0])
-        && normalizeStreet(fields[0]) === street ? 1
-        : fields.slice(1).filter((_field, index) =>
-          subjectMatches(fields.slice(0, index + 1).join(","))
-          && normalizeStreet(fields.slice(index + 1).join(",")) === street
-        ).length;
-      return matches === 1 && normalizeCity(locality) === city
-        && location !== null && normalizeState(location[1]) === state
-        && (!clean(base?.postalCode) || location[2] === clean(base?.postalCode));
-    });
+    && descriptionNodes.every((element) => descriptionMatches(element));
+  // The original exact-name visible family permits address-only SEO drift.
+  // A separately named subject/street tuple is an explicit identity claim;
+  // newly admitted headline aliases must also agree with address-only claims.
+  const usesHeadlineAlias = !pageTitles.every((value) => titleMatches(value, [name]))
+    || (listing && subjectMatches(listing.name) && normalizeName(listing.name) !== name);
+  const descriptionConflicts = descriptionNodes.some((element) => {
+    const value = clean($(element).attr("content")) ?? "";
+    if (!/^for (?:sale|lease)\s*-\s*/i.test(value)) return false;
+    // Terminal fields are city and state/ZIP. Two preceding comma fields
+    // declare a separate subject and street, including names with commas.
+    const identityFields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
+    if (identityFields.length >= 4) return !descriptionMatches(element);
+    return Boolean(usesHeadlineAlias) && identityFields.length === 3
+      && !descriptionMatches(element, true);
+  });
+  if (descriptionConflicts) {
+    throw new Error("Avison Young detail identity does not match the requested property");
+  }
   const completeDescriptionIdentity = /^\d{5}$/.test(clean(base?.postalCode) ?? "") && descriptionIdentity;
   const rangeDescriptionIdentity = /^\d+\s*-\s*\d+\s+.+$/.test(clean(base?.street) ?? "")
     && completeDescriptionIdentity;
@@ -619,7 +638,7 @@ export function assertAvisonYoungDetailDoc(
     && (visiblePropertyIdentity || namedDescriptionIdentity || physicalAddressIdentity || namedLocationIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
       && matchesAddressHeading($(".hero__sub-title").text(), name)))))
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
-    && pageTitles.every(titleMatches) && $('meta[property="og:url"]').length === 1
+    && pageTitles.every((value) => titleMatches(value)) && $('meta[property="og:url"]').length === 1
     && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
     && canonicalUrls.every((value) => sameIdentityUrl(value, requested));
   if (nativeCompleteIdentity) {
