@@ -266,6 +266,11 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
 
+Savills baseline/coverage comparisons use the registered U.S. commercial
+sale+lease scope. See [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364)
+for the separate exact-preimage historical correction and ordinary acceptance;
+provider/raw, gate-flat and merged unique counts are distinct domains.
+
 NAI physical facts come only from unambiguous exact `Year Built` and
 `Property Type` two-cell rows in the selected public-post content, outside
 nested tables and only without a detail error. Years are exact four-digit

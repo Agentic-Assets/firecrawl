@@ -983,9 +983,24 @@ listings remain untouched, and mark-missing stays off. Its terminal
 coverage or a full-registry certificate. No current-inventory admission flag,
 pipeline selection, baseline seed or lifecycle permission is implied.
 
+Savills baseline comparisons must use the same registered U.S. commercial
+sale+lease scope. [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364)
+records the verified exact historical scope correction and subsequent ordinary
+full source-native refresh. Derive a correction count from the gate's flat
+`to_row`-accepted rows; reconcile raw entries and merged unique/readback
+identities separately.
+Bind the exact artifact clock consumed by the gate (`runMeta.finishedAt`, or
+its actual `startedAt` fallback), not the correction time. A correction requires
+an exact full-row preimage and one-row permitted effects; preserve historical
+receipts and all protected data. It is separate from routine refresh and never
+substitutes for a NEW ordinary full sale+lease run with normal gates, exact
+readback and preservation. Source-native record coverage is not property-detail
+freshness or a historical database census; no observed count is a permanent floor.
+
 Baseline seeding is a separate operator procedure requiring approval for the
-exact source and artifact. AGENTIC-2895/2902 prohibit baseline writes; do not
-run `cre_gate.py --apply --update-baseline` to unblock those refreshes.
+exact source and artifact. Routine AGENTIC-2895/2902 refreshes prohibit baseline
+writes; the exact-evidence maintenance above is separate. Do not run
+`cre_gate.py --apply --update-baseline` to unblock those routine refreshes.
 
 The global admission floor is 100 listings. The sole reviewed exception is
 Savills, declared in `data/cre-gate-coverage-policy.json`: its floor is one
@@ -1688,16 +1703,15 @@ images into Supabase storage for the bulk collector.
   filter fix. The full detail run used `AVISON_YOUNG_DETAIL_LIMIT=2200` and was
   live-ingested additively without `--mark-missing`. VCards remain absent from
   the public path, and broker profile URLs are sparse.
-- **Savills live-cap evidence (2026-07-31):** the direct enumerator now proves
-  the provider pagination/count contract and fails closed on unclassified or
-  non-U.S.-only results. Its fresh full-scope attempt
+- **Historical Savills live-cap evidence (2026-07-31):** attempt
   `2026-07-31T145116Z` found three eligible lease records but the nominal U.S.
   sale endpoint exposed only two explicitly non-U.S. rows. The artifact was
   rejected before baseline, ingest, status activation, or `--mark-missing`.
-  Do not treat the old two-lease-row snapshot as a permanent baseline or a
-  current whole-source proof. The one-row Savills exception remains available
-  only if a future artifact proves complete eligible sale *and* lease coverage;
-  until then, the source is correctly blocked rather than silently partial.
+  Preserve this dated failure and the old two-lease-row snapshot as history,
+  not a permanent baseline or current blocked/whole-source status. Later
+  like-for-like commercial-scope correction and ordinary acceptance are governed
+  by [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364); every new
+  artifact must still prove complete eligible sale *and* lease coverage.
 - `cre_ingest.py` now drops non-HTTP contact profile/avatar/VCard URLs and
   non-HTTP document URLs. Reingesting the complete Lee and SVN artifacts
   refreshed child rows and reduced active bad contact avatar URLs from 37 to 0.
