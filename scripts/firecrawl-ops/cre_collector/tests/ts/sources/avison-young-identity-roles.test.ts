@@ -178,3 +178,39 @@ for (const [street, accepted] of [
   if (accepted) assert.doesNotThrow(() => check(interstateRow, $.html()));
   else assert.throws(() => check(interstateRow, $.html()), /identity/);
 });
+
+
+const physicalIdentityFeed = JSON.parse(readFileSync(new URL("../../fixtures/raw_data/avison-young-official-physical-identity-feed.json", import.meta.url), "utf8"));
+const physicalIdentityHtml = readFileSync(new URL("../../fixtures/raw_data/avison-young-official-physical-identity.html", import.meta.url), "utf8");
+for (const street of ["160 E. Horizon Drive", "160-162 E. Horizon Drive", "NWC I-10 Fwy and Watson Road"]) {
+  test(`Avison established physical identity preserves complete official display scope: ${street}`, () => {
+    const row = { ...physicalIdentityFeed, address: street, name: "The Campus", meta_title: "The Campus" };
+    const base = avisonYoungBaseListing(row, new Map());
+    let html = physicalIdentityHtml.replaceAll("160 E. Horizon Drive", street);
+    html = html.replace(/content="3,985 sf office building[^"]*"/, `content="${street}, Henderson, NV 89015"`);
+    html = html.replace(`<title>${street}</title>`, "<title>The Campus</title>")
+      .replace(`property="og:title" content="${street}"`, 'property="og:title" content="The Campus"')
+      .replace(`"name":"${street}"`, '"name":"The Campus"');
+    const requestUrl = physicalIdentityFeed.external_url;
+    assert.doesNotThrow(() => assertAvisonYoungDetailDoc({
+      rawHtml: html, markdown: "", links: [],
+      metadata: { statusCode: 200, sourceURL: requestUrl, url: requestUrl },
+    }, requestUrl, base));
+  });
+}
+
+
+const displayRole17752 = JSON.parse(readFileSync(new URL("../../fixtures/raw_data/avison-young-official-display-role-17752.json", import.meta.url), "utf8"));
+const displayRole17752Html = readFileSync(new URL("../../fixtures/raw_data/avison-young-official-display-role-17752.html", import.meta.url), "utf8");
+test("Avison strict display role refuses a contradictory complete numeric address claim", () => {
+  const base = avisonYoungBaseListing(displayRole17752.feed_row, new Map());
+  const requestUrl = displayRole17752.response_url;
+  const html = displayRole17752Html.replace(
+    'property="og:description" content="3,729-sf office space available at the Westpoint Corporate Center."',
+    'property="og:description" content="801 Corporate Way, Westlake, OH 44145"',
+  );
+  assert.throws(() => assertAvisonYoungDetailDoc({
+    rawHtml: html, markdown: "", links: [],
+    metadata: { statusCode: 200, sourceURL: requestUrl, url: requestUrl },
+  }, requestUrl, base), /identity/);
+});

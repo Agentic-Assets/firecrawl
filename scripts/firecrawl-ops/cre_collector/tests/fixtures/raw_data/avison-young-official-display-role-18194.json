@@ -1,0 +1,27 @@
+{
+  "schema": "avison-official-display-role-fixture-v1",
+  "response_url": "https://www.avisonyoung.us/properties/4235-west-ann-lurie-place-chicago-sale",
+  "response_sha256": "b38949acc7759ea644b3428ee3c0cf919def32df45f014aa96f3142687aba443",
+  "feed_sha256": "9d725fbf88310ae17ef4002750ad9f264be8981da8b604b4a718a938990e0e2c",
+  "feed_row": {
+    "id": 18194,
+    "name": "4235 W Ann Lurie Place",
+    "meta_title": "4235 W Ann Lurie Place",
+    "address": "4235 West Ann Lurie Place",
+    "city": "Chicago",
+    "state": "IL",
+    "zip": "60632",
+    "country": "US",
+    "url": "https://www.avisonyoung.us/properties/4235-west-ann-lurie-place-chicago-sale",
+    "external_url": "https://www.avisonyoung.us/properties/4235-west-ann-lurie-place-chicago-sale",
+    "description": "48,456 sf, well-maintained food/cold storage distribution facility.",
+    "type": [
+      "industrial.warehouse_distribution",
+      "industrial.refrigerated_cold_storage"
+    ],
+    "transaction": [
+      "sale"
+    ],
+    "status": "active"
+  }
+}

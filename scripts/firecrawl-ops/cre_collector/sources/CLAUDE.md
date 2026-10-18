@@ -316,6 +316,20 @@ Prose is not identity authority. Within this new physical witness, explicit
 description conflicts, bare contradictory address tuples, generic H1, missing
 ZIP and price-only heroes remain refused.
 
+A separate official-wrapper display witness may use one of three captured roles:
+an exact feed subject with a locality hero (offering copy is optional), an exact
+street H1 with a locality hero (with or without an offering suffix), or a
+recognized offering/acreage H1 with a complete visible address. It also
+requires a unique exact official URL among every current feed row (including
+inactive rows), exact owned metadata and structured subject, a present matching
+five-digit ZIP on every structured address, substantive page structure, and
+agreement from every address-shaped subject or description claim. Repeated H1s
+are allowed only when they are identical exact feed subjects; street/acreage
+roles require one H1. Missing feed URL context disables only this new witness;
+existing identity paths still decide under their own rules. New captured-role
+positives do not authorize street-range, unit, intersection, locality-punctuation,
+wrong-number or incomplete-ZIP equivalence.
+
 A separate official scope witness may retain a wider description range only
 when an exact known-subject H1 and two complete endpoint-address/known-ZIP
 witnesses independently agree, with substantive highlights/availability. Every

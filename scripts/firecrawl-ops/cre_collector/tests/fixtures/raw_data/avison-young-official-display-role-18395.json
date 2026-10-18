@@ -1,0 +1,31 @@
+{
+  "schema": "avison-official-display-role-fixture-v1",
+  "feed_id": "18395",
+  "response_url": "https://www.avisonyoung.us/properties/4101-s-state-st-chicago-lease",
+  "response_sha256": "4513b707453f70720f938a9e0c5d3b41ddeb5102b0697c81571010ab2feda34f",
+  "captured_source_sha256": "35fc671942d46feca918ec7e99346c4b925a110c6013984aea00360307d2865a",
+  "feed_identity": {
+    "name": "4101 S State Street",
+    "headline": "4101 S State Street",
+    "street": "4101 S State St",
+    "city": "Chicago",
+    "state": "IL",
+    "zip": "60609"
+  },
+  "candidate_roles": [
+    "role_3_street_offer_locality"
+  ],
+  "capture_reference": "public-census official-0007",
+  "feed_row": {
+    "id": 18395,
+    "name": "4101 S State Street",
+    "meta_title": "4101 S State Street",
+    "address": "4101 S State St",
+    "city": "Chicago",
+    "state": "IL",
+    "zip": "60609",
+    "country": "US",
+    "url": "https://www.avisonyoung.us/properties/4101-s-state-st-chicago-lease",
+    "external_url": "https://www.avisonyoung.us/properties/4101-s-state-st-chicago-lease"
+  }
+}

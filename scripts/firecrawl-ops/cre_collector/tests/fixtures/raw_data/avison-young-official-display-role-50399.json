@@ -1,0 +1,31 @@
+{
+  "schema": "avison-official-display-role-fixture-v1",
+  "feed_id": "50399",
+  "response_url": "https://www.avisonyoung.us/properties/12-65-acres-for-sale-in-laughlin-nevada",
+  "response_sha256": "9815a016025c0e20822fe6e4e18ba951461808781730e5954340708f33bd8760",
+  "captured_source_sha256": "35fc671942d46feca918ec7e99346c4b925a110c6013984aea00360307d2865a",
+  "feed_identity": {
+    "name": "±12.65 acres For Sale in Laughlin, Nevada",
+    "street": "3301 Needles Highway",
+    "city": "Laughlin",
+    "state": "NV",
+    "zip": "89029"
+  },
+  "candidate_roles": [
+    "role_1_structured_h1_hero",
+    "role_4_acreage_full_physical_subcase"
+  ],
+  "capture_reference": "public-census official-0106",
+  "feed_row": {
+    "id": 50399,
+    "name": "±12.65 acres For Sale in Laughlin, Nevada",
+    "meta_title": null,
+    "address": "3301 Needles Highway",
+    "city": "Laughlin",
+    "state": "NV",
+    "zip": "89029",
+    "country": "US",
+    "url": "https://www.avisonyoung.us/properties/12-65-acres-for-sale-in-laughlin-nevada",
+    "external_url": "https://www.avisonyoung.us/properties/12-65-acres-for-sale-in-laughlin-nevada"
+  }
+}
