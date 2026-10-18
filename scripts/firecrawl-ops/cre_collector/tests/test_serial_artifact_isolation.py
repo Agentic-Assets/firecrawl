@@ -1,6 +1,8 @@
 """Guarded serial pure-compute isolation, without acquisition polling authority."""
 
 import json
+import os
+import stat
 from datetime import datetime, timezone
 
 import pytest
@@ -16,6 +18,54 @@ def clean_guard_state():
     refresh._clear_cpu_guard_trip()
     yield
     refresh._clear_cpu_guard_trip()
+
+
+def test_compute_directory_is_private_under_umask_022(tmp_path):
+    old_umask = os.umask(0o022)
+    try:
+        directory = pipeline._private_compute_directory(tmp_path)
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+def test_compute_directory_refuses_existing_public_directory_without_chmod(
+    tmp_path, monkeypatch
+):
+    from cre_stop_guarded_tier import StopRefused
+
+    directory = tmp_path / "pipeline" / "compute"
+    directory.mkdir(parents=True, mode=0o700)
+    directory.chmod(0o755)
+    monkeypatch.setattr(
+        refresh,
+        "run_command",
+        lambda *args, **kwargs: pytest.fail("unsafe compute directory must not launch"),
+    )
+    with pytest.raises(StopRefused, match="unsafe local evidence"):
+        pipeline.run_artifact_compute(tmp_path, "hash", {"path": "unused"})
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o755
+
+
+def test_compute_directory_refuses_leaf_symlink(tmp_path):
+    directory = tmp_path / "pipeline"
+    directory.mkdir(mode=0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    (directory / "compute").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(refresh.GlobalStageError, match="unsafe pipeline artifact"):
+        pipeline._private_compute_directory(tmp_path)
+    assert list(outside.iterdir()) == []
+
+
+def test_compute_directory_refuses_wrong_owner_before_creation(tmp_path, monkeypatch):
+    from cre_stop_guarded_tier import StopRefused
+
+    owner = os.geteuid()
+    monkeypatch.setattr(pipeline.os, "geteuid", lambda: owner + 1)
+    with pytest.raises(StopRefused, match="unsafe local evidence"):
+        pipeline._private_compute_directory(tmp_path)
+    assert not (tmp_path / "pipeline").exists()
 
 
 def test_serial_scope_uses_real_worker_without_parent_decode_or_poll_hook(
