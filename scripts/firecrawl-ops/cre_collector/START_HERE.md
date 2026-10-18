@@ -918,9 +918,13 @@ and full audit/readback remain mandatory; see [the source contract](sources/CLAU
 
 DAUM also has a separately authorized verified-subset scope selected by
 `--admit-daum-verified-subset` (`-AdmitDaumVerifiedSubset` on Windows).
-It verifies the complete fresh inventory and every detail before holding only
-records whose inventory and detail tenure are both unknown. All identity,
-staging, lifecycle-preservation and database checks remain mandatory. The result
+It verifies the complete fresh inventory and every detail. Its default policy
+holds only records whose inventory and detail tenure are both unknown.
+The optional `--daum-subset-policy tenure-and-empty-title-v2` (Windows
+`-DaumSubsetPolicy tenure-and-empty-title-v2`) additionally permits the exactly-one-empty-visible-title
+hold; it requires the subset flag and preserves observed tenure. The default
+remains `tenure-only-v1`; neither policy maps held records into listings.
+All identity, staging, lifecycle-preservation and database checks remain mandatory. The result
 is explicitly partial, including when no records are held, and cannot advance
 complete-source receipts or certificates. The complete admission flag above
 never implies this permission. See the

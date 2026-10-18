@@ -2,7 +2,8 @@ import "../../fixtures/daum-offline-deny.mjs";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { load } from "cheerio";
-import { srcDaumCommercial } from "../../../sources/daum-commercial.js";
+import { readFileSync } from "node:fs";
+import { parseDaumDetail, srcDaumCommercial } from "../../../sources/daum-commercial.js";
 import { observationNow } from "../../../lib/observation-clock.js";
 import { daumProofPage, daumProofDetail } from "../../fixtures/daum-proof-pages.js";
 
@@ -42,6 +43,17 @@ function offline(t: TestContext, total = 100, allSale = false) {
   };
   return state;
 }
+
+test("saved 52023 visible empty title is only a V2 identity observation, never head-title facts", () => {
+  const body = readFileSync(new URL("../../fixtures/daum-52023-empty-title.html", import.meta.url), "utf8");
+  const url = "https://daumcommercial.com/property/27778-avenue-hopkins-valencia-ca-91355/";
+  assert.throws(() => parseDaumDetail(body, url), /omitted its property title/);
+  const observed = parseDaumDetail(body, url, true);
+  assert.deepEqual(observed, { postId: 52023, observedCanonicalUrl: url,
+    tenure: "lease", tenureText: "Lease", emptyRequiredTitle: true });
+  assert.equal("title" in observed, false);
+  assert.equal("city" in observed, false);
+});
 
 // Without the opt-in branch the real strict producer rejects the first hold.
 test("subset exhaustively proves 562 members and emits 560 with two typed holds", async t => {
@@ -178,3 +190,78 @@ for (const [first, second] of [[0, 7], [7, 0], [7, 99]]) {
     await assert.rejects(srcDaumCommercial("sale", Infinity, false), /inventory did not converge.*duplicate URL/);
   });
 }
+
+test("v2 holds an identity-proved empty visible title without erasing recognized Lease", async t => {
+  const state = offline(t, 102);
+  process.env.DAUM_SUBSET_POLICY = "tenure-and-empty-title-v2";
+  state.unknownInventory.add(101); state.unknownDetail.add(101);
+  state.detailFault = (id, body) => id === 100
+    ? body.replace(/class="title-property">[^<]*</, 'class="title-property">   <') : body;
+  const sale = await srcDaumCommercial("sale", Infinity, false);
+  const lease = await srcDaumCommercial("lease", Infinity, false);
+  const proof: any = sale.currentInventoryProof;
+  assert.equal(proof.schema, "daum-verified-subset-v2");
+  assert.equal(proof.subsetPolicy, "tenure-and-empty-title-v2");
+  assert.deepEqual(proof.titleObservations, [["50100", 1, "empty"]]);
+  assert.deepEqual(proof.held, [["50100", "empty_required_property_title"], ["50101", "unknown_inventory_and_detail_tenure"]]);
+  assert.equal(proof.cohort.find((row: string[]) => row[0] === "50100")[7], "lease");
+  assert.deepEqual({ ...proof, transaction: "lease" }, lease.currentInventoryProof);
+  const emitted = [...sale.listings, ...lease.listings];
+  assert.equal(new Set(emitted.map(row => row.daumPostId)).size, 100);
+  assert.equal(emitted.some(row => ["50100", "50101"].includes(String(row.daumPostId))), false);
+  assert.equal(state.gets.length, 102);
+});
+
+for (const fault of ["missing-title", "multiple-title", "missing-canonical", "duplicate-canonical", "wrong-canonical", "duplicate-shortlink", "tenure-conflict", "native-collision"] as const) {
+  test(`v2 empty-title hold cannot mask ${fault}`, async t => {
+    const state = offline(t, 101);
+    process.env.DAUM_SUBSET_POLICY = "tenure-and-empty-title-v2";
+    state.detailFault = (id, body) => {
+      if (id !== 100) return body;
+      const $ = load(body);
+      $(".title-property").text("");
+      if (fault === "missing-title") $(".title-property").remove();
+      if (fault === "multiple-title") $(".title-property").clone().appendTo(".main-section");
+      if (fault === "missing-canonical") $('link[rel="canonical"]').remove();
+      if (fault === "duplicate-canonical") $('link[rel="canonical"]').clone().appendTo("head");
+      if (fault === "wrong-canonical") $('link[rel="canonical"]').attr("href", "https://daumcommercial.com/property/Synthetic-0/");
+      if (fault === "duplicate-shortlink") $('link[rel="shortlink"]').clone().appendTo("head");
+      if (fault === "tenure-conflict") $(".title-about").text("Sale");
+      if (fault === "native-collision") $('link[rel="shortlink"]').attr("href", "https://daumcommercial.com/?p=50000");
+      return $.html();
+    };
+    await assert.rejects(srcDaumCommercial("sale", Infinity, false));
+  });
+}
+
+test("v2 empty-title reason takes priority over unknown tenure and does not leak across policy caches", async t => {
+  const state = offline(t, 101);
+  state.unknownInventory.add(100); state.unknownDetail.add(100);
+  state.detailFault = (id, body) => id === 100 ? body.replace(/class="title-property">[^<]*</, 'class="title-property"> <') : body;
+  process.env.DAUM_SUBSET_POLICY = "tenure-and-empty-title-v2";
+  const result = await srcDaumCommercial("sale", Infinity, false);
+  assert.deepEqual((result.currentInventoryProof as any).held, [["50100", "empty_required_property_title"]]);
+  const posts = state.posts;
+  delete process.env.DAUM_SUBSET_POLICY;
+  await assert.rejects(srcDaumCommercial("sale", Infinity, false), /omitted its property title/);
+  assert.ok(state.posts > posts);
+  delete process.env.DAUM_VERIFIED_SUBSET;
+  await assert.rejects(srcDaumCommercial("sale", Infinity, false), /omitted its property title/);
+  const afterStrict = state.posts;
+  process.env.DAUM_SUBSET_POLICY = "tenure-and-empty-title-v2";
+  await assert.rejects(srcDaumCommercial("sale", Infinity, false), /requires.*subset/i);
+  assert.equal(state.posts, afterStrict, "invalid policy configuration refuses before transport");
+});
+
+test("v2 preserves the existing full parser for nonempty multiple title containers", async t => {
+  const state = offline(t, 100);
+  process.env.DAUM_SUBSET_POLICY = "tenure-and-empty-title-v2";
+  state.detailFault = (id, body) => {
+    if (id !== 0) return body;
+    const $ = load(body); $(".title-property").clone().appendTo(".main-section"); return $.html();
+  };
+  const result = await srcDaumCommercial("sale", Infinity, false);
+  assert.equal(result.currentInventoryProof?.schema, "daum-verified-subset-v2");
+  assert.deepEqual((result.currentInventoryProof as any).held, []);
+  assert.ok(result.listings.some(row => row.daumPostId === "50000"));
+});

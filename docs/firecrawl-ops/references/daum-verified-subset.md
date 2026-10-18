@@ -4,7 +4,7 @@ Parent: [AGENTIC-1972](https://linear.app/agenticassets/issue/AGENTIC-1972); imp
 
 DAUM's ordinary complete-detail admission remains the default. Its separate
 verified-subset path permits additive refresh of proved records while leaving
-records with unresolved transaction tenure untouched. This is a DAUM-specific
+records with explicitly admitted incomplete detail evidence untouched. This is a DAUM-specific
 permission, not a general exception for incomplete sources.
 
 ## Selecting the scope
@@ -24,6 +24,13 @@ subset acquisitions cannot reuse each other's cached result, including failures.
 Selecting this scope always produces a partial result, even when the held set
 is empty. Changing a receipt label cannot turn it into complete-source proof.
 
+The existing flag defaults to `tenure-only-v1`, preserving that contract. The
+separate `--daum-subset-policy tenure-and-empty-title-v2` (Windows
+`-DaumSubsetPolicy tenure-and-empty-title-v2`) requires the subset flag too. It
+selects scope `daum_verified_subset_v2`, proof schema `daum-verified-subset-v2`
+and exact policy metadata through configuration, cache, both gates and the
+ingestion claims. Complete admission and V1 do not inherit this permission.
+
 ## What must be proved
 
 Two fresh, complete inventories must match. Every member must then have a fresh,
@@ -34,7 +41,24 @@ checks may the collector partition the inventory:
 - **Emitted:** sale, lease or both are positively resolved. Only these records
   enter ordinary staging.
 - **Held:** inventory and detail tenure are both unknown. The sole allowed
-  reason is `unknown_inventory_and_detail_tenure`.
+  V1 reason is `unknown_inventory_and_detail_tenure`.
+
+V2 additionally permits `empty_required_property_title` only when a successful
+detail has exactly one empty cleaned visible `.main-section .title-property`,
+one matching owned observed canonical URL and one unambiguous native shortlink.
+Missing or multiple empty title containers still fail. The normal full parser
+for nonempty titles is unchanged. No head-title fallback or placeholder facts
+enter staging. Identity and recognized tenure conflicts still fail before
+partitioning. An empty-title hold preserves the resolved tenure, including a
+recognized Lease, but excludes that parent from both emitted transaction sets.
+This reason takes priority if tenure is also unknown, counting the hold once.
+
+The empty-only `titleObservations` tuples `[postId, 1, "empty"]` are unique and
+ordered by inventory URL. Their IDs must equal exactly the empty-title held
+IDs, joined to the complete existing cohort and detail hash/time receipts.
+These are producer observations, not independent HTML authentication by the
+Python gates: a consistently false bound observation can conservatively
+withhold a member; it cannot authorize its writes or claim full coverage.
 
 The partition must be exhaustive and disjoint. Native IDs, paths and URL
 associations must remain consistent across emitted and held records and all
@@ -45,7 +69,7 @@ once toward that floor.
 
 Transport errors, invalid responses, conflicting tenure, ambiguous identities,
 resource or cleanup failures, and database uncertainty fail the whole attempt.
-They are not tenure holds. Never infer sale/lease from an address, title or a
+They are not incomplete-detail holds. Never infer sale/lease from an address, title or a
 previous listing merely to increase throughput.
 
 Both admission gates bind the exact artifact, code/policy, target database,
@@ -71,7 +95,7 @@ mark-missing, OM or schema changes follow from this permission.
 
 Reports must distinguish **verified subset refreshed** from **whole brokerage
 complete**. Show emitted and held counts, verified sale/lease counts and the
-partial scope. If unknown holds exist and no lease records are emitted, report
+partial scope. If any holds exist and no lease records are emitted, report
 zero verified subset leases with whole-brokerage lease coverage unknown. That
 is not evidence of an empty lease inventory.
 

@@ -77,7 +77,9 @@ def sql(text, db="postgres", check=True):
     return p
 
 
-def row(index, *, fresh=False):
+def row(
+    index, *, fresh=False, transaction="Sale", transaction_mode=None, name="Synthetic"
+):
     prefix = "fresh-" if fresh else ""
     key = f"property/Synthetic-{index}"
     url = f"https://daumcommercial.com/{key}/"
@@ -87,18 +89,32 @@ def row(index, *, fresh=False):
             "id": key,
             "url": url,
             "canonicalUrl": url,
-            "name": "Synthetic",
-            "transactionType": "Sale",
+            "name": name,
+            "transactionType": transaction,
+            **(
+                {"transactionMode": transaction_mode}
+                if transaction_mode is not None
+                else {}
+            ),
             "daumPostId": str(50000 + index),
             "photos": [f"https://example.test/{prefix}photo.jpg"],
             "brokerIds": [0],
             "documents": [
                 {"url": f"https://example.test/{prefix}doc.pdf", "docType": "brochure"}
             ],
-            "media": [{"url": f"https://example.test/{prefix}tour", "mediaType": "video"}],
-            "links": [{"url": f"https://example.test/{prefix}site", "linkType": "other"}],
+            "media": [
+                {"url": f"https://example.test/{prefix}tour", "mediaType": "video"}
+            ],
+            "links": [
+                {"url": f"https://example.test/{prefix}site", "linkType": "other"}
+            ],
         },
-        {0: {"name": prefix + "Fixture broker", "email": prefix + "fixture@example.invalid"}},
+        {
+            0: {
+                "name": prefix + "Fixture broker",
+                "email": prefix + "fixture@example.invalid",
+            }
+        },
         "2026-10-16T00:00:00Z",
     )
 
@@ -144,6 +160,33 @@ claims = {
     },
     "members": members,
 }
+title_observations_v2 = [["50100", 1, "empty"]]
+claims_v2 = {
+    "schema": "daum-verified-subset-v2",
+    "attempt_id": "f" * 32,
+    "subset_policy": "tenure-and-empty-title-v2",
+    "titleObservations": title_observations_v2,
+    "binding": {
+        "scope": "daum_verified_subset_v2",
+        "subset_policy": "tenure-and-empty-title-v2",
+        "inventory_count": 102,
+        "emitted_count": 100,
+        "held_count": 2,
+        "title_observations_sha256": hashlib.sha256(
+            json.dumps(
+                title_observations_v2,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    },
+    "members": members,
+}
+assert len(members) == len({member["native_id"] for member in members}) == 102
+assert len({member["external_id"] for member in members}) == 102
+assert sum(member["emitted"] for member in members) == 100
+assert sum(not member["emitted"] for member in members) == 2
 
 
 try:
@@ -241,12 +284,48 @@ try:
         "new",
         "missing_old_native",
         "null_old_native",
+        "v2_held_lease_empty_title",
+        "v2_held_missing_index",
+        "v2_held_native_collision",
     ]
     for i, case in enumerate(cases):
         db = "fixture_" + str(i)
         sql("CREATE DATABASE " + db + ";")
         sql(schema, db)
-        sql(generated([row(index) for index in range(102)]), db)
+        sql(
+            generated(
+                [
+                    row(
+                        index,
+                        transaction=(
+                            "Lease"
+                            if case.startswith("v2_") and index == 100
+                            else "Sale"
+                        ),
+                        transaction_mode=(
+                            "lease" if case.startswith("v2_") and index == 100 else None
+                        ),
+                        name=(
+                            ""
+                            if case.startswith("v2_") and index == 100
+                            else "Synthetic"
+                        ),
+                    )
+                    for index in range(102)
+                ]
+            ),
+            db,
+        )
+        held_fixture_verified = False
+        if case.startswith("v2_"):
+            held_fixture = sql(
+                "SELECT coalesce(transaction_type, '<null>') || '|' "
+                "|| coalesce(title, '<null>') "
+                "FROM credeals.cre_listings WHERE external_id='property/Synthetic-100';",
+                db,
+            ).stdout.strip()
+            assert held_fixture == "lease|<null>", (case, held_fixture)
+            held_fixture_verified = True
         sql(
             "INSERT INTO credeals.cre_listing_om_facts (listing_id,fact_key,fact_value_text,source_doc_url,parser_version) SELECT id,'fixture','protected','https://example.test/om.pdf','fixture/1' FROM credeals.cre_listings;",
             db,
@@ -296,7 +375,7 @@ try:
                 + " WHERE external_id='property/Synthetic-0';",
                 db,
             )
-        if case == "held_native_collision":
+        if case in {"held_native_collision", "v2_held_native_collision"}:
             sql(
                 "UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}','\"50100\"') WHERE external_id='property/Synthetic-0';",
                 db,
@@ -311,9 +390,11 @@ try:
                 "UPDATE credeals.cre_source_index SET url='https://daumcommercial.com/property/Wrong/' WHERE external_id='property/Synthetic-100';",
                 db,
             )
-        if case == "missing_index":
+        if case in {"missing_index", "v2_held_missing_index"}:
             sql(
-                "DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-0';",
+                "DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-"
+                + ("100" if case == "v2_held_missing_index" else "0")
+                + "';",
                 db,
             )
         if case == "new":
@@ -332,6 +413,12 @@ try:
             "SELECT tablename FROM pg_tables WHERE schemaname='credeals' ORDER BY tablename;",
             db,
         ).stdout.splitlines()
+        protected_tables = {
+            "cre_listing_events",
+            "cre_listing_om_facts",
+            "cre_listing_price_history",
+            "cre_source_baseline",
+        } | {table for table in tables if table.endswith("_archive")}
 
         def snapshot():
             parts = [
@@ -385,23 +472,40 @@ try:
 
         def emitted_child_content():
             result = {}
-            for table in ["cre_listing_images", "cre_listing_contacts", "cre_listing_documents", "cre_listing_media", "cre_listing_links"]:
-                result[table] = json.loads(sql(
-                    "SELECT jsonb_object_agg(external_id, children)::text FROM ("
-                    "SELECT l.external_id, jsonb_agg(to_jsonb(c)-'id'-'created_at'-'scraped_at' "
-                    "ORDER BY (to_jsonb(c)-'id'-'created_at'-'scraped_at')::text) children "
-                    "FROM credeals." + table + " c JOIN credeals.cre_listings l "
-                    "ON l.id=c.listing_id WHERE l.external_id NOT IN "
-                    "('property/Synthetic-100','property/Synthetic-101') GROUP BY l.external_id)s;", db
-                ).stdout)
+            for table in [
+                "cre_listing_images",
+                "cre_listing_contacts",
+                "cre_listing_documents",
+                "cre_listing_media",
+                "cre_listing_links",
+            ]:
+                result[table] = json.loads(
+                    sql(
+                        "SELECT jsonb_object_agg(external_id, children)::text FROM ("
+                        "SELECT l.external_id, jsonb_agg(to_jsonb(c)-'id'-'created_at'-'scraped_at' "
+                        "ORDER BY (to_jsonb(c)-'id'-'created_at'-'scraped_at')::text) children "
+                        "FROM credeals." + table + " c JOIN credeals.cre_listings l "
+                        "ON l.id=c.listing_id WHERE l.external_id NOT IN "
+                        "('property/Synthetic-100','property/Synthetic-101') GROUP BY l.external_id)s;",
+                        db,
+                    ).stdout
+                )
             return result
 
-        children_before = emitted_child_content() if case == "fresh_emitted_children" else None
-        before = snapshot()
+        children_before = (
+            emitted_child_content() if case == "fresh_emitted_children" else None
+        )
+        before = json.loads(snapshot())
         held_before = protected()
         lifecycle = "SELECT jsonb_agg(jsonb_build_array(l.external_id,l.status,l.deleted_at,si.soft_deleted,si.observation_present,si.presence_generation,si.presence_changed_at) ORDER BY l.external_id)::text FROM credeals.cre_listings l JOIN credeals.cre_source_index si USING(brokerage_id,external_id) WHERE l.external_id NOT IN ('property/Synthetic-100','property/Synthetic-101');"
         life_before = sql(lifecycle, db).stdout
-        text = generated([row(index, fresh=case == "fresh_emitted_children" and index == 0) for index in range(100)], claims)
+        text = generated(
+            [
+                row(index, fresh=case == "fresh_emitted_children" and index == 0)
+                for index in range(100)
+            ],
+            claims_v2 if case.startswith("v2_") else claims,
+        )
         (out / (case + ".sql")).write_text(text)
         result = sql(text, db, check=False)
         negative = case not in {
@@ -411,8 +515,17 @@ try:
             "new",
             "missing_old_native",
             "null_old_native",
+            "v2_held_lease_empty_title",
+            "v2_held_missing_index",
         }
-        unchanged = snapshot() == before
+        after = json.loads(snapshot())
+        changed_tables = sorted(
+            table for table in before if before[table] != after[table]
+        )
+        unchanged = before == after
+        protected_tables_unchanged = all(
+            before[table] == after[table] for table in protected_tables
+        )
         held_unchanged = protected() == held_before
         lifecycle_unchanged = sql(lifecycle, db).stdout == life_before
         checks.append(
@@ -422,8 +535,29 @@ try:
                 "refused": result.returncode != 0,
                 "all_tables_unchanged": unchanged,
                 "tables": len(tables),
+                "changed_tables": changed_tables,
+                "protected_tables_unchanged": protected_tables_unchanged,
+                "protected_table_count": len(protected_tables),
                 "held_children_index_om_baseline_unchanged": held_unchanged,
                 "lifecycle_unchanged": lifecycle_unchanged,
+                "v2_partition": (
+                    {
+                        "members": len(members),
+                        "unique_native_ids": len(
+                            {member["native_id"] for member in members}
+                        ),
+                        "unique_external_ids": len(
+                            {member["external_id"] for member in members}
+                        ),
+                        "emitted": sum(member["emitted"] for member in members),
+                        "held": sum(not member["emitted"] for member in members),
+                    }
+                    if case.startswith("v2_")
+                    else None
+                ),
+                "v2_held_fixture_is_lease_with_null_title": (
+                    held_fixture_verified if case.startswith("v2_") else None
+                ),
             }
         )
         if negative:
@@ -435,6 +569,9 @@ try:
         else:
             assert result.returncode == 0, (case, result.stderr)
             assert held_unchanged, case + " touched held child or protected table"
+            assert protected_tables_unchanged, (
+                case + " changed protected history or baseline"
+            )
             if case == "fresh_emitted_children":
                 children_after = emitted_child_content()
                 deltas = {}
@@ -445,11 +582,23 @@ try:
                     assert all(len(rows) == 1 for rows in current.values()), table
                     changed = sorted(key for key in prior if prior[key] != current[key])
                     assert changed == ["property/Synthetic-0"], (table, changed)
-                    deltas[table] = {"emitted_rows_before": 100, "emitted_rows_after": 100, "changed_identities": changed}
+                    deltas[table] = {
+                        "emitted_rows_before": 100,
+                        "emitted_rows_after": 100,
+                        "changed_identities": changed,
+                    }
                 checks[-1]["fresh_emitted_child_deltas"] = deltas
 
-            if case not in {"new", "missing_index"}:
+            if case not in {"new", "missing_index", "v2_held_missing_index"}:
                 assert lifecycle_unchanged, case
+            if case == "v2_held_missing_index":
+                missing_held_index = sql(
+                    "SELECT count(*) FROM credeals.cre_source_index "
+                    "WHERE external_id='property/Synthetic-100';",
+                    db,
+                ).stdout.strip()
+                assert missing_held_index == "0", missing_held_index
+                checks[-1]["held_missing_index_remains_absent"] = True
         sql("DROP DATABASE " + db + ";")
         sql("CHECKPOINT;")
 

@@ -1,12 +1,12 @@
-import type { DaumCurrentInventoryProof, DaumVerifiedSubsetInventoryProof, Tx } from "../../types.js";
+import type { DaumCurrentInventoryProof, DaumVerifiedSubsetInventoryProof, DaumEmptyTitleSubsetProof, Tx } from "../../types.js";
 import type { DaumCompleteCohort } from "../daum-commercial.js";
 import { daumListingId, resolveDaumTenure } from "./daum-identity.js";
 
 /** Receipt serialization follows global acquisition/identity validation. */
 export function daumProof(
   cohort: DaumCompleteCohort, tx: Tx, generationId: string, generationStartedAt: string,
-  mode: "complete" | "verified_subset"
-): DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof {
+  mode: "complete" | "verified_subset" | "verified_subset_empty_title"
+): DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof | DaumEmptyTitleSubsetProof {
   const rows = [...cohort.details].sort((a,b) => a.inventory.url < b.inventory.url ? -1 : a.inventory.url > b.inventory.url ? 1 : 0);
   const identity = { sourceKey: "daum-commercial" as const, transaction: tx };
   const base = {
@@ -22,6 +22,17 @@ export function daumProof(
   const details: DaumCurrentInventoryProof["details"] = rows.map(row => [
     String(row.detail.postId), row.detail.observedCanonicalUrl!, row.observedAt, row.bodySha256,
   ]);
+  if (mode === "verified_subset_empty_title") {
+    const titleObservations: DaumEmptyTitleSubsetProof["titleObservations"] = rows
+      .filter(row => "emptyRequiredTitle" in row.detail).map(row => [String(row.detail.postId), 1, "empty"]);
+    const empty = new Set(titleObservations.map(row => row[0]));
+    return {
+      schema: "daum-verified-subset-v2", ...identity, kind: "verified_subset_with_holds", ...base,
+      subsetPolicy: "tenure-and-empty-title-v2", cohort: members, details, titleObservations,
+      held: members.filter(row => empty.has(row[0]) || row[7] === "unknown")
+        .map(row => [row[0], empty.has(row[0]) ? "empty_required_property_title" : "unknown_inventory_and_detail_tenure"]),
+    };
+  }
   if (mode === "verified_subset") {
     return {
       schema: "daum-verified-subset-v1", ...identity, kind: "verified_subset_with_holds", ...base,

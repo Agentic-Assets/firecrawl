@@ -74,6 +74,8 @@ export type DaumDetail = {
   }>;
 };
 
+export type DaumEmptyTitleObservation = Pick<DaumDetail, "postId" | "observedCanonicalUrl" | "tenure" | "tenureText"> & { emptyRequiredTitle: true };
+
 async function daumBoundedResponseText(
   response: Response,
   maxBytes: number
@@ -382,7 +384,9 @@ function daumCloudflareEmail(hex: string | undefined): string | null {
   return clean(value);
 }
 
-export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail {
+export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail;
+export function parseDaumDetail(html: string, expectedUrl: string, allowEmptyTitle: true): DaumDetail | DaumEmptyTitleObservation;
+export function parseDaumDetail(html: string, expectedUrl?: string, allowEmptyTitle = false): DaumDetail | DaumEmptyTitleObservation {
   const shell = cheerio.load(html);
   const shellTitle = clean(shell("title").text());
   const shortBody = html.length < 2_000 ? clean(shell("body").text()) : null;
@@ -409,8 +413,14 @@ export function parseDaumDetail(html: string, expectedUrl?: string): DaumDetail 
     }
   }
   const title = clean($(".main-section .title-property").first().text());
-  if (!title) throw new Error(`DAUM detail ${postId} omitted its property title`);
   const tenureText = clean($(".main-section .title-about").first().text());
+  if (!title && allowEmptyTitle && $(".main-section .title-property").length === 1) {
+    const canonical = canonicalDaumPropertyUrl($('link[rel="canonical"]').attr("href"));
+    if ($('link[rel="canonical"]').length !== 1 || $('link[rel="shortlink"]').length !== 1
+      || !canonical || canonical !== expectedUrl) throw new Error("DAUM empty-title observation has ambiguous identity");
+    return { postId, observedCanonicalUrl: canonical, tenure: daumTenure(tenureText), tenureText, emptyRequiredTitle: true };
+  }
+  if (!title) throw new Error(`DAUM detail ${postId} omitted its property title`);
   const locationParts = $(".main-section .state-city li")
     .map((_, element) => clean($(element).text()))
     .get()
@@ -827,9 +837,9 @@ export function mapDaumListing(
 const textSha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 export type DaumCompleteCohort = {
   snapshot: Awaited<ReturnType<typeof fetchDaumSnapshot>>;
-  details: Array<{ inventory: DaumInventoryRow; detail: DaumDetail; observedAt: string; bodySha256: string }>;
+  details: Array<{ inventory: DaumInventoryRow; detail: DaumDetail | DaumEmptyTitleObservation; observedAt: string; bodySha256: string }>;
 };
-type DaumProofMode = "complete" | "verified_subset";
+type DaumProofMode = "complete" | "verified_subset" | "verified_subset_empty_title";
 const daumCohortAcquisitions: Partial<Record<DaumProofMode, { key: string; promise: Promise<DaumCompleteCohort> }>> = {};
 
 async function completeDaumCohort(key: string, transport: DaumPoliteTransport, mode: DaumProofMode): Promise<DaumCompleteCohort> {
@@ -851,7 +861,7 @@ async function fetchCompleteDaumCohort(transport: DaumPoliteTransport, mode: Dau
     const html = await transport.get(inventory.url);
     const observedAt = observationNow();
     try {
-      const detail = parseDaumDetail(html, inventory.url);
+      const detail = mode === "verified_subset_empty_title" ? parseDaumDetail(html, inventory.url, true) : parseDaumDetail(html, inventory.url);
       if (detail.observedCanonicalUrl !== inventory.url) throw new Error("DAUM strict proof requires observed canonical identity");
       try {
         if (resolveDaumTenure(inventory.tenure, detail.tenure) === "unknown" && mode === "complete") throw new Error("DAUM strict proof has unresolved tenure");
@@ -878,23 +888,27 @@ export async function srcDaumCommercial(
   max: number,
   _monitor: boolean
 ): Promise<SourceResult> {
+  const subsetPolicy = process.env.DAUM_SUBSET_POLICY ?? "tenure-only-v1";
+  if (!["tenure-only-v1", "tenure-and-empty-title-v2"].includes(subsetPolicy)
+    || (subsetPolicy !== "tenure-only-v1" && process.env.DAUM_VERIFIED_SUBSET !== "1")) throw new Error("DAUM subset policy requires its exact explicit subset permission");
   const transport = new DaumPoliteTransport();
   const generationId = refreshGenerationId();
   const generationStartedAt = refreshStartedAt();
   if (requireFreshDetails() && !_monitor && !Number.isFinite(max) && generationId && generationStartedAt) {
-    const mode: DaumProofMode = process.env.DAUM_VERIFIED_SUBSET === "1" ? "verified_subset" : "complete";
-    const cohort = await completeDaumCohort(JSON.stringify([mode, generationId, generationStartedAt]), transport, mode);
+    const mode: DaumProofMode = process.env.DAUM_VERIFIED_SUBSET === "1" ? subsetPolicy === "tenure-and-empty-title-v2" ? "verified_subset_empty_title" : "verified_subset" : "complete";
+    const cohort = await completeDaumCohort(JSON.stringify([mode, generationId, generationStartedAt, subsetPolicy]), transport, mode);
     const proof = daumProof(cohort, tx, generationId, generationStartedAt, mode);
-    const listings = cohort.details.filter(row => daumBelongsToTx(resolveDaumTenure(row.inventory.tenure, row.detail.tenure), tx))
-      .map(row => ({
-        ...mapDaumListing(row.inventory, row.detail, tx, cohort.snapshot.observedAt, row.observedAt),
-        daumDetailResponseSha256: row.bodySha256,
-      }));
+    const held = new Set(proof.schema === "daum-strict-detail-v1" ? [] : proof.held.map(row => row[0]));
+    const listings = cohort.details.filter(row => !held.has(String(row.detail.postId)) && daumBelongsToTx(resolveDaumTenure(row.inventory.tenure, row.detail.tenure), tx))
+      .map(row => {
+        if ("emptyRequiredTitle" in row.detail) throw new Error("DAUM empty-title observation cannot enter listing mapping");
+        return { ...mapDaumListing(row.inventory, row.detail, tx, cohort.snapshot.observedAt, row.observedAt), daumDetailResponseSha256: row.bodySha256 };
+      });
     return {
       company: "DAUM Commercial Real Estate Services", sourceUrl: DAUM_SEARCH_URL,
       method: "complete consecutive public POST snapshots plus every fresh canonical detail",
       totalAvailable: listings.length, listings,
-      truncated: proof.schema === "daum-verified-subset-v1" && proof.held.length > 0,
+      truncated: proof.schema !== "daum-strict-detail-v1" && proof.held.length > 0,
       currentInventoryProof: proof,
     };
   }

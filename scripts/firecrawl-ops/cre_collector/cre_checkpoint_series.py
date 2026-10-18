@@ -175,6 +175,7 @@ def series_config(
     memory_sample_seconds: float = DEFAULT_MEMORY_SAMPLE_SECONDS,
     admit_current_inventory_source: str | Sequence[str] | None = None,
     admit_daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
     pipeline: bool = False,
     source_workers: int | None = None,
     admit_baseline_hold_additively: bool = False,
@@ -183,7 +184,7 @@ def series_config(
 
     admissions = ([admit_current_inventory_source] if isinstance(admit_current_inventory_source, str)
                   else list(admit_current_inventory_source or ()))
-    current_inventory.validate_options(admissions, sources, ("sale", "lease"), pipeline=pipeline, daum_verified_subset=admit_daum_verified_subset)
+    current_inventory.validate_options(admissions, sources, ("sale", "lease"), pipeline=pipeline, daum_verified_subset=admit_daum_verified_subset, daum_subset_policy=daum_subset_policy)
     if admit_baseline_hold_additively and (list(sources) != ["savills"] or pipeline or admissions):
         raise ValueError("baseline-hold admission requires a Savills-only serial series without other admissions")
     workers = (2 if pipeline else 1) if source_workers is None else source_workers
@@ -223,11 +224,11 @@ def series_config(
         config["admit_baseline_hold_additively"] = True
     if pipeline:
         config["pipeline"] = True
-        config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources, daum_verified_subset=admit_daum_verified_subset)
+        config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources, daum_verified_subset=admit_daum_verified_subset, daum_subset_policy=daum_subset_policy)
         if recovery_config.max_recoveries_per_source:
             raise ValueError("pipeline resource failures require a hard stop; automatic recovery is disabled")
     elif admit_daum_verified_subset:
-        config["current_inventory_admission"] = current_inventory.subset_configuration()
+        config["current_inventory_admission"] = current_inventory.subset_configuration(daum_subset_policy)
     elif admissions:
         config["current_inventory_admission"] = current_inventory.configuration(admissions[0])
     return config
@@ -588,7 +589,7 @@ def build_checkpoint_argv(
     if config.get("pipeline"):
         argv.append("--pipeline")
         for key, entry in config.get("current_inventory_admissions", {}).items():
-            if entry.get("admission_scope") == "daum_verified_subset_v1":
+            if entry.get("admission_scope") in {"daum_verified_subset_v1", "daum_verified_subset_v2"}:
                 argv.append("--admit-daum-verified-subset")
             else:
                 argv.extend(["--admit-current-inventory-source", key])
@@ -606,6 +607,10 @@ def build_checkpoint_argv(
         )
     if config.get("admit_baseline_hold_additively") is True:
         argv.append("--admit-baseline-hold-additively")
+    if current_subset(config):
+        from cre_current_inventory_admission import subset_policy
+        if subset_policy(config) != "tenure-only-v1":
+            argv.extend(["--daum-subset-policy", subset_policy(config)])
     return argv
 
 
@@ -2736,6 +2741,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--admit-daum-verified-subset", action="store_true")
+    parser.add_argument("--daum-subset-policy", choices=("tenure-only-v1", "tenure-and-empty-title-v2"), default="tenure-only-v1")
     parser.add_argument("--nice", type=int, default=10)
     args = parser.parse_args(argv)
 
@@ -2755,7 +2761,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         current_inventory.validate_options(
             args.admit_current_inventory_source, sources, ("sale", "lease"), pipeline=args.pipeline,
-            daum_verified_subset=args.admit_daum_verified_subset
+            daum_verified_subset=args.admit_daum_verified_subset,
+            daum_subset_policy=args.daum_subset_policy
         )
         if args.admit_baseline_hold_additively and (sources != ("savills",) or args.pipeline or args.admit_current_inventory_source):
             raise ValueError("baseline-hold admission requires a Savills-only serial series without other admissions")
@@ -2839,6 +2846,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         recovery=recovery_config,
         admit_current_inventory_source=args.admit_current_inventory_source,
         admit_daum_verified_subset=args.admit_daum_verified_subset,
+        daum_subset_policy=args.daum_subset_policy,
         admit_baseline_hold_additively=args.admit_baseline_hold_additively,
         pipeline=args.pipeline,
         source_workers=args.source_workers,

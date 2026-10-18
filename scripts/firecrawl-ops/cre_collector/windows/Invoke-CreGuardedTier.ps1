@@ -16,6 +16,7 @@ param(
     [switch]$Pipeline,
     [switch]$AdmitBaselineHoldAdditively,
     [switch]$AdmitDaumVerifiedSubset,
+    [ValidateSet('tenure-only-v1','tenure-and-empty-title-v2')][string]$DaumSubsetPolicy = 'tenure-only-v1',
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
     [ValidateScript({ $value = 0; $_ -match '^\+?[0-9]+$' -and [int]::TryParse($_, [ref]$value) -and $value -gt 0 })][string]$AttemptsPerSource = '3',
@@ -89,6 +90,9 @@ foreach ($key in $selectedAdmissionKeys) {
     if ($Tier -ne 'series' -or $admissibleKeys -cnotcontains $key -or $selectedSourceKeys -cnotcontains $key) {
         throw 'Admission requires an exact selected and supported source key.'
     }
+}
+if ($DaumSubsetPolicy -cne 'tenure-only-v1' -and -not $AdmitDaumVerifiedSubset) {
+    throw '-DaumSubsetPolicy requires -AdmitDaumVerifiedSubset.'
 }
 if ($AdmitDaumVerifiedSubset -and ($Tier -ne 'series' -or $selectedSourceKeys -cnotcontains 'daum-commercial' -or
     (-not $Pipeline -and $Source -cne 'daum-commercial') -or $selectedAdmissionKeys -ccontains 'daum-commercial' -or $AdmitBaselineHoldAdditively)) {
@@ -701,6 +705,7 @@ $record = [ordered]@{
     notification = [ordered]@{ Status = 'not_attempted'; Reason = 'invocation_pending' }
     stdoutPath = $stdoutPath; stderrPath = $stderrPath; byteLimitPerStream = 1048576
 }
+if ($DaumSubsetPolicy -cne 'tenure-only-v1') { $record['daumSubsetPolicy'] = $DaumSubsetPolicy }
 if ($Tier -eq 'series') {
     $record['workDeadlineSeconds'] = $WorkDeadlineSeconds
     $record['acknowledgeDatabaseWrites'] = [bool]$AcknowledgeDatabaseWrites
@@ -797,6 +802,7 @@ try {
             if ($Pipeline) { $arguments += @('--pipeline', '--source-workers', "$resolvedSourceWorkers") }
             if ($AdmitBaselineHoldAdditively) { $arguments += '--admit-baseline-hold-additively' }
             if ($AdmitDaumVerifiedSubset) { $arguments += '--admit-daum-verified-subset' }
+            if ($DaumSubsetPolicy -cne 'tenure-only-v1') { $arguments += @('--daum-subset-policy', $DaumSubsetPolicy) }
             foreach ($key in $selectedAdmissionKeys) { $arguments += @('--admit-current-inventory-source', $key) }
             $runPrefix = "$collector/out/checkpoint-series/"
         } elseif ($Apply) { $arguments += '--apply' }
