@@ -267,6 +267,67 @@ def test_actual_worker_source_aggregate_claims_and_no_early_sql(subset, monkeypa
     assert len(calls) == 1
 
 
+def test_pipeline_subset_claims_pass_real_dryrun_reader_under_umask_022(subset):
+    """The pipeline's sealed claims carrier is readable by the strict dry-run guard."""
+    import copy
+    import json
+    import os
+    import stat
+    import cre_pipeline_artifact_worker as worker
+    import cre_refresh_pipeline as pipeline
+    import test_essex_current_inventory as helpers
+
+    run, path, artifact, manifest, raw = subset
+    for entry in artifact["sources"]:
+        metrics = entry["freshness"]
+        count = entry["listingsCollected"]
+        for key in ("listings", "inventoryObserved", "detailObserved"):
+            metrics[key] = count
+    helpers.refresh(path, artifact, manifest)
+
+    source_report = copy.deepcopy(raw)
+    source_result = worker.compute(
+        "admit",
+        {
+            "path": str(path),
+            "source": SOURCE,
+            "run_dir": str(run),
+            "manifest": manifest,
+            "report": source_report,
+            "phase": "source",
+        },
+        run / "source-response.json",
+    )
+    manifest["sources"][SOURCE]["gate"] = {
+        "path": str(Path(source_result["report_path"]).relative_to(run)),
+        **source_report["per_source"][SOURCE],
+    }
+    manifest["sources"][SOURCE]["subset_ingest_attempt_id"] = "e" * 32
+
+    previous_umask = os.umask(0o022)
+    try:
+        with pipeline.artifact_compute_scope(run):
+            aggregate = copy.deepcopy(raw)
+            refresh._admit_current_inventory(
+                run, manifest, aggregate, path, "aggregate", source=SOURCE
+            )
+
+        claims = manifest["sources"][SOURCE]["daum_verified_subset_claims"]
+        compute_dir = run / "pipeline" / "compute"
+        claims_path = Path(claims["path"])
+        assert stat.S_IMODE(compute_dir.stat().st_mode) == 0o700
+        assert claims_path.parent == compute_dir
+        assert stat.S_IMODE(claims_path.stat().st_mode) == 0o600
+        assert refresh.dry_run_source(run, manifest, SOURCE, path)
+    finally:
+        os.umask(previous_umask)
+
+    log = (run / "logs" / f"{SOURCE}-ingest-dry-run.log").read_text()
+    assert "dry run: not connecting" in log
+    assert "unsafe local evidence" not in log
+    assert json.loads(claims_path.read_text())["attempt_id"] == "e" * 32
+
+
 def test_dirty_subset_manifest_refuses_before_child_scope(tmp_path):
     with pytest.raises(ValueError):
         refresh.new_manifest(
