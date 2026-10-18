@@ -1332,3 +1332,96 @@ def test_other_pipeline_terminal_states_cannot_hide_unknown_commit(evidence, pip
     evidence["save"]()
     with pytest.raises(REFUSED):
         read_pipeline(evidence)
+
+
+def interrupted_pipeline(evidence, kind="deadline"):
+    """Controlled producer shape: parent attempts stop before reconciliation."""
+    setup = settled_global_failure(evidence)
+    parent, child = setup["parent"], setup["child"]
+    rc = 124 if kind == "deadline" else 130
+    parent.update(status="interrupted", error=(
+        "series work deadline expired" if rc == 124 else "operator interruption"
+    ))
+    child["status"] = "interrupted"
+    evidence["values"]["control"]["status"] = (
+        "deadline_interrupted" if rc == 124 else "interrupted"
+    )
+    for entry in parent["sources"].values():
+        entry.update(state="interrupted", checkpoint_status=None)
+        entry.pop("pipeline_result", None)
+        entry["attempts"][-1]["rc"] = rc
+    child["sources"]["cbre"]["state"] = "collecting"
+    evidence["save"]()
+    return setup
+
+
+@pytest.mark.parametrize("kind", ["deadline", "operator"])
+def test_settled_interruption_uses_verified_child_not_parent_success(evidence, kind):
+    setup = interrupted_pipeline(evidence, kind)
+    before = copy.deepcopy(setup["parent"])
+    result = read_pipeline(evidence)
+    assert result["verified"] is True and result["complete"] is False
+    assert result["failed_source_keys"] == ["cbre"]
+    assert result["pending_source_keys"] == []
+    assert [r["source_key"] for r in result["per_source_summaries"]] == [SOURCE]
+    assert result["per_source_summaries"][0]["verified_listings"] == 3
+    assert "verified_listings" not in result
+    assert setup["parent"] == before
+
+
+@pytest.mark.parametrize("fault", [
+    "exit", "bool_exit", "control_kind", "child_terminal", "parent_state",
+    "locator", "child_id", "write_unknown", "write_absent", "write_numeric",
+    "active_unit", "ingesting", "recovery", "cleanup", "guards", "receipt",
+    "settlement", "generation", "artifact", "validation", "stale", "target",
+])
+def test_interrupted_pipeline_keeps_every_settlement_and_unit_guard(evidence, fault):
+    setup = interrupted_pipeline(evidence)
+    parent, child = setup["parent"], setup["child"]
+    pipeline = child["pipeline"]
+    entry = parent["sources"][SOURCE]
+    receipt = evidence["values"]["settlement"]
+    if fault == "exit":
+        entry["attempts"][-1]["rc"] = 130
+    elif fault == "bool_exit":
+        entry["attempts"][-1]["rc"] = True
+    elif fault == "control_kind":
+        evidence["values"]["control"]["status"] = "interrupted"
+    elif fault == "child_terminal":
+        child["status"] = "failed"
+    elif fault == "parent_state":
+        entry["state"] = "complete"
+    elif fault == "locator":
+        entry["attempts"][-1]["checkpoint_run"] += "0"
+    elif fault == "child_id":
+        entry["attempts"][-1]["series_control_child_id"] = "f" * 32
+    elif fault == "write_unknown":
+        pipeline["commit_outcome_unknown"] = True
+    elif fault == "write_absent":
+        pipeline.pop("commit_outcome_unknown")
+    elif fault == "write_numeric":
+        pipeline["commit_outcome_unknown"] = 0
+    elif fault == "active_unit":
+        pipeline["active_unit"] = "unit-0002"
+    elif fault == "ingesting":
+        child["sources"]["cbre"]["state"] = "ingesting"
+    elif fault == "recovery":
+        child["sources"]["cbre"]["state"] = "ingest_recovery_required"
+    elif fault in {"cleanup", "guards", "receipt"}:
+        receipt[{"cleanup": "nested_cleanup_confirmed", "guards": "guards_stopped",
+                 "receipt": "terminal_evidence_saved"}[fault]] = False
+    elif fault == "settlement":
+        evidence["values"]["control"]["local_settlement"] = "unknown"
+    elif fault == "generation":
+        pipeline["source_results"][SOURCE]["generation_id"] = "stale"
+    elif fault == "artifact":
+        child["sources"][SOURCE]["artifact"]["sha256"] = "f" * 64
+    elif fault == "validation":
+        pipeline["source_results"][SOURCE]["validation_sha256"] = "f" * 64
+    elif fault == "stale":
+        evidence["values"]["control"]["finished_unix_ms"] -= 600000
+    elif fault == "target":
+        child["preflight"]["database_target"] = {"sha256": "f" * 64}
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)

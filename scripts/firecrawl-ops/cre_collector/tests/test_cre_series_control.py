@@ -1047,3 +1047,46 @@ def test_typed_stop_retains_unknown_causal_chain(tmp_path, monkeypatch, cli_role
     )
     assert receipt["status"] == "cleanup_unknown"
     assert receipt["local_settlement"] == "unknown"
+
+
+@pytest.mark.parametrize("cause,expected", [(signal.SIGALRM, 124), (signal.SIGINT, 130), (signal.SIGTERM, 130)])
+def test_controlled_cli_stop_publishes_plain_locator_before_work(tmp_path, cause, expected):
+    """Real subprocess/signals exercise startup output without providers or DB."""
+    script = tmp_path / "controlled_cli.py"
+    script.write_text("""
+import json, os, signal, sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0, sys.argv[1])
+import cre_checkpoint_series as series
+from cre_resource_recovery import SeriesOwnershipLock
+root = Path(sys.argv[2])
+series.__name__ = "__main__"
+series._CLI_CONTROL_CAPABILITY = object()
+config = series.series_config(sources=("cbre", "jll"), page_cap=400, concurrency=1,
+    attempts_per_source=1, max_resume_age_hours=24, max_host_cpu_percent=90,
+    cpu_sustain_seconds=30, cpu_sample_seconds=2, nice=15)
+manifest = series.new_manifest(root, git_sha="a" * 40, config=config)
+def work(*a, **kw):
+    print("synthetic-work-started", flush=True)
+    os.kill(os.getpid(), int(sys.argv[3]))
+series.run_series = work
+args = SimpleNamespace(work_deadline_seconds=30, env_file=None, retry_failed=False,
+    expected_sha=None)
+with SeriesOwnershipLock(root / ".series.lock") as lock:
+    rc = series.run_controlled_series(root, manifest, lock, args,
+        _cli_control_capability=series._CLI_CONTROL_CAPABILITY)
+raise SystemExit(rc)
+""")
+    process = subprocess.run(
+        [sys.executable, str(script), str(Path(series.__file__).parent), str(tmp_path), str(int(cause))],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert process.returncode == expected, process.stderr
+    lines = process.stdout.splitlines()
+    handshake = json.loads(lines[0])
+    assert handshake["series_dir"] == str(tmp_path)
+    assert lines[1:] == [str(tmp_path), "synthetic-work-started"]
+    receipt = control.read_receipt(tmp_path, handshake["invocation_id"])
+    assert receipt["status"] == ("deadline_interrupted" if expected == 124 else "interrupted")
+    assert receipt["local_settlement"] == "not_started"
