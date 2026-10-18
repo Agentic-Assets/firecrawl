@@ -13,10 +13,18 @@ $sourceText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Invoke-CreGuarded
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseInput($sourceText,[ref]$tokens,[ref]$errors)
 Assert-Cre ($errors.Count -eq 0) 'Shipped launcher must parse.'
-foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText')) {
+foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText','Set-CreNotification')) {
     $definition=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true))
     Assert-Cre ($definition.Count -eq 1) "Exactly one shipped $name function is required."
-    . ([scriptblock]::Create($definition[0].Extent.Text))
+    if ($name -eq 'Set-CreNotification') {
+        # A real file preserves PSScriptRoot for the unchanged shipped function.
+        $senderFile=Join-Path $ProofDirectory 'Set-CreNotification.ps1'
+        [IO.File]::WriteAllText($senderFile,$definition[0].Extent.Text)
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'CreWindowsNotification.cs') -Destination (Join-Path $ProofDirectory 'CreWindowsNotification.cs')
+        . $senderFile
+    } else {
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+    }
 }
 Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'CreNativeCapture.cs')))
 $fixtureSource=@'
@@ -39,7 +47,7 @@ $fixtureExe=Join-Path $ProofDirectory 'summary.exe'
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 & $compiler /nologo /target:exe "/out:$fixtureExe" $fixtureCs
 if ($LASTEXITCODE -ne 0) { throw 'Synthetic reader compilation failed.' }
-function Get-Command { param($Name,$CommandType,$ErrorAction) if ($Name -ne 'wsl.exe') { throw 'Unexpected executable lookup.' }; [pscustomobject]@{Source=$fixtureExe} }
+function Get-Command { param($Name,$CommandType,$ErrorAction) if ($Name -notin @('wsl.exe','curl.exe')) { throw 'Unexpected executable lookup.' }; [pscustomobject]@{Source=$fixtureExe} }
 $Tier='series'; $Source='newmark'; $ExpectedSha=('a'*40)
 $LinuxRepo='/home/fixture/firecrawl with spaces'; $Distro='fixture'; $LinuxUser='fixture'
 $auditDir=$ProofDirectory
@@ -336,6 +344,51 @@ foreach ($bad in @('complete','partition','duplicate','string-partition','low-fl
     Save-Summary $value
     Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) ('subset-invalid-pipeline-'+$bad))) 'Malformed or subfloor pipeline subset never counts as full source acceptance.'
     $AdmitDaumVerifiedSubset = $true
+}
+
+# Exercise the actual sender boundary; transport is an in-memory substitute.
+$helperHash=(Get-FileHash (Join-Path $PSScriptRoot 'CreWindowsNotification.cs') -Algorithm SHA256).Hash.ToLowerInvariant()
+Add-Type -TypeDefinition @"
+namespace CreWindowsNotification {
+    public static class Identity { public const string Sha256 = "$helperHash"; }
+    public static class Sender {
+        public static System.Collections.Generic.List<string> Payloads = new System.Collections.Generic.List<string>();
+        public static object Send(string credential, string repository, string curl, string payload) {
+            Payloads.Add(payload); return new { Status = "synthetic_transport" };
+        }
+    }
+}
+"@
+$NotificationMode='StartFinish'; $AlertWebhookFile='synthetic-unused'; $AdmitDaumVerifiedSubset=$false
+$Pipeline=$true; $selectedSourceKeys=@('newmark','cbre','jll'); $selectedSourceArgument=$selectedSourceKeys -join ','
+$senderSummary=New-Summary
+$senderSummary['selected_source_keys']=$selectedSourceKeys
+$senderSummary['per_source_summaries']=@([ordered]@{source_key='newmark';verified_listings=59;transaction_breakdown=[ordered]@{sale=59;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$senderSummary['failed_source_keys']=@('cbre'); $senderSummary['pending_source_keys']=@('jll'); $senderSummary['complete']=$false
+Save-Summary $senderSummary
+$record=New-Record; $record.nativeExitCode=1
+$script:notificationAttempted=@{Start=$false;Terminal=$false}
+Set-CreNotification $record 'actual-sender' 0 'Start'
+Set-CreNotification $record 'actual-sender' 1 'Terminal'
+Set-CreNotification $record 'actual-sender' 1 'Terminal'
+Assert-Cre ([CreWindowsNotification.Sender]::Payloads.Count -eq 2) 'The real sender attempts only one Start and one Finish.'
+$payload=[CreWindowsNotification.Sender]::Payloads[1] | ConvertFrom-Json
+Assert-Cre ($record.Contains('notificationSummaryCapture') -and $record.notificationSummaryStatus -ceq 'verified') 'Nonzero pipeline terminal must invoke the actual bounded summary reader.'
+Assert-Cre ($payload.text.Contains('Needs attention') -and $payload.text.Contains('59 listings verified') -and $payload.text.Contains('*For sale:* 59 | *For lease:* 0') -and $payload.text -notmatch 'Completed') 'Overall failure must retain only qualified brokerage figures.'
+Assert-Cre ($payload.text.Contains('*CBRE:* Failed; verified counts unavailable') -and $payload.text.Contains('*JLL:* Pending; verified counts unavailable')) 'Failed and pending brokerages have explicit unavailable counts.'
+foreach ($failure in @('unverified','conflict','audit-failed','nonpipeline')) {
+    $record=New-Record; $record.nativeExitCode=1
+    switch ($failure) {
+        'unverified' { Save-Summary @{schema_version=1;verified=$false} }
+        'conflict' { $record.capture.Stdout.RunReferenceConflict=$true }
+        'audit-failed' { $record.status='windows_terminal_audit_failed_linux_settlement_unverified' }
+        'nonpipeline' { $Pipeline=$false }
+    }
+    $script:notificationAttempted=@{Start=$false;Terminal=$false}
+    Set-CreNotification $record ('sender-refusal-'+$failure) 1 'Terminal'
+    $payload=[CreWindowsNotification.Sender]::Payloads[[CreWindowsNotification.Sender]::Payloads.Count-1] | ConvertFrom-Json
+    Assert-Cre ($payload.text -notmatch '59 listings|For sale:\* 59|Completed') 'Unavailable or unbound summaries never supply counts.'
+    if ($failure -eq 'nonpipeline') { Assert-Cre (-not $record.Contains('notificationSummaryCapture')) 'A nonpipeline failure does not dispatch a summary reader.' }
 }
 
 Remove-Item Env:CRE_TEST_SUMMARY_JSON,Env:CRE_TEST_SUMMARY_ARGV

@@ -226,6 +226,6 @@ guaranteed outage-paging service.
 
 ## Pipeline terminal counts
 
-Opt-in pipeline invocations emit one terminal summary listing only brokerages whose sealed database unit passed the full audit and exact member readback. Partial terminal results name failed/pending counts and never claim all-source completion or sum brokerage counts into a global unique-property total. See [Start Here](START_HERE.md#opt-in-stage-overlap).
+Opt-in pipeline invocations emit one terminal summary listing only brokerages whose sealed database unit passed the full audit and exact member readback. A settled failed pipeline can retain independently verified brokerage totals and sale/lease breakdowns while its overall status remains **Needs attention**. Failed and pending brokerages are named with verified counts unavailable; collected counts are never substituted. Unknown commit outcomes, unfinished units or unconfirmed cleanup keep the summary unavailable. Partial results never claim all-source completion or sum brokerage counts into a global unique-property total. See [Start Here](START_HERE.md#opt-in-stage-overlap).
 
 Policy-supported inventory-only index entries are verified separately by their exact generation-bound readback. Canonical property totals and sale/lease counts exclude those entries; index entries make no parent-detail refresh claim. Missing or failed index evidence keeps the summary unavailable.

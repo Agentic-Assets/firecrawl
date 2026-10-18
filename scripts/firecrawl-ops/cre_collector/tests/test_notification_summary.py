@@ -296,6 +296,7 @@ def pipeline_evidence(evidence, primary_source=SOURCE, second_source="cbre"):
         current_inventory_admissions={},
     )
     parent["status"] = "failed"
+    evidence["values"]["control"]["status"] = "failed"
     parent["sources"][primary_source]["state"] = "complete"
     parent["sources"][primary_source]["pipeline_result"] = {
         "state": "verified",
@@ -420,6 +421,7 @@ def qualify_pipeline_second_source(evidence, setup):
     parent["sources"][primary]["checkpoint_status"] = "supported_scope_complete"
     child["status"] = "supported_scope_complete"
     parent["status"] = "complete"
+    evidence["values"]["control"]["status"] = "complete"
     child["pipeline"]["status"] = "complete"
     evidence["save"]()
     return second_path
@@ -804,6 +806,7 @@ def test_pipeline_marks_complete_only_when_every_selected_source_qualifies(evide
     parent["config"]["sources"] = [SOURCE]
     parent["sources"].pop(source2)
     parent["status"] = "complete"
+    evidence["values"]["control"]["status"] = "complete"
     child["config"]["sources"] = [SOURCE]
     child["sources"].pop(source2)
     child["pipeline"]["source_results"].pop(source2)
@@ -1254,3 +1257,76 @@ def test_real_main_terminal_metadata_keeps_verified_partial_summary(
         output = evidence["series"] / "produced-partial-summary.json"
         output.write_text(json.dumps(result))
         output.chmod(0o600)
+
+
+def settled_global_failure(evidence):
+    """Real terminal shapes from a verified unit followed by a pre-write stop."""
+    setup = pipeline_evidence(evidence)
+    evidence["values"]["control"]["status"] = "failed"
+    setup["child"]["pipeline"].update(
+        status="reconciliation_required", commit_outcome_unknown=False, active_unit=None
+    )
+    evidence["save"]()
+    return setup
+
+
+def test_settled_global_failure_retains_only_verified_brokerage(evidence):
+    settled_global_failure(evidence)
+    result = read_pipeline(evidence)
+    assert result["verified"] is True and result["complete"] is False
+    assert result["failed_source_keys"] == ["cbre"]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+    assert result["per_source_summaries"][0]["verified_listings"] == 3
+    assert result["per_source_summaries"][0]["transaction_breakdown"]["sale"] == 2
+    assert "verified_listings" not in result
+
+
+@pytest.mark.parametrize("fault", [
+    "write_unknown", "missing_write_outcome", "numeric_write_outcome", "active_unit",
+    "cleanup_unknown", "owner_mismatch", "interrupted", "ingesting", "generation",
+    "report_hash", "stale", "artifact_hash", "owner_unsettled", "active_ingest",
+])
+def test_global_failure_requires_known_settlement_and_unchanged_unit(evidence, fault):
+    setup = settled_global_failure(evidence)
+    pipeline = setup["child"]["pipeline"]
+    control = evidence["values"]["control"]
+    if fault == "write_unknown":
+        pipeline["commit_outcome_unknown"] = True
+    elif fault == "missing_write_outcome":
+        pipeline.pop("commit_outcome_unknown")
+    elif fault == "numeric_write_outcome":
+        pipeline["commit_outcome_unknown"] = 0
+    elif fault == "active_unit":
+        pipeline["active_unit"] = "unit-0002"
+    elif fault == "cleanup_unknown":
+        evidence["values"]["settlement"]["nested_cleanup_confirmed"] = False
+    elif fault == "owner_mismatch":
+        control["status"] = "complete"
+    elif fault == "interrupted":
+        control["status"] = "interrupted"
+    elif fault == "ingesting":
+        setup["child"]["sources"]["cbre"]["state"] = "ingest_recovery_required"
+    elif fault == "generation":
+        pipeline["source_results"][SOURCE]["generation_id"] = "stale"
+    elif fault == "report_hash":
+        pipeline["source_results"][SOURCE]["validation_sha256"] = "f" * 64
+    elif fault == "stale":
+        control["finished_unix_ms"] -= 600000
+    elif fault == "artifact_hash":
+        setup["child"]["sources"][SOURCE]["artifact"]["sha256"] = "f" * 64
+    elif fault == "owner_unsettled":
+        control["local_settlement"] = "unknown"
+    elif fault == "active_ingest":
+        setup["child"]["sources"]["cbre"]["state"] = "ingesting"
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
+@pytest.mark.parametrize("pipeline_status", ["complete", "partial", "failed"])
+def test_other_pipeline_terminal_states_cannot_hide_unknown_commit(evidence, pipeline_status):
+    setup = pipeline_evidence(evidence)
+    setup["child"]["pipeline"].update(status=pipeline_status, commit_outcome_unknown=True)
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)

@@ -580,6 +580,14 @@ function Get-CreNotificationText {
             $lines += "$bullet *Complete brokerages:* $($members.Count - $qualifiedSubsets.Count) | *Qualified subsets:* $($qualifiedSubsets.Count)"
         }
         $lines += "$bullet *Failed:* $(@($Summary.failed_source_keys).Count) | *Pending:* $(@($Summary.pending_source_keys).Count)"
+        foreach ($key in @($Summary.failed_source_keys | Select-Object -First 20)) {
+            $broker = (Get-CreBrokerageName $key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
+            $lines += "$bullet *${broker}:* Failed; verified counts unavailable."
+        }
+        foreach ($key in @($Summary.pending_source_keys | Select-Object -First 20)) {
+            $broker = (Get-CreBrokerageName $key).Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
+            $lines += "$bullet *${broker}:* Pending; verified counts unavailable."
+        }
         if ((-not $Summary.complete -or $ExitCode -ne 0) -and -not $subsetOnlyAttention) {
             $lines += ''
             $lines += "$bullet Partial result; the selected refresh did not finish successfully. Check the local CRE audit."
@@ -663,7 +671,7 @@ function Set-CreNotification {
         }
         $curl = (Get-Command curl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
         $summary = $null
-        if ($Phase -eq 'Terminal' -and $ExitCode -eq 0) {
+        if ($Phase -eq 'Terminal' -and ($ExitCode -eq 0 -or $Pipeline)) {
             $Record['notificationSummaryStatus'] = 'unavailable'
             try { $summary = Get-CreVerifiedSummary $Record $AttemptId }
             catch { $Record['notificationSummaryUnavailable'] = $true }
