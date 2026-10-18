@@ -78,15 +78,23 @@ def work_deadline(seconds: float):
     previous = signal.getsignal(signal.SIGALRM)
     previous_stops = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
 
-    def expired(_signum: int, _frame: Any) -> None:
+    interrupted = False
+
+    def interrupt(reason: type[KeyboardInterrupt]) -> None:
+        nonlocal interrupted
+        if interrupted:
+            return
+        # Latch before any call that can deliver another signal. Reentrant
+        # interrupts can strand Popen's wait lock before owned-child cleanup.
+        interrupted = True
         signal.setitimer(signal.ITIMER_REAL, 0.0)
-        raise TierDeadline
+        raise reason
+
+    def expired(_signum: int, _frame: Any) -> None:
+        interrupt(TierDeadline)
 
     def stopped(_signum: int, _frame: Any) -> None:
-        # An operator/guard stop must not encounter a second alarm inside
-        # checkpoint's settlement routine, which defers INT/TERM, not ALRM.
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        raise KeyboardInterrupt
+        interrupt(KeyboardInterrupt)
 
     signal.signal(signal.SIGALRM, expired)
     try:
