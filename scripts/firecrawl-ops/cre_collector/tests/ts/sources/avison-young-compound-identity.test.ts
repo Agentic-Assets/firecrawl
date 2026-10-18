@@ -12,7 +12,7 @@ function check(html:string,base:any) { const doc:ScrapedDoc={rawHtml:html,markdo
 for (const row of cases) {
  test(`Avison compound ${row.key} exact observed identity accepts without changing incoming fields`,()=>{const before=structuredClone(row);assert.doesNotThrow(()=>check(row.html,row));assert.deepEqual(row,before);});
  for(const mutation of ["wrong-h1","unknown-offering","address-h1","duplicate-h1","wrong-name","wrong-street","wrong-city","wrong-state","wrong-zip","title","og-title","og-url","canonical","duplicate-title","duplicate-og","missing-hero","duplicate-hero","conflict-h2","description-conflict","challenge"]){
-  test(`Avison compound ${row.key} ${mutation === "description-conflict" && row.key === "offering" ? "retains advisory" : "refuses"} ${mutation}`,()=>{const $=cheerio.load(row.html);const base={...row};
+  test(`Avison compound ${row.key} ${row.key === "offering" && ["description-conflict", "wrong-h1", "unknown-offering"].includes(mutation) ? "requires scoped advisory authority for" : "refuses"} ${mutation}`,()=>{const $=cheerio.load(row.html);const base={...row};
    if(mutation==="wrong-h1")$("h1").text("Different Property");
    if(mutation==="unknown-offering")$("h1").text("Unrecognized Property for Sale");
    if(mutation==="address-h1")$("h1").text("99999 Other Road");
@@ -34,6 +34,13 @@ for (const row of cases) {
    if(mutation==="description-conflict")$('meta[property="og:description"]').attr("content","Other Property, 999 Other Road, Other City, TX 99999");
    if(mutation==="duplicate-canonical")$("head").append(`<link rel="canonical" href="${row.sharpLaunchUrl}/"><link rel="canonical" href="${row.sharpLaunchUrl}/">`);
    if(mutation==="challenge")$("body").append("Checking your browser");
+   if (row.key === "offering" && ["wrong-h1", "unknown-offering"].includes(mutation)) {
+    // The complete visible address AND known-ZIP descriptions identify this
+    // new family. Removing descriptions restores the original refusal.
+    assert.doesNotThrow(() => check($.html(), base));
+    $('meta[name="description"],meta[name="twitter:description"],meta[property="og:description"]').remove();
+    assert.throws(() => check($.html(), base), /identity|structure/);
+   } else
    if (mutation === "description-conflict" && row.key === "offering") {
     // Complete visible identity is independently bound; SEO is source text, not street authority.
     assert.doesNotThrow(() => check($.html(), base));

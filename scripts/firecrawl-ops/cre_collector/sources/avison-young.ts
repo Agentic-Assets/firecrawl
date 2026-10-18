@@ -556,11 +556,47 @@ export function assertAvisonYoungDetailDoc(
   const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
   const namedDescriptionIdentity = completeDescriptionIdentity && identityMetadataMatches
     && heroLocations.length === 1 && heroLocations[0] === true;
+  // Only this stronger family treats a display name as advisory. A recognizable
+  // address assertion still has to agree; unclassified numeric/unit remnants
+  // refuse rather than becoming a new marketing-name exception.
+  const physicalHeadingAgrees = (): boolean => {
+    const heading = clean($("h1").text()) ?? "";
+    if (!heading) return false;
+    if (normalizeStreet(heading) === street || matchesAddressHeading(heading, street)) return true;
+    const attachedUnits = [...heading.matchAll(/\b(?:suite|ste|unit)([a-z]+)\b/gi)];
+    if (attachedUnits.some((unit) => unit[1]!.length === 1 || /^[A-Z]/.test(unit[1]!)
+      || normalizeStreet(heading).startsWith(street + " "))) return false;
+    // Observed acreage/SF marketing quantities are not street numbers. Strip
+    // the complete quantity, including its evidenced range, never bare digits.
+    const quantities = /[±~]?\s*\d[\d,.]*\s*(?:(?:up\s+to|to|-)\s*[±~]?\s*\d[\d,.]*\s*)?(?:rsf|sf|square feet|acres?|ac)\b/gi;
+    let displayText = heading.replace(quantities, " ").trim();
+    const region = new RegExp("(?:^|[,\\s])(" + stateNames.join("|")
+      + "|[a-z]{2})(?:\\s+(\\d{5}))?$", "i").exec(displayText);
+    if (region) {
+      if (!matchesStateLocation(region[1]! + (region[2] ? " " + region[2] : ""))) return false;
+      const locality = normalizeCity(displayText.slice(0, region.index));
+      if (!locality.endsWith(" " + city) && locality !== city) return false;
+      displayText = locality.slice(0, -city.length).trim();
+    } else if (/\bin\b/i.test(displayText)) return false;
+    let remainder = normalizeStreet(displayText);
+    const expectedName = normalizeStreet(base?.name);
+    if (remainder === expectedName) return true;
+    if (remainder.startsWith(expectedName + " ")) remainder = remainder.slice(expectedName.length).trim();
+    // Unqualified intersections/location punctuation are ambiguous. Only a
+    // wholly marketing remainder may use conjunctions after quantities/name
+    // are removed; unknown words never become an address-parser fallback.
+    if ((/[&,/]/.test(displayText) || /\b(?:and|at|nwc|nec|swc|sec)\b/.test(remainder))
+      && !/^(?:(?:of|industrial|office|medical|retail|space|ios|available|for|sale|or|lease|sublease|and)\s*)+$/.test(remainder)) return false;
+    return !heading.includes("#")
+      && !/\d|\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|highway|hwy|drive|dr|lane|ln|court|ct|parkway|pkwy|suite|ste|unit|apt|floor|lot)\b/.test(remainder);
+  };
+  const physicalAddressIdentity = addressHeroIdentity && completeDescriptionIdentity
+    && physicalHeadingAgrees();
   const nativeCompleteIdentity = requestedSharpLaunchMatch && urlMatches
     && Boolean(name && street && city && state)
     && ((nativeInfo.length > 0 && nativeInfoRows.length > 0) || hasPropertySections || hasBuildingSections)
     && $("h1").length === 1 && $(".hero__sub-title").length === 1
-    && (visiblePropertyIdentity || namedDescriptionIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
+    && (visiblePropertyIdentity || namedDescriptionIdentity || physicalAddressIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
       && matchesAddressHeading($(".hero__sub-title").text(), name)))))
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
     && pageTitles.every(titleMatches) && $('meta[property="og:url"]').length === 1

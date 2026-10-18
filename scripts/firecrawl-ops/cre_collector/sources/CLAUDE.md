@@ -339,6 +339,20 @@ witness is diagnosed as an identity refusal, which need not mean the property is
 wrong; empty or unrecognized templates retain the structure-refusal diagnosis.
 It grants no current inventory, freshness or source acceptance.
 
+A stronger native physical-identity family may retain a differing H1 as display
+text only with BOTH an independently complete visible street/range/unit or
+intersection, city/state hero AND the complete feed-name/street/city/state
+metadata tuple with known matching five-digit feed ZIP. A hero ZIP, when
+present, must agree; the ZIP need not be visibly printed. Exact title/OG-name,
+owned requested/observed/OG and every present canonical URL, singular identity
+containers, substantive structure and common H2/structured-subject vetoes remain.
+A missing canonical link does not itself fail this family. Address-shaped H1s
+must agree in full; unknown numeric/unit/intersection/location remnants refuse.
+Only bounded evidenced size-qualified and property/space marketing conjunctions
+may avoid that ambiguity veto. This is no claim that free-form names are aliases:
+canonical feed names and original text stay unchanged. Missing descriptions or
+unknown feed ZIP cannot gain this new authority. Other identity families and
+validated official-alternate child harvesting retain their existing contracts.
 Street comparison also recognizes `Highway/Hwy` and `Drive/Dr`; those rules
 apply to a property name/title only when the feed names the property by its
 street. The eight standard terminal street postdirections can compare with
