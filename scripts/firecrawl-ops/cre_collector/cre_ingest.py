@@ -3822,6 +3822,41 @@ def build_sql(
       s.raw_data->>'jllPriceWithheld' = 'true'
       AND {staged_source_key_sql} = 'jll'
     )"""
+    # One projection owns both the optional SET and its no-op comparison.
+    # Compare effective values, not sparse source values or the whole raw row.
+    institutional_assignments = {
+        column: f"COALESCE(s.{column}, t.{column})"
+        for column in (
+            "canonical_url", "building_class", "property_subtype", "apn",
+            "tenant_name", "guarantor", "lease_years_remaining",
+            "price_per_unit", "grm", "price_per_acre", "num_rooms", "revpar",
+            "clear_height_ft", "dock_doors", "drive_in_doors",
+            "power_service", "rail_served",
+        )
+    }
+    for column in ("price_per_unit", "grm", "price_per_acre", "revpar"):
+        institutional_assignments[column] = (
+            f"CASE WHEN {jll_price_withheld_stage_sql} THEN NULL "
+            f"ELSE {institutional_assignments[column]} END"
+        )
+    institutional_assignments["extra_facts"] = f"""CASE
+          WHEN {jll_price_withheld_stage_sql} THEN NULL
+          WHEN s.extra_facts IS NULL OR s.extra_facts = '{{}}'::jsonb
+            THEN COALESCE(t.extra_facts, '{{}}'::jsonb)
+          ELSE COALESCE(t.extra_facts, '{{}}'::jsonb) || s.extra_facts
+        END"""
+    institutional_set_sql = ",\n".join(
+        f"        {column} = {value}"
+        for column, value in institutional_assignments.items()
+    )
+    # Preserve serialized NUMERIC/JSONB scale as well as values. The SET stays
+    # native; text comparison only avoids a redundant second row mutation.
+    institutional_old_sql = ",\n        ".join(
+        f"t.{column}::text" for column in institutional_assignments
+    )
+    institutional_final_sql = ",\n        ".join(
+        f"({value})::text" for value in institutional_assignments.values()
+    )
     jll_contact_title_clear_sql = _jll_hidden_label_sql("c.title")
     jll_contact_license_clear_sql = _jll_hidden_label_sql("c.license")
     jll_document_title_clear_sql = _jll_hidden_label_sql("d.title")
@@ -5023,49 +5058,25 @@ DO $$ BEGIN
       AND column_name = 'building_class'
   ) THEN
     UPDATE credeals.cre_listings t SET
-        canonical_url         = COALESCE(s.canonical_url, t.canonical_url),
-        building_class        = COALESCE(s.building_class, t.building_class),
-        property_subtype      = COALESCE(s.property_subtype, t.property_subtype),
-        apn                   = COALESCE(s.apn, t.apn),
-        tenant_name           = COALESCE(s.tenant_name, t.tenant_name),
-        guarantor             = COALESCE(s.guarantor, t.guarantor),
-        lease_years_remaining = COALESCE(s.lease_years_remaining, t.lease_years_remaining),
-        price_per_unit        = CASE WHEN {jll_price_withheld_stage_sql}
-                                     THEN NULL
-                                     ELSE COALESCE(s.price_per_unit, t.price_per_unit) END,
-        grm                   = CASE WHEN {jll_price_withheld_stage_sql}
-                                     THEN NULL
-                                     ELSE COALESCE(s.grm, t.grm) END,
-        price_per_acre        = CASE WHEN {jll_price_withheld_stage_sql}
-                                     THEN NULL
-                                     ELSE COALESCE(s.price_per_acre, t.price_per_acre) END,
-        num_rooms             = COALESCE(s.num_rooms, t.num_rooms),
-        revpar                = CASE WHEN {jll_price_withheld_stage_sql}
-                                     THEN NULL
-                                     ELSE COALESCE(s.revpar, t.revpar) END,
-        clear_height_ft       = COALESCE(s.clear_height_ft, t.clear_height_ft),
-        dock_doors            = COALESCE(s.dock_doors, t.dock_doors),
-        drive_in_doors        = COALESCE(s.drive_in_doors, t.drive_in_doors),
-        power_service         = COALESCE(s.power_service, t.power_service),
-        rail_served           = COALESCE(s.rail_served, t.rail_served),
-        -- extra_facts: jsonb merge, keeping prior keys; a NULL/empty staged blob
-        -- (no new facts this pass) leaves the prior blob untouched.
-        extra_facts           = CASE
-                                  WHEN {jll_price_withheld_stage_sql} THEN NULL
-                                  WHEN s.extra_facts IS NULL
-                                       OR s.extra_facts = '{}'::jsonb THEN COALESCE(t.extra_facts, '{}'::jsonb)
-                                  ELSE COALESCE(t.extra_facts, '{}'::jsonb) || s.extra_facts
-                                END
+{institutional_set_sql}
     FROM _src s
     JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
     WHERE t.brokerage_id = s.brokerage_id
-      AND t.external_id = s.external_id;
+      AND t.external_id = s.external_id
+      AND ROW(
+        {institutional_old_sql}
+      ) IS DISTINCT FROM ROW(
+        {institutional_final_sql}
+      );
   END IF;
 END $$;
 
 """.replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
+        .replace("{institutional_set_sql}", institutional_set_sql)
+        .replace("{institutional_old_sql}", institutional_old_sql)
+        .replace("{institutional_final_sql}", institutional_final_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
         .replace("{targeted_queue}", targeted_queue)

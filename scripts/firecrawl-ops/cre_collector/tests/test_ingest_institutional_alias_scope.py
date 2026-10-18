@@ -26,3 +26,24 @@ def test_institutional_update_binds_canonical_source_brokerage(history_guard):
         r"ON b\.id = s\.brokerage_id\s+WHERE t\.brokerage_id = s\.brokerage_id",
         statement,
     )
+
+
+def test_institutional_update_compares_all_final_assignment_values():
+    sql = cre_ingest.build_sql([], [], "2026-10-12T00:00:00Z", set())
+    start = sql.index("-- Phase-2 data-lift: write the new institutional columns")
+    block = sql[start:sql.index("END $$;", start)]
+    block = re.sub(r"(?m)^\s*--[^\n]*\n", "", block)
+    assignments = re.findall(
+        r"^        ([a-z_]+)\s*= (.*?)(?=,\n        [a-z_]+\s*=|\n    FROM)",
+        block, re.MULTILINE | re.DOTALL,
+    )
+    assert len(assignments) == 18
+    old_values = ",\n        ".join(
+        f"t.{column}::text"
+        for column, _ in assignments
+    )
+    final_values = ",\n        ".join(
+        f"({value})::text"
+        for column, value in assignments
+    )
+    assert f"ROW(\n        {old_values}\n      ) IS DISTINCT FROM ROW(\n        {final_values}\n      )" in block
