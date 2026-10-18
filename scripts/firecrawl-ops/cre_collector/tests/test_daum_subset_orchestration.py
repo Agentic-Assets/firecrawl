@@ -267,7 +267,9 @@ def test_actual_worker_source_aggregate_claims_and_no_early_sql(subset, monkeypa
     assert len(calls) == 1
 
 
-def test_pipeline_subset_claims_pass_real_dryrun_reader_under_umask_022(subset):
+def test_pipeline_subset_claims_pass_real_dryrun_reader_under_umask_022(
+    subset,  # noqa: F811
+):
     """The pipeline's sealed claims carrier is readable by the strict dry-run guard."""
     import copy
     import json
