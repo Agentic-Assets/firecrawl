@@ -70,6 +70,7 @@ import tempfile
 # cre_collector/ on sys.path under pytest; for a direct CLI run we add our own
 # directory too so the import resolves from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cre_avison_lease_facts as avison_leases
 import cre_parse  # noqa: E402
 from cre_ingest import (  # noqa: E402
     SOURCE_TO_BROKERAGE,
@@ -366,13 +367,13 @@ def derive_avison_young(raw):
     _set(cols, "max_divisible_sf",
          num_or_none(rsl.get("availabilities_max_surface_sqft"), lo=0, hi=1e9))
 
-    # lease_rate_min/max <- availabilities_min_rent / availabilities_max_rent.
-    # (DQ guard 3) AY anomalous $7500/SF/YR: clamp through the >500 cap so the
-    # known anomaly is rejected exactly like cre_parse.parse_lease_rate would.
-    _set(cols, "lease_rate_min",
-         num_or_none(rsl.get("availabilities_min_rent"), lo=0, hi=500))
-    _set(cols, "lease_rate_max",
-         num_or_none(rsl.get("availabilities_max_rent"), lo=0, hi=500))
+    # Only attributed explicit-unit detail facts can establish an AY rate.
+    lease = avison_leases.project_row({
+        "slug": "avison-young", "external_id": str(dual_get(raw, "id")),
+        "raw_data": raw, "extra_facts": {},
+    })
+    for key in ("lease_rate_min", "lease_rate_max", "lease_rate_type"):
+        _set(cols, key, lease[key])
 
     # submarket <- submarket.
     _set(cols, "submarket", clean_text(rsl.get("submarket"), 128))

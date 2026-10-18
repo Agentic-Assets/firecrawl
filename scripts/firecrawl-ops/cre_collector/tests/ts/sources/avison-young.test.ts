@@ -21,7 +21,6 @@ import {
   avisonYoungMatchesTx,
   avisonYoungTransactionType,
   avisonYoungSizeText,
-  avisonYoungLeaseRateText,
   avisonYoungContact,
   avisonYoungEntityItems,
   avisonYoungTeamFeedState,
@@ -158,7 +157,7 @@ test("avisonYoungTransactions and transaction matchers classify rows", () => {
   assert.equal(avisonYoungTransactionType({ transaction: "Lease" }), "Lease");
 });
 
-test("avisonYoungSizeText and avisonYoungLeaseRateText format feed metrics", () => {
+test("avisonYoungSizeText formats feed size metrics without inventing rent units", () => {
   assert.equal(
     avisonYoungSizeText({
       total_surface_sqft: 50000,
@@ -167,14 +166,6 @@ test("avisonYoungSizeText and avisonYoungLeaseRateText format feed metrics", () 
     }),
     "50000 SF total; 2500 - 8000 SF available"
   );
-  assert.equal(
-    avisonYoungLeaseRateText({
-      availabilities_min_rent: 28,
-      availabilities_max_rent: 34,
-    }),
-    "$28 - $34/SF/YR"
-  );
-  assert.equal(avisonYoungLeaseRateText({}), null);
 });
 
 test("avisonYoungContact maps SharpLaunch team members", () => {
@@ -652,27 +643,18 @@ test("avisonYoungBaseListing emits availableSf / minDivisibleSf / maxDivisibleSf
   assert.equal(listingB.maxDivisibleSf, 127231);
 });
 
-test("avisonYoungBaseListing emits leaseRateMin/Max for normal rates and suppresses anomalous $7500/SF/YR rate", () => {
+test("avisonYoungBaseListing preserves feed rent without assigning units or period", () => {
   const fixtures = loadFixture();
-
-  // Row 17808: $18/SF/YR -> leaseRateMin=18; leaseRateMax pruned (null -> absent key)
-  const rowA = fixtures.find((f) => f.external_id === "17808")!.rawSharpLaunch;
-  const listingA = avisonYoungBaseListing(rowA, emptyTeam());
-  assert.equal(listingA.leaseRateMin, 18);
-  // prune() drops null values, so leaseRateMax is absent (undefined) when there is no range high
-  assert.equal(listingA.leaseRateMax, undefined, "no range high -> prune drops leaseRateMax");
-
-  // Row 17952: $4.95/SF/YR (same min and max in feed) -> leaseRateMin=4.95, leaseRateMax absent
-  const rowB = fixtures.find((f) => f.external_id === "17952")!.rawSharpLaunch;
-  const listingB = avisonYoungBaseListing(rowB, emptyTeam());
-  assert.equal(listingB.leaseRateMin, 4.95);
-  assert.equal(listingB.leaseRateMax, undefined, "identical min==max -> no range -> leaseRateMax absent");
-
-  // Row 18150: $7500/SF/YR anomaly -> MUST be rejected (>500 $/SF/yr guard) -> both absent after prune
-  const rowC = fixtures.find((f) => f.external_id === "18150")!.rawSharpLaunch;
-  const listingC = avisonYoungBaseListing(rowC, emptyTeam());
-  assert.equal(listingC.leaseRateMin, undefined, "AY $7500/SF/YR anomaly must be rejected by >500 guard");
-  assert.equal(listingC.leaseRateMax, undefined, "AY $7500/SF/YR anomaly must be rejected by >500 guard");
+  for (const externalId of ["17808", "17952", "18150"]) {
+    const row = fixtures.find((fixture) => fixture.external_id === externalId)!.rawSharpLaunch;
+    const listing = avisonYoungBaseListing(row, emptyTeam());
+    assert.equal(listing.leaseRateText, undefined);
+    assert.equal(listing.leaseRateMin, undefined);
+    assert.equal(listing.leaseRateMax, undefined);
+    assert.equal(listing.leaseRateType, undefined);
+    assert.equal(listing.rawSharpLaunch.availabilities_min_rent, row.availabilities_min_rent);
+    assert.equal(listing.rawSharpLaunch.availabilities_max_rent, row.availabilities_max_rent);
+  }
 });
 
 test("avisonYoungBaseListing emits submarket from rawSharpLaunch.submarket", () => {
@@ -1419,6 +1401,15 @@ test("strict Avison detail scrape is uncached, complete, and generation-bound", 
     return {
       rawHtml: `
         <html><main class="property-detail"><h1>602 N Capitol Ave</h1>
+        <div class="building__overview-text"><ul><li>1,800 sf available</li></ul></div>
+        <div class="availability-card-v2"><div class="availability-card-v2-container">
+          <div class="availability-card-status-tag">Available</div>
+          <div class="availability-card-name"><h3>Suite 101</h3></div>
+          <div class="availability-card-rent"><h3>$21.00 - $23.00/SF/YR</h3></div>
+          <div class="availability-card-info"><div class="availability-card-info-item">
+            <span class="availability-card-info-item-title">Total Size</span>
+            <p class="availability-card-info-item-value">1,800 SF</p>
+          </div></div></div></div>
         <script type="application/ld+json">
           {"@type":"RealEstateListing","name":"602 N Capitol Ave",
            "url":"${url}","description":"Current property detail"}
@@ -1457,6 +1448,26 @@ test("strict Avison detail scrape is uncached, complete, and generation-bound", 
   assert.equal(listing.freshnessProvenance.detailScope, "detail_page");
   assert.equal(listing.preserveChildCollections, undefined);
   assert.equal(listing.detailError, undefined);
+  assert.deepEqual(
+    listing.extraFacts.avison_lease_facts.pages.map((page: any) => page.role),
+    ["availability", "overview"]
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.external_id,
+    "17808"
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.listing_url,
+    "https://www.avisonyoung.us/properties/602-n-capitol-ave-indianapolis-lease"
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.pages[0].observed_at,
+    listing.detailObservedAt
+  );
+  assert.equal(
+    listing.extraFacts.avison_lease_facts.pages[0].observations[0].rent_text,
+    "$21.00 - $23.00/SF/YR"
+  );
 });
 
 test("strict Avison still fetches and validates both SharpLaunch and external detail URLs", async (t) => {

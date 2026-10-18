@@ -447,8 +447,14 @@ marker uses schema `avison-asking-price-v1` and control `absent`, `visible`, or
 Apply the source projection after enrichment and at every final emission so
 hidden asking aliases and prose cannot reappear. Preserve independent lease
 rates, cap rate, NOI and other nonprice facts, protected identity/resource URLs,
-and original observation clocks/proofs. Asking visibility is neither missing
-source data nor fresh-detail or production acceptance; follow
+and original observation clocks/proofs. The optional `avison_lease_facts`
+namespace preserves literal, URL- and observation-bound suite, status, rent,
+area, lease-type and labelled/unparsed page evidence; it does not assign units,
+periods or canonical rates. `cre_avison_lease_facts.py` is the sole canonical
+normalization/cohort authority after strict source guards, including its
+post-merge and backfill paths. Raw-fact retention or a priced subset is not
+inventory-coverage or source-acceptance proof. Asking visibility is neither
+missing source data nor fresh-detail or production acceptance; follow
 [source visibility guidance](../../../../docs/firecrawl-ops/references/cre-ingest-freshness-troubleshooting.md#source-visibility-is-not-missing-data).
 
 ## Monitor Mode Matrix

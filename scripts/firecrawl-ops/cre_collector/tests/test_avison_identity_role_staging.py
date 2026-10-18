@@ -57,7 +57,9 @@ def test_accepted_identity_roles_retain_page_and_feed_financials_in_actual_stagi
     assert sale["listing"]["salePriceUsd"] == 14500000
     assert sale["listing"]["rawSharpLaunch"]["sale_price"] == 14500000
     assert "14,000,000" in sale["listing"]["markdown"]
-    assert lease["listing"]["leaseRateMin"] == 19.5
+    # Typed rates now require the attributed detail facts at Python staging.
+    # Feed 19.5 has no period/basis; the differing page text remains available.
+    assert lease["listing"].get("leaseRateMin") is None
     assert lease["listing"]["rawSharpLaunch"]["availabilities_max_rent"] == 19.5
     assert "19.50-$20.50" in lease["listing"]["markdown"]
     assert len(lease["listing"]["contactsDetailed"]) == 2

@@ -1,4 +1,5 @@
 import { avisonAskingControl, projectAvisonAskingPrice } from "./pure/avison-price-visibility.js";
+import { extractAvisonLeaseFacts } from "./pure/avison-lease-facts.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
@@ -8,7 +9,7 @@ import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, firstJsonLd, jsonLdObjects, stripHtmlText, titleFromFilename } from "../lib/html.js";
-import { normBuildingClass, parseLeaseRate } from "../lib/parse.js";
+import { normBuildingClass } from "../lib/parse.js";
 import { scrapeDoc } from "../lib/scrape.js";
 import { harvestDetail, type HarvestResult } from "../lib/harvest.js";
 import { DocItem, LinkItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
@@ -1488,14 +1489,6 @@ export function avisonYoungSizeText(row: any): string | null {
   return clean(parts.join("; "));
 }
 
-export function avisonYoungLeaseRateText(row: any): string | null {
-  const min = num(row.availabilities_min_rent);
-  const max = num(row.availabilities_max_rent);
-  if (!min && !max) return null;
-  const value = min && max && min !== max ? `$${min} - $${max}` : `$${min ?? max}`;
-  return `${value}/SF/YR`;
-}
-
 export function avisonYoungContact(member: any): any | null {
   if (!member) return null;
   const name = clean([member.first_name, member.last_name].map(clean).filter(Boolean).join(" "));
@@ -1613,16 +1606,7 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
   // units: SharpLaunch "units" field (multifamily / mixed-use unit count).
   const units = num(row.units);
 
-  // capRatePct: already set below from row.cap_rate; no change needed.
-  // leaseRateMin / leaseRateMax: derive from the feed's clean numeric availability
-  // rent fields via parseLeaseRate so the AY $5000/SF/YR anomaly guard fires.
-  // Construct the canonical rate text ($/SF/YR) so parseLeaseRate can evaluate it.
-  const rateText = avisonYoungLeaseRateText(row);
-  const parsedRate = parseLeaseRate(rateText);
-  const leaseRateMin = parsedRate.min;
-  const leaseRateMax = parsedRate.max;
-  const leaseRateType = parsedRate.type;
-  // --- End Phase-2 Data-Lift ---
+
 
   return prune({
     id: row.id != null ? String(row.id) : null,
@@ -1641,10 +1625,6 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     salePriceUsd: num(row.sale_price),
     salePriceText: row.sale_price ? `$${Number(row.sale_price).toLocaleString("en-US")}` : null,
     capRatePct: num(row.cap_rate),
-    leaseRateText: rateText,
-    leaseRateMin,
-    leaseRateMax,
-    leaseRateType,
     sizeText: avisonYoungSizeText(row),
     buildingSizeSqft: num(row.total_surface_sqft),
     yearBuilt,
@@ -1890,8 +1870,14 @@ export async function enrichAvisonYoungListing(
   const directOnly = docs.every(
     ({ doc }) => doc.metadata?.transport === "direct_http"
   );
+  const leaseFacts = extractAvisonLeaseFacts({
+    externalId: clean(base.id) ?? "",
+    listingUrl: clean(base.externalUrl) ?? "",
+    observedAt: observed.observedAt,
+    pages: docs.map(({ doc, url }) => ({ sourceUrl: url, rawHtml: doc.rawHtml })),
+  });
 
-  return prune({
+  const result = prune({
     ...base,
     name: clean(listingLd?.name) ?? base.name,
     description: clean(listingLd?.description) ?? base.description,
@@ -1941,7 +1927,15 @@ export async function enrichAvisonYoungListing(
     detailUnavailable: undefined,
     detailUnavailableReason: undefined,
     detailWarning: errors.length ? errors.join("; ") : undefined,
-  });
+  }) ?? {};
+  if (leaseFacts) {
+    const extraFacts =
+      base.extraFacts !== null && typeof base.extraFacts === "object" && !Array.isArray(base.extraFacts)
+        ? base.extraFacts
+        : {};
+    result.extraFacts = { ...extraFacts, avison_lease_facts: leaseFacts };
+  }
+  return result;
 }
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
