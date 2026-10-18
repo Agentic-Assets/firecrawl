@@ -58,6 +58,15 @@ def test_compute_directory_refuses_leaf_symlink(tmp_path):
     assert list(outside.iterdir()) == []
 
 
+def test_compute_directory_refuses_pipeline_symlink(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o700)
+    (tmp_path / "pipeline").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(refresh.GlobalStageError, match="unsafe pipeline artifact"):
+        pipeline._private_compute_directory(tmp_path)
+    assert not (outside / "compute").exists()
+
+
 def test_compute_directory_refuses_wrong_owner_before_creation(tmp_path, monkeypatch):
     from cre_stop_guarded_tier import StopRefused
 

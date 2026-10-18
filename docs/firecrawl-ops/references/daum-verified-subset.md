@@ -112,6 +112,14 @@ checks, complete scoped before/after preservation snapshots, all 14 validation
 families and no-regression checks, exact emitted-generation readback, and
 settlement of the original process and its children.
 
+The normal pipeline creates its artifact-compute directory privately before
+writing admission evidence. If an existing compute path is public, linked, or
+owned by another user, the producer refuses it; it does not change permissions
+to make the path usable. Preserve a failed mixed-stage run and reconcile that
+exact generation before deciding what to run next. Resume still requires the
+saved generation's original code SHA and configuration; a new SHA is not a
+reason to rewrite its manifest or replay its cached artifact.
+
 Preserve failed evidence. Before commit, a refusal rolls back normally. For an
 unknown commit, use the existing recovery procedure instead of replaying. A
 committed run that fails qualification remains failed and fenced for reviewed
