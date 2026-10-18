@@ -1158,7 +1158,7 @@ def build_report(path: Path, *, now: datetime | None = None) -> dict[str, Any]:
             "max_items": _number(_object(manifest.get("config")).get("max_items")),
             "pipeline": _object(manifest.get("config")).get("pipeline") is True,
             "freshness_policy": "checkpoint_generation_bound",
-            "admission_scope": "daum_verified_subset_v1" if _verified_subset_scope(manifest.get("config") or {}) else None,
+            "admission_scope": (manifest["config"].get("current_inventory_admission") or manifest["config"].get("current_inventory_admissions", {}).get("daum-commercial", {})).get("admission_scope") if _verified_subset_scope(manifest.get("config") or {}) else None,
         },
         "computed_at": now.isoformat(),
         "sources": rows,

@@ -348,13 +348,20 @@ export type DaumVerifiedSubsetInventoryProof = Omit<DaumCurrentInventoryProof, "
   held: Array<[string, "unknown_inventory_and_detail_tenure"]>;
 };
 
+export type DaumEmptyTitleSubsetProof = Omit<DaumVerifiedSubsetInventoryProof, "schema" | "held"> & {
+  schema: "daum-verified-subset-v2";
+  subsetPolicy: "tenure-and-empty-title-v2";
+  titleObservations: Array<[string, 1, "empty"]>;
+  held: Array<[string, "unknown_inventory_and_detail_tenure" | "empty_required_property_title"]>;
+};
+
 export type SourceResult = {
   company: string;
   sourceUrl: string;
   method: string;
   totalAvailable: number | null;
   listings: any[];
-  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof;
+  currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof | DaumEmptyTitleSubsetProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
   // provider cap, PAGE_CAP, or a short/partial read) WITHOUT throwing. Monitor

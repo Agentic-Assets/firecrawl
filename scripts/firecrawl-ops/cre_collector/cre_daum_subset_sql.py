@@ -6,14 +6,18 @@ import re
 
 def guard_sql(claims):
     from cre_current_inventory_admission import require
-    from cre_daum_current_inventory import SUBSET_SCHEMA, SUBSET_SCOPE, _path_key, _post
+    from cre_daum_current_inventory import (
+        SUBSET_SCHEMA, SUBSET_SCOPE, SUBSET_SCHEMA_V2, SUBSET_SCOPE_V2,
+        SUBSET_POLICY_V2, _path_key, _post, _sha,
+    )
     from cre_ingest import sql_lit
 
-    require(isinstance(claims, dict) and claims.get("schema") == SUBSET_SCHEMA)
+    require(isinstance(claims, dict) and claims.get("schema") in {SUBSET_SCHEMA, SUBSET_SCHEMA_V2})
+    v2 = claims["schema"] == SUBSET_SCHEMA_V2
     binding = claims.get("binding")
     require(
         isinstance(binding, dict)
-        and binding.get("scope") == SUBSET_SCOPE
+        and binding.get("scope") == (SUBSET_SCOPE_V2 if v2 else SUBSET_SCOPE)
         and re.fullmatch(r"[a-f0-9]{32}", claims.get("attempt_id", ""))
     )
     members = claims.get("members")
@@ -36,6 +40,21 @@ def guard_sql(claims):
         keys.add(member["external_id"])
         urls.append(member["source_url"])
     emitted = sum(member["emitted"] for member in members)
+    if v2:
+        require(claims.get("subset_policy") == binding.get("subset_policy") == SUBSET_POLICY_V2)
+        observations = claims.get("titleObservations")
+        require(isinstance(observations, list) and _sha(observations) == binding.get("title_observations_sha256"))
+        by_id = {member["native_id"]: member for member in members}
+        seen, observed_urls = set(), []
+        for observation in observations:
+            require(isinstance(observation, list) and len(observation) == 3)
+            post, count, state = observation
+            require(isinstance(post, str) and post in by_id and post not in seen)
+            require(type(count) is int and count == 1 and state == "empty")
+            require(by_id[post]["emitted"] is False)
+            seen.add(post)
+            observed_urls.append(by_id[post]["source_url"])
+        require(observed_urls == sorted(observed_urls))
     require(
         urls == sorted(set(urls))
         and emitted >= 100

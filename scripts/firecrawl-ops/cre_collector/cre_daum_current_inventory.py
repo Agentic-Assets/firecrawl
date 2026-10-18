@@ -16,6 +16,7 @@ from cre_current_inventory_admission import (
     _time,
     admission_configuration,
     configuration,
+    subset_configuration,
     require,
     validate_report_scope,
 )
@@ -32,6 +33,9 @@ SOURCE = "daum-commercial"
 SCHEMA = "daum-strict-detail-v1"
 SUBSET_SCHEMA = "daum-verified-subset-v1"
 SUBSET_SCOPE = "daum_verified_subset_v1"
+SUBSET_SCHEMA_V2 = "daum-verified-subset-v2"
+SUBSET_SCOPE_V2 = "daum_verified_subset_v2"
+SUBSET_POLICY_V2 = "tenure-and-empty-title-v2"
 SUBSET_VERDICT = "ok_additive_verified_subset"
 SUBSET_REASON = "verified subset admitted additively with explicit tenure holds; whole source remains unqualified"
 BASE = "https://daumcommercial.com/property-search/"
@@ -172,7 +176,7 @@ def subset_source_scope(data):
         proof = entry.get("currentInventoryProof")
         require(
             isinstance(proof, dict)
-            and proof.get("schema") == SUBSET_SCHEMA
+            and proof.get("schema") in {SUBSET_SCHEMA, SUBSET_SCHEMA_V2}
             and proof.get("kind") == "verified_subset_with_holds"
             and isinstance(proof.get("held"), list)
         )
@@ -228,17 +232,19 @@ def _admit(
         and config["transactions"] == ["sale", "lease"]
     )
     expected_configuration = configuration(SOURCE)
+    selected = admission_configuration(config, SOURCE)
+    v2 = subset and isinstance(selected, dict) and selected.get("admission_scope") == SUBSET_SCOPE_V2
     if subset:
-        expected_configuration = {
-            **expected_configuration,
-            "admission_scope": SUBSET_SCOPE,
-        }
-    require(admission_configuration(config, SOURCE) == expected_configuration)
+        expected_configuration = subset_configuration(SUBSET_POLICY_V2 if v2 else "tenure-only-v1")
+    require(selected == expected_configuration)
     schema, scope_kind, verdict, reason = (
         (SUBSET_SCHEMA, SUBSET_SCOPE, SUBSET_VERDICT, SUBSET_REASON)
         if subset
         else (SCHEMA, SCOPE, VERDICT, REASON)
     )
+    if v2:
+        schema, scope_kind = SUBSET_SCHEMA_V2, SUBSET_SCOPE_V2
+        reason = "verified subset admitted additively with explicit incomplete-detail holds; whole source remains unqualified"
     require(
         config.get("additive") is True
         and config.get("mark_missing") is False
@@ -319,6 +325,8 @@ def _admit(
             {k: v for k, v in item.items() if k != "transaction"}
             == {k: v for k, v in proof.items() if k != "transaction"}
         )
+        if v2:
+            require(item.get("subsetPolicy") == SUBSET_POLICY_V2)
     total = proof["total"]
     require(type(total) is int and total >= 100)
     observed = _time(proof["observedAt"])
@@ -356,22 +364,35 @@ def _admit(
         require(observed <= _time(clock) <= end)
         _digest(body_hash)
         details[post] = (canonical, clock, body_hash)
-    held = [
-        [post, "unknown_inventory_and_detail_tenure"]
-        for post, row in native.items()
-        if row[-1] == "unknown"
-    ]
+    empty_titles, title_urls = set(), []
+    if v2:
+        observations = proof.get("titleObservations")
+        require(isinstance(observations, list))
+        for observation in observations:
+            require(isinstance(observation, list) and len(observation) == 3)
+            post, count, state = observation
+            require(isinstance(post, str) and post in details and post not in empty_titles)
+            require(type(count) is int and count == 1 and state == "empty")
+            empty_titles.add(post)
+            title_urls.append(native[post][0])
+        require(title_urls == sorted(title_urls))
+    held = [[post, "empty_required_property_title" if post in empty_titles
+             else "unknown_inventory_and_detail_tenure"]
+            for post, row in native.items() if post in empty_titles or row[-1] == "unknown"]
     if subset:
         require(proof.get("held") == held)
         require(
-            all(native[post][2] == native[post][4] == "unknown" for post, _ in held)
+            all(native[post][2] == native[post][4] == "unknown"
+                for post, reason in held if reason == "unknown_inventory_and_detail_tenure")
         )
+    held_ids = {post for post, _ in held}
     emitted_total = total - len(held)
     require(emitted_total >= 100)
     listings = scope["listings"]
     staged, emitted = {}, {"sale": set(), "lease": set()}
     expected = {
-        tx: {post for post, row in native.items() if row[-1] in {tx, "sale_or_lease"}}
+        tx: {post for post, row in native.items()
+             if post not in held_ids and row[-1] in {tx, "sale_or_lease"}}
         for tx in ("sale", "lease")
     }
     for listing in listings:
@@ -496,6 +517,9 @@ def _admit(
             whole_source_coverage=False,
             whole_lease_coverage="unknown" if held else "proved",
         )
+        if v2:
+            binding.update(subset_policy=SUBSET_POLICY_V2,
+                           title_observations_sha256=_sha(proof["titleObservations"]))
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
@@ -557,7 +581,7 @@ def ingest_subset_context(
         == {"algorithm": "sha256", "value": expected_database_target_sha256}
     )
     binding = envelope["binding"]
-    require(isinstance(binding, dict) and binding.get("scope") == SUBSET_SCOPE)
+    require(isinstance(binding, dict) and binding.get("scope") in {SUBSET_SCOPE, SUBSET_SCOPE_V2})
     for phase, key in (("source", "source_report"), ("aggregate", "aggregate_report")):
         report = copy.deepcopy(envelope[key])
         require(report["per_source"][SOURCE].get("current_inventory_proof") == binding)
@@ -576,8 +600,8 @@ def ingest_subset_context(
     require(hashlib.sha256(raw).hexdigest() == binding["artifact_sha256"])
     proof = json.loads(raw)["sources"][0]["currentInventoryProof"]
     held = {member[0] for member in proof["held"]}
-    return {
-        "schema": SUBSET_SCHEMA,
+    result = {
+        "schema": proof["schema"],
         "binding": binding,
         "attempt_id": attempt_id,
         "members": [
@@ -590,3 +614,6 @@ def ingest_subset_context(
             for row in proof["cohort"]
         ],
     }
+    if proof["schema"] == SUBSET_SCHEMA_V2:
+        result.update(subset_policy=SUBSET_POLICY_V2, titleObservations=proof["titleObservations"])
+    return result

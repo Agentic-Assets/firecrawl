@@ -6712,7 +6712,7 @@ def main():
             )
         is_daum_subset = any(
             isinstance(entry, dict) and isinstance(entry.get("currentInventoryProof"), dict)
-            and entry["currentInventoryProof"].get("schema") == "daum-verified-subset-v1"
+            and entry["currentInventoryProof"].get("schema") in {"daum-verified-subset-v1", "daum-verified-subset-v2"}
             for entry in data.get("sources", []))
         if is_daum_subset != (daum_subset_claims is not None):
             sys.exit("refusing DAUM subset without its explicit guarded claims")

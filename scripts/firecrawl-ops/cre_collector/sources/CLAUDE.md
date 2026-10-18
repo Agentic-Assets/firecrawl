@@ -147,6 +147,12 @@ The separate `--admit-daum-verified-subset` permission uses versioned
 `daum-verified-subset-v1` proof, never the complete proof above. It still proves
 two matching complete inventories and valid fresh details for every member;
 only inventory-unknown AND detail-unknown tenure may become a typed hold.
+The distinct `tenure-and-empty-title-v2` policy additionally holds an exactly
+one-container empty visible title after canonical/native identity and tenure
+conflict checks. It preserves resolved tenure and excludes that held ID from
+both transaction sets. Empty-only typed observations bind to complete detail
+receipts; V1/default behavior is unchanged. No title fallback or placeholder
+listing is permitted. Policy joins scope, generation and start in cache identity.
 Conflicts, malformed details, ownership or identity uncertainty fail the attempt.
 All-member historical compatibility and emitted lifecycle preconditions run
 before unchanged upserts. Held parents/children/index remain untouched; this

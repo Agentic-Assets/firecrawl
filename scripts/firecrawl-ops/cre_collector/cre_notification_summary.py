@@ -114,23 +114,28 @@ def _pipeline_admissions(config, selected_sources):
 
 def _subset_summary_fields(child, source, count):
     """Partial accounting is source-scoped and never grants complete-source credit."""
-    from cre_current_inventory_admission import is_verified_subset, DAUM_SUBSET_SCOPE
+    from cre_current_inventory_admission import is_verified_subset, admission_configuration
     if not is_verified_subset(child["config"], source):
         return {}
     checkpoint = child["sources"][source]
     gate = checkpoint["gate"]
     binding = gate["current_inventory_proof"]
+    selected = admission_configuration(child["config"], source)
+    scope = selected["admission_scope"]
+    v2 = scope == "daum_verified_subset_v2"
     require(gate.get("verdict") == "ok_additive_verified_subset"
             and gate.get("raw_verdict") == "first_seen"
-            and gate.get("admission_scope") == DAUM_SUBSET_SCOPE)
-    require(binding.get("schema") == "daum-verified-subset-v1"
-            and binding.get("scope") == DAUM_SUBSET_SCOPE
+            and gate.get("admission_scope") == scope)
+    require(binding.get("schema") == ("daum-verified-subset-v2" if v2 else "daum-verified-subset-v1")
+            and binding.get("scope") == scope
             and binding.get("whole_source_coverage") is False
             and binding.get("generation_id") == child["run_id"]
             and binding.get("collector_git_sha") == child["collector_git_sha"]
             and binding.get("artifact_sha256") == checkpoint["artifact"]["sha256"]
             and binding.get("database_target_sha256") == child["preflight"]["database_target"].get("value")
             and binding.get("source_policy_sha256") == current_inventory.subset_configuration()["source_policy_sha256"])
+    if v2:
+        require(binding.get("subset_policy") == selected["subset_policy"])
     for key in ("inventory_count", "emitted_count", "held_count"):
         require(type(binding.get(key)) is int and binding[key] >= 0)
     require(binding["inventory_count"] == binding["emitted_count"] + binding["held_count"]

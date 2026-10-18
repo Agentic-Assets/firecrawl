@@ -19,6 +19,8 @@ SCHEMA = "interra-current-inventory-v1"
 VERDICT = "ok_additive_current_inventory"
 SCOPE = "additive_current_inventory"
 DAUM_SUBSET_SCOPE = "daum_verified_subset_v1"
+DAUM_SUBSET_SCOPE_V2 = "daum_verified_subset_v2"
+DAUM_SUBSET_POLICIES = ("tenure-only-v1", "tenure-and-empty-title-v2")
 DAUM_SUBSET_STATUS = "qualified_partial_subset"
 DAUM_SUBSET_VERDICT = "ok_additive_verified_subset"
 
@@ -51,14 +53,23 @@ def configuration(source: str) -> dict:
     return result
 
 
-def subset_configuration() -> dict:
+def subset_configuration(policy="tenure-only-v1") -> dict:
     """The separately approved DAUM-only partial scope; complete is unchanged."""
-    return {**configuration("daum-commercial"), "admission_scope": DAUM_SUBSET_SCOPE}
+    require(policy in DAUM_SUBSET_POLICIES)
+    result = {**configuration("daum-commercial"), "admission_scope": DAUM_SUBSET_SCOPE}
+    if policy == "tenure-and-empty-title-v2":
+        result.update(admission_scope=DAUM_SUBSET_SCOPE_V2, subset_policy=policy)
+    return result
 
 
 def is_verified_subset(config: dict, source: str = "daum-commercial") -> bool:
     entry = admission_configuration(config, source)
-    return bool(entry and entry.get("admission_scope") == DAUM_SUBSET_SCOPE)
+    return bool(entry and entry.get("admission_scope") in {DAUM_SUBSET_SCOPE, DAUM_SUBSET_SCOPE_V2})
+
+
+def subset_policy(config: dict, source="daum-commercial") -> str:
+    entry = admission_configuration(config, source)
+    return entry.get("subset_policy", "tenure-only-v1") if entry else "tenure-only-v1"
 
 
 def validate_option(
@@ -80,11 +91,14 @@ def validate_options(
     additive_hold=False,
     allow_dirty=False,
     daum_verified_subset=False,
+    daum_subset_policy="tenure-only-v1",
 ) -> None:
     """Admit only explicit exact keys inside the selected source set."""
     admitted = list(admitted_sources or ())
     selected = list(sources)
     require(type(daum_verified_subset) is bool)
+    require(daum_subset_policy in DAUM_SUBSET_POLICIES)
+    require(daum_subset_policy == "tenure-only-v1" or daum_verified_subset)
     if daum_verified_subset:
         require("daum-commercial" in selected and "daum-commercial" not in admitted)
         require(tuple(transactions) == ("sale", "lease"))
@@ -113,17 +127,18 @@ def validate_options(
         configuration(source)
 
 
-def configuration_map(admitted_sources, sources, *, daum_verified_subset=False) -> dict:
+def configuration_map(admitted_sources, sources, *, daum_verified_subset=False, daum_subset_policy="tenure-only-v1") -> dict:
     validate_options(
         admitted_sources,
         sources,
         ("sale", "lease"),
         pipeline=True,
         daum_verified_subset=daum_verified_subset,
+        daum_subset_policy=daum_subset_policy,
     )
     result = {source: configuration(source) for source in admitted_sources}
     if daum_verified_subset:
-        result["daum-commercial"] = subset_configuration()
+        result["daum-commercial"] = subset_configuration(daum_subset_policy)
     return result
 
 
@@ -144,9 +159,9 @@ def admission_configuration(config: dict, source: str) -> dict | None:
         for key, entry in entries.items():
             require(isinstance(entry, dict))
             expected = (
-                subset_configuration()
+                subset_configuration(entry.get("subset_policy", "tenure-only-v1"))
                 if key == "daum-commercial"
-                and entry.get("admission_scope") == DAUM_SUBSET_SCOPE
+                and entry.get("admission_scope") in {DAUM_SUBSET_SCOPE, DAUM_SUBSET_SCOPE_V2}
                 else configuration(key)
             )
             require(entry == expected)
@@ -164,9 +179,9 @@ def admission_configuration(config: dict, source: str) -> dict | None:
     require(
         legacy
         == (
-            subset_configuration()
+            subset_configuration(legacy.get("subset_policy", "tenure-only-v1"))
             if key == "daum-commercial"
-            and legacy.get("admission_scope") == DAUM_SUBSET_SCOPE
+            and legacy.get("admission_scope") in {DAUM_SUBSET_SCOPE, DAUM_SUBSET_SCOPE_V2}
             else configuration(key)
         )
     )

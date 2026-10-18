@@ -2420,6 +2420,7 @@ def build_cohort_collect_worker_argv(
     concurrency: int,
     transactions: Sequence[str],
     daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
 ) -> list[str]:
     """Build the no-manifest collection worker command for one source.
 
@@ -2448,7 +2449,8 @@ def build_cohort_collect_worker_argv(
         str(concurrency),
         "--transactions",
         "both" if tuple(transactions) == TRANSACTIONS else transactions[0],
-    ] + (["--admit-daum-verified-subset"] if daum_verified_subset else [])
+    ] + (["--admit-daum-verified-subset"] if daum_verified_subset else []) + (
+        ["--daum-subset-policy", daum_subset_policy] if daum_subset_policy != "tenure-only-v1" else [])
 
 
 def build_gate_argv(
@@ -2573,6 +2575,7 @@ def fresh_source_env(
     attempt_number: int = 1,
     collector_concurrency: int | None = None,
     daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return subprocess env plus a nonsecret manifest summary of overrides."""
     env = safe_process_env(base)
@@ -2596,11 +2599,17 @@ def fresh_source_env(
                 return
             overrides[name] = str(max(minimum, min(maximum, int(normalized))))
 
+    current_inventory.require(daum_subset_policy in current_inventory.DAUM_SUBSET_POLICIES)
+    current_inventory.require(daum_subset_policy == "tenure-only-v1" or daum_verified_subset)
+    if "DAUM_SUBSET_POLICY" in env:
+        clear("DAUM_SUBSET_POLICY")
     clear("DAUM_VERIFIED_SUBSET")
     if daum_verified_subset:
         if source != "daum-commercial":
             raise ValueError("DAUM subset environment requires the DAUM source")
         set_value("DAUM_VERIFIED_SUBSET", "1")
+        if daum_subset_policy != "tenure-only-v1":
+            set_value("DAUM_SUBSET_POLICY", daum_subset_policy)
     set_value("CRE_REFRESH_GENERATION", run_dir.name)
     if generation_started_at:
         set_value("CRE_REFRESH_STARTED_AT", generation_started_at)
@@ -3488,6 +3497,7 @@ def run_cohort_collection_worker(
     concurrency: int,
     transactions: Sequence[str],
     daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
 ) -> int:
     """Collect one source without reading or writing a checkpoint manifest.
 
@@ -3504,6 +3514,7 @@ def run_cohort_collection_worker(
         attempt_number=attempt_number,
         collector_concurrency=concurrency,
         daum_verified_subset=daum_verified_subset,
+        daum_subset_policy=daum_subset_policy,
     )
     if source == "colliers-main":
         rc, _error = collect_colliers_main_chunks(
@@ -3716,6 +3727,7 @@ def _cohort_attempt(
                 daum_verified_subset=current_inventory.is_verified_subset(
                     manifest["config"], source
                 ),
+                daum_subset_policy=current_inventory.subset_policy(manifest["config"], source),
             )[1].items()
         },
         "rejected_artifact": None,
@@ -3762,6 +3774,7 @@ def _start_cohort_collection(
         daum_verified_subset=current_inventory.is_verified_subset(
             manifest["config"], source
         ),
+        daum_subset_policy=current_inventory.subset_policy(manifest["config"], source),
     )
     attempt_log.parent.mkdir(parents=True, exist_ok=True)
     log_handle = attempt_log.open("a", encoding="utf-8")
@@ -4033,6 +4046,7 @@ def new_manifest(
     admit_baseline_hold_additively: bool = False,
     admit_current_inventory_source: str | None = None,
     admit_daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
     pipeline: bool = False,
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
@@ -4108,6 +4122,7 @@ def new_manifest(
             transactions,
             pipeline=True,
             daum_verified_subset=admit_daum_verified_subset,
+            daum_subset_policy=daum_subset_policy,
             additive_hold=admit_baseline_hold_additively,
             allow_dirty=git_dirty,
         )
@@ -4116,6 +4131,7 @@ def new_manifest(
             admit_current_inventory_sources,
                 sources,
                 daum_verified_subset=admit_daum_verified_subset,
+                daum_subset_policy=daum_subset_policy,
             )
         )
     if admit_daum_verified_subset:
@@ -4126,11 +4142,12 @@ def new_manifest(
             pipeline=pipeline,
             additive_hold=admit_baseline_hold_additively,
             daum_verified_subset=True,
+            daum_subset_policy=daum_subset_policy,
             allow_dirty=git_dirty,
         )
         if not pipeline:
             manifest["config"]["current_inventory_admission"] = (
-                current_inventory.subset_configuration()
+                current_inventory.subset_configuration(daum_subset_policy)
             )
     if admit_current_inventory_source is not None:
         current_inventory.validate_option(
@@ -4167,6 +4184,7 @@ def load_resume_manifest(
     admit_baseline_hold_additively: bool = False,
     admit_current_inventory_source: str | None = None,
     admit_daum_verified_subset: bool = False,
+    daum_subset_policy: str = "tenure-only-v1",
     pipeline: bool = False,
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
@@ -4217,6 +4235,7 @@ def load_resume_manifest(
             transactions,
             pipeline=True,
             daum_verified_subset=admit_daum_verified_subset,
+            daum_subset_policy=daum_subset_policy,
             additive_hold=admit_baseline_hold_additively,
             allow_dirty=False,
         )
@@ -4224,6 +4243,7 @@ def load_resume_manifest(
             admit_current_inventory_sources,
             sources,
             daum_verified_subset=admit_daum_verified_subset,
+            daum_subset_policy=daum_subset_policy,
         )
     if admit_daum_verified_subset:
         current_inventory.validate_options(
@@ -4233,10 +4253,11 @@ def load_resume_manifest(
             pipeline=pipeline,
             additive_hold=admit_baseline_hold_additively,
             daum_verified_subset=True,
+            daum_subset_policy=daum_subset_policy,
         )
         if not pipeline:
             expected["current_inventory_admission"] = (
-                current_inventory.subset_configuration()
+                current_inventory.subset_configuration(daum_subset_policy)
             )
     if admit_current_inventory_source is not None:
         current_inventory.validate_option(
@@ -4626,6 +4647,7 @@ def collect_source(
             daum_verified_subset=current_inventory.is_verified_subset(
                 manifest["config"], source
             ),
+            daum_subset_policy=current_inventory.subset_policy(manifest["config"], source),
         )
         attempt = {
             "number": attempt_number,
@@ -5513,7 +5535,7 @@ def run_aggregate_gate(
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
         **(
-            {"admission_scope": current_inventory.DAUM_SUBSET_SCOPE if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
+            {"admission_scope": current_inventory.admission_configuration(manifest["config"], "daum-commercial")["admission_scope"] if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
             if manifest["config"].get("current_inventory_admission")
             else {}
         ),
@@ -6950,6 +6972,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None, action="append", dest="admit_current_inventory_sources",
         help="Exact reviewed source additive current inventory; repeat only with --pipeline; no lifecycle/certificate authority",
     )
+    parser.add_argument("--daum-subset-policy", choices=current_inventory.DAUM_SUBSET_POLICIES, default="tenure-only-v1")
     parser.add_argument(
         "--admit-daum-verified-subset",
         action="store_true",
@@ -7103,6 +7126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 transactions=worker_transactions,
                 daum_verified_subset=args.admit_daum_verified_subset,
+                daum_subset_policy=args.daum_subset_policy,
             )
             if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
                 return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
@@ -7163,6 +7187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             transactions,
             pipeline=args.pipeline,
             daum_verified_subset=args.admit_daum_verified_subset,
+            daum_subset_policy=args.daum_subset_policy,
             additive_hold=args.admit_baseline_hold_additively,
             allow_dirty=args.allow_dirty,
         )
@@ -7195,6 +7220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             admit_current_inventory_source=args.admit_current_inventory_source,
             admit_daum_verified_subset=args.admit_daum_verified_subset,
+            daum_subset_policy=args.daum_subset_policy,
             pipeline=args.pipeline,
             admit_current_inventory_sources=args.admit_current_inventory_sources
             if args.pipeline
@@ -7225,6 +7251,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             admit_baseline_hold_additively=args.admit_baseline_hold_additively,
             admit_current_inventory_source=args.admit_current_inventory_source,
             admit_daum_verified_subset=args.admit_daum_verified_subset,
+            daum_subset_policy=args.daum_subset_policy,
             pipeline=args.pipeline,
             admit_current_inventory_sources=args.admit_current_inventory_sources
             if args.pipeline

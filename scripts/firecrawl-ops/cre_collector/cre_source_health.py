@@ -370,7 +370,7 @@ def _load_child(
 def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, source_key=None):
     if source_key != "daum-commercial" or checkpoint.get("state") != "qualified_partial_subset" or not isinstance(child, Mapping):
         return False
-    from cre_current_inventory_admission import is_verified_subset
+    from cre_current_inventory_admission import is_verified_subset, admission_configuration
     try:
         if not is_verified_subset(child["config"]):
             return False
@@ -388,7 +388,7 @@ def _qualified_subset_attempt(checkpoint, child, observation, *, computed_at, so
             and _mapping(source.get("readback")).get("generation_id") == child.get("run_id")
             and binding.get("generation_id") == child.get("run_id")
             and binding.get("artifact_sha256") == _mapping(source.get("artifact")).get("sha256")
-            and binding.get("scope") == "daum_verified_subset_v1"
+            and binding.get("scope") == admission_configuration(child["config"], "daum-commercial")["admission_scope"]
             and binding.get("whole_source_coverage") is False
             and None not in (start, observed, finished) and start <= observed <= finished
             and _within_clock_skew(observation, computed_at)

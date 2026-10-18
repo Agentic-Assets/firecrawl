@@ -182,7 +182,7 @@ database-health claim.
 
 An explicitly admitted DAUM subset instead says **Verified subset refreshed**,
 shows inventory/emitted/held counts and verified sale/lease/both counts, and
-states that whole-brokerage coverage is incomplete. Unknown-tenure holds never
+states that whole-brokerage coverage is incomplete. Held records never
 count as refreshed records. Zero emitted leases with holds means zero verified
 subset leases and unknown whole-brokerage lease coverage. Pipeline summaries
 count qualified subsets separately from complete brokerages; neither this
