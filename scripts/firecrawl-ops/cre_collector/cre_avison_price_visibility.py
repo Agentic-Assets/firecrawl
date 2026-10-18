@@ -236,7 +236,7 @@ def sanitize_text(value, amounts=(), role="narrative"):
             )
             asking = re.search(ASK_LABEL, part, re.I)
             disclosure = re.search(MONEY, part, re.I) or (
-                role not in {"unknown", "identity"}
+                role not in {"unknown", "identity", "identity-caption"}
                 and re.search(_amount_pattern(amounts), part)
             )
             if independent or (not asking and not disclosure):
@@ -271,6 +271,47 @@ def _context(value, context):
     return context
 
 
+def _lease_fact_pairs(value, amounts):
+    """Sanitize the new literal label/value pairs atomically, before role loss."""
+    result = copy.deepcopy(value)
+    if not isinstance(result, dict):
+        return result
+    for page in result.get("pages", []):
+        if not isinstance(page, dict):
+            continue
+        for observation in page.get("observations", []):
+            if not isinstance(observation, dict) or not isinstance(observation.get("fields"), list):
+                continue
+            for key in ("suite_text", "status_text", "rent_text", "area_text", "lease_type_text"):
+                text = observation.get(key)
+                if isinstance(text, str):
+                    role = "independent" if key == "rent_text" else "identity-caption" if key in {"suite_text", "area_text"} else "narrative"
+                    if sanitize_text(text, amounts, role) != text:
+                        observation[key] = None
+            if isinstance(observation.get("unparsed"), list):
+                observation["unparsed"] = [
+                    sanitize_text(text, amounts) if isinstance(text, str) else text
+                    for text in observation["unparsed"]
+                ]
+            fields = []
+            for pair in observation["fields"]:
+                if (not isinstance(pair, dict) or not isinstance(pair.get("label"), str)
+                        or (pair.get("value") is not None and not isinstance(pair.get("value"), str))):
+                    fields.append(pair)  # The strict source consumer still refuses malformed input.
+                    continue
+                label, text = pair["label"], pair.get("value")
+                if re.search(ASK_LABEL, label, re.I):
+                    continue
+                if re.search(OTHER_LABEL, label, re.I) or re.search(r"\brental\s+rate\b", label, re.I):
+                    if isinstance(text, str) and re.search(ASK_LABEL, text, re.I):
+                        continue
+                elif text is not None and sanitize_text(str(text), amounts) != str(text):
+                    continue
+                fields.append(pair)
+            observation["fields"] = fields
+    return result
+
+
 def project_value(value, amounts=(), context="", role="raw"):
     if isinstance(value, list):
         return [project_value(item, amounts, context, role) for item in value]
@@ -291,6 +332,8 @@ def project_value(value, amounts=(), context="", role="raw"):
     for key, item in value.items():
         normalized = _key(key)
         tokens = _tokens(key)
+        if normalized == "avisonleasefacts":
+            item = _lease_fact_pairs(item, amounts)
         if normalized == "avisonpricevisibility":
             if (
                 not isinstance(item, dict)
@@ -541,7 +584,7 @@ BEGIN
    IF part='' THEN CONTINUE; END IF;
    independent:=part ~* ('^'||__OTHER__) OR (part ~* __BASIS__ AND (NOT part ~* __ASK__ OR part ~* '^offered\s+at\y')) OR (role='independent' AND NOT part ~* __ASK__);
    asking:=part ~* __ASK__;
-   disclosure:=part ~* __MONEY__ OR (role NOT IN ('unknown','identity') AND cardinality(variants)>0 AND part ~* amount_pattern);
+   disclosure:=part ~* __MONEY__ OR (role NOT IN ('unknown','identity','identity-caption') AND cardinality(variants)>0 AND part ~* amount_pattern);
    IF independent OR (NOT asking AND NOT disclosure) THEN joined:=concat_ws(' ',nullif(joined,''),part); END IF;
   END LOOP;
   joined:=rtrim(joined,' -–—');
@@ -549,6 +592,47 @@ BEGIN
  END LOOP;
  result:=rtrim(btrim(result),'; ');
  FOR i IN 1..cardinality(spans) LOOP result:=replace(result,chr(57344+i),spans[i]); END LOOP;
+ RETURN result;
+END $av$;
+
+CREATE OR REPLACE FUNCTION pg_temp.avison_lease_field_pairs(v jsonb, amounts numeric[])
+RETURNS jsonb LANGUAGE plpgsql IMMUTABLE AS $av$
+DECLARE result jsonb:=v; page jsonb; observation jsonb; pair jsonb; fields jsonb;
+ pi bigint; oi bigint; label text; value text; k text; clean_unparsed jsonb;
+BEGIN
+ IF jsonb_typeof(v)<>'object' OR jsonb_typeof(v->'pages') IS DISTINCT FROM 'array' THEN RETURN v; END IF;
+ FOR page,pi IN SELECT x,n FROM jsonb_array_elements(v->'pages') WITH ORDINALITY AS p(x,n) LOOP
+  IF jsonb_typeof(page->'observations') IS DISTINCT FROM 'array' THEN CONTINUE; END IF;
+  FOR observation,oi IN SELECT x,n FROM jsonb_array_elements(page->'observations') WITH ORDINALITY AS p(x,n) LOOP
+   IF jsonb_typeof(observation->'fields') IS DISTINCT FROM 'array' THEN CONTINUE; END IF;
+   FOREACH k IN ARRAY ARRAY['suite_text','status_text','rent_text','area_text','lease_type_text'] LOOP
+    IF jsonb_typeof(observation->k)='string' AND pg_temp.avison_asking_text(observation->>k,amounts,CASE WHEN k='rent_text' THEN 'independent' WHEN k IN ('suite_text','area_text') THEN 'identity-caption' ELSE 'narrative' END) IS DISTINCT FROM observation->>k THEN
+     observation:=jsonb_set(observation,ARRAY[k],'null'::jsonb);
+    END IF;
+   END LOOP;
+   IF jsonb_typeof(observation->'unparsed')='array' THEN
+    SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(x)='string' THEN to_jsonb(pg_temp.avison_asking_text(x#>>'{}',amounts)) ELSE x END),'[]'::jsonb)
+     INTO clean_unparsed FROM jsonb_array_elements(observation->'unparsed') AS u(x);
+    observation:=jsonb_set(observation,ARRAY['unparsed'],clean_unparsed);
+   END IF;
+   result:=jsonb_set(result,ARRAY['pages',(pi-1)::text,'observations',(oi-1)::text],observation);
+   fields:='[]'::jsonb;
+   FOR pair IN SELECT * FROM jsonb_array_elements(observation->'fields') LOOP
+    IF jsonb_typeof(pair)<>'object' OR jsonb_typeof(pair->'label') IS DISTINCT FROM 'string' OR (pair ? 'value' AND jsonb_typeof(pair->'value') NOT IN ('string','null')) THEN
+     fields:=fields||jsonb_build_array(pair); CONTINUE;
+    END IF;
+    label:=pair->>'label'; value:=pair->>'value';
+    IF label ~* __ASK__ THEN CONTINUE; END IF;
+    IF label ~* __OTHER__ OR label ~* '\yrental[[:space:]]+rate\y' THEN
+     IF value ~* __ASK__ THEN CONTINUE; END IF;
+    ELSIF value IS NOT NULL AND pg_temp.avison_asking_text(value,amounts) IS DISTINCT FROM value THEN
+     CONTINUE;
+    END IF;
+    fields:=fields||jsonb_build_array(pair);
+   END LOOP;
+   result:=jsonb_set(result,ARRAY['pages',(pi-1)::text,'observations',(oi-1)::text,'fields'],fields);
+  END LOOP;
+ END LOOP;
  RETURN result;
 END $av$;
 
@@ -578,6 +662,7 @@ BEGIN
  result:='{}'::jsonb;
  FOR k,x IN SELECT * FROM jsonb_each(v) LOOP
   normalized:=lower(regexp_replace(k,'[^a-zA-Z0-9]','','g'));
+  IF normalized='avisonleasefacts' THEN x:=pg_temp.avison_lease_field_pairs(x,amounts); END IF;
   tokens:=' '||lower(regexp_replace(regexp_replace(k,'([a-z])([A-Z])','\1 \2','g'),'[_-]',' ','g'))||' ';
   IF normalized='avisonpricevisibility' THEN
    IF jsonb_typeof(x) IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(x))<>2 OR x->>'schema' IS DISTINCT FROM 'avison-asking-price-v1' OR NOT coalesce(x->>'control' IN ('absent','visible','withheld'),false) THEN RAISE EXCEPTION 'Avison invalid marker'; END IF;

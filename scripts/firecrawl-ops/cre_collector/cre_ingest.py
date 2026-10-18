@@ -55,6 +55,7 @@ from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunspli
 # delegate to it without changing their observable to_row()-level behavior.
 import cre_parse
 import cre_avison_price_visibility as avison_prices
+import cre_avison_lease_facts as avison_leases
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -2809,17 +2810,20 @@ def to_row(listing, brokers_by_idx, scraped_at):
 
     # (DQ guard 3) AY $5000/SF/YR anomaly + the >500 $/SF/yr cap live in
     # cre_parse.parse_lease_rate, so parse_lease_rates returns (None, None) for them.
-    lease_min, lease_max = parse_lease_rates(listing.get("leaseRateText"))
+    lease_min, lease_max = ((None, None) if source_key == "avison-young"
+                            else parse_lease_rates(listing.get("leaseRateText")))
     # An adapter may pre-parse a cleaner lease rate than leaseRateText; prefer the
     # explicit leaseRateMin/Max when present (contract B), COALESCE-style.
     lease_min = (
         lease_min
         if lease_min is not None
+        else None if source_key == "avison-young"
         else num_or_none(listing.get("leaseRateMin"), lo=0, hi=500)
     )
     lease_max = (
         lease_max
         if lease_max is not None
+        else None if source_key == "avison-young"
         else num_or_none(listing.get("leaseRateMax"), lo=0, hi=500)
     )
     if jll_pricing_withheld or jll_foreign_lease_currency:
@@ -3123,7 +3127,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "om_facts": om_facts,
         "_modes": {listing.get("transactionMode")},
     }
-    return avison_prices.project_row(row)
+    return avison_leases.project_row(avison_prices.project_row(row))
 
 
 def _contact_aliases(item):
@@ -3381,7 +3385,7 @@ def merge_rows(a, b):
         a["contacts"] = _safe_jll_hidden_child_metadata(a["contacts"], broker=True)
         for key in ("documents", "images", "media", "links"):
             a[key] = _safe_jll_hidden_child_metadata(a[key])
-    return avison_prices.project_row(a)
+    return avison_leases.project_row(avison_prices.project_row(a))
 
 
 def validate_duplicate_identity_before_merge(a, b):

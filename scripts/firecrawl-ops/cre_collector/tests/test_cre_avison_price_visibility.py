@@ -23,6 +23,17 @@ def listing(control=1, **changes):
         "description": "Great frontage. Asking price $2,000,000. Rent $20/SF/YR.",
         "detailObservedAt": "2026-10-16T22:00:00Z",
     }
+    # Independent annual rent now has explicit source units, not feed guesses.
+    url = value["url"]
+    value["detailScrape"] = {"urls": [url]}
+    value["rawSharpLaunch"].update(id=value["id"], external_url=url, country="US", sale_currency="USD")
+    value["extraFacts"] = {"avison_lease_facts": {
+        "schema": "avison-lease-facts-v1", "external_id": value["id"], "listing_url": url,
+        "pages": [{"source_url": url, "observed_at": value["detailObservedAt"], "role": "availability",
+                   "observations": [{"suite_text": "Test suite", "status_text": "Available",
+                                     "rent_text": "$20 - $25/SF/Year", "area_text": "1,000 SF",
+                                     "lease_type_text": None, "fields": [], "unparsed": []}]}],
+    }}
     value.update(changes)
     return value
 
@@ -35,7 +46,8 @@ def test_hidden_asking_cannot_enter_canonical_stage():
     assert row["noi"] == 50
     assert row["grm"] == 9
     assert row["description"] == "Great frontage. Rent $20/SF/YR."
-    assert row["raw_data"]["rawSharpLaunch"] == {"hide_price": 1}
+    assert row["raw_data"]["rawSharpLaunch"]["hide_price"] == 1
+    assert "sale_price" not in row["raw_data"]["rawSharpLaunch"]
 
 
 @pytest.mark.parametrize("control", [True, False, None, "1", 2])

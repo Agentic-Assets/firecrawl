@@ -22,7 +22,7 @@ test('Avison final fresh producer suppresses hidden asking without losing rent o
     }]:[]}));
   };
   (firecrawl as any).scrape=async(url:string)=>({
-    rawHtml:`<script type="application/ld+json">{"@type":"RealEstateListing","name":"Synthetic Visibility Property","url":"${url}"}</script>`,
+    rawHtml:`<script type="application/ld+json">{"@type":"RealEstateListing","name":"Synthetic Visibility Property","url":"${url}"}</script><div class="availability-card-v2"><div class="availability-card-v2-container"><div class="availability-card-name"><h3>Suite 20</h3></div><span class="availability-card-status-tag">Available</span><div class="availability-card-rent"><h3>$20/SF/YR</h3></div></div></div>`,
     markdown:'Retail frontage. Asking price $20. 20 available. Rent $20/SF/YR.',links:[],metadata:{sourceURL:url,statusCode:200},
   });
   const result=await srcAvisonYoung('sale',1,false);const row=result.listings[0];
@@ -32,7 +32,9 @@ test('Avison final fresh producer suppresses hidden asking without losing rent o
   assert.equal(row.rawSharpLaunch.hide_price,1);
   assert.match(row.markdown,/Rent \$20\/SF\/YR/);
   assert.doesNotMatch(row.markdown,/asking price|20 available/i);
-  assert.equal(row.leaseRateMin,20);
+  assert.equal(row.leaseRateMin,undefined);
+  assert.equal(row.rawSharpLaunch.availabilities_min_rent,20);
+  assert.equal(row.extraFacts.avison_lease_facts.pages[0].observations[0].rent_text,"$20/SF/YR");
   assert.equal(row.freshnessProvenance.generationId,'synthetic-visibility-generation');
   assert.equal(row.detailObservedWithChildPreservation,true);
   assert.ok(row.detailObservedAt);
@@ -89,7 +91,8 @@ test('Avison monitor, base-only and degraded-detail final emissions stay hidden 
   process.env.AVISON_YOUNG_DETAIL_LIMIT=limit;
   const result=await srcAvisonYoung('sale',1,monitor);const row=result.listings[0];
   assert.equal(row.salePriceUsd,undefined);assert.equal(row.rawSharpLaunch.sale_price,undefined);
-  assert.equal(row.leaseRateMin,20);assert.equal(row.id,'20');
+  assert.equal(row.leaseRateMin,undefined);
+  assert.equal(row.rawSharpLaunch.availabilities_min_rent,20);assert.equal(row.id,'20');
   assert.equal(row.detailObservedAt,undefined);assert.equal(row.detailObservedWithChildPreservation,undefined);
   assert.equal(row.freshnessProvenance.detailScope,'inventory_only');
   assert.equal(row.avisonPriceVisibility.control,'withheld');

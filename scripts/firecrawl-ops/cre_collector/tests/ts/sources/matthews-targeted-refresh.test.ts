@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { groupEnrichItems, resolveEnricher, runEnrichGroups } from "../../../lib/enrich.js";
 import { firecrawl } from "../../../lib/scrape.js";
+import { observationNow } from "../../../lib/observation-clock.js";
 import { MATTHEWS_FETCH_TIMEOUT_MS, matthewsFreshInventory } from "../../../sources/matthews.js";
 
 const sale = "https://www.matthews.com/properties/target-sale";
@@ -28,7 +29,7 @@ async function setup(t: TestContext, header: any, inventory: string = sitemap([s
     const url = String(input); requested.push(url);
     assert.equal(options?.cache, "no-store");
     assert.equal(options?.redirect, "manual");
-    received[url] = Date.now();
+    received[url] = Date.parse(observationNow());
     if (url === sitemapUrl) return new Response(inventory);
     return new Response(httpStatus === 200 ? detail(url) : null, { status: httpStatus, headers: httpStatus === 308 ? { location: sale } : undefined });
   };

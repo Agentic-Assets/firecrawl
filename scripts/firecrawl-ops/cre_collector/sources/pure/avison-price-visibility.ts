@@ -81,6 +81,82 @@ function contextOf(value: Record<string, any>, inherited: Context): Context {
   return inherited;
 }
 
+const OTHER_LABEL = /\b(?:rent|rental\s+rate|lease\s+rate|noi|net\s+operating\s+income|cap\s+rate|grm|tax(?:es)?|operating\s+expenses)\b/i;
+const LEASE_FACT_TEXT_FIELDS = new Set([
+  "suite_text", "status_text", "rent_text", "area_text", "lease_type_text",
+]);
+
+function projectAvisonLeaseField(field: any, amounts: readonly number[]): any {
+  if (!object(field) || typeof field.label !== "string") return field;
+  const label = field.label;
+  const value = field.value;
+  if (value !== null && typeof value !== "string") return field;
+  if (ASK_LABEL.test(label)) return undefined;
+  if (OTHER_LABEL.test(label)) {
+    if (typeof value === "string" && ASK_LABEL.test(value)) return undefined;
+  } else if (value !== null && value !== undefined) {
+    const text = String(value);
+    if (sanitizeAvisonAskingText(text, amounts, "narrative") !== text) return undefined;
+  }
+  return field;
+}
+
+function projectAvisonLeaseObservation(observation: any, amounts: readonly number[]): any {
+  if (!object(observation)) return undefined;
+  const { fields, ...rest } = observation;
+  const prepared = { ...rest };
+  for (const key of LEASE_FACT_TEXT_FIELDS) {
+    if (typeof prepared[key] !== "string") continue;
+    if (ASK_LABEL.test(prepared[key])) {
+      prepared[key] = null;
+      continue;
+    }
+    const role = key === "rent_text"
+      ? "independent"
+      : key === "suite_text" || key === "area_text" ? "identity-caption" : "narrative";
+    const sanitized = sanitizeAvisonAskingText(prepared[key], amounts, role);
+    if (sanitized !== prepared[key]) prepared[key] = null;
+  }
+  if (Array.isArray(prepared.unparsed)) {
+    prepared.unparsed = prepared.unparsed.map((text: any) => {
+      if (typeof text !== "string" || ASK_LABEL.test(text)) return null;
+      const sanitized = sanitizeAvisonAskingText(text, amounts, "narrative");
+      return sanitized || null;
+    }).filter((text: any) => text !== null);
+  }
+  const projected = projectAvisonAskingValue(prepared, amounts, "independent");
+  if (Array.isArray(fields)) {
+    projected.fields = fields.map((field) => projectAvisonLeaseField(field, amounts))
+      .filter((field) => field !== undefined);
+  }
+  return projected;
+}
+
+function projectAvisonLeasePage(page: any, amounts: readonly number[]): any {
+  if (!object(page) || !Array.isArray(page.observations)) {
+    return projectAvisonAskingValue(page, amounts, "independent");
+  }
+  const { observations, ...rest } = page;
+  return {
+    ...projectAvisonAskingValue(rest, amounts, "independent"),
+    observations: observations.map((observation: any) =>
+      projectAvisonLeaseObservation(observation, amounts)
+    ).filter((observation: any) => observation !== undefined),
+  };
+}
+
+function projectAvisonLeaseFacts(value: any, amounts: readonly number[]): any {
+  if (!object(value) || value.schema !== "avison-lease-facts-v1" || !Array.isArray(value.pages)) {
+    return projectAvisonAskingValue(value, amounts, "independent");
+  }
+  const { pages, ...rest } = value;
+  return {
+    ...projectAvisonAskingValue(rest, amounts, "independent"),
+    pages: pages.map((page: any) => projectAvisonLeasePage(page, amounts))
+      .filter((page: any) => page !== undefined),
+  };
+}
+
 export function projectAvisonAskingValue(value: any, amounts: readonly number[] = [], context: Context = ""): any {
   if (context === "identity") return value;
   if (Array.isArray(value)) return value.map(v => projectAvisonAskingValue(v, amounts, context)).filter(v => v !== undefined && v !== "");
@@ -94,6 +170,10 @@ export function projectAvisonAskingValue(value: any, amounts: readonly number[] 
   for (const [key, item] of Object.entries(value)) {
     const normalized = compact(key), tokens = words(key);
     if (IDENTITY.has(normalized) || ["url", "href", "src"].includes(tokens.at(-1) ?? "") && typeof item === "string" && /^https?:\/\//i.test(item)) { out[key] = item; continue; }
+    if (normalized === "avisonleasefacts") {
+      out[key] = projectAvisonLeaseFacts(item, amounts);
+      continue;
+    }
     if (ASK_KEYS.has(normalized) || tokens.includes("asking") || tokens.includes("sale") && (tokens.includes("price") || tokens.includes("amount"))) {
       if (object(item) || Array.isArray(item)) out[key] = projectAvisonAskingValue(item, amounts, "asking");
       continue;

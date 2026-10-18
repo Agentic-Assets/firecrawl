@@ -66,7 +66,8 @@ test("Avison accepted paired medical pages preserve extra official contact and f
   const result = await enrichAvisonYoungListing({ ...pages[0]!.base, preserveChildCollections: undefined }, true, async url => { calls.push(url); const row = pages.find(row => row.url === url)!; return fetchAvisonYoungDirectDoc(url, 30000, async () => ["93.184.216.34"], async () => ({ status: 200, body: row.html, location: null })); });
   assert.deepEqual(calls, pages.map(row => row.url));
   assert.equal(result.contactsDetailed.length, 2);
-  assert.equal(result.leaseRateMin, 19.5); assert.equal(result.leaseRateMax, undefined);
+  assert.equal(result.leaseRateMin, undefined); assert.equal(result.leaseRateMax, undefined);
+  // This response retains its page wording; unlabelled feed rent has no typed period authority.
   assert.equal(result.rawSharpLaunch.availabilities_max_rent, 19.5);
   assert.match(result.markdown, /19\.50-\$20\.50/);
   assert.equal(result.preserveChildCollections, undefined);
