@@ -139,3 +139,41 @@ for (const [description, accepted] of [
   if (accepted) assert.doesNotThrow(() => check(conflictRow, $.html()));
   else assert.throws(() => check(conflictRow, $.html()), /identity/);
 });
+
+for (const street of ["1831 Iron Point Road, Building B", "6990 Snowdrift Rd, Building B", "4910 Massachusetts Avenue, NW", "4315 50th Street, NW"]) test(`Avison source-backed street-as-name description keeps whole comma field: ${street}`, () => {
+  const $ = cheerio.load(conflictHtml); const base = { ...conflictBase, name: street, headline: undefined, street };
+  $("h1").text(street); $("title").text(street); $('meta[property="og:title"]').attr("content", street);
+  $(".hero__sub-title").text("Memphis, TN");
+  $('meta[name="description"],meta[name="twitter:description"],meta[property="og:description"]').attr("content", `For lease - ${street}, Memphis, TN 38134`);
+  assert.doesNotThrow(() => check(conflictRow, $.html(), base));
+});
+for (const [zip, accepted] of [["38134-1234", true], ["38134-5678", false]] as const) test(`Avison description ZIP+4 compares the exact known value: ${zip}`, () => {
+  const $ = cheerio.load(conflictHtml); const base = { ...conflictBase, postalCode: "38134-1234" };
+  $(".hero__sub-title").text("1610 Century Center Pkwy, Memphis, TN");
+  $('meta[name="description"],meta[name="twitter:description"],meta[property="og:description"]').attr("content", `For lease - Century Center Building F, 1610 Century Center Pkwy, Memphis, TN ${zip}`);
+  if (accepted) assert.doesNotThrow(() => check(conflictRow, $.html(), base));
+  else assert.throws(() => check(conflictRow, $.html(), base), /identity/);
+});
+test("Avison source-backed narrative commas do not assert a named subject/address tuple", () => {
+  const $ = cheerio.load(conflictHtml);
+  $('meta[name="description"],meta[name="twitter:description"],meta[property="og:description"]').attr("content", "For Sale - Former bank branch retail/office building located on busy retail corridor with 31,700 VPD traffic!Avison Young, as the exclusive sales agent, is pleased to present 3 Danbury Road, Wilton, CT, a 1,464 SF free-standing single-story office/retai");
+  assert.doesNotThrow(() => check(conflictRow, $.html()));
+});
+
+const interstateBase = avisonYoungBaseListing(feeds.find((row: any) => row.id === 19514), new Map());
+const interstateHtml = readFileSync(new URL("../../fixtures/raw_data/avison-young-identity-interstate-descriptor.html", import.meta.url), "utf8");
+const interstateRow = { page: 6, base: interstateBase, url: interstateBase.sharpLaunchUrl, html: interstateHtml };
+test("Avison actual numbered interstate descriptor variation preserves identity", () => {
+  assert.doesNotThrow(() => check(interstateRow));
+});
+for (const [street, accepted] of [
+  ["SWC I-10 Fwy & Watson Rd", true], ["SWC I-10 Freeway & Watson Rd", true],
+  ["SWC I-11 & Watson Rd", false], ["NWC I-10 & Watson Rd", false],
+  ["SWC I-10 East & Watson Rd", false], ["SWC I-10 & Other Rd", false],
+  ["SWC Fwy & Watson Rd", false], ["SWC I-10 & Watson Rd SuiteB", false],
+] as const) test(`Avison interstate descriptor preserves every other street role: ${street}`, () => {
+  const $ = cheerio.load(interstateHtml);
+  $('meta[name="description"],meta[name="twitter:description"],meta[property="og:description"]').attr("content", `For lease - Sundance Towne Center, ${street}, Buckeye, AZ 85326`);
+  if (accepted) assert.doesNotThrow(() => check(interstateRow, $.html()));
+  else assert.throws(() => check(interstateRow, $.html()), /identity/);
+});

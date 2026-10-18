@@ -393,7 +393,9 @@ export function assertAvisonYoungDetailDoc(
     south: "s", southwest: "sw", west: "w", northwest: "nw",
   };
   const normalizeStreet = (value: any): string => {
-    const text = normalizeIdentityText(value).replace(/\bhighway\b/g, "hwy").replace(/\bdrive\b/g, "dr");
+    const text = normalizeIdentityText(value).replace(/\bhighway\b/g, "hwy").replace(/\bdrive\b/g, "dr")
+      // An evidenced numbered interstate may omit only its freeway descriptor.
+      .replace(/\b(i \d+) (?:fwy|freeway)\b/g, "$1");
     // Only a terminal street postdirection; do not combine opposing words.
     return /\b(?:north|south|east|west) (?:north|south|east|west)$/.test(text)
       || /\b(?:unit|suite|ste|apt|floor|fl|building|bldg|lot) .+$/.test(text)
@@ -527,12 +529,13 @@ export function assertAvisonYoungDetailDoc(
     const value = clean($(element).attr("content")) ?? "";
     if (value.length > 1000) return false;
     const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
-    const location = /^(.*?)\s+(\d{5})$/.exec(fields.pop()?.trim() ?? "");
+    const location = /^(.*?)\s+(\d{5}(?:-\d{4})?)$/.exec(fields.pop()?.trim() ?? "");
     const locality = fields.pop();
     // Feed names/streets can themselves contain commas. Require exactly one
     // boundary that matches both complete known fields; never drop tokens.
-    const matches = fields.length === 1 && (allowAddressOnly || subjectMatches(fields[0]))
-      && normalizeStreet(fields[0]) === street ? 1
+    const completePrefix = fields.join(",");
+    const matches = (allowAddressOnly || subjectMatches(completePrefix))
+      && normalizeStreet(completePrefix) === street ? 1
       : fields.slice(1).filter((_field, index) =>
         subjectMatches(fields.slice(0, index + 1).join(","))
         && normalizeStreet(fields.slice(index + 1).join(",")) === street
@@ -552,11 +555,19 @@ export function assertAvisonYoungDetailDoc(
   const descriptionConflicts = descriptionNodes.some((element) => {
     const value = clean($(element).attr("content")) ?? "";
     if (!/^for (?:sale|lease)\s*-\s*/i.test(value)) return false;
-    // Terminal fields are city and state/ZIP. Two preceding comma fields
-    // declare a separate subject and street, including names with commas.
-    const identityFields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
-    if (identityFields.length >= 4) return !descriptionMatches(element);
-    return Boolean(usesHeadlineAlias) && identityFields.length === 3
+    // Bind terminal city/state fields and the complete prefix before deciding
+    // its role: commas can belong to the known street or property name.
+    const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
+    const identityFields = fields.slice(0, -2);
+    const completePrefix = identityFields.join(",");
+    const addressOnly = normalizeStreet(completePrefix) === street;
+    const knownSubject = identityFields.some((_field, index) =>
+      subjectMatches(identityFields.slice(0, index + 1).join(","))
+    );
+    const region = (fields.at(-1) ?? "").replace(/\s+\d{5}(?:-\d{4})?$/, "");
+    if (!knownSubject && !addressOnly && !normalizeState(region)) return false;
+    if (identityFields.length >= 2 && !addressOnly) return !descriptionMatches(element);
+    return Boolean(usesHeadlineAlias) && identityFields.length >= 1
       && !descriptionMatches(element, true);
   });
   if (descriptionConflicts) {

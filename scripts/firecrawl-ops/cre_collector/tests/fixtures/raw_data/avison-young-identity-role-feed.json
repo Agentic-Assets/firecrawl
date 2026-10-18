@@ -67,5 +67,26 @@
       "lease"
     ],
     "status": "active"
+  },
+  {
+    "id": 19514,
+    "name": "Sundance Towne Center",
+    "meta_title": "Sundance Towne Center",
+    "address": "SWC I-10 Fwy & Watson Rd",
+    "city": "Buckeye",
+    "state": "AZ",
+    "zip": "85326",
+    "country": "US",
+    "url": "https://ayussundancetownecenter.sharplaunch.com",
+    "external_url": "https://www.avisonyoung.us/properties/sundance-towne-center",
+    "description": "",
+    "meta_description": "For lease - Sundance Towne Center, SWC I-10 & Watson Rd, Buckeye, AZ 85326",
+    "type": [
+      "retail.neighborhood_center"
+    ],
+    "transaction": [
+      "lease"
+    ],
+    "status": "active"
   }
 ]

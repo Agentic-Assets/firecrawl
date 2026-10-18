@@ -324,6 +324,13 @@ when the registered official wrapper uses a descriptive marketing headline.
 This still requires coherent visible identity, one structured listing and exact
 page metadata/URL bindings. Literal IDs, URLs and raw addresses are unchanged;
 the existing property-detail child-preserving mode remains unchanged.
+Description tuples compare complete comma-containing names/streets before
+separating field roles, and compare a known ZIP+4 exactly. This does not broaden
+the stronger witness's five-digit ZIP eligibility. Source-local street comparison
+may omit `Fwy`/`Freeway` only immediately after a numbered `I-` interstate;
+route number, direction, quadrant, intersecting road and other tokens still match.
+An endpoint does not equal a wider range, nor does a ZIP or different street
+conflict become optional merely because another visible family agrees.
 A native named-property hero may instead show `name | city, state` only when
 the visible address heading independently binds the same full name, street,
 city and state, with matching title/OG and owned page URLs. A complete visible
