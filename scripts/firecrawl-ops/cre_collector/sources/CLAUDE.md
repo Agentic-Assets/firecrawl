@@ -88,8 +88,11 @@ a new historical sitemap crawl to manufacture that proof. Complete repeated
 native/frontend reconciliation, provider pacing (the observed robots delay was
 10 seconds), all current details/status/tenure and ordinary admission gates
 remain [AGENTIC-4308](https://linear.app/agenticassets/issue/AGENTIC-4308) work.
-The last robots diagnostic stopped on a managed challenge; no bypass or blind
-retry is authorized. This change grants no source, lifecycle or full51 acceptance.
+The October 17 robots diagnostic stopped on an HTTP 403 managed challenge;
+a separately bounded October 18 observation returned HTTP 200. Read the owning
+issue's current decision and proof comments for the applicable access evidence.
+Neither observation authorizes bypass or blind retries, and neither establishes
+source, lifecycle or full51 acceptance.
 
 Lyon's fresh REST `Closed` category can conflict with the same property's HTML
 `InStock` Offer; keep that conflict held under

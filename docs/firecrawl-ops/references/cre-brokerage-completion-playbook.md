@@ -137,6 +137,12 @@ contract; do not add a collector PDF/OM extraction writer or OM-facts writes.
 
 ## Investigation Workflow
 
+Read the owning issue, its canonical plan, and the latest decision and proof
+comments before selecting a probe. Reconcile completed steps and retained
+evidence with the current frontier; an outdated summary is not a reason to
+repeat discovery. Update stale canonical guidance with verified findings while
+preserving historical observations and unresolved scope or authority limits.
+
 1. Start with the source folder:
 
 ```bash
@@ -167,8 +173,9 @@ python3 scripts/firecrawl-ops/firecrawl_request.py scrape '<api-url>' \
   --formats rawHtml --out /tmp/source-api.json
 ```
 
-Use local Firecrawl even when direct Python or curl gets blocked. Some sites
-serve the local browser path but reject plain urllib.
+Use the source's registered transport and access contract. A direct-client
+challenge does not authorize switching clients to bypass it; respect applicable
+robots, pacing and challenge-stop rules before using local Firecrawl.
 
 4. Build the collector adapter:
 
