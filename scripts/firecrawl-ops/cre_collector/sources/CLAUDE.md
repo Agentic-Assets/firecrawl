@@ -303,17 +303,36 @@ witness needs an exact comma/pipe name-city-state tuple, complete known-ZIP
 description, owned metadata and coherent heading. A registered official wrapper
 may instead use its unique full structured address/known ZIP plus those metadata,
 description and heading checks. A recognized monetary hero is display text only;
-it cannot supply a native location witness. Keep every validated alternate's
-contacts/resources and the existing child-preserving fallback. Identity acceptance
-does not change feed/page price precedence: raw page wording and raw feed facts
-remain alongside the existing typed feed prices; hidden-price projection remains
-mandatory. Present metadata descriptions declaring a `For sale/lease -`
-property/location tuple must agree with the exact feed subject and full address;
-an otherwise matching visible family cannot override an explicit contradiction.
-The prior exact-name visible family retains its documented optional address-only
-SEO behavior; a newly used headline alias cannot inherit contradictory address-only
-SEO. Absent or unstructured marketing descriptions remain optional in that prior
-family.
+it cannot supply a native location witness.
+
+An official offering H1 may instead bind agreeing complete structured and visible
+street/city/state/known five-digit ZIP witnesses with owned subject metadata.
+Prose is not identity authority. Within this new physical witness, explicit
+description conflicts, bare contradictory address tuples, generic H1, missing
+ZIP and price-only heroes remain refused.
+
+A separate official scope witness may retain a wider description range only
+when an exact known-subject H1 and two complete endpoint-address/known-ZIP
+witnesses independently agree, with substantive highlights/availability. Every
+unique present description must give the same ascending range, starting with
+the exact feed house-number token and preserving every remaining street,
+city/state/ZIP token. Raw intersection/unit markers cannot disappear through
+normalization in this new scope witness. Address-shaped H2s must agree with the
+endpoint. This is one-way description scope, not general range equivalence;
+native conflicts and feed-range/page-endpoint disagreement retain their existing
+refusals.
+
+Keep every validated alternate's contacts/resources and the existing
+child-preserving fallback. Identity acceptance does not change feed/page price
+precedence: raw page wording and raw feed facts remain alongside the existing
+typed feed prices; hidden-price projection remains mandatory. Outside the
+complete official scope witness above, present metadata descriptions declaring
+a `For sale/lease -` property/location tuple must agree with the exact feed
+subject and full address; an otherwise matching visible family cannot override
+an explicit contradiction. The prior exact-name visible family retains its
+documented optional address-only SEO behavior; a newly used headline alias cannot
+inherit contradictory address-only SEO. Absent or unstructured marketing
+descriptions remain optional in that prior family.
 
 Avison identity comparison recognizes the evidenced `Road`/`Rd`, `Avenue`/`Ave`
 and `Boulevard`/`Blvd` spellings at word boundaries, plus a state followed by a
