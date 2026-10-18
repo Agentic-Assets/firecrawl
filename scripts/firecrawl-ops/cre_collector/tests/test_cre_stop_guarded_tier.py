@@ -557,7 +557,8 @@ def test_real_private_owner_cooperative_stop_and_concurrent_requests(
                 for _ in range(requesters)
             ]
             results = [future.result(timeout=45) for future in futures]
-        assert owner.wait(timeout=3) == 130
+        stdout, stderr = owner.communicate(timeout=3)
+        assert owner.returncode == 130, (stdout, stderr)
         assert all(
             rc == 0 and result["signal_sent"] and result["recovery_fence"] == "retained"
             for rc, result in results
