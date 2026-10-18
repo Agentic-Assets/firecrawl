@@ -310,10 +310,41 @@ export function assertAvisonYoungStrictFeed(
   }
 }
 
+export type AvisonYoungOfficialFeedIdentityContext = {
+  matchingExternalUrlRowIds: readonly string[];
+};
+
+export function avisonYoungOfficialUrlKey(value: unknown): string | null {
+  try {
+    const url = new URL(String(value ?? ""));
+    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "www.avisonyoung.us"
+      || url.username || url.password || url.port || !url.pathname.startsWith("/properties/")) return null;
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+export function indexAvisonYoungOfficialFeedUrls(websiteRows: readonly any[]): Map<string, string[]> {
+  const rowsByUrl = new Map<string, string[]>();
+  for (const row of websiteRows) {
+    const key = avisonYoungOfficialUrlKey(row?.external_url);
+    if (!key) continue;
+    const rowIds = rowsByUrl.get(key) ?? [];
+    const rowId = row?.id == null ? "" : String(row.id);
+    // Repeated copies of the same literal feed identity do not create a second owner.
+    // Preserve each empty-ID occurrence because it cannot be safely deduplicated.
+    if (!rowId || !rowIds.includes(rowId)) rowIds.push(rowId);
+    rowsByUrl.set(key, rowIds);
+  }
+  return rowsByUrl;
+}
+
 export function assertAvisonYoungDetailDoc(
   doc: ScrapedDoc,
   requestedUrl: string,
-  base: any
+  base: any,
+  officialFeedIdentity?: AvisonYoungOfficialFeedIdentityContext
 ): any | null {
   const status = Number(doc.metadata?.statusCode);
   if (Number.isFinite(status) && status >= 400) {
@@ -470,6 +501,49 @@ export function assertAvisonYoungDetailDoc(
     && addressHeroParts.length === 3 && normalizeStreet(addressHeroParts[0]) === street
     && normalizeCity(addressHeroParts[1]) === city && matchesStateLocation(addressHeroParts[2]!);
   const heroText = clean($(".hero__sub-title").text()) ?? "";
+  const strictLocalityText = (value: any): boolean => {
+    const text = clean(value);
+    return Boolean(text && /^[\p{L}\p{M}]+(?:[ .'-][\p{L}\p{M}]+)*\.?$/u.test(text)
+      && !/\b(?:suite|ste|unit|apt|floor|building|bldg|lot|nwc|nec|swc|sec)\b/i.test(text));
+  };
+  const strictFullAddressHero = (): boolean => {
+    if ($(".hero__sub-title").length !== 1 || !/^\d{5}$/.test(clean(base?.postalCode) ?? "")) return false;
+    const parts = heroText.split(",").map((part) => part.trim());
+    const region = /^(.*?)\s+(\d{5})$/.exec(parts[2] ?? "");
+    return parts.length === 3 && strictPhysicalStreetMatches(parts[0], base?.street)
+      && strictLocalityText(parts[1]) && normalizeCity(parts[1]) === city && region !== null
+      && strictLocalityText(region[1]) && normalizeState(region[1]) === state
+      && region[2] === clean(base?.postalCode);
+  };
+  const strictLocalityHero = (requireOffering: boolean): boolean => {
+    if ($(".hero__sub-title").length !== 1) return false;
+    const match = /^([^,]+),\s*(.+?)(?:\s+-\s+(.+))?$/.exec(heroText);
+    const suffix = match?.[3]?.toLowerCase().replace(/\s+/g, " ");
+    const region = /^(.*?)\s+(\d{5})$/.exec(match?.[2]?.trim() ?? "");
+    const acceptedOfferings = new Set([
+      "available for sale", "available for sale or lease", "available for lease", "available for lease or sale",
+      "for sale", "for sale or lease", "for lease", "for lease or sale",
+    ]);
+    if (!match || !strictLocalityText(match[1]) || !strictLocalityText(region?.[1] ?? match[2])
+      || (suffix && !acceptedOfferings.has(suffix)) || (requireOffering && !suffix)) return false;
+    return normalizeCity(match[1]) === city && normalizeState(region?.[1] ?? match[2]) === state
+      && (!region || region[2] === clean(base?.postalCode));
+  };
+  const strictStreetOfferingHeading = (): boolean => {
+    const headings = $("h1").map((_index, element) => $(element).text()).get();
+    return headings.length > 0 && headings.every((value) => {
+      const match = /^(.*?)\s+\|\s+(?:available\s+)?for\s+(sale(?:\s+or\s+lease)?|lease(?:\s+or\s+sale)?)$/i
+        .exec(clean(value) ?? "");
+      return Boolean(match && strictPhysicalStreetMatches(match[1], base?.street));
+    });
+  };
+  const strictAcreageOfferingHeading = (): boolean => {
+    const headings = $("h1").map((_index, element) => $(element).text()).get();
+    return headings.length > 0 && headings.every((value) =>
+      /^[±~]?\s*[1-9]\d{0,2}(?:,\d{3})*(?:\.\d+)?\s+acres?\s+for\s+(?:sale(?:\s+or\s+lease)?|lease(?:\s+or\s+sale)?)$/i
+        .test(clean(value) ?? "")
+    );
+  };
   const namedHeroParts = heroIdentityParts.length === 2
     ? [heroIdentityParts[0], ...(heroIdentityParts[1]?.split(",") ?? [])]
     : heroText.split(",");
@@ -479,6 +553,33 @@ export function assertAvisonYoungDetailDoc(
     && normalizeCity(namedHeroParts.at(-2)) === city
     && matchesStateLocation(namedHeroParts.at(-1) ?? "");
   const pageTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")];
+  const exactFeedSubject = (value: any): boolean => {
+    const text = clean(value)?.replace(/\s+/g, " ").toLowerCase();
+    return Boolean(text && [base?.name, base?.headline].some((candidate) =>
+      clean(candidate)?.replace(/\s+/g, " ").toLowerCase() === text
+    ));
+  };
+  const strictPhysicalStreetKey = (value: any): string[] | null => {
+    const text = clean(value);
+    if (!text || /[&#,/@|]/.test(text)
+      || /\b(?:and|at|nwc|nec|swc|sec|suite|ste|unit|apt|floor|building|bldg|lot)\b/i.test(text)
+      || /^\d+\s*[-–]\s*\d+\b/.test(text)) return null;
+    return text.toLowerCase().replace(/\s+/g, " ").trim().split(" ").map((token) => token.replace(/\.$/, ""));
+  };
+  const strictPhysicalStreetMatches = (left: any, right: any): boolean => {
+    const leftTokens = strictPhysicalStreetKey(left);
+    const rightTokens = strictPhysicalStreetKey(right);
+    if (!leftTokens || !rightTokens || leftTokens.length !== rightTokens.length) return false;
+    const directionalAliases = new Set(["n|north", "s|south", "e|east", "w|west", "ne|northeast", "nw|northwest", "se|southeast", "sw|southwest"]);
+    const suffixAliases = new Set(["st|street", "rd|road", "ave|avenue", "blvd|boulevard", "highway|hwy", "dr|drive", "ln|lane", "ct|court", "parkway|pkwy"]);
+    return leftTokens.every((token, index) => {
+      const other = rightTokens[index];
+      if (token === other) return true;
+      const pair = [token, other].sort().join("|");
+      return (index === 1 && /^\d+$/.test(leftTokens[0]!) && directionalAliases.has(pair))
+        || (index === leftTokens.length - 1 && suffixAliases.has(pair));
+    });
+  };
   const titleMatches = (value: any, subjects = knownNames): boolean => {
     if (subjects.includes(normalizeName(value))) return true;
     // Existing aliases keep token counts. Separate the known name field before
@@ -638,6 +739,36 @@ export function assertAvisonYoungDetailDoc(
     && /\s\d{5}$/.test(addressHeroParts[2]?.trim() ?? "")
     && addresses.every((address) => clean(address.postalCode) === clean(base?.postalCode));
   const streetRole = /\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|highway|hwy|drive|dr|lane|ln|court|ct|parkway|pkwy)\b/i;
+  const strictDescriptionMatches = (element: typeof descriptionNodes[number]): boolean => {
+    const value = (clean($(element).attr("content")) ?? "").replace(/^for (?:sale|lease)\s*-\s*/i, "");
+    if (!value || value.length > 1000) return false;
+    const fields = value.split(",").map((field) => field.trim());
+    const region = /^(.*?)\s+(\d{5})$/.exec(fields.pop() ?? "");
+    const locality = fields.pop();
+    if (!region || !locality || !strictLocalityText(locality) || !strictLocalityText(region[1])
+      || normalizeCity(locality) !== city || normalizeState(region[1]) !== state
+      || region[2] !== clean(base?.postalCode)) return false;
+    const matchingBoundaries = fields.map((_field, index) => {
+      const possibleSubject = fields.slice(0, index).join(",").trim();
+      const possibleStreet = fields.slice(index).join(",").trim();
+      return strictPhysicalStreetMatches(possibleStreet, base?.street)
+        && (!possibleSubject || exactFeedSubject(possibleSubject));
+    }).filter(Boolean);
+    return matchingBoundaries.length === 1;
+  };
+  const strictPhysicalDescriptionsAgree = (): boolean => descriptionSelectors.every((selector) => $(selector).length <= 1)
+    && descriptionNodes.every((element) => {
+      const fields = (clean($(element).attr("content")) ?? "").split(",");
+      // Only a raw street-role or exact street tuple is an address claim. Prices
+      // and area quantities in otherwise ordinary marketing copy are not.
+      const region = /^(.*?)\s+(\d[\d-]*)$/.exec(fields.at(-1)?.trim() ?? "");
+      const claimsAddress = fields.length >= 3 && region
+        && (normalizeState(region[1]) || /^[a-z]{2}$/i.test(region[1]!))
+        && fields.slice(0, -2).some((field) => /^\d+\b/.test(field)
+          || /\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|highway|hwy|drive|dr|lane|ln|court|ct|parkway|pkwy|place|pl|way|trail|trl|circle|cir)\b/i.test(field)
+          || strictPhysicalStreetMatches(field, base?.street));
+      return !claimsAddress || strictDescriptionMatches(element);
+    });
   const ambiguousScopeRole = /[&/#]|\b(?:and|at|nwc|nec|swc|sec|suite|ste|unit|apt|floor|building|bldg|lot)\b/i;
   const endpoint = ambiguousScopeRole.test(clean(base?.street) ?? "") ? null : /^(\d+) ([a-z ]+)$/.exec(street);
   const scopeRanges = descriptionNodes.map((element) => {
@@ -663,9 +794,74 @@ export function assertAvisonYoungDetailDoc(
     && scopeRanges.every((range) => range !== null) && new Set(scopeRanges).size === 1
     && $("h2").toArray().filter((element) => /^\d+(?:\s*[-–]\s*\d+)?\s+/.test(clean($(element).text()) ?? "") && streetRole.test($(element).text()))
       .every((element) => normalizeStreet($(element).text()) === street || matchesAddressHeading($(element).text(), street));
+  const feedUrlKey = avisonYoungOfficialUrlKey(base?.externalUrl);
+  const exactFeedUrlOwner = Boolean(feedUrlKey && officialFeedIdentity
+    && officialFeedIdentity.matchingExternalUrlRowIds.length === 1
+    && officialFeedIdentity.matchingExternalUrlRowIds[0] === clean(base?.id)
+    && sameIdentityUrl(requested, base?.externalUrl));
+  const strictStructuredAddresses = addresses.length > 0
+    && /^\d{5}$/.test(clean(base?.postalCode) ?? "")
+    && addresses.every((address) => strictPhysicalStreetMatches(address.streetAddress, base?.street)
+      && strictLocalityText(address.addressLocality)
+      && normalizeCity(address.addressLocality) === city
+      && strictLocalityText(address.addressRegion)
+      && normalizeState(address.addressRegion) === state
+      && clean(address.postalCode) === clean(base?.postalCode));
+  const exactOwnedMetadata = ownedIdentityMetadata;
+  const h1Values = $("h1").map((_index, element) => $(element).text()).get();
+  const subjectHeading = h1Values.length > 0 && h1Values.every(exactFeedSubject);
+  const exactSubjectRecord = records.length === 1 && exactFeedSubject(record?.name)
+    && sameIdentityUrl(record?.url, requested);
+  const physicalSubjectClaimAgrees = (value: any): boolean => {
+    const text = clean(value);
+    if (!text) return false;
+    const streetOffering = /^(.*?)\s+\|\s+(?:available\s+)?for\s+(?:sale(?:\s+or\s+lease)?|lease(?:\s+or\s+sale)?)$/i.exec(text);
+    const offerPrefix = /^(?:available\s+)?for\s+(?:sale(?:\s+or\s+lease)?|lease(?:\s+or\s+sale)?)\s*\|\s*(.+)$/i.exec(text);
+    const candidate = streetOffering?.[1] ?? offerPrefix?.[1] ?? text;
+    const candidateParts = candidate.split(",").map((part) => part.trim());
+    const streetField = candidateParts[0] ?? candidate;
+    const addressShaped = /^\d+\b/.test(streetField)
+      || /\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|highway|hwy|drive|dr|lane|ln|court|ct|parkway|pkwy|place|pl|way|trail|trl|circle|cir)\b/i.test(streetField)
+      || Boolean(streetOffering || offerPrefix) && strictPhysicalStreetMatches(streetField, base?.street);
+    if (!addressShaped) return true;
+    if (!strictPhysicalStreetMatches(streetField, base?.street)) return false;
+    const locality = candidateParts.slice(1);
+    if (locality.length === 0) return true;
+    if (locality.length > 3 || !strictLocalityText(locality[0]) || normalizeCity(locality[0]) !== city) return false;
+    if (locality.length === 1) return true;
+    const stateZip = /^(.*?)\s+(\d{5})$/.exec(locality[1] ?? "");
+    const suppliedState = stateZip?.[1] ?? locality[1];
+    if (!strictLocalityText(suppliedState) || normalizeState(suppliedState) !== state) return false;
+    if (stateZip) return stateZip[2] === clean(base?.postalCode) && locality.length === 2;
+    return locality.length === 2
+      || (locality.length === 3 && /^\d{5}$/.test(locality[2] ?? "") && locality[2] === clean(base?.postalCode));
+  };
+  const physicalSubjectClaimsAgree = [
+    ...pageTitles,
+    ...records.map((value) => value?.name),
+    ...h1Values.filter(exactFeedSubject),
+    ...h1Values.filter((value) => /\s+\|\s+(?:available\s+)?for\s+(?:sale|lease)/i.test(clean(value) ?? "")),
+  ].every(physicalSubjectClaimAgrees);
+  const uniqueExactSubjectHeadings = subjectHeading
+    && new Set(h1Values.map((value) => clean(value)?.replace(/\s+/g, " ").toLowerCase())).size === 1;
+  const substantiveStructure = (nativeInfo.length > 0 && nativeInfoRows.length > 0)
+    || hasPropertySections || hasBuildingContent;
+  const officialDisplayRole = (uniqueExactSubjectHeadings
+      && (strictLocalityHero(false) || strictFullAddressHero()))
+    || (h1Values.length === 1 && strictPhysicalStreetMatches(h1Values[0], base?.street)
+      && strictLocalityHero(false))
+    || (h1Values.length === 1 && strictStreetOfferingHeading() && strictLocalityHero(false))
+    || (h1Values.length === 1 && (offeringHeading || strictAcreageOfferingHeading()) && strictFullAddressHero());
+  const officialStrictDisplayEvidence = isRegisteredOfficialWrapper && substantiveStructure
+    && exactOwnedMetadata && exactSubjectRecord && strictStructuredAddresses
+    && physicalSubjectClaimsAgree && structuredIdentityMatches && urlMatches
+    && strictPhysicalDescriptionsAgree() && officialDisplayRole;
+  const officialStrictDisplayIdentity = officialStrictDisplayEvidence && exactFeedUrlOwner;
+
   if (descriptionConflicts && !officialRangeScopeWitness) {
     throw new Error("Avison Young detail identity does not match the requested property");
   }
+  if (officialStrictDisplayIdentity) return record;
   const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
   const namedDescriptionIdentity = completeDescriptionIdentity && identityMetadataMatches
     && heroLocations.length === 1 && heroLocations[0] === true;
@@ -757,9 +953,7 @@ export function assertAvisonYoungDetailDoc(
     const physicalDescriptionsAgree = descriptionSelectors.every((selector) => $(selector).length <= 1)
       && descriptionNodes.every((element) => {
         const fields = (clean($(element).attr("content")) ?? "").split(",");
-        // An address-bearing comma tuple ending in a postal region is a claim,
-        // even without the optional "For lease -" introduction. Keep the older
-        // visible families' optional SEO behavior outside this new witness.
+        // Retain the established descriptions rule for legacy identity families.
         const region = /^(.*?)\s+(\d[\d-]*)$/.exec(fields.at(-1)?.trim() ?? "");
         const claimsAddress = fields.length >= 3 && region
           && (normalizeState(region[1]) || /^[a-z]{2}$/i.test(region[1]!))
@@ -1763,7 +1957,8 @@ export async function fetchAvisonYoungDirectDocWithRetry(
 export async function enrichAvisonYoungListing(
   base: any,
   strict = requireFreshDetails(),
-  directFetch: (url: string) => Promise<ScrapedDoc> = fetchAvisonYoungDirectDoc
+  directFetch: (url: string) => Promise<ScrapedDoc> = fetchAvisonYoungDirectDoc,
+  officialFeedIdentity?: AvisonYoungOfficialFeedIdentityContext
 ): Promise<any> {
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   const detailUrls = dedupeStrings([clean(base.sharpLaunchUrl), clean(base.externalUrl)]).filter((url) =>
@@ -1796,7 +1991,7 @@ export async function enrichAvisonYoungListing(
               timeout: 60000,
               ...(requireLiveDetails ? { maxAge: 0 } : {}),
             });
-      assertAvisonYoungDetailDoc(doc, url, base);
+      assertAvisonYoungDetailDoc(doc, url, base, officialFeedIdentity);
       docs.push({ url, doc });
     } catch (err) {
       const error = `${url}: ${String(err)}`;
@@ -1959,6 +2154,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
   }
   const sourceUrl = `https://www.avisonyoung.us/properties/#/?transaction=${tx}&view=sidebar&status=active`;
   const { websiteRows, teamMembers, teamFeedComplete, teamFeedReason } = await getAvisonYoungFeed();
+  const officialFeedUrls = indexAvisonYoungOfficialFeedUrls(websiteRows);
   assertAvisonYoungStrictFeed(teamFeedComplete, teamFeedReason, strict);
   const inventoryObservation = detailObservation(
     "avison_young_sharplaunch_inventory",
@@ -2006,12 +2202,18 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
   }
   const detailLimit = avisonYoungDetailLimit(max, baseListings.length, requireLiveDetails);
   const enrichSelected = async (listing: any, idx: number): Promise<any> => {
+    const feedUrlKey = avisonYoungOfficialUrlKey(listing?.externalUrl);
+    const officialFeedIdentity = feedUrlKey
+      ? { matchingExternalUrlRowIds: officialFeedUrls.get(feedUrlKey) ?? [] }
+      : undefined;
     const enriched = await enrichAvisonYoungListing(
       {
         ...listing,
         preserveChildCollections: teamFeedComplete ? undefined : true,
       },
-      strict
+      strict,
+      undefined,
+      officialFeedIdentity
     );
     // Classify only successful fresh results as successes in the draining map.
     // Otherwise a concurrent 404 could conceal this ordinary source failure.
