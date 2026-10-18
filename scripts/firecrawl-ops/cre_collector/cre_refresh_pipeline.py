@@ -8,6 +8,7 @@ import uuid
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -130,12 +131,64 @@ def artifact_compute_enabled() -> bool:
     return _COMPUTE_ROOT.get() is not None or poll_hook() is not None
 
 
+def _private_compute_directory(root: Path) -> Path:
+    """Create/open the private artifact directory without following links.
+
+    Existing directories are never chmodded: an unsafe path is a refusal that
+    needs operator inspection, not something the producer should repair.
+    """
+    import cre_checkpoint_refresh as refresh
+    from cre_stop_guarded_tier import StopRefused, _safe_stat
+
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        _safe_stat(root_fd, directory=True)
+        try:
+            os.mkdir("pipeline", 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        pipeline_fd = os.open(
+            "pipeline",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=root_fd,
+        )
+        try:
+            _safe_stat(pipeline_fd, directory=True)
+            try:
+                os.mkdir("compute", 0o700, dir_fd=pipeline_fd)
+            except FileExistsError:
+                pass
+            compute_fd = os.open(
+                "compute",
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=pipeline_fd,
+            )
+            try:
+                observed = _safe_stat(compute_fd, directory=True, private=True)
+                if (
+                    not observed.st_mode & stat.S_IWUSR
+                    or not observed.st_mode & stat.S_IXUSR
+                ):
+                    raise StopRefused("unsafe local evidence")
+                named = os.stat("compute", dir_fd=pipeline_fd, follow_symlinks=False)
+                if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino):
+                    raise StopRefused("changed local evidence")
+                return root / "pipeline" / "compute"
+            finally:
+                os.close(compute_fd)
+        finally:
+            os.close(pipeline_fd)
+    except OSError as exc:
+        raise refresh.GlobalStageError("unsafe pipeline artifact directory") from exc
+    finally:
+        os.close(root_fd)
+
+
 def run_artifact_compute(root: Path, action: str, arguments: dict) -> dict:
     """Run pure heavy work in one owned subprocess; consume bounded metadata."""
     import cre_checkpoint_refresh as refresh
 
-    directory = root / "pipeline" / "compute"
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = _private_compute_directory(root)
     request_id = uuid.uuid4().hex
     request = directory / f"{request_id}.request.json"
     response = directory / f"{request_id}.response.json"
