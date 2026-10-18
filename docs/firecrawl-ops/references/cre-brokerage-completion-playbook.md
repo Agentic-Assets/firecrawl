@@ -68,6 +68,20 @@ Trace a representative fresh detail record through each existing boundary:
    extraction failure; a value retained only in `raw_data` can still be unmapped
    or undisplayed.
 
+When admitting a new identity/layout family, inspect representative newly
+accepted records as well as unchanged controls. Equal extracted-fact fingerprints
+prove retention, not that a page belongs to the requested property. Mutate explicit
+subject, street, city, state and ZIP claims independently and verify that conflicts
+refuse. Missing optional metadata differs from a present claimed subject/address
+tuple; preserve each source's documented field roles rather than treating every
+marketing heading or SEO fragment as interchangeable identity authority.
+
+Build stored-preservation expectations from both prior and incoming records using
+the maintained SQL merge semantics. Known stored tenure must not narrow merely
+because a current artifact exposes fewer transaction types. Report observed
+sale/lease counts from the bound artifact separately from stored merged tenure;
+neither count substitutes for the other.
+
 Use these as evidence/review categories, not new implemented database fields:
 
 | Category | Evidence to retain |

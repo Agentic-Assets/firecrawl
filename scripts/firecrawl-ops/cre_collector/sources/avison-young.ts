@@ -393,7 +393,9 @@ export function assertAvisonYoungDetailDoc(
     south: "s", southwest: "sw", west: "w", northwest: "nw",
   };
   const normalizeStreet = (value: any): string => {
-    const text = normalizeIdentityText(value).replace(/\bhighway\b/g, "hwy").replace(/\bdrive\b/g, "dr");
+    const text = normalizeIdentityText(value).replace(/\bhighway\b/g, "hwy").replace(/\bdrive\b/g, "dr")
+      // An evidenced numbered interstate may omit only its freeway descriptor.
+      .replace(/\b(i \d+) (?:fwy|freeway)\b/g, "$1");
     // Only a terminal street postdirection; do not combine opposing words.
     return /\b(?:north|south|east|west) (?:north|south|east|west)$/.test(text)
       || /\b(?:unit|suite|ste|apt|floor|fl|building|bldg|lot) .+$/.test(text)
@@ -437,6 +439,8 @@ export function assertAvisonYoungDetailDoc(
     return index >= 0 ? stateCodes[index]! : stateCodes.includes(text) ? text : "";
   };
   const name = normalizeName(base?.name);
+  const knownNames = [...new Set([name, normalizeName(base?.headline)].filter(Boolean))];
+  const subjectMatches = (value: any): boolean => knownNames.includes(normalizeName(value));
   const street = normalizeStreet(base?.street);
   const city = normalizeCity(base?.city);
   const state = normalizeState(base?.state);
@@ -464,34 +468,42 @@ export function assertAvisonYoungDetailDoc(
   const addressHeroIdentity = $(".hero__sub-title").length === 1
     && addressHeroParts.length === 3 && normalizeStreet(addressHeroParts[0]) === street
     && normalizeCity(addressHeroParts[1]) === city && matchesStateLocation(addressHeroParts[2]!);
-  const namedHeroLocation = heroIdentityParts[1]?.split(",") ?? [];
+  const heroText = clean($(".hero__sub-title").text()) ?? "";
+  const namedHeroParts = heroIdentityParts.length === 2
+    ? [heroIdentityParts[0], ...(heroIdentityParts[1]?.split(",") ?? [])]
+    : heroText.split(",");
   const namedHeroIdentity = $(".hero__sub-title").length === 1
-    && heroIdentityParts.length === 2 && normalizeName(heroIdentityParts[0]) === name
-    && namedHeroLocation.length === 2 && normalizeCity(namedHeroLocation[0]) === city
-    && matchesStateLocation(namedHeroLocation[1]!);
+    && namedHeroParts.length >= 3 && heroIdentityParts.length <= 2
+    && subjectMatches(namedHeroParts.slice(0, -2).join(","))
+    && normalizeCity(namedHeroParts.at(-2)) === city
+    && matchesStateLocation(namedHeroParts.at(-1) ?? "");
   const pageTitles = [$("title").first().text(), $('meta[property="og:title"]').first().attr("content")];
-  const titleMatches = (value: any): boolean => {
-    if (normalizeName(value) === name) return true;
+  const titleMatches = (value: any, subjects = knownNames): boolean => {
+    if (subjects.includes(normalizeName(value))) return true;
     // Existing aliases keep token counts. Separate the known name field before
     // comparing city/state so a street postdirection remains terminal.
     const words = (clean(value) ?? "").toLowerCase().replace(/#\s+/g, "#")
       .replace(/[^a-z0-9#]+/g, " ").trim().split(/\s+/);
-    const nameWords = name.split(" ").length;
-    const location = normalizeCity(words.slice(nameWords).join(" "));
-    return normalizeName(words.slice(0, nameWords).join(" ")) === name
-      && location.startsWith(city + " ") && normalizeState(location.slice(city.length + 1)) === state;
+    return subjects.some((subject) => {
+      const nameWords = subject.split(" ").length;
+      const location = normalizeCity(words.slice(nameWords).join(" "));
+      return normalizeName(words.slice(0, nameWords).join(" ")) === subject
+        && location.startsWith(city + " ") && normalizeState(location.slice(city.length + 1)) === state;
+    });
   };
   const canonicalUrls = $('link[rel="canonical"]').map((_index, element) => $(element).attr("href")).get();
-  const identityMetadataMatches = Boolean(name && street && city && state)
-    && $("h1").length === 1
-    && ((normalizeName($("h1").text()) === name
-      && ((heroLocations.length === 1 && heroLocations[0] === true) || addressHeroIdentity))
-      || combinedHeroIdentity)
+  const ownedIdentityMetadata = Boolean(name && street && city && state)
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
-    && pageTitles.every(titleMatches)
+    && pageTitles.every((value) => titleMatches(value))
     && $('meta[property="og:url"]').length === 1
     && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
-    && canonicalUrls.every((value) => sameIdentityUrl(value, requested));
+    && canonicalUrls.every((value) => sameIdentityUrl(value, requested))
+    && [doc.metadata?.sourceURL, doc.metadata?.url].filter(Boolean)
+      .every((value) => sameIdentityUrl(value, requested));
+  const identityMetadataMatches = ownedIdentityMetadata && $("h1").length === 1
+    && ((normalizeName($("h1").text()) === name
+      && ((heroLocations.length === 1 && heroLocations[0] === true) || addressHeroIdentity))
+      || combinedHeroIdentity);
   const capturedBuildingStructure = nativeInfo.length > 0 && nativeInfoRows.length > 0
     && $(".hero__text .hero__title").length === 1 && heroLocations.length > 0;
   // A marketing heading is not property-name authority. These native shapes
@@ -513,26 +525,54 @@ export function assertAvisonYoungDetailDoc(
     'meta[property="og:description"]',
   ];
   const descriptionNodes = descriptionSelectors.flatMap((selector) => $(selector).get());
+  const descriptionMatches = (element: typeof descriptionNodes[number], allowAddressOnly = false): boolean => {
+    const value = clean($(element).attr("content")) ?? "";
+    if (value.length > 1000) return false;
+    const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
+    const location = /^(.*?)\s+(\d{5}(?:-\d{4})?)$/.exec(fields.pop()?.trim() ?? "");
+    const locality = fields.pop();
+    // Feed names/streets can themselves contain commas. Require exactly one
+    // boundary that matches both complete known fields; never drop tokens.
+    const completePrefix = fields.join(",");
+    const matches = (allowAddressOnly || subjectMatches(completePrefix))
+      && normalizeStreet(completePrefix) === street ? 1
+      : fields.slice(1).filter((_field, index) =>
+        subjectMatches(fields.slice(0, index + 1).join(","))
+        && normalizeStreet(fields.slice(index + 1).join(",")) === street
+      ).length;
+    return matches === 1 && normalizeCity(locality) === city
+      && location !== null && normalizeState(location[1]) === state
+      && (!clean(base?.postalCode) || location[2] === clean(base?.postalCode));
+  };
   const descriptionIdentity = descriptionNodes.length > 0
     && descriptionSelectors.every((selector) => $(selector).length <= 1)
-    && descriptionNodes.every((element) => {
-      const value = clean($(element).attr("content")) ?? "";
-      if (value.length > 1000) return false;
-      const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
-      const location = /^(.*?)\s+(\d{5})$/.exec(fields.pop()?.trim() ?? "");
-      const locality = fields.pop();
-      // Feed names/streets can themselves contain commas. Require exactly one
-      // boundary that matches both complete known fields; never drop tokens.
-      const matches = fields.length === 1 && normalizeName(fields[0]) === name
-        && normalizeStreet(fields[0]) === street ? 1
-        : fields.slice(1).filter((_field, index) =>
-          normalizeName(fields.slice(0, index + 1).join(",")) === name
-          && normalizeStreet(fields.slice(index + 1).join(",")) === street
-        ).length;
-      return matches === 1 && normalizeCity(locality) === city
-        && location !== null && normalizeState(location[1]) === state
-        && (!clean(base?.postalCode) || location[2] === clean(base?.postalCode));
-    });
+    && descriptionNodes.every((element) => descriptionMatches(element));
+  // The original exact-name visible family permits address-only SEO drift.
+  // A separately named subject/street tuple is an explicit identity claim;
+  // newly admitted headline aliases must also agree with address-only claims.
+  const usesHeadlineAlias = !pageTitles.every((value) => titleMatches(value, [name]))
+    || (listing && subjectMatches(listing.name) && normalizeName(listing.name) !== name);
+  const descriptionConflicts = descriptionNodes.some((element) => {
+    const value = clean($(element).attr("content")) ?? "";
+    if (!/^for (?:sale|lease)\s*-\s*/i.test(value)) return false;
+    // Bind terminal city/state fields and the complete prefix before deciding
+    // its role: commas can belong to the known street or property name.
+    const fields = value.replace(/^for (?:sale|lease)\s*-\s*/i, "").split(",");
+    const identityFields = fields.slice(0, -2);
+    const completePrefix = identityFields.join(",");
+    const addressOnly = normalizeStreet(completePrefix) === street;
+    const knownSubject = identityFields.some((_field, index) =>
+      subjectMatches(identityFields.slice(0, index + 1).join(","))
+    );
+    const region = (fields.at(-1) ?? "").replace(/\s+\d{5}(?:-\d{4})?$/, "");
+    if (!knownSubject && !addressOnly && !normalizeState(region)) return false;
+    if (identityFields.length >= 2 && !addressOnly) return !descriptionMatches(element);
+    return Boolean(usesHeadlineAlias) && identityFields.length >= 1
+      && !descriptionMatches(element, true);
+  });
+  if (descriptionConflicts) {
+    throw new Error("Avison Young detail identity does not match the requested property");
+  }
   const completeDescriptionIdentity = /^\d{5}$/.test(clean(base?.postalCode) ?? "") && descriptionIdentity;
   const rangeDescriptionIdentity = /^\d+\s*-\s*\d+\s+.+$/.test(clean(base?.street) ?? "")
     && completeDescriptionIdentity;
@@ -590,16 +630,26 @@ export function assertAvisonYoungDetailDoc(
     return !heading.includes("#")
       && !/\d|\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|highway|hwy|drive|dr|lane|ln|court|ct|parkway|pkwy|suite|ste|unit|apt|floor|lot)\b/.test(remainder);
   };
+  // Complete offering phrases are display roles, not street/unit assertions.
+  // Keep this separate from the established physical and range-heading guards.
+  const marketingOfferingHeading = new RegExp("^(?:medical )?" + offeringPropertyFamily
+    + " (?:space|suites) available for (?:sale(?: or lease)?|lease(?: or sale)?)$", "i")
+    .test(clean($("h1").text()) ?? "");
+  const coherentDisplayHeading = $("h1").length === 1
+    && (marketingOfferingHeading || physicalHeadingAgrees());
   const physicalAddressIdentity = addressHeroIdentity && completeDescriptionIdentity
-    && physicalHeadingAgrees();
+    && coherentDisplayHeading;
+  // A range's endpoint display name retains its existing full-range/H1 proof.
+  const namedLocationIdentity = namedHeroIdentity && completeDescriptionIdentity
+    && !rangeDescriptionIdentity && ownedIdentityMetadata && coherentDisplayHeading;
   const nativeCompleteIdentity = requestedSharpLaunchMatch && urlMatches
     && Boolean(name && street && city && state)
     && ((nativeInfo.length > 0 && nativeInfoRows.length > 0) || hasPropertySections || hasBuildingSections)
     && $("h1").length === 1 && $(".hero__sub-title").length === 1
-    && (visiblePropertyIdentity || namedDescriptionIdentity || physicalAddressIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
+    && (visiblePropertyIdentity || namedDescriptionIdentity || physicalAddressIdentity || namedLocationIdentity || (offeringHeading && (addressHeroIdentity || (rangeDescriptionIdentity
       && matchesAddressHeading($(".hero__sub-title").text(), name)))))
     && $("title").length === 1 && $('meta[property="og:title"]').length === 1
-    && pageTitles.every(titleMatches) && $('meta[property="og:url"]').length === 1
+    && pageTitles.every((value) => titleMatches(value)) && $('meta[property="og:url"]').length === 1
     && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
     && canonicalUrls.every((value) => sameIdentityUrl(value, requested));
   if (nativeCompleteIdentity) {
@@ -614,7 +664,7 @@ export function assertAvisonYoungDetailDoc(
     const record = records[0];
     const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
     if (!addressHeadingsAgree || records.length > 1 || (record && (
-      normalizeName(record.name) !== name || !sameIdentityUrl(record.url, requested)
+      !subjectMatches(record.name) || !sameIdentityUrl(record.url, requested)
       || !addresses.every((address) => normalizeStreet(address.streetAddress) === street
         && normalizeCity(address.addressLocality) === city
         && normalizeState(address.addressRegion) === state
@@ -637,13 +687,23 @@ export function assertAvisonYoungDetailDoc(
     const record = records[0];
     const addresses = [record?.address, record?.propertyListing?.address].filter(Boolean);
     const structuredIdentityMatches = records.length === 1
-      && normalizeName(record?.name) === name
+      && subjectMatches(record?.name)
       && sameIdentityUrl(record?.url, requested)
       && addresses.length > 0 && addresses.every((address) =>
         normalizeStreet(address.streetAddress) === street
         && normalizeCity(address.addressLocality) === city
-        && normalizeState(address.addressRegion) === state);
-    if (!identityMetadataMatches || !structuredIdentityMatches || !urlMatches) {
+        && normalizeState(address.addressRegion) === state
+        && (!clean(address.postalCode) || !clean(base?.postalCode)
+          || clean(address.postalCode) === clean(base?.postalCode)));
+    // Complete registered structured identity can own the subject while H1 and
+    // hero carry marketing/financial display text. A price is never location proof.
+    const coherentHeroDisplay = namedHeroIdentity || addressHeroIdentity
+      || (heroLocations.length === 1 && heroLocations[0] === true)
+      || /^priced at \$[\d,]+(?:\.\d+)?$/i.test(heroText);
+    const structuredDisplayIdentity = ownedIdentityMetadata && completeDescriptionIdentity
+      && coherentDisplayHeading && $(".hero__sub-title").length === 1
+      && coherentHeroDisplay && addresses.every((address) => clean(address.postalCode) === clean(base?.postalCode));
+    if (!(identityMetadataMatches || structuredDisplayIdentity) || !structuredIdentityMatches || !urlMatches) {
       throw new Error("Avison Young detail identity does not match the requested property");
     }
     return record;
