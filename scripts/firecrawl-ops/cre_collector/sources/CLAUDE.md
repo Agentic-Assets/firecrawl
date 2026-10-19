@@ -210,8 +210,21 @@ Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for in
 
 Marcus direct POST and detail HTML requests share a fixed 30-second deadline
 covering response headers and body. Timeouts abort the request and attempt to
-cancel unread or late response bodies, without adding transport retries or
-changing strict detail evidence.
+cancel unread or late response bodies. A detail HTML deadline may trigger one
+same-URL replacement only after the original fetch and body operation has
+settled locally, including any known body-cancellation attempt. Responses
+whose headers arrive after the deadline never permit a replacement, including
+late HTTP denials. Settlement waits at most one additional second; an unsettled
+operation keeps its error without a retry. The replacement keeps the same
+30-second deadline, so detail recovery is bounded by 61 seconds. Local
+settlement does not prove remote-server settlement. POSTs, HTTP refusals,
+arbitrary transport errors, unusable/challenge pages and identity errors do
+not gain this retry. Existing retry telemetry counts the replacement with
+zero deliberate backoff; cleanup wait is not reported as backoff.
+Only successful enrichment supplies fresh provenance and enters the existing
+same-generation, identity-bound cache. Persistent failures retain detailError
+and still reject the strict whole-source artifact; never promote failed rows,
+replay an old generation, or weaken full-detail evidence to recover a timeout.
 The guarded owner's overall work deadline remains a separate bound.
 Strict map inventory recognizes the native `Results: [...]` envelope as well
 as the existing `Properties` array envelope. Neither shape supplies the source

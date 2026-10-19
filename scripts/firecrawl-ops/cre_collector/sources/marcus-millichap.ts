@@ -51,6 +51,26 @@ export function marcusMapDetailBody(activityId: string): Record<string, any> {
 
 export const MARCUS_FETCH_TIMEOUT_MS = 30_000;
 
+class MarcusRequestTimeoutError extends Error {
+  constructor(message: string, readonly retryReady: Promise<boolean>) {
+    super(message);
+  }
+}
+
+// A deadline alone does not prove that an abort-ignoring transport stopped.
+// Recovery may wait briefly for local settlement, but never wait indefinitely.
+async function marcusRequestSettled(settled: Promise<boolean>): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      settled,
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 1_000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // One deadline covers headers AND body. Race explicitly even if a transport
 // ignores abort; cancel unread/late bodies without waiting on a stuck cancel.
 async function marcusResponse<T>(
@@ -61,32 +81,46 @@ async function marcusResponse<T>(
   const controller = new AbortController();
   let response: Response | undefined;
   let complete = false;
+  let lateResponse = false;
+  let bodyCancellation: Promise<void> | undefined;
+  let markSettled!: () => void;
+  const operationSettled = new Promise<void>(resolve => { markSettled = resolve; });
+  const retryReady = operationSettled.then(async () => {
+    await bodyCancellation;
+    return !lateResponse;
+  });
   const cancelBody = () => {
     // Native fetch abort closes a locked body; cancel also handles unread and
     // late responses. Neither a locked nor a stuck cancel may extend deadline.
-    void response?.body?.cancel().catch(() => {});
+    // Cache only an actual cancellation: absent headers must not hide a later body.
+    bodyCancellation ??= response?.body?.cancel().catch(() => {});
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error(`${errorPrefix} timed out after ${timeoutMs}ms`));
+      reject(new MarcusRequestTimeoutError(`${errorPrefix} timed out after ${timeoutMs}ms`, retryReady));
       controller.abort();
       cancelBody();
     }, timeoutMs);
   });
   try {
     const operation = (async () => {
-      response = await fetch(url, { ...init, signal: controller.signal });
-      if (controller.signal.aborted) {
-        cancelBody();
-        throw new Error(`${errorPrefix} response arrived after its deadline`);
+      try {
+        response = await fetch(url, { ...init, signal: controller.signal });
+        if (controller.signal.aborted) {
+          lateResponse = true;
+          cancelBody();
+          throw new Error(`${errorPrefix} response arrived after its deadline`);
+        }
+        if (!response.ok) throw new Error(`${errorPrefix} HTTP ${response.status}`);
+        // Keep the existing response methods: matched-capacity observers wrap
+        // json()/text() to bind raw evidence and release request permits.
+        const value = await consume(response);
+        complete = true;
+        return value;
+      } finally {
+        markSettled();
       }
-      if (!response.ok) throw new Error(`${errorPrefix} HTTP ${response.status}`);
-      // Keep the existing response methods: matched-capacity observers wrap
-      // json()/text() to bind raw evidence and release request permits.
-      const value = await consume(response);
-      complete = true;
-      return value;
     })();
     return await Promise.race([operation, deadline]);
   } finally {
@@ -302,13 +336,23 @@ export function marcusCapTruncated(
 export async function fetchMarcusDetailHtml(
   url: string, timeoutMs = MARCUS_FETCH_TIMEOUT_MS
 ): Promise<string> {
-  return marcusResponse(url, {
+  const request = () => marcusResponse(url, {
     headers: {
       accept: "text/html,*/*",
       referer: MARCUS_PROPERTIES_URL,
       "user-agent": "Mozilla/5.0 CRE collector",
     },
   }, "Marcus & Millichap detail", response => response.text(), timeoutMs);
+  try {
+    return await request();
+  } catch (error) {
+    if (!(error instanceof MarcusRequestTimeoutError) ||
+        !await marcusRequestSettled(error.retryReady)) throw error;
+    // Only one replacement, after fetch, body and known cancellation settled.
+    // Settlement wait is cleanup, not deliberate backoff. POSTs never use this.
+    recordRetry("http_helper", 0, true);
+    return request();
+  }
 }
 
 export function marcusDetailHtmlIsUsable(html: string): boolean {
