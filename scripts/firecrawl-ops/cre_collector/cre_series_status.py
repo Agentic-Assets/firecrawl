@@ -582,7 +582,10 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
             f"{key} {pipeline[key]}" for key in
             ("fetching", "pending", "validating", "committing", "verified", "failed")))
     if snapshot["elapsed_seconds"] is not None:
-        lines.append(f"Elapsed                {_duration(snapshot['elapsed_seconds'])}")
+        lines.append(
+            f"{'Parent elapsed        ' if pipeline else 'Elapsed               '} "
+            f"{_duration(snapshot['elapsed_seconds'])}"
+        )
     if snapshot["updated_age_seconds"] is not None:
         lines.append(
             f"{'Parent manifest updated' if pipeline else 'Manifest updated      '} "

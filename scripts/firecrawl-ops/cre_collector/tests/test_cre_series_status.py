@@ -657,6 +657,7 @@ def test_pipeline_render_foregrounds_qualified_child_preserves_parent_json(tmp_p
     assert "Parent recorded status running" in rendered
     assert "Parent complete        0/2 (0.0%)" in rendered
     assert "Parent manifest updated" in rendered
+    assert "Parent elapsed" in rendered
     assert "Recorded source" not in rendered
     assert "Outer attempt" not in rendered
     assert json.dumps(snapshot, sort_keys=True) == before
