@@ -5,6 +5,55 @@ existing manifest, source JSON, validation, ingest and readback artifacts.
 Performance diagnostics never authorize a database write, weaken a freshness
 gate, change a request format or replace required safety evidence.
 
+## Standing parallel-work and throughput instructions
+
+Optimize elapsed time to correctly refreshed, verified listings. Parallel work
+is a standing operating requirement when independent work is available, not a
+one-off experiment or a reason to reduce listing completeness.
+
+- Split independent diagnosis, implementation, research and verification among
+  as many focused lanes as runtime capacity and independent work support. Keep
+  the coordinator responsible for integration and the original live process
+  handle. Reassign idle lanes to useful independent
+  work; do not invent work or duplicate another agent's run.
+- Run independent test suites and bounded experiments concurrently when their
+  state and resource use are isolated. Collector suites require separate genuine
+  `git clone --no-hardlinks` checkouts, never the runtime or a worktree. Use
+  focused failure tests first, then the required final-candidate checks. Do not
+  repeat passing broad suites without changed code or an unresolved failure.
+- Use the existing pipeline's configurable `--source-workers` range of 1–4.
+  These are collection slots, not database workers. Release a slot when its
+  collection process settles; validation and ordered database units must not
+  retain that collection slot. Preserve provider lanes, backpressure, exclusive
+  sources and the single database-write lane. Do not build another scheduler.
+- Tune request concurrency separately from brokerage worker count. Inspect the
+  adapter's actual fanout, clamps and pacing; record effective settings, rather
+  than assuming the requested value was honored. Increase useful parallelism
+  within the existing provider and resource contracts, not by bypassing them.
+- Derive finite work budgets from comparable successful work at those effective
+  settings, including complete detail collection, ingest, full validation and
+  cleanup headroom. A fast failure, small canary or older higher-fanout run does
+  not prove a full-run deadline fits. Do not invent item/data caps or omit useful
+  fields to make a run appear faster.
+- Fail early on a diagnosed deterministic defect. Reuse an exact-generation
+  shared inventory outcome where the adapter supports it, including failure,
+  instead of downloading the same failed inventory again for the other tenure.
+  Retry only the affected source or supported stage after reconciliation; do
+  not repeat an already verified cohort. Pipeline resume remains unsupported:
+  never edit a manifest to turn an interrupted run into a success. If ingest
+  committed but validation stopped, inspect the existing read-only audit and
+  exact-generation readback path before considering another write or recrawl.
+- Record comparable wall times, verified counts, queue waits, errors, effective
+  settings, findings and disproved ideas in the existing
+  [AGENTIC-2895 learning log](https://linear.app/agenticassets/issue/AGENTIC-2895).
+  Preserve full validation, source identity, freshness and public-field fidelity.
+  Keep source-specific acceptance distinct from whole-registry completion.
+
+For a recurring failure, first check other brokerages using the same provider,
+adapter or helper and reuse a proven family fix where its contract applies.
+The [source-module instructions](../../../scripts/firecrawl-ops/cre_collector/sources/CLAUDE.md)
+own that implementation and regression-test guidance.
+
 ## Read it
 
 From `scripts/firecrawl-ops/cre_collector/`:

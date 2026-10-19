@@ -995,7 +995,13 @@ after snapshot and all14-family/no-regression/generation-exact readback receipts
 Keep baseline writes, source-derived activation and mark-missing off. Ordinary
 upsert revival remains possible and must be disclosed if observed.
 
-Pyramid inventory concurrency is2, detail concurrency4, without an RPS limiter.
+Pyramid honors configured request concurrency `C`: inventory uses `min(C, 2)`
+and details use `min(C, 4)`, without an RPS limiter. Thus `C=2` uses two detail
+workers. Older code used literal inventory2/detail4 even when configured `C=1`;
+those historical timings do not establish the runtime or deadline fit of the
+current lower-fanout setting. Follow the
+[standing throughput instructions](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md#standing-parallel-work-and-throughput-instructions)
+when choosing parallel work, effective settings and a complete-run budget.
 Each source helper allows2attempts,30s per attempt,32MiB per response and up to
 3followed redirects; logical fetch counts exclude these extra HTTP dispatches.
 Use a finite separately reviewed pilot deadline, normal guards and no outer retry.

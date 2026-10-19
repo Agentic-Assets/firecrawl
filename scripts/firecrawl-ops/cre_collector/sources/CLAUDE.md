@@ -9,6 +9,24 @@ source metadata and evidence of missingness, follow the
 [listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
 An empty consumer field is not proof of source absence.
 
+## Fix shared failure families
+
+Before treating a failure as unique to one brokerage, identify its provider,
+adapter and shared helpers, then search existing fixes, tests and the
+[AGENTIC-2895 learning log](https://linear.app/agenticassets/issue/AGENTIC-2895).
+Check other brokerages using the affected path. Fix genuinely shared behavior
+once and add parameterized regressions for representative sources and variations,
+rather than copying the fix into separate adapters. Examples include equivalent
+owned-host forms, pagination, response shapes, retries and duplicate inventory
+downloads; apply normalization only where the source contract permits it.
+
+Shared code does not transfer another brokerage's identity, tenure, admission,
+freshness or lifecycle authority. Retain each source's raw provenance and
+source-specific checks. A sibling is not verified merely because it uses the
+fixed helper: obtain its required fresh acceptance evidence. Follow the
+[throughput workflow](../../../../docs/firecrawl-ops/references/cre-performance-telemetry.md#standing-parallel-work-and-throughput-instructions)
+for parallel diagnosis and testing without repeated full-batch runs.
+
 ## Adapter Contract
 
 - Return `{ company, sourceUrl, method, totalAvailable, listings, note?, truncated? }`.
