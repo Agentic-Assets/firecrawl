@@ -244,8 +244,6 @@ Assert-Cre (($creDecoded -join '|') -ceq ('fixture.exe|-NoProfile|-NonInteractiv
 $creEquivalent = $crePreview.Replace('<RegistrationInfo>','<RegistrationInfo><Date>2026-01-01T00:00:00</Date><URI>\fixture</URI>')
 Assert-Cre ((Get-CreTaskContract $creEquivalent) -ceq (Get-CreTaskContract $crePreview)) 'Scheduler registration metadata must not masquerade as execution drift.'
 Assert-Cre ((Get-CreTaskContract $crePreview.Replace('<WakeToRun>false','<WakeToRun>true')) -cne (Get-CreTaskContract $crePreview)) 'Execution settings drift must be detected.'
-$creOffline = [ordered]@{ status='passed'; assertions=$global:Cre4265Fixture.Checks; nativeFixtureRequested=[bool]$NativeFixture; productionTaskRegistered=$false; providerOrDatabaseCalled=$false }
-$creOffline | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ProofDirectory 'offline.json') -Encoding UTF8
 $pipelineTaskArgs = $creBase.Clone()
 $pipelineTaskArgs.Remove('Source')
 $pipelineTaskArgs['Tier'] = 'series'
@@ -271,7 +269,45 @@ $callsBeforePreview = $global:Cre4265Fixture.Calls.Count
 $strictMixedAction = Get-CreXmlValue $strictMixedDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
 Assert-Cre ($strictMixedAction.Contains(('"-Sources" "'+$strictMixed+'"')) -and $strictMixedAction.Contains(('"-AdmitCurrentInventorySources" "'+$strictMixed+'"'))) 'Mixed strict-source preview preserves exact selected admissions.'
 Assert-Cre ($global:Cre4265Fixture.Calls.Count -eq $callsBeforePreview) 'Mixed preview never calls the scheduler.'
+# Optional series concurrency must not change omitted-parameter action bytes.
+$creDefaultSeriesAction = Get-CreXmlValue ([xml]$creSeriesPreview) '/t:Task/t:Actions/t:Exec/t:Arguments'
+Assert-Cre (-not $creDefaultSeriesAction.Contains('"-Concurrency"') -and -not $strictMixedAction.Contains('"-Concurrency"')) 'Omitted concurrency keeps old serial/plural action bytes and inherited C1.'
+$callsBeforeConcurrency = $global:Cre4265Fixture.Calls.Count
+foreach ($limit in @(1,2,6)) {
+    $concurrencyArgs = $creSeries.Clone()
+    $concurrencyArgs['Concurrency'] = $limit
+    [xml]$concurrencyDoc = (& $creInstaller @concurrencyArgs) -join [Environment]::NewLine
+    $concurrencyAction = Get-CreXmlValue $concurrencyDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
+    $binding = ' "-Concurrency" "'+$limit+'"'
+    Assert-Cre ($concurrencyAction.Replace($binding,'') -ceq $creDefaultSeriesAction) 'Explicit serial concurrency changes only its one quoted parameter/value pair.'
+    $decodedConcurrency = [CreScheduledArgv]::Parse('"fixture.exe" '+$concurrencyAction)
+    $concurrencyIndex = [Array]::IndexOf($decodedConcurrency,'-Concurrency')
+    Assert-Cre (@($decodedConcurrency | Where-Object { $_ -ceq '-Concurrency' }).Count -eq 1 -and $concurrencyIndex -ge 0 -and $decodedConcurrency[$concurrencyIndex+1] -ceq "$limit") 'Native argv carries explicit series concurrency exactly once.'
+}
+$pluralConcurrencyArgs = $pipelineTaskArgs.Clone()
+$pluralConcurrencyArgs['Concurrency'] = 2
+[xml]$pluralConcurrencyDoc = (& $creInstaller @pluralConcurrencyArgs) -join [Environment]::NewLine
+$pluralConcurrencyAction = Get-CreXmlValue $pluralConcurrencyDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
+Assert-Cre ($pluralConcurrencyAction.Replace(' "-Concurrency" "2"','') -ceq $strictMixedAction) 'Plural C2 retains exact sources/admissions/worker budget and every other action byte.'
+[xml]$omittedAgainDoc = (& $creInstaller @pipelineTaskArgs) -join [Environment]::NewLine
+Assert-Cre ((Get-CreXmlValue $omittedAgainDoc '/t:Task/t:Actions/t:Exec/t:Arguments') -ceq $strictMixedAction) 'Explicit C2 cannot leak into a later omitted-parameter preview.'
+Assert-Cre ($global:Cre4265Fixture.Calls.Count -eq $callsBeforeConcurrency) 'All concurrency previews remain scheduler-free.'
+foreach ($invalidConcurrency in @(
+    @{ Tier='monitor'; Concurrency=1 }, @{ Tier='enrich'; Concurrency=2 },
+    @{ Tier='series'; Concurrency=0 }, @{ Tier='series'; Concurrency=7 }
+)) {
+    $concurrencyArgs = if ($invalidConcurrency.Tier -ceq 'series') { $creSeries.Clone() } else { $creBase.Clone() }
+    foreach ($key in $invalidConcurrency.Keys) { $concurrencyArgs[$key] = $invalidConcurrency[$key] }
+    $concurrencyArgs['Register'] = $true
+    $concurrencyArgs['Enable'] = $true
+    $global:Cre4265Fixture.Calls.Clear()
+    $concurrencyRefused = $false
+    try { & $creInstaller @concurrencyArgs | Out-Null } catch { $concurrencyRefused = $true }
+    Assert-Cre ($concurrencyRefused -and $global:Cre4265Fixture.Calls.Count -eq 0) 'Non-series or out-of-range concurrency refuses before enumeration/COM/registration/enable.'
+}
 $crePreview | Set-Content -LiteralPath (Join-Path $ProofDirectory 'preview.xml') -Encoding UTF8
+$creOffline = [ordered]@{ status='passed'; assertions=$global:Cre4265Fixture.Checks; nativeFixtureRequested=[bool]$NativeFixture; productionTaskRegistered=$false; providerOrDatabaseCalled=$false }
+$creOffline | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ProofDirectory 'offline.json') -Encoding UTF8
 Write-Output ('Offline scheduled-task PASS: '+$global:Cre4265Fixture.Checks+' assertions')
 
 if (-not $NativeFixture) { return }
