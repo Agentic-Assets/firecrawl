@@ -77,6 +77,18 @@ Keep operation counts unknown without authoritative committed outcome evidence
 bound to the source and generation; staged counts and an uncertain commit do
 not supply that evidence.
 
+The separate [date-bounded database report](../../../scripts/firecrawl-ops/cre_collector/cre_refresh_report.py)
+does expose `created_since`: currently non-deleted rows whose database
+`created_at` is at or after the requested boundary. This answers a creation-time
+question, not how many INSERT or UPDATE operations a particular invocation
+performed, how many records were subsequently retired, or how many properties
+are newly on the market. Its `refreshed_since` instead filters `scraped_at`, the
+detail-observation clock. Inventory-only updates and child-preserving updates
+without admitted current detail proof can retain an older clock, so this value
+is not a complete inventory-refresh count. Report these fields separately from
+generation-qualified counts. Each report query uses its own read-only
+transaction; while a writer is active, the report is not one atomic snapshot.
+
 A refreshed existing row is also not necessarily a changed business record.
 The current upsert updates existing rows and their `updated_at` even when the
 listing facts are unchanged. Keep refreshed listings, new parent rows and
