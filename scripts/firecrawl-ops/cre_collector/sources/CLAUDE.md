@@ -324,6 +324,9 @@ not the labeled offered address. Numeric/range/unit/intersection subjects receiv
 no new authority; the retained endpoint-map/range offering remains refused.
 This association does not expand native authority, financial normalization,
 child replacement or source acceptance. Existing legacy families remain intact.
+Current general harvest can retain avatar/tracking URLs; image counts are not distinct property photos.
+Structured name-only agents can coexist with full cards; contact counts are not distinct people.
+These existing limits remain on AGENTIC-4294; this witness does not establish clean-gallery/source acceptance.
 
 An official offering H1 may instead bind agreeing complete structured and visible
 street/city/state/known five-digit ZIP witnesses with owned subject metadata.
