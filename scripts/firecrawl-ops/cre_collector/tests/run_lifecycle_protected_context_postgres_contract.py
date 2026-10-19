@@ -36,7 +36,7 @@ TARGET = "0" * 64
 # Columns used by generated lifecycle DML and the finite scope are real column
 # names/types; extra marker values let every protected family prove drift.
 DDL = """
-CREATE EXTENSION pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE SCHEMA credeals;
 CREATE TABLE credeals.cre_brokerages(id uuid PRIMARY KEY,slug text UNIQUE NOT NULL,name text);
 CREATE TABLE credeals.cre_listings(
