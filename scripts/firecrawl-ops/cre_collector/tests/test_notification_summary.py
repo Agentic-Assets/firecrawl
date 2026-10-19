@@ -1384,6 +1384,7 @@ def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
     "artifact_hash", "report_hash", "generation", "stale", "active_ingest",
     "missing_recovery", "missing_ingest", "empty_ingest", "rollback_outcome",
     "rollback_rc", "rollback_bool_rc", "rollback_safe", "rollback_generation", "rollback_artifact",
+    "missing_result_rollback", "missing_result_unstarted",
 ])
 def test_pending_global_stop_requires_exact_settled_producer_shape(evidence, fault):
     setup = settled_global_failure(evidence)
@@ -1423,6 +1424,10 @@ def test_pending_global_stop_requires_exact_settled_producer_shape(evidence, fau
         evidence["values"]["control"]["finished_unix_ms"] -= 600000
     elif fault == "active_ingest":
         child["sources"]["cbre"]["state"] = "ingest_recovery_required"
+    elif fault.startswith("missing_result_"):
+        child["pipeline"]["source_results"].pop("cbre")
+        if fault == "missing_result_unstarted":
+            child["sources"]["cbre"] = {"state": "pending", "ingest": None}
     elif fault == "missing_recovery":
         child["sources"]["cbre"].pop("ingest_recovery")
     elif fault == "missing_ingest":

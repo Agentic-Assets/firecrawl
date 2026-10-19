@@ -942,6 +942,10 @@ def verified_pipeline_summary(
                     failed.append(source)
                 continue
             if result is None:
+                # Failed global cleanup records a result for every unverified
+                # member; absence cannot downgrade an attempted write to pending.
+                require(not (parent.get("status") == child.get("status") == "failed"
+                             and pipeline.get("status") == "reconciliation_required"))
                 require(
                     interrupted or parent_entry.get("state")
                     in {
