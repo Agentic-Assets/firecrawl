@@ -243,6 +243,13 @@ Key behavior:
   shared lock table before mutation. The global lock also serializes the bounded
   reviewed reconciliation path; unique identity constraints serialize new-row
   conflicts.
+- **Protected lifecycle reconciliation:** use the optional finite four-parent
+  JLL Investor contract in the [lifecycle runbook](../../../docs/firecrawl-ops/references/cre-listing-lifecycle-runbook.md#optional-four-parent-jll-investor-protection).
+  Its context is part of the exact plan hash and must never be ignored or
+  downgraded. Compare all protected objects and catalog before job DML, and
+  finalize the two actions and job in one transaction. Ordinary multi-batch
+  reconciliation retains its existing behavior. A stale preimage or uncertain
+  commit requires read-only diagnosis, not blind replay or a replacement runner.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
   suppressed unless `--activate-status` is passed on the CLI or
   `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:

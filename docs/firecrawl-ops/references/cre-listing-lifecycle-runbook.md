@@ -124,9 +124,57 @@ and this exact confirmation with the generated hash:
 APPLY cre-listing-lifecycle-reconciliation <plan-hash>
 ```
 
-Reconciliation jobs stay `running` while batches execute and become
+Ordinary reconciliation jobs stay `running` while batches execute and become
 `completed` only in the final transaction after every batch succeeds. Preserve
 the JSON/CSV plan and the final database readback with the approval issue.
+
+### Optional four-parent JLL Investor protection
+
+[AGENTIC-4360](https://linear.app/agenticassets/issue/AGENTIC-4360) owns the
+finite protected-context contract. This is an optional mode of the maintained
+planner and executor, not a separate repair runner or general snapshot format.
+It permits exactly two indexed absence-based retirements while protecting two
+current records that share their source URLs. A shared URL alone never proves
+that one provider identity replaces another.
+
+The evidence bundle can include this additional top-level pointer:
+
+```json
+{
+  "protected_context": {
+    "snapshot_path": "/private/path/current-context.json",
+    "snapshot_sha256": "<sha256-of-original-context-bytes>",
+    "database_target_sha256": "<expected-database-target-sha256>"
+  }
+}
+```
+
+This example shows only the additional field; the ordinary `rows` and fresh
+complete source-artifact evidence remain mandatory. Preserve the original
+PostgreSQL JSON text rather than parsing and rewriting its numeric values
+through floating point. The planner validates the fixed four-parent,
+four-index and 15-object/catalog scope, matches the actions to the captured
+lifecycle preimages, and verifies both untouched current identities against
+the same complete source artifact. It normalizes and hashes the context pointer
+into the plan. Missing, malformed or drifted context refuses the plan; it must
+never silently downgrade to ordinary reconciliation.
+
+Protected application requires the existing exact plan approval and database
+target checks. It refuses skipped rows or a batch size that would split the two
+actions. Within the existing lifecycle transaction lock, bounded relation locks
+prevent child and other protected-row changes while the complete saved objects
+and catalog are compared, before any job or listing mutation. The two actions
+and deterministic job completion then commit together. The ordinary mode keeps
+its existing separate-batch finalization behavior.
+
+A context mismatch or lock timeout requires diagnosis and, when appropriate,
+new read-only evidence and a new plan hash. After a successful protected commit,
+the original preimage intentionally no longer matches: do not blindly replay it.
+A disconnected client or nonzero exit around `COMMIT` does not prove rollback.
+Reconcile exact parents, indexes, events and jobs through read-only access before
+deciding the outcome. Neither a prepared protected plan nor passing disposable
+tests establishes production execution or full-source acceptance. This mode
+does not authorize baseline, OM, schema, schedule or Mac changes.
 
 Every generated ingest and reconciliation apply/finalize transaction takes the
 same transaction-scoped lifecycle advisory lock before row locks. This
