@@ -120,20 +120,22 @@ test("Lyon forward wall-clock adjustment cannot shorten physical start spacing",
   });
 });
 
-test("Lyon failures preserve request spacing, retry maximum and a usable start queue", async (t) => {
+test("Lyon fail-fast refusals preserve request spacing and a usable start queue", async (t) => {
   await withLyonClock(t, async () => {
     const starts: number[] = [];
     const paced = lyonStahlPacedFetch(async () => {
       starts.push(Date.now());
-      if (starts.length === 1) throw new Error("synthetic network failure");
+      if (starts.length === 1) {
+        throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+      }
       return new Response("not found", { status: 404 });
     });
     await assert.rejects(lyonStahlFetchText("https://lyonstahl.com/properties/failure/", "html", paced), /HTTP 404/);
-    assert.deepEqual(starts, [100_000, 110_000, 120_000]);
+    assert.deepEqual(starts, [100_000, 110_000]);
     await paced("next");
-    assert.deepEqual(starts, [100_000, 110_000, 120_000, 130_000]);
+    assert.deepEqual(starts, [100_000, 110_000, 120_000]);
     await assert.rejects(lyonStahlFetchText("http://foreign.example/", "html", paced, 60_000, 100, 1), /unsafe/);
-    assert.equal(starts.length, 4, "URL refusal must not reserve a physical request");
+    assert.equal(starts.length, 3, "URL refusal must not reserve a physical request");
   });
 });
 
@@ -923,7 +925,7 @@ test("Lyon Stahl reports detail acquisition failures separately from parser reje
   assert.match(result.note ?? "", /1 terminal detail page\(s\) excluded/);
   assert.match(result.note ?? "", /2 detail page\(s\) failed identity or structure validation/);
   assert.match(result.note ?? "", /2 detail page\(s\) failed acquisition/);
-  assert.equal(calls.get(notFoundUrl), 3);
+  assert.equal(calls.get(notFoundUrl), 1);
   assert.equal(calls.get(rateLimitedUrl), 3);
 });
 

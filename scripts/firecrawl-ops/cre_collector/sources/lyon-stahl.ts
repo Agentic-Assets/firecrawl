@@ -13,6 +13,14 @@ export const LYON_STAHL_SITEMAP_URL = `${LYON_STAHL_HOST}/sitemap.xml`;
 export const LYON_STAHL_FETCH_TIMEOUT_MS = 60_000;
 export const LYON_STAHL_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const LYON_STAHL_REQUEST_INTERVAL_MS = 10_000;
+const LYON_STAHL_RETRYABLE_NATIVE_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
 
 const LYON_STAHL_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 const LYON_STAHL_NON_PHOTO = /avatar|headshot|logo|favicon|placeholder|sprite|cropped-/i;
@@ -609,6 +617,46 @@ export function parseLyonStahlDetail(
 
 type FetchKind = "html" | "xml";
 
+class LyonStahlRetryableFetchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "LyonStahlRetryableFetchError";
+  }
+}
+
+function lyonStahlIsTransientTransportFailure(error: unknown, timedOut: boolean): boolean {
+  if (timedOut) return true;
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof TypeError)) return false;
+  const cause = (error as TypeError & { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return false;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && LYON_STAHL_RETRYABLE_NATIVE_CODES.has(code);
+}
+
+/** Bound body cancellation so a broken stream cannot mask the primary refusal. */
+async function lyonStahlCancelBody(
+  body: { cancel(): Promise<unknown> } | null,
+  timeoutMs: number
+): Promise<boolean> {
+  if (!body) return true;
+  let cancellation: Promise<void>;
+  try {
+    cancellation = Promise.resolve(body.cancel()).then(() => undefined);
+  } catch {
+    return true;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await Promise.race([
+    cancellation.then(() => true, () => true),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.min(timeoutMs, 1_000));
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return settled;
+}
+
 /** One invocation's physical request starts, including redirects and retries. */
 export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
   let lastStartedAt: number | null = null;
@@ -644,10 +692,13 @@ export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
 
 async function lyonStahlBoundedResponseText(
   response: Response,
-  maxBytes: number
+  maxBytes: number,
+  timeoutMs: number,
+  signal: AbortSignal
 ): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await lyonStahlCancelBody(response.body, timeoutMs);
     throw new Error(`Lyon Stahl response exceeds ${maxBytes} bytes`);
   }
   if (!response.body) return "";
@@ -657,11 +708,23 @@ async function lyonStahlBoundedResponseText(
   let text = "";
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        if (!await lyonStahlCancelBody(reader, timeoutMs)) {
+          throw new Error("Lyon Stahl response body read failed and did not cancel", { cause: error });
+        }
+        if (!lyonStahlIsTransientTransportFailure(error, signal.aborted)) {
+          throw error;
+        }
+        throw new LyonStahlRetryableFetchError("Lyon Stahl response body read failed", { cause: error });
+      }
+      const { done, value } = chunk;
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
+        await lyonStahlCancelBody(reader, timeoutMs);
         throw new Error(`Lyon Stahl response exceeds ${maxBytes} bytes`);
       }
       text += decoder.decode(value, { stream: true });
@@ -685,31 +748,67 @@ export async function lyonStahlFetchText(
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let retry = false;
     try {
       let current = url;
       for (let redirect = 0; redirect <= 3; redirect++) {
         const allowed = lyonStahlUrl(current, kind === "html" ? "detail" : "sitemap");
         if (!allowed) throw new Error(`Lyon Stahl refused unsafe ${kind} URL`);
         const strict = requireFreshDetails();
-        const response = await fetchImpl(allowed, {
-          redirect: "manual",
-          signal: controller.signal,
-          headers: {
-            "User-Agent": "Mozilla/5.0 CRE collector",
-            Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
-            ...(strict ? { "Cache-Control": "no-cache" } : {}),
-          },
-          ...(strict ? { cache: "no-store" as const } : {}),
-        });
+        let response: Response;
+        try {
+          response = await fetchImpl(allowed, {
+            redirect: "manual",
+            signal: controller.signal,
+            headers: {
+              "User-Agent": "Mozilla/5.0 CRE collector",
+              Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
+              ...(strict ? { "Cache-Control": "no-cache" } : {}),
+            },
+            ...(strict ? { cache: "no-store" as const } : {}),
+          });
+        } catch (error) {
+          if (lyonStahlIsTransientTransportFailure(error, controller.signal.aborted)) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new LyonStahlRetryableFetchError(`Lyon Stahl fetch failed: ${message}`, { cause: error });
+          }
+          throw error;
+        }
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
-          if (!location) throw new Error(`Lyon Stahl redirect ${response.status} lacks Location`);
-          current = new URL(location, allowed).toString();
+          if (!location) {
+            await lyonStahlCancelBody(response.body, timeoutMs);
+            throw new Error(`Lyon Stahl redirect ${response.status} lacks Location`);
+          }
+          let next: string;
+          try {
+            next = new URL(location, allowed).toString();
+          } catch {
+            await lyonStahlCancelBody(response.body, timeoutMs);
+            throw new Error(`Lyon Stahl redirect ${response.status} has invalid Location`);
+          }
+          if (!lyonStahlUrl(next, kind === "html" ? "detail" : "sitemap")) {
+            await lyonStahlCancelBody(response.body, timeoutMs);
+            throw new Error(`Lyon Stahl refused unsafe ${kind} URL`);
+          }
+          if (!await lyonStahlCancelBody(response.body, timeoutMs)) {
+            throw new Error("Lyon Stahl redirect body did not settle before the next request");
+          }
+          current = next;
           continue;
         }
-        if (!response.ok) throw new Error(`Lyon Stahl HTTP ${response.status}`);
+        if (!response.ok) {
+          const status = response.status;
+          const hasRetryAfter = response.headers.has("retry-after");
+          const cancelled = await lyonStahlCancelBody(response.body, timeoutMs);
+          if ([429, 500, 502, 503, 504].includes(status) && !hasRetryAfter && cancelled) {
+            throw new LyonStahlRetryableFetchError(`Lyon Stahl HTTP ${status}`);
+          }
+          throw new Error(`Lyon Stahl HTTP ${status}`);
+        }
         const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
         if (contentType.includes("application/pdf")) {
+          await lyonStahlCancelBody(response.body, timeoutMs);
           throw new Error("Lyon Stahl refused PDF response");
         }
         if (
@@ -718,19 +817,22 @@ export async function lyonStahlFetchText(
           && !contentType.includes("text/html")
           && !contentType.includes("application/xhtml+xml")
         ) {
+          await lyonStahlCancelBody(response.body, timeoutMs);
           throw new Error(`Lyon Stahl detail returned ${contentType}`);
         }
-        const body = await lyonStahlBoundedResponseText(response, maxBytes);
+        const body = await lyonStahlBoundedResponseText(response, maxBytes, timeoutMs, controller.signal);
         if (!body.trim()) throw new Error(`Lyon Stahl returned empty ${kind}`);
         return body;
       }
       throw new Error("Lyon Stahl exceeded redirect cap");
     } catch (error) {
       lastError = error;
-      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      retry = error instanceof LyonStahlRetryableFetchError;
     } finally {
       clearTimeout(timer);
     }
+    if (!retry || attempt >= attempts) break;
+    await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
   }
   throw lastError;
 }

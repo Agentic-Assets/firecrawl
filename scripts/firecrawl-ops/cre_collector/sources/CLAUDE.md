@@ -162,6 +162,11 @@ sitemaps, details, redirects and retries. It spaces starts without serializing
 response bodies; the existing 60-second attempt timeout includes queued waits,
 and an expired queued request never dispatches. This enforces the retained robots
 rule, not a claim that it resolves HTTP 429 or complete source coverage.
+The Lyon fetcher retries only recognized transport/timeouts and selected 429/5xx
+responses without a `Retry-After` header, within its existing attempt bound.
+It cancels discarded response bodies; definitive HTTP, URL, content-type and
+size-limit refusals remain fail-fast. Do not use retries to bypass a 403 or
+managed challenge, or to imply inventory completeness.
 The October 17 robots diagnostic stopped on an HTTP 403 managed challenge;
 a separately bounded October 18 observation returned HTTP 200. Read the owning
 issue's current decision and proof comments for the applicable access evidence.
