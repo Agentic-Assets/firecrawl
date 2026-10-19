@@ -438,6 +438,7 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
         }
         <= info.keys()
         or type(info["current_active"]) is not int
+        or info["current_active"] < 0
         or type(info["effective_floor"]) is not int
         or (
             info["baseline_median"] is not None

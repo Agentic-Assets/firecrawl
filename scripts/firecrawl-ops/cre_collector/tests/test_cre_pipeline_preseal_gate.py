@@ -387,6 +387,7 @@ def test_incomplete_standard_refusal_stops_globally(closed_pipeline, verdict, fi
     "field,value",
     [
         ("current_active", True),
+        ("current_active", -1),
         ("baseline_median", False),
         ("effective_floor", True),
         ("floor_policy", []),
