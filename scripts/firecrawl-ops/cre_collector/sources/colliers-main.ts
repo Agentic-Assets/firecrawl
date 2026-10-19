@@ -625,6 +625,17 @@ export function mapColliersMainCoveoListing(
   return listing;
 }
 
+export const COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE = 79;
+
+export class ColliersMainBootstrapDeniedError extends Error {
+  readonly code = "COLLIERS_MAIN_BOOTSTRAP_HTTP_403";
+
+  constructor() {
+    super("Colliers browser bootstrap returned HTTP 403");
+    this.name = "ColliersMainBootstrapDeniedError";
+  }
+}
+
 export async function postColliersMainBrowserBatch(
   requestBodies: string[],
   wait: Sleep = sleep
@@ -642,6 +653,14 @@ export async function postColliersMainBrowserBatch(
       });
       const responseText = await response.text();
       if (!response.ok) {
+        let bootstrapDenied = false;
+        try {
+          const failure = JSON.parse(responseText);
+          bootstrapDenied = failure !== null && typeof failure === "object"
+            && !Array.isArray(failure) && failure.bootstrapStatus === 403
+            && typeof failure.error === "string" && !("responses" in failure);
+        } catch { /* An untyped response keeps the existing status retry policy. */ }
+        if (bootstrapDenied) throw new ColliersMainBootstrapDeniedError();
         retryable = response.status === 429 || response.status >= 500 ||
           /(?:HTTP|bootstrapStatus)[^\d]*429/i.test(responseText);
         throw new Error(
@@ -669,6 +688,7 @@ export async function postColliersMainBrowserBatch(
         return parsed;
       });
     } catch (error) {
+      if (error instanceof ColliersMainBootstrapDeniedError) throw error;
       lastError = error instanceof Error ? error : new Error(String(error));
       // A rejected local fetch has no response status, so retry it as a bounded
       // transport failure. Deterministic validation and 4xx failures remain terminal.
@@ -691,7 +711,11 @@ export async function colliersMainCoveoEnrichAll(entries: ColliersMainEntry[]): 
     const payloads = await postColliersMainBrowserBatch(group.map((batch) => colliersMainCoveoQueryBody(batch.map((e) => e.id), "property")));
     payloads.forEach((payload, index) => {
       if (payload.totalCount !== group[index].length || payload.results.length !== group[index].length) {
-        throw new Error(`Colliers Coveo property batch count mismatch`);
+        throw new Error(
+          `Colliers Coveo property batch count mismatch: requested ${group[index].length}, ` +
+          `provider total ${typeof payload.totalCount === "number" ? payload.totalCount : "<non-numeric>"} (type ${typeof payload.totalCount}), ` +
+          `returned ${payload.results.length}`
+        );
       }
       resultSets.push(...payload.results);
     });

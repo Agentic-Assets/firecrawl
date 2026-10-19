@@ -40,6 +40,8 @@ def run_schedule(
     retained_paths=(),
     temporary_bytes=None,
     free_bytes=None,
+    attempts_this_run=1,
+    terminal_code=None,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -80,7 +82,7 @@ def run_schedule(
         assert all(not lanes & refresh.source_worker_lanes(other) for other in alive)
         assert len(alive) < workers
         checkpoint = owner["sources"][source]
-        checkpoint["attempts"].append({"number": 1, "started_at": refresh.utc_now()})
+        checkpoint["attempts"].append({"number": len(checkpoint["attempts"]) + 1, "started_at": refresh.utc_now()})
         checkpoint["state"] = "collecting"
         path = root / "sources" / f"{source}.tmp"
         path.parent.mkdir(exist_ok=True)
@@ -106,7 +108,12 @@ def run_schedule(
         }
         checkpoint["state"] = "candidate"
         events.append(("published", item.source, clock["now"]))
-        return item.source != failure
+        if item.source == failure:
+            checkpoint["state"] = "collect_failed"
+            if terminal_code:
+                checkpoint["terminal_collection_failure"] = {"code": terminal_code}
+            return False
+        return True
 
     def prepare(root, owner, source):
         # Deliberately slow compute, exercising the actual scoped polling wait.
@@ -156,7 +163,7 @@ def run_schedule(
         sources,
         page_cap=400,
         concurrency=1,
-        attempts_this_run=1,
+        attempts_this_run=attempts_this_run,
         env_file=None,
         source_workers=workers,
     )
@@ -528,3 +535,25 @@ def test_zero_pending_queue_still_refuses_low_disk(tmp_path, monkeypatch):
         not checkpoint["attempts"] for checkpoint in manifest["sources"].values()
     )
     assert manifest["pipeline"]["status"] == "reconciliation_required"
+
+
+@pytest.mark.parametrize("source,code,attempts", [
+    ("colliers-main", "COLLIERS_MAIN_BOOTSTRAP_HTTP_403", 1),
+    ("avison-young", refresh.AVISON_YOUNG_TERMINAL_FAILURE_CODE, 1),
+    ("colliers-main", refresh.AVISON_YOUNG_TERMINAL_FAILURE_CODE, 3),
+    ("cbre", "COLLIERS_MAIN_BOOTSTRAP_HTTP_403", 3),
+    ("colliers-main", None, 3),
+])
+def test_pipeline_terminal_source_refusal_does_not_retry_or_block_peer(
+    tmp_path, monkeypatch, source, code, attempts
+):
+    manifest, events, failures = run_schedule(
+        tmp_path, monkeypatch, 2, sources=(source, "hanley"), failure=source,
+        terminal_code=code, attempts_this_run=3,
+    )
+    assert failures == [source]
+    assert len([event for event in events if event[:2] == ("start", source)]) == attempts
+    assert manifest["pipeline"]["source_results"][source]["state"] == "failed"
+    assert manifest["sources"][source]["artifact"] is None
+    assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
+    assert all(source not in unit["sources"] for unit in manifest["pipeline"]["units"])

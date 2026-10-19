@@ -309,6 +309,23 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
 
+Cushman strict pagination accepts only numeric or nonempty numeric-string totals.
+A later page with a valid zero total and an empty array receives one same-URL,
+uncached read after 12 seconds; the original total, page size, identity and full
+aggregate guards still apply. Other malformed/drifting/short responses remain
+fatal. Each read retains the existing HTTP/JSON retry policy, so this adds at
+most one semantic read for an eligible page, not a source success or lifecycle
+waiver (AGENTIC-4520). The scheduled wait is recorded through the existing
+`http_helper` retry telemetry; non-strict monitoring is unchanged.
+
+Colliers-main treats only the non-OK browser sidecar's typed numeric
+`bootstrapStatus: 403` error envelope as a terminal bootstrap denial. Its full
+singleton collector exits 79 with no artifact, and the cohort wrapper carries
+settled marker 83; source-bound terminal evidence prevents another automatic
+whole-source attempt in the same generation. Monitor/mixed-CLI behavior stays
+scoped to its existing paths. Untyped 502, bootstrap 503 and 429 retain their
+bounded retries; no denial is source success or inventory removal (AGENTIC-4522).
+
 Savills baseline/coverage comparisons use the registered U.S. commercial
 sale+lease scope. See [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364)
 for the separate exact-preimage historical correction and ordinary acceptance;

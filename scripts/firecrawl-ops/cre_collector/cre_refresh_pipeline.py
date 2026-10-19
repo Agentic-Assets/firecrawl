@@ -836,7 +836,8 @@ def run_bounded_pipeline(
     def retry_or_fail(source, reason="collection failed"):
         checkpoint = manifest["sources"][source]
         if (
-            len(checkpoint["attempts"]) - prior_attempts[source] < attempts_this_run
+            not refresh.has_terminal_collection_failure(source, checkpoint)
+            and len(checkpoint["attempts"]) - prior_attempts[source] < attempts_this_run
             and checkpoint.get("state") not in {
                 "collect_infrastructure_failed",
                 "artifact_rejected",
