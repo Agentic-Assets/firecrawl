@@ -31,6 +31,7 @@ import {
   colliersStrandedDocs,
   colliersStrandedMedia,
   colliersStrandedStructured,
+  srcColliers,
 } from "../../../sources/colliers.js";
 import { harvestDetail } from "../../../lib/harvest.js";
 import { parseLeaseRate } from "../../../lib/parse.js";
@@ -54,6 +55,53 @@ function fixtureFor(sourceKey: string): any {
   const entry = fixtures.find((f: any) => f.sourceKey === sourceKey);
   if (!entry) throw new Error(`No fixture for sourceKey=${sourceKey}`);
   return entry.raw_data;
+}
+
+function syntheticSalesTrackerPage(projectIds: string[], start: number) {
+  const html = `<ul>${projectIds
+    .map((id) => `<li class="item"><a class="headline">Property ${id}</a></li>`)
+    .join("")}</ul>`;
+  return {
+    list: {
+      success: true,
+      total: 4,
+      totalAvail: 4,
+      numProjects: projectIds.length,
+      html,
+    },
+    map: {
+      success: true,
+      projectLocations: projectIds.map((ProjectId, index) => ({
+        ProjectId,
+        Latitude: 30 + start + index,
+        Longitude: -90 - start - index,
+      })),
+    },
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function requestUrl(input: RequestInfo | URL): URL {
+  if (input instanceof Request) return new URL(input.url);
+  return new URL(String(input));
+}
+
+function installSalesTrackerFetch(
+  t: { after(callback: () => void): void },
+  handler: (url: URL, init?: RequestInit) => Promise<Response>
+): void {
+  const priorFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = priorFetch;
+  });
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    handler(requestUrl(input), init)) as typeof fetch;
 }
 
 test("parseColliersLocation extracts city and state", () => {
@@ -462,4 +510,153 @@ test("colliers SalesTracker: parseLeaseRate on NNN rate text returns correct typ
   assert.equal(lr.min, 18.5);
   assert.equal(lr.max, null);
   assert.equal(lr.type, "nnn");
+});
+
+test("Colliers SalesTracker retries only the failed page pair after settling the sibling", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const pageTwo = syntheticSalesTrackerPage(["P3", "P4"], 3);
+  const pageRequests: string[] = [];
+  let laterListAttempts = 0;
+  let siblingSettled = false;
+
+  installSalesTrackerFetch(t, async (url, init) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    pageRequests.push(
+      `${url.pathname.split("/").at(-1)}|${url.searchParams.get("pv")}|${start}|${url.searchParams.get("PageSize")}`
+    );
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+
+    if (isList) {
+      laterListAttempts++;
+      if (laterListAttempts === 1) {
+        return Promise.reject(new DOMException("synthetic request deadline", "TimeoutError"));
+      }
+      assert.equal(siblingSettled, true, "retry must wait for the paired request to settle");
+      return jsonResponse(pageTwo.list);
+    }
+
+    if (laterListAttempts === 1) {
+      const signal = init?.signal;
+      assert.ok(signal, "paired map request should receive the attempt cancellation signal");
+      return new Promise<Response>((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(new DOMException("aborted with failed list request", "AbortError"));
+          return;
+        }
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted with failed list request", "AbortError")),
+          { once: true }
+        );
+      }).finally(() => {
+        siblingSettled = true;
+      });
+    }
+    return jsonResponse(pageTwo.map);
+  });
+
+  const result = await srcColliers("sale", 4, false);
+  assert.equal(result.listings.length, 4);
+  assert.equal(laterListAttempts, 2);
+  assert.deepEqual(
+    pageRequests.sort(),
+    [
+      `GetListingsHtml|${COLLIERS_FALLBACK_ENGINE_KEY}|1|4`,
+      `GetMapData|${COLLIERS_FALLBACK_ENGINE_KEY}|1|4`,
+      `GetListingsHtml|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+      `GetMapData|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+      `GetListingsHtml|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+      `GetMapData|${COLLIERS_FALLBACK_ENGINE_KEY}|3|2`,
+    ].sort(),
+    "the earlier page is fetched once and only the identical later pair is repeated"
+  );
+});
+
+test("Colliers SalesTracker does not retry a pair when an observed denial accompanies a transient status", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const pageStarts: number[] = [];
+
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    pageStarts.push(start);
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+    if (isList) return new Response("temporary upstream error", { status: 503 });
+    return new Response("not found", { status: 404 });
+  });
+
+  await assert.rejects(srcColliers("sale", 4, false), /HTTP 404/);
+  assert.deepEqual(pageStarts.sort((a, b) => a - b), [1, 1, 3, 3]);
+});
+
+test("Colliers SalesTracker leaves a 5xx with Retry-After beyond its bounded wait fatal", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const laterPageStarts: number[] = [];
+
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+    laterPageStarts.push(start);
+    if (isList) {
+      return new Response("retry later", {
+        status: 503,
+        headers: { "retry-after": "120" },
+      });
+    }
+    return jsonResponse({ success: true, projectLocations: [] });
+  });
+
+  await assert.rejects(srcColliers("sale", 4, false), /HTTP 503/);
+  assert.deepEqual(laterPageStarts, [3, 3]);
+});
+
+test("Colliers SalesTracker does not retry malformed page data or exceed one eligible pair retry", async (t) => {
+  const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  let mode: "malformed" | "repeat-503" | "arbitrary-typeerror" | "undefined-rejection" = "malformed";
+  let laterListAttempts = 0;
+  let laterMapAttempts = 0;
+
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? pageOne.list : pageOne.map);
+    if (isList) {
+      laterListAttempts++;
+      if (mode === "malformed") return new Response("<html>not JSON</html>");
+      if (mode === "arbitrary-typeerror") throw new TypeError("synthetic invalid URL failure");
+      if (mode === "undefined-rejection") return Promise.reject(undefined);
+      return new Response("temporary upstream error", { status: 503 });
+    }
+    laterMapAttempts++;
+    return mode === "malformed"
+      ? new Response("temporary upstream error", { status: 503 })
+      : jsonResponse({ success: true, projectLocations: [] });
+  });
+
+  await assert.rejects(srcColliers("sale", 4, false), /non-JSON/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [1, 1]);
+
+  mode = "arbitrary-typeerror";
+  laterListAttempts = 0;
+  laterMapAttempts = 0;
+  await assert.rejects(srcColliers("sale", 4, false), /synthetic invalid URL failure/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [1, 1]);
+
+  mode = "undefined-rejection";
+  laterListAttempts = 0;
+  laterMapAttempts = 0;
+  await assert.rejects(srcColliers("sale", 4, false), /without an error value/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [1, 1]);
+
+  mode = "repeat-503";
+  laterListAttempts = 0;
+  laterMapAttempts = 0;
+  await assert.rejects(srcColliers("sale", 4, false), /HTTP 503/);
+  assert.deepEqual([laterListAttempts, laterMapAttempts], [2, 2]);
 });
