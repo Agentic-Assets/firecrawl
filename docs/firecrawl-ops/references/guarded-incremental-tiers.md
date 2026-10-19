@@ -489,9 +489,10 @@ current-inventory admission must name an exact selected, supported key in
 for its selected source. `Source = 'all'` never grants admissions. A schedule
 does not expand source eligibility or remove baseline and quality requirements.
 
-The installer does not accept or forward `Concurrency` or `AttemptsPerSource`.
-Its scheduled action inherits the launcher's defaults: concurrency **1** and
-**3 whole-source attempts**, within the explicit work deadline. Provider
+The installer accepts explicit series-only `Concurrency = 1..6` and forwards
+it through the fixed action. If omitted, action bytes are unchanged and inherit
+concurrency **1**. It does not accept `AttemptsPerSource`; scheduled actions
+retain **3 whole-source attempts**, within the explicit work deadline. Provider
 per-request retries and pacing remain separate. Qualify the actual scheduled
 action, not a manual command with different attempt limits.
 

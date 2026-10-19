@@ -17,6 +17,7 @@ param(
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$Sources,
     [switch]$Pipeline,
     [ValidateRange(1, 4)][int]$SourceWorkers,
+    [ValidateRange(1, 6)][int]$Concurrency = 1,
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{40}\z')][string]$ExpectedSha,
@@ -43,6 +44,9 @@ if ($env:OS -ne 'Windows_NT') { throw 'Run this installer on Windows.' }
 # Pure selection validation runs before readiness, telemetry or notification work.
 if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
     throw '-Sources requires pipeline series and conflicts with -Source.'
+}
+if ($PSBoundParameters.ContainsKey('Concurrency') -and $Tier -ne 'series') {
+    throw '-Concurrency requires series.'
 }
 if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
@@ -226,6 +230,7 @@ if ($Pipeline) { $arguments += @('-Pipeline','-SourceWorkers',"$resolvedSourceWo
 if ($AdmitCurrentInventorySources) { $arguments += @('-AdmitCurrentInventorySources',$AdmitCurrentInventorySources) }
 if ($Tier -eq 'series') {
     $arguments += @('-WorkDeadlineSeconds',"$WorkDeadlineSeconds",'-AcknowledgeDatabaseWrites')
+    if ($PSBoundParameters.ContainsKey('Concurrency')) { $arguments += @('-Concurrency',"$Concurrency") }
     if ($AdmitCurrentInventorySource) { $arguments += @('-AdmitCurrentInventorySource',$AdmitCurrentInventorySource) }
 } else {
     $arguments += @('-Batch',"$Batch",'-DeadlineSeconds',"$DeadlineSeconds")
