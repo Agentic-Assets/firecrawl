@@ -46,7 +46,7 @@ for (const mutation of ["missing-remote", "wrong-remote", "duplicate-remote", "w
   "wrong-h1", "wrong-canonical", "missing-canonical", "foreign-og", "wrong-subject", "duplicate-record", "wrong-structured-street",
   "wrong-city", "wrong-state", "wrong-zip", "missing-zip", "wrong-feed-zip", "feed-city-punctuation", "feed-state-punctuation", "foreign-headline", "missing-address", "wrong-label",
   "wrong-section", "duplicate-address", "conflicting-address", "extra-address", "duplicate-hero", "wrong-hero",
-  "hero-unit", "address-range", "address-unit", "address-intersection", "map-conflict", "map-malformed", "map-quoted", "map-single-quoted", "map-name-conflict", "description-conflict", "description-no-zip", "named-description-no-zip",
+  "hero-unit", "address-range", "address-unit", "address-intersection", "map-conflict", "map-malformed", "map-quoted", "map-single-quoted", "map-name-conflict", "description-conflict", "description-no-zip", "named-description-no-zip", "description-bare-street", "description-bare-unit", "description-bare-range", "description-bare-intersection", "named-description-bare-street",
   "h2-conflict", "numeric-subject", "range-subject", "unit-subject", "intersection-subject", "punctuation-subject"]) {
   test(`named property refuses ${mutation}`, () => {
     const $ = cheerio.load(named.html); const row = { ...base };
@@ -92,6 +92,11 @@ for (const mutation of ["missing-remote", "wrong-remote", "duplicate-remote", "w
     if (mutation === "description-conflict") $('meta[property="og:description"]').attr("content", "Other Plaza, 149 Briarcliff Drive, Clayton, NC 27527");
     if (mutation === "description-no-zip") $('meta[property="og:description"]').attr("content", "149 Briarcliff Drive, Clayton, NC");
     if (mutation === "named-description-no-zip") $('meta[property="og:description"]').attr("content", "The Shoppes at Glen Laurel, 149 Briarcliff Drive, Clayton, NC");
+    if (mutation === "description-bare-street") $('meta[property="og:description"]').attr("content", "149 Briarcliff Drive");
+    if (mutation === "description-bare-unit") $('meta[property="og:description"]').attr("content", "148 Briarcliff Drive Unit 2");
+    if (mutation === "description-bare-range") $('meta[property="og:description"]').attr("content", "148-150 Briarcliff Drive");
+    if (mutation === "description-bare-intersection") $('meta[property="og:description"]').attr("content", "148 Briarcliff Drive & Other Road");
+    if (mutation === "named-description-bare-street") $('meta[property="og:description"]').attr("content", "The Shoppes at Glen Laurel, 149 Briarcliff Drive");
     if (mutation === "h2-conflict") $('body').append('<h2>149 Briarcliff Drive, Clayton, NC</h2>');
     const subjects: Record<string, string> = { "numeric-subject": "149 Briarcliff Drive", "range-subject": "148-150 Briarcliff Drive",
       "unit-subject": "Glen Laurel Unit 2", "intersection-subject": "Glen Laurel & Briarcliff", "punctuation-subject": "Glen Laurel #B" };
@@ -119,6 +124,14 @@ test("agreeing physical map and optional ZIP corroborate rather than replace lab
     $('body').append(`<script>var bootstrap={${key}:[{"address":"148 Briarcliff Drive","name":"The Shoppes at Glen Laurel"}]};</script>`);
     $('.hero__sub-title').text("148 Briarcliff Drive, Clayton, NC 27527");
     $('meta[property="og:description"]').attr('content', "The Shoppes at Glen Laurel, 148 Briarcliff Drive, Clayton, NC");
+    assert.ok(check($.html()));
+  }
+});
+
+test("bare agreeing address descriptions supplement the complete primary association", () => {
+  for (const value of ["148 Briarcliff Drive", "The Shoppes at Glen Laurel, 148 Briarcliff Drive"]) {
+    const $ = cheerio.load(named.html);
+    $('meta[property="og:description"]').attr('content', value);
     assert.ok(check($.html()));
   }
 });

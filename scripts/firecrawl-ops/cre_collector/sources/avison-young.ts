@@ -909,6 +909,9 @@ export function assertAvisonYoungDetailDoc(
       || !descriptionNodes.every((element) => {
         const value = clean($(element).attr("content")) ?? "";
         const parts = value.split(",");
+        const physicalClaim = sameSubject(parts[0]) ? parts.slice(1).join(",").trim() : value;
+        if (/^\d/.test(physicalClaim) && streetRole.test(physicalClaim))
+          return physicalSubjectClaimAgrees(physicalClaim, offeredStreet);
         const claimsAddress = parts.length >= 3 && parts.slice(0, -2).some((part) =>
           /^\d/.test(part.trim()) || streetRole.test(part));
         if (!claimsAddress) return true;
