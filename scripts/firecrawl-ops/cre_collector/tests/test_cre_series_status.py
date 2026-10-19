@@ -410,7 +410,8 @@ def test_child_progress_shows_latest_counter_without_exposing_log(tmp_path):
         },
     }
     assert "lease: 200/300 in this pass" in rendered
-    assert "Includes cache/error outcomes; not listing completion" in rendered
+    assert "Reported detail pass" in rendered
+    assert "May include cache/errors or item positions; not listing completion" in rendered
     assert "private provider message" not in rendered
     assert "private token" not in json.dumps(snapshot)
 
@@ -532,6 +533,123 @@ def test_last_detail_counter_survives_empty_newer_attempt(tmp_path):
     assert "Detail attempt         1  (last recorded counter)" in status.render(
         snapshot, color=False
     )
+
+
+@pytest.mark.parametrize(
+    "source,transaction,completed,total",
+    [
+        ("jll", "sale", 2, 9),
+        ("transwestern", "lease", 3, 11),
+        ("avison-young", "sale", 4, 13),
+        ("cbre-dealflow", "lease", 5, 17),
+        ("colliers", "sale", 6, 19),
+        ("cushman-wakefield", "lease", 7, 23),
+        ("marcus-millichap", "sale", 8, 29),
+    ],
+)
+def test_child_progress_reads_exact_source_detail_counter(
+    tmp_path, source, transaction, completed, total
+):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["config"]["sources"] = [source]
+    manifest["sources"] = {source: {"state": "running"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = status.load_manifest(path)
+    run_dir, _ = _child_fixture(path, manifest, source=source)
+    (run_dir / "logs" / "collect.log").write_text(
+        f"{source}/{transaction}: detail enriched {completed}/{total}\n",
+        encoding="utf-8",
+    )
+
+    progress = status.child_progress(manifest, path, source)
+
+    assert progress == {
+        "state": "collecting",
+        "detail_pass": {
+            "transaction": transaction,
+            "completed": completed,
+            "total": total,
+            "attempt": 1,
+        },
+    }
+
+
+def test_avison_detail_counter_reports_latest_log_line_not_numeric_max(tmp_path):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["config"]["sources"] = ["avison-young"]
+    manifest["sources"] = {"avison-young": {"state": "running"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = status.load_manifest(path)
+    run_dir, _ = _child_fixture(path, manifest, source="avison-young")
+    (run_dir / "logs" / "collect.log").write_text(
+        "avison-young/lease: detail enriched 9/13\n"
+        "avison-young/lease: detail enriched 3/13\n",
+        encoding="utf-8",
+    )
+
+    progress = status.child_progress(manifest, path, "avison-young")
+
+    assert progress["detail_pass"] == {
+        "transaction": "lease",
+        "completed": 3,
+        "total": 13,
+        "attempt": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "source,lines",
+    [
+        (
+            "cbre-dealflow",
+            ["cbre/sale: detail enriched 8/9"],
+        ),
+        (
+            "transwestern",
+            ["avison-young/lease: detail enriched 8/9"],
+        ),
+        (
+            "transwestern",
+            ["transwestern/sale: enumerated 8/9"],
+        ),
+        (
+            "colliers",
+            ["colliers-main/sale: detail enriched 8/9"],
+        ),
+        (
+            "jll-investor",
+            ["jll-investor: detail enriched 8/9"],
+        ),
+        (
+            "cushman-wakefield",
+            [
+                "cushman-wakefield/sale: detail enriched 9/0",
+                "cushman-wakefield/sale: detail enriched 10/9",
+                "cushman-wakefield/sale: detail enriched 1234567890/1234567890",
+            ],
+        ),
+    ],
+)
+def test_child_progress_rejects_other_source_or_invalid_detail_counters(
+    tmp_path, source, lines
+):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["config"]["sources"] = [source]
+    manifest["sources"] = {source: {"state": "running"}}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = status.load_manifest(path)
+    run_dir, _ = _child_fixture(path, manifest, source=source)
+    (run_dir / "logs" / "collect.log").write_text(
+        "\n".join(lines), encoding="utf-8"
+    )
+
+    assert status.child_progress(manifest, path, source) == {
+        "state": "collecting",
+        "detail_pass": None,
+    }
 
 
 def test_progress_history_is_bounded_and_skips_missing_logs(tmp_path):
