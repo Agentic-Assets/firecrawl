@@ -181,6 +181,16 @@ use a separate diagnostic thread; no signal handler is added. A stalled request 
 termination may leave no terminal record. The reader labels that uncertainty.
 Terminal means that snapshot was finalized, not that collection succeeded.
 
+Checkpoint coordinators supply the recorder's identifiers. For a direct
+`collect.ts` invocation, `CRE_PERFORMANCE_PATH` needs an existing writable parent,
+`CRE_PERFORMANCE_COMMAND_ID` must be 32 lowercase hexadecimal characters, and
+`CRE_REFRESH_GENERATION` must be a fresh UTC `YYYY-MM-DDTHHMMSSZ`, optionally
+followed by `-` and exactly 12 lowercase hexadecimal characters. Keep descriptive
+cell labels in directory names. A descriptive generation suffix can be accepted
+by freshness handling while disabling the optional recorder with a degraded
+telemetry warning. Preserve that observation's missing metrics; use valid new
+identifiers for a later observation instead of rewriting the earlier artifact.
+
 The JSON snapshot preserves the fixed latency histogram, finite error categories
 and bounded HTTP status counts for later analysis. It does not contain URLs,
 page bodies, broker/contact records, exception messages, command-line secrets
