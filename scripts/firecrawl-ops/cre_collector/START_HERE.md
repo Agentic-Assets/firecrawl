@@ -390,6 +390,19 @@ The [source contract](sources/CLAUDE.md) and
 bounded recovery. It does not establish fresh source acceptance or permit
 replaying a rejected artifact.
 
+Marcus detail HTML keeps a 30-second headers-and-body deadline per attempt.
+Only a typed deadline expiry permits one same-URL replacement, after the first
+operation settles locally within a bounded one-second cleanup wait. An
+abort-ignoring operation that remains unsettled receives no replacement;
+known body cancellation must also settle, and late response headers never
+permit a replacement.
+HTTP refusals, arbitrary transport errors, returned challenge pages and POST requests
+do not gain this retry. The existing successful-detail cache and strict
+full-source artifact gate still apply. See the [source contract](sources/CLAUDE.md)
+and [AGENTIC-4562](https://linear.app/agenticassets/issue/AGENTIC-4562).
+This recovery changes neither the guarded owner's overall deadline nor
+source acceptance, and does not authorize replay of an old failed generation.
+
 The accelerated profile changes request scheduling and throughput while the
 source cardinality, identity, freshness, artifact, SQL dry-run, ingest, and
 readback gates remain unchanged. Provider reliability still has to be observed

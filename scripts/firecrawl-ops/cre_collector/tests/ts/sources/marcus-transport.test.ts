@@ -15,11 +15,12 @@ for (const kind of ["post", "detail"] as const) {
   for (const stage of ["headers", "body", "body_cancel_stalls"] as const) {
     test(`Marcus ${kind} deadline aborts stalled ${stage} even if fetch ignores abort`, async (t) => {
       const originalFetch = globalThis.fetch, originalTimer = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
-      let expire: (() => void) | undefined, signal: AbortSignal | undefined;
+      let expire: (() => void) | undefined, settleGrace: (() => void) | undefined, signal: AbortSignal | undefined;
       let calls = 0, canceled = 0, cleared = false, deadlines = 0;
       const token = {} as ReturnType<typeof setTimeout>;
       globalThis.setTimeout = ((callback: () => void, delay: number) => {
         if (delay === DEADLINE) { deadlines++; expire = callback; return token; }
+        if (kind === "detail" && delay === 1_000) { settleGrace = callback; return {} as ReturnType<typeof setTimeout>; }
         return originalTimer(callback, delay);
       }) as typeof setTimeout;
       globalThis.clearTimeout = ((value: ReturnType<typeof setTimeout>) => {
@@ -36,7 +37,7 @@ for (const kind of ["post", "detail"] as const) {
       }) as typeof fetch;
       t.after(() => { globalThis.fetch = originalFetch; globalThis.setTimeout = originalTimer; globalThis.clearTimeout = originalClear; });
       const outcome = invoke().then((value: unknown) => ({ state: "returned", value }), (error: Error) => ({ state: "rejected", error }));
-      await flush(); expire?.();
+      await flush(); expire?.(); await flush(); settleGrace?.(); await flush();
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([outcome, new Promise<{state: string}>(resolve => { watchdog = originalTimer(() => resolve({ state: "still_pending" }), 50); })]);
       if (watchdog) originalClear(watchdog);
@@ -61,15 +62,20 @@ for (const kind of ["post", "detail"] as const) {
     }))) as typeof fetch;
     t.after(() => { globalThis.fetch = originalFetch; globalThis.setTimeout = originalTimer; });
     const pending = invoke();
-    await flush(); assert.ok(expire); expire();
+    await flush(); assert.ok(expire); const firstDeadline = expire; expire(); await flush();
+    if (kind === "detail") {
+      assert.notEqual(expire, firstDeadline, "settled detail abort permits one new attempt deadline");
+      expire();
+    }
     await assert.rejects(pending, /timed out/);
-    assert.equal(observedAbort, 1);
+    assert.equal(observedAbort, kind === "detail" ? 2 : 1);
   });
   test(`Marcus ${kind} cancels a late response after the header deadline`, async (t) => {
     const originalFetch = globalThis.fetch, originalTimer = globalThis.setTimeout;
-    let resolveHeaders!: (response: Response) => void, expire: (() => void) | undefined, canceled = 0;
+    let resolveHeaders!: (response: Response) => void, expire: (() => void) | undefined, settleGrace: (() => void) | undefined, canceled = 0;
     globalThis.setTimeout = ((callback: () => void, delay: number) => {
       if (delay === DEADLINE) { expire = callback; return originalTimer(() => {}, 1); }
+      if (kind === "detail" && delay === 1_000) { settleGrace = callback; return {} as ReturnType<typeof setTimeout>; }
       return originalTimer(callback, delay);
     }) as typeof setTimeout;
     globalThis.fetch = (() => new Promise<Response>(resolve => { resolveHeaders = resolve; })) as typeof fetch;
@@ -78,7 +84,7 @@ for (const kind of ["post", "detail"] as const) {
     await flush();
     // Old code has no deadline; the separate RED stall cases already prove that.
     assert.ok(expire, "source-local deadline must be installed");
-    expire();
+    expire(); await flush(); settleGrace?.(); await flush();
     await assert.rejects(pending, /timed out/);
     resolveHeaders(new Response(new ReadableStream({ cancel() { canceled++; } })));
     await flush();
