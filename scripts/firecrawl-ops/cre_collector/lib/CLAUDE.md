@@ -46,8 +46,10 @@
   `/v1/tiles`; do not exclude the host wholesale. Preserve genuine gallery
   imagery and other useful media. Parser fixtures do not authorize deployment
   or cleanup: filtering may affect persisted-child retention, so require
-  source-backed meaningful-photo proof and the canonical artifact-to-ingest-to-
-  database readback.
+  source-backed evidence for each changed image role or excluded URL and the
+  canonical artifact-to-ingest-to-database readback. A valid source may have no
+  identifiable property photo; do not invent a primary image or infer source
+  absence from missing role evidence.
 - Direct-provider metrics must bind source, transaction and operation role;
   never combine adapters that share a role name. Complete an attempt after its
   bounded body read or before retry backoff. Keep existing acquisition/error
