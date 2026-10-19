@@ -1,0 +1,30 @@
+{
+  "schema": "avison-named-association-fixture-v1",
+  "response_url": "https://www.avisonyoung.us/properties/the-shoppes-at-glen-laurel-clayton-lease",
+  "response_sha256": "98d3f7ac199c9d57292cbddc586b80267e1279491b3a10865cdeddee00ee6ff3",
+  "feed_sha256": "9d725fbf88310ae17ef4002750ad9f264be8981da8b604b4a718a938990e0e2c",
+  "sanitization": "Selected owned head/hero/building/download/map nodes; removed structured agent contacts and unrelated page chrome. Selected original feed fields only; no identity field rewritten.",
+  "feed_row": {
+    "id": 17440,
+    "name": "The Shoppes at Glen Laurel",
+    "meta_title": "The Shoppes at Glen Laurel",
+    "address": "The Shoppes at Glen Laurel",
+    "city": "Clayton",
+    "state": "NC",
+    "zip": "27527",
+    "country": "US",
+    "url": "https://ayustheshoppesatglenlaurel.sharplaunch.com",
+    "external_url": "https://www.avisonyoung.us/properties/the-shoppes-at-glen-laurel-clayton-lease",
+    "description": "<p>10,000 sf new construction retail building for lease; located within a new mixed-use development in Clayton.</p>",
+    "type": [
+      "retail.street_retail"
+    ],
+    "transaction": [
+      "lease"
+    ],
+    "status": "active",
+    "availabilities_min_rent": 29.5,
+    "availabilities_max_rent": 29.5,
+    "total_surface_sqft": 10000
+  }
+}

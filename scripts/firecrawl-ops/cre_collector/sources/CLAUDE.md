@@ -313,6 +313,18 @@ may instead use its unique full structured address/known ZIP plus those metadata
 description and heading checks. A recognized monetary hero is display text only;
 it cannot supply a native location witness.
 
+A registered official named property can associate a labeled Offering Summary
+Address with one matching hero only when the publisher's singleton remote ID,
+complete-feed unique URL owner (including inactive rows), owned URLs and exact
+non-address subject all agree. Feed and structured street fields must equal that
+same name, with matching locality and present known ZIP; the feed street is not
+rewritten. Extra physical/address/map or description-scope contradictions refuse
+this witness. A nearby intersection in Property Highlights is location prose,
+not the labeled offered address. Numeric/range/unit/intersection subjects receive
+no new authority; the retained endpoint-map/range offering remains refused.
+This association does not expand native authority, financial normalization,
+child replacement or source acceptance. Existing legacy families remain intact.
+
 An official offering H1 may instead bind agreeing complete structured and visible
 street/city/state/known five-digit ZIP witnesses with owned subject metadata.
 Prose is not identity authority. Within this new physical witness, explicit
