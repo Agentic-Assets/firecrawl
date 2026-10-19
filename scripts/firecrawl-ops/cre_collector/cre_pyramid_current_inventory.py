@@ -136,9 +136,8 @@ def admit(
 ) -> dict:
     require(source == SOURCE and phase in {"source", "aggregate"})
     config = manifest["config"]
-    # Initial extension is deliberately singleton, even inside a pipeline owner.
     require(
-        config["sources"] == [SOURCE] and config["transactions"] == ["sale", "lease"]
+        SOURCE in config["sources"] and config["transactions"] == ["sale", "lease"]
     )
     require(admission_configuration(config, SOURCE) == configuration(SOURCE))
     require(

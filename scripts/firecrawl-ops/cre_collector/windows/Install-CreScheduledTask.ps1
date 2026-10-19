@@ -77,7 +77,7 @@ if (@($selectedAdmissionKeys | Sort-Object -Unique).Count -ne $selectedAdmission
 $admissibleKeys = $selectedAdmissionKeys
 if ($AdmitCurrentInventorySources) {
 $buildoutRows = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../data/cre-buildout-sources.json') -Raw | ConvertFrom-Json
-$admissibleKeys = @('interra-realty') + @($buildoutRows | ForEach-Object { $_[0] })
+$admissibleKeys = @('interra-realty','essex-realty','pyramid-brokerage') + @($buildoutRows | ForEach-Object { $_[0] })
 }
 foreach ($key in $selectedAdmissionKeys) {
     if ($Tier -ne 'series' -or $admissibleKeys -cnotcontains $key -or $selectedSourceKeys -cnotcontains $key) {

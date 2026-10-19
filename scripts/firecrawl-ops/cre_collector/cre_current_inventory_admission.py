@@ -122,8 +122,6 @@ def validate_options(
         require(not additive_hold and not allow_dirty)
     for source in admitted:
         require(source in selected)
-        if source in {"pyramid-brokerage", "essex-realty"}:
-            require(selected == [source])
         configuration(source)
 
 

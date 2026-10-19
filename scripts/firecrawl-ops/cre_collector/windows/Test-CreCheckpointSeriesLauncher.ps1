@@ -115,6 +115,9 @@ $pipelineBase = @('-Tier','series','-Sources','cbre,jll','-Pipeline','-ExpectedS
     '-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites')
 $cases += @{Name='pipeline-concurrency'; Args=$pipelineBase + @('-SourceWorkers','2','-Concurrency','6'); Exit=0; Dispatch=$true; Workers=2; Concurrency=6}
 $cases += @{Name='pipeline-default'; Args=$pipelineBase; Exit=0; Dispatch=$true; Workers=2}
+$strictMixed = 'essex-realty,pyramid-brokerage,interra-realty'
+$cases += @{Name='strict-mixed-admissions'; Args=@('-Tier','series','-Pipeline','-Sources',$strictMixed,'-AdmitCurrentInventorySources',$strictMixed,'-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=0; Dispatch=$true; Workers=2; Selected=$strictMixed; Admissions=$strictMixed.Split(',')}
+$cases += @{Name='strict-mixed-unselected'; Args=$pipelineBase + @('-AdmitCurrentInventorySources','essex-realty'); Exit=1; Dispatch=$false}
 $cases += @{Name='daum-pipeline'; Args=@('-Tier','series','-Pipeline','-Sources','daum-commercial,transwestern','-AdmitCurrentInventorySource','daum-commercial','-ExpectedSha',$sha,'-WorkDeadlineSeconds','30','-AcknowledgeDatabaseWrites'); Exit=0; Dispatch=$true; Workers=2; Selected='daum-commercial,transwestern'; Admission='daum-commercial'}
 foreach ($workers in @(1,2,3,4)) {
     $cases += @{Name=('pipeline-' + $workers); Args=($pipelineBase + @('-SourceWorkers',"$workers")); Exit=0; Dispatch=$true; Workers=$workers}
@@ -224,7 +227,10 @@ foreach ($case in $cases) {
         if ($case.ContainsKey('Workers')) {
             Assert-True (($forwarded -join '|').Contains('--pipeline|--source-workers|' + $case.Workers)) 'Resolved worker setting crosses actual native argv boundary.'
         }
-        if ($case.ContainsKey('Admission') -or $case.Name -in @('interra-current', 'buildout-current', 'pyramid-current', 'essex-current', 'daum-current')) {
+        if ($case.ContainsKey('Admissions')) {
+            $actualAdmissions = @(for ($index=0; $index -lt $forwarded.Count-1; $index++) { if ($forwarded[$index] -ceq '--admit-current-inventory-source') { $forwarded[$index+1] } })
+            Assert-True (($actualAdmissions -join ',') -ceq ($case.Admissions -join ',')) 'Each explicit mixed admission must cross the actual native argv boundary exactly once.'
+        } elseif ($case.ContainsKey('Admission') -or $case.Name -in @('interra-current', 'buildout-current', 'pyramid-current', 'essex-current', 'daum-current')) {
             $admittedSource = if ($case.ContainsKey('Admission')) { $case.Admission } else { $selectedSource }
             Assert-True (($forwarded -join '|').EndsWith('--admit-current-inventory-source|' + $admittedSource)) 'Explicit source admission must survive the actual native argv boundary.'
         } else {

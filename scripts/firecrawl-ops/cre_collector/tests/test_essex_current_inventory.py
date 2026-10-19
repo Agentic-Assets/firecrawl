@@ -19,8 +19,8 @@ SOURCE = "essex-realty"
 ROOT = Path(cp.__file__).parent
 
 
-def produce(root, total=2, closed=1, second_pass="same", primary_pair=False):
-    start = (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
+def produce(root, total=2, closed=1, second_pass="same", primary_pair=False, start=None):
+    start = start or (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
     generation = "2026-10-15T172001Z-123456abcdef"
     preload = root / "transport.mts"
     preload.write_text(
@@ -475,15 +475,16 @@ def test_matching_receipts_still_require_independent_reconciliation(
         admit(path, manifest, report)
 
 
-def test_singleton_configuration_and_prior_target_binding_refuse_drift(
+def test_configuration_and_prior_target_binding_refuse_drift(
     tmp_path, produced
 ):
     admission.validate_option(SOURCE, [SOURCE], ("sale", "lease"))
     admission.validate_options([SOURCE], [SOURCE], ("sale", "lease"), pipeline=True)
+    admission.validate_options(
+        [SOURCE], [SOURCE, "hanley"], ("sale", "lease"), pipeline=True
+    )
     with pytest.raises(ValueError):
-        admission.validate_options(
-            [SOURCE], [SOURCE, "hanley"], ("sale", "lease"), pipeline=True
-        )
+        admission.validate_option(SOURCE, [SOURCE, "hanley"], ("sale", "lease"))
     with pytest.raises(ValueError):
         admission.validate_option(SOURCE, [SOURCE], ("sale",))
     _, path, _, manifest, report = setup(tmp_path, produced)

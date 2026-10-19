@@ -44,7 +44,7 @@ authorize closed/missing lifecycle updates.
 Current Essex inventory includes on-market and under-contract properties only;
 the closed archive reconciles coverage but never inflates current counts. With
 no baseline the raw gate reports `first_seen` before the default 100-row floor;
-Essex's explicit singleton current-inventory admission requires two matching
+Essex's explicit source-bound current-inventory admission requires two matching
 complete current/closed/sitemap reconciliations and every fresh current detail.
 Closed cards bind coverage URLs/lifecycle only and never enter current output.
 Only successful full, uncapped, non-monitor proof can supply the exact same
@@ -231,7 +231,7 @@ ambiguous values and disagreement with inventory taxonomy fail with post ID and
 bounded raw fact. Do not guess from descriptions or default unfamiliar labels
 to sale; validate observed labels without loosening ownership or detail proof.
 
-Pyramid strict first-seen proof is singleton full/uncapped sale+lease only. A
+Pyramid strict first-seen proof requires full/uncapped sale+lease. A
 successful immutable complete snapshot may be reused only within the exact
 nonempty generation+start; monitor, capped and standalone calls do not populate
 or consume it. Receipts retain two consecutive equal full-payload passes and
