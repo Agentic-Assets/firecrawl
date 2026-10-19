@@ -218,8 +218,10 @@ late HTTP denials. Settlement waits at most one additional second; an unsettled
 operation keeps its error without a retry. The replacement keeps the same
 30-second deadline, so detail recovery is bounded by 61 seconds. Local
 settlement does not prove remote-server settlement. POSTs, HTTP refusals,
-arbitrary transport errors, unusable/challenge pages and identity errors do
-not gain this retry. Existing retry telemetry counts the replacement with
+arbitrary transport errors, returned unusable/challenge pages and identity
+errors do not trigger this retry. A body that times out before it can be
+classified follows the bounded deadline policy above. Existing retry
+telemetry counts the replacement with
 zero deliberate backoff; cleanup wait is not reported as backoff.
 Only successful enrichment supplies fresh provenance and enters the existing
 same-generation, identity-bound cache. Persistent failures retain detailError

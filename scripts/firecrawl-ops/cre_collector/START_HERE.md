@@ -396,7 +396,7 @@ operation settles locally within a bounded one-second cleanup wait. An
 abort-ignoring operation that remains unsettled receives no replacement;
 known body cancellation must also settle, and late response headers never
 permit a replacement.
-HTTP refusals, arbitrary transport errors, challenge pages and POST requests
+HTTP refusals, arbitrary transport errors, returned challenge pages and POST requests
 do not gain this retry. The existing successful-detail cache and strict
 full-source artifact gate still apply. See the [source contract](sources/CLAUDE.md)
 and [AGENTIC-4562](https://linear.app/agenticassets/issue/AGENTIC-4562).
