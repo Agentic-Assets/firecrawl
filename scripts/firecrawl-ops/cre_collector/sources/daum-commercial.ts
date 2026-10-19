@@ -656,6 +656,7 @@ async function fetchDaumSnapshotPass(
   const pages = [first];
   for (let page = 2; page <= first.reportedPages; page++) pages.push(await load(page));
   const rows = assertDaumSnapshot(pages);
+  console.error(`  daum-commercial: inventory pass ${index} completed; pages=${pages.length}; members=${rows.length}`);
   return {
     total: first.reportedTotal, rows,
     reportedTotals: pages.map(page => page.reportedTotal),
@@ -854,6 +855,7 @@ async function completeDaumCohort(key: string, transport: DaumPoliteTransport, m
 
 async function fetchCompleteDaumCohort(transport: DaumPoliteTransport, mode: DaumProofMode): Promise<DaumCompleteCohort> {
   const snapshot = await fetchDaumSnapshot(transport);
+  console.error(`  daum-commercial: inventory matched; starting detail acquisition; members=${snapshot.rows.length}`);
   const work = snapshot.rows.map((inventory, index) => ({ inventory, index }))
     .sort((a, b) => Number(b.inventory.tenure === "unknown") - Number(a.inventory.tenure === "unknown"));
   const acquired: Array<{ index: number; row: DaumCompleteCohort["details"][number] }> = [];
@@ -872,6 +874,9 @@ async function fetchCompleteDaumCohort(transport: DaumPoliteTransport, mode: Dau
         throw error;
       }
       acquired.push({ index, row: { inventory, detail, observedAt, bodySha256: textSha256(html) } });
+      if (acquired.length % 100 === 0 && acquired.length < work.length) {
+        console.error(`  daum-commercial: detail acquisition checked=${acquired.length}/${work.length}`);
+      }
     } catch (error) {
       if (error instanceof Error) error.message += ` [inventoryUrl=${inventory.url}]`;
       throw error;
@@ -879,6 +884,7 @@ async function fetchCompleteDaumCohort(transport: DaumPoliteTransport, mode: Dau
   }
   const details = acquired.sort((a, b) => a.index - b.index).map(entry => entry.row);
   assertDaumUniqueProviderIds(details.map(row => ({ id: daumListingId(row.inventory.url), daumPostId: row.detail.postId })));
+  console.error(`  daum-commercial: detail acquisition finished; checked=${details.length}/${snapshot.rows.length}`);
   return { snapshot, details };
 }
 

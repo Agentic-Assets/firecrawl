@@ -521,7 +521,9 @@ test("DAUM convergence requires stable normalized tenure for each identity", asy
   );
 });
 
-test("DAUM full-pass convergence fails closed after its bounded pass budget", async () => {
+test("DAUM full-pass convergence fails closed after its bounded pass budget", async (t) => {
+  const progress: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { progress.push(args.join(" ")); });
   const urls = [
     "https://daumcommercial.com/property/first/",
     "https://daumcommercial.com/property/second/",
@@ -538,10 +540,20 @@ test("DAUM full-pass convergence fails closed after its bounded pass budget", as
     /did not converge/
   );
   assert.equal(calls, 3);
+  assert.deepEqual(progress, [1, 2, 3].map(pass =>
+    `  daum-commercial: inventory pass ${pass} completed; pages=1; members=1`));
+  assert.doesNotMatch(progress.join("\n"), /matched|detail|verified|https?:|first|second|third/);
   await assert.rejects(
     fetchDaumSnapshot({ post: async () => searchHtml() } as any, 1),
     /integer from 2 to 5/
   );
+});
+
+test("DAUM failed inventory pages emit no completed or detail progress", async (t) => {
+  const progress: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { progress.push(args.join(" ")); });
+  await assert.rejects(fetchDaumSnapshot({ post: async () => { throw Error("PRIVATE_TRANSPORT_FAILURE"); } }), /did not converge/);
+  assert.deepEqual(progress, []);
 });
 
 test("DAUM full sale and lease collection converges when complete members reorder", async (t) => {
