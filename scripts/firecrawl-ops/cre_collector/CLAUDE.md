@@ -70,6 +70,19 @@ checkpoint-manifest readback. Dated docs are operational history.
    for its separate opt-in, typed tenure holds, transaction preservation and
    partial acceptance. Never count that scope as complete brokerage coverage.
 
+## Standing execution priorities
+
+Use the [parallel-work and throughput instructions](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md#standing-parallel-work-and-throughput-instructions)
+on every substantial CRE phase: delegate independent work, test in parallel,
+keep collection moving while database units run, and avoid repeating verified
+work. Investigate shared provider/adapter families before writing brokerage-only
+fixes; follow `sources/CLAUDE.md` for the scope and regression checks.
+For delegated work, use Sol at medium reasoning and Luna at high or extra-high
+for smaller bounded tasks, unless the user explicitly chooses another setting.
+After major code phases, use the repository's
+[thermo-nuclear code-quality review](../../../.agents/skills/thermo-nuclear-code-quality-review/SKILL.md)
+and resolve confirmed findings before shipping.
+
 ## Files
 
 | File / dir | Purpose |
