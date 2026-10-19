@@ -246,7 +246,12 @@ to sale; validate observed labels without loosening ownership or detail proof.
 Pyramid strict first-seen proof requires full/uncapped sale+lease. A
 successful immutable complete snapshot may be reused only within the exact
 nonempty generation+start; monitor, capped and standalone calls do not populate
-or consume it. Receipts retain two consecutive equal full-payload passes and
+or consume it. Within that source process, sale/lease also share in-flight and
+failed inventory outcomes, so a failed inventory is not walked again for the
+other transaction. A new generation/start or source process may retry normally.
+Partial inventory never becomes cached success. Inventory/detail worker counts
+honor configured concurrency within their existing ceilings of two/four.
+Receipts retain two consecutive equal full-payload passes and
 each fresh detail's native ID, owned canonical URL, observation and body digest.
 No missing detail or absent taxonomy label is covered by an inventory receipt.
 When the fresh detail has property facts but genuinely no Sale/Lease field, only

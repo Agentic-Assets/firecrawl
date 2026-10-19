@@ -121,6 +121,68 @@ def test_loader_rejects_malformed_source_checkpoint(tmp_path):
         status.load_manifest(manifest_path)
 
 
+@pytest.mark.parametrize("states", [
+    ["complete", "complete", "failed_source"],
+    ["qualified_partial_subset", "complete", "failed_source"],
+    ["complete", "pending", "failed_source"],
+    ["pending", "pending", "pending"],
+    ["complete", "complete", "complete"],
+    ["qualified_partial_subset", "complete", "complete"],
+])
+def test_failed_pipeline_producer_shapes_remain_renderable(tmp_path, capsys, states):
+    # run_pipeline_series requires both rc=0 and every member qualified for
+    # parent success; nonzero rc can leave even all members complete.
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text())
+    manifest.update(status="failed", finished_at="2026-09-13T12:00:00+00:00")
+    manifest["config"]["pipeline"] = True
+    for checkpoint, state in zip(manifest["sources"].values(), states):
+        checkpoint.update(state=state, checkpoint_status="failed", attempts=[{"rc": 1}])
+    path.write_text(json.dumps(manifest))
+
+    snapshot = status.build_snapshot(status.load_manifest(path), path)
+    assert snapshot["status"] == "failed"
+    assert snapshot["failed"] == states.count("failed_source")
+    assert snapshot["complete"] == states.count("complete")
+    assert snapshot["handled"] == sum(state in status.HANDLED_STATES for state in states)
+    assert "failed" in status.render(snapshot, color=False).lower()
+    assert status.main([str(path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+@pytest.mark.parametrize("pipeline,states", [
+    (False, ["complete", "complete", "failed_source"]),
+    (None, ["complete", "complete", "failed_source"]),
+    (1, ["complete", "complete", "failed_source"]),
+    ("true", ["complete", "complete", "failed_source"]),
+    (False, ["complete", "complete", "complete"]),
+    (True, ["complete", "running", "failed_source"]),
+    (True, ["complete", "interrupted", "failed_source"]),
+    (True, ["complete", "resource_guard_interrupted", "failed_source"]),
+])
+def test_failed_pipeline_allowance_does_not_hide_inconsistent_series(tmp_path, pipeline, states):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text())
+    manifest["status"] = "failed"
+    manifest["config"]["pipeline"] = pipeline
+    for checkpoint, state in zip(manifest["sources"].values(), states):
+        checkpoint["state"] = state
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(TypeError, match="inconsistent checkpoint-series manifest"):
+        status.load_manifest(path)
+
+
+def test_failed_pipeline_without_source_states_remains_inconsistent(tmp_path):
+    path = _manifest(tmp_path / "series")
+    manifest = json.loads(path.read_text())
+    manifest.update(status="failed", sources={})
+    manifest["config"].update(pipeline=True, sources=[])
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(TypeError, match="inconsistent checkpoint-series manifest"):
+        status.load_manifest(path)
+
+
 def test_render_does_not_echo_raw_error_text(tmp_path):
     manifest_path = _manifest(tmp_path / "2026-09-13T120000Z")
     manifest = status.load_manifest(manifest_path)

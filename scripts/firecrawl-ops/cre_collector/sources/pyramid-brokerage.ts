@@ -2,6 +2,7 @@ import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
 import { brokerRef } from "../lib/broker.js";
+import { CONCURRENCY } from "../lib/config.js";
 import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshPropertyDetails } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { PyramidCurrentInventoryProof, PyramidInventoryPass, SourceResult, Tx } from "../types.js";
@@ -286,7 +287,7 @@ async function fetchPyramidSnapshotPass(
   }
   const pages = await pmap(
     Array.from({ length: Math.max(0, totalPages - 1) }, (_, index) => index + 2),
-    2,
+    Math.min(CONCURRENCY, 2),
     async (page) => {
       const response = await pyramidFetch(pyramidInventoryUrl(page), fetchImpl);
       const pageTotal = requiredPositiveHeader(response.headers, "X-WP-Total");
@@ -676,12 +677,22 @@ export async function srcPyramidBrokerage(
   const generationStartedAt = refreshStartedAt();
   const proofEnabled = !monitor && !Number.isFinite(max) && Boolean(generationId && generationStartedAt);
   const key = proofEnabled ? JSON.stringify([generationId, generationStartedAt]) : null;
-  const snapshot = key && generationSnapshot?.key === key
-    ? generationSnapshot.snapshot : await fetchPyramidSnapshot();
-  if (key && generationSnapshot?.key !== key) {
-    // Publish only a successful immutable complete snapshot, never a promise.
-    freezeSnapshot(snapshot);
-    generationSnapshot = { key, snapshot };
+  let snapshot: PyramidSnapshot;
+  if (key) {
+    if (generationSnapshot?.key !== key) {
+      generationSnapshot = { key, outcome: fetchPyramidSnapshot().then(
+        (snapshot): PyramidSnapshotOutcome => {
+          freezeSnapshot(snapshot);
+          return { kind: "success", snapshot };
+        },
+        (error): PyramidSnapshotOutcome => ({ kind: "failure", error })
+      ) };
+    }
+    const outcome = await generationSnapshot.outcome;
+    if (outcome.kind === "failure") throw outcome.error;
+    snapshot = outcome.snapshot;
+  } else {
+    snapshot = await fetchPyramidSnapshot();
   }
   const eligible = snapshot.rows.filter((row) => pyramidTransaction(row) === tx);
   const selected = eligible.slice(0, Math.min(max, eligible.length));
@@ -702,7 +713,7 @@ export async function srcPyramidBrokerage(
   }
 
   const details: PyramidCurrentInventoryProof["details"] = [];
-  const listings = await pmap(selected, 4, async (row) => {
+  const listings = await pmap(selected, Math.min(CONCURRENCY, 4), async (row) => {
     const url = pyramidAbsoluteUrl(row.link);
     if (!url) throw new Error(`Pyramid row ${row.id} has no valid detail URL`);
     const response = await pyramidFetch(url, fetch);
@@ -744,7 +755,10 @@ export async function srcPyramidBrokerage(
   };
 }
 
-let generationSnapshot: { key: string; snapshot: PyramidSnapshot } | null = null;
+type PyramidSnapshotOutcome =
+  | { kind: "success"; snapshot: PyramidSnapshot }
+  | { kind: "failure"; error: unknown };
+let generationSnapshot: { key: string; outcome: Promise<PyramidSnapshotOutcome> } | null = null;
 
 function freezeSnapshot(value: any): void {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return;

@@ -391,7 +391,14 @@ def load_manifest(path: Path) -> dict[str, Any]:
                 or any(state not in HANDLED_STATES for state in states)
             )
         )
-        or (series_state == "failed" and "failed_global" not in states)
+        or (
+            series_state == "failed" and "failed_global" not in states
+            and not (
+                config.get("pipeline") is True
+                and bool(states)
+                and all(state in HANDLED_STATES | {"pending"} for state in states)
+            )
+        )
         or (series_state == "interrupted" and "interrupted" not in states)
         or (
             series_state == "resource_guard_interrupted"
