@@ -506,7 +506,9 @@ attempt number, from up to eight recent linked collection logs (at most 64 KiB
 per log, 512 KiB total). The reported pass counter can include cache/error
 outcomes and need not be monotonic for concurrent adapters; it is not a
 successful-enrichment, qualification, or overall listing-completion percentage.
-The main percentage counts completed sources, which have very different sizes.
+In serial mode the main percentage counts completed sources. A valid pipeline
+view counts audit/readback-qualified child members and keeps parent completion
+separate. Source sizes differ.
 
 During bounded CPU recovery the display shows `cooling_down`, the measured CPU,
 the continuous low-CPU window, remaining recovery budgets and preserved cache
