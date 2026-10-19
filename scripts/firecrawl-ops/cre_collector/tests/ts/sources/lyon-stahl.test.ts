@@ -708,6 +708,7 @@ test("Lyon Stahl reports detail acquisition failures separately from parser reje
   const originalFetch = globalThis.fetch;
   const acceptedUrl = "https://lyonstahl.com/properties/accepted/";
   const identityRejectUrl = "https://lyonstahl.com/properties/identity-reject/";
+  const parserExceptionUrl = "https://lyonstahl.com/properties/parser-exception/";
   const heldUrl = "https://lyonstahl.com/properties/held/";
   const terminalUrl = "https://lyonstahl.com/properties/terminal/";
   const notFoundUrl = "https://lyonstahl.com/properties/not-found/";
@@ -721,6 +722,11 @@ test("Lyon Stahl reports detail acquisition failures separately from parser reje
           'href="https://lyonstahl.com/properties/identity-reject/"',
           'href="https://lyonstahl.com/properties/not-this-listing/"'
         ),
+    ],
+    [
+      parserExceptionUrl,
+      lyonFixture({ id: "42007", path: "parser-exception", name: "Parser Exception" })
+        .replace('"price": "1800000"', '"price": {"toString": null}'),
     ],
     [
       heldUrl,
@@ -744,6 +750,7 @@ test("Lyon Stahl reports detail acquisition failures separately from parser reje
   const sitemap = `<urlset>${[
     acceptedUrl,
     identityRejectUrl,
+    parserExceptionUrl,
     heldUrl,
     terminalUrl,
     notFoundUrl,
@@ -774,12 +781,12 @@ test("Lyon Stahl reports detail acquisition failures separately from parser reje
 
   const result = await srcLyonStahl("sale", Infinity, false);
 
-  assert.equal(result.totalAvailable, 6);
+  assert.equal(result.totalAvailable, 7);
   assert.deepEqual(result.listings.map((listing) => listing.id), ["accepted"]);
   assert.equal(result.truncated, true);
   assert.match(result.note ?? "", /1 detail page\(s\) held for unknown availability/);
   assert.match(result.note ?? "", /1 terminal detail page\(s\) excluded/);
-  assert.match(result.note ?? "", /1 detail page\(s\) failed identity or structure validation/);
+  assert.match(result.note ?? "", /2 detail page\(s\) failed identity or structure validation/);
   assert.match(result.note ?? "", /2 detail page\(s\) failed acquisition/);
   assert.equal(calls.get(notFoundUrl), 3);
   assert.equal(calls.get(rateLimitedUrl), 3);

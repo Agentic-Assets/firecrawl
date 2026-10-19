@@ -747,10 +747,15 @@ export async function srcLyonStahl(
       console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
       return { kind: "fetch_failed", reason: String(error) } as LyonStahlDetailOutcome;
     }
-    return parseLyonStahlDetail(html, url, tx, {
-      inventoryObservedAt,
-      detailObservedAt: observationNow(),
-    });
+    try {
+      return parseLyonStahlDetail(html, url, tx, {
+        inventoryObservedAt,
+        detailObservedAt: observationNow(),
+      });
+    } catch (error) {
+      console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
+      return { kind: "rejected", reason: String(error) } as LyonStahlDetailOutcome;
+    }
   });
   const listings = outcomes
     .filter((outcome): outcome is Extract<LyonStahlParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
