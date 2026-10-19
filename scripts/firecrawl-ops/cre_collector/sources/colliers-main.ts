@@ -691,7 +691,11 @@ export async function colliersMainCoveoEnrichAll(entries: ColliersMainEntry[]): 
     const payloads = await postColliersMainBrowserBatch(group.map((batch) => colliersMainCoveoQueryBody(batch.map((e) => e.id), "property")));
     payloads.forEach((payload, index) => {
       if (payload.totalCount !== group[index].length || payload.results.length !== group[index].length) {
-        throw new Error(`Colliers Coveo property batch count mismatch`);
+        throw new Error(
+          `Colliers Coveo property batch count mismatch: requested ${group[index].length}, ` +
+          `provider total ${typeof payload.totalCount === "number" ? payload.totalCount : "<non-numeric>"} (type ${typeof payload.totalCount}), ` +
+          `returned ${payload.results.length}`
+        );
       }
       resultSets.push(...payload.results);
     });

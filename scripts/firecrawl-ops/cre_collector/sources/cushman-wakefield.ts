@@ -382,6 +382,13 @@ function cushmanProviderIdentity(row: any): string | null {
     : null;
 }
 
+function cushmanInventoryTotal(value: unknown): number {
+  return typeof value === "number"
+    || (typeof value === "string" && value.trim() !== "")
+    ? Number(value)
+    : Number.NaN;
+}
+
 export function assertCushmanInventoryPage(
   data: any,
   offset: number,
@@ -405,7 +412,7 @@ export function assertCushmanInventoryPage(
       `Cushman strict inventory offset ${offset} requires a content array`
     );
   }
-  const total = Number(data.total_item);
+  const total = cushmanInventoryTotal(data.total_item);
   if (!Number.isFinite(total) || !Number.isInteger(total) || total < 0) {
     throw new Error(
       `Cushman strict inventory offset ${offset} requires a valid integer total`
@@ -733,7 +740,18 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
   if (pages > 1) {
     const offsets = Array.from({ length: pages - 1 }, (_, i) => (i + 1) * CUSHMAN_PAGE_SIZE);
     const rest = await pmap(offsets, CUSHMAN_API_CONCURRENCY, async (offset) => {
-      const d = await scrapeJson(cushmanSearchApiUrl(tx, offset), strictApiOpts);
+      const url = cushmanSearchApiUrl(tx, offset);
+      let d = await scrapeJson(url, strictApiOpts);
+      if (
+        strict && offset > 0 && firstPage.total > 0
+        && cushmanInventoryTotal(d?.total_item) === 0
+        && Array.isArray(d?.content) && d.content.length === 0
+      ) {
+        // One semantic read retry, separate from scrapeJson's parse retries.
+        console.error(`  cushman-wakefield/${tx}: API offset ${offset} returned empty zero total; retry 2/2 after 12000ms`);
+        await new Promise(resolve => setTimeout(resolve, 12000));
+        d = await scrapeJson(url, strictApiOpts);
+      }
       const rows = Array.isArray(d.content) ? d.content : [];
       assertCushmanInventoryPage(d, offset, firstPage, strict);
       console.error(`  cushman-wakefield/${tx}: API offset ${offset}, ${rows.length} rows`);

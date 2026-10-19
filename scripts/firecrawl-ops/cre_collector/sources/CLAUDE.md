@@ -300,6 +300,7 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | jll | detail `property.id` (numeric) | URL slug ≠ id; monitor disabled |
 | jll-investor | `investor:` + Salesforce `listing.id` | Stable U.S. search snapshots + exact detail ID/alias; no coords |
 | cushman-wakefield | `url:v1:` + first 32 hex characters of normalized public-URL SHA-256 | Provider GUID is observational, not canonical identity; strict inventory preserves detail-only fields and children |
+
 | transwestern | `PageUrl` slug | Invalid rows fail closed. The provider-published `-` slug requires fresh unique official-sitemap membership and an exact primary name/full-address match, including in monitor mode. |
 | newmark | Algolia `slug` | Algolia 1000-hit cap per query; state+type sub-split |
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
@@ -308,6 +309,14 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | nai-global | `infabode:{id}` (prefixed in adapter) | Bulk public `publicPosts` detail fields; full and monitor share the conservative `FOR_SALE_ON_MARKET` source-eligibility rule. Do not activate provider status. |
 | Buildout sources | `propertyId` base from URL | Strip `-(sale|lease)`; dual rows merge to `sale_or_lease` |
 | savills | `ExternalPropertyID` | Direct server-rendered `__NEXT_DATA__`; provider `NextUrl` only, so an invalid or incomplete page fails closed |
+
+Cushman strict pagination accepts only numeric or nonempty numeric-string totals.
+A later page with a valid zero total and an empty array receives one same-URL,
+uncached read after 12 seconds; the original total, page size, identity and full
+aggregate guards still apply. Other malformed/drifting/short responses remain
+fatal. Each read retains the existing HTTP/JSON retry policy, so this adds at
+most one semantic read for an eligible page, not a source success or lifecycle
+waiver (AGENTIC-4520). Non-strict monitoring is unchanged.
 
 Savills baseline/coverage comparisons use the registered U.S. commercial
 sale+lease scope. See [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364)

@@ -38,6 +38,7 @@ import {
   colliersMainCoveoAcreageIsCorroborated,
   colliersMainCoveoMeasurements,
   postColliersMainBrowserBatch,
+  colliersMainCoveoEnrichAll,
 } from "../../../sources/colliers-main.js";
 import type { ScrapedDoc } from "../../../types.js";
 import { firecrawl } from "../../../lib/scrape.js";
@@ -543,6 +544,49 @@ test("Colliers Coveo requires source-text corroboration above 100 acres", () => 
   );
   assert.deepEqual(colliersMainCoveoMeasurements(trailingApproximationMismatch), {});
 });
+
+for (const scenario of [
+  { name: "numeric shortage", total: 1, returned: 1, type: "number" },
+  { name: "string count", total: "2", returned: 2, type: "string" },
+  { name: "missing count", total: undefined, returned: 2, type: "undefined" },
+  { name: "null count", total: null, returned: 2, type: "object" },
+  { name: "short result array", total: 2, returned: 1, type: "number" },
+  { name: "excess result array", total: 2, returned: 3, type: "number" },
+]) {
+  test(`Colliers property accounting retains strict refusal and diagnoses ${scenario.name}`, async () => {
+    const oldFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify({ responses: [{ status: 200, body: JSON.stringify({
+        totalCount: scenario.total,
+        results: Array.from({ length: scenario.returned }, () => ({
+          clickUri: "https://private.example/should-not-appear",
+          raw: { propertyz32xid: "PRIVATE_IDENTIFIER" },
+        })),
+      }) }] }), { status: 200 });
+    };
+    try {
+      await assert.rejects(
+        colliersMainCoveoEnrichAll([
+          entry("usa1168531", "https://www.colliers.com/en/properties/usa1168531"),
+          entry("usa1159083", "https://www.colliers.com/en/properties/usa1159083"),
+        ]),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.message,
+            `Colliers Coveo property batch count mismatch: requested 2, ` +
+            `provider total ${typeof scenario.total === "number" ? scenario.total : "<non-numeric>"} (type ${scenario.type}), returned ${scenario.returned}`);
+          assert.doesNotMatch(error.message, /PRIVATE_IDENTIFIER|private\.example|aq=|token|https:/);
+          return true;
+        },
+      );
+      assert.equal(calls, 1, "deterministic accounting refusal must not add a transport retry");
+    } finally {
+      globalThis.fetch = oldFetch;
+    }
+  });
+}
 
 test("Colliers Coveo browser batching retries outer and inner transient failures", async () => {
   const oldFetch = globalThis.fetch;

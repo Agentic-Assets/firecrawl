@@ -38,6 +38,7 @@ import {
 } from "../../../sources/cushman-wakefield.js";
 import { parseLeaseRate } from "../../../lib/parse.js";
 import { firecrawl } from "../../../lib/scrape.js";
+import { createClientRequestDeadlineError } from "../../../lib/performance.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "../../fixtures/raw_data/cushman-wakefield.json");
@@ -1054,3 +1055,101 @@ test("fixture rows: contactsDetailed title is passed through when present", () =
   // license is absent in Cushman contacts (not published publicly)
   assert.equal(withTitle.license, undefined);
 });
+
+// Offline strict total type boundary controls; no provider requests.
+for (const [label, total] of [
+  ["null", null], ["false", false], ["empty string", ""],
+  ["empty array", []], ["singleton string array", ["0"]],
+  ["true", true], ["whitespace", "   "], ["object", {}],
+] as const) {
+  test(`strict total type boundary refuses ${label}`, () => {
+    const row = { id: "cw-type-boundary", url: "/en/united-states/properties/invest/cw-type-boundary" };
+    assert.throws(() => assertCushmanInventoryPage(
+      { total_item: total, content: total === true ? [row] : [] }, 0, null, true
+    ), /valid integer total/);
+  });
+}
+for (const total of [0, "0", 1, "1", " 1 "]) {
+  test(`strict total type boundary preserves ${JSON.stringify(total)}`, () => {
+    const row = { id: "cw-type-boundary", url: "/en/united-states/properties/invest/cw-type-boundary" };
+    const evidence = assertCushmanInventoryPage(
+      { total_item: total, content: Number(total) ? [row] : [] }, 0, null, true
+    );
+    assert.equal(evidence.total, Number(total));
+  });
+}
+
+const recoveryFirstRows = Array.from({ length: 100 }, (_, index) => ({
+  id: `cw-recovery-${index}`,
+  url: `/en/united-states/properties/lease/cw-recovery-${index}`,
+}));
+const recoveryLastRow = {
+  id: "cw-recovery-100", url: "/en/united-states/properties/lease/cw-recovery-100",
+};
+for (const scenario of [
+  { name: "numeric zero recovers", first: 101, page: { total_item: 0, content: [] }, retry: true },
+  { name: "string zero recovers", first: 101, page: { total_item: "0", content: [] }, retry: true },
+  { name: "persistent zero fails", first: 101, page: { total_item: 0, content: [] }, retry: true, second: { total_item: 0, content: [] }, error: /total changed/ },
+  { name: "recovered aggregate duplicate fails", first: 101, page: { total_item: 0, content: [] }, retry: true, second: { total_item: 101, content: [recoveryFirstRows[0]] }, error: /duplicate provider identity/ },
+  { name: "recovered drift fails", first: 101, page: { total_item: 0, content: [] }, retry: true, second: { total_item: 102, content: [recoveryLastRow] }, error: /total changed/ },
+  { name: "positive total drift is not retried", first: 101, page: { total_item: 102, content: [recoveryLastRow] }, error: /total changed/ },
+  { name: "empty positive-total page is not retried", first: 101, page: { total_item: 101, content: [] }, error: /expected 1 rows/ },
+  { name: "short nonempty page is not retried", first: 102, page: { total_item: 102, content: [recoveryLastRow] }, error: /expected 2 rows/ },
+  { name: "page duplicate is not retried", first: 102, page: { total_item: 102, content: [recoveryLastRow, recoveryLastRow] }, error: /duplicate provider identity/ },
+  { name: "invalid URL is not retried", first: 101, page: { total_item: 101, content: [{ id: "other", url: "javascript:void(0)" }] }, error: /canonical URL/ },
+  { name: "unknown-settlement transport is not semantically retried", first: 101, page: { total_item: 0, content: [] }, transportError: true, error: /timed out/i },
+  { name: "null total is not retried", first: 101, page: { total_item: null, content: [] }, error: /valid integer total/ },
+  { name: "false total is not retried", first: 101, page: { total_item: false, content: [] }, error: /valid integer total/ },
+  { name: "zero with rows is not retried", first: 101, page: { total_item: 0, content: [recoveryLastRow] }, error: /total changed/ },
+  { name: "missing array is not retried", first: 101, page: { total_item: 0 }, error: /content array/ },
+  { name: "first zero is not retried", first: 0, page: { total_item: 0, content: [] }, error: /no lease content/, firstZero: true },
+  { name: "non-strict later zero stays truncated", first: 101, page: { total_item: 0, content: [] }, nonStrict: true },
+]) {
+  test(`Cushman bounded page recovery: ${scenario.name}`, async (t) => {
+    const old = { strict: process.env.CRE_REQUIRE_FRESH_DETAILS, generation: process.env.CRE_REFRESH_GENERATION };
+    process.env.CRE_REQUIRE_FRESH_DETAILS = scenario.nonStrict ? "0" : "1";
+    process.env.CRE_REFRESH_GENERATION = "cushman-recovery-offline";
+    t.after(() => {
+      if (old.strict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+      else process.env.CRE_REQUIRE_FRESH_DETAILS = old.strict;
+      if (old.generation === undefined) delete process.env.CRE_REFRESH_GENERATION;
+      else process.env.CRE_REFRESH_GENERATION = old.generation;
+    });
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
+    const calls: { url: string; options: any; at: number }[] = [];
+    t.mock.method(firecrawl, "scrape", async (url: string, options: any) => {
+      assert.ok(url.includes("/api/properties/search"));
+      calls.push({ url, options, at: Date.now() });
+      const offset = Number(new URL(url).searchParams.get("offset"));
+      if (offset > 0 && scenario.transportError) throw createClientRequestDeadlineError(90_000);
+      const body = offset === 0
+        ? { total_item: scenario.first, content: scenario.firstZero ? [] : recoveryFirstRows }
+        : calls.length === 2 ? scenario.page
+          : scenario.second ?? { total_item: scenario.first, content: [recoveryLastRow] };
+      return { rawHtml: JSON.stringify(body) };
+    });
+    const pending = srcCushman("lease", Infinity, Boolean(scenario.nonStrict));
+    const outcome = pending.then(result => ({ result, error: undefined }), error => ({ result: undefined, error }));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.length, scenario.firstZero ? 1 : 2);
+    t.mock.timers.tick(11_999);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.length, scenario.firstZero ? 1 : 2);
+    t.mock.timers.tick(1);
+    const settled = await outcome;
+    assert.equal(calls.length, scenario.retry ? 3 : scenario.firstZero ? 1 : 2);
+    if (scenario.retry) {
+      assert.equal(calls[2]!.url, calls[1]!.url);
+      assert.deepEqual(calls[2]!.options, calls[1]!.options);
+      assert.equal(calls[2]!.at - calls[1]!.at, 12_000);
+    }
+    if (!scenario.nonStrict) for (const call of calls) assert.equal(call.options.maxAge, 0);
+    if (scenario.error) assert.match(String(settled.error), scenario.error);
+    else {
+      assert.equal(settled.error, undefined);
+      assert.equal(settled.result!.totalAvailable, 101);
+      assert.equal(settled.result!.listings.length, scenario.nonStrict ? 100 : 101);
+      assert.equal(settled.result!.truncated, Boolean(scenario.nonStrict));
+    }
+  });
+}
