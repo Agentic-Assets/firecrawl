@@ -1283,6 +1283,172 @@ def test_settled_global_failure_retains_only_verified_brokerage(evidence):
     assert "verified_listings" not in result
 
 
+def set_rolled_back_checkpoint(checkpoint):
+    from cre_ingest import artifact_run_identity_from_digests
+
+    digest = "e" * 64
+    artifact_key, _ = artifact_run_identity_from_digests([digest])
+    checkpoint.update(
+        artifact={"sha256": digest},
+        ingest={"started_at": "2026-10-15T17:20:01Z", "rc": 1},
+        ingest_recovery={
+            "outcome": "exact_rollback", "rc": 0, "replay_safe": True,
+            "generation_id": RUN,
+            "artifact_run_key_sha256": hashlib.sha256(artifact_key.encode()).hexdigest(),
+        },
+    )
+
+
+@pytest.mark.parametrize("checkpoint_state", [
+    "pending", "collecting", "candidate", "validated", "gated", "dry_run_passed", "rollback", "mixed",
+])
+def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
+    evidence, monkeypatch, checkpoint_state
+):
+    import cre_checkpoint_series as series
+    from test_pipeline_configuration import config
+
+    setup = settled_global_failure(evidence)
+    parent, child = setup["parent"], setup["child"]
+    stopped = {"cbre": "dry_run_passed" if checkpoint_state == "rollback" else checkpoint_state}
+    if checkpoint_state == "mixed":
+        stopped = {"cbre": "dry_run_passed", "jll-investor": "collecting", "colliers": "pending", "prepared": "dry_run_passed"}
+    selected = [SOURCE, *stopped]
+    for source, state in stopped.items():
+        child["sources"][source] = {"state": state, "attempts": []}
+        child["pipeline"]["source_results"][source] = {
+            "state": "failed", "reason": "global pipeline stop",
+        }
+        parent["sources"][source] = {"state": "pending"}
+    rollback = checkpoint_state in {"rollback", "mixed"}
+    if rollback:
+        set_rolled_back_checkpoint(child["sources"]["cbre"])
+    parent["config"] = config(sources=selected, pipeline=True)
+    child["config"]["sources"] = selected
+    parent["database_target"] = {"algorithm": "sha256", "value": "d" * 64}
+    child["preflight"]["database_target"] = parent["database_target"]
+    for row in parent["sources"].values():
+        row.update(checkpoint_run=None, attempts=[])
+    monkeypatch.setattr(series, "allocate_run_id", lambda: RUN)
+    times = iter([child["started_at"]])
+    monkeypatch.setattr(series, "utc_now", lambda: next(times, parent["finished_at"]))
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **k: (None, child))
+    # The reader still verifies the sibling's real full-profile report and readback.
+    monkeypatch.setattr(series, "pipeline_source_qualified", lambda _, key, **k: key == SOURCE)
+
+    class Process:
+        pid = 12345
+
+        def wait(self):
+            return 1
+
+    class Control:
+        invocation_id = INVOCATION
+        child_invocation_id = CHILD
+
+        def prepare_checkpoint(self, *a):
+            pass
+
+        def spawn(self, *a, **k):
+            return Process()
+
+        def check(self):
+            pass
+
+        def observe_exit(self, *a):
+            pass
+
+    assert series.run_pipeline_series(
+        evidence["series"], parent, env_file=None, control=Control()
+    ) == 1
+    for source in stopped:
+        assert parent["sources"][source]["state"] == "pending"
+        assert parent["sources"][source]["attempts"][-1]["rc"] == 1
+    evidence["save"]()
+    result = read_pipeline(evidence, source_keys=selected)
+    assert result["verified"] is True and result["complete"] is False
+    assert result["failed_source_keys"] == [
+        source for source in stopped if rollback and source == "cbre"
+    ]
+    assert result["pending_source_keys"] == [
+        source for source in stopped if not rollback or source != "cbre"
+    ]
+    assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
+    assert result["per_source_summaries"][0]["verified_listings"] == 3
+    assert "verified_listings" not in result
+
+
+@pytest.mark.parametrize("fault", [
+    "reason", "parent_state", "checkpoint_state", "pipeline_status", "child_status",
+    "parent_status", "write_unknown", "active_unit", "cleanup_unknown", "owner_unsettled",
+    "artifact_hash", "report_hash", "generation", "stale", "active_ingest",
+    "missing_recovery", "missing_ingest", "empty_ingest", "rollback_outcome",
+    "rollback_rc", "rollback_bool_rc", "rollback_safe", "rollback_generation", "rollback_artifact",
+    "missing_result_rollback", "missing_result_unstarted",
+])
+def test_pending_global_stop_requires_exact_settled_producer_shape(evidence, fault):
+    setup = settled_global_failure(evidence)
+    parent, child = setup["parent"], setup["child"]
+    parent["sources"]["cbre"]["state"] = "pending"
+    child["sources"]["cbre"]["state"] = "dry_run_passed"
+    set_rolled_back_checkpoint(child["sources"]["cbre"])
+    result = child["pipeline"]["source_results"]["cbre"]
+    result["reason"] = "global pipeline stop"
+    if fault == "reason":
+        result["reason"] += "?"
+    elif fault == "parent_state":
+        parent["sources"]["cbre"]["state"] = "collecting"
+    elif fault == "checkpoint_state":
+        child["sources"]["cbre"]["state"] = "unknown"
+    elif fault == "pipeline_status":
+        child["pipeline"]["status"] = "partial"
+    elif fault == "child_status":
+        child["status"] = "supported_scope_complete"
+    elif fault == "parent_status":
+        parent["status"] = "complete"
+    elif fault == "write_unknown":
+        child["pipeline"]["commit_outcome_unknown"] = True
+    elif fault == "active_unit":
+        child["pipeline"]["active_unit"] = "unit-0002"
+    elif fault == "cleanup_unknown":
+        evidence["values"]["settlement"]["nested_cleanup_confirmed"] = False
+    elif fault == "owner_unsettled":
+        evidence["values"]["control"]["local_settlement"] = "unknown"
+    elif fault == "artifact_hash":
+        child["sources"][SOURCE]["artifact"]["sha256"] = "f" * 64
+    elif fault == "report_hash":
+        child["pipeline"]["source_results"][SOURCE]["validation_sha256"] = "f" * 64
+    elif fault == "generation":
+        child["pipeline"]["source_results"][SOURCE]["generation_id"] = "stale"
+    elif fault == "stale":
+        evidence["values"]["control"]["finished_unix_ms"] -= 600000
+    elif fault == "active_ingest":
+        child["sources"]["cbre"]["state"] = "ingest_recovery_required"
+    elif fault.startswith("missing_result_"):
+        child["pipeline"]["source_results"].pop("cbre")
+        if fault == "missing_result_unstarted":
+            child["sources"]["cbre"] = {"state": "pending", "ingest": None}
+    elif fault == "missing_recovery":
+        child["sources"]["cbre"].pop("ingest_recovery")
+    elif fault == "missing_ingest":
+        child["sources"]["cbre"].pop("ingest")
+    elif fault == "empty_ingest":
+        child["sources"]["cbre"]["ingest"] = {}
+    elif fault.startswith("rollback_"):
+        field, value = {
+            "rollback_outcome": ("outcome", "unknown"),
+            "rollback_rc": ("rc", 1),
+            "rollback_bool_rc": ("rc", False),
+            "rollback_safe": ("replay_safe", 1),
+            "rollback_generation": ("generation_id", "stale"),
+            "rollback_artifact": ("artifact_run_key_sha256", "f" * 64),
+        }[fault]
+        child["sources"]["cbre"]["ingest_recovery"][field] = value
+    evidence["save"]()
+    with pytest.raises(REFUSED):
+        read_pipeline(evidence)
+
+
 @pytest.mark.parametrize("fault", [
     "write_unknown", "missing_write_outcome", "numeric_write_outcome", "active_unit",
     "cleanup_unknown", "owner_mismatch", "interrupted", "ingesting", "generation",
