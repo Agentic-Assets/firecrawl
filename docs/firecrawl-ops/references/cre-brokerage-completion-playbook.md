@@ -245,6 +245,13 @@ robots, pacing and challenge-stop rules before using local Firecrawl.
 - Save a small targeted artifact under `/tmp`.
 - Confirm counts for document URLs, image URLs, contact URLs, and key facts.
 
+For a regression replay, pin the recorded input bytes, requested formats and
+unchanged dependencies. Run both mapper versions against the same inputs before
+claiming field parity or loss. A capture without structured attributes is not
+equivalent to a collector request that includes them. Preserve failed results
+and explain any corrected oracle; offline replay does not refresh source age or
+prove full-source, database or performance acceptance.
+
 7. Ingest proof:
 
 ```bash
