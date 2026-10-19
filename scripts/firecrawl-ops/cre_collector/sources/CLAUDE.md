@@ -233,6 +233,21 @@ wait telemetry. Schema, identity, count and parity failures remain fatal, as do
 denials, explicit Retry-After and arbitrary transport errors. This bounded
 recovery never accepts a partial inventory.
 
+CBRE strict unlimited acquisition uses at most four cache-bypassed full
+snapshots, still requiring two consecutive internally valid snapshots with the
+same unique native-ID membership and total. Only aggregate cross-page duplicate
+IDs or disagreement between assembled unique records and valid reported totals
+permit another snapshot pass; failed passes clear the previous candidate. Page
+shape/metadata, same-page duplicates, missing IDs, caps, sentinel, denial,
+transport and unknown failures stop without another snapshot pass. Existing
+HTTP/JSON helper retries are separate and unchanged. Keep page size 500 and
+snapshot concurrency two; emit the later matching pass without combining data
+from failed passes. The helper's default remains three and its explicit limit
+is hard. A lone valid final pass is not enough. Source errors published in a
+rejected artifact do not consume the pipeline's outer source-retry budget, so
+recover known churn inside this acquisition boundary, never by admitting the
+partial artifact. See [AGENTIC-4547](https://linear.app/agenticassets/issue/AGENTIC-4547).
+
 Matthews published keyword/state filters are not proven exhaustive or disjoint
 inventory partitions. A matched multi-state subject appeared in a keyword
 query but was absent with the same keyword plus the IL filter. This observed

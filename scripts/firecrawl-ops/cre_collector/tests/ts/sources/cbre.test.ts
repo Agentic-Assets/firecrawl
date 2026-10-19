@@ -570,7 +570,7 @@ test("CBRE snapshot rejects malformed pages and nonempty pages after a terminal 
         maxPages: 5,
         concurrency: 1,
       }),
-    /did not converge[\s\S]*missing a Documents array/,
+    /missing a Documents array/,
   );
 
   const gap = {
@@ -587,7 +587,7 @@ test("CBRE snapshot rejects malformed pages and nonempty pages after a terminal 
         maxPages: 5,
         concurrency: 1,
       }),
-    /did not converge[\s\S]*nonempty page 3 after a terminal empty page/,
+    /nonempty page 3 after a terminal empty page/,
   );
 });
 
@@ -793,5 +793,158 @@ test("strict CBRE fetches every page uncached and stamps authoritative provenanc
       "authoritative_inventory_feed",
     );
     assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
+  }
+});
+
+
+test("CBRE real strict source recovers drift and duplicate before two valid snapshots", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const calls: Array<{ url: string; options: any; pass: number }> = [];
+  let pass = 0;
+  (firecrawl as any).scrape = async (url: string, options: any) => {
+    const parsed = new URL(url);
+    const page = Number(parsed.searchParams.get("Page"));
+    if (page === 1) pass++;
+    calls.push({ url, options, pass });
+    const prefix = pass === 1 ? "STALE" : pass === 2 ? "DUP" : "CURRENT";
+    const ids = Array.from({ length: 501 }, (_, index) => `${prefix}-${index}`);
+    const pageSize = Number(parsed.searchParams.get("PageSize"));
+    const total = pass === 1 && page > 1 ? 500 : 501;
+    const selectedIds = pass === 2 && page === 2 ? [ids[499]]
+      : ids.slice((page - 1) * pageSize, Math.min(page * pageSize, total));
+    return { rawHtml: JSON.stringify({ DocumentCount: total,
+      Documents: selectedIds.map(id => cbreRow(id!, {
+        "Common.ActualAddress": {
+          "Common.Line1": `${pass === 4 ? "final" : "earlier"}-${id}`,
+          "Common.Line2": "1 Main Street", "Common.Locallity": "Dallas",
+          "Common.Region": "TX", "Common.PostCode": "75201", "Common.Country": "US",
+        }, "Common.Aspects": ["isSale"],
+      })),
+    }) };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "cbre-churn-caller-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+  const result = await srcCbre("sale", Number.POSITIVE_INFINITY, false);
+  assert.equal(result.totalAvailable, 501);
+  assert.equal(result.listings.length, 501);
+  assert.equal(new Set(result.listings.map(row => row.id)).size, 501);
+  assert.ok(result.listings.every(row => String(row.id).startsWith("CURRENT-")));
+  assert.ok(result.listings.every(row => String(row.name).startsWith("final-")));
+  assert.equal(calls.length, 12);
+  assert.equal(calls.filter(call => new URL(call.url).searchParams.get("Page") === "1").length, 4);
+  for (const { url, options } of calls) {
+    const parsed = new URL(url);
+    assert.equal(parsed.searchParams.get("site"), "us-comm");
+    assert.equal(parsed.searchParams.get("Common.Aspects"), "isSale");
+    assert.equal(parsed.searchParams.get("PageSize"), "500");
+    assert.deepEqual([...parsed.searchParams.keys()].sort(), ["Common.Aspects", "Page", "PageSize", "site"].sort());
+    assert.equal(options.maxAge, 0);
+    assert.equal(options.proxy, "stealth");
+    assert.equal(options.timeout, 120000);
+  }
+  const firstPages = calls.filter(call => new URL(call.url).searchParams.get("Page") === "1");
+  assert.equal(new Set(firstPages.map(call => call.url)).size, 4);
+});
+
+test("CBRE real strict source rejects a malformed envelope without another pass", async (t) => {
+  const originalScrape = firecrawl.scrape;
+  const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
+  const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  let calls = 0;
+  (firecrawl as any).scrape = async () => {
+    calls++;
+    return { rawHtml: JSON.stringify({ DocumentCount: 1 }) };
+  };
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  process.env.CRE_REFRESH_GENERATION = "cbre-malformed-caller-test";
+  t.after(() => {
+    (firecrawl as any).scrape = originalScrape;
+    if (originalStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS;
+    else process.env.CRE_REQUIRE_FRESH_DETAILS = originalStrict;
+    if (originalGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION;
+    else process.env.CRE_REFRESH_GENERATION = originalGeneration;
+  });
+  await assert.rejects(srcCbre("sale", Number.POSITIVE_INFINITY, false), /missing a Documents array/);
+  assert.equal(calls, 1);
+});
+
+for (const kind of ["denial", "transport", "schema", "count", "missing-ID", "same-page-duplicate", "page-cap", "sentinel-gap"] as const) {
+  test(`CBRE nonchurn failure does not start another pass: ${kind}`, async () => {
+    const calls: Array<{ page: number; pass: number }> = [];
+    const originalError = new Error(kind === "denial" ? "synthetic HTTP 403" : "synthetic TLS failure");
+    const fetchPage = async (page: number, pass: number) => {
+      calls.push({ page, pass });
+      if (kind === "denial" || kind === "transport") throw originalError;
+      if (kind === "schema") return { DocumentCount: 2 };
+      if (kind === "count") return { DocumentCount: "2", Documents: [cbreRow("A"), cbreRow("B")] };
+      if (kind === "missing-ID") return { DocumentCount: 2, Documents: [cbreRow("A"), {}] };
+      if (kind === "same-page-duplicate") return { DocumentCount: 2, Documents: [cbreRow("A"), cbreRow("A")] };
+      if (kind === "page-cap") return { DocumentCount: 20, Documents: [cbreRow("A"), cbreRow("B")] };
+      return ({
+        1: { DocumentCount: 5, Documents: [cbreRow("A"), cbreRow("B")] },
+        2: { DocumentCount: 2, Documents: [] },
+        3: { DocumentCount: 5, Documents: [cbreRow("E")] },
+        4: { DocumentCount: 5, Documents: [] },
+      } as Record<number, CbreMockPage>)[page];
+    };
+    await assert.rejects(fetchCbreSnapshot(fetchPage, {
+      pageSize: 2, maxPasses: 4, maxPages: 5, concurrency: 1,
+    }), error => {
+      if (kind === "denial" || kind === "transport") assert.equal(error, originalError);
+      return true;
+    });
+    assert.equal(calls.filter(call => call.page === 1).length, 1);
+    assert.ok(calls.every(call => call.pass === 1));
+  });
+}
+
+for (const maxPasses of [undefined, 3, 4]) {
+  test(`CBRE snapshot keeps its explicit/default hard pass bound: ${maxPasses ?? "default"}`, async () => {
+    const invalid = {
+      1: { DocumentCount: 3, Documents: [cbreRow("old-A"), cbreRow("old-B")] },
+      2: { DocumentCount: 2, Documents: [] },
+      3: { DocumentCount: 2, Documents: [] },
+    };
+    const stable = {
+      1: { DocumentCount: 3, Documents: [cbreRow("A"), cbreRow("B")] },
+      2: { DocumentCount: 3, Documents: [cbreRow("C")] },
+      3: { DocumentCount: 3, Documents: [] },
+    };
+    const calls: Array<{ page: number; pass: number }> = [];
+    const result = fetchCbreSnapshot(cbrePassFetcher([invalid, invalid, stable, stable], calls), {
+      pageSize: 2, maxPages: 5, concurrency: 1, ...(maxPasses === undefined ? {} : { maxPasses }),
+    });
+    if (maxPasses === 4) assert.equal((await result).total, 3);
+    else await assert.rejects(result, /did not converge across 3/);
+    assert.equal(calls.filter(call => call.page === 1).length, maxPasses ?? 3);
+  });
+}
+
+test("CBRE first valid fourth snapshot and persistent churn never qualify alone", async () => {
+  const invalid = {
+    1: { DocumentCount: 3, Documents: [cbreRow("A"), cbreRow("B")] },
+    2: { DocumentCount: 3, Documents: [cbreRow("B")] },
+    3: { DocumentCount: 3, Documents: [] },
+  };
+  const valid = {
+    1: { DocumentCount: 3, Documents: [cbreRow("A"), cbreRow("B")] },
+    2: { DocumentCount: 3, Documents: [cbreRow("C")] },
+    3: { DocumentCount: 3, Documents: [] },
+  };
+  for (const last of [invalid, valid]) {
+    const calls: Array<{ page: number; pass: number }> = [];
+    await assert.rejects(fetchCbreSnapshot(cbrePassFetcher([invalid, invalid, invalid, last], calls), {
+      pageSize: 2, maxPasses: 4, maxPages: 5, concurrency: 1,
+    }), /did not converge across 4/);
+    assert.equal(calls.filter(call => call.page === 1).length, 4);
   }
 });

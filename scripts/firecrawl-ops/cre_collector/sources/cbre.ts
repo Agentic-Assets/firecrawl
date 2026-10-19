@@ -581,7 +581,7 @@ async function fetchCbreSnapshotPass(
       );
     }
     if (seen.has(primaryKey)) {
-      throw new Error(
+      throw new CbreSnapshotChurnError(
         `CBRE listings API snapshot has duplicate Common.PrimaryKey ${primaryKey}`,
       );
     }
@@ -595,7 +595,7 @@ async function fetchCbreSnapshotPass(
   if (
     reportedTotals.some((reportedTotal) => reportedTotal !== documents.length)
   ) {
-    throw new Error(
+    throw new CbreSnapshotChurnError(
       `CBRE listings API snapshot collected ${documents.length} unique documents, ` +
         `but its pages did not all report that total (${[...new Set(reportedTotals)].join(",")})`,
     );
@@ -613,6 +613,8 @@ async function fetchCbreSnapshotPass(
     identityFingerprint: cbreIdentityFingerprint(documents),
   };
 }
+
+class CbreSnapshotChurnError extends Error {}
 
 export async function fetchCbreSnapshot(
   fetchPage: CbrePageFetcher,
@@ -654,6 +656,7 @@ export async function fetchCbreSnapshot(
         concurrency,
       );
     } catch (error) {
+      if (!(error instanceof CbreSnapshotChurnError)) throw error;
       failures.push(`pass ${pass}: ${String(error)}`);
       previous = null;
       continue;
@@ -734,7 +737,7 @@ export async function srcCbre(
           cbreInventoryUrl(aspect, page, CBRE_PAGE_SIZE, cacheSeed, pass),
           opts,
         ),
-      { concurrency: CBRE_SNAPSHOT_CONCURRENCY },
+      { concurrency: CBRE_SNAPSHOT_CONCURRENCY, maxPasses: 4 },
     );
     total = snapshot.total;
     collectedDocs = snapshot.documents;
