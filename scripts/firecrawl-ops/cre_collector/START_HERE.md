@@ -1377,8 +1377,17 @@ python3 cre_refresh_report.py \
   --out /tmp/cre-refresh-report.md
 ```
 
-`scraped_at` proves only that a row was processed by ingest. A strict
-detail-freshness claim additionally requires current source observation
+In this report, `created_since` counts currently non-deleted database rows with
+`created_at` at or after the boundary. It is not a per-invocation INSERT/UPDATE
+split or a count of newly marketed properties. `refreshed_since` filters
+`scraped_at`, the detail-observation clock. Inventory-only updates and
+child-preserving updates without admitted current detail proof can retain an
+older clock, so this field does not count every inventory refresh or upsert.
+Use the generation-qualified counts for verified run inventory. Each report
+query uses a separate read-only transaction; live-writer reports are not one
+atomic snapshot.
+
+A strict detail-freshness claim additionally requires current source observation
 provenance, the exact run generation, zero source errors or hidden truncation,
 explicit handling of every listing-level `detailError`, and the
 generation-exact database readback described above. Observation timestamps more
