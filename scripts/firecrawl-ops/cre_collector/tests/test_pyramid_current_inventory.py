@@ -39,8 +39,9 @@ def produce(
     clock_step_ms=0,
     clock_before_ms=0,
     expected_error=None,
+    start=None,
 ):
-    start = (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
+    start = start or (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
     run_id = "2026-10-15T172001Z-123456abcdef"
     preload = root / "transport.mts"
     preload.write_text(r"""let inventory=0,details=0;

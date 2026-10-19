@@ -263,6 +263,14 @@ foreach ($workers in @(1,2,3,4)) {
 $pipelineTaskArgs.Remove('SourceWorkers')
 [xml]$pipelineDoc = (& $creInstaller @pipelineTaskArgs) -join [Environment]::NewLine
 Assert-Cre ((Get-CreXmlValue $pipelineDoc '/t:Task/t:Actions/t:Exec/t:Arguments').Contains('"-SourceWorkers" "2"')) 'Omitted opt-in pipeline setting resolves two in the visible preview.'
+$strictMixed = 'essex-realty,pyramid-brokerage,interra-realty'
+$pipelineTaskArgs['Sources'] = $strictMixed
+$pipelineTaskArgs['AdmitCurrentInventorySources'] = $strictMixed
+$callsBeforePreview = $global:Cre4265Fixture.Calls.Count
+[xml]$strictMixedDoc = (& $creInstaller @pipelineTaskArgs) -join [Environment]::NewLine
+$strictMixedAction = Get-CreXmlValue $strictMixedDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
+Assert-Cre ($strictMixedAction.Contains(('"-Sources" "'+$strictMixed+'"')) -and $strictMixedAction.Contains(('"-AdmitCurrentInventorySources" "'+$strictMixed+'"'))) 'Mixed strict-source preview preserves exact selected admissions.'
+Assert-Cre ($global:Cre4265Fixture.Calls.Count -eq $callsBeforePreview) 'Mixed preview never calls the scheduler.'
 $crePreview | Set-Content -LiteralPath (Join-Path $ProofDirectory 'preview.xml') -Encoding UTF8
 Write-Output ('Offline scheduled-task PASS: '+$global:Cre4265Fixture.Checks+' assertions')
 

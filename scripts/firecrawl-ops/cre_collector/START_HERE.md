@@ -945,7 +945,7 @@ never implies this permission. See the
 [DAUM subset contract](../../../docs/firecrawl-ops/references/daum-verified-subset.md)
 for counts, transaction guards and production acceptance.
 
-Essex's explicit singleton `--admit-current-inventory-source essex-realty`
+Essex's explicit `--admit-current-inventory-source essex-realty`
 (`-AdmitCurrentInventorySource essex-realty` on the native series launcher) uses
 this same carrier for uncapped full sale+lease. It requires two matching complete
 current/closed/sitemap reconciliations, every fresh current detail, historical
@@ -960,7 +960,7 @@ rekeys, closed-row ingestion or lifecycle authority follows. A fresh bounded
 pilot still needs pre/post preservation, full audit/generation readback and
 settlement; merged code and dated public observations are not that acceptance.
 
-Pyramid's explicit singleton `--admit-current-inventory-source pyramid-brokerage`
+Pyramid's explicit `--admit-current-inventory-source pyramid-brokerage`
 uses the same additive coverage scope only with complete strict details. It
 requires uncapped full sale+lease, a generation-local shared REST cohort from two
 consecutive identical complete passes, and a fresh identity/transaction-matched
@@ -968,6 +968,14 @@ detail response for every member. Source and aggregate gates recheck compact
 receipts, policy/code/target/artifact bindings, absent baseline and the normal
 source-wide unique floor100. This is not inventory-only or a historical-baseline
 certificate; strict-detail child replacement and severe-loss/quality gates remain.
+
+Both sources also support an explicit entry in the original flat `--pipeline`
+owner, including the native plural `-AdmitCurrentInventorySources` option and
+installer preview. Serial admission still requires a singleton selection. Mixed
+selection preserves each source's own complete fresh proof and absent-baseline
+checks; another member's receipt never supplies authority. Historical singleton
+acceptance is not fresh mixed-run acceptance, which still requires the full
+audit, preservation, exact generation readback and settlement.
 
 Pyramid's pre-upsert transaction guard compares the actual staged cohort against
 all same-brokerage historical parents, including soft-deleted rows. It refuses

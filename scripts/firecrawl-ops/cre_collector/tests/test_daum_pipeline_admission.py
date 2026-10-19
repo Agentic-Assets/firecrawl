@@ -191,11 +191,10 @@ def test_mixed_owner_cannot_borrow_or_weaken_daum_proof(mixed, case):
 
 
 @pytest.mark.parametrize("source", ["pyramid-brokerage", "essex-realty"])
-def test_other_strict_singleton_rules_remain(source):
-    with pytest.raises(ValueError):
-        admission.validate_options(
-            [source], [source, OTHER], ["sale", "lease"], pipeline=True
-        )
+def test_other_strict_sources_allow_explicit_pipeline_but_not_serial_mixed(source):
+    admission.validate_options(
+        [source], [source, OTHER], ["sale", "lease"], pipeline=True
+    )
     with pytest.raises(ValueError):
         admission.validate_options([SOURCE], [SOURCE, OTHER], ["sale", "lease"])
 

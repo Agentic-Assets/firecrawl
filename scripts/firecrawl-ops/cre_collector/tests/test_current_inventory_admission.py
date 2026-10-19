@@ -18,11 +18,11 @@ TARGET = "b" * 64
 ENDPOINT = "https://interrarealty.com/wp-json/filtered-loop/v1/posts?post_type=torque_listing&posts_per_page=1000&paged=1"
 
 
-def setup(tmp_path):
+def setup(tmp_path, generation=None, started_at=None):
     now = datetime.now(UTC)
-    start = (now - timedelta(minutes=2)).isoformat()
-    observed = (now - timedelta(minutes=1)).isoformat()
-    run = tmp_path / "2026-10-14T120000Z"
+    start = started_at or (now - timedelta(minutes=2)).isoformat()
+    observed = (now if started_at else now - timedelta(minutes=1)).isoformat()
+    run = tmp_path / (generation or "2026-10-14T120000Z")
     run.mkdir()
     generation = run.name
     rows = []

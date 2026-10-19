@@ -363,7 +363,11 @@ reviewed baseline seed and readback before resuming the same immutable run.
 Explicit current-inventory admission preserves the absent baseline and raw
 verdict while requiring each source's complete fresh proof. Interra, registered
 Buildout feeds and DAUM support exact source-keyed pipeline admission; serial
-admission stays singleton. Pyramid and Essex remain singleton in either mode.
+admission stays singleton. Pyramid and Essex also allow explicit source-bound
+entries in the original flat pipeline owner; serial admission remains singleton.
+Each requires its own complete fresh proof and absent-baseline checks. Mixed
+code support does not establish fresh mixed-run acceptance or inherit another
+member's authority.
 This grants additive inventory scope, never historical-baseline certification
 or lifecycle authority. Follow the source contracts in [START_HERE.md](START_HERE.md)
 and [sources/CLAUDE.md](sources/CLAUDE.md); Buildout details remain in the
