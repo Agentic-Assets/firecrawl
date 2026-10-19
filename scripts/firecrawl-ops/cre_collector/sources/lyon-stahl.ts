@@ -36,6 +36,10 @@ export type LyonStahlParseOutcome =
   | { kind: "held"; availability: string | null; reason: string }
   | { kind: "rejected"; reason: string };
 
+type LyonStahlDetailOutcome =
+  | LyonStahlParseOutcome
+  | { kind: "fetch_failed"; reason: string };
+
 type FetchLike = (
   input: string | URL | Request,
   init?: RequestInit
@@ -736,16 +740,17 @@ export async function srcLyonStahl(
   const inventoryObservedAt = observationNow();
   const take = Number.isFinite(max) ? urls.slice(0, Math.max(0, max)) : urls;
   const outcomes = await pmap(take, LYON_STAHL_DETAIL_CONCURRENCY, async (url) => {
+    let html: string;
     try {
-      const html = await lyonStahlFetchText(url, "html");
-      return parseLyonStahlDetail(html, url, tx, {
-        inventoryObservedAt,
-        detailObservedAt: observationNow(),
-      });
+      html = await lyonStahlFetchText(url, "html");
     } catch (error) {
       console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
-      return { kind: "rejected", reason: String(error) } as LyonStahlParseOutcome;
+      return { kind: "fetch_failed", reason: String(error) } as LyonStahlDetailOutcome;
     }
+    return parseLyonStahlDetail(html, url, tx, {
+      inventoryObservedAt,
+      detailObservedAt: observationNow(),
+    });
   });
   const listings = outcomes
     .filter((outcome): outcome is Extract<LyonStahlParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
@@ -754,13 +759,15 @@ export async function srcLyonStahl(
   const held = outcomes.filter((outcome) => outcome.kind === "held").length;
   const terminal = outcomes.filter((outcome) => outcome.kind === "terminal").length;
   const rejected = outcomes.filter((outcome) => outcome.kind === "rejected").length;
+  const fetchFailures = outcomes.filter((outcome) => outcome.kind === "fetch_failed").length;
   const finiteCap = take.length !== urls.length;
-  const truncated = finiteCap || held > 0 || rejected > 0;
+  const truncated = finiteCap || held > 0 || rejected > 0 || fetchFailures > 0;
   const notes = [
     finiteCap ? `Selected ${take.length}/${urls.length} property sitemap URL(s)` : null,
     held ? `${held} detail page(s) held for unknown availability` : null,
     terminal ? `${terminal} terminal detail page(s) excluded` : null,
     rejected ? `${rejected} detail page(s) failed identity or structure validation` : null,
+    fetchFailures ? `${fetchFailures} detail page(s) failed acquisition` : null,
   ].filter((value): value is string => Boolean(value));
 
   return {

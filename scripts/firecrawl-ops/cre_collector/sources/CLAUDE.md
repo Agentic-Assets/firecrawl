@@ -82,6 +82,13 @@ objects survive source and collector pruning in `extraFacts.providerOffers`,
 including literal false/null/empty values. A lease row never copies the page's
 sale price into rent; unqualified Offer amounts/bases stay raw for future mapping.
 
+The sale adapter reports detail-page acquisition failures separately from
+parser identity/structure rejections. Either makes the pass truncated; the
+aggregate note keeps their counts distinct. Held availability remains a
+separate category, terminal detail pages remain excluded, and these diagnostic
+categories do not change source admission. Lease acquisition remains
+explicitly incomplete.
+
 Lease **acquisition** is still unimplemented and explicitly incomplete; parsing
 an observed lease Offer does not prove a complete lease inventory. Do not launch
 a new historical sitemap crawl to manufacture that proof. Complete repeated
