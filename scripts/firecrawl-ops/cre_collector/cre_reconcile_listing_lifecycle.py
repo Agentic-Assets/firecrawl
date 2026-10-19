@@ -435,8 +435,39 @@ def build_plan(bundle, *, evidence_base_dir=".", max_age_hours=48,
         }
         actions.append(action)
     core = {"schema_version": 3, "actions": actions, "skipped": skipped}
+    if "protected_context" in bundle:
+        if skipped:
+            raise ValueError("protected reconciliation cannot contain skipped evidence")
+        context = _load_protected_context(
+            bundle["protected_context"], actions,
+            evidence_base_dir=evidence_base_dir, max_age_hours=max_age_hours,
+        )
+        core["protected_context"] = context.binding
     core["plan_hash"] = hashlib.sha256(_canon(core).encode()).hexdigest()
     return core
+
+
+def _load_protected_context(value, actions, *, evidence_base_dir=".", max_age_hours=48):
+    """Bind the finite preimage and its untouched parents to the same source bytes."""
+    from cre_lifecycle_protected_context import load_context
+
+    context = load_context(value, actions, evidence_base_dir=evidence_base_dir)
+    action = actions[0]  # The finite context contract requires exactly two actions.
+    source = {
+        "state": "present", "source_key": action["source_key"],
+        "evidence_path": action["source_evidence_path"],
+        "evidence_sha256": action["source_evidence_sha256"],
+        "observed_at": action["observed_at"],
+    }
+    now = datetime.now(timezone.utc)
+    for parent in context.non_action_parents:
+        _, reason = _validate_bound_artifact(
+            parent, {**source, "url": parent["source_url"]},
+            evidence_base_dir=evidence_base_dir, now=now, max_age_hours=max_age_hours,
+        )
+        if reason:
+            raise ValueError(f"protected current parent source evidence refused: {reason}")
+    return context
 
 
 def write_evidence(plan, prefix):
@@ -556,7 +587,7 @@ def _index_absent_apply_sql(action, plan_hash, job_id):
 END $$;"""
 
 
-def build_apply_sql(actions, plan_hash, operator, approval_ref):
+def build_apply_sql(actions, plan_hash, operator, approval_ref, *, protected_context=None):
     """Build one bounded, lock-and-compare transaction."""
     if len(actions) > MAX_BATCH_SIZE:
         raise ValueError(f"batch exceeds {MAX_BATCH_SIZE} rows")
@@ -570,8 +601,10 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
         "\\set ON_ERROR_STOP on", "BEGIN;", "SET LOCAL statement_timeout = '120s';",
         "-- Intentionally serialize all generated lifecycle mutation transactions.",
         lifecycle_transaction_lock_sql(),
-        "CREATE TEMP TABLE _reconcile_apply (listing_id uuid PRIMARY KEY) ON COMMIT DROP;",
     ]
+    if protected_context is not None:
+        lines.append(protected_context.guard_sql())
+    lines.append("CREATE TEMP TABLE _reconcile_apply (listing_id uuid PRIMARY KEY) ON COMMIT DROP;")
     if any(action.get("index_absent_retirement") for action in actions):
         lines.extend([
             "SET LOCAL lock_timeout = '5s';",
@@ -818,6 +851,8 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
                 f"FROM credeals.cre_listings l WHERE l.id={listing_id}::uuid "
                 "AND l.id IN (SELECT listing_id FROM _reconcile_apply) ON CONFLICT DO NOTHING;"
             )
+    if protected_context is not None:
+        lines.append(_finalize_sql_body(actions, plan_hash, operator, approval_ref).rstrip("\n"))
     lines.extend([
         "COMMIT;",
         f"-- operator: {operator}",
@@ -826,14 +861,14 @@ def build_apply_sql(actions, plan_hash, operator, approval_ref):
     return "\n".join(lines) + "\n"
 
 
-def build_finalize_sql(actions, plan_hash, operator, approval_ref):
-    """Complete shared reconciliation jobs only after every batch succeeded."""
+def _finalize_sql_body(actions, plan_hash, operator, approval_ref):
+    """Complete deterministic jobs within the caller's lifecycle transaction."""
     jobs = [
         (*_job_identity(plan_hash, brokerage_id), brokerage_id)
         for brokerage_id in sorted({action["brokerage_id"] for action in actions})
     ]
     if not jobs:
-        return "\\set ON_ERROR_STOP on\n"
+        return ""
     values = ",\n".join(
         f"({sql_lit(job_id)}::uuid, {sql_lit(run_key)}, {sql_lit(brokerage_id)}::uuid)"
         for run_key, job_id, brokerage_id in jobs
@@ -842,13 +877,7 @@ def build_finalize_sql(actions, plan_hash, operator, approval_ref):
         "approved evidence-backed lifecycle reconciliation by " + operator
         + "; ref=" + approval_ref + "; plan=" + plan_hash
     )
-    transaction_lock = lifecycle_transaction_lock_sql()
-    return f"""\\set ON_ERROR_STOP on
-BEGIN;
-SET LOCAL statement_timeout = '120s';
--- Intentionally serialize all generated lifecycle mutation transactions.
-{transaction_lock}
-CREATE TEMP TABLE _expected_reconcile_jobs
+    return f"""CREATE TEMP TABLE _expected_reconcile_jobs
     (job_id uuid PRIMARY KEY, run_key text NOT NULL, brokerage_id uuid NOT NULL)
     ON COMMIT DROP;
 INSERT INTO _expected_reconcile_jobs VALUES
@@ -874,8 +903,19 @@ UPDATE credeals.cre_scrape_jobs j
 SET status = 'completed', completed_at = now(), notes = {sql_lit(notes)}
 FROM _expected_reconcile_jobs expected
 WHERE expected.job_id = j.id AND j.status = 'running';
-COMMIT;
 """
+
+
+def build_finalize_sql(actions, plan_hash, operator, approval_ref):
+    """Complete ordinary reconciliation jobs after every separate batch succeeds."""
+    body = _finalize_sql_body(actions, plan_hash, operator, approval_ref)
+    if not body:
+        return "\\set ON_ERROR_STOP on\n"
+    return (
+        "\\set ON_ERROR_STOP on\nBEGIN;\nSET LOCAL statement_timeout = '120s';\n"
+        "-- Intentionally serialize all generated lifecycle mutation transactions.\n"
+        + lifecycle_transaction_lock_sql() + "\n" + body + "COMMIT;\n"
+    )
 
 
 def _revalidate_plan_evidence(plan, *, max_age_hours):
@@ -975,10 +1015,28 @@ def apply_plan(plan, *, approval_contract_path, confirmation, supplied_hash, env
         raise ValueError("--expected-db-target-sha256 is required for apply")
     if batch_size < 1 or batch_size > MAX_BATCH_SIZE:
         raise ValueError(f"batch size must be 1..{MAX_BATCH_SIZE}")
+    protected_context = None
+    if "protected_context" in plan:
+        if plan.get("skipped") or len(plan["actions"]) > batch_size:
+            raise ValueError("protected reconciliation requires one complete batch without skips")
+        protected_context = _load_protected_context(
+            plan["protected_context"], plan["actions"], max_age_hours=max_age_hours,
+        )
+        if protected_context.binding["database_target_sha256"] != expected_db_target_sha256:
+            raise ValueError("protected context database target does not match apply target")
     db_url, _ = load_db_url(env_file)
     assert_expected_database_target(db_url, expected_db_target_sha256)
     _revalidate_plan_evidence(plan, max_age_hours=max_age_hours)
     psql = find_psql()
+    if protected_context is not None:
+        _run_psql_script(
+            psql, db_url,
+            build_apply_sql(
+                plan["actions"], plan["plan_hash"], operator, approval_ref,
+                protected_context=protected_context,
+            ),
+        )
+        return
     for offset in range(0, len(plan["actions"]), batch_size):
         batch = plan["actions"][offset:offset + batch_size]
         _run_psql_script(
