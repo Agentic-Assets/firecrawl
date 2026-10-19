@@ -812,7 +812,7 @@ export function assertAvisonYoungDetailDoc(
   const subjectHeading = h1Values.length > 0 && h1Values.every(exactFeedSubject);
   const exactSubjectRecord = records.length === 1 && exactFeedSubject(record?.name)
     && sameIdentityUrl(record?.url, requested);
-  const physicalSubjectClaimAgrees = (value: any): boolean => {
+  const physicalSubjectClaimAgrees = (value: any, expectedStreet = base?.street): boolean => {
     const text = clean(value);
     if (!text) return false;
     const streetOffering = /^(.*?)\s+\|\s+(?:available\s+)?for\s+(?:sale(?:\s+or\s+lease)?|lease(?:\s+or\s+sale)?)$/i.exec(text);
@@ -822,9 +822,9 @@ export function assertAvisonYoungDetailDoc(
     const streetField = candidateParts[0] ?? candidate;
     const addressShaped = /^\d+\b/.test(streetField)
       || /\b(?:street|st|road|rd|avenue|ave|boulevard|blvd|highway|hwy|drive|dr|lane|ln|court|ct|parkway|pkwy|place|pl|way|trail|trl|circle|cir)\b/i.test(streetField)
-      || Boolean(streetOffering || offerPrefix) && strictPhysicalStreetMatches(streetField, base?.street);
+      || Boolean(streetOffering || offerPrefix) && strictPhysicalStreetMatches(streetField, expectedStreet);
     if (!addressShaped) return true;
-    if (!strictPhysicalStreetMatches(streetField, base?.street)) return false;
+    if (!strictPhysicalStreetMatches(streetField, expectedStreet)) return false;
     const locality = candidateParts.slice(1);
     if (locality.length === 0) return true;
     if (locality.length > 3 || !strictLocalityText(locality[0]) || normalizeCity(locality[0]) !== city) return false;
@@ -841,7 +841,7 @@ export function assertAvisonYoungDetailDoc(
     ...records.map((value) => value?.name),
     ...h1Values.filter(exactFeedSubject),
     ...h1Values.filter((value) => /\s+\|\s+(?:available\s+)?for\s+(?:sale|lease)/i.test(clean(value) ?? "")),
-  ].every(physicalSubjectClaimAgrees);
+  ].every((value) => physicalSubjectClaimAgrees(value));
   const uniqueExactSubjectHeadings = subjectHeading
     && new Set(h1Values.map((value) => clean(value)?.replace(/\s+/g, " ").toLowerCase())).size === 1;
   const substantiveStructure = (nativeInfo.length > 0 && nativeInfoRows.length > 0)
@@ -858,10 +858,87 @@ export function assertAvisonYoungDetailDoc(
     && strictPhysicalDescriptionsAgree() && officialDisplayRole;
   const officialStrictDisplayIdentity = officialStrictDisplayEvidence && exactFeedUrlOwner;
 
+  // Some registered named properties repeat their name in the feed/structured
+  // street field. Only the publisher's linked, explicitly labeled offering
+  // address can associate a physical hero with that otherwise exact subject.
+  // This witness validates the association; it never rewrites the feed street.
+  const officialNamedPropertyIdentity = (() => {
+    const subject = clean(base?.name)?.replace(/\s+/g, " ").toLowerCase() ?? "";
+    const sameSubject = (value: any): boolean => clean(value)?.replace(/\s+/g, " ").toLowerCase() === subject;
+    if (!isRegisteredOfficialWrapper || !exactFeedUrlOwner || !ownedIdentityMetadata
+      || !subject || /\d|[&#,/@|]|\b(?:suite|ste|unit|apt|floor|lot|nwc|nec|swc|sec)\b/i.test(subject)
+      || streetRole.test(subject) || !sameSubject(base?.street)
+      || (clean(base?.headline) && !sameSubject(base.headline))
+      || !strictLocalityText(base?.city) || !strictLocalityText(base?.state)
+      || !pageTitles.every(sameSubject) || $("h1").length !== 1 || !sameSubject($("h1").text())
+      || canonicalUrls.length !== 1 || records.length !== 1 || !sameSubject(record?.name)
+      || !structuredIdentityMatches || !/^\d{5}$/.test(clean(base?.postalCode) ?? "")
+      || !addresses.every((address) => sameSubject(address.streetAddress)
+        && strictLocalityText(address.addressLocality) && strictLocalityText(address.addressRegion)
+        && clean(address.postalCode) === clean(base?.postalCode))) return false;
+    const remoteIds = [...doc.rawHtml.matchAll(/\bremote\s*:\s*(\d+)\b/g)];
+    const remoteComments = $("script").toArray().filter((element) =>
+      /^\s*\/\*\s*remote\s*:\s*\d+\b[^*]*\*\/\s*$/.test($(element).text()));
+    if (remoteIds.length !== 1 || remoteIds[0]![1] !== clean(base?.id) || remoteComments.length !== 1) return false;
+    const labeledRows = $("li").toArray().filter((element) =>
+      /^address$/i.test(clean($(element).children("span").first().text()) ?? ""));
+    if (labeledRows.length !== 1) return false;
+    const addressRow = $(labeledRows[0]!);
+    const summary = addressRow.closest(".building__property-info-box");
+    if (summary.closest(".page-content > section#building .building").length !== 1 || summary.length !== 1
+      || !/^offering summary$/i.test(clean(summary.prev("h2.building__property-info-title").text()) ?? "")
+      || addressRow.children("span").length !== 2 || !hasBuildingOverview) return false;
+    const offeredAddress = clean(addressRow.children("span").last().text()) ?? "";
+    const offeredStreet = offeredAddress.split(",")[0]?.trim() ?? "";
+    if (!/^[1-9]\d*\s+[\p{L}]/u.test(offeredStreet) || !strictPhysicalStreetKey(offeredStreet)) return false;
+    const sameOfferingAddress = (value: any): boolean => {
+      const parts = (clean(value) ?? "").split(",").map((part) => part.trim());
+      const region = /^(.*?)(?:\s+(\d{5}))?$/.exec(parts[2] ?? "");
+      return parts.length === 3 && strictPhysicalStreetMatches(parts[0], offeredStreet)
+        && strictLocalityText(parts[1]) && normalizeCity(parts[1]) === city
+        && strictLocalityText(region?.[1]) && normalizeState(region?.[1]) === state
+        && (!region?.[2] || region[2] === clean(base?.postalCode));
+    };
+    if (!sameOfferingAddress(offeredAddress) || $(".hero__sub-title").length !== 1
+      || !sameOfferingAddress(heroText)) return false;
+    const physicalHeadings = $("h2").toArray().filter((element) => /^\d/.test(clean($(element).text()) ?? ""));
+    if (!physicalHeadings.every((element) => sameOfferingAddress($(element).text()))) return false;
+    // Location prose in Property Highlights is not an offered address. Explicit
+    // description tuples and map POI addresses remain contradictory claims.
+    if (!descriptionSelectors.every((selector) => $(selector).length <= 1)
+      || !descriptionNodes.every((element) => {
+        const value = clean($(element).attr("content")) ?? "";
+        const parts = value.split(",");
+        const physicalClaim = sameSubject(parts[0]) ? parts.slice(1).join(",").trim() : value;
+        if (/^\d/.test(physicalClaim) && streetRole.test(physicalClaim))
+          return physicalSubjectClaimAgrees(physicalClaim, offeredStreet);
+        const claimsAddress = parts.length >= 3 && parts.slice(0, -2).some((part) =>
+          /^\d/.test(part.trim()) || streetRole.test(part));
+        if (!claimsAddress) return true;
+        return sameOfferingAddress(value) || (sameSubject(parts[0]) && sameOfferingAddress(parts.slice(1).join(",")));
+      })) return false;
+    for (const script of $("script").toArray()) {
+      const text = $(script).text();
+      const mapClaims = [...text.matchAll(/(?:\bpoi|"poi"|'poi')\s*:/g)];
+      const maps = [...text.matchAll(/(?:\bpoi|"poi"|'poi')\s*:\s*(\[[^\n]*\])/g)];
+      if (maps.length !== mapClaims.length) return false;
+      for (const map of maps) {
+        try {
+          const points = JSON.parse(map[1]!);
+          if (!Array.isArray(points) || !points.every((point) =>
+            strictPhysicalStreetMatches(point?.address, offeredStreet)
+            && physicalSubjectClaimAgrees(point?.name, offeredStreet))) return false;
+        } catch { return false; }
+      }
+    }
+    return true;
+  })();
+
   if (descriptionConflicts && !officialRangeScopeWitness) {
     throw new Error("Avison Young detail identity does not match the requested property");
   }
   if (officialStrictDisplayIdentity) return record;
+  if (officialNamedPropertyIdentity) return record;
   const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
   const namedDescriptionIdentity = completeDescriptionIdentity && identityMetadataMatches
     && heroLocations.length === 1 && heroLocations[0] === true;
