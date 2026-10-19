@@ -703,6 +703,95 @@ test("Lyon Stahl source holds unknown availability, marks coverage incomplete, a
   assert.equal(calls.some((url) => /\.pdf(?:$|[?#])/i.test(url)), false);
 });
 
+test("Lyon Stahl reports detail acquisition failures separately from parser rejects", async (t) => {
+  resetBrokerStateForTests();
+  const originalFetch = globalThis.fetch;
+  const acceptedUrl = "https://lyonstahl.com/properties/accepted/";
+  const identityRejectUrl = "https://lyonstahl.com/properties/identity-reject/";
+  const parserExceptionUrl = "https://lyonstahl.com/properties/parser-exception/";
+  const heldUrl = "https://lyonstahl.com/properties/held/";
+  const terminalUrl = "https://lyonstahl.com/properties/terminal/";
+  const notFoundUrl = "https://lyonstahl.com/properties/not-found/";
+  const rateLimitedUrl = "https://lyonstahl.com/properties/rate-limited/";
+  const details = new Map<string, string>([
+    [acceptedUrl, lyonFixture({ id: "42001", path: "accepted", name: "Accepted" })],
+    [
+      identityRejectUrl,
+      lyonFixture({ id: "42002", path: "identity-reject", name: "Identity Reject" })
+        .replace(
+          'href="https://lyonstahl.com/properties/identity-reject/"',
+          'href="https://lyonstahl.com/properties/not-this-listing/"'
+        ),
+    ],
+    [
+      parserExceptionUrl,
+      lyonFixture({ id: "42007", path: "parser-exception", name: "Parser Exception" })
+        .replace('"price": "1800000"', '"price": {"toString": null}'),
+    ],
+    [
+      heldUrl,
+      lyonFixture({
+        id: "42003",
+        path: "held",
+        name: "Held",
+        availability: "https://schema.org/BackOrder",
+      }),
+    ],
+    [
+      terminalUrl,
+      lyonFixture({
+        id: "42004",
+        path: "terminal",
+        name: "Terminal",
+        availability: "https://schema.org/SoldOut",
+      }),
+    ],
+  ]);
+  const sitemap = `<urlset>${[
+    acceptedUrl,
+    identityRejectUrl,
+    parserExceptionUrl,
+    heldUrl,
+    terminalUrl,
+    notFoundUrl,
+    rateLimitedUrl,
+  ].map((url) => `<url><loc>${url}</loc></url>`).join("")}</urlset>`;
+  const calls = new Map<string, number>();
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    calls.set(url, (calls.get(url) ?? 0) + 1);
+    if (url === "https://lyonstahl.com/sitemap.xml") {
+      return new Response(
+        `<sitemapindex><sitemap><loc>https://lyonstahl.com/properties-sitemap1.xml</loc></sitemap></sitemapindex>`,
+        { headers: { "content-type": "application/xml" } }
+      );
+    }
+    if (url === "https://lyonstahl.com/properties-sitemap1.xml") {
+      return new Response(sitemap, { headers: { "content-type": "application/xml" } });
+    }
+    if (url === notFoundUrl) return new Response("not found", { status: 404 });
+    if (url === rateLimitedUrl) return new Response("rate limited", { status: 429 });
+    const body = details.get(url);
+    assert.ok(body, `unexpected source request: ${url}`);
+    return new Response(body, { headers: { "content-type": "text/html" } });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const result = await srcLyonStahl("sale", Infinity, false);
+
+  assert.equal(result.totalAvailable, 7);
+  assert.deepEqual(result.listings.map((listing) => listing.id), ["accepted"]);
+  assert.equal(result.truncated, true);
+  assert.match(result.note ?? "", /1 detail page\(s\) held for unknown availability/);
+  assert.match(result.note ?? "", /1 terminal detail page\(s\) excluded/);
+  assert.match(result.note ?? "", /2 detail page\(s\) failed identity or structure validation/);
+  assert.match(result.note ?? "", /2 detail page\(s\) failed acquisition/);
+  assert.equal(calls.get(notFoundUrl), 3);
+  assert.equal(calls.get(rateLimitedUrl), 3);
+});
+
 test("Lyon Stahl source rejects duplicate emitted shortlink IDs across different property URLs", async (t) => {
   resetBrokerStateForTests();
   const originalFetch = globalThis.fetch;
