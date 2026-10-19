@@ -426,7 +426,27 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
     if (gate["verdict"], gate["rc"]) not in {
         ("hold", 2),
         ("first_seen", 0),
-    } or info.get("mark_missing_safe") is not False:
+    } or (
+        not {
+            "current_active",
+            "baseline_median",
+            "effective_floor",
+            "floor_policy",
+            "verdict",
+            "reason",
+            "mark_missing_safe",
+        }
+        <= info.keys()
+        or type(info["current_active"]) is not int
+        or type(info["effective_floor"]) is not int
+        or (
+            info["baseline_median"] is not None
+            and type(info["baseline_median"]) is not int
+        )
+        or not isinstance(info["floor_policy"], (str, type(None)))
+        or not isinstance(info["reason"], str)
+        or info["mark_missing_safe"] is not False
+    ):
         raise refresh.GlobalStageError(
             f"unrecognized pre-seal source gate refusal: {source}"
         )

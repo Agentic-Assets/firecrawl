@@ -119,8 +119,9 @@ Never-sealed empty preparation units are omitted; source failure evidence is
 retained. Mixed and all-held runs remain failed/incomplete and never advance
 all-source last-good. Partial summaries report only qualified member counts,
 including no listing counts when every source is held.
-The manifest records sealed membership, audit report bindings and exact
-`pipeline.source_results` only for qualified members. Series entries point to
+The manifest records sealed membership and per-source outcomes in
+`pipeline.source_results`; qualified members also carry audit/readback bindings.
+Series entries point to
 that same refresh run; partial completion cannot publish all-source last-good
 health. `cre_series_status.py` exposes stage counts and the resolved worker
 setting. Terminal Slack messages report only qualified brokerage counts.

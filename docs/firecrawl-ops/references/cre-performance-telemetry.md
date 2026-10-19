@@ -235,8 +235,10 @@ effective limit. Increasing every cap is not a substitute for locating the
 constraint or measuring its consequences.
 
 Record effective settings, observed sizes and latencies, work scope and
-measurement gaps alongside each experiment. Leave unmeasured values unknown;
-retain failed trials as well as successful ones. Use the existing
+measurement gaps alongside each experiment. The work deadline is per invocation: read
+`latest_invocation_control.work_deadline_seconds` or its receipt rather than
+the immutable run configuration. Leave unmeasured values unknown; retain failed
+trials as well as successful ones. Use the existing
 [AGENTIC-2900](https://linear.app/agenticassets/issue/AGENTIC-2900) experiments
 and [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895) Learning
 log for evidence and interpretation before proposing a targeted adjustment.

@@ -387,6 +387,7 @@ def test_ordinary_unit_finishes_while_real_contained_daum_collects(
         return None
 
     monkeypatch.setattr(cp, "_start_cohort_collection", start)
+    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
     try:
         assert (

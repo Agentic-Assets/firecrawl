@@ -123,7 +123,7 @@ def closed_pipeline(tmp_path, monkeypatch):
                 events.append(("gate", key))
                 per_source[key] = {
                     "current_active": 2,
-                    "baseline_median": 100,
+                    "baseline_median": None if verdict == "first_seen" else 100,
                     "effective_floor": 100,
                     "floor_policy": None,
                     "verdict": verdict,
@@ -357,6 +357,50 @@ def test_uncertain_preseal_gate_report_stops_every_lane(closed_pipeline, mutate)
         case.run()
     assert not any(event[0] == "write" for event in case.events)
     assert case.manifest["pipeline"]["status"] == "reconciliation_required"
+
+
+@pytest.mark.parametrize("verdict", ["hold", "first_seen"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "current_active",
+        "baseline_median",
+        "effective_floor",
+        "floor_policy",
+        "verdict",
+        "reason",
+        "mark_missing_safe",
+    ],
+)
+def test_incomplete_standard_refusal_stops_globally(closed_pipeline, verdict, field):
+    case = closed_pipeline
+    case.gates["cbre"] = [verdict]
+    case.mutations["gate_report"] = lambda report: (
+        report["per_source"].get("cbre", {}).pop(field, None)
+    )
+    with pytest.raises(refresh.GlobalStageError):
+        case.run()
+    assert not any(event[0] == "write" for event in case.events)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("current_active", True),
+        ("baseline_median", False),
+        ("effective_floor", True),
+        ("floor_policy", []),
+        ("reason", None),
+    ],
+)
+def test_malformed_standard_refusal_stops_globally(closed_pipeline, field, value):
+    case = closed_pipeline
+    case.mutations["gate_report"] = lambda report: (
+        report["per_source"].get("cbre", {}).update({field: value})
+    )
+    with pytest.raises(refresh.GlobalStageError):
+        case.run()
+    assert not any(event[0] == "write" for event in case.events)
 
 
 @pytest.mark.parametrize(
