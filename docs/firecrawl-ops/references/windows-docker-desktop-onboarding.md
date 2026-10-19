@@ -411,7 +411,7 @@ scope before choosing a recurring cadence.
 
 Do not directly schedule the legacy monitor/enrich/weekly commands: their
 equivalent resource/cancellation protection remains an acceptance gate in the
-[tier guide](../../../scripts/firecrawl-ops/cre_collector/launchd/README.md).
+[guarded tier guide](guarded-incremental-tiers.md#unattended-operating-goal).
 Use the proven guarded checkpoint path for a bounded pilot. A native task
 needs tested graceful Linux cancellation, no overlap, bounded readiness,
 reviewed deadlines and visible stop controls before activation. A Task
@@ -436,9 +436,10 @@ Windows/WSL uses the same collector pipeline as macOS. Opt in through the native
 series wrapper with `-Pipeline -SourceWorkers 2 -Sources interra-realty,faris-lee`
 and the matching explicit admissions, reviewed SHA and existing write/budget gates.
 Change `-SourceWorkers` in the invocation/task preview to choose 1–4; omitted
-pipeline mode resolves 2 and existing serial invocations remain 1. The optional
-foreground `-Concurrency` parameter is separate; the task installer does not
-expose it and retains the default 1. This does not
-change Docker limits, provider/detail limits, Mac settings or scheduler cadence.
+pipeline mode resolves 2 and existing serial invocations remain 1. Acquisition
+`-Concurrency` is separate from `-SourceWorkers`. The foreground launcher and
+installer accept explicit series values 1–6; omitted installer actions retain
+default 1. This does not change Docker limits, provider/detail limits, Mac
+settings or scheduler cadence.
 See [Start Here](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md#opt-in-stage-overlap)
 for shared validation, serial ingestion and recovery requirements.

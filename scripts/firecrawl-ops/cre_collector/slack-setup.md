@@ -215,7 +215,7 @@ returned HTTP `200`, exited normally, and the exact unique test message was
 read back in `#cre-pipeline` through the Slack connector. [Delivery receipt](https://agentic-assets.slack.com/archives/C0C9K5SCWRY/p1792082430340859).
 This is a dated setup result, not evidence of current task enablement or a
 completed scheduled pipeline run. Current operational acceptance lives on
-AGENTIC-4270 and AGENTIC-4265.
+[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752).
 
 If configuration fails, fix the private file and its permissions without
 relaxing the checks. If delivery fails, inspect the redacted notification
