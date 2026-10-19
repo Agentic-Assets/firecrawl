@@ -542,35 +542,54 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
         status_color = "31"
     elif status == "cooling_down":
         status_color = "33"
+    pipeline = snapshot.get("pipeline_progress")
     lines = [
         f"CRE checkpoint series  {paint('1', snapshot['series_id'])}",
-        f"Recorded status        {paint(status_color, status)}",
+        f"{'Parent recorded status' if pipeline else 'Recorded status       '} {paint(status_color, status)}",
         "",
+    ]
+    if pipeline:
+        verified = int(pipeline["verified"])
+        total = int(snapshot["total"])
+        percent = verified / total * 100 if total else 0.0
+        lines.append(
+            f"{_bar(verified, total)} {verified}/{total} "
+            f"qualified by audit/readback ({percent:.1f}%)"
+        )
+    lines.extend([
         (
+            f"Parent complete        {snapshot['complete']}/{snapshot['total']} "
+            f"({snapshot['percent_complete']:.1f}%)"
+            if pipeline else
             f"{_bar(int(snapshot['complete']), int(snapshot['total']))} "
             f"{snapshot['complete']}/{snapshot['total']} complete "
             f"({snapshot['percent_complete']:.1f}%)"
         ),
         (
-            f"Handled                {snapshot['handled']}/{snapshot['total']} "
+            f"{'Parent handled        ' if pipeline else 'Handled               '} "
+            f"{snapshot['handled']}/{snapshot['total']} "
             f"({snapshot['percent_handled']:.1f}%)"
         ),
         (
-            f"Pending / running      {snapshot['pending']} / {snapshot['running']}"
+            f"{'Parent pending/running' if pipeline else 'Pending / running     '} "
+            f"{snapshot['pending']} / {snapshot['running']}"
             f"    Failed/interrupted {snapshot['failed']}"
         ),
-    ]
-    pipeline = snapshot.get("pipeline_progress")
+    ])
     if pipeline:
         lines.append(f"Collection workers     {pipeline['source_workers']}")
         lines.append("Pipeline stages        " + " / ".join(
             f"{key} {pipeline[key]}" for key in
             ("fetching", "pending", "validating", "committing", "verified", "failed")))
     if snapshot["elapsed_seconds"] is not None:
-        lines.append(f"Elapsed                {_duration(snapshot['elapsed_seconds'])}")
+        lines.append(
+            f"{'Parent elapsed        ' if pipeline else 'Elapsed               '} "
+            f"{_duration(snapshot['elapsed_seconds'])}"
+        )
     if snapshot["updated_age_seconds"] is not None:
         lines.append(
-            f"Manifest updated       {_duration(snapshot['updated_age_seconds'])} ago"
+            f"{'Parent manifest updated' if pipeline else 'Manifest updated      '} "
+            f"{_duration(snapshot['updated_age_seconds'])} ago"
         )
     lines.append(f"Collector SHA          {paint('0', snapshot['collector_sha'])}")
 
@@ -622,7 +641,7 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
                 f"Preserved details      {int(preserved):,}  (original observation times)"
             )
 
-    if snapshot["current_source"]:
+    if snapshot["current_source"] and not pipeline:
         lines.extend(
             [
                 "",

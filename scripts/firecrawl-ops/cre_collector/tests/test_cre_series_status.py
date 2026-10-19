@@ -603,3 +603,92 @@ def test_fifo_child_log_cannot_hang_dashboard(tmp_path):
     log.unlink()
     os.mkfifo(log)
     assert status.child_progress(manifest, path, "jll")["detail_pass"] is None
+
+
+def _running_pipeline_snapshot(tmp_path, *, peer="fetching", drift=None):
+    import cre_checkpoint_series as series
+    from test_pipeline_configuration import (
+        PARENT_ATTEMPTS, PARENT_START, RUN_ID, config, qualified_child,
+    )
+
+    directory = tmp_path / "series"
+    run = directory / "runs" / RUN_ID
+    run.mkdir(parents=True)
+    selected = ["cbre"] if peer == "all_verified" else ["cbre", "jll"]
+    settings = config(pipeline=True, sources=selected)
+    manifest = series.new_manifest(directory, git_sha="a" * 40, config=settings)
+    manifest.update(status="running", started_at=PARENT_START, updated_at=PARENT_START)
+    for row in manifest["sources"].values():
+        row.update(state="running", checkpoint_run="runs/" + RUN_ID,
+                   attempts=[dict(item) for item in PARENT_ATTEMPTS])
+    child = qualified_child(run)
+    child.update(status="running", finished_at=None, collector_git_sha="a" * 40,
+                 config=series._expected_child_config(",".join(selected), settings),
+                 preflight={"database_target": manifest.get("database_target")})
+    if peer != "all_verified":
+        child["sources"]["jll"] = {
+            "state": "collect_failed" if peer == "failed" else "collecting"
+        }
+    if drift == "generation":
+        child["pipeline"]["source_results"]["cbre"]["generation_id"] = "foreign"
+    elif drift == "readback":
+        child["pipeline"]["source_results"]["cbre"]["readback_ok"] = False
+    elif drift == "path":
+        manifest["sources"]["cbre"]["checkpoint_run"] = "runs/foreign"
+    (run / "manifest.json").write_text(json.dumps(child), encoding="utf-8")
+    path = directory / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return status.build_snapshot(
+        manifest, path, now=datetime(2026, 10, 15, 12, 3, tzinfo=timezone.utc)
+    )
+
+
+def test_pipeline_render_foregrounds_qualified_child_preserves_parent_json(tmp_path):
+    snapshot = _running_pipeline_snapshot(tmp_path)
+    before = json.dumps(snapshot, sort_keys=True)
+    rendered = status.render(snapshot, color=False)
+    assert snapshot["complete"] == 0
+    assert snapshot["running"] == 2
+    assert snapshot["percent_complete"] == 0
+    assert snapshot["current_source"] == "cbre"
+    assert snapshot["updated_age_seconds"] == 180
+    assert snapshot["pipeline_progress"]["verified"] == 1
+    assert "1/2 qualified by audit/readback (50.0%)" in rendered
+    assert "Parent recorded status running" in rendered
+    assert "Parent complete        0/2 (0.0%)" in rendered
+    assert "Parent manifest updated" in rendered
+    assert "Parent elapsed" in rendered
+    assert "Recorded source" not in rendered
+    assert "Outer attempt" not in rendered
+    assert json.dumps(snapshot, sort_keys=True) == before
+
+
+def test_pipeline_all_children_verified_does_not_render_parent_complete(tmp_path):
+    snapshot = _running_pipeline_snapshot(tmp_path, peer="all_verified")
+    rendered = status.render(snapshot, color=False)
+    assert "1/1 qualified by audit/readback (100.0%)" in rendered
+    assert "Parent recorded status running" in rendered
+    assert snapshot["status"] == "running"
+    assert snapshot["complete"] == 0
+
+
+def test_pipeline_render_retains_failed_peer_without_whole_run_success(tmp_path):
+    snapshot = _running_pipeline_snapshot(tmp_path, peer="failed")
+    rendered = status.render(snapshot, color=False)
+    assert snapshot["pipeline_progress"]["failed"] == 1
+    assert "1/2 qualified by audit/readback (50.0%)" in rendered
+    assert "failed 1" in rendered
+    assert "Parent recorded status running" in rendered
+
+
+@pytest.mark.parametrize("drift", ["generation", "readback", "path"])
+def test_pipeline_render_never_credits_invalid_child_evidence(tmp_path, drift):
+    snapshot = _running_pipeline_snapshot(tmp_path, drift=drift)
+    rendered = status.render(snapshot, color=False)
+    if snapshot["pipeline_progress"] is None:
+        assert "qualified by audit/readback" not in rendered
+    else:
+        assert snapshot["pipeline_progress"]["verified"] == 0
+        assert "0/2 qualified by audit/readback (0.0%)" in rendered
+    assert snapshot["complete"] == 0
+    assert snapshot["status"] == "running"

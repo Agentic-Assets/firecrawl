@@ -124,7 +124,14 @@ The manifest records sealed membership and per-source outcomes in
 Series entries point to
 that same refresh run; partial completion cannot publish all-source last-good
 health. `cre_series_status.py` exposes stage counts and the resolved worker
-setting. Terminal Slack messages report only qualified brokerage counts.
+setting. For a valid pipeline child, its human progress bar counts only members
+qualified by the existing audit/readback checks. Recorded parent status, counters
+and update age remain separate: the parent reconciles after its child settles,
+so it may still be running with zero parent-complete members while child units
+are already qualified. The human pipeline view omits the arbitrary singular
+parent source; JSON fields (including `current_source`) retain their recorded
+parent meanings. Intermediate progress is not whole-run settlement or acceptance.
+Terminal Slack messages report only qualified brokerage counts.
 Supported inventory-only index records are counted separately; they do not
 increase property-listing or sale/lease totals or claim refreshed parent details.
 No scheduler or Mac configuration is activated by selecting this mode.
