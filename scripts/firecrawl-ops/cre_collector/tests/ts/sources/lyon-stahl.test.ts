@@ -23,6 +23,7 @@ type LyonFixtureOptions = {
 
 async function withLyonClock<T>(t: TestContext, run: () => Promise<T>): Promise<T> {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
+  t.mock.method(performance, "now", () => Date.now());
   let settled = false;
   const result = run();
   void result.then(() => { settled = true; }, () => { settled = true; });
@@ -99,6 +100,23 @@ test("Lyon aborted queued start never dispatches or poisons the following start"
     assert.deepEqual(starts, [100_000, 110_000]);
     await assert.rejects(paced("already-aborted", { signal: AbortSignal.abort(new Error("pre-aborted")) }), /pre-aborted/);
     assert.equal(calls.length, 2);
+  });
+});
+
+test("Lyon forward wall-clock adjustment cannot shorten physical start spacing", async (t) => {
+  await withLyonClock(t, async () => {
+    let wallCorrection = 0;
+    t.mock.method(performance, "now", () => Date.now() - wallCorrection);
+    const monotonicStarts: number[] = [];
+    const paced = lyonStahlPacedFetch(async () => {
+      monotonicStarts.push(performance.now());
+      return new Response("ok");
+    });
+    await paced("before-wall-jump");
+    wallCorrection = 60_000;
+    t.mock.timers.setTime(160_000);
+    await paced("after-wall-jump");
+    assert.deepEqual(monotonicStarts, [100_000, 110_000]);
   });
 });
 

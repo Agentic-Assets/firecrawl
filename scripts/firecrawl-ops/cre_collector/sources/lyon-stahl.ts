@@ -618,7 +618,7 @@ export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
       const signal = init?.signal;
       signal?.throwIfAborted();
       const waitMs = lastStartedAt === null
-        ? 0 : Math.max(0, LYON_STAHL_REQUEST_INTERVAL_MS - (Date.now() - lastStartedAt));
+        ? 0 : Math.max(0, LYON_STAHL_REQUEST_INTERVAL_MS - (performance.now() - lastStartedAt));
       if (waitMs) {
         await new Promise<void>((resolve, reject) => {
           const onAbort = () => {
@@ -633,7 +633,7 @@ export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
         });
       }
       signal?.throwIfAborted();
-      lastStartedAt = Date.now();
+      lastStartedAt = performance.now();
       // Release the start queue without waiting for headers or the response body.
       return { response: fetchImpl(input, init) };
     });
