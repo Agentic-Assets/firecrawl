@@ -645,7 +645,7 @@ export async function enrichTranswesternListing(
       contactsDetailed,
       brochures: undefined,
       documents: harvested.documents,
-      photos: harvested.images.length ? harvested.images : nativePhotos,
+      photos: harvested.images,
       media: harvested.media,
       links: harvested.links,
       markdown: doc.markdown,

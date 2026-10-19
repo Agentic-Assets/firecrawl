@@ -129,6 +129,15 @@ every occurrence is unrelated. Test the actual card layout, a native-gallery
 control, a shared-reference control and an unknown layout before changing the
 source-owned scope helper. Keep original captures intact.
 
+When filtering basemap noise in the shared image harvester, reject only the
+observed modern Google Maps resource on host
+`mapsresources-pa.googleapis.com` at path `/v1/tiles`; do not expand this into a
+host-wide exclusion. Preserve genuine listing-gallery imagery and other useful
+assets. A parser fixture proves classification only: filtering shared images can
+affect persisted-child retention, so it does not authorize deployment or cleanup.
+Require source-backed proof of a meaningful listing photo and the canonical
+artifact-to-ingest-to-database readback before shipping that change.
+
 Use permitted public access and provider-aware pacing. Preserve existing
 deployment and guarded-write procedures when adding fields. Retaining a
 document URL does not prove its contents were downloaded or parsed. GetCREdata

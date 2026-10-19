@@ -41,6 +41,13 @@
   rejecting. This is scheduling fairness, not a provider pacing or timeout rule.
 
 - One `broker.ts` table per `collect.ts` run across all sources.
+- When filtering basemap noise, `harvest.ts` should reject only the observed
+  modern Google Maps resource on `mapsresources-pa.googleapis.com` at
+  `/v1/tiles`; do not exclude the host wholesale. Preserve genuine gallery
+  imagery and other useful media. Parser fixtures do not authorize deployment
+  or cleanup: filtering may affect persisted-child retention, so require
+  source-backed meaningful-photo proof and the canonical artifact-to-ingest-to-
+  database readback.
 - Direct-provider metrics must bind source, transaction and operation role;
   never combine adapters that share a role name. Complete an attempt after its
   bounded body read or before retry backoff. Keep existing acquisition/error
