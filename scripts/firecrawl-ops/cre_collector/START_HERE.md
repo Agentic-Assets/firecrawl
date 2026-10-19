@@ -131,8 +131,8 @@ No scheduler or Mac configuration is activated by selecting this mode.
 
 After a failed pipeline settles with a known rollback, the strict finish summary
 can retain qualified siblings while an exact `global pipeline stop` leaves
-prewrite members without credit. A `dry_run_passed` stopped member is failed;
-cancelled or unstarted prewrite members remain unfinished. This is a partial
+prewrite members without credit. An ingest with exact rollback evidence is failed;
+cancelled, unstarted or prepared-but-never-ingested members remain unfinished. This is a partial
 summary, not whole-run success; unknown writes, active recovery, unsettled owners
 or invalid qualification evidence still make counts unavailable.
 

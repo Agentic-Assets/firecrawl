@@ -1283,8 +1283,24 @@ def test_settled_global_failure_retains_only_verified_brokerage(evidence):
     assert "verified_listings" not in result
 
 
+def set_rolled_back_checkpoint(checkpoint):
+    from cre_ingest import artifact_run_identity_from_digests
+
+    digest = "e" * 64
+    artifact_key, _ = artifact_run_identity_from_digests([digest])
+    checkpoint.update(
+        artifact={"sha256": digest},
+        ingest={"started_at": "2026-10-15T17:20:01Z", "rc": 1},
+        ingest_recovery={
+            "outcome": "exact_rollback", "rc": 0, "replay_safe": True,
+            "generation_id": RUN,
+            "artifact_run_key_sha256": hashlib.sha256(artifact_key.encode()).hexdigest(),
+        },
+    )
+
+
 @pytest.mark.parametrize("checkpoint_state", [
-    "pending", "collecting", "candidate", "validated", "gated", "dry_run_passed", "mixed",
+    "pending", "collecting", "candidate", "validated", "gated", "dry_run_passed", "rollback", "mixed",
 ])
 def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
     evidence, monkeypatch, checkpoint_state
@@ -1294,9 +1310,9 @@ def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
 
     setup = settled_global_failure(evidence)
     parent, child = setup["parent"], setup["child"]
-    stopped = {"cbre": checkpoint_state}
+    stopped = {"cbre": "dry_run_passed" if checkpoint_state == "rollback" else checkpoint_state}
     if checkpoint_state == "mixed":
-        stopped = {"cbre": "dry_run_passed", "jll-investor": "collecting", "colliers": "pending"}
+        stopped = {"cbre": "dry_run_passed", "jll-investor": "collecting", "colliers": "pending", "prepared": "dry_run_passed"}
     selected = [SOURCE, *stopped]
     for source, state in stopped.items():
         child["sources"][source] = {"state": state, "attempts": []}
@@ -1304,6 +1320,9 @@ def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
             "state": "failed", "reason": "global pipeline stop",
         }
         parent["sources"][source] = {"state": "pending"}
+    rollback = checkpoint_state in {"rollback", "mixed"}
+    if rollback:
+        set_rolled_back_checkpoint(child["sources"]["cbre"])
     parent["config"] = config(sources=selected, pipeline=True)
     child["config"]["sources"] = selected
     parent["database_target"] = {"algorithm": "sha256", "value": "d" * 64}
@@ -1349,10 +1368,10 @@ def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
     result = read_pipeline(evidence, source_keys=selected)
     assert result["verified"] is True and result["complete"] is False
     assert result["failed_source_keys"] == [
-        source for source, state in stopped.items() if state == "dry_run_passed"
+        source for source in stopped if rollback and source == "cbre"
     ]
     assert result["pending_source_keys"] == [
-        source for source, state in stopped.items() if state != "dry_run_passed"
+        source for source in stopped if not rollback or source != "cbre"
     ]
     assert [row["source_key"] for row in result["per_source_summaries"]] == [SOURCE]
     assert result["per_source_summaries"][0]["verified_listings"] == 3
@@ -1363,12 +1382,15 @@ def test_actual_failed_pipeline_producer_preserves_settled_sibling_summary(
     "reason", "parent_state", "checkpoint_state", "pipeline_status", "child_status",
     "parent_status", "write_unknown", "active_unit", "cleanup_unknown", "owner_unsettled",
     "artifact_hash", "report_hash", "generation", "stale", "active_ingest",
+    "missing_recovery", "missing_ingest", "empty_ingest", "rollback_outcome",
+    "rollback_rc", "rollback_bool_rc", "rollback_safe", "rollback_generation", "rollback_artifact",
 ])
 def test_pending_global_stop_requires_exact_settled_producer_shape(evidence, fault):
     setup = settled_global_failure(evidence)
     parent, child = setup["parent"], setup["child"]
     parent["sources"]["cbre"]["state"] = "pending"
     child["sources"]["cbre"]["state"] = "dry_run_passed"
+    set_rolled_back_checkpoint(child["sources"]["cbre"])
     result = child["pipeline"]["source_results"]["cbre"]
     result["reason"] = "global pipeline stop"
     if fault == "reason":
@@ -1401,6 +1423,22 @@ def test_pending_global_stop_requires_exact_settled_producer_shape(evidence, fau
         evidence["values"]["control"]["finished_unix_ms"] -= 600000
     elif fault == "active_ingest":
         child["sources"]["cbre"]["state"] = "ingest_recovery_required"
+    elif fault == "missing_recovery":
+        child["sources"]["cbre"].pop("ingest_recovery")
+    elif fault == "missing_ingest":
+        child["sources"]["cbre"].pop("ingest")
+    elif fault == "empty_ingest":
+        child["sources"]["cbre"]["ingest"] = {}
+    elif fault.startswith("rollback_"):
+        field, value = {
+            "rollback_outcome": ("outcome", "unknown"),
+            "rollback_rc": ("rc", 1),
+            "rollback_bool_rc": ("rc", False),
+            "rollback_safe": ("replay_safe", 1),
+            "rollback_generation": ("generation_id", "stale"),
+            "rollback_artifact": ("artifact_run_key_sha256", "f" * 64),
+        }[fault]
+        child["sources"]["cbre"]["ingest_recovery"][field] = value
     evidence["save"]()
     with pytest.raises(REFUSED):
         read_pipeline(evidence)

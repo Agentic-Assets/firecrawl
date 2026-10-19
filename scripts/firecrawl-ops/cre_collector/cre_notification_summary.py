@@ -917,11 +917,28 @@ def verified_pipeline_summary(
                 require(interrupted or settled_global_stop
                         or parent_entry.get("state") in {"failed_source", "failed"})
                 require(checkpoint.get("state") not in {"ingested", "complete"})
-                # A settled rollback is failed; cancelled/unstarted prewrite work
-                # remains unfinished. Neither classification receives DB credit.
-                if settled_global_stop and checkpoint.get("state") != "dry_run_passed":
+                if not settled_global_stop:
+                    failed.append(source)
+                elif checkpoint.get("ingest") is None and checkpoint.get("ingest_recovery") is None:
+                    # Prepared members can also be dry_run_passed without a write.
                     pending.append(source)
                 else:
+                    from cre_ingest import artifact_run_identity_from_digests
+
+                    ingest = checkpoint.get("ingest")
+                    recovery = checkpoint.get("ingest_recovery")
+                    require(checkpoint.get("state") == "dry_run_passed"
+                            and isinstance(ingest, dict) and bool(ingest)
+                            and isinstance(recovery, dict))
+                    artifact_key, _ = artifact_run_identity_from_digests(
+                        [(checkpoint.get("artifact") or {}).get("sha256")]
+                    )
+                    require(recovery.get("outcome") == "exact_rollback"
+                            and type(recovery.get("rc")) is int and recovery["rc"] == 0
+                            and recovery.get("replay_safe") is True
+                            and recovery.get("generation_id") == run_id
+                            and recovery.get("artifact_run_key_sha256")
+                            == hashlib.sha256(artifact_key.encode("utf-8")).hexdigest())
                     failed.append(source)
                 continue
             if result is None:
