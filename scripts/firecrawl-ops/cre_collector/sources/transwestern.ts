@@ -13,6 +13,7 @@ import { parseLeaseRate, normBuildingClass, acresToSf } from "../lib/parse.js";
 import { canonicalTranswesternUrl, TRANSWESTERN_HOST, transwesternDetailUrl } from "./pure/transwestern-identity.js";
 import { requireUniqueTranswesternPlaceholderIdentity, transwesternIdentityTuple, transwesternPrimaryIdentityMatches } from "./pure/transwestern-published-identity.js";
 import { proveTranswesternPublishedIdentity, requireCurrentTranswesternPublishedProof, TranswesternPublishedIdentityProof } from "./transwestern-published-identity.js";
+import { filterTranswesternImages } from "./pure/transwestern-images.js";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
@@ -189,11 +190,9 @@ export function extractTranswesternPhotos(doc: ScrapedDoc, feedImage: string | n
       candidates.push(canonicalTranswesternUrl($(el).attr("href") ?? $(el).attr("src") ?? null));
     }
   );
-  return dedupeStrings(candidates).filter(
-    (url) =>
-      !/\.pdf(?:\?|$)/i.test(url) &&
-      !/\/assets\/images\/(?:mail|comment|connect-image|tw-logo|Transwestern_2023|tw_gl|transwestern-mapmarker)/i.test(url)
-  );
+  // Keep image candidates until the final source-role filter can record why a
+  // template resource is excluded, including when doc.images is present/empty.
+  return dedupeStrings(candidates).filter((url) => !/\.pdf(?:\?|$)/i.test(url));
 }
 
 // Lift structured fields out of the Transwestern property-facts label/value map
@@ -632,6 +631,28 @@ export async function enrichTranswesternListing(
       extraDocs: nativeDocs.map((d: any) => clean(d?.url)).filter((u): u is string => !!u),
       extraImages: nativePhotos,
     });
+    const galleryImages = $('.photos-list a.chocolat-image[href]').toArray()
+      .map((node) => canonicalTranswesternUrl($(node).attr('href') ?? null))
+      .filter((url): url is string => url !== null);
+    const filteredImages = filterTranswesternImages(harvested.images, {
+      nativePropertyUrls: [...(feedImage ? [feedImage] : []), ...galleryImages],
+      brokerAvatarUrls: contactsDetailed
+        .filter((contact) => contact.name || contact.profileUrl || contact.email || contact.phone)
+        .map((contact) => contact.avatarUrl)
+        .filter((url): url is string => typeof url === "string" && url.length > 0),
+    });
+    const feedPrimary = feedImage && filteredImages.images.includes(feedImage) ? feedImage : null;
+    const firstGalleryImage = canonicalTranswesternUrl(
+      $('.photos-list a.chocolat-image[href]').first().attr('href') ?? null
+    );
+    const galleryPrimary =
+      !feedPrimary && firstGalleryImage && filteredImages.images.includes(firstGalleryImage)
+        ? firstGalleryImage
+        : null;
+    const primaryPhoto = feedPrimary ?? galleryPrimary;
+    const photos = primaryPhoto
+      ? [primaryPhoto, ...filteredImages.images.filter((image) => image !== primaryPhoto)]
+      : filteredImages.images;
     const structured = transwesternStructured(facts);
     const scalars = liftTranswesternScalars(facts, availability, detailUrl);
     return prune({
@@ -645,7 +666,21 @@ export async function enrichTranswesternListing(
       contactsDetailed,
       brochures: undefined,
       documents: harvested.documents,
-      photos: harvested.images.length ? harvested.images : nativePhotos,
+      photos,
+      transwesternPhotoRoleVersion: "v1",
+      ...(filteredImages.excluded.length
+        ? { transwesternExcludedPhotoEvidence: {
+            schema: "transwestern-photo-role-v1", entries: filteredImages.excluded,
+          } }
+        : {}),
+      ...(primaryPhoto
+        ? {
+            transwesternPrimaryPhotoEvidence: {
+              url: primaryPhoto,
+              basis: feedPrimary ? 'provider_feed' : 'property_gallery',
+            },
+          }
+        : {}),
       media: harvested.media,
       links: harvested.links,
       markdown: doc.markdown,

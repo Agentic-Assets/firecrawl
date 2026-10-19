@@ -462,3 +462,343 @@ test("liftTranswesternScalars: railServed parses Yes/No/absent correctly", () =>
   // Absent key -> undefined
   assert.equal(liftTranswesternScalars({}, [], null).railServed, undefined);
 });
+
+
+test("Transwestern real source mapper excludes basemap tiles while preserving property richness and freshness", async () => {
+  const original = firecrawl.scrape;
+  const tile = "https://mapsresources-pa.googleapis.com/v1/tiles?layer=basemap";
+  const gallery = "https://images.transwestern.com/property/gallery.jpg";
+  const feedImage = "https://images.transwestern.com/property/feed.jpg";
+  const flyer = "https://transwestern.com/property/flyer.pdf";
+  const feedRow = {
+    PageUrl: "sample-property", BuildingName: "Sample Property", PropertyTypeName: "Office",
+    FullAddress: "100 Main Street", City: "Dallas", State: "TX", ZipCode: "75201",
+    PropertySize: 10000, Price: 2500000, PropertyImage: feedImage,
+  };
+  const rawHtml = `<main class="property-dtl"><h1>Sample Property</h1>
+    <section class="property-dscptn">Current property overview</section>
+    <ul class="property-facts"><li><b>Year Built:</b> 1987</li></ul>
+    <div class="photos-list"><a class="chocolat-image" href="${gallery}">Gallery</a></div>
+    <table id="tblAttachments"><tr><td><a href="${flyer}">Property flyer</a></td></tr></table>
+    <div class="PropertyVcard"><div class="v-card"><h3>Sample Broker</h3>
+      <a href="/people/sample-broker">Sample Broker</a><a href="mailto:sample@example.test">Email</a>
+      <a href="tel:2145550100">214-555-0100</a></div></div>
+    <iframe src="https://player.vimeo.com/video/824804225"></iframe></main>`;
+  const markdown = "Sample Property\nCurrent property overview";
+  const calls: string[] = [];
+  (firecrawl as any).scrape = async (url: string) => {
+    calls.push(url);
+    if (url.includes("/properties?")) return { rawHtml: JSON.stringify([feedRow]) };
+    return { rawHtml, markdown, links: [flyer], images: [tile, gallery] };
+  };
+  try {
+    const result = await srcTranswestern("sale", 1, false);
+    assert.equal(calls.filter((url) => url === "https://transwestern.com/property/sample-property").length, 1);
+    assert.equal(result.listings.length, 1);
+    const listing = result.listings[0]!;
+    assert.equal(listing.detailError, undefined);
+    assert.deepEqual([...listing.photos].sort(), [gallery, feedImage].sort());
+    assert.deepEqual(listing.transwesternPrimaryPhotoEvidence, { url: feedImage, basis: "provider_feed" });
+    assert.equal(listing.id, "sample-property");
+    assert.equal(listing.canonicalUrl, "https://transwestern.com/property/sample-property");
+    assert.equal(listing.transactionType, "Sale");
+    assert.equal(listing.buildingSizeSqft, 10000);
+    assert.equal(listing.salePriceUsd, 2500000);
+    assert.equal(listing.yearBuilt, 1987);
+    assert.deepEqual(listing.rawTranswesternFeed, feedRow);
+    assert.equal(listing.markdown, markdown);
+    assert.ok(listing.documents.some((item: { url: string }) => item.url === flyer));
+    assert.ok(listing.media.some((item: { provider: string }) => item.provider === "vimeo"));
+    assert.equal(listing.contactsDetailed.length, 1);
+    assert.equal(listing.contactsDetailed[0].name, "Sample Broker");
+    assert.equal(listing.contactsDetailed[0].email, "sample@example.test");
+    assert.equal(listing.brokerIds.length, 1);
+    assert.equal(listing.freshnessProvenance.method, "transwestern_detail_page");
+    assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
+    assert.ok(Number.isFinite(Date.parse(listing.inventoryObservedAt)));
+    assert.ok(Date.parse(listing.detailObservedAt) >= Date.parse(listing.inventoryObservedAt));
+    assert.deepEqual(listing.detailScrape, {
+      url: listing.url, markdownLength: markdown.length, rawHtmlLength: rawHtml.length, linkCount: 1,
+    });
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});
+
+
+test("Transwestern tile-only native gallery and feed image cannot bypass the shared image filter", async () => {
+  const original = firecrawl.scrape;
+  const tile = "https://mapsresources-pa.googleapis.com/v1/tiles?layer=basemap";
+  const flyer = "https://transwestern.com/property/flyer.pdf";
+  const feedRow = {
+    PageUrl: "sample-property", BuildingName: "Sample Property", PropertyTypeName: "Office",
+    PropertyImage: tile, PropertySize: 10000,
+  };
+  (firecrawl as any).scrape = async (url: string) => {
+    if (url.includes("/properties?")) return { rawHtml: JSON.stringify([feedRow]) };
+    return {
+      rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+        <section class="property-dscptn">Current detail without property photos</section>
+        <div class="photos-list"><a class="chocolat-image" href="${tile}">Map</a></div>
+        <table id="tblAttachments"><tr><td><a href="${flyer}">Flyer</a></td></tr></table></main>`,
+      markdown: "Current detail without property photos", links: [flyer], images: [],
+    };
+  };
+  try {
+    const result = await srcTranswestern("sale", 1, false);
+    assert.equal(result.listings.length, 1);
+    const listing = result.listings[0]!;
+    assert.equal(listing.photos, undefined, "prune omits an empty photos array; no native tile may reappear");
+    assert.equal(listing.detailError, undefined);
+    assert.equal(listing.id, "sample-property");
+    assert.equal(listing.name, "Sample Property");
+    assert.equal(listing.buildingSizeSqft, 10000);
+    assert.deepEqual(listing.rawTranswesternFeed, feedRow);
+    assert.equal(listing.markdown, "Current detail without property photos");
+    assert.ok(listing.documents.some((item: { url: string }) => item.url === flyer));
+    assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
+    assert.ok(Number.isFinite(Date.parse(listing.detailObservedAt)));
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});
+
+test("Transwestern real mapper prioritizes retained provider feed photo without changing remaining harvest order", async () => {
+  const original = firecrawl.scrape;
+  const feedImage = "https://images.transwestern.com/property/feed-primary.jpg";
+  const otherImages = [
+    "https://images.transwestern.com/property/first-harvested.jpg",
+    "https://images.transwestern.com/property/second-harvested.jpg",
+    "https://images.transwestern.com/property/third-harvested.jpg",
+  ];
+  const feedRow = {
+    PageUrl: "sample-property", BuildingName: "Sample Property",
+    PropertyTypeName: "Office", PropertyImage: feedImage, PropertySize: 10000,
+  };
+  (firecrawl as any).scrape = async (url: string) => {
+    if (url.includes("/properties?")) return { rawHtml: JSON.stringify([feedRow]) };
+    return {
+      rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+        <section class="property-dscptn">Current property overview</section></main>`,
+      markdown: "Sample Property\nCurrent property overview",
+      images: otherImages,
+      links: [],
+    };
+  };
+  try {
+    const result = await srcTranswestern("sale", 1, false);
+    assert.equal(result.listings.length, 1);
+    const listing = result.listings[0]!;
+    assert.equal(listing.detailError, undefined);
+    assert.deepEqual(listing.photos, [feedImage, ...otherImages]);
+    assert.deepEqual(listing.transwesternPrimaryPhotoEvidence, { url: feedImage, basis: "provider_feed" });
+    assert.deepEqual(listing.rawTranswesternFeed, feedRow);
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});
+
+test("Transwestern real mapper requires retained source-role primary photo witnesses", async (t) => {
+  const first = "https://images.transwestern.com/property/first.jpg";
+  const gallery = "https://images.transwestern.com/property/gallery.jpg";
+  const second = "https://images.transwestern.com/property/second.jpg";
+  const feed = "https://images.transwestern.com/property/feed.jpg";
+  const tile = "https://mapsresources-pa.googleapis.com/v1/tiles?layer=basemap";
+  const cases = [
+    { name: "feed outranks exact gallery", feed, images: [first, gallery, second],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${gallery}">Gallery</a></div>`,
+      photos: [feed, first, gallery, second], evidence: { url: feed, basis: "provider_feed" } },
+    { name: "feedless exact gallery promotes only one retained URL", feed: undefined, images: [first, second],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${gallery}">Gallery</a></div>`,
+      photos: [gallery, first, second], evidence: { url: gallery, basis: "property_gallery" } },
+    { name: "generic chocolat anchor is not primary authority", feed: undefined, images: [first, second],
+      html: `<a class="chocolat-image" href="${gallery}">Unscoped image</a>`,
+      photos: [first, second, gallery], evidence: undefined },
+    { name: "filtered feed falls back to retained exact gallery", feed: tile, images: [first, second, tile],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${gallery}">Gallery</a></div>`,
+      photos: [gallery, first, second], evidence: { url: gallery, basis: "property_gallery" } },
+    { name: "no retained witness preserves harvest order", feed: tile, images: [first, second, tile],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${tile}">Map</a></div>`,
+      photos: [first, second], evidence: undefined },
+    { name: "promotion preserves existing deduplication", feed, images: [first, feed, first, second, feed],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${feed}">Gallery</a></div>`,
+      photos: [feed, first, second], evidence: { url: feed, basis: "provider_feed" } },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const original = firecrawl.scrape;
+      const row = { PageUrl: "sample-property", BuildingName: "Sample Property",
+        PropertySize: 10000, Price: 2500000, PropertyImage: scenario.feed };
+      (firecrawl as any).scrape = async (url: string) => {
+        if (url.includes("/properties?")) return { rawHtml: JSON.stringify([row]) };
+        return { rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+          <section class="property-dscptn">Current property overview</section>${scenario.html}</main>`,
+          markdown: "Current property overview", images: scenario.images, links: [] };
+      };
+      try {
+        const result = await srcTranswestern("sale", 1, false);
+        const listing = result.listings[0]!;
+        assert.equal(listing.detailError, undefined);
+        assert.deepEqual(listing.photos, scenario.photos);
+        assert.deepEqual(listing.transwesternPrimaryPhotoEvidence, scenario.evidence);
+        assert.deepEqual(listing.rawTranswesternFeed, JSON.parse(JSON.stringify(row)));
+        assert.equal(listing.salePriceUsd, 2500000);
+        assert.equal(listing.buildingSizeSqft, 10000);
+        assert.equal(listing.markdown, "Current property overview");
+      } finally {
+        (firecrawl as any).scrape = original;
+      }
+    });
+  }
+});
+
+test("Transwestern real mapper excludes known nonphoto roles without losing contact or property facts", async () => {
+  const original = firecrawl.scrape;
+  // Exact retained 9701 image URLs; contact identity text is sanitized.
+  const avatar = "https://images.transwestern.com/f00000000081388/s3.amazonaws.com/transwestern-userphoto/THAWP1.jpg";
+  const templates = [
+    "https://transwestern.com/assets/images/tw_gl.png",
+    "https://images.transwestern.com/f00000000081388/transwestern.com/assets/images/mail-3.png",
+    "https://transwestern.com/assets/images/connect-image.png",
+    "https://transwestern.com/assets/images/transwestern-mapmarker.png",
+  ];
+  const flyer = "https://transwestern.com/property/flyer.pdf";
+  const row = { PageUrl: "sample-property", BuildingName: "Sample Property", PropertySize: 10000 };
+  const markdown = "Sample Property\nCurrent property overview and broker contact";
+  (firecrawl as any).scrape = async (url: string) => {
+    if (url.includes("/properties?")) return { rawHtml: JSON.stringify([row]) };
+    return {
+      rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+        <section class="property-dscptn">Current property overview</section>
+        <ul class="property-facts"><li><b>Year Built:</b> 1987</li></ul>
+        <table id="tblAttachments"><tr><td><a href="${flyer}">Flyer</a></td></tr></table>
+        <div class="PropertyVcard"><div class="v-card"><h3>Sample Broker</h3>
+          <a href="/people/sample-broker">Profile</a><img src="${avatar}">
+          <a href="mailto:sample@example.test">Email</a><a href="tel:2145550100">214-555-0100</a>
+        </div></div></main>`,
+      markdown, images: [avatar, ...templates], links: [flyer],
+    };
+  };
+  try {
+    const result = await srcTranswestern("sale", 1, false);
+    const listing = result.listings[0]!;
+    assert.equal(listing.detailError, undefined);
+    // Existing prune semantics omit empty arrays; neither form may retain noise.
+    assert.ok(listing.photos === undefined || Array.isArray(listing.photos));
+    assert.deepEqual(listing.photos ?? [], []);
+    assert.equal(listing.transwesternPhotoRoleVersion, "v1");
+    assert.equal(listing.transwesternPrimaryPhotoEvidence, undefined);
+    assert.deepEqual(listing.transwesternExcludedPhotoEvidence, {
+      schema: "transwestern-photo-role-v1",
+      entries: [
+        { url: avatar, role: "broker_portrait", basis: "parsed_contact_avatar" },
+        ...templates.map((url) => ({ url, role: "template_resource", basis: "existing_source_template_policy" })),
+      ],
+    });
+    assert.equal(listing.contactsDetailed.length, 1);
+    assert.equal(listing.contactsDetailed[0].avatarUrl, avatar);
+    assert.equal(listing.contactsDetailed[0].name, "Sample Broker");
+    assert.equal(listing.contactsDetailed[0].email, "sample@example.test");
+    assert.equal(listing.contactsDetailed[0].phone, "214-555-0100");
+    assert.equal(listing.contactsDetailed[0].profileUrl, "https://transwestern.com/people/sample-broker");
+    assert.equal(listing.brokerIds.length, 1);
+    assert.ok(listing.documents.some((item: { url: string }) => item.url === flyer));
+    assert.equal(listing.markdown, markdown);
+    assert.equal(listing.yearBuilt, 1987);
+    assert.equal(listing.buildingSizeSqft, 10000);
+    assert.deepEqual(listing.rawTranswesternFeed, row);
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});
+
+test("Transwestern real mapper retains positive property references and unknown external image roles", async (t) => {
+  const avatar = "https://images.transwestern.com/f00000000081388/s3.amazonaws.com/transwestern-userphoto/THAWP1.jpg";
+  const template = "https://transwestern.com/assets/images/tw_gl.png";
+  const unknown = "https://external.example.test/unknown-resource.png";
+  const cases = [
+    { name: "feed beats parsed avatar role", feed: avatar, gallery: undefined,
+      images: [avatar], expected: [avatar], basis: "provider_feed", extraCard: "" },
+    { name: "exact gallery beats known template role", feed: undefined, gallery: template,
+      images: [template], expected: [template], basis: "property_gallery", extraCard: "" },
+    { name: "unknown external resource stays unknown and retained", feed: undefined, gallery: undefined,
+      images: [unknown], expected: [unknown], basis: undefined, extraCard: "" },
+    { name: "avatar-only card is not enough contact-role evidence", feed: undefined, gallery: undefined,
+      images: [avatar], expected: [avatar], basis: undefined,
+      extraCard: `<div class="v-card"><img src="${avatar}"></div>` },
+    { name: "exact gallery wins over the same parsed broker avatar URL", feed: undefined, gallery: avatar,
+      images: [avatar], expected: [avatar], basis: "property_gallery",
+      extraCard: `<div class="v-card"><h3>Sample Broker</h3><img src="${avatar}"></div>` },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const original = firecrawl.scrape;
+      const row = { PageUrl: "sample-property", BuildingName: "Sample Property", PropertyImage: scenario.feed };
+      (firecrawl as any).scrape = async (url: string) => {
+        if (url.includes("/properties?")) return { rawHtml: JSON.stringify([row]) };
+        return { rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+          <section class="property-dscptn">Current detail</section>
+          ${scenario.gallery ? `<div class="photos-list"><a class="chocolat-image" href="${scenario.gallery}">Gallery</a></div>` : ""}
+          ${scenario.feed ? `<div class="v-card"><h3>Sample Broker</h3><img src="${avatar}"></div>` : ""}
+          ${scenario.extraCard}
+          </main>`, markdown: "Current detail", images: scenario.images, links: [] };
+      };
+      try {
+        const result = await srcTranswestern("sale", 1, false);
+        const listing = result.listings[0]!;
+        assert.equal(listing.detailError, undefined);
+        assert.deepEqual(listing.photos, scenario.expected);
+        assert.equal(listing.transwesternPhotoRoleVersion, "v1");
+        assert.deepEqual(listing.transwesternPrimaryPhotoEvidence,
+          scenario.basis ? { url: scenario.expected[0], basis: scenario.basis } : undefined);
+        assert.equal(listing.transwesternExcludedPhotoEvidence, undefined);
+      } finally {
+        (firecrawl as any).scrape = original;
+      }
+    });
+  }
+});
+
+test("Transwestern unavailable detail does not fabricate photo exclusion metadata", async () => {
+  const original = firecrawl.scrape;
+  const row = { PageUrl: "sample-property", BuildingName: "Sample Property" };
+  (firecrawl as any).scrape = async (url: string) => url.includes("/properties?")
+    ? { rawHtml: JSON.stringify([row]) }
+    : { rawHtml: "<h1>Other property</h1>", markdown: "Not the expected detail", images: [], links: [] };
+  try {
+    const result = await srcTranswestern("sale", 1, false);
+    assert.equal(result.listings.length, 1);
+    assert.match(result.listings[0]!.detailError, /expected Transwestern property identity/);
+    assert.equal(result.listings[0]!.transwesternExcludedPhotoEvidence, undefined);
+    assert.equal(result.listings[0]!.transwesternPrimaryPhotoEvidence, undefined);
+    assert.equal(result.listings[0]!.transwesternPhotoRoleVersion, undefined);
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});
+
+test("Transwestern real mapper records HTML-only template exclusion when doc images is empty", async () => {
+  const original = firecrawl.scrape;
+  const marker = "https://transwestern.com/assets/images/transwestern-mapmarker.png";
+  const row = { PageUrl: "sample-property", BuildingName: "Sample Property" };
+  (firecrawl as any).scrape = async (url: string) => url.includes("/properties?")
+    ? { rawHtml: JSON.stringify([row]) }
+    : { rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+        <section class="property-dscptn">Current detail</section><img src="${marker}"></main>`,
+        markdown: "Current detail", images: [], links: [] };
+  try {
+    const result = await srcTranswestern("sale", 1, false);
+    const listing = result.listings[0]!;
+    assert.equal(listing.detailError, undefined);
+    assert.deepEqual(listing.photos ?? [], []);
+    assert.equal(listing.transwesternPhotoRoleVersion, "v1");
+    assert.deepEqual(listing.transwesternExcludedPhotoEvidence, {
+      schema: "transwestern-photo-role-v1",
+      entries: [{ url: marker, role: "template_resource", basis: "existing_source_template_policy" }],
+    });
+    assert.equal(listing.transwesternPrimaryPhotoEvidence, undefined);
+    assert.equal(listing.markdown, "Current detail");
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});

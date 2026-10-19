@@ -2536,11 +2536,17 @@ def build_validate_argv(
     expected_db_target_sha256: str | None = None,
     expected_artifact_run_key: str | None = None,
     profile: str = FULL_VALIDATION_PROFILE,
+    transwestern_image_state: bool = False,
 ) -> list[str]:
     if not isinstance(profile, str) or profile not in VALIDATION_AUDIT_SCOPES:
         raise ValueError("unknown validation profile")
     if profile != FULL_VALIDATION_PROFILE and expected_artifact_run_key is not None:
         raise ValueError("artifact recovery requires full validation")
+    if transwestern_image_state and (
+        profile != FULL_VALIDATION_PROFILE or not expected_artifact_run_key
+        or not expected_db_target_sha256
+    ):
+        raise ValueError("Transwestern image state requires bound full validation")
     argv = [
         sys.executable,
         "cre_validate.py",
@@ -2557,6 +2563,8 @@ def build_validate_argv(
         argv.extend(["--expected-artifact-run-key", expected_artifact_run_key])
     if profile != FULL_VALIDATION_PROFILE:
         argv.extend(["--profile", profile])
+    if transwestern_image_state:
+        argv.append("--transwestern-image-state")
     return argv
 
 
@@ -5097,8 +5105,11 @@ def ingest_source(
     attempt_id = checkpoint["subset_ingest_attempt_id"] if subset else secrets.token_hex(16)
     if source == "colliers-main":
         argv.extend(["--checkpoint-ingest-attempt", attempt_id])
+    if source == "transwestern":
+        argv.extend(["--checkpoint-ingest-attempt", attempt_id,
+                     "--checkpoint-collector-git-sha", manifest["collector_git_sha"]])
     checkpoint["ingest"] = {
-        **({"attempt_id": attempt_id} if source == "colliers-main" or subset else {}),
+        **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern"} or subset else {}),
         "started_at": started,
         "finished_at": None,
         "rc": None,
@@ -5119,7 +5130,7 @@ def ingest_source(
             "readback_ok": False,
         }
         save_manifest(run_dir, manifest)
-        if poll_hook() is not None:
+        if source == "transwestern" or poll_hook() is not None:
             checkpoint["state"] = "ingest_recovery_required"
             save_manifest(run_dir, manifest)
             raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
@@ -5132,6 +5143,21 @@ def ingest_source(
         except (OSError, ValueError, TypeError):
             # Missing/invalid evidence never disables the raw final audit.
             checkpoint["ingest"]["image_transition"] = None
+    if source == "transwestern":
+        from cre_transwestern_image_outcome import read_outcome, verified_checkpoint
+        try:
+            checkpoint["ingest"]["image_transition"] = read_outcome(log_path)
+        except (OSError, ValueError, TypeError):
+            checkpoint["ingest"]["image_transition"] = None
+        checkpoint["state"] = "ingested"
+        if verified_checkpoint(run_dir, manifest) is None:
+            checkpoint["state"] = "ingest_recovery_required"
+            checkpoint["ingest_recovery"] = {
+                "reason": "missing_or_invalid_transwestern_image_outcome",
+                "subprocess_rc": rc, "readback_ok": False,
+            }
+            save_manifest(run_dir, manifest)
+            raise GlobalStageError("Transwestern committed image outcome requires reviewed reconciliation")
     checkpoint["state"] = "ingested"
     save_manifest(run_dir, manifest)
 
@@ -6388,11 +6414,24 @@ def run_final_validation(
     output = (evidence_dir or run_dir) / "validation.json"
     log = (run_dir / "logs" / f"{evidence_dir.name}-validation.log") if evidence_dir else run_dir / "logs" / "validation.log"
     output.parent.mkdir(parents=True, exist_ok=True)
+    from cre_transwestern_image_outcome import verified_checkpoint as verified_tw_checkpoint
+    tw_checkpoint = manifest["sources"].get("transwestern", {})
+    tw_ingest = tw_checkpoint.get("ingest") or {}
+    tw_required = (tw_checkpoint.get("state") in {
+        "ingested", "ingesting", "ingest_recovery_required"
+    } or bool(tw_ingest)) and (
+        sources is None or "transwestern" in sources
+    )
+    tw_transition = verified_tw_checkpoint(run_dir, manifest) if tw_required else None
+    if tw_required and tw_transition is None:
+        raise GlobalStageError("Transwestern image transition evidence is missing or invalid")
     rc = run_command(
         build_validate_argv(
             output,
             env_file,
             expected_db_target_sha256=manifest_database_target_sha256(manifest),
+            **({"expected_artifact_run_key": tw_transition["binding"]["artifact_run_key"],
+                "transwestern_image_state": True} if tw_required else {}),
         ),
         log,
         env=safe_process_env(),
@@ -6421,7 +6460,10 @@ def run_final_validation(
             ) from exc
     from cre_colliers_image_transition import verified_checkpoint
     transition = verified_checkpoint(run_dir, manifest)
-    quality = compare_validation_quality(before, result, image_transition=transition)
+    quality = compare_validation_quality(
+        before, result, image_transition=transition,
+        transwestern_image_transition=tw_transition if tw_required else None,
+    )
     absolute_quality = verify_absolute_validation_quality(result)
     readback = (
         verify_validation_readback(run_dir, manifest, result)
@@ -6435,6 +6477,8 @@ def run_final_validation(
         "quality_no_regression": quality["ok"],
         "quality_failures": quality["failures"],
         "image_transition": quality.get("image_transition"),
+        **({"transwestern_image_transition": quality.get("transwestern_image_transition")}
+           if tw_required else {}),
         "absolute_quality_ok": absolute_quality["ok"],
         "absolute_quality_failures": absolute_quality["failures"],
         "readback_ok": readback["ok"],
@@ -6473,7 +6517,8 @@ def _rows_by(
 
 
 def compare_validation_quality(
-    before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None
+    before: Mapping[str, Any], after: Mapping[str, Any], *, image_transition=None,
+    transwestern_image_transition=None,
 ) -> dict[str, Any]:
     """Reject newly introduced hard defects or severe child-data loss."""
     try:
@@ -6493,6 +6538,16 @@ def compare_validation_quality(
     )
     policy = load_source_policy()
     failures: list[str] = []
+    tw_qualified = False
+    if transwestern_image_transition is not None:
+        from cre_transwestern_image_outcome import matches_reports, matches_readback, report_image_count
+        tw_qualified = (
+            matches_reports(transwestern_image_transition, report_image_count(before),
+                            report_image_count(after))
+            and matches_readback(transwestern_image_transition, after.get("transwestern_image_state"))
+        )
+        if not tw_qualified:
+            failures.append("Transwestern image transition count or image-state readback mismatch")
 
     count_specs = (
         ("duplicates", ("check_name", "source_key"), ("groups", "rows")),
@@ -6546,6 +6601,8 @@ def compare_validation_quality(
         old_count = _int_value(prior.get("count"))
         new_count = _int_value(new_children.get(identity, {}).get("count"))
         if child_count_regressed(old_count, new_count):
+            if identity == ("transwestern", "images") and tw_qualified:
+                continue
             if identity == ("colliers-main", "images") and image_transition is not None:
                 from cre_colliers_image_transition import matches_reports
                 if matches_reports(image_transition, old_count, new_count):
@@ -6558,6 +6615,8 @@ def compare_validation_quality(
         if isinstance(row, dict) and _int_value(row.get("rows")) <= 0:
             failures.append(f"search_smoke/{row.get('smoke')} returned zero rows")
     outcome = {"ok": not failures, "failures": failures}
+    if tw_qualified:
+        outcome["transwestern_image_transition"] = transwestern_image_transition
     if image_transition is not None:
         from cre_colliers_image_transition import matches_reports
         key = ("colliers-main", "images")

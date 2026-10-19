@@ -96,6 +96,11 @@ and resolve confirmed findings before shipping.
 | `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
 | `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
+| `cre_image_transition_log.py` | Shared stable-file/hash mechanics for post-commit image receipts; no source qualification policy |
+| `cre_colliers_image_transition.py` | Existing Colliers-main seven-field-bound image receipt and source-specific qualification |
+| `cre_transwestern_image_roles.py` | Validate Transwestern raw role evidence against final staged images |
+| `cre_transwestern_image_sql.py` | Transwestern in-transaction prior-image checks/projection and full image-state digest query |
+| `cre_transwestern_image_outcome.py` | Validate the eight-field-bound Transwestern receipt, raw reports and image-state readback |
 | `cre_monitor.py` | Observe-only diff/event runner (007 tables); never writes `status`/`deleted_at`; enqueues new/changed into `cre_enrichment_queue` |
 | `cre_gate.py` | Per-source coverage gate (`cre_source_baseline`); emits `mark_missing_safe` rollup |
 | `cre_enrich.py` | Tier-B queue worker: claims a batch from `cre_enrichment_queue`, runs `collect.ts --enrich-input` (targeted detail), re-ingests additively (`cre_ingest.py --in`), deletes done rows. Additive by construction (never `--mark-missing`/`--activate-status`); URL-matched, id-keyed completion; pure builders + thin `run()`. Manual recovery may use `--source SOURCE_KEY` for an exact queue-claim filter: only that source can be claimed, retried, or have attempts incremented. |
@@ -243,6 +248,21 @@ Key behavior:
   shared lock table before mutation. The global lock also serializes the bounded
   reviewed reconciliation path; unique identity constraints serialize new-row
   conflicts.
+- **Transwestern image transition:** the source-specific
+  opt-in path binds one strict-fresh full-source artifact, generation/start,
+  database target, ingest attempt and clean collector code SHA. Its single
+  ingest transaction snapshots prior image rows, preserves each protected
+  URL occurrence and multiplicity, and permits only source-proved role changes
+  plus narrow established template/tile exclusions. Primary selection prefers
+  a retained current feed/gallery witness, otherwise keeps the prior primary
+  only if that exact image remains; absence of a witness does not invent one.
+  The receipt is emitted only after `COMMIT` and carries a full physical image
+  count/digest for subsequent readback. This exception applies only to
+  Transwestern's image-count comparison: the normal full-14 validation queries
+  and all other quality/source/lifecycle guards remain in force. Code merge
+  and isolated QA do not establish runtime promotion or full-source production
+  acceptance; use the current evidence on
+  [AGENTIC-4576](https://linear.app/agenticassets/issue/AGENTIC-4576).
 - **Protected lifecycle reconciliation:** use the optional finite four-parent
   JLL Investor contract in the [lifecycle runbook](../../../docs/firecrawl-ops/references/cre-listing-lifecycle-runbook.md#optional-four-parent-jll-investor-protection).
   Its context is part of the exact plan hash and must never be ignored or

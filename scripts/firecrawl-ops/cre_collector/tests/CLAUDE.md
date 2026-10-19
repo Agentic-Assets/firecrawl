@@ -61,6 +61,8 @@ bash tests/run_ingest_institutional_postgres_contract.sh  # opt-in disposable in
 bash tests/run_cre_quality_postgres_contract.sh  # opt-in active/historical scope + bounded financial fallback contract
 python3 tests/run_daum_subset_postgres_contract.py "$(mktemp -d)/proof"  # opt-in WSL/Linux DAUM subset transaction contract
 python3 tests/run_jll_image_repair_postgres_contract.py  # opt-in exact-reference repair SQL contract
+python3 tests/run_transwestern_image_transition_postgres_contract.py \
+  --proof-dir "$(mktemp -d)/proof" --execute-disposable-fixture  # opt-in Transwestern image transition contract
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
@@ -101,6 +103,15 @@ concurrent-writer refusals. `--full-scale` adds one synthetic 345,440-image /
 9,985-parent case. It never accepts production credentials or a database URL;
 see the [operator guide](../../../../docs/firecrawl-ops/references/jll-image-reference-repair.md#isolated-verification)
 for the distinct evidence and execution-receipt boundaries.
+
+The Transwestern image-transition contract runs the actual generated
+transaction against one owned, unexposed cached PostgreSQL fixture. It accepts
+only a new proof directory and `--execute-disposable-fixture`; it never accepts
+a database URL or production credentials. Synthetic cases cover classified
+noise removal, protected per-parent image multiplicity, primary-role
+projection, offstage preservation, full-state digest/readback, and
+whole-transaction refusals. The runner's existence or isolated output does not
+establish deployment or fresh full-source production acceptance.
 
 **Coverage push (2026-06-15):** a comprehensive unit-test pass lifted production
 coverage across the collector (measure with `pytest --cov=. --cov-report=term-missing
@@ -146,6 +157,10 @@ Add files as `tests/ts/*.test.ts` or `tests/ts/**/*.test.ts`. See `tests/ts/READ
 | `test_daily_scripts.py` | Disk-management shell helpers: extracts and runs `prune_keep` (cre_daily_update.sh) and `_keep_newest` (cre_run_tier.sh) in a tmp dir; asserts newest-N retention, no-op under threshold, space-safe `OUT_DIR`, and that the `run_*.json` glob spares `last_run_<tier>.json` markers; skips if bash absent |
 | `test_ingest_mark_missing.py` | Folded-coverage `--mark-missing` guard via `cre_ingest.py --dry-run --keep-artifacts` (no DB): parent soft-deletes hold until every sub-source is present (`cbre`+`cbre-dealflow`), fire for complete coverage and singletons (`svn`), and stay blocked when a sub-source pass errored |
 | `test_om_facts_migration_contract.py` | Static fresh-runner, default-refusal, and disposable-Postgres contract wiring for legacy migration `015` |
+| `test_transwestern_image_outcome.py` | Source-bound receipt, raw-count conservation, exact code/artifact/log binding and full image-state readback |
+| `test_transwestern_image_sql.py` | Pure Transwestern role-evidence, SQL-fragment and image-state query contracts |
+| `test_transwestern_image_transition_sql.py` | Ingest-writer hook and post-`COMMIT` receipt emission boundary |
+| `test_transwestern_image_integration.py` | Clean-code/artifact binding, checkpoint uncertainty refusal, unchanged full raw-query families and supplementary role readback |
 
 The table above lists the foundational contract tests. The data-lift and
 freshness/history sessions added ~21 more `test_*.py` files (raw-data / media /

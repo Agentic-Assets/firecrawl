@@ -292,6 +292,9 @@ function classifyLink(url: string, rel?: string | null): LinkItem | null {
 // hard rule); only drops map tiles, data:/svg URIs, and recaptcha/analytics
 // assets.
 function isImageNoise(url: string): boolean {
+  // addImage has already validated/resolved this as an HTTP(S) URL.
+  const imageUrl = new URL(url);
+  if (imageUrl.hostname === "mapsresources-pa.googleapis.com" && imageUrl.pathname === "/v1/tiles") return true;
   const l = lc(url);
   if (l.startsWith("data:")) return true;
   if (/\.svg(?:[?#]|$)/.test(l)) return true;

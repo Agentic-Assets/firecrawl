@@ -435,3 +435,37 @@ test("garbage urls (relative, fragment, javascript:, mailto:) are filtered witho
   assert.equal(out.links.length, 1);
   assert.equal(out.links[0]!.url, "https://www.example.com/keeper");
 });
+
+
+// Retained Transwestern samples expose this exact Google basemap tile class.
+// URLs are key-free; neighboring hosts/paths are not asserted to be gallery roles.
+for (const ingress of ["structured images", "rawHtml fallback", "extraImages"] as const) {
+  test(`harvest drops exact modern Google basemap tiles via ${ingress} without broad host/path filtering`, () => {
+    const tiles = [
+      "https://mapsresources-pa.googleapis.com/v1/tiles",
+      "https://mapsresources-pa.googleapis.com/v1/tiles?layer=basemap",
+    ];
+    const kept = [
+      "https://images.transwestern.com/property/gallery.jpg",
+      "https://mapsresources-pa.googleapis.com.example.test/v1/tiles",
+      "https://example.test/mapsresources-pa.googleapis.com/v1/tiles",
+      "https://mapsresources-pa.googleapis.com/v1/tiles/",
+      "https://mapsresources-pa.googleapis.com/v1/tiles-extra",
+      "https://mapsresources-pa.googleapis.com/v1/tiles.jpg",
+      "https://mapsresources-pa.googleapis.com/v2/tiles",
+    ];
+    const candidates = [...tiles, ...kept];
+    const fixture = doc({
+      links: ["https://transwestern.com/property/flyer.pdf", "https://vimeo.com/824804225"],
+      ...(ingress === "structured images" ? { images: candidates } : {}),
+      ...(ingress === "rawHtml fallback"
+        ? { rawHtml: candidates.map((url) => `<img src="${url}">`).join("") }
+        : {}),
+    });
+    const out = harvestDetail(fixture, ingress === "extraImages" ? { extraImages: candidates } : {});
+    assert.deepEqual(out.images, kept);
+    assert.deepEqual(out.documents.map((item) => item.url), ["https://transwestern.com/property/flyer.pdf"]);
+    assert.equal(out.media.length, 1);
+    assert.equal(out.media[0]?.url, "https://vimeo.com/824804225");
+  });
+}

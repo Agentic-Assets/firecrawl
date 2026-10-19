@@ -129,6 +129,40 @@ every occurrence is unrelated. Test the actual card layout, a native-gallery
 control, a shared-reference control and an unknown layout before changing the
 source-owned scope helper. Keep original captures intact.
 
+When filtering basemap noise in the shared image harvester, reject only the
+observed modern Google Maps resource on host
+`mapsresources-pa.googleapis.com` at path `/v1/tiles`; do not expand this into a
+host-wide exclusion. Preserve genuine listing-gallery imagery and other useful
+assets. A parser fixture proves classification only: filtering shared images can
+affect persisted-child retention, so it does not authorize deployment or cleanup.
+For each persisted image role changed, require source-backed evidence for the
+changed URLs and canonical artifact-to-ingest-to-database readback. A source may
+have no identifiable property photo; missing primary evidence must not promote
+an unknown image or be presented as proof that the source publishes none.
+
+Verify photo roles as well as photo presence. Canonical ingest marks
+`photos[0]` primary, so retaining a property's feed photo somewhere in the
+array does not prove the consumer will display it. Prefer a source-owned
+primary field or an observed property-gallery role, require that URL to survive
+the normal image filter, and preserve the relative order of all other retained
+images. Unknown roles stay unknown; do not promote a generic first scrape
+image merely because its URL looks photographic. Record source-backed role
+evidence where the adapter supports it, and test the actual mapper with a
+preferred image that initially follows other images, a filtered preferred
+image, a gallery-only fallback and an unknown layout. Transwestern's precise
+selection contract lives in `cre_collector/sources/CLAUDE.md`.
+
+Keep image classification and its evidence together at the final source
+boundary. A contact portrait belongs with its identified contact, and an
+observed interface graphic should not become a property photo through a second
+harvest input. Record actual excluded URLs with their source-backed role and
+basis; preserve unknown references and give an explicit native property-gallery
+reference precedence over a competing non-property role. Test structured image
+input and HTML-only input with a present but empty image array. Missing primary
+evidence is uncertainty, not permission to invent a property photo or a claim
+that the source publishes none. Source cleanup still requires its own bounded
+persisted-image transition proof before rollout.
+
 Use permitted public access and provider-aware pacing. Preserve existing
 deployment and guarded-write procedures when adding fields. Retaining a
 document URL does not prove its contents were downloaded or parsed. GetCREdata
@@ -210,6 +244,13 @@ robots, pacing and challenge-stop rules before using local Firecrawl.
 - Add a temporary or environment-gated query hook when the source supports text search.
 - Save a small targeted artifact under `/tmp`.
 - Confirm counts for document URLs, image URLs, contact URLs, and key facts.
+
+For a regression replay, pin the recorded input bytes, requested formats and
+unchanged dependencies. Run both mapper versions against the same inputs before
+claiming field parity or loss. A capture without structured attributes is not
+equivalent to a collector request that includes them. Preserve failed results
+and explain any corrected oracle; offline replay does not refresh source age or
+prove full-source, database or performance acceptance.
 
 7. Ingest proof:
 

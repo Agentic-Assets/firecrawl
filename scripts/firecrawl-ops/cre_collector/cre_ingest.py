@@ -3705,6 +3705,7 @@ def build_sql(
     matthews_targeted_targets=None,
     image_transition_binding=None,
     daum_verified_subset_claims=None,
+    transwestern_image_transition_binding=None,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
@@ -3735,6 +3736,24 @@ def build_sql(
         artifact_run_key = (
             "ingest:v1:" + hashlib.sha256(identity_payload.encode()).hexdigest()
         )
+    tw_parts = None
+    if transwestern_image_transition_binding is not None:
+        if (not isinstance(transwestern_image_transition_binding, dict)
+                or colliers_first_party_transition or image_transition_binding is not None
+                or targeted or daum_verified_subset_claims is not None
+                or mark_missing_slugs or inventory_only_rows or inventory_only_scopes
+                or transwestern_image_transition_binding.get("artifact_run_key") != artifact_run_key):
+            raise ValueError("invalid Transwestern image transition scope")
+        from cre_transwestern_image_sql import build_parts
+        tw_parts = build_parts(rows, transwestern_image_transition_binding)
+    tw_verify_sql = tw_parts["verify"] if tw_parts else ""
+    tw_retention_sql = (
+        "    AND NOT (prior_counts.source_key = 'transwestern' AND prior_counts.child_type = 'images')\n"
+        if tw_parts else ""
+    )
+    tw_alt_column = ", alt_text" if tw_parts else ""
+    tw_alt_value = ", x->>'altText'" if tw_parts else ""
+    tw_alt_update = ",\n  alt_text = incoming.x->>'altText'" if tw_parts else ""
     job_meta = [
         {
             **jm,
@@ -4233,6 +4252,9 @@ DO $$ BEGIN
     GROUP BY a.listing_id, a.source_key;
   END IF;
 END $$;""")
+    if tw_parts:
+        w(tw_parts["before"])
+        w(tw_parts["project"])
 
     w(
         """
@@ -5287,9 +5309,9 @@ CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
 WHERE u.id IN (SELECT id FROM _child_refresh)
   AND jsonb_typeof(s.documents) = 'array' AND x->>'url' IS NOT NULL;
 
-INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order)
+INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
 SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0)
+       COALESCE((x->>'order')::integer, 0){tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
@@ -5501,14 +5523,14 @@ WITH incoming AS (
 )
 UPDATE credeals.cre_listing_images i SET
   is_primary = COALESCE((incoming.x->>'isPrimary')::boolean, i.is_primary),
-  display_order = COALESCE((incoming.x->>'order')::integer, i.display_order)
+  display_order = COALESCE((incoming.x->>'order')::integer, i.display_order){tw_alt_update}
 FROM incoming
 WHERE i.listing_id = incoming.listing_id
   AND i.url = incoming.x->>'url';
 
-INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order)
+INSERT INTO credeals.cre_listing_images (listing_id, url, is_primary, display_order{tw_alt_column})
 SELECT u.id, x->>'url', COALESCE((x->>'isPrimary')::boolean, false),
-       COALESCE((x->>'order')::integer, 0)
+       COALESCE((x->>'order')::integer, 0){tw_alt_value}
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.images) x
@@ -5976,7 +5998,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-DO $$
+{tw_verify_sql}DO $$
 DECLARE
   regressions text;
   colliers_coveo_image_transition boolean := {colliers_transition_sql};
@@ -6003,7 +6025,7 @@ BEGIN
       AND prior_counts.source_key = 'colliers-main'
       AND prior_counts.child_type = 'images'
     )
-    AND COALESCE(current_counts.child_count, 0)
+{tw_retention_sql}    AND COALESCE(current_counts.child_count, 0)
       < (
         prior_counts.child_count * {CHILD_COUNT_RETAIN_NUMERATOR}
         / {CHILD_COUNT_RETAIN_DENOMINATOR}
@@ -6069,6 +6091,8 @@ END $$;
 
 COMMIT;
 """)
+    if tw_parts:
+        w(tw_parts["emit"])
     if image_transition_binding is not None:
         # The temp table is created in this transaction: ROLLBACK removes it,
         # so no successful post-COMMIT outcome can be emitted after rollback.
@@ -6580,6 +6604,44 @@ def iter_copy_json_rows(psql, db_url, inner_select, *, label="read"):
 # ---------------------------------------------------------------------------
 
 
+def transwestern_checkpoint_binding(args, data, original_bytes, artifact_run_key):
+    """Bind only the complete fresh source input to its actual clean collector."""
+    from pathlib import Path
+    from cre_checkpoint_refresh import git_identity
+    from cre_transwestern_image_outcome import valid_binding
+
+    if (len(args.inputs) != 1 or not args.checkpoint_ingest_attempt
+            or not args.expected_db_target_sha256 or not args.require_strict_freshness
+            or args.mark_missing or _status_activation_enabled(args.activate_status)
+            or args.daum_verified_subset_claims or args.matthews_targeted_claims):
+        raise ValueError("unbound Transwestern image transition")
+    validate_strict_artifact_freshness(data, require_strict_freshness=True)
+    scope = strict_full_source_scope(data, "transwestern")
+    if (len(scope["entries"]) != len(data["sources"])
+            or len(scope["listings"]) != len(data["listings"])):
+        raise ValueError("mixed Transwestern image transition scope")
+    code_sha, dirty = git_identity()
+    if dirty or code_sha != args.checkpoint_collector_git_sha:
+        raise ValueError("Transwestern collector code changed")
+    input_bytes = Path(args.inputs[0]).read_bytes()
+    digest = hashlib.sha256(input_bytes).hexdigest()
+    if (input_bytes != original_bytes
+            or artifact_run_key != artifact_run_identity_from_digests([digest])[0]):
+        raise ValueError("Transwestern transition input changed")
+    generation = data["runMeta"]["freshness"]
+    binding = {
+        "artifact_sha256": digest, "artifact_bytes": len(input_bytes),
+        "artifact_run_key": artifact_run_key,
+        "generation_id": generation["generationId"],
+        "generation_started_at": generation["generationStartedAt"],
+        "database_target_sha256": args.expected_db_target_sha256,
+        "attempt_id": args.checkpoint_ingest_attempt, "collector_git_sha": code_sha,
+    }
+    if not valid_binding(binding):
+        raise ValueError("invalid Transwestern image transition binding")
+    return binding
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -6595,6 +6657,7 @@ def main():
     ap.add_argument("--daum-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
         "--expected-db-target-sha256",
         default=None,
@@ -6639,6 +6702,8 @@ def main():
         ),
     )
     args = ap.parse_args()
+    if args.checkpoint_collector_git_sha is not None and not args.checkpoint_ingest_attempt:
+        ap.error("collector code binding requires a checkpoint ingest attempt")
 
     merged = {}  # (slug, external_id) -> row
     inventory_only_merged = {}  # (slug, external_id) -> source-index row
@@ -7005,6 +7070,14 @@ def main():
         }
         if not valid_binding(image_transition_binding):
             sys.exit("invalid Colliers image transition binding")
+    transwestern_image_transition_binding = None
+    if args.checkpoint_collector_git_sha is not None:
+        try:
+            transwestern_image_transition_binding = transwestern_checkpoint_binding(
+                args, data, image_transition_input, artifact_run_key
+            )
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            sys.exit(f"refusing Transwestern image transition: {exc}")
     sql = build_sql(
         rows,
         job_meta,
@@ -7020,6 +7093,7 @@ def main():
         matthews_targeted_targets=targeted_targets,
         image_transition_binding=image_transition_binding,
         daum_verified_subset_claims=daum_subset_claims,
+        transwestern_image_transition_binding=transwestern_image_transition_binding,
     )
 
     print(

@@ -9,6 +9,50 @@ source metadata and evidence of missingness, follow the
 [listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
 An empty consumer field is not proof of source absence.
 
+Photo order is part of fidelity: canonical ingest uses `photos[0]` as the
+primary image. For Transwestern, prefer the canonical feed `PropertyImage`
+only when it survives the shared image filter; otherwise consider only the
+first `.photos-list a.chocolat-image[href]` from that property's detail DOM,
+again requiring a retained URL. Move the witnessed image first while preserving
+every other retained image's relative order. Record the selected URL and
+`provider_feed` or `property_gallery` basis in
+`transwesternPrimaryPhotoEvidence`. With no retained witness, leave order alone
+and omit that evidence. A generic scraped image, avatar, filename or unrelated
+gallery cannot establish a property-primary role. This source contract does
+not grant another adapter the same selector or authorize persisted-image loss.
+
+Transwestern's final photo-role filter lives in `pure/transwestern-images.ts`.
+It excludes only the four observed owned template resources (`tw_gl.png`,
+`connect-image.png`, `transwestern-mapmarker.png`, `mail-3.png`) at their exact
+asset paths, and exact avatars from contacts with a parsed identity signal.
+A retained feed or scoped property-gallery reference wins over either role.
+Unknown URLs remain in their existing order; filenames or CDN folders alone do
+not identify a portrait. Apply the filter after all harvest inputs, including
+HTML-only candidates when `doc.images` is empty, so exclusions are recorded.
+Successful details carry `transwesternPhotoRoleVersion: "v1"`; actual removals
+also carry `transwesternExcludedPhotoEvidence` with schema
+`transwestern-photo-role-v1` and per-URL role/basis entries. Keep avatars with
+their contacts, and preserve documents, Markdown and other useful detail fields.
+An empty photo array may be omitted by `prune`; neither missing primary evidence
+nor an empty array proves that the publisher has no property imagery elsewhere.
+These source observations do not waive persisted-child or primary-role checks.
+
+The Transwestern image-transition path is source-specific. It requires the exact
+strict-fresh full-source artifact, generation/start, clean collector code SHA,
+database target and ingest-attempt binding. In the same canonical ingest
+transaction it snapshots prior physical image rows, preserves each protected
+URL/multiplicity and offstage state, and permits removal only for exact
+source-proved exclusions or the narrowly classified map-tile/template noise.
+Primary choice uses the retained current feed/gallery witness when available;
+otherwise it keeps the prior primary only if that exact URL remains staged,
+and leaves primary unassigned when neither is supported. The post-`COMMIT`
+receipt carries raw counts, conservation totals, primary-role totals and a full
+image-state digest; normal raw-report comparison and full digest readback are
+both required. This is not a Transwestern inventory/lifecycle waiver and does
+not apply to another source. Code merge and isolated QA do not establish
+runtime promotion or fresh full-source production acceptance; inspect the
+current evidence on [AGENTIC-4576](https://linear.app/agenticassets/issue/AGENTIC-4576).
+
 ## Fix shared failure families
 
 Before treating a failure as unique to one brokerage, identify its provider,
