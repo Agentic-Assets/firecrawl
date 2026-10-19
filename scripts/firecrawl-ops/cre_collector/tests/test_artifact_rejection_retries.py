@@ -134,6 +134,7 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
     monkeypatch.setattr(refresh, "_finalize_cohort_collection", finalize)
     monkeypatch.setattr(refresh, "run_command", command)
     monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *args: None)
+    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", db)
     monkeypatch.setattr(refresh, "advance_source", lambda *args, **kwargs: True)
     return root, manifest, sources, starts, database
