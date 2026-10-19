@@ -37,7 +37,20 @@ This adds capacity headroom; it does not establish a throughput improvement or
 prove recovery after a Windows reboot. Verify current limits rather than
 treating a dated observation as live state.
 
-WSL resource limits belong in `%USERPROFILE%\.wslconfig`, not a tracked repository file. They apply to all WSL 2 distributions. Changing them requires stopping Docker, shutting down WSL, and restarting Docker; first check for other running WSL work. Leave automatic Docker startup off if the stack is only needed during interactive work. The shared Compose resource limits and bounded log rotation remain unchanged.
+WSL resource limits belong in `%USERPROFILE%\.wslconfig`, not a tracked repository
+file. They apply to all WSL 2 distributions. Changing them requires stopping
+Docker, shutting down WSL, and restarting Docker; first check for other running
+WSL work.
+
+For scheduled Windows CRE, turn on Docker Desktop's standard **Start Docker
+Desktop when you sign in to your computer** preference. Leave automatic startup
+off only when this stack is for interactive use. This starts Desktop in the
+signed-in user's session; signed-out task execution is unsupported. The login
+preference and container `unless-stopped` policies do not prove successful
+login or reboot recovery; qualify those events separately under the
+[CRE unattended acceptance guide](guarded-incremental-tiers.md#unattended-operating-goal).
+See Docker's [Desktop settings reference](https://docs.docker.com/desktop/settings-and-maintenance/settings/).
+The shared Compose resource limits and bounded log rotation remain unchanged.
 
 Keep Linux pipeline code, `node_modules`, caches, output and Linux test clones
 inside Ubuntu's filesystem, such as `/home/<user>/code/firecrawl`, rather than
