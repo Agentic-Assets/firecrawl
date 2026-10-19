@@ -145,6 +145,11 @@ A second transaction cannot turn that failure into accepted proof or download
 the same cohort again. A new generation/start or a fresh collector process
 reacquires; the coordinator's existing bounded fresh-process retry remains.
 Limited, monitor and non-fresh paths cannot borrow this strict cohort proof.
+Local aggregate progress reports completed inventory-pass page/member counts,
+the matched-inventory/detail transition, every 100 checked details and the final
+acquisition count. Sale and lease share this progress with their cohort; held
+observations count as checked, never as qualified listings or database writes.
+Progress includes no listing identifiers or URLs and changes no pacing or proof.
 
 The separate `--admit-daum-verified-subset` permission uses versioned
 `daum-verified-subset-v1` proof, never the complete proof above. It still proves

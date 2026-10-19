@@ -58,9 +58,14 @@ test("saved 52023 visible empty title is only a V2 identity observation, never h
 // Without the opt-in branch the real strict producer rejects the first hold.
 test("subset exhaustively proves 562 members and emits 560 with two typed holds", async t => {
   const state = offline(t, 562);
+  const progress: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { progress.push(args.join(" ")); });
   state.unknownInventory = new Set([7, 293]); state.unknownDetail = new Set([7, 293]);
   const sale = await srcDaumCommercial("sale", Infinity, false);
   const lease = await srcDaumCommercial("lease", Infinity, false);
+  assert.equal(progress.length, 9, "two transactions must not duplicate progress or log every member");
+  assert.equal(progress.at(-1), "  daum-commercial: detail acquisition finished; checked=562/562");
+  assert.doesNotMatch(progress.join("\n"), /https?:|Synthetic|verified|ingest|database|held.*accepted/i);
   const proof = sale.currentInventoryProof;
   assert.equal(proof?.schema, "daum-verified-subset-v1");
   if (proof?.schema !== "daum-verified-subset-v1") throw Error("missing subset proof");

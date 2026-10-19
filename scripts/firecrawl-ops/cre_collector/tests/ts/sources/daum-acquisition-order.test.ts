@@ -15,6 +15,8 @@ test("strict acquisition prioritizes unknowns without changing identity, ordinal
   Object.assign(process.env, { CRE_REQUIRE_FRESH_DETAILS: "1", CRE_REFRESH_STARTED_AT: observationNow() });
   globalThis.setTimeout = ((fn: any, ms?: number, ...args: any[]) => timer(fn, ms && ms > 0 && ms <= 3000 ? 0 : ms, ...args)) as typeof setTimeout;
   let unknown = new Set<number>(), unresolved = new Set<number>(), gets: number[] = [], posts = 0;
+  let progress: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { progress.push(args.join(" ")); });
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     const page = url.match(/^https:\/\/daumcommercial[.]com\/property-search\/(?:page\/(\d+)\/)?$/);
@@ -45,9 +47,14 @@ test("strict acquisition prioritizes unknowns without changing identity, ordinal
     assert.deepEqual(gets, [293]); assert.equal(posts, 8);
     await assert.rejects(srcDaumCommercial("lease", Infinity, false), error => error === originalError);
     assert.deepEqual(gets, [293]);
+    assert.deepEqual(progress, [
+      "  daum-commercial: inventory pass 1 completed; pages=4; members=300",
+      "  daum-commercial: inventory pass 2 completed; pages=4; members=300",
+      "  daum-commercial: inventory matched; starting detail acquisition; members=300",
+    ]);
   });
   await t.test("new generation resolves two stable unknowns and restores full output/proof order", async () => {
-    process.env.CRE_REFRESH_GENERATION = "order-resolved"; unknown = new Set([7, 293]); unresolved.clear(); gets = []; posts = 0;
+    process.env.CRE_REFRESH_GENERATION = "order-resolved"; unknown = new Set([7, 293]); unresolved.clear(); gets = []; posts = 0; progress = [];
     const [sale, lease] = await Promise.all([srcDaumCommercial("sale", Infinity, false), srcDaumCommercial("lease", Infinity, false)]);
     const original = Array.from({ length: 300 }, (_, i) => i);
     assert.deepEqual(gets, [7, 293, ...original.filter(i => !unknown.has(i))]); assert.equal(posts, 8);
@@ -57,6 +64,15 @@ test("strict acquisition prioritizes unknowns without changing identity, ordinal
       assert.equal(proof.cohort.length, 300); assert.equal(proof.details.length, 300);
       assert.deepEqual(proof.details.map(row => row[0]), proof.cohort.map(row => row[0]));
     }
+    assert.deepEqual(progress, [
+      "  daum-commercial: inventory pass 1 completed; pages=4; members=300",
+      "  daum-commercial: inventory pass 2 completed; pages=4; members=300",
+      "  daum-commercial: inventory matched; starting detail acquisition; members=300",
+      "  daum-commercial: detail acquisition checked=100/300",
+      "  daum-commercial: detail acquisition checked=200/300",
+      "  daum-commercial: detail acquisition finished; checked=300/300",
+    ], "sale and lease share one bounded aggregate progress stream");
+    assert.doesNotMatch(progress.join("\n"), /https?:|Synthetic|500\d\d|verified|ingest|database|broker|Phoenix/i);
   });
   await t.test("all-known inventory keeps original request order", async () => {
     process.env.CRE_REFRESH_GENERATION = "order-known"; unknown.clear(); gets = [];
