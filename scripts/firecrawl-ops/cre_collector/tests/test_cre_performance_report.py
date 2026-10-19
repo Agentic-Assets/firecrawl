@@ -891,7 +891,7 @@ def test_real_typescript_snapshot_is_consumed_by_python_report(tmp_path):
     assert scrape["collector_process"]["rss_bytes"] == 200_000_000
     assert (
         scrape["coverage"]["direct_provider_requests"]
-        == "essex_only_other_direct_sources_unknown"
+        == "essex_pyramid_only_other_direct_sources_unknown"
     )
     direct = scrape["direct_provider_requests"]
     assert len(direct) == 1

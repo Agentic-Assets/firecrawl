@@ -1,3 +1,4 @@
+import { recordDirectProviderAttemptStarted, recordDirectProviderAttemptCompleted } from "../lib/performance.js";
 import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
@@ -152,20 +153,26 @@ export async function pyramidFetch(
 ): Promise<{ headers: Headers; body: string }> {
   const initialUrl = pyramidAbsoluteUrl(url);
   if (!initialUrl) throw new Error(`Pyramid refused unsafe URL ${url}`);
+  const role = new URL(initialUrl).pathname === new URL(PYRAMID_INVENTORY_URL).pathname
+    ? "current_archive" : "detail";
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const telemetry = recordDirectProviderAttemptStarted(role, "pyramid-brokerage");
+    let status: number | undefined;
     try {
       let current = initialUrl;
       for (let redirect = 0; redirect <= 3; redirect++) {
         const safeUrl = pyramidAbsoluteUrl(current);
         if (!safeUrl) throw new Error(`Pyramid refused unsafe redirect URL ${current}`);
+        status = undefined;
         const response = await fetchImpl(safeUrl, {
           headers: { "User-Agent": PYRAMID_USER_AGENT, Accept: "application/json,text/html" },
           redirect: "manual",
           signal: controller.signal,
         });
+        status = response.status;
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
           if (!location) throw new Error(`Pyramid redirect ${response.status} lacks Location`);
@@ -176,10 +183,14 @@ export async function pyramidFetch(
         }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await pyramidBoundedResponseText(response, maxBytes);
+        recordDirectProviderAttemptCompleted(telemetry, { outcome: "succeeded", status });
         return { headers: response.headers, body };
       }
       throw new Error("Pyramid exceeded redirect cap");
     } catch (error) {
+      recordDirectProviderAttemptCompleted(telemetry, {
+        outcome: "failed", status, error,
+      });
       lastError = error;
       if (attempt === attempts) break;
       await new Promise((resolve) => setTimeout(resolve, 500 * attempt));

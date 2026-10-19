@@ -44,7 +44,10 @@ RUN_ID = re.compile(r"\d{4}-\d{2}-\d{2}T\d{6}Z(?:-[0-9a-f]{12})?\Z")
 COMMAND_ID = re.compile(r"[0-9a-f]{32}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 SAFE_FILE = re.compile(r"[a-zA-Z0-9_.-]{1,200}\Z")
-DIRECT_PROVIDER_ROLES = {"current_archive", "closed_archive", "sitemap", "detail"}
+DIRECT_PROVIDER_ROLES = {
+    "essex-realty": {"current_archive", "closed_archive", "sitemap", "detail"},
+    "pyramid-brokerage": {"current_archive", "detail"},
+}
 DIRECT_PROVIDER_ERRORS = (
     "timeout",
     "http_4xx",
@@ -164,7 +167,7 @@ def _source_metrics(value: object, names: tuple[str, ...]) -> list[dict[str, Any
 
 def _direct_provider_metrics(value: object) -> list[dict[str, Any]]:
     records = _object(value).get("by_source_transaction_role")
-    if not isinstance(records, list) or len(records) > 12:
+    if not isinstance(records, list) or len(records) > 18:
         return []
     result = []
     seen: set[tuple[str, str, str]] = set()
@@ -191,11 +194,12 @@ def _direct_provider_metrics(value: object) -> list[dict[str, Any]]:
             record.get("role"),
         )
         if (
-            source != "essex-realty"
+            not isinstance(source, str)
+            or source not in DIRECT_PROVIDER_ROLES
             or not isinstance(transaction, str)
             or transaction not in {"sale", "lease", "unknown"}
             or not isinstance(role, str)
-            or role not in DIRECT_PROVIDER_ROLES
+            or role not in DIRECT_PROVIDER_ROLES[source]
         ):
             continue
         key = (source, transaction, role)
@@ -296,6 +300,16 @@ def _snapshot(
     direct_provider_requests = _direct_provider_metrics(
         metrics.get("direct_provider_requests")
     )
+    direct_coverage = _object(value.get("coverage")).get("direct_provider_requests")
+    if direct_coverage not in (
+        "essex_only_other_direct_sources_unknown",
+        "essex_pyramid_only_other_direct_sources_unknown",
+    ):
+        direct_coverage = (
+            "essex_only_other_direct_sources_unknown"
+            if any(row["source"] == "essex-realty" for row in direct_provider_requests)
+            else "unknown_uninstrumented"
+        )
     resources = _object(metrics.get("resources"))
     memory = _object(resources.get("node_rss_bytes"))
     cpu = _object(resources.get("process_cpu_microseconds"))
@@ -378,11 +392,7 @@ def _snapshot(
             "concurrency": "locally_awaited_attempts_not_server_concurrency",
             "latency": "approximate_histogram_attempt_latency_excludes_backoff",
             "api_queue_wait": "unknown_uninstrumented",
-            "direct_provider_requests": (
-                "essex_only_other_direct_sources_unknown"
-                if direct_provider_requests
-                else "unknown_uninstrumented"
-            ),
+            "direct_provider_requests": direct_coverage,
             "other_caches": "unknown_uninstrumented",
             "listing_quality": "not_established_by_request_metrics",
         },
@@ -1262,8 +1272,9 @@ def render(report: Mapping[str, Any]) -> str:
                 f"max locally awaited={requests['max_active_locally_awaited'] if requests['max_active_locally_awaited'] is not None else '?'}"
             )
             for direct in scrape.get("direct_provider_requests", []):
+                label = "Essex" if direct["source"] == "essex-realty" else "Pyramid"
                 lines.append(
-                    f"  Essex direct {direct['transaction']}/{direct['role']}: "
+                    f"  {label} direct {direct['transaction']}/{direct['role']}: "
                     f"started={_display(direct['attempts_started'])}, "
                     f"completed={_display(direct['attempts_completed'])}, "
                     f"failed={_display(direct['failed'])}, "
@@ -1353,7 +1364,7 @@ def render(report: Mapping[str, Any]) -> str:
         [
             "",
             "Staged rows are not proof of ingestion. Request success is not listing completion.",
-            "Firecrawl and direct-provider requests are separate; only Essex direct requests are instrumented, and other providers remain unknown.",
+            "Firecrawl and direct-provider requests are separate; direct coverage follows each saved snapshot, and other providers remain unknown.",
             "CPU is from bounded guard evidence; Node RSS is sampled, not a true peak.",
             "Use --json for command IDs, settings, retries/cache counters and evidence gaps.",
             "No matched quality-valid baseline: speedup is unknown. Shared coordinator metrics are not source costs."

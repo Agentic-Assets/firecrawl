@@ -168,7 +168,7 @@ inconsistent qualification evidence still leaves the metric unknown.
 |---|---|---|
 | Command journal | `logs/COMMAND.performance.jsonl` | Start, terminal outcome and monotonic duration of collection, health, validation, gate and ingest subprocesses. Each invocation has a distinct ID, including repeated uses of the same log during resume. |
 | Validation query timings | `pre-validation.json` and `validation.json` under top-level `query_timings` | Per-query psql client elapsed milliseconds, keyed by the existing validation query name. This includes client-side result handling and is not pure server execution time. |
-| Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, Firecrawl client attempts, retry/backoff, latency histogram, locally awaited concurrency, Essex direct-provider requests, JLL detail cache, source outcomes and sampled Node resources. |
+| Scrape snapshot | `logs/COMMAND.INVOCATION.scrape-performance.json` | Logical helper calls, Firecrawl client attempts, retry/backoff, latency histogram, locally awaited concurrency, Essex/Pyramid direct-provider requests where instrumented, JLL detail cache, source outcomes and sampled Node resources. |
 | Initial runtime configuration | `runtime-performance.json` | Known API/browser container IDs, image IDs and configured CPU/memory/PID/shared-memory/port limits, plus available host CPU/RAM configuration. One narrow read before the guard starts; not current usage. |
 | Resource timeline | `resource-usage.jsonl` | Five-second platform-specific CPU/load, memory/pressure/swap, filesystem capacity, owned process RSS and selected Compose API/browser container usage, limits and OOM/restart snapshots. Each resume has a distinct session ID and monotonic clock. |
 | Required guards | `logs/host-cpu-guard.jsonl`, `logs/host-memory-guard.jsonl` | Platform-selected CPU and memory-pressure stop decisions. Darwin uses Mach/sysctl; Linux uses `/proc`, PSI and visible cgroup evidence. Under WSL these cover the Linux VM, not aggregate Windows load. Memory warning defaults to 20 seconds; critical stops immediately; missing/stale required telemetry fails closed. |
@@ -187,14 +187,28 @@ page bodies, broker/contact records, exception messages, command-line secrets
 or environment values. Sensitive raw business artifacts stay in their existing
 governed artifact locations, not in the optimization log.
 
-Direct-provider telemetry is separate from Firecrawl helper requests. Current
-coverage is limited to Essex's current archive, closed archive, sitemap and
-detail roles, grouped by transaction and role; other direct adapters remain
-unknown. Its request latency covers the direct fetch and bounded body read, not
-the local pacing interval. Pacing records the requested delay and observed
-elapsed wait separately. These aggregate counts and finite status/error
-categories describe transport work only; they do not establish parsing,
-inventory completeness, detail quality or a performance improvement.
+Direct-provider telemetry is separate from Firecrawl helper requests. Supported
+coverage is Essex's current archive, closed archive, sitemap and detail roles,
+plus Pyramid's WordPress inventory (`current_archive`) and property `detail`
+roles. Metrics are grouped by source, transaction and role; a mismatched or
+absent source context has unknown transaction. Other direct adapters remain
+unknown. Read each saved snapshot's coverage: upgrading the reader does not
+add Pyramid timing to historical Essex-only or uninstrumented snapshots.
+
+Request latency covers the direct fetch and bounded body read, excluding local
+pacing and retry backoff. A Pyramid attempt includes its existing manual
+redirect chain; it is not a count of individual HTTP exchanges. Each retry
+starts another logical attempt. A successful HTTP/body read does not prove
+that later JSON parsing, inventory or detail verification passed. Generic
+fetch/body errors retain the existing error classifier; a failed body
+read can have HTTP status 200. These categories are not detailed failure causes.
+Forced-start snapshots expose in-flight attempts without a new timer; updates
+remain event driven and may be stale while requests are pending. Pacing records
+requested delay and observed elapsed wait separately where instrumented.
+These bounded aggregates and finite status/error categories describe transport
+work only; they do not establish completeness, quality or a speed improvement.
+See [AGENTIC-4554](https://linear.app/agenticassets/issue/AGENTIC-4554) for the
+Pyramid extension and its verification boundary.
 
 Runtime configuration resolves the selected Compose project and services,
 checks the API loopback endpoint binding and reads narrow Docker inspect fields,
@@ -247,8 +261,9 @@ remote continuation remains unknown until the existing settlement checks pass.
 
 JLL cache hits mean an accepted cached detail document was returned. Misses and
 explicit refresh bypasses are separate. Cache age/freshness still comes from
-the existing source/generation contracts. Other source caches, direct provider
-HTTP timing and API queue wait remain explicitly uninstrumented.
+the existing source/generation contracts. Other source caches, direct-provider
+timing outside the named adapters above, and API queue wait remain explicitly
+uninstrumented.
 
 Node RSS is a current sample and the maximum of those samples, not a true peak
 and not browser/API container memory. Process CPU is cumulative Node user/system

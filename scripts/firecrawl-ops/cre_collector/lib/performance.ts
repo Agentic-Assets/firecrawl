@@ -42,6 +42,12 @@ export type DirectProviderRequestRole =
   | "sitemap"
   | "detail";
 
+export type DirectProviderSource = "essex-realty" | "pyramid-brokerage";
+const DIRECT_PROVIDER_ROLES = new Map<DirectProviderSource, readonly DirectProviderRequestRole[]>([
+  ["essex-realty", ["current_archive", "closed_archive", "sitemap", "detail"]],
+  ["pyramid-brokerage", ["current_archive", "detail"]],
+]);
+
 export type DirectProviderErrorCategory = PerformanceErrorCategory | "response_too_large";
 type DirectProviderTransaction = Tx | "unknown";
 
@@ -90,7 +96,7 @@ type SourceRunCounts = SourceContext & {
 };
 
 type DirectProviderRequestCounts = {
-  source: "essex-realty";
+  source: DirectProviderSource;
   transaction: DirectProviderTransaction;
   role: DirectProviderRequestRole;
   attempts_started: number;
@@ -393,15 +399,19 @@ export class PerformanceRecorder {
 
   private directProviderCountsFor(
     role: DirectProviderRequestRole,
-    context?: SourceContext
+    context: SourceContext | undefined,
+    source: DirectProviderSource
   ): DirectProviderRequestCounts {
+    if (!DIRECT_PROVIDER_ROLES.get(source)?.includes(role)) {
+      throw new Error("unsupported direct-provider telemetry source or role");
+    }
     const transaction: DirectProviderTransaction =
-      context?.source === "essex-realty" ? context.transaction : "unknown";
-    const key = `${transaction}\u0000${role}`;
+      context?.source === source ? context.transaction : "unknown";
+    const key = `${source}\u0000${transaction}\u0000${role}`;
     let counts = this.directProviderRequests.get(key);
     if (!counts) {
       counts = {
-        source: "essex-realty",
+        source,
         transaction,
         role,
         attempts_started: 0,
@@ -428,10 +438,11 @@ export class PerformanceRecorder {
 
   recordDirectProviderAttemptStarted(
     role: DirectProviderRequestRole,
-    context?: SourceContext
+    context?: SourceContext,
+    source: DirectProviderSource = "essex-realty"
   ): DirectProviderAttemptToken {
     const startedMs = this.readMonotonic();
-    const counts = this.directProviderCountsFor(role, context);
+    const counts = this.directProviderCountsFor(role, context, source);
     counts.attempts_started = safeAdd(counts.attempts_started);
     counts.active_locally_awaited = safeAdd(counts.active_locally_awaited);
     counts.max_active_locally_awaited = Math.max(
@@ -439,7 +450,7 @@ export class PerformanceRecorder {
       counts.active_locally_awaited
     );
     const token = {
-      key: `${counts.transaction}\u0000${role}`,
+      key: `${counts.source}\u0000${counts.transaction}\u0000${role}`,
       startedMs,
       completed: false,
     };
@@ -494,10 +505,11 @@ export class PerformanceRecorder {
   recordDirectProviderPacingWaitStarted(
     role: DirectProviderRequestRole,
     scheduledMs: number,
-    context?: SourceContext
+    context?: SourceContext,
+    source: DirectProviderSource = "essex-realty"
   ): DirectProviderPacingToken {
     const startedMs = this.readMonotonic();
-    const counts = this.directProviderCountsFor(role, context);
+    const counts = this.directProviderCountsFor(role, context, source);
     const boundedScheduledMs = Number.isFinite(scheduledMs) && scheduledMs > 0
       ? scheduledMs
       : 0;
@@ -508,7 +520,7 @@ export class PerformanceRecorder {
       boundedScheduledMs
     );
     const token = {
-      key: `${counts.transaction}\u0000${role}`,
+      key: `${counts.source}\u0000${counts.transaction}\u0000${role}`,
       startedMs,
       scheduledMs: boundedScheduledMs,
       completed: false,
@@ -805,9 +817,10 @@ export class PerformanceRecorder {
       },
       coverage: {
         client_requests: "firecrawl_scrape_only",
-        direct_provider_requests: "essex_only_other_direct_sources_unknown",
+        direct_provider_requests: "essex_pyramid_only_other_direct_sources_unknown",
         direct_provider_request_sources: {
           "essex-realty": "instrumented",
+          "pyramid-brokerage": "instrumented",
           other_direct_adapters: "unknown_uninstrumented",
         },
         jll_detail_cache: "instrumented",
@@ -1013,12 +1026,13 @@ export function recordClientAttemptCompleted(
 }
 
 export function recordDirectProviderAttemptStarted(
-  role: DirectProviderRequestRole
+  role: DirectProviderRequestRole,
+  source: DirectProviderSource = "essex-realty"
 ): DirectProviderAttemptToken | undefined {
   const recorder = performanceRecorder();
   if (!recorder) return undefined;
   try {
-    return recorder.recordDirectProviderAttemptStarted(role, sourceContext.getStore());
+    return recorder.recordDirectProviderAttemptStarted(role, sourceContext.getStore(), source);
   } catch {
     recorder.diagnosticFailure();
     return undefined;
@@ -1046,7 +1060,8 @@ export function recordDirectProviderAttemptCompleted(
 
 export function recordDirectProviderPacingWaitStarted(
   role: DirectProviderRequestRole,
-  scheduledMs: number
+  scheduledMs: number,
+  source: DirectProviderSource = "essex-realty"
 ): DirectProviderPacingToken | undefined {
   const recorder = performanceRecorder();
   if (!recorder) return undefined;
@@ -1054,7 +1069,8 @@ export function recordDirectProviderPacingWaitStarted(
     return recorder.recordDirectProviderPacingWaitStarted(
       role,
       scheduledMs,
-      sourceContext.getStore()
+      sourceContext.getStore(),
+      source
     );
   } catch {
     recorder.diagnosticFailure();

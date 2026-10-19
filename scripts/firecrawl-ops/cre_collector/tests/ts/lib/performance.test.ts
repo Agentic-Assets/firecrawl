@@ -380,7 +380,7 @@ test("direct-provider telemetry is separate, bounded, and reports active request
     assert.equal(snapshot.coverage.client_requests, "firecrawl_scrape_only");
     assert.equal(
       snapshot.coverage.direct_provider_requests,
-      "essex_only_other_direct_sources_unknown"
+      "essex_pyramid_only_other_direct_sources_unknown"
     );
     assert.doesNotMatch(JSON.stringify(snapshot), /example\.invalid|private|business-body/);
   } finally {
