@@ -1518,6 +1518,7 @@ def main():
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--out", default=None, help="optional output path")
+    parser.add_argument("--transwestern-image-state", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     parser.add_argument(
         "--profile",
@@ -1526,10 +1527,18 @@ def main():
         help="full by default; checkpoint-preflight is a reduced before-collection audit only",
     )
     args = parser.parse_args()
+    if args.transwestern_image_state and (
+        args.profile != FULL_VALIDATION_PROFILE or not args.expected_artifact_run_key
+        or not args.expected_db_target_sha256
+    ):
+        parser.error("Transwestern image state requires bound full validation")
     try:
         queries = queries_for_profile(
             args.profile, expected_artifact_run_key=args.expected_artifact_run_key
         )
+        if args.transwestern_image_state:
+            from cre_transwestern_image_sql import image_state_query
+            queries["transwestern_image_state"] = image_state_query()
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -1550,6 +1559,8 @@ def main():
         psql, db_url, queries
     )
     _require_query_families(report["queries"], queries)
+    if args.transwestern_image_state:
+        report["transwestern_image_state"] = report["queries"].pop("transwestern_image_state")
     if args.profile == FULL_VALIDATION_PROFILE:
         report["historical_primary_child_conflicts"] = report["queries"].pop(
             "historical_primary_child_conflicts"

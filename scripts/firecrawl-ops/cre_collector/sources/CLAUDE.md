@@ -37,6 +37,22 @@ An empty photo array may be omitted by `prune`; neither missing primary evidence
 nor an empty array proves that the publisher has no property imagery elsewhere.
 These source observations do not waive persisted-child or primary-role checks.
 
+The Transwestern image-transition path is source-specific. It requires the exact
+strict-fresh full-source artifact, generation/start, clean collector code SHA,
+database target and ingest-attempt binding. In the same canonical ingest
+transaction it snapshots prior physical image rows, preserves each protected
+URL/multiplicity and offstage state, and permits removal only for exact
+source-proved exclusions or the narrowly classified map-tile/template noise.
+Primary choice uses the retained current feed/gallery witness when available;
+otherwise it keeps the prior primary only if that exact URL remains staged,
+and leaves primary unassigned when neither is supported. The post-`COMMIT`
+receipt carries raw counts, conservation totals, primary-role totals and a full
+image-state digest; normal raw-report comparison and full digest readback are
+both required. This is not a Transwestern inventory/lifecycle waiver and does
+not apply to another source. Code merge and isolated QA do not establish
+runtime promotion or fresh full-source production acceptance; inspect the
+current evidence on [AGENTIC-4576](https://linear.app/agenticassets/issue/AGENTIC-4576).
+
 ## Fix shared failure families
 
 Before treating a failure as unique to one brokerage, identify its provider,
