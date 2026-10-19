@@ -75,7 +75,20 @@ test("Lyon Product fallback retains identity, challenge and unlabeled lease refu
   assert.equal(parse(mutate(n => { n.splice(1); })).kind, "held");
 });
 
-test("Lyon source excludes exact terminal page and keeps unknown pages truncated", async () => {
+test("Lyon source excludes exact terminal page and keeps unknown pages truncated", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
+  t.mock.method(performance, "now", () => Date.now());
+  const collect = async () => {
+    let settled = false;
+    const result = srcLyonStahl("sale", Infinity, false);
+    void result.then(() => { settled = true; }, () => { settled = true; });
+    for (let tick = 0; !settled && tick < 400; tick++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (!settled) t.mock.timers.tick(250);
+    }
+    assert.ok(settled, "fixture source must settle in bounded fake time");
+    return result;
+  };
   const previous = globalThis.fetch;
   try {
     globalThis.fetch = (async (input: any) => {
@@ -86,7 +99,7 @@ test("Lyon source excludes exact terminal page and keeps unknown pages truncated
         ? `<urlset><url><loc>${url}</loc></url></urlset>` : fixture;
       return new Response(body, { headers: { "content-type": requested.endsWith(".xml") ? "text/xml" : "text/html" } });
     }) as typeof fetch;
-    const terminal = await srcLyonStahl("sale", Infinity, false);
+    const terminal = await collect();
     assert.equal(terminal.listings.length, 0);
     assert.equal(terminal.truncated, false);
     assert.match(terminal.note ?? "", /1 terminal/);
@@ -94,7 +107,7 @@ test("Lyon source excludes exact terminal page and keeps unknown pages truncated
     globalThis.fetch = (async (input: any, init: any) => String(input) === url
       ? new Response(mutate(n => { delete n[1].offers.availability; }), { headers: { "content-type": "text/html" } })
       : fake(input, init)) as typeof fetch;
-    const unknown = await srcLyonStahl("sale", Infinity, false);
+    const unknown = await collect();
     assert.equal(unknown.truncated, true);
     assert.match(unknown.note ?? "", /1 detail page.*held/);
   } finally {
