@@ -129,6 +129,13 @@ Supported inventory-only index records are counted separately; they do not
 increase property-listing or sale/lease totals or claim refreshed parent details.
 No scheduler or Mac configuration is activated by selecting this mode.
 
+After a failed pipeline settles with a known rollback, the strict finish summary
+can retain qualified siblings while an exact `global pipeline stop` leaves
+prewrite members without credit. A `dry_run_passed` stopped member is failed;
+cancelled or unstarted prewrite members remain unfinished. This is a partial
+summary, not whole-run success; unknown writes, active recovery, unsettled owners
+or invalid qualification evidence still make counts unavailable.
+
 For concise scheduled-run messages, see [Slack setup](slack-setup.md). It owns
 the private webhook-file format, local configuration check and exact-channel
 delivery verification; it does not authorize or enable a schedule.

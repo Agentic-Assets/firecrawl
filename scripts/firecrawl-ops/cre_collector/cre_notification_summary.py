@@ -904,9 +904,25 @@ def verified_pipeline_summary(
             require(parent_entry.get("attempts", [])[-1].get("series_control_child_id") == child_id)
             state = result.get("state") if isinstance(result, dict) else None
             if state == "failed":
-                require(interrupted or parent_entry.get("state") in {"failed_source", "failed"})
+                settled_global_stop = (
+                    parent.get("status") == child.get("status") == "failed"
+                    and pipeline.get("status") == "reconciliation_required"
+                    and result.get("reason") == "global pipeline stop"
+                    and parent_entry.get("state") == "pending"
+                    and checkpoint.get("state") in {
+                        "pending", "collecting", "candidate", "validated", "gated",
+                        "dry_run_passed",
+                    }
+                )
+                require(interrupted or settled_global_stop
+                        or parent_entry.get("state") in {"failed_source", "failed"})
                 require(checkpoint.get("state") not in {"ingested", "complete"})
-                failed.append(source)
+                # A settled rollback is failed; cancelled/unstarted prewrite work
+                # remains unfinished. Neither classification receives DB credit.
+                if settled_global_stop and checkpoint.get("state") != "dry_run_passed":
+                    pending.append(source)
+                else:
+                    failed.append(source)
                 continue
             if result is None:
                 require(
