@@ -25,7 +25,7 @@ failure before attempting a restart. Desktop's host logs normally live under
 sharing. A missing Ubuntu Docker CLI/socket while `docker-desktop` is stopped
 does not by itself prove that the integration setting was disabled.
 
-On a Desktop version with the CLI shown above:
+On a Desktop version with the [Docker Desktop CLI](https://docs.docker.com/reference/cli/docker/desktop/), use its documented [bounded start command](https://docs.docker.com/reference/cli/docker/desktop/start/):
 
 ```powershell
 docker desktop start --help
@@ -61,9 +61,14 @@ and current sole-writer coordination.
 
 ## Windows startup and container restart policy
 
-For an approved Windows unattended workload, verify Docker Desktop's login
-startup separately from the containers' restart policies. A running Desktop
-window, a login entry and a container policy each prove different settings.
+For scheduled Windows CRE, turn on Docker Desktop's standard **Start Docker
+Desktop when you sign in to your computer** preference in Settings > General for
+the task user's interactive sign-in. Leave it off only when this stack is for
+interactive use. CRE's task uses that signed-in user's token; signed-out
+execution is unsupported. Verify the login preference separately from the
+containers' restart policies: a running Desktop window, a login entry and a
+container policy each prove different settings. See Docker's [Desktop settings
+reference](https://docs.docker.com/desktop/settings-and-maintenance/settings/).
 Inspect only the intended five core containers; do not change every container
 on the computer. Docker supports updating an existing container's policy with
 `docker update --restart unless-stopped <verified-container-id>` without
@@ -136,6 +141,19 @@ network-policy change or Docker data reset was needed. The version change and
 recovery are verified observations; they do not establish why the earlier
 launcher call failed. Engine recovery does not establish container health or
 production-refresh completion.
+
+Across October 18–19, three scheduled Windows attempts exhausted the launcher's
+90-second loopback API readiness wait and refused before Linux dispatch or
+database work. Docker Desktop and its backend were absent at diagnosis. The
+operator used the supported bounded `docker desktop start --timeout 60`; the
+five existing Firecrawl containers returned with their reviewed configurations
+and the API became ready. The standard sign-in startup preference was enabled.
+Subsequent on-demand Interra (59 listings) and Newmark (4,548) runs passed source readback,
+no-regression checks, local settlement and actual Slack readback. These manual
+recoveries do not prove natural-clock or login/reboot acceptance. Why Desktop
+had stopped remains unknown. No Mac, resource-limit or model-routing changes
+were made. [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752)
+holds the dated evidence.
 
 If this recurs, record the fresh failure timestamp and executable arguments,
 compare the exact WSL command under the same account/session as Desktop, and
