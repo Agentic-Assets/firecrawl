@@ -27,6 +27,11 @@ checkout. Before starting a development task, open or register `firecrawl-dev` a
 project and select it for that task. This guide does not establish that the project has been
 registered.
 
+When a file-edit tool targets a checkout other than the chat's working directory,
+use absolute file paths. A shell command's `workdir` applies only to that command;
+it does not change the base directory of other tools. Verify edits with `git status`
+in the intended development or test clone, and keep the runtime checkout clean.
+
 On Windows, verify that `.claude/skills` is a real directory symlink to `../.agents/skills`; a
 text file containing the target is not a working link. A checkout may need `core.symlinks=true`
 and Windows symlink support when creating that link. This affects project skill discovery only;
