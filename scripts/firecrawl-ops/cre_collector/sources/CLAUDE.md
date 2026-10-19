@@ -217,6 +217,21 @@ Strict map inventory recognizes the native `Results: [...]` envelope as well
 as the existing `Properties` array envelope. Neither shape supplies the source
 total: the separate properties response must still provide a finite integer
 `TotalCount` matching the unique map ActivityIds before detail expansion.
+Only a valid strict total-versus-unique-ID mismatch permits one 3-second delayed
+reread of both inventory POSTs. Discard the first pair; only the replacement
+pair may supply details. Every raw map row must carry a nonempty string
+ActivityId. Malformed input, denial, timeout or a persistent mismatch refuses;
+there is no count tolerance or union of observations. Existing retry telemetry
+records the actual wait.
+
+Colliers SalesTracker (`colliers`, not `colliers-main`) may retry one failed
+list/map GET pair on the same page after a 1-second delay. Only recognized native
+timeouts or HTTP 500/502/503/504 without Retry-After qualify. Abort and settle the
+sibling before deciding; any observed nonretryable failure wins. Keep the exact
+engine key, start and page size, retain completed earlier pages, and record actual
+wait telemetry. Schema, identity, count and parity failures remain fatal, as do
+denials, explicit Retry-After and arbitrary transport errors. This bounded
+recovery never accepts a partial inventory.
 
 Matthews published keyword/state filters are not proven exhaustive or disjoint
 inventory partitions. A matched multi-state subject appeared in a keyword
@@ -330,6 +345,10 @@ Savills baseline/coverage comparisons use the registered U.S. commercial
 sale+lease scope. See [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364)
 for the separate exact-preimage historical correction and ordinary acceptance;
 provider/raw, gate-flat and merged unique counts are distinct domains.
+Its full-source coverage proof belongs to exactly one Savills-contributing
+artifact, even in a mixed-brokerage batch. Unrelated files must not invalidate
+that proof; additional Savills source entries or listings in another file must
+not borrow it. Keep all batch members and every other source's normal gate.
 
 NAI physical facts come only from unambiguous exact `Year Built` and
 `Property Type` two-cell rows in the selected public-post content, outside

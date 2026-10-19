@@ -7,6 +7,7 @@ import { harvestDetail } from "../lib/harvest.js";
 import { decodeHtmlEntities, dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { refreshGenerationId } from "../lib/freshness.js";
 import { parseJsonBody } from "../lib/scrape.js";
+import { recordRetry } from "../lib/performance.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { parseLeaseRate } from "../lib/parse.js";
 import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
@@ -81,21 +82,115 @@ export function colliersUrl(href: string | null | undefined): string | null {
   }
 }
 
-export async function colliersGetText(url: string): Promise<string> {
+class ColliersHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfter: string | null,
+    url: string
+  ) {
+    super(`Colliers GET ${url} HTTP ${status}`);
+    this.name = "ColliersHttpError";
+  }
+}
+
+export async function colliersGetText(url: string, signal?: AbortSignal): Promise<string> {
+  const timeoutSignal = AbortSignal.timeout(30000);
   const res = await fetch(url, {
     headers: colliersHeaders("text/html,application/json,*/*"),
-    signal: AbortSignal.timeout(30000),
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   });
-  if (!res.ok) throw new Error(`Colliers GET ${url} HTTP ${res.status}`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new ColliersHttpError(res.status, res.headers.get("retry-after"), url);
+  }
   return res.text();
 }
 
-export async function colliersGetJson(url: string): Promise<any> {
-  const text = await colliersGetText(url);
+export async function colliersGetJson(url: string, signal?: AbortSignal): Promise<any> {
+  const text = await colliersGetText(url, signal);
   const parsed = parseJsonBody(text);
   if (parsed === null) throw new Error(`Colliers GET ${url} returned non-JSON`);
   if (parsed?.success === false) throw new Error(`Colliers GET ${url} returned success=false`);
   return parsed;
+}
+
+const COLLIERS_PAGE_PAIR_RETRY_DELAY_MS = 1000;
+const COLLIERS_RETRYABLE_HTTP_STATUSES = new Set([500, 502, 503, 504]);
+const COLLIERS_RETRYABLE_NATIVE_CODES = new Set([
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+function colliersPairRetryable(error: unknown): boolean {
+  if (error instanceof ColliersHttpError) {
+    return (
+      COLLIERS_RETRYABLE_HTTP_STATUSES.has(error.status) &&
+      error.retryAfter === null
+    );
+  }
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof TypeError)) return false;
+  const cause = (error as TypeError & { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return false;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && COLLIERS_RETRYABLE_NATIVE_CODES.has(code);
+}
+
+function colliersSiblingAbort(error: unknown, firstFailure: unknown): boolean {
+  return error !== firstFailure && error instanceof Error && error.name === "AbortError";
+}
+
+async function colliersFetchPagePair(
+  listUrl: string,
+  mapUrl: string
+): Promise<[any, any]> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    let firstFailure: unknown;
+    const request = async (url: string): Promise<any> => {
+      try {
+        return await colliersGetJson(url, controller.signal);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          firstFailure = error;
+          controller.abort(error);
+        }
+        throw error;
+      }
+    };
+    const settled = await Promise.allSettled([request(listUrl), request(mapUrl)]);
+    const failures = settled
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason)
+      .filter((error) => !colliersSiblingAbort(error, firstFailure));
+    if (!failures.length) {
+      return [
+        (settled[0] as PromiseFulfilledResult<any>).value,
+        (settled[1] as PromiseFulfilledResult<any>).value,
+      ];
+    }
+
+    const nonRetryableIndex = failures.findIndex((error) => !colliersPairRetryable(error));
+    if (nonRetryableIndex >= 0) {
+      const nonRetryable = failures[nonRetryableIndex];
+      if (nonRetryable === undefined) {
+        throw new Error("Colliers paired page request failed without an error value");
+      }
+      throw nonRetryable;
+    }
+    if (attempt === 2) throw failures[0];
+
+    const waitStarted = performance.now();
+    await new Promise<void>((resolve) => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
+    recordRetry(
+      "http_helper",
+      Math.max(0, Math.round(performance.now() - waitStarted)),
+      true
+    );
+  }
+  throw new Error("Colliers page-pair retry exhausted unexpectedly");
 }
 
 export function extractColliersEngineKey(html: string): string {
@@ -613,10 +708,10 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
   let start = 1;
   for (let page = 1; page <= PAGE_CAP && selected.length < want; page++) {
     const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
-    const [listData, mapData] = await Promise.all([
-      colliersGetJson(colliersListUrl(engineKey, start, pageSize)),
-      colliersGetJson(colliersMapUrl(engineKey, start, pageSize)),
-    ]);
+    const [listData, mapData] = await colliersFetchPagePair(
+      colliersListUrl(engineKey, start, pageSize),
+      colliersMapUrl(engineKey, start, pageSize)
+    );
     const reportedTotal = Number.isFinite(Number(listData.total))
       ? Number(listData.total)
       : null;

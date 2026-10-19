@@ -1053,9 +1053,12 @@ writes; the exact-evidence maintenance above is separate. Do not run
 
 The global admission floor is 100 listings. The sole reviewed exception is
 Savills, declared in `data/cre-gate-coverage-policy.json`: its floor is one
-only when the gate receives exactly one uncapped, full `sale` + `lease`
-artifact whose provider totals, collector counts, and artifact listings agree
-for both transactions. An error, truncation, subset, capped run, malformed
+only when exactly one Savills-contributing artifact in the gate inputs proves
+uncapped, full `sale` + `lease` coverage, with provider totals, collector counts,
+and artifact listings agreeing for both transactions. Unrelated brokerage
+artifacts may share the batch. Any additional Savills contribution, in source
+metadata or listings, refuses rather than borrowing that proof. An error,
+truncation, subset, capped run, malformed
 evidence, or reconciliation mismatch retains the normal floor and cannot seed
 a baseline. This exception changes neither the no-schedule rule nor the
 separate whole-source freshness certificate requirements.

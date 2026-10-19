@@ -1,3 +1,4 @@
+import { recordRetry } from "../lib/performance.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/marcus-millichap.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
@@ -203,14 +204,15 @@ export function parseMarcusPropertiesResponse(
 
 export function parseMarcusMapRowsResponse(
   map: any,
-  strict = requireFreshDetails()
+  strict = requireFreshDetails(),
+  requireNativeIds = false
 ): any[] {
-  return parsePureMarcusMapRowsResponse(map, strict);
+  return parsePureMarcusMapRowsResponse(map, strict, requireNativeIds);
 }
 
-export async function fetchMarcusMapRows(): Promise<any[]> {
+export async function fetchMarcusMapRows(requireNativeIds = false): Promise<any[]> {
   const map = await marcusPost("/api/contentsearch/mapproperties", marcusSearchBody(1));
-  return parseMarcusMapRowsResponse(map);
+  return parseMarcusMapRowsResponse(map, requireFreshDetails(), requireNativeIds);
 }
 
 export async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
@@ -251,6 +253,8 @@ export async function fetchMarcusMapListing(mapRow: any): Promise<any | null> {
   }
 }
 
+class MarcusInventoryCountMismatchError extends Error {}
+
 export function assertMarcusInventoryCount(
   total: number | null,
   mapRows: any[],
@@ -269,7 +273,7 @@ export function assertMarcusInventoryCount(
     );
   }
   if (strict && mapRows.length !== total) {
-    throw new Error(
+    throw new MarcusInventoryCountMismatchError(
       `Marcus & Millichap inventory mismatch: properties API reported ${total}, map API returned ${mapRows.length} unique ActivityIds`
     );
   }
@@ -845,17 +849,30 @@ export async function srcMarcusMillichap(tx: Tx, max: number, monitor: boolean):
         "Sale-only in the public property UI. The documented public bundle exposes property and auction endpoints, but no public lease search mode or lease endpoint was found.",
     };
   }
-  const search = await marcusPost("/api/contentsearch/properties", marcusSearchBody(2));
-  const { rows, total } = parseMarcusPropertiesResponse(search);
-  if (!rows.length) throw new Error("Marcus & Millichap public properties API sanity check returned no rows");
-  console.error(
-    `  marcus-millichap/sale: public properties API sanity check returned ${rows.length} row(s), total ${
-      total ?? "?"
-    }`
-  );
-  const mapRows = await fetchMarcusMapRows();
-  if (!mapRows.length) throw new Error("Marcus & Millichap public mapproperties API returned no rows");
-  assertMarcusInventoryCount(total, mapRows);
+  let total: number | null = null;
+  let mapRows: any[] = [];
+  for (let pair = 1; pair <= 2; pair++) {
+    const search = await marcusPost("/api/contentsearch/properties", marcusSearchBody(2));
+    const parsed = parseMarcusPropertiesResponse(search);
+    total = parsed.total;
+    if (!parsed.rows.length) throw new Error("Marcus & Millichap public properties API sanity check returned no rows");
+    console.error(
+      `  marcus-millichap/sale: public properties API sanity check returned ${parsed.rows.length} row(s), total ${total ?? "?"}`
+    );
+    mapRows = await fetchMarcusMapRows(true);
+    if (!mapRows.length) throw new Error("Marcus & Millichap public mapproperties API returned no rows");
+    try {
+      assertMarcusInventoryCount(total, mapRows);
+      break;
+    } catch (err) {
+      if (!(err instanceof MarcusInventoryCountMismatchError) || pair === 2) throw err;
+      // Discard both observations; only a fresh complete pair can feed details.
+      console.error(`  marcus-millichap/sale: inventory count mismatch ${total}/${mapRows.length}; pair retry 2/2 after 3000ms`);
+      const waitStarted = performance.now();
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      recordRetry("http_helper", performance.now() - waitStarted, true);
+    }
+  }
   const inventoryObservedAt = observationNow();
   const observedMapRows = mapRows.map((row) => ({
     ...row,

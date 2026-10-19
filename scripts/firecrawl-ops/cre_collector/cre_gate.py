@@ -175,9 +175,6 @@ def savills_full_scope_coverage_error(artifact_payloads):
     therefore cannot turn into a normal gate ``ok`` merely because Savills is
     currently a small source.
     """
-    if len(artifact_payloads) != 1:
-        return "requires exactly one full Savills artifact"
-
     matching = []
     for data in artifact_payloads:
         entries = [
@@ -185,7 +182,13 @@ def savills_full_scope_coverage_error(artifact_payloads):
             for entry in (data.get("sources") or [])
             if isinstance(entry, dict) and entry.get("sourceKey") == "savills"
         ]
-        if entries:
+        # Unrelated batch members cannot invalidate this source's proof.  A
+        # second Savills contribution must still count even if its source
+        # metadata is missing, so it cannot borrow the full artifact's proof.
+        if entries or any(
+            isinstance(listing, dict) and listing.get("sourceKey") == "savills"
+            for listing in (data.get("listings") or [])
+        ):
             matching.append((data, entries))
     if len(matching) != 1:
         return "requires exactly one full Savills artifact"
