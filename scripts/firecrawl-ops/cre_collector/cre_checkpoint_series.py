@@ -2599,6 +2599,8 @@ def run_controlled_series(
         }
         try:
             save_manifest(series_dir, manifest)
+            # Locator only: the bounded native observer does not parse the JSON handshake.
+            print(series_dir, flush=True)
             signal.setitimer(signal.ITIMER_REAL, control.seconds)
             rc = run_series(
                 series_dir,

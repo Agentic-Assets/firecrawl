@@ -686,7 +686,7 @@ def verified_pipeline_summary(
             type(parent.get("schema_version")) is int
             and parent["schema_version"] == 1
             and parent.get("series_id") == selected.name
-            and parent.get("status") in {"complete", "qualified_partial_subset", "failed"}
+            and parent.get("status") in {"complete", "qualified_partial_subset", "failed", "interrupted"}
             and parent.get("collector_git_sha") == expected_sha
             and parent.get("collector_git_dirty") is False
         )
@@ -709,6 +709,19 @@ def verified_pipeline_summary(
         private = directory(series_fd, ".series-control")
         safe._safe_stat(private, directory=True, private=True)
         control = read(private, invocation + ".json", 16384)
+        interrupted = parent.get("status") == "interrupted"
+        interruption_rc = None
+        if interrupted:
+            # Controlled stops leave parent attempts unreconciled. They bind the
+            # child only; verified units below remain the sole count authority.
+            interruption_rc = {"deadline_interrupted": 124, "interrupted": 130}.get(
+                control.get("status")
+            )
+            require(interruption_rc is not None)
+            require(parent.get("error") == (
+                "series work deadline expired" if interruption_rc == 124
+                else "operator interruption"
+            ))
         owner = control["stop_owner"]
         require(
             type(owner.get("schema_version")) is int
@@ -722,11 +735,11 @@ def verified_pipeline_summary(
             == safe._identity(os.fstat(private))
         )
         require(
-            control.get("status") == (
+            (interrupted or control.get("status") == (
                 "failed" if parent.get("status") == "failed" else
                 "qualified_partial_subset" if current_inventory.is_verified_subset(config)
                 and parent.get("status") == "qualified_partial_subset" else "complete"
-            )
+            ))
             and control.get("local_settlement") == "confirmed"
         )
         started, finished = control["started_unix_ms"], control["finished_unix_ms"]
@@ -753,6 +766,12 @@ def verified_pipeline_summary(
             require(isinstance(attempts, list) and attempts)
             attempt = attempts[-1]
             require(attempt.get("checkpoint_run") == locator)
+            if interrupted:
+                require(
+                    entry.get("state") == "interrupted"
+                    and type(attempt.get("rc")) is int
+                    and attempt["rc"] == interruption_rc
+                )
             child_id = attempt.get("series_control_child_id")
             require(isinstance(child_id, str) and HEX_ID.fullmatch(child_id))
             child_ids.add(child_id)
@@ -775,15 +794,14 @@ def verified_pipeline_summary(
             and child.get("run_id") == run_id
             and child.get("collector_git_sha") == expected_sha
             and child.get("collector_git_dirty") is False
-            and child.get("status")
-            in {
+            and child.get("status") in ({"interrupted"} if interrupted else {
                 "supported_scope_complete",
                 "additive_scope_complete_current_inventory",
                 "qualified_partial_subset",
                 "selected_transaction_scope_complete",
                 "additive_scope_complete_coverage_hold",
                 "failed",
-            }
+            })
             and child.get("config", {}).get("pipeline") is True
             and child["config"].get("sources") == selected_sources
             and child["config"].get("transactions") == ["sale", "lease"]
@@ -824,10 +842,12 @@ def verified_pipeline_summary(
         require(isinstance(pipeline, dict))
         pipeline_status = pipeline.get("status")
         require(pipeline_status in {"complete", "partial", "failed", "reconciliation_required"})
+        if interrupted:
+            require(pipeline_status == "reconciliation_required")
         # A global pre-write failure also requests reconciliation. Only settled,
         # known-outcome units can supply notification counts; never run-wide success.
         if pipeline_status == "reconciliation_required":
-            require(parent.get("status") == "failed" and child.get("status") == "failed")
+            require(interrupted or (parent.get("status") == "failed" and child.get("status") == "failed"))
             require(pipeline.get("commit_outcome_unknown") is False)
         else:
             require(pipeline.get("commit_outcome_unknown", False) is False)
@@ -884,13 +904,13 @@ def verified_pipeline_summary(
             require(parent_entry.get("attempts", [])[-1].get("series_control_child_id") == child_id)
             state = result.get("state") if isinstance(result, dict) else None
             if state == "failed":
-                require(parent_entry.get("state") in {"failed_source", "failed"})
+                require(interrupted or parent_entry.get("state") in {"failed_source", "failed"})
                 require(checkpoint.get("state") not in {"ingested", "complete"})
                 failed.append(source)
                 continue
             if result is None:
                 require(
-                    parent_entry.get("state")
+                    interrupted or parent_entry.get("state")
                     in {
                         "pending",
                         "collecting",
@@ -905,9 +925,9 @@ def verified_pipeline_summary(
                 continue
             require(state == "verified")
             require(
-                parent_entry.get("state") == ("qualified_partial_subset" if current_inventory.is_verified_subset(child["config"], source) else "complete")
+                interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if current_inventory.is_verified_subset(child["config"], source) else "complete")
                 and parent_entry.get("pipeline_result") == result
-                and parent_entry.get("checkpoint_status") == child.get("status")
+                and parent_entry.get("checkpoint_status") == child.get("status"))
             )
             unit_id = result.get("unit_id")
             unit = units_by_id.get(unit_id)

@@ -121,6 +121,17 @@ Assert-True ($state.Eof -and -not $state.Failed -and $state.ObservedBytes -eq 81
 $test = Invoke-Capture @('refs', '/synthetic/out/guarded-tiers/')
 Assert-True ($test.Result.Stdout.ObservedRunDirectory -ceq '/synthetic/out/guarded-tiers/2026-10-13T183401Z-0123456789ab' -and $test.Result.Stdout.RunReferenceConflict) 'Run correlation must retain first exact hint and flag conflicting references.'
 
+# Controlled startup retains JSON, then publishes the same plain locator used
+# at normal completion. The real observer must retain it on interrupted exits.
+foreach ($exitCode in @(124, 130)) {
+    $stem = Join-Path $ProofDirectory ('controlled-' + $exitCode)
+    $directory = '/synthetic/out/checkpoint-series/2026-10-18T101202Z'
+    $command = "[Console]::WriteLine('{`"series_dir`":`"$directory`",`"invocation_id`":`"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`"}'); [Console]::WriteLine('$directory'); exit $exitCode"
+    $hostExe = (Get-Process -Id $PID).Path
+    $captured = [CreWindowsCapture.Capture]::Run($hostExe, @('-NoProfile', '-NonInteractive', '-Command', $command), "$stem.out", "$stem.err", '/synthetic/out/checkpoint-series/')
+    Assert-True (-not $captured.Failed -and $captured.NativeExitCode -eq $exitCode -and $captured.Stdout.ObservedRunDirectory -ceq $directory -and -not $captured.Stdout.RunReferenceConflict) 'Controlled interrupted startup must retain the canonical locator and exact exit without parsing its JSON.'
+}
+
 # Execute the actual launcher body in a private directory, replacing only its
 # telemetry function and application resolver with deterministic offline seams.
 # The shipped capture helper and all audit/dispatch/exit code remain unchanged.

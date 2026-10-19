@@ -376,6 +376,13 @@ $payload=[CreWindowsNotification.Sender]::Payloads[1] | ConvertFrom-Json
 Assert-Cre ($record.Contains('notificationSummaryCapture') -and $record.notificationSummaryStatus -ceq 'verified') 'Nonzero pipeline terminal must invoke the actual bounded summary reader.'
 Assert-Cre ($payload.text.Contains('Needs attention') -and $payload.text.Contains('59 listings verified') -and $payload.text.Contains('*For sale:* 59 | *For lease:* 0') -and $payload.text -notmatch 'Completed') 'Overall failure must retain only qualified brokerage figures.'
 Assert-Cre ($payload.text.Contains('*CBRE:* Failed; verified counts unavailable') -and $payload.text.Contains('*JLL:* Pending; verified counts unavailable')) 'Failed and pending brokerages have explicit unavailable counts.'
+foreach ($exitCode in @(124, 130)) {
+    $record=New-Record; $record.nativeExitCode=$exitCode
+    $script:notificationAttempted=@{Start=$false;Terminal=$false}
+    Set-CreNotification $record ('interrupted-'+$exitCode) $exitCode 'Terminal'
+    $payload=[CreWindowsNotification.Sender]::Payloads[[CreWindowsNotification.Sender]::Payloads.Count-1] | ConvertFrom-Json
+    Assert-Cre ($record.notificationSummaryStatus -ceq 'verified' -and $payload.text.Contains('Needs attention') -and $payload.text.Contains('59 listings verified') -and $payload.text.Contains('*CBRE:* Failed; verified counts unavailable') -and $payload.text -notmatch 'Completed') 'Settled deadline/operator summaries retain only verified source counts under overall Needs attention.'
+}
 foreach ($failure in @('unverified','conflict','audit-failed','nonpipeline')) {
     $record=New-Record; $record.nativeExitCode=1
     switch ($failure) {
