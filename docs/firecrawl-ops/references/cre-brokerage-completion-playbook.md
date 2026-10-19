@@ -135,8 +135,10 @@ observed modern Google Maps resource on host
 host-wide exclusion. Preserve genuine listing-gallery imagery and other useful
 assets. A parser fixture proves classification only: filtering shared images can
 affect persisted-child retention, so it does not authorize deployment or cleanup.
-Require source-backed proof of a meaningful listing photo and the canonical
-artifact-to-ingest-to-database readback before shipping that change.
+For each persisted image role changed, require source-backed evidence for the
+changed URLs and canonical artifact-to-ingest-to-database readback. A source may
+have no identifiable property photo; missing primary evidence must not promote
+an unknown image or be presented as proof that the source publishes none.
 
 Verify photo roles as well as photo presence. Canonical ingest marks
 `photos[0]` primary, so retaining a property's feed photo somewhere in the
@@ -149,6 +151,17 @@ evidence where the adapter supports it, and test the actual mapper with a
 preferred image that initially follows other images, a filtered preferred
 image, a gallery-only fallback and an unknown layout. Transwestern's precise
 selection contract lives in `cre_collector/sources/CLAUDE.md`.
+
+Keep image classification and its evidence together at the final source
+boundary. A contact portrait belongs with its identified contact, and an
+observed interface graphic should not become a property photo through a second
+harvest input. Record actual excluded URLs with their source-backed role and
+basis; preserve unknown references and give an explicit native property-gallery
+reference precedence over a competing non-property role. Test structured image
+input and HTML-only input with a present but empty image array. Missing primary
+evidence is uncertainty, not permission to invent a property photo or a claim
+that the source publishes none. Source cleanup still requires its own bounded
+persisted-image transition proof before rollout.
 
 Use permitted public access and provider-aware pacing. Preserve existing
 deployment and guarded-write procedures when adding fields. Retaining a

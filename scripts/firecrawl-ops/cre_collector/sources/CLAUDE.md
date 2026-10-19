@@ -21,6 +21,22 @@ and omit that evidence. A generic scraped image, avatar, filename or unrelated
 gallery cannot establish a property-primary role. This source contract does
 not grant another adapter the same selector or authorize persisted-image loss.
 
+Transwestern's final photo-role filter lives in `pure/transwestern-images.ts`.
+It excludes only the four observed owned template resources (`tw_gl.png`,
+`connect-image.png`, `transwestern-mapmarker.png`, `mail-3.png`) at their exact
+asset paths, and exact avatars from contacts with a parsed identity signal.
+A retained feed or scoped property-gallery reference wins over either role.
+Unknown URLs remain in their existing order; filenames or CDN folders alone do
+not identify a portrait. Apply the filter after all harvest inputs, including
+HTML-only candidates when `doc.images` is empty, so exclusions are recorded.
+Successful details carry `transwesternPhotoRoleVersion: "v1"`; actual removals
+also carry `transwesternExcludedPhotoEvidence` with schema
+`transwestern-photo-role-v1` and per-URL role/basis entries. Keep avatars with
+their contacts, and preserve documents, Markdown and other useful detail fields.
+An empty photo array may be omitted by `prune`; neither missing primary evidence
+nor an empty array proves that the publisher has no property imagery elsewhere.
+These source observations do not waive persisted-child or primary-role checks.
+
 ## Fix shared failure families
 
 Before treating a failure as unique to one brokerage, identify its provider,
