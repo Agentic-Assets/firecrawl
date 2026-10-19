@@ -351,6 +351,93 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
     return True
 
 
+def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) -> bool:
+    """Retain a confirmed source hold before it can enter a database unit."""
+    import cre_checkpoint_refresh as refresh
+
+    checkpoint = manifest["sources"][source]
+    artifact = run_dir / checkpoint["artifact"]["path"]
+    binding = {
+        "collector_git_sha": manifest["collector_git_sha"],
+        "database_target_sha256": refresh.manifest_database_target_sha256(manifest),
+        "generation_id": manifest["run_id"],
+        "artifact_sha256": checkpoint["artifact"]["sha256"],
+    }
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    if (
+        manifest.get("collector_git_dirty") is not False
+        or refresh.git_identity() != (binding["collector_git_sha"], False)
+        or not binding["database_target_sha256"]
+        or refresh.sha256_file(artifact) != binding["artifact_sha256"]
+    ):
+        raise refresh.GlobalStageError(
+            f"pre-seal gate input identity changed: {source}"
+        )
+    refresh.gate_source(run_dir, manifest, source, artifact, env_file)
+    gate = checkpoint["gate"]
+    path = run_dir / gate["path"]
+    digest = refresh.sha256_file(path)
+    try:
+        report = refresh._load_json(path)
+        refresh.current_inventory.validate_report_scope(
+            report, manifest, source, artifact
+        )
+        info = report["per_source"][source]
+        summary = report["summary"]
+        valid = (
+            isinstance(info, dict)
+            and isinstance(summary, dict)
+            and set(report["per_source"]) == {source}
+            and summary.get("mode") == "live"
+            and type(summary.get("torow_errors")) is int
+            and summary["torow_errors"] == 0
+            and summary.get("baseline_updated") is False
+            and summary.get("baseline_update_sources") == []
+            and type(gate.get("rc")) is int
+            and gate["rc"] in (0, 2)
+            and info.get("verdict") == gate.get("verdict")
+            and gate["rc"]
+            == {"ok": 0, "first_seen": 0, "hold": 2}.get(
+                info.get("verdict")
+                if info.get("verdict") in {"ok", "first_seen", "hold"}
+                else info.get("raw_verdict")
+            )
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise refresh.GlobalStageError(
+            f"pre-seal gate report is invalid: {source}"
+        ) from exc
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    if (
+        not valid
+        or refresh.sha256_file(path) != digest
+        or refresh.sha256_file(artifact) != binding["artifact_sha256"]
+        or refresh.git_identity() != (binding["collector_git_sha"], False)
+        or manifest["collector_git_sha"] != binding["collector_git_sha"]
+        or manifest["run_id"] != binding["generation_id"]
+        or refresh.manifest_database_target_sha256(manifest)
+        != binding["database_target_sha256"]
+    ):
+        raise refresh.GlobalStageError(
+            f"pre-seal gate evidence changed or is invalid: {source}"
+        )
+    if refresh.gate_verdict_is_admitted(manifest, gate["verdict"], source=source):
+        return True
+    if (gate["verdict"], gate["rc"]) not in {
+        ("hold", 2),
+        ("first_seen", 0),
+    } or info.get("mark_missing_safe") is not False:
+        raise refresh.GlobalStageError(
+            f"unrecognized pre-seal source gate refusal: {source}"
+        )
+    gate.update(sha256=digest, preseal_binding=binding)
+    checkpoint["state"] = (
+        "baseline_seed_required" if gate["verdict"] == "first_seen" else "gate_blocked"
+    )
+    refresh.save_manifest(run_dir, manifest)
+    return False
+
+
 def require_pipeline_full_report(report: dict) -> None:
     """New pipeline evidence never inherits the serial legacy-report waiver."""
     import cre_checkpoint_refresh as refresh
@@ -688,6 +775,7 @@ def run_bounded_pipeline(
     active = []
     ready = []
     pending = list(selected)
+    terminal_gate_holds: set[str] = set()
     sealed = ()
     preparing = ()
     dispatch_pending = False
@@ -731,6 +819,8 @@ def run_bounded_pipeline(
             and checkpoint.get("state") not in {
                 "collect_infrastructure_failed",
                 "artifact_rejected",
+                "gate_blocked",
+                "baseline_seed_required",
             }
         ):
             pending.append(source)
@@ -777,6 +867,10 @@ def run_bounded_pipeline(
             and (
                 source in sealed
                 or state["source_results"].get(source, {}).get("state") == "verified"
+                or (
+                    source in terminal_gate_holds
+                    and checkpoint.get("state") in {"gate_blocked", "baseline_seed_required"}
+                )
             )
         }
         candidates = refresh.select_cohort_sources(
@@ -866,7 +960,6 @@ def run_bounded_pipeline(
                                 raise refresh.ArtifactValidationError(
                                     "candidate validation failed"
                                 )
-                            qualified.append(source)
                         except refresh.ArtifactValidationError as exc:
                             checkpoint = manifest["sources"][source]
                             candidate = checkpoint["candidate"]
@@ -881,6 +974,12 @@ def run_bounded_pipeline(
                                 )
                             )
                             retry_or_fail(source, "artifact validation failed")
+                            continue
+                        if preseal_source_gate(run_dir, manifest, source, env_file):
+                            qualified.append(source)
+                        else:
+                            terminal_gate_holds.add(source)
+                            retry_or_fail(source, "pre-seal source gate refused")
                     sealed = tuple(qualified)
                     preparing = ()
                     unit.update(
@@ -889,6 +988,9 @@ def run_bounded_pipeline(
                     refresh.save_manifest(run_dir, manifest)
                     if not sealed:
                         unit["finished_at"] = refresh.utc_now()
+                        # No database unit was sealed; source receipts retain
+                        # rejected candidates without publishing empty members.
+                        state["units"].pop()
                         state["active_unit"] = None
                         counts()
                         continue
@@ -959,7 +1061,13 @@ def run_bounded_pipeline(
         )
         state["status"] = "reconciliation_required"
         if state["active_unit"]:
-            state["units"][-1].update(state="failed", finished_at=refresh.utc_now())
+            unit = state["units"][-1]
+            if unit["state"] == "preparing" and unit["sources"] == []:
+                # Preparation has no database directory, members or writes.
+                # Keep source evidence without publishing an empty unit.
+                state["units"].pop()
+            else:
+                unit.update(state="failed", finished_at=refresh.utc_now())
         try:
             refresh._terminate_cohort_processes(active)
             active.clear()

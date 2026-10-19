@@ -56,8 +56,15 @@ collects, validates, gates, and dry-runs each source into a resumable manifest.
 Default serial mode stops on a refused source gate and requires the complete
 prepared artifact set to pass its aggregate gate before additive live ingest.
 Opt-in pipeline mode applies those gates to each sealed unit before its serial
-writes and full audit, while other sources may collect. The
-monolithic `cre_daily_update.sh` is a legacy backstop, not the proof path for a
+writes and full audit, while other sources may collect. The pipeline first
+checks each validated artifact's source gate before sealing.
+Exactly bound standard `hold` and `first_seen` refusals become terminal
+`gate_blocked` and `baseline_seed_required` source failures; other eligible
+sources continue. Their artifact and gate evidence remain in the checkpoint,
+outside sealed membership. Malformed, foreign, changed or unknown evidence,
+failed admission proof, and any refusal after sealing still stop all lanes.
+This adds a baseline read, artifact/report hashes and code identity checks per
+candidate. The monolithic `cre_daily_update.sh` is a legacy backstop, not the proof path for a
 source-fresh detail sweep or a new Windows schedule. For explicit-source,
 bounded inventory/enrichment trials, see the
 [guarded incremental guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md).
@@ -101,11 +108,17 @@ Dispatch pauses at a 512 MiB soft pending-byte watermark, charging at least
 64 MiB per active output plus actual larger temporary/retry files, and requires
 1 GiB free beyond remaining reservations. These are dispatch limits: legitimate
 oversized artifacts retain their unchanged acceptance checks and drain alone.
+Confirmed terminal pre-seal held artifacts leave the pending-work budget but
+remain on disk and count against the unchanged minimum-free-space check.
 Mixed-stage resource, telemetry, ownership, evidence or database failures stop
 new dispatch and settle owned groups. There is no automatic mixed-stage
 cooldown/restart; uncertain writes retain existing reconciliation fences.
 
 Evidence stays in the single refresh manifest and `pipeline/unit-0001/` etc.
+Never-sealed empty preparation units are omitted; source failure evidence is
+retained. Mixed and all-held runs remain failed/incomplete and never advance
+all-source last-good. Partial summaries report only qualified member counts,
+including no listing counts when every source is held.
 The manifest records sealed membership, audit report bindings and exact
 `pipeline.source_results` only for qualified members. Series entries point to
 that same refresh run; partial completion cannot publish all-source last-good

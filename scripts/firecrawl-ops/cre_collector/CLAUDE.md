@@ -349,11 +349,15 @@ For an operator-requested full freshness sweep, prefer
 `cre_checkpoint_refresh.py` over the monolithic daily runner. It checkpoints
 each source, binds observations to an immutable generation, bypasses Firecrawl
 response caches for strict source reads, expires resumable generations after
-24 hours, validates artifact provenance, and stops at the first non-`ok` source
-gate. In serial mode, all configured artifacts must pass their source gates
+24 hours and validates artifact provenance. Serial mode stops on a refused
+source gate; all configured artifacts must pass their source gates
 and the aggregate gate before live ingest begins. In opt-in pipeline mode,
 each sealed unit must pass its own source and aggregate gates before its
 serial database transaction; another source may continue collecting.
+Before sealing, exactly bound standard `hold`/`first_seen` refusals become
+terminal source failures while other eligible sources continue. Invalid or
+uncertain evidence and sealed-unit refusals remain globally terminal; see
+the pre-seal and retained-artifact accounting contract in `START_HERE.md`.
 Ordinary `first_seen` requires an explicit
 reviewed baseline seed and readback before resuming the same immutable run.
 Explicit current-inventory admission preserves the absent baseline and raw

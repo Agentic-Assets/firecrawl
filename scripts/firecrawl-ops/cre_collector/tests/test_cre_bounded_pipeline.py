@@ -142,6 +142,7 @@ def run_schedule(
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
     monkeypatch.setattr(refresh, "_finalize_cohort_collection", publish)
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
+    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
 
     def cleanup(items):
@@ -391,6 +392,7 @@ def test_pipeline_real_owned_compute_and_db_waits_refill_fetches(
 
     monkeypatch.setattr(refresh, "run_command", command)
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
+    monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
     try:
         assert (

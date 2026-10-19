@@ -210,7 +210,9 @@ dispatch another job; it is not a maximum source-artifact size. The separate
 rather than trimming a completed source to fit. Do not reduce listing coverage
 to satisfy either scheduling estimate. Pending bytes cover unconsumed files in
 `sources/`, including temporary and retry leftovers; sealed and verified
-artifacts are excluded as they drain. Retained detail caches and quarantined
+artifacts are excluded as they drain. Confirmed terminal pre-seal held artifacts
+also leave unfinished-work accounting while retaining their gate evidence.
+Retained detail caches and quarantined
 `rejected/` audit files are not pending queue work and are not scanned for that
 watermark. They remain on disk and still reduce the actual free space used by
 the unchanged minimum-free-disk admission check.
