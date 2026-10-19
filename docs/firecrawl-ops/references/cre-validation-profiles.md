@@ -19,6 +19,14 @@ their required query families. Inventory fingerprints, freshness generations,
 queue health, search smoke, totals and historical diagnostics remain in the
 full audit. A preflight report cannot replace that audit or certify freshness.
 
+Reusable SQL helpers can return fragments intended for nesting. A standalone
+validation caller must terminate each statement before the timing frames and
+transaction rollback. Keep the optional Transwestern image-state fragment
+unterminated for ingest embedding; its validator caller adds the terminator.
+The disposable PostgreSQL timing contract exercises that actual CLI composition,
+result-like timing text, image count/digest, and terminal rollback. See
+[AGENTIC-4576](https://linear.app/agenticassets/issue/AGENTIC-4576).
+
 From `scripts/firecrawl-ops/cre_collector/`, inspect the explicit profile with:
 
 ```bash
