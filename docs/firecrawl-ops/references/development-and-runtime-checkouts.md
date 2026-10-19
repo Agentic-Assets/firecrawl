@@ -52,6 +52,33 @@ using SETUP; do not copy `node_modules`, virtual environments, database or webho
 or runtime artifacts between checkouts. Keep credentials in private host-local files, and keep
 runtime outputs in their owning runtime directory.
 
+## Independent verification captures
+
+Give each independent observation a new, unique output directory under ignored
+`.scratch/`, including another observation of the **same build**. Reuse reviewed
+capture code, not its previous output paths. Before executing a copied capture,
+statically inspect its dot-sourced helpers, `$PSScriptRoot` references, output
+directory and expected SHA: a new script location does not redirect paths embedded
+in its code or helpers. Confirm every output resolves to the new observation's
+directory before starting it.
+
+Keep captures writable only while their owning commands are producing evidence.
+After those writers have settled, record the observation clocks, code and target
+identity, then seal the files with their hashes and sizes. Never overwrite frozen
+captures or reuse their directory for a later readback. A sealed packet's references
+must continue to resolve to the exact bytes reviewed; a matching build SHA does
+not make two observations interchangeable.
+
+If old capture bytes have already been overwritten, preserve the currently
+available bytes in a new incident directory and report the lost-evidence gap on
+[AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752). Do not fabricate
+a restoration, reconstruct missing old bytes as proof, or relabel a new observation
+as the old one. Preserve any surviving hashes and receipts with their actual scope.
+
+These rules govern independent verification outputs. Runtime-owned mutable
+manifests, state and receipt paths retain their existing owner and update contracts;
+this guidance does not relocate them or introduce another writer or lease.
+
 ## Moving a reviewed build to a runtime
 
 Before any runtime handoff, use the current runbook and host tools to establish fresh idleness

@@ -44,6 +44,10 @@ per-source rows, tests, launchd state, or index sizes, run `cre_status.sh`,
 re-run the relevant test suites, and obtain a fresh `cre_validate.py` or exact
 checkpoint-manifest readback. Dated docs are operational history.
 
+For independent captures, use a new output directory for every observation, even
+of the same build; reuse capture code, never frozen output paths. Follow the
+[capture evidence rules](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md#independent-verification-captures).
+
 ## Read order
 
 1. `START_HERE.md` - current procedures, next steps, session bootstrap, Known Limits
