@@ -632,6 +632,18 @@ export async function enrichTranswesternListing(
       extraDocs: nativeDocs.map((d: any) => clean(d?.url)).filter((u): u is string => !!u),
       extraImages: nativePhotos,
     });
+    const feedPrimary = feedImage && harvested.images.includes(feedImage) ? feedImage : null;
+    const firstGalleryImage = canonicalTranswesternUrl(
+      $('.photos-list a.chocolat-image[href]').first().attr('href') ?? null
+    );
+    const galleryPrimary =
+      !feedPrimary && firstGalleryImage && harvested.images.includes(firstGalleryImage)
+        ? firstGalleryImage
+        : null;
+    const primaryPhoto = feedPrimary ?? galleryPrimary;
+    const photos = primaryPhoto
+      ? [primaryPhoto, ...harvested.images.filter((image) => image !== primaryPhoto)]
+      : harvested.images;
     const structured = transwesternStructured(facts);
     const scalars = liftTranswesternScalars(facts, availability, detailUrl);
     return prune({
@@ -645,7 +657,15 @@ export async function enrichTranswesternListing(
       contactsDetailed,
       brochures: undefined,
       documents: harvested.documents,
-      photos: harvested.images,
+      photos,
+      ...(primaryPhoto
+        ? {
+            transwesternPrimaryPhotoEvidence: {
+              url: primaryPhoto,
+              basis: feedPrimary ? 'provider_feed' : 'property_gallery',
+            },
+          }
+        : {}),
       media: harvested.media,
       links: harvested.links,
       markdown: doc.markdown,

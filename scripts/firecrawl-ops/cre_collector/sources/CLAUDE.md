@@ -9,6 +9,18 @@ source metadata and evidence of missingness, follow the
 [listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
 An empty consumer field is not proof of source absence.
 
+Photo order is part of fidelity: canonical ingest uses `photos[0]` as the
+primary image. For Transwestern, prefer the canonical feed `PropertyImage`
+only when it survives the shared image filter; otherwise consider only the
+first `.photos-list a.chocolat-image[href]` from that property's detail DOM,
+again requiring a retained URL. Move the witnessed image first while preserving
+every other retained image's relative order. Record the selected URL and
+`provider_feed` or `property_gallery` basis in
+`transwesternPrimaryPhotoEvidence`. With no retained witness, leave order alone
+and omit that evidence. A generic scraped image, avatar, filename or unrelated
+gallery cannot establish a property-primary role. This source contract does
+not grant another adapter the same selector or authorize persisted-image loss.
+
 ## Fix shared failure families
 
 Before treating a failure as unique to one brokerage, identify its provider,

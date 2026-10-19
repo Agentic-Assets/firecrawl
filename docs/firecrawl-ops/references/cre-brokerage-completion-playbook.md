@@ -138,6 +138,18 @@ affect persisted-child retention, so it does not authorize deployment or cleanup
 Require source-backed proof of a meaningful listing photo and the canonical
 artifact-to-ingest-to-database readback before shipping that change.
 
+Verify photo roles as well as photo presence. Canonical ingest marks
+`photos[0]` primary, so retaining a property's feed photo somewhere in the
+array does not prove the consumer will display it. Prefer a source-owned
+primary field or an observed property-gallery role, require that URL to survive
+the normal image filter, and preserve the relative order of all other retained
+images. Unknown roles stay unknown; do not promote a generic first scrape
+image merely because its URL looks photographic. Record source-backed role
+evidence where the adapter supports it, and test the actual mapper with a
+preferred image that initially follows other images, a filtered preferred
+image, a gallery-only fallback and an unknown layout. Transwestern's precise
+selection contract lives in `cre_collector/sources/CLAUDE.md`.
+
 Use permitted public access and provider-aware pacing. Preserve existing
 deployment and guarded-write procedures when adding fields. Retaining a
 document URL does not prove its contents were downloaded or parsed. GetCREdata

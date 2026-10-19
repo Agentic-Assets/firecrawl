@@ -498,6 +498,7 @@ test("Transwestern real source mapper excludes basemap tiles while preserving pr
     const listing = result.listings[0]!;
     assert.equal(listing.detailError, undefined);
     assert.deepEqual([...listing.photos].sort(), [gallery, feedImage].sort());
+    assert.deepEqual(listing.transwesternPrimaryPhotoEvidence, { url: feedImage, basis: "provider_feed" });
     assert.equal(listing.id, "sample-property");
     assert.equal(listing.canonicalUrl, "https://transwestern.com/property/sample-property");
     assert.equal(listing.transactionType, "Sale");
@@ -559,5 +560,94 @@ test("Transwestern tile-only native gallery and feed image cannot bypass the sha
     assert.ok(Number.isFinite(Date.parse(listing.detailObservedAt)));
   } finally {
     (firecrawl as any).scrape = original;
+  }
+});
+
+test("Transwestern real mapper prioritizes retained provider feed photo without changing remaining harvest order", async () => {
+  const original = firecrawl.scrape;
+  const feedImage = "https://images.transwestern.com/property/feed-primary.jpg";
+  const otherImages = [
+    "https://images.transwestern.com/property/first-harvested.jpg",
+    "https://images.transwestern.com/property/second-harvested.jpg",
+    "https://images.transwestern.com/property/third-harvested.jpg",
+  ];
+  const feedRow = {
+    PageUrl: "sample-property", BuildingName: "Sample Property",
+    PropertyTypeName: "Office", PropertyImage: feedImage, PropertySize: 10000,
+  };
+  (firecrawl as any).scrape = async (url: string) => {
+    if (url.includes("/properties?")) return { rawHtml: JSON.stringify([feedRow]) };
+    return {
+      rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+        <section class="property-dscptn">Current property overview</section></main>`,
+      markdown: "Sample Property\nCurrent property overview",
+      images: otherImages,
+      links: [],
+    };
+  };
+  try {
+    const result = await srcTranswestern("sale", 1, false);
+    assert.equal(result.listings.length, 1);
+    const listing = result.listings[0]!;
+    assert.equal(listing.detailError, undefined);
+    assert.deepEqual(listing.photos, [feedImage, ...otherImages]);
+    assert.deepEqual(listing.transwesternPrimaryPhotoEvidence, { url: feedImage, basis: "provider_feed" });
+    assert.deepEqual(listing.rawTranswesternFeed, feedRow);
+  } finally {
+    (firecrawl as any).scrape = original;
+  }
+});
+
+test("Transwestern real mapper requires retained source-role primary photo witnesses", async (t) => {
+  const first = "https://images.transwestern.com/property/first.jpg";
+  const gallery = "https://images.transwestern.com/property/gallery.jpg";
+  const second = "https://images.transwestern.com/property/second.jpg";
+  const feed = "https://images.transwestern.com/property/feed.jpg";
+  const tile = "https://mapsresources-pa.googleapis.com/v1/tiles?layer=basemap";
+  const cases = [
+    { name: "feed outranks exact gallery", feed, images: [first, gallery, second],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${gallery}">Gallery</a></div>`,
+      photos: [feed, first, gallery, second], evidence: { url: feed, basis: "provider_feed" } },
+    { name: "feedless exact gallery promotes only one retained URL", feed: undefined, images: [first, second],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${gallery}">Gallery</a></div>`,
+      photos: [gallery, first, second], evidence: { url: gallery, basis: "property_gallery" } },
+    { name: "generic chocolat anchor is not primary authority", feed: undefined, images: [first, second],
+      html: `<a class="chocolat-image" href="${gallery}">Unscoped image</a>`,
+      photos: [first, second, gallery], evidence: undefined },
+    { name: "filtered feed falls back to retained exact gallery", feed: tile, images: [first, second, tile],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${gallery}">Gallery</a></div>`,
+      photos: [gallery, first, second], evidence: { url: gallery, basis: "property_gallery" } },
+    { name: "no retained witness preserves harvest order", feed: tile, images: [first, second, tile],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${tile}">Map</a></div>`,
+      photos: [first, second], evidence: undefined },
+    { name: "promotion preserves existing deduplication", feed, images: [first, feed, first, second, feed],
+      html: `<div class="photos-list"><a class="chocolat-image" href="${feed}">Gallery</a></div>`,
+      photos: [feed, first, second], evidence: { url: feed, basis: "provider_feed" } },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const original = firecrawl.scrape;
+      const row = { PageUrl: "sample-property", BuildingName: "Sample Property",
+        PropertySize: 10000, Price: 2500000, PropertyImage: scenario.feed };
+      (firecrawl as any).scrape = async (url: string) => {
+        if (url.includes("/properties?")) return { rawHtml: JSON.stringify([row]) };
+        return { rawHtml: `<main class="property-dtl"><h1>Sample Property</h1>
+          <section class="property-dscptn">Current property overview</section>${scenario.html}</main>`,
+          markdown: "Current property overview", images: scenario.images, links: [] };
+      };
+      try {
+        const result = await srcTranswestern("sale", 1, false);
+        const listing = result.listings[0]!;
+        assert.equal(listing.detailError, undefined);
+        assert.deepEqual(listing.photos, scenario.photos);
+        assert.deepEqual(listing.transwesternPrimaryPhotoEvidence, scenario.evidence);
+        assert.deepEqual(listing.rawTranswesternFeed, JSON.parse(JSON.stringify(row)));
+        assert.equal(listing.salePriceUsd, 2500000);
+        assert.equal(listing.buildingSizeSqft, 10000);
+        assert.equal(listing.markdown, "Current property overview");
+      } finally {
+        (firecrawl as any).scrape = original;
+      }
+    });
   }
 });
