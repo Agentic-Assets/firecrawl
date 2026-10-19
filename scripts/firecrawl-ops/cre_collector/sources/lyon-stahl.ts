@@ -12,6 +12,7 @@ export const LYON_STAHL_SOURCE_URL = `${LYON_STAHL_HOST}/properties/`;
 export const LYON_STAHL_SITEMAP_URL = `${LYON_STAHL_HOST}/sitemap.xml`;
 export const LYON_STAHL_FETCH_TIMEOUT_MS = 60_000;
 export const LYON_STAHL_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const LYON_STAHL_REQUEST_INTERVAL_MS = 10_000;
 
 const LYON_STAHL_DETAIL_CONCURRENCY = Math.min(CONCURRENCY, 2);
 const LYON_STAHL_NON_PHOTO = /avatar|headshot|logo|favicon|placeholder|sprite|cropped-/i;
@@ -608,6 +609,39 @@ export function parseLyonStahlDetail(
 
 type FetchKind = "html" | "xml";
 
+/** One invocation's physical request starts, including redirects and retries. */
+export function lyonStahlPacedFetch(fetchImpl: FetchLike = fetch): FetchLike {
+  let lastStartedAt: number | null = null;
+  let queue: Promise<void> = Promise.resolve();
+  return (input, init) => {
+    const start = queue.then(async () => {
+      const signal = init?.signal;
+      signal?.throwIfAborted();
+      const waitMs = lastStartedAt === null
+        ? 0 : Math.max(0, LYON_STAHL_REQUEST_INTERVAL_MS - (Date.now() - lastStartedAt));
+      if (waitMs) {
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(signal?.reason);
+          };
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+          }, waitMs);
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+      signal?.throwIfAborted();
+      lastStartedAt = Date.now();
+      // Release the start queue without waiting for headers or the response body.
+      return { response: fetchImpl(input, init) };
+    });
+    queue = start.then(() => undefined, () => undefined);
+    return start.then(({ response }) => response);
+  };
+}
+
 async function lyonStahlBoundedResponseText(
   response: Response,
   maxBytes: number
@@ -718,7 +752,8 @@ export async function srcLyonStahl(
     };
   }
 
-  const indexXml = await lyonStahlFetchText(LYON_STAHL_SITEMAP_URL, "xml");
+  const pacedFetch = lyonStahlPacedFetch();
+  const indexXml = await lyonStahlFetchText(LYON_STAHL_SITEMAP_URL, "xml", pacedFetch);
   const propertySitemaps = lyonStahlPropertySitemaps(indexXml);
   if (!propertySitemaps.length) {
     throw new Error("Lyon Stahl: sitemap index has no same-host properties-sitemapN.xml");
@@ -726,7 +761,7 @@ export async function srcLyonStahl(
   const propertyXml = await pmap(
     propertySitemaps,
     Math.min(propertySitemaps.length, 2),
-    (url) => lyonStahlFetchText(url, "xml")
+    (url) => lyonStahlFetchText(url, "xml", pacedFetch)
   );
   const propertySnapshots = propertyXml.map((xml, index) => {
     try {
@@ -742,7 +777,7 @@ export async function srcLyonStahl(
   const outcomes = await pmap(take, LYON_STAHL_DETAIL_CONCURRENCY, async (url) => {
     let html: string;
     try {
-      html = await lyonStahlFetchText(url, "html");
+      html = await lyonStahlFetchText(url, "html", pacedFetch);
     } catch (error) {
       console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
       return { kind: "fetch_failed", reason: String(error) } as LyonStahlDetailOutcome;

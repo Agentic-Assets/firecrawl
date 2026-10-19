@@ -113,6 +113,11 @@ a new historical sitemap crawl to manufacture that proof. Complete repeated
 native/frontend reconciliation, provider pacing (the observed robots delay was
 10 seconds), all current details/status/tenure and ordinary admission gates
 remain [AGENTIC-4308](https://linear.app/agenticassets/issue/AGENTIC-4308) work.
+Each source invocation shares one fixed 10-second request-start gate across
+sitemaps, details, redirects and retries. It spaces starts without serializing
+response bodies; the existing 60-second attempt timeout includes queued waits,
+and an expired queued request never dispatches. This enforces the retained robots
+rule, not a claim that it resolves HTTP 429 or complete source coverage.
 The October 17 robots diagnostic stopped on an HTTP 403 managed challenge;
 a separately bounded October 18 observation returned HTTP 200. Read the owning
 issue's current decision and proof comments for the applicable access evidence.
