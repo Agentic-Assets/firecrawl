@@ -1,0 +1,40 @@
+{
+  "schema": "avison-retained-photo-roles-v1",
+  "gallery_role_counterexample": {
+    "listing_id": "52767",
+    "body_sha256": "b59ff10de53234b82d78c685e52d9dac04d844db53aa22b54927dade58610313",
+    "url": "https://cdn.sharplaunch.com/v2/client-10/5fa3293477b7bb9/1600w/Sassler_Land___Sharplaunch_header_image.jpg",
+    "linked_url": "https://cdn.sharplaunch.com/v2/client-10/5fa3293477b7bb9/1920w/Sassler_Land___Sharplaunch_header_image.jpg",
+    "role": "section#gallery .gallery__carousel-images a[data-fancybox=gallery-carousel] img[alt=Gallery Image 1]"
+  },
+  "body_sha256": "98d3f7ac199c9d57292cbddc586b80267e1279491b3a10865cdeddee00ee6ff3",
+  "feed_sha256": "9d725fbf88310ae17ef4002750ad9f264be8981da8b604b4a718a938990e0e2c",
+  "sanitization": "Exact retained property/gallery/avatar URLs; tracking query identifiers removed. The first18 property URLs are gallery renditions; the final additional property URL is the feed image.",
+  "property_urls": [
+    "https://cdn.sharplaunch.com/v2/client-10/eb20549ba7490f0/1600w/View4_Edit.png",
+    "https://cdn.sharplaunch.com/v2/client-10/0304cba41ceef6e/1600w/View1.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/5dcecc7c383c212/1600w/View2.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/bf55ba82cb45b58/1600w/View3.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/6efa1db060a992b/1600w/View5.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/cfaebebc883bc43/1600w/View6.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/eb20549ba7490f0/370x370/View4_Edit.png",
+    "https://cdn.sharplaunch.com/v2/client-10/0304cba41ceef6e/370x370/View1.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/5dcecc7c383c212/370x370/View2.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/bf55ba82cb45b58/370x370/View3.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/6efa1db060a992b/370x370/View5.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/cfaebebc883bc43/370x370/View6.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/eb20549ba7490f0/1920w/View4_Edit.png",
+    "https://cdn.sharplaunch.com/v2/client-10/0304cba41ceef6e/1920w/View1.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/5dcecc7c383c212/1920w/View2.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/bf55ba82cb45b58/1920w/View3.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/6efa1db060a992b/1920w/View5.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/cfaebebc883bc43/1920w/View6.jpg",
+    "https://cdn.sharplaunch.com/v2/client-10/5b817ab6c74d107/View4_Edit.png"
+  ],
+  "broker_avatars": [
+    "https://cdn.sharplaunch.com/v2/client-10/7f4aa454f2cd580/150x150/Web_Avison_Young_28700_Edit__no_background.png",
+    "https://cdn.sharplaunch.com/v2/client-10/c35ec9df7bda62f/150x150/Gigac__Kathy_square.png"
+  ],
+  "tracking_url": "https://ayustheshoppesatglenlaurel.sharplaunch.com/activity/visit",
+  "feed_image_path": "v2/client-10/5b817ab6c74d107/View4_Edit.png"
+}

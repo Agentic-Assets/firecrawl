@@ -126,7 +126,7 @@ for (const row of cases) {
     try {
       let calls = 0;
       const base = { ...row, id: `building-${row.ordinal}`, salePriceUsd: 2300000, leaseRate: 20,
-        photos: ["https://images.example.test/target.jpg"], rawSharpLaunch: { retained: "source facts" } };
+        photos: ["https://cdn.sharplaunch.com/v2/client-10/fixture/target.jpg"], rawSharpLaunch: { retained: "source facts" } };
       const before = structuredClone(base);
       const result = await enrichAvisonYoungListing(base, false, async (url) => {
         calls++;

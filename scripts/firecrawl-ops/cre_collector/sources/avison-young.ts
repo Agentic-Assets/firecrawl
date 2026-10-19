@@ -1462,7 +1462,7 @@ export function extractAvisonYoungDocuments(docs: Array<{ doc: ScrapedDoc; url: 
   return urls.map((url) => ({ name: titleFromFilename(url), url }));
 }
 
-export function isAvisonYoungPropertyPhoto(url: string): boolean {
+export function isAvisonYoungPropertyPhoto(url: string, propertyGallery = false): boolean {
   try {
     const u = new URL(url);
     const filename = u.pathname.split("/").pop()?.toLowerCase() ?? "";
@@ -1474,7 +1474,7 @@ export function isAvisonYoungPropertyPhoto(url: string): boolean {
       !/\/150x150\//i.test(u.pathname) &&
       // Exclude known non-property images (logo, generic header)
       !/ay_logo/i.test(filename) &&
-      !/sharplaunch_header/i.test(filename) &&
+      (propertyGallery || !/sharplaunch_header/i.test(filename)) &&
       (/\/website-\d+\//i.test(u.pathname) || /\/v2\/client-\d+\//i.test(u.pathname))
     );
   } catch {
@@ -1484,10 +1484,24 @@ export function isAvisonYoungPropertyPhoto(url: string): boolean {
 
 export function extractAvisonYoungPhotos(docs: Array<{ doc: ScrapedDoc; url: string }>, fallback: string[]): string[] {
   const urls = docs
-    .flatMap(({ doc, url }) => extractAvisonYoungUrls(doc, url))
-    .filter(isAvisonYoungPropertyPhoto);
+    .flatMap(({ doc, url }) => {
+      const $ = cheerio.load(doc.rawHtml);
+      // Publisher gallery context disambiguates real property assets whose
+      // filenames also contain the generic header marker (retained 52767).
+      const gallery = new Set<string>();
+      $('section#gallery .gallery__carousel-images a[data-fancybox="gallery-carousel"]').each((_, el) => {
+        for (const value of [$(el).attr("href"), $(el).find("img").attr("src")]) {
+          const image = avisonYoungAbsoluteUrl(value ?? null, url);
+          if (image) gallery.add(image);
+        }
+      });
+      return [
+        ...extractAvisonYoungUrls(doc, url),
+        ...(Array.isArray(doc.images) ? doc.images : []).map((image) => avisonYoungAbsoluteUrl(image, url)),
+      ].filter((image): image is string => image !== null && isAvisonYoungPropertyPhoto(image, gallery.has(image)));
+    });
   // Apply the same filter to fallback so non-property feed images are excluded too
-  const filteredFallback = fallback.filter(isAvisonYoungPropertyPhoto);
+  const filteredFallback = fallback.filter((image) => isAvisonYoungPropertyPhoto(image));
   return dedupeStrings([...urls, ...filteredFallback]);
 }
 
@@ -2111,8 +2125,8 @@ export async function enrichAvisonYoungListing(
   // external). Fold the SharpLaunch PDFs and curated property photos in as
   // extra* so the harvester unifies + classifies + dedups, and add any
   // RealEstateListing JSON-LD video/tour url as promoted media. media/links are
-  // unioned across the per-doc passes; documents/images are taken from the
-  // harvester (a superset that already contains the SharpLaunch docs/photos).
+  // unioned across the per-doc passes; documents use the generic harvester,
+  // while listing photos retain the source-qualified selection above.
   const harvested = harvestAvisonYoung(docs, documents, photos, listingLd);
   const contactsDetailed = enrichAvisonYoungContacts(
     mergeAvisonYoungContacts(
@@ -2158,7 +2172,7 @@ export async function enrichAvisonYoungListing(
     contactsDetailed,
     brochures: undefined,
     documents: harvested.documents.length ? harvested.documents : documents,
-    photos: harvested.images.length ? harvested.images : photos.length ? photos : base.photos,
+    photos,
     media: harvested.media,
     links: harvested.links,
     markdown: avisonYoungLongestMarkdown(docs),
@@ -2167,7 +2181,7 @@ export async function enrichAvisonYoungListing(
     // or filling an existing NULL.
     preserveExistingMarkdown: directOnly ? true : undefined,
     documentCount: (harvested.documents.length || documents.length),
-    photoCount: (harvested.images.length || photos.length) || base.photos?.length,
+    photoCount: photos.length,
     detailJsonLd: listingLd,
     detailScrape: {
       urls: docs.map(({ url }) => url),

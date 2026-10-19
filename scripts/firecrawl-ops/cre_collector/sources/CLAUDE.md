@@ -324,7 +324,9 @@ not the labeled offered address. Numeric/range/unit/intersection subjects receiv
 no new authority; the retained endpoint-map/range offering remains refused.
 This association does not expand native authority, financial normalization,
 child replacement or source acceptance. Existing legacy families remain intact.
-Current general harvest can retain avatar/tracking URLs; image counts are not distinct property photos.
+Listing photos use the source predicate across discovered URLs, `doc.images` and feed fallback; generic harvested images cannot override it.
+The retained property-gallery carousel role can override only the generic-header filename exclusion; unscoped `doc.images` and feed fallbacks cannot. Other source URL exclusions still apply.
+Rendered image variants remain distinct URLs. Generic harvest can retain avatar/tracking candidates internally without granting property-photo authority.
 Structured name-only agents can coexist with full cards; contact counts are not distinct people.
 These existing limits remain on AGENTIC-4294; this witness does not establish clean-gallery/source acceptance.
 
