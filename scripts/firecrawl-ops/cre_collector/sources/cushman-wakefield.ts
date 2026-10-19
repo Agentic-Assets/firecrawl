@@ -7,6 +7,7 @@ import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, firstJsonLd, titleFromFilename } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { parseLeaseRate } from "../lib/parse.js";
+import { recordRetry } from "../lib/performance.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { boundedInt, clean, moneyToNumber, pmap, prune } from "../lib/util.js";
@@ -749,6 +750,7 @@ export async function srcCushman(tx: Tx, max: number, monitor: boolean): Promise
       ) {
         // One semantic read retry, separate from scrapeJson's parse retries.
         console.error(`  cushman-wakefield/${tx}: API offset ${offset} returned empty zero total; retry 2/2 after 12000ms`);
+        recordRetry("http_helper", 12000, true);
         await new Promise(resolve => setTimeout(resolve, 12000));
         d = await scrapeJson(url, strictApiOpts);
       }

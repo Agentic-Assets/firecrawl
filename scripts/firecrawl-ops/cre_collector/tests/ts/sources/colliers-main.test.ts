@@ -1271,3 +1271,44 @@ test("parseColliersMainDetail: does not throw on minimal/empty doc", () => {
   assert.ok(listing.leaseRateMin == null, "leaseRateMin absent when no lease rate text");
   assert.ok(listing.leaseRateMax == null, "leaseRateMax absent when no lease rate text");
 });
+
+for (const scenario of [
+  { name: "typed bootstrap403", status: 502, body: { error: "Bootstrap returned HTTP 403", bootstrapStatus: 403 }, terminal: true },
+  { name: "string403 is untyped", status: 502, body: { error: "Bootstrap returned HTTP 403", bootstrapStatus: "403" } },
+  { name: "missing error is untyped", status: 502, body: { bootstrapStatus: 403 } },
+  { name: "array envelope is untyped", status: 502, body: [{ error: "Bootstrap returned HTTP 403", bootstrapStatus: 403 }] },
+  { name: "responses envelope is untyped", status: 502, body: { error: "Bootstrap returned HTTP 403", bootstrapStatus: 403, responses: [] } },
+  { name: "malformed body is untyped", status: 502, body: null, rawBody: "not JSON" },
+  { name: "nested403 is untyped", status: 502, body: { error: "upstream", nested: { bootstrapStatus: 403 } } },
+  { name: "bootstrap503 remains transient", status: 502, body: { error: "Bootstrap returned HTTP 503", bootstrapStatus: 503 } },
+  { name: "untyped502 remains transient", status: 502, body: { error: "upstream unavailable" } },
+  { name: "genuine503 remains transient", status: 503, body: { error: "unavailable" } },
+  { name: "429 remains transient", status: 429, body: { error: "busy" } },
+]) {
+  test(`Colliers typed bootstrap denial: ${scenario.name}`, async (t) => {
+    let calls = 0;
+    const waits: number[] = [];
+    t.mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return calls === 1 || scenario.terminal
+        ? new Response(scenario.rawBody ?? JSON.stringify(scenario.body), { status: scenario.status })
+        : new Response(JSON.stringify({ responses: [{ status: 200, body: JSON.stringify({ results: [] }) }] }));
+    });
+    const result = postColliersMainBrowserBatch(["private-token=PRIVATE"], async delay => { waits.push(delay); });
+    if (scenario.terminal) {
+      await assert.rejects(result, (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "ColliersMainBootstrapDeniedError");
+        assert.equal(error.message, "Colliers browser bootstrap returned HTTP 403");
+        assert.doesNotMatch(error.message, /PRIVATE|token|responses|https:/);
+        return true;
+      });
+      assert.equal(calls, 1);
+      assert.deepEqual(waits, []);
+    } else {
+      assert.deepEqual(await result, [{ results: [] }]);
+      assert.equal(calls, 2);
+      assert.deepEqual(waits, [15_000]);
+    }
+  });
+}

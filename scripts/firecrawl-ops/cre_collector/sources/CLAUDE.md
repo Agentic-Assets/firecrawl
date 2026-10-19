@@ -315,7 +315,16 @@ uncached read after 12 seconds; the original total, page size, identity and full
 aggregate guards still apply. Other malformed/drifting/short responses remain
 fatal. Each read retains the existing HTTP/JSON retry policy, so this adds at
 most one semantic read for an eligible page, not a source success or lifecycle
-waiver (AGENTIC-4520). Non-strict monitoring is unchanged.
+waiver (AGENTIC-4520). The scheduled wait is recorded through the existing
+`http_helper` retry telemetry; non-strict monitoring is unchanged.
+
+Colliers-main treats only the non-OK browser sidecar's typed numeric
+`bootstrapStatus: 403` error envelope as a terminal bootstrap denial. Its full
+singleton collector exits 79 with no artifact, and the cohort wrapper carries
+settled marker 83; source-bound terminal evidence prevents another automatic
+whole-source attempt in the same generation. Monitor/mixed-CLI behavior stays
+scoped to its existing paths. Untyped 502, bootstrap 503 and 429 retain their
+bounded retries; no denial is source success or inventory removal (AGENTIC-4522).
 
 Savills baseline/coverage comparisons use the registered U.S. commercial
 sale+lease scope. See [AGENTIC-4364](https://linear.app/agenticassets/issue/AGENTIC-4364)

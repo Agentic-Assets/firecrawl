@@ -146,10 +146,16 @@ class ProcessCleanupUnknown(RefreshError):
 COHORT_SETTLED_FAILURE_EXIT = 80
 COHORT_SETTLED_INTERRUPT_EXIT = 81
 COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
+COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT = 83
+COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE = 79
+COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE = "COLLIERS_MAIN_BOOTSTRAP_HTTP_403"
 AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78
 AVISON_YOUNG_TERMINAL_FAILURE_CODE = "AVISON_YOUNG_REQUIRED_DETAIL_HTTP_404"
 COHORT_SETTLED_EXIT_CODES = frozenset(
-    {0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT, COHORT_SETTLED_AVISON_TERMINAL_404_EXIT}
+    {
+        0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT,
+        COHORT_SETTLED_AVISON_TERMINAL_404_EXIT, COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT,
+    }
 )
 
 
@@ -3532,7 +3538,10 @@ def run_cohort_collection_worker(
             "see sibling chunk logs for commands and output.\n",
             encoding="utf-8",
         )
-        return rc
+        return (
+            COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT
+            if rc == COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE else rc
+        )
     rc = run_command(
         build_collect_argv(
             source,
@@ -3883,19 +3892,19 @@ def _finalize_cohort_collection(
             item.tmp_artifact, run_dir, item.source, item.attempt["number"]
         )
         checkpoint["state"] = "collect_failed"
-        if (
-            item.source == "avison-young"
-            and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
-        ):
-            terminal = {
-                "code": AVISON_YOUNG_TERMINAL_FAILURE_CODE,
-                "http_status": 404,
-                "attempt_number": item.attempt["number"],
-            }
+        terminal = None
+        if item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
+            terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
+        elif item.source == "colliers-main" and rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT:
+            terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
+        if terminal is not None:
+            terminal["attempt_number"] = item.attempt["number"]
             item.attempt["terminal_failure"] = terminal
             checkpoint["terminal_collection_failure"] = terminal
             item.attempt["error"] = (
                 "typed terminal required-detail HTTP 404; see private attempt log"
+                if item.source == "avison-young"
+                else "typed terminal browser bootstrap HTTP 403; see private attempt log"
             )
         save_manifest(run_dir, manifest)
         return False
@@ -4594,6 +4603,14 @@ def collect_colliers_main_chunks(
     )
 
 
+def has_terminal_collection_failure(source: str, checkpoint: Mapping[str, Any]) -> bool:
+    terminal = checkpoint.get("terminal_collection_failure")
+    return isinstance(terminal, Mapping) and (
+        (source == "avison-young" and terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE)
+        or (source == "colliers-main" and terminal.get("code") == COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE)
+    )
+
+
 def collect_source(
     run_dir: Path,
     manifest: dict[str, Any],
@@ -4605,12 +4622,7 @@ def collect_source(
     attempts_this_run: int,
 ) -> tuple[Path, dict[str, Any]] | None:
     checkpoint = manifest["sources"][source]
-    prior_terminal = checkpoint.get("terminal_collection_failure")
-    if (
-        source == "avison-young"
-        and isinstance(prior_terminal, Mapping)
-        and prior_terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE
-    ):
+    if has_terminal_collection_failure(source, checkpoint):
         return None
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
     if existing:
@@ -4715,16 +4727,19 @@ def collect_source(
                 tmp_artifact, run_dir, source, attempt_number
             )
             checkpoint["state"] = "collect_failed"
+            terminal = None
             if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
-                terminal = {
-                    "code": AVISON_YOUNG_TERMINAL_FAILURE_CODE,
-                    "http_status": 404,
-                    "attempt_number": attempt_number,
-                }
+                terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
+            elif source == "colliers-main" and rc == COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE:
+                terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
+            if terminal is not None:
+                terminal["attempt_number"] = attempt_number
                 attempt["terminal_failure"] = terminal
                 checkpoint["terminal_collection_failure"] = terminal
                 attempt["error"] = (
                     "typed terminal required-detail HTTP 404; see private attempt log"
+                    if source == "avison-young"
+                    else "typed terminal browser bootstrap HTTP 403; see private attempt log"
                 )
                 save_manifest(run_dir, manifest)
                 return None
@@ -5228,12 +5243,7 @@ def _cohort_needs_collection(
     checkpoint = manifest["sources"][source]
     if _manifest_checkpoint_artifact_valid(run_dir, manifest, source):
         return False
-    prior_terminal = checkpoint.get("terminal_collection_failure")
-    if (
-        source == "avison-young"
-        and isinstance(prior_terminal, Mapping)
-        and prior_terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE
-    ):
+    if has_terminal_collection_failure(source, checkpoint):
         return False
     if checkpoint.get("state") in {
         "collect_infrastructure_failed",
@@ -7129,7 +7139,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 daum_subset_policy=args.daum_subset_policy,
             )
             if worker_rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
-                return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+                return worker_rc
+            if (
+                args._cohort_collect_source == "colliers-main"
+                and worker_rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT
+            ):
+                return worker_rc
             return 0 if worker_rc == 0 else COHORT_SETTLED_FAILURE_EXIT
         except KeyboardInterrupt as exc:
             if _cleanup_unknown_in_chain(exc):

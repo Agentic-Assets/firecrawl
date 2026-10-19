@@ -38,7 +38,10 @@ import {
 } from "../../../sources/cushman-wakefield.js";
 import { parseLeaseRate } from "../../../lib/parse.js";
 import { firecrawl } from "../../../lib/scrape.js";
-import { createClientRequestDeadlineError } from "../../../lib/performance.js";
+import {
+  createClientRequestDeadlineError, createPerformanceRecorder,
+  resetPerformanceRecorderForTests, setPerformanceRecorderForTests,
+} from "../../../lib/performance.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(__dirname, "../../fixtures/raw_data/cushman-wakefield.json");
@@ -1115,6 +1118,26 @@ for (const scenario of [
       if (old.generation === undefined) delete process.env.CRE_REFRESH_GENERATION;
       else process.env.CRE_REFRESH_GENERATION = old.generation;
     });
+    const files = new Map<string, string>();
+    const telemetryPath = "/diagnostics/cushman-retry.json";
+    const recorder = createPerformanceRecorder({
+      path: telemetryPath, runId: "2026-10-19T144700Z-abcdef123456",
+      commandId: "0123456789abcdef0123456789abcdef", processId: 321,
+      fs: {
+        kind: candidate => files.has(candidate) ? "regular" : "missing",
+        openExclusive: candidate => {
+          assert.equal(files.has(candidate), false); files.set(candidate, ""); return candidate;
+        },
+        writeOpened: (handle, contents) => { files.set(String(handle), contents); },
+        closeOpened: () => undefined,
+        rename: (from, to) => { files.set(to, files.get(from)!); files.delete(from); },
+        unlink: candidate => { files.delete(candidate); },
+      },
+      randomHex: () => "a".repeat(32),
+    });
+    assert.ok(recorder);
+    setPerformanceRecorderForTests(recorder);
+    t.after(resetPerformanceRecorderForTests);
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
     const calls: { url: string; options: any; at: number }[] = [];
     t.mock.method(firecrawl, "scrape", async (url: string, options: any) => {
@@ -1137,6 +1160,15 @@ for (const scenario of [
     assert.equal(calls.length, scenario.firstZero ? 1 : 2);
     t.mock.timers.tick(1);
     const settled = await outcome;
+    recorder.flush(true);
+    const snapshot = JSON.parse(files.get(telemetryPath)!);
+    assert.deepEqual(snapshot.metrics.requests.retry.http_helper, {
+      retry_attempts: scenario.retry ? 1 : 0,
+      backoff_ms: scenario.retry ? 12_000 : 0,
+      terminal_backoff_ms: 0,
+    });
+    assert.equal(snapshot.metrics.requests.retry.json_parse.retry_attempts, 0);
+    assert.equal(snapshot.metrics.requests.attempts_started, calls.length);
     assert.equal(calls.length, scenario.retry ? 3 : scenario.firstZero ? 1 : 2);
     if (scenario.retry) {
       assert.equal(calls[2]!.url, calls[1]!.url);

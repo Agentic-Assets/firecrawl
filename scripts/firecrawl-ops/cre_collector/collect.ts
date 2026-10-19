@@ -17,7 +17,10 @@ import { registeredBuildoutFirmFor } from "./sources/buildout-registry.js";
 import { srcCbre } from "./sources/cbre.js";
 import { srcCbreDealflow } from "./sources/cbre-dealflow.js";
 import { srcColliers } from "./sources/colliers.js";
-import { srcColliersMain } from "./sources/colliers-main.js";
+import {
+  COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE,
+  ColliersMainBootstrapDeniedError, srcColliersMain,
+} from "./sources/colliers-main.js";
 import { API_URL, OUT_PATH, PAGE_CAP, flags } from "./lib/config.js";
 import { srcCushman } from "./sources/cushman-wakefield.js";
 import { srcDaumCommercial } from "./sources/daum-commercial.js";
@@ -232,6 +235,16 @@ async function main() {
       } catch (err) {
         recordSourceCompleted(key, tx, { outcome: "failed" });
         console.error(`  ${key}/${tx} FAILED: ${err}`);
+        if (
+          !MONITOR && key === "colliers-main" && requestedSources.length === 1
+          && err instanceof ColliersMainBootstrapDeniedError
+        ) {
+          console.error(JSON.stringify({
+            event: "colliers_main_terminal_bootstrap_denial", code: err.code, http_status: 403,
+          }));
+          process.exitCode = COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE;
+          return;
+        }
         if (key === "avison-young") {
           if (isAvisonYoungTerminalSourceError(err)) {
             avisonTerminalFailures.push({ transaction: tx, failures: err.failures });

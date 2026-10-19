@@ -546,12 +546,19 @@ Cancellation cannot silently restart a child. No daemon or scheduler is added.
 Outer attempts have separate logs, and child runs retain collection, gate,
 dry-run, ingest, readback and host-guard artifacts. Keep these run directories
 for diagnosis; do not publish scraped bodies, credentials or unrestricted logs.
-Within a child generation, a typed artifact-validation rejection ends automatic
-collection attempts for that source; a settled nonzero collector exit still uses
+Within a child generation, a typed artifact-validation rejection or source-specific
+terminal refusal ends automatic collection attempts for that source; ordinary
+settled nonzero collector exits use
 the configured retry budget. An artifact's source error may be transient after
 its inner retries, so this refusal does not prohibit a separately admitted fresh run.
 Recorded experiments and rejected settings are summarized in
 [`cre-throughput-recovery-2026-09-13.md`](../../../docs/firecrawl-ops/references/cre-throughput-recovery-2026-09-13.md).
+
+A confirmed Colliers-main browser bootstrap denial is also source-local and
+terminal for that generation: collector exit79 / settled cohort marker83,
+`COLLIERS_MAIN_BOOTSTRAP_HTTP_403`, failed/no artifact. It does not authorize
+fallback access or count as empty inventory; pipeline peers continue under the
+existing coordinator. Untyped/transient browser failures retain bounded retries.
 
 Every manifest save updates `source-health-publication.json` with the attempted
 publication state. While a series is incomplete it records `not_advanced` and
