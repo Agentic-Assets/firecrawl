@@ -500,12 +500,13 @@ collision-resistant run ID that
 the parent records before process launch; terminal handling reads only that
 reserved manifest path. If startup is interrupted before that manifest becomes
 readable, the next invocation fails closed for operator review instead of
-assuming a fresh run or automatic replay. It reports source phase and the last
-JLL detail-pass counter, with its attempt number, from up to eight recent linked
-collection logs (at most 64 KiB per log, 512 KiB total). A detail-pass counter
-includes processed outcomes, including cache reuse and errors; it is not a
-successful-enrichment or overall listing-completion percentage. The main
-percentage counts completed sources, which have very different sizes.
+assuming a fresh run or automatic replay. For a bound single-source child, it
+reports the latest recognized exact-source sale/lease detail counter, with its
+attempt number, from up to eight recent linked collection logs (at most 64 KiB
+per log, 512 KiB total). The reported pass counter can include cache/error
+outcomes and need not be monotonic for concurrent adapters; it is not a
+successful-enrichment, qualification, or overall listing-completion percentage.
+The main percentage counts completed sources, which have very different sizes.
 
 During bounded CPU recovery the display shows `cooling_down`, the measured CPU,
 the continuous low-CPU window, remaining recovery budgets and preserved cache

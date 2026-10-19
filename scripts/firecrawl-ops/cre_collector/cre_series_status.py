@@ -73,8 +73,9 @@ CHILD_STATES = {
     "baseline_seed_required",
     "dry_run_failed",
 }
-JLL_DETAIL_PROGRESS = re.compile(
-    r"^\s*jll/(sale|lease): detail enriched (\d{1,9})/(\d{1,9})\s*$"
+DETAIL_PROGRESS = re.compile(
+    r"^\s*([a-z0-9]+(?:-[a-z0-9]+)*)/(sale|lease): detail enriched "
+    r"(\d{1,9})/(\d{1,9})\s*$"
 )
 
 
@@ -135,7 +136,7 @@ def child_progress(
             return None
         progress = {"state": record["state"], "detail_pass": None}
         attempts = record.get("attempts")
-        if source != "jll" or not isinstance(attempts, list) or not attempts:
+        if not isinstance(attempts, list) or not attempts:
             return progress
         for attempt in reversed(attempts[-8:]):
             log = (
@@ -154,12 +155,12 @@ def child_progress(
             except OSError:
                 continue
             for line in reversed(lines):
-                match = JLL_DETAIL_PROGRESS.fullmatch(line)
-                if match:
-                    completed, total = int(match[2]), int(match[3])
+                match = DETAIL_PROGRESS.fullmatch(line)
+                if match and match[1] == source:
+                    completed, total = int(match[3]), int(match[4])
                     if 0 <= completed <= total and total > 0:
                         progress["detail_pass"] = {
-                            "transaction": match[1],
+                            "transaction": match[2],
                             "completed": completed,
                             "total": total,
                             "attempt": _finite_nonnegative(attempt.get("number")),
@@ -655,7 +656,7 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
             detail = progress.get("detail_pass")
             if isinstance(detail, Mapping):
                 lines.append(
-                    f"Last detail counter    {paint('0', detail['transaction'])}: "
+                    f"Reported detail pass   {paint('0', detail['transaction'])}: "
                     f"{detail['completed']:,}/{detail['total']:,} in this pass"
                 )
                 if detail.get("attempt") is not None:
@@ -663,7 +664,8 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
                         f"Detail attempt         {int(detail['attempt'])}  (last recorded counter)"
                     )
                 lines.append(
-                    "                       Includes cache/error outcomes; not listing completion"
+                    "                       May include cache/errors or item positions; "
+                    "not listing completion"
                 )
         if snapshot["attempt_log"]:
             lines.append(
