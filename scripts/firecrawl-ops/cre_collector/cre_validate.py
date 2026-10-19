@@ -1538,7 +1538,7 @@ def main():
         )
         if args.transwestern_image_state:
             from cre_transwestern_image_sql import image_state_query
-            queries["transwestern_image_state"] = image_state_query()
+            queries["transwestern_image_state"] = image_state_query() + ";"
     except ValueError as exc:
         parser.error(str(exc))
 

@@ -1266,3 +1266,56 @@ def test_main_separates_historical_conflicts_from_operational_queries(
         "Historical Primary Child Conflicts (Soft-Deleted Listings)"
         in render_markdown(report)
     )
+
+
+def test_main_terminates_transwestern_fragment_in_timed_batch(monkeypatch, capsys):
+    import cre_transwestern_image_sql
+
+    captured = {}
+    monkeypatch.setattr(
+        cre_validate,
+        "load_db_url",
+        lambda _env_file: ("postgres://SENTINEL", "/fake/.env.local"),
+    )
+    monkeypatch.setattr(
+        cre_validate, "assert_expected_database_target", lambda *_args: None
+    )
+    monkeypatch.setattr(cre_validate, "find_psql", lambda: "psql")
+
+    def fake_run(_psql, _url, queries):
+        captured["queries"] = dict(queries)
+        return (
+            {name: [{"value": "1"}] for name in queries},
+            {},
+            "",
+        )
+
+    monkeypatch.setattr(cre_validate, "run_queries_with_timings", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cre_validate.py",
+            "--format",
+            "json",
+            "--transwestern-image-state",
+            "--expected-artifact-run-key",
+            f"ingest:v1:{'a' * 64}",
+            "--expected-db-target-sha256",
+            "b" * 64,
+        ],
+    )
+
+    cre_validate.main()
+
+    report = json.loads(capsys.readouterr().out)
+    expected_base = cre_validate.queries_for_profile(
+        cre_validate.FULL_VALIDATION_PROFILE,
+        expected_artifact_run_key=f"ingest:v1:{'a' * 64}",
+    )
+    expected_transwestern = cre_transwestern_image_sql.image_state_query() + ";"
+    assert captured["queries"] == {
+        **expected_base,
+        "transwestern_image_state": expected_transwestern,
+    }
+    assert report["transwestern_image_state"] == [{"value": "1"}]
