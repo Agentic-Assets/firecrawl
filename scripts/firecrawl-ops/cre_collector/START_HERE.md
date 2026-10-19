@@ -380,11 +380,22 @@ series use the current 90%/30-second/2-second guard shown in the commands.
 Resume an older series only with its exact recorded guard configuration; never
 reinterpret or hand-edit an existing manifest to adopt the new default.
 
+CBRE's strict unlimited acquisition allows up to four full snapshot passes for
+typed inventory churn, with the same page-size-500/concurrency-two profile and
+two consecutive complete matching snapshots required. A third pass that is the
+first valid snapshot cannot qualify alone. Malformed or denied reads do not
+start another snapshot pass; the existing HTTP/JSON helper policy is unchanged.
+The [source contract](sources/CLAUDE.md) and
+[AGENTIC-4547](https://linear.app/agenticassets/issue/AGENTIC-4547) describe this
+bounded recovery. It does not establish fresh source acceptance or permit
+replaying a rejected artifact.
+
 The accelerated profile changes request scheduling and throughput while the
 source cardinality, identity, freshness, artifact, SQL dry-run, ingest, and
 readback gates remain unchanged. Provider reliability still has to be observed
-through the source checkpoint. Sources remain serial, Colliers Main stays at
-concurrency 1 because of its provider challenge behavior, and NAI enumeration
+through the source checkpoint. In that historical serial runner, sources remain
+serial, Colliers Main stays at concurrency 1 because of its provider challenge
+behavior, and NAI enumeration
 stays at concurrency 1. Start a new series when changing the global concurrency
 or CPU ceiling; never resume an existing series with a different recorded
 configuration.
