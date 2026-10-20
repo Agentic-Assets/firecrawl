@@ -165,7 +165,8 @@ test("real source caller stages the original range and retained provider witness
       detailCalls++;
       return { ...doc(html, url), markdown: "The properties located at 1563-1641 El Dorado Street." };
     };
-    const source = await import("../../../sources/avison-young.js?range-offering-caller=unique");
+    const callerModulePath: string = "../../../sources/avison-young.js?range-offering-caller=unique";
+    const source = await import(callerModulePath);
     const result = await source.srcAvisonYoung("sale", 1, false);
     assert.equal(detailCalls, 1);
     assert.deepEqual(result.listings.map((listing: any) => listing.id), ["18071"]);
@@ -180,7 +181,8 @@ test("real source caller stages the original range and retained provider witness
 
     // URL ownership is checked against the complete feed before active/transaction filtering.
     websiteRows = [feedRow, { ...feedRow, id: 18072, status: "inactive" }];
-    const duplicateOwnerSource = await import("../../../sources/avison-young.js?range-offering-owner=unique");
+    const ownerModulePath: string = "../../../sources/avison-young.js?range-offering-owner=unique";
+    const duplicateOwnerSource = await import(ownerModulePath);
     const duplicateOwnerResult = await duplicateOwnerSource.srcAvisonYoung("sale", 1, false);
     assert.match(duplicateOwnerResult.listings[0]!.detailError ?? "", /identity/);
   } finally {
