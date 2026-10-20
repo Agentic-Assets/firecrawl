@@ -540,6 +540,7 @@ function Get-CreNotificationText {
         $lines = @('', "$statusMark *CRE pipeline | $title*", '', "$bullet *Duration:* $duration", '')
         $members = @($Summary.per_source_summaries)
         $firstMember = $true
+        $hasTransactionFigures = $false
         foreach ($entry in @($members | Select-Object -First 20)) {
             if (-not $firstMember) { $lines += '' }
             $firstMember = $false
@@ -551,12 +552,14 @@ function Get-CreNotificationText {
                 $both = ([long]$entry.transaction_breakdown.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $held = ([long]$entry.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $leaseScope = if ($entry.held_count -gt 0) { 'whole lease coverage unknown' } else { 'whole lease coverage proved' }
+                $hasTransactionFigures = $true
                 $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held held`n    *For sale:* $sale | *For lease:* $lease | *Both:* $both`n    $lease verified subset leases; $leaseScope; whole brokerage incomplete."
                 continue
             }
             $scopeLabel = if ($null -ne $entry.PSObject.Properties['verified_inventory_only']) { 'property listings' } else { 'listings' }
             $breakdownProperty = $entry.PSObject.Properties['transaction_breakdown']
             if ($null -ne $breakdownProperty -and $null -ne $breakdownProperty.Value) {
+                $hasTransactionFigures = $true
                 $sale = ([long]$breakdownProperty.Value.sale).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $lease = ([long]$breakdownProperty.Value.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $both = ([long]$breakdownProperty.Value.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
@@ -574,8 +577,10 @@ function Get-CreNotificationText {
             $lines += "$bullet $($members.Count - 20) additional verified brokerages are listed in the local CRE audit."
         }
         $lines += ''
-        $lines += "$bullet Both counts overlap and are included in the For sale and For lease figures."
-        $lines += ''
+        if ($hasTransactionFigures) {
+            $lines += "$bullet Both counts overlap and are included in the For sale and For lease figures."
+            $lines += ''
+        }
         if ($qualifiedSubsets.Count -gt 0) {
             $lines += "$bullet *Complete brokerages:* $($members.Count - $qualifiedSubsets.Count) | *Qualified subsets:* $($qualifiedSubsets.Count)"
         }
