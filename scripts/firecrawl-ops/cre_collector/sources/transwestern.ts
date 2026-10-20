@@ -111,8 +111,7 @@ export function parseTranswesternAvailability($: cheerio.CheerioAPI): any[] {
   return rows;
 }
 
-export function extractTranswesternContacts(doc: ScrapedDoc): any[] {
-  const $ = cheerio.load(doc.rawHtml);
+function extractTranswesternContacts($: cheerio.CheerioAPI): any[] {
   const contactsByKey = new Map<string, any>();
   $(".PropertyVcard .v-card, .v-card").each((_, el) => {
     const card = $(el);
@@ -162,8 +161,7 @@ export function extractTranswesternContacts(doc: ScrapedDoc): any[] {
   );
 }
 
-export function extractTranswesternDocuments(doc: ScrapedDoc): any[] {
-  const $ = cheerio.load(doc.rawHtml);
+function extractTranswesternDocuments(doc: ScrapedDoc, $: cheerio.CheerioAPI): any[] {
   const candidates: string[] = [];
   $('#tblAttachments a[href], a.download-att-btn[href], a.download-flyer-btn[href], a[href$=".pdf"], a[href*=".pdf"], a[href*="twurls.com"]').each(
     (_, el) => {
@@ -182,8 +180,7 @@ export function extractTranswesternDocuments(doc: ScrapedDoc): any[] {
     .map((url) => ({ name: titleFromFilename(url), url }));
 }
 
-export function extractTranswesternPhotos(doc: ScrapedDoc, feedImage: string | null): string[] {
-  const $ = cheerio.load(doc.rawHtml);
+function extractTranswesternPhotos($: cheerio.CheerioAPI, feedImage: string | null): string[] {
   const candidates: Array<string | null> = [feedImage];
   $('.photos-list a.chocolat-image[href], a.chocolat-image[href], a[href*="/images/"], img[src*="/images/"]').each(
     (_, el) => {
@@ -600,7 +597,7 @@ export async function enrichTranswesternListing(
     const $ = cheerio.load(doc.rawHtml);
     const facts = parseTranswesternFacts($);
     const availability = parseTranswesternAvailability($);
-    const contactsDetailed = extractTranswesternContacts(doc);
+    const contactsDetailed = extractTranswesternContacts($);
     const brokerIds = contactsDetailed
       .map((c) =>
         brokerRef({
@@ -624,8 +621,8 @@ export async function enrichTranswesternListing(
     // iframes. Brochures fold into the unified `documents` channel (cre_ingest
     // reads both `brochures` and `documents`); we drop the legacy `brochures` key
     // so the same PDF is not inserted twice.
-    const nativeDocs = extractTranswesternDocuments(doc);
-    const nativePhotos = extractTranswesternPhotos(doc, feedImage);
+    const nativeDocs = extractTranswesternDocuments(doc, $);
+    const nativePhotos = extractTranswesternPhotos($, feedImage);
     const harvested = harvestDetail(doc, {
       baseUrl: detailUrl,
       extraDocs: nativeDocs.map((d: any) => clean(d?.url)).filter((u): u is string => !!u),
