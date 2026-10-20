@@ -9,6 +9,10 @@ source metadata and evidence of missingness, follow the
 [listing fidelity standard](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity).
 An empty consumer field is not proof of source absence.
 
+Transwestern's contact, document and photo extractors share the enrichment
+call's listing-local Cheerio instance and must remain read-only. Preserve the
+original document's links and harvest inputs; do not share a DOM across listings.
+
 Photo order is part of fidelity: canonical ingest uses `photos[0]` as the
 primary image. For Transwestern, prefer the canonical feed `PropertyImage`
 only when it survives the shared image filter; otherwise consider only the
