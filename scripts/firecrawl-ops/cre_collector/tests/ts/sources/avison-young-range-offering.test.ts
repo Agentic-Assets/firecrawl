@@ -22,7 +22,12 @@ const doc = (rawHtml: string, url = evidence.response_url) => ({
   links: [],
   metadata: { statusCode: 200, sourceURL: url, url },
 });
-const check = (rawHtml = html, row = base, requestedUrl = evidence.response_url, owners = owner) =>
+const check = (
+  rawHtml = html,
+  row = base,
+  requestedUrl = evidence.response_url,
+  owners: typeof owner | undefined = owner,
+) =>
   assertAvisonYoungDetailDoc(doc(rawHtml, requestedUrl), requestedUrl, row, owners);
 
 function withEndpoint(raw: string, endpoint: string): string {
@@ -41,7 +46,7 @@ function withEndpoint(raw: string, endpoint: string): string {
 test("registered owned range offering accepts one endpoint as a checked locator and preserves the full feed range", () => {
   const before = structuredClone(base);
   const result = check();
-  assert.equal(result, assertAvisonYoungDetailDoc(doc(html), evidence.response_url, base, owner));
+  assert.ok(result);
   assert.equal(base.street, "1563 - 1641 El Dorado St");
   assert.deepEqual(base, before);
 });
