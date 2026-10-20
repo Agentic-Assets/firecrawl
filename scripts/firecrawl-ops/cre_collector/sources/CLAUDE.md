@@ -674,6 +674,17 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `buildout-registry.ts` | Governed single-token Buildout source definitions |
 | `savills.ts` | Sale and lease: structured `__NEXT_DATA__`; provider `NextUrl` pagination; direct fetch with validated Firecrawl fallback |
 
+For JLL Investor, only a full-string acreage value on the exact case-insensitive
+detail attribute label `Land Area` may populate `lotSizeAcres`. Identical
+duplicate numeric values may agree; conflicting or malformed values remain
+raw. A unit-only placeholder contributes no value. If the retained search-row
+`landArea` is present, it must be an explicit matching acreage value; a conflict
+or unsupported unit keeps the normalized field unset. Preserve all original
+attributes and search fields. The generic search `area` is not a building-size
+source, including on `Land` asset types; do not map it to `buildingSizeSqft` or
+`sizeText`. [AGENTIC-4625](https://linear.app/agenticassets/issue/AGENTIC-4625)
+owns this bounded field lift.
+
 JLL child harvesting uses a working DOM projection to exclude positively
 identified other-property recommendation assets, map tile images, proven srcset
 fragments, consent-widget images and native-contact broker-card portraits.
