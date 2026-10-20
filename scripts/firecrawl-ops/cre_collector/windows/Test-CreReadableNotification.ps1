@@ -209,6 +209,17 @@ Save-Summary $pipelineSummary
 $invalidPipelineBreakdown = Get-CreVerifiedSummary $partialRecord 'pipeline-invalid-breakdown'
 $invalidPipelineText = Get-CreNotificationText $partialRecord 'Terminal' 1 $invalidPipelineBreakdown
 Assert-Cre ($null -ne $invalidPipelineBreakdown -and $invalidPipelineBreakdown.per_source_summaries[0].verified_listings -eq 4535 -and $null -eq $invalidPipelineBreakdown.per_source_summaries[0].transaction_breakdown -and $invalidPipelineText.Contains("`n    *For sale / lease / both:* unavailable")) 'Invalid optional pipeline counts preserve the verified total and display breakdown as unavailable.'
+Assert-Cre (-not $invalidPipelineText.Contains('Both counts overlap')) 'Unavailable transaction figures must not gain an overlap explanation.'
+$emptyPipelineSummary = New-Summary
+$emptyPipelineSummary['selected_source_keys'] = $selectedSourceKeys
+$emptyPipelineSummary['per_source_summaries'] = @()
+$emptyPipelineSummary['failed_source_keys'] = @('newmark','cbre')
+$emptyPipelineSummary['pending_source_keys'] = @('jll')
+$emptyPipelineSummary['complete'] = $false
+Save-Summary $emptyPipelineSummary
+$emptyPipelineRead = Get-CreVerifiedSummary $partialRecord 'pipeline-no-qualified-counts'
+$emptyPipelineText = Get-CreNotificationText $partialRecord 'Terminal' 1 $emptyPipelineRead
+Assert-Cre ($null -ne $emptyPipelineRead -and $emptyPipelineText.Contains('*Failed:* 2 | *Pending:* 1') -and $emptyPipelineText.Contains('*Newmark:* Failed; verified counts unavailable.') -and $emptyPipelineText.Contains('Partial result') -and $emptyPipelineText -notmatch 'Both counts overlap|\*For sale:|\*For lease:|Completed') 'A failed pipeline without qualified sources preserves failure and pending scope without referring to absent transaction figures.'
 $pipelineSummary['pending_source_keys'] = @('cbre')
 Save-Summary $pipelineSummary
 Assert-Cre ($null -eq (Get-CreVerifiedSummary $partialRecord 'pipeline-duplicate')) 'Duplicate or missing partition members cannot enter the formatter.'
