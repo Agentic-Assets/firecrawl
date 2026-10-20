@@ -543,6 +543,16 @@ This comparison view never rewrites source or staged addresses and still rejects
 units, ranges and intersections under the existing simple-street grammar. It
 supplies no additional visible witness or marketing-hero acceptance role.
 
+Separately, the registered official display decision can pair one complete
+physical-address H1 with a finite property-family Space/Suites For Sale/Lease
+hero. Only this additional pairing requires the exact official envelope, two
+matching typed addresses, Place/category/Offer and feed geo/tenure consistency,
+substantive Building overview, and agreement from every populated POI. Medical
+Ready/Dental Ready modifiers require Office and exact `office.medical` category;
+unknown words, negation, conflicting scope or tenure never become advisory.
+Null/empty maps supply no location witness. Existing reciprocal roles retain
+their own checks; raw addresses and supported detail freshness stay unchanged.
+
 The official intersection and office-sublease roles remain bounded to the exact
 registered-page identity envelope and complete-feed URL owner. Both require one
 unique owned URL, remote identity, structured listing, known five-digit feed ZIP,

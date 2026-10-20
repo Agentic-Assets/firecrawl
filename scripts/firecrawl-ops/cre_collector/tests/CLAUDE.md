@@ -38,7 +38,9 @@ an unrelated URL override or rewritten interpreter argv can break the harness.
 For website or provider variations, build fixtures from sanitized, genuinely
 observed responses and call the real mapper and verifier. Cover supported
 layout/value variants plus negative mutations for missing, malformed,
-conflicting, and unknown critical fields. Assert that unsupported identity or
+conflicting, and unknown critical fields. Assert that each mutation actually
+changes its intended node, field or input fingerprint; writing to an absent
+selector is not a negative test. Assert that unsupported identity or
 required-field changes fail closed; do not make a positional-selector fixture
 or a duplicated test parser the acceptance oracle. Run collector suites in a
 standalone `git clone --no-hardlinks` as required by

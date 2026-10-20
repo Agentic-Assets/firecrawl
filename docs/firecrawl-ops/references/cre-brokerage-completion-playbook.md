@@ -50,6 +50,19 @@ validator and its negative controls. Preserve genuine publisher conflicts; do
 not add per-ID exceptions or restore a permissive fallback to recover old counts.
 Use bounded permitted acquisition only for evidence the replay cannot supply.
 
+Before a transport comparison, derive the exact target from the bound complete
+feed and validate its ownership and offline preconditions; a mistyped locator is
+not a website change. Preserve earlier failed observations. Reuse sufficiently
+fresh, hash-bound inputs with their original capture times rather than repeating
+downloads, and give each new experiment its own output and finite deadline.
+Compare actual identity and listing facts across transports. Different HTML
+bytes do not prove additional detail, and an unreported engine remains unknown:
+a successful local API call does not by itself prove browser rendering occurred.
+One page's outcome does not justify changing transport for an entire brokerage.
+Retain genuine access denials and review robots rules against their applicable
+user-agent groups; do not invent a wildcard group for orphan directives (see
+[RFC 9309 sections 2.2.1 and 2.2.2](https://www.rfc-editor.org/rfc/rfc9309.html#section-2.2.1)).
+
 Keep the diagnosis, rejected hypotheses and next small experiment on the existing
 source issue and [performance learning log](https://linear.app/agenticassets/issue/AGENTIC-2895).
 Offline replay produces no collector artifact or ingestion authority. A later
