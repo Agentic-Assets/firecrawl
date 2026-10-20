@@ -127,7 +127,7 @@ npm ci --ignore-scripts
 # Python integration tests also execute Node/tsx in the browser sidecar.
 # This version must match apps/playwright-service-ts/package.json.
 (cd ../../../apps/playwright-service-ts && npx --yes pnpm@11.4.0 install --frozen-lockfile)
-../../../.venv/bin/python -m pytest tests/ -q
+../../../.venv/bin/python -m pytest tests/ -q --maxfail=1
 npm test
 ```
 
@@ -141,6 +141,11 @@ normalization or hidden-file flag is needed.
 Both suites run only in that standalone clone. The Node packages above are
 test prerequisites, not additional production services. Recheck the sidecar's
 `packageManager` pin after pulling a revision that changes it.
+Before a full suite, verify `node --import tsx --eval 'void 0'` from the sidecar
+directory; collector dependencies alone do not satisfy that import. Use
+`--maxfail=1` during iteration so a failure exposes its traceback promptly;
+a passing run still executes the entire suite. Preserve failed logs, fix the
+confirmed cause, then rerun the failed tests before the full suite.
 For concurrent suites, use a separate standalone clone per lane so test lock
 and artifact state cannot collide. On Linux/WSL alongside a live runtime, use
 the [identity-preserving network containment recipe](tests/CLAUDE.md) and enable

@@ -51,7 +51,7 @@ the [brokerage completion playbook](../../../../docs/firecrawl-ops/references/cr
 
 ```bash
 cd scripts/firecrawl-ops/cre_collector
-python3 -m pytest tests/ -q
+python3 -m pytest tests/ -q --maxfail=1
 python3 -m pytest tests/test_enum_key_invariant.py -q
 python3 -m pytest tests/test_norm_status_canonical_and_guards.py -q   # portable CI signal (no out/)
 bash tests/run_om_facts_postgres_contract.sh  # opt-in disposable PostgreSQL 17 contract
