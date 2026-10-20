@@ -996,7 +996,7 @@ export function assertAvisonYoungDetailDoc(
       || !overviewTexts.some((text) => text.length > 0)) return false;
 
     const sourceTexts = [
-      bodyText,
+      $("body").clone().find("script, style, noscript").remove().end().text(),
       ...overviewTexts,
       ...descriptionNodes.map((element) => clean($(element).attr("content")) ?? ""),
       clean(record?.description) ?? "",
