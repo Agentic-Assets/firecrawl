@@ -45,6 +45,12 @@ standalone `git clone --no-hardlinks` as required by
 [SETUP's isolated verification recipe](../SETUP.md#isolated-verification). See
 the [brokerage completion playbook](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md).
 
+Before another identity-parser production trial, use the playbook's
+[full available corpus diagnosis](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#diagnose-the-full-available-corpus-before-retrying).
+Include accepted controls and alternate routes; distinguish route outcomes from
+per-listing acceptance and historical replay from fresh coverage. Fixing one
+comparison predicate does not prove the complete validator accepts the page.
+
 ## Folder-Specific Commands
 
 **Python (ingest, monitor, gate):**
