@@ -532,6 +532,11 @@ retained original and the fixture and confirm the same outcome; otherwise a
 fixture can accidentally bypass the production identity branch. Remove unrelated
 chrome only, and keep raw source values unchanged when comparison needs decoding.
 
+Before retrying a source after a parser change, follow the
+[full available corpus diagnosis](../../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#diagnose-the-full-available-corpus-before-retrying).
+Use the existing replay seams; do not discover each remaining layout through a
+separate first-failure production attempt.
+
 The official intersection and office-sublease roles remain bounded to the exact
 registered-page identity envelope and complete-feed URL owner. Both require one
 unique owned URL, remote identity, structured listing, known five-digit feed ZIP,

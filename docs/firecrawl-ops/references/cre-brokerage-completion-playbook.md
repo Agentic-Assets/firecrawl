@@ -2,11 +2,14 @@ Parent: [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 # CRE Brokerage Completion Playbook
 
-Last reviewed: 2026-10-16.
+Last reviewed: 2026-10-20.
 
 Use this playbook when upgrading one brokerage website from shallow coverage to
 complete public-feed coverage for EQUIRE. It is adapter-development guidance,
-not production refresh authorization. Work one brokerage at a time.
+not production refresh authorization. Investigate independent sources and shared
+provider families in parallel while keeping evidence and acceptance source-bound.
+Use the existing collection slots and serial database lane; never duplicate an
+active writer or test owner.
 
 ## Completion Standard
 
@@ -21,6 +24,36 @@ A brokerage is complete only when all of these are true:
 7. Contacts include visible names, phones, emails when public, profile URLs, avatar URLs, and VCard or contact-card URLs when available.
 8. A target listing is tested against manual expectations for documents, images, contacts, and key facts.
 9. The collector passes typecheck, the ingestor dry-run stages expected rows, and docs record the remaining limits.
+
+## Diagnose the full available corpus before retrying
+
+After an identity or layout refusal, replay all available retained responses
+through the real validator, including previously accepted controls and every
+saved candidate endpoint. Catch and group each result independently instead of
+using another production run to discover only its first failure. Compare the
+previous and proposed source blobs against identical feed, response and complete
+URL-ownership inputs. Keep original bytes and exact hashes; report missing bodies,
+changed routes and historical observation times explicitly.
+
+Count routes and listing identities separately. Property-detail mode may accept
+one validated endpoint where the documented source contract permits it; explicit
+strict mode has different requirements. An official-route refusal does not imply
+a listing failed if another admitted route passed. Conversely, prior generic
+fallback acceptance does not prove identity, and a targeted historical corpus is
+not representative current coverage or fresh source acceptance.
+
+Group by actual witnesses and contradictions, not only CSS layout, throw line or
+street shape. A matching city/state/ZIP suffix is an address representation, not
+an acceptance rule: its street component can still be an intersection, range or
+unit. A counterfactual that fixes one predicate must still pass the complete
+validator and its negative controls. Preserve genuine publisher conflicts; do
+not add per-ID exceptions or restore a permissive fallback to recover old counts.
+Use bounded permitted acquisition only for evidence the replay cannot supply.
+
+Keep the diagnosis, rejected hypotheses and next small experiment on the existing
+source issue and [performance learning log](https://linear.app/agenticassets/issue/AGENTIC-2895).
+Offline replay produces no collector artifact or ingestion authority. A later
+fresh, normally guarded source run and exact database readback remain separate.
 
 ## Comprehensive listing fidelity
 
