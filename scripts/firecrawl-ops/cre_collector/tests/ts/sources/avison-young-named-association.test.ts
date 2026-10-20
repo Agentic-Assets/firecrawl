@@ -136,9 +136,10 @@ test("bare agreeing address descriptions supplement the complete primary associa
   }
 });
 
-test("missing-hero legacy acceptance gains no named-association authority", () => {
+test("recognized Building page with a missing hero refuses instead of falling through to generic JSON-LD", () => {
   const $ = cheerio.load(named.html); $('.hero__sub-title').remove();
-  assert.deepEqual(check($.html()), assertAvisonYoungDetailDoc(doc($.html()), named.response_url, base));
+  assert.throws(() => check($.html()), /identity/);
+  assert.throws(() => assertAvisonYoungDetailDoc(doc($.html()), named.response_url, base), /identity/);
 });
 
 test("fully witnessed range offering accepts endpoint map address without rewriting its range", () => {
