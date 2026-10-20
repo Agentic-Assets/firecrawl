@@ -64,6 +64,8 @@ test("an additional POI is allowed only when it repeats the same witnessed endpo
 
 for (const mutation of [
   "missing-offering-prose",
+  "excluded-from-offering-prose",
+  "affirmative-then-excluded",
   "missing-h1",
   "endpoint-only-typed-address",
   "missing-second-typed-address",
@@ -93,6 +95,16 @@ for (const mutation of [
       $(".building__overview-text p").first().text("A well-located investment opportunity in San Jose.");
       $('meta[property="og:description"]').attr("content", "A well-located investment opportunity in San Jose.");
       record.description = "A well-located investment opportunity in San Jose.";
+    }
+    if (mutation === "excluded-from-offering-prose") {
+      $(".building__overview-text p").first().text(
+        "The properties located at 1563-1641 El Dorado Street. These properties are excluded from this offering.",
+      );
+    }
+    if (mutation === "affirmative-then-excluded") {
+      $(".building__overview-text p").first().text(
+        "We are pleased to present the offering memoradum for the properties located at 1563-1641 El Dorado Street. These properties are excluded from this offering.",
+      );
     }
     if (mutation === "endpoint-only-typed-address") {
       record.address.streetAddress = "1641 El Dorado St";
@@ -185,6 +197,13 @@ test("real source caller stages the original range and retained provider witness
     const duplicateOwnerSource = await import(ownerModulePath);
     const duplicateOwnerResult = await duplicateOwnerSource.srcAvisonYoung("sale", 1, false);
     assert.match(duplicateOwnerResult.listings[0]!.detailError ?? "", /identity/);
+
+    // A same-street but different feed-name range must not inherit the street-field range witness.
+    websiteRows = [{ ...feedRow, name: "1500 - 1600 El Dorado St" }];
+    const feedNameRangeModule: string = "../../../sources/avison-young.js?range-offering-feed-name-mismatch=unique";
+    const feedNameRangeSource = await import(feedNameRangeModule);
+    const feedNameRangeResult = await feedNameRangeSource.srcAvisonYoung("sale", 1, false);
+    assert.match(feedNameRangeResult.listings[0]!.detailError ?? "", /identity/);
   } finally {
     globalThis.fetch = oldFetch;
     firecrawl.scrape = oldScrape;

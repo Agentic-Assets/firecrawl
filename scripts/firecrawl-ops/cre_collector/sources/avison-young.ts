@@ -951,6 +951,7 @@ export function assertAvisonYoungDetailDoc(
     const feedRange = parseRange(base?.street);
     const feedNameRange = parseRange(base?.name);
     if (!feedRange || !feedNameRange
+      || feedNameRange.first !== feedRange.first || feedNameRange.last !== feedRange.last
       || !strictPhysicalStreetMatches(feedNameRange.street, feedRange.street)) return false;
     const sameRange = (value: any): boolean => {
       const parsed = parseRange(value);
@@ -987,11 +988,16 @@ export function assertAvisonYoungDetailDoc(
     const streetSuffix = "(?:street|st\\.?|road|rd\\.?|avenue|ave\\.?|boulevard|blvd\\.?|highway|hwy\\.?|drive|dr\\.?|lane|ln\\.?|court|ct\\.?|parkway|pkwy\\.?|place|pl\\.?|way|trail|trl\\.?|circle|cir\\.?)";
     const rangePattern = new RegExp(`\\b(\\d+)\\s*[-–]\\s*(\\d+)\\s+(.+?\\b${streetSuffix})(?=$|[,.;!?])`, "giu");
     const endpointPattern = new RegExp(`\\b(\\d+)\\s+(.+?\\b${streetSuffix})(?=$|[,.;!?])`, "giu");
-    const offeringRangePattern = new RegExp(`\\bproperties\\s+located\\s+at\\s+(\\d+)\\s*[-–]\\s*(\\d+)\\s+(.+?\\b${streetSuffix})(?=$|[,.;!?])`, "giu");
+    const offeringRangePattern = new RegExp(
+      `\\bwe\\s+are\\s+pleased\\s+to\\s+present\\s+the\\s+offering\\s+memor(?:ad|and)um\\s+for\\s+the\\s+properties\\s+located\\s+at\\s+`
+        + `(\\d+)\\s*[-–]\\s*(\\d+)\\s+(.+?\\b${streetSuffix})(?=$|[,.;!?])`,
+      "giu",
+    );
     const overviewTexts = building.find(".building__overview-text p, .building__overview-text li")
       .toArray().map((element) => clean($(element).text()) ?? "");
     const offerClaims = overviewTexts.flatMap((text) => [...text.matchAll(offeringRangePattern)]);
-    if (offerClaims.length !== 1
+    const explicitExclusion = /\b(?:the|these)\s+properties\b[^.!?]{0,160}\b(?:are|were)\s+excluded\s+from\s+(?:this|the)\s+offering\b/iu;
+    if (overviewTexts.some((text) => explicitExclusion.test(text)) || offerClaims.length !== 1
       || !sameRange(`${offerClaims[0]![1]}-${offerClaims[0]![2]} ${offerClaims[0]![3]}`)
       || !overviewTexts.some((text) => text.length > 0)) return false;
 

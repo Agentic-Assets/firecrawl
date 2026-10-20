@@ -508,9 +508,12 @@ wrong-number or incomplete-ZIP equivalence.
 
 The exact registered range-offering role keeps the feed's ordered full street
 range as the identity and accepts one of its two endpoint numbers only as the
-display/map locator. It requires the complete ordered range in the feed name
-and street, H1 and every typed address, plus one affirmative “properties located
-at” statement for that same range inside the native Building overview. One
+display/map locator. It requires identical ordered endpoints and street in the
+feed name and street, H1 and every typed address, plus the captured affirmative
+“We are pleased to present the offering memorandum for the properties located
+at [range]” clause in the native Building overview. A bare location mention or
+an explicit statement that the properties are excluded from the offering refuses
+the role. One
 registered official URL, unique full-feed URL owner (including inactive rows),
 singleton remote/RealEstateListing identity, exact canonical/OG/requested URLs,
 matching city/state/known ZIP and hero, and a consistent endpoint in title, OG
