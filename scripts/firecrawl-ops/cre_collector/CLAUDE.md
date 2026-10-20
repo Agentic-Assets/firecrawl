@@ -270,6 +270,12 @@ Key behavior:
   finalize the two actions and job in one transaction. Ordinary multi-batch
   reconciliation retains its existing behavior. A stale preimage or uncertain
   commit requires read-only diagnosis, not blind replay or a replacement runner.
+- **Dead-owner recovery:** an exited PID never makes an armed recovery fence
+  safe to clear. Follow [lock authority and recovery](LOCK_AUTHORITY_RECOVERY.md)
+  for the explicit known-settled operator procedure. Reconcile database and
+  remote outcomes, prove descendant settlement, and bind the exact filesystem
+  state before recovery; preserve its forensic evidence and persistent authority
+  inode. Recovery does not retry an apply or certify source freshness.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
   suppressed unless `--activate-status` is passed on the CLI or
   `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:
