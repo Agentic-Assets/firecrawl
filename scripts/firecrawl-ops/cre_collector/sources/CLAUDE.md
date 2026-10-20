@@ -504,7 +504,8 @@ are allowed only when they are identical exact feed subjects; street/acreage
 roles require one H1. Missing feed URL context disables only this new witness;
 existing identity paths still decide under their own rules. Other captured-role
 positives do not authorize street-range, unit, intersection, locality-punctuation,
-wrong-number or incomplete-ZIP equivalence.
+wrong-number or incomplete-ZIP equivalence; only the separately bounded range
+and intersection roles below authorize their respective evidenced layouts.
 
 The exact registered range-offering role keeps the feed's ordered full street
 range as the identity and accepts one of its two endpoint numbers only as the
@@ -532,15 +533,20 @@ fixture can accidentally bypass the production identity branch. Remove unrelated
 chrome only, and keep raw source values unchanged when comparison needs decoding.
 
 The official intersection and office-sublease roles remain bounded to the exact
-registered-page identity envelope and complete-feed URL owner. Compare the two
-intersection roads in order using the literal `&` separator across the feed,
-visible heading, structured name, and every populated map point; keep entity
-decoding comparison-only. For the observed office sublease, use the same-page
-affirmative Building overview expiry bullet with its marketing heading and
-coherent hero. A `null` or empty-array map claim supplies no point; validate
-every populated claim and refuse malformed or conflicting claims. Do not require
-an incidental factbox, infer a missing photo/address, or let a recognized
-official Building page fall through to generic JSON-LD acceptance.
+registered-page identity envelope and complete-feed URL owner. Both require one
+unique owned URL, remote identity, structured listing, known five-digit feed ZIP,
+and agreement from the typed addresses and applicable city/state/geo witnesses.
+The intersection role compares its two roads in order using the literal `&`
+separator across the feed, visible heading, structured name, and every populated
+map point; HTML entity decoding is comparison-only and raw values stay intact.
+For the observed office sublease, use the same-page affirmative Building
+overview expiry bullet with its marketing heading and coherent hero. A `null` or
+empty-array map claim supplies no point; validate every populated claim and
+refuse malformed or conflicting claims. Classification follows the registered
+official Building family and does not require its incidental stats factbox; a
+recognized official Building page must not fall through to generic JSON-LD
+acceptance. Neither role infers missing identity, photo evidence, or source
+acceptance.
 
 A separate official scope witness may retain a wider description range only
 when an exact known-subject H1 and two complete endpoint-address/known-ZIP
