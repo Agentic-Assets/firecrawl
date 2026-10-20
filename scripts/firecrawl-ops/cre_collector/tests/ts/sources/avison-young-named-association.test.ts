@@ -141,11 +141,14 @@ test("missing-hero legacy acceptance gains no named-association authority", () =
   assert.deepEqual(check($.html()), assertAvisonYoungDetailDoc(doc($.html()), named.response_url, base));
 });
 
-test("retained range offering with endpoint map address stays refused", () => {
+test("fully witnessed range offering accepts endpoint map address without rewriting its range", () => {
   const range = fixture(18071); const row = avisonYoungBaseListing(range.feed_row, new Map());
   assert.match(range.html, /"address":"1641 El Dorado St"/);
-  assert.throws(() => assertAvisonYoungDetailDoc(doc(range.html, range.response_url), range.response_url, row,
-    { matchingExternalUrlRowIds: ["18071"] }), /identity/);
+  const accepted = assertAvisonYoungDetailDoc(doc(range.html, range.response_url), range.response_url, row,
+    { matchingExternalUrlRowIds: ["18071"] });
+  assert.ok(accepted);
+  assert.equal(accepted.address.streetAddress, range.feed_row.address);
+  assert.equal(accepted.propertyListing.address.streetAddress, range.feed_row.address);
 });
 
 test("real source caller applies named association only with all-feed unique URL ownership", async () => {

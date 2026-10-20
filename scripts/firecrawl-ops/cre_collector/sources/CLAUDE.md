@@ -476,9 +476,10 @@ same name, with matching locality and present known ZIP; the feed street is not
 rewritten. Extra physical/address/map or description-scope contradictions refuse
 this witness. A nearby intersection in Property Highlights is location prose,
 not the labeled offered address. Numeric/range/unit/intersection subjects receive
-no new authority; the retained endpoint-map/range offering remains refused.
-This association does not expand native authority, financial normalization,
-child replacement or source acceptance. Existing legacy families remain intact.
+no authority from that named-property association. A range offering can use
+only the separate, fully witnessed range-locator role below; neither family
+rewrites the feed range or expands child replacement or source acceptance.
+Existing legacy families remain intact.
 Listing photos use the source predicate across discovered URLs, `doc.images` and feed fallback; generic harvested images cannot override it.
 The retained property-gallery carousel role can override only the generic-header filename exclusion; unscoped `doc.images` and feed fallbacks cannot. Other source URL exclusions still apply.
 Rendered image variants remain distinct URLs. Generic harvest can retain avatar/tracking candidates internally without granting property-photo authority.
@@ -501,9 +502,27 @@ five-digit ZIP on every structured address, substantive page structure, and
 agreement from every address-shaped subject or description claim. Repeated H1s
 are allowed only when they are identical exact feed subjects; street/acreage
 roles require one H1. Missing feed URL context disables only this new witness;
-existing identity paths still decide under their own rules. New captured-role
+existing identity paths still decide under their own rules. Other captured-role
 positives do not authorize street-range, unit, intersection, locality-punctuation,
 wrong-number or incomplete-ZIP equivalence.
+
+The exact registered range-offering role keeps the feed's ordered full street
+range as the identity and accepts one of its two endpoint numbers only as the
+display/map locator. It requires identical ordered endpoints and street in the
+feed name and street, H1 and every typed address, plus the captured affirmative
+“We are pleased to present the offering memorandum for the properties located
+at [range]” clause in the native Building overview. A bare location mention or
+an explicit statement that the properties are excluded from the offering refuses
+the role. One
+registered official URL, unique full-feed URL owner (including inactive rows),
+singleton remote/RealEstateListing identity, exact canonical/OG/requested URLs,
+matching city/state/known ZIP and hero, and a consistent endpoint in title, OG
+title, structured name and every parsed POI are all required. Every POI must have
+finite coordinates equal to that listing's typed structured geo; malformed or
+contradictory map/address/range claims refuse. This role does not split the range,
+infer parcels, or make endpoint containment a general street comparison rule.
+Both endpoints are bounded roles; lower-endpoint tests are synthetic controls
+unless separately supported by retained source evidence.
 
 A separate official scope witness may retain a wider description range only
 when an exact known-subject H1 and two complete endpoint-address/known-ZIP
@@ -542,8 +561,9 @@ separating field roles, and compare a known ZIP+4 exactly. This does not broaden
 the stronger witness's five-digit ZIP eligibility. Source-local street comparison
 may omit `Fwy`/`Freeway` only immediately after a numbered `I-` interstate;
 route number, direction, quadrant, intersecting road and other tokens still match.
-An endpoint does not equal a wider range, nor does a ZIP or different street
-conflict become optional merely because another visible family agrees.
+An endpoint does not equal a wider range outside that exact range-offering role,
+nor does a ZIP or different-street conflict become optional merely because
+another visible family agrees.
 A native named-property hero may instead show `name | city, state` only when
 the visible address heading independently binds the same full name, street,
 city and state, with matching title/OG and owned page URLs. A complete visible
