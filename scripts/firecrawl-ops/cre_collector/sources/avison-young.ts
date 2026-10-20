@@ -949,8 +949,9 @@ export function assertAvisonYoungDetailDoc(
       return { first, last, street: rangeStreet };
     };
     const feedRange = parseRange(base?.street);
-    if (!feedRange || !parseRange(base?.name)
-      || !strictPhysicalStreetMatches(parseRange(base?.name)?.street, feedRange.street)) return false;
+    const feedNameRange = parseRange(base?.name);
+    if (!feedRange || !feedNameRange
+      || !strictPhysicalStreetMatches(feedNameRange.street, feedRange.street)) return false;
     const sameRange = (value: any): boolean => {
       const parsed = parseRange(value);
       return Boolean(parsed && parsed.first === feedRange.first && parsed.last === feedRange.last
@@ -983,18 +984,19 @@ export function assertAvisonYoungDetailDoc(
       || !sameIdentityUrl(doc.metadata.sourceURL, requested) || !sameIdentityUrl(doc.metadata.url, requested)
       || $(".hero__sub-title").length !== 1 || heroLocations.length !== 1 || heroLocations[0] !== true) return false;
 
-    const rangePattern = /\b(\d+)\s*[-–]\s*(\d+)\s+(.+?\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|highway|hwy\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|parkway|pkwy\.?|place|pl\.?|way|trail|trl\.?|circle|cir\.?))(?=$|[,.;!?])/giu;
-    const endpointPattern = /\b(\d+)\s+(.+?\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|highway|hwy\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|parkway|pkwy\.?|place|pl\.?|way|trail|trl\.?|circle|cir\.?))(?=$|[,.;!?])/giu;
+    const streetSuffix = "(?:street|st\\.?|road|rd\\.?|avenue|ave\\.?|boulevard|blvd\\.?|highway|hwy\\.?|drive|dr\\.?|lane|ln\\.?|court|ct\\.?|parkway|pkwy\\.?|place|pl\\.?|way|trail|trl\\.?|circle|cir\\.?)";
+    const rangePattern = new RegExp(`\\b(\\d+)\\s*[-–]\\s*(\\d+)\\s+(.+?\\b${streetSuffix})(?=$|[,.;!?])`, "giu");
+    const endpointPattern = new RegExp(`\\b(\\d+)\\s+(.+?\\b${streetSuffix})(?=$|[,.;!?])`, "giu");
+    const offeringRangePattern = new RegExp(`\\bproperties\\s+located\\s+at\\s+(\\d+)\\s*[-–]\\s*(\\d+)\\s+(.+?\\b${streetSuffix})(?=$|[,.;!?])`, "giu");
     const overviewTexts = building.find(".building__overview-text p, .building__overview-text li")
       .toArray().map((element) => clean($(element).text()) ?? "");
-    const offerClaims = overviewTexts.flatMap((text) => [...text.matchAll(
-      /\bproperties\s+located\s+at\s+(\d+)\s*[-–]\s*(\d+)\s+(.+?\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|highway|hwy\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|parkway|pkwy\.?|place|pl\.?|way|trail|trl\.?|circle|cir\.?))(?=$|[,.;!?])/giu
-    )]);
+    const offerClaims = overviewTexts.flatMap((text) => [...text.matchAll(offeringRangePattern)]);
     if (offerClaims.length !== 1
       || !sameRange(`${offerClaims[0]![1]}-${offerClaims[0]![2]} ${offerClaims[0]![3]}`)
       || !overviewTexts.some((text) => text.length > 0)) return false;
 
     const sourceTexts = [
+      bodyText,
       ...overviewTexts,
       ...descriptionNodes.map((element) => clean($(element).attr("content")) ?? ""),
       clean(record?.description) ?? "",
