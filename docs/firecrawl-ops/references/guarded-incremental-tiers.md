@@ -536,6 +536,14 @@ Get-ScheduledTaskInfo -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refres
 Disable-ScheduledTask -TaskPath '\Agentic Assets\CRE\' -TaskName 'Interra Refresh'
 ```
 
+For read-only COM inspection, traverse the task folder with the maintained
+installer's component-by-component `GetFolder` pattern; normalize a folder path
+without a trailing `\` before passing it to COM. A proposed XML definition can
+be parsed in memory with `Schedule.Service.NewTask(0).XmlText` before any
+registration call. This checks the COM definition parser only; it is not task
+registration, runtime, or acceptance proof. Keep any held task disabled until
+the reviewed update procedure authorizes its exact replacement.
+
 When comparing a saved definition before and after a handoff, use the same
 PowerShell version and this exact `-TaskPath`/`-TaskName` export form. Exporting
 with `-InputObject` reserializes the CIM task and can change XML length,

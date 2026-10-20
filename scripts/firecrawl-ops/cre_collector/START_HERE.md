@@ -710,6 +710,21 @@ generates Unix milliseconds directly and does not use that conversion. Keep
 the existing stale/future checks; do not adjust clocks or admission evidence
 to compensate for a parsing error.
 
+PowerShell 7.5+ can deserialize ISO JSON timestamps as `DateTime` values unless
+`-DateKind String` is requested; Windows PowerShell 5.1 has no such parameter
+and leaves the timestamp text as a string. Test both supported shells with
+serialized JSON fixtures, not only in-memory values. For Task Scheduler COM,
+trim a trailing separator before `GetFolder` and traverse folder components as
+`Install-CreScheduledTask.ps1` does. `Schedule.Service.NewTask(0).XmlText` can
+validate proposed XML in memory without registering it; registration and task
+acceptance remain separate gates.
+
+If an update fails after a task was held, preserve the failed attempt and exact
+task definition. Do not replay registration or re-enable by inference. Confirm
+the owner is settled first; a remaining recovery fence follows the explicit
+[settled-owner recovery procedure](LOCK_AUTHORITY_RECOVERY.md#explicit-recovery-of-a-known-settled-dead-owner)
+under AGENTIC-4607.
+
 When configured, reviewed code is checked again before every child dispatch,
 including recovery retries, before an attempt counter or child log is created.
 Drift refuses new child work and records a global failure. This is admission
