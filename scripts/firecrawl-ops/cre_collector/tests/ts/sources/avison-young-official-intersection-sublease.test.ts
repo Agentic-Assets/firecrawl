@@ -284,6 +284,25 @@ for (const mutation of ["reversed-roads", "extra-road", "wrong-h1", "wrong-typed
   });
 }
 
+for (const mutation of ["missing-all-zip", "malformed-matching-zip"]) {
+  test(`official intersection role refuses ${mutation}`, () => {
+    const $ = cheerio.load(pages.get("18247")!);
+    const node = $('script[type="application/ld+json"]').first();
+    const record = JSON.parse(node.text());
+    const row = { ...officialRows.get("18247")! };
+    const addresses = [record.address, record.propertyListing.address];
+    if (mutation === "missing-all-zip") {
+      row.zip = undefined;
+      for (const address of addresses) delete address.postalCode;
+    } else {
+      row.zip = "7651";
+      for (const address of addresses) address.postalCode = "7651";
+    }
+    node.text(JSON.stringify(record));
+    assert.throws(() => assertRole("18247", $.html(), row), /identity/);
+  });
+}
+
 for (const mutation of ["wrong-tenure", "wrong-heading", "wrong-city-hero", "missing-expiry", "expired-claim", "negated-expiry", "historical-expiry", "contradictory-claim", "wrong-address", "wrong-zip", "missing-owner", "duplicate-owner", "native-host", "malformed-poi-null", "malformed-poi-array", "conflicting-poi"]) {
   test(`official sublease role refuses ${mutation}`, () => {
     const html = pages.get("17626")!;

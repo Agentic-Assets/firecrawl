@@ -994,6 +994,7 @@ export function assertAvisonYoungDetailDoc(
       && remoteComments.length === 1 && /\bremote\s*:\s*(\d+)\b/.exec($(remoteComments[0]!).text())?.[1] === clean(base?.id);
   };
   const exactOfficialEnvelope = (): boolean => isRegisteredOfficialWrapper && exactOfficialUrls()
+    && /^\d{5}$/.test(clean(base?.postalCode) ?? "")
     && exactRemoteIdentity() && records.length === 1 && addresses.length === 2
     && sameIdentityUrl(record?.url, requested)
     && normalizeIdentityText(decodeHtmlAmpForComparison(record?.name))
