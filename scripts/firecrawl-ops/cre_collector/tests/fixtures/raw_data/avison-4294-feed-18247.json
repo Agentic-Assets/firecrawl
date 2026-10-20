@@ -1,0 +1,28 @@
+{
+  "id": 18247,
+  "name": "Taylor Valley Rd & FM 93 | Land",
+  "meta_title": "Taylor Valley Rd & FM 93 | Land",
+  "address": " Taylor Valley Rd & FM 93",
+  "city": "Belton",
+  "state": "TX",
+  "state_long": "Texas",
+  "zip": "76513",
+  "country": "US",
+  "transaction": [
+    "sale"
+  ],
+  "status": "active",
+  "external_url": "https://www.avisonyoung.us/properties/-taylor-valley-rd-fm-93-belton-sale",
+  "url": "https://ayustaylorvalleyrdandfm93orland.sharplaunch.com",
+  "type": [
+    "land.other"
+  ],
+  "location": {
+    "lng": -97.44573,
+    "lat": 31.054209
+  },
+  "total_surface_sqft": 378100.8,
+  "updated_at": "2025-06-03T14:00:49.000Z",
+  "on_market_at": "2024-07-16T00:00:00.000Z",
+  "description": "<ul><li><strong>Parcel ID:</strong> 371769</li><li><strong>Land Area:</strong> 8.68 Acres</li><li><strong>Zoning:</strong> Heavy industrial</li><li><strong>Utilities: </strong>At site perimeter</li><li><strong>Price:</strong> Call broker</li><li><str"
+}
