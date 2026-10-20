@@ -656,7 +656,46 @@ export function jllInvestorStrandedDocs(listing: any): DocItem[] {
 //   statusBadge <- jllInvestorDetail.stageName / isUnderContract / top-level status
 //   canonicalUrl <- base.url (the invest.jll.com detail URL)
 //   extraFacts  <- { deal_type } from jllInvestorDetail.dealType
-export function jllInvestorStrandedStructured(listing: any): Record<string, any> {
+const JLL_INVESTOR_ACREAGE_VALUE =
+  /^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?\s*(?:acres?|ac\.?)$/i;
+const JLL_INVESTOR_ACREAGE_PLACEHOLDER = /^(?:acres?|ac\.?)$/i;
+
+function jllInvestorAcreageValue(value: string): number | undefined {
+  if (!JLL_INVESTOR_ACREAGE_VALUE.test(value)) return undefined;
+  const acres = Number(value.replace(/\s*(?:acres?|ac\.?)$/i, "").replace(/,/g, ""));
+  return Number.isFinite(acres) && acres > 0 ? acres : undefined;
+}
+
+function jllInvestorLandAreaAcres(attributes: any, searchLandArea: unknown): number | undefined {
+  if (!Array.isArray(attributes)) return undefined;
+
+  const values: number[] = [];
+  for (const attribute of attributes) {
+    if (clean(attribute?.label)?.toLowerCase() !== "land area") continue;
+    const raw = attribute?.value;
+    if (raw == null || (typeof raw === "string" && !raw.trim())) continue;
+    if (typeof raw !== "string") return undefined;
+    const value = raw.trim();
+    if (JLL_INVESTOR_ACREAGE_PLACEHOLDER.test(value)) continue;
+    const acres = jllInvestorAcreageValue(value);
+    if (acres === undefined) return undefined;
+    values.push(acres);
+  }
+
+  if (!values.length || values.some((value) => value !== values[0])) return undefined;
+  if (searchLandArea != null && searchLandArea !== "") {
+    if (typeof searchLandArea !== "string") return undefined;
+    const searchValue = searchLandArea.trim();
+    const searchAcres = jllInvestorAcreageValue(searchValue);
+    if (searchAcres === undefined || searchAcres !== values[0]) return undefined;
+  }
+  return values[0];
+}
+
+export function jllInvestorStrandedStructured(
+  listing: any,
+  searchRow?: any
+): Record<string, any> {
   // highlights: the investor payload stores these as an HTML string (rich text editor output)
   // OR as an array of objects/strings. Handle both.
   let highlights: string[] = [];
@@ -694,6 +733,10 @@ export function jllInvestorStrandedStructured(listing: any): Record<string, any>
   const extraFacts: Record<string, unknown> = {};
   const dealType = clean(listing?.dealType);
   if (dealType) extraFacts.deal_type = dealType;
+  const lotSizeAcres = jllInvestorLandAreaAcres(
+    listing?.customAttributes,
+    searchRow?.landArea
+  );
 
   return (
     prune({
@@ -705,6 +748,7 @@ export function jllInvestorStrandedStructured(listing: any): Record<string, any>
       submarket: clean(listing?.submarket),
       highlights: highlights.length ? highlights : undefined,
       statusBadge,
+      lotSizeAcres,
       extraFacts: Object.keys(extraFacts).length ? extraFacts : undefined,
     }) ?? {}
   );
@@ -834,7 +878,10 @@ function parseJllInvestorListing(
   });
   const teaserUrlSet = new Set(documentUrls.map((u) => u.toLowerCase()));
   const documents = harvested.documents.filter((d) => !teaserUrlSet.has(d.url.toLowerCase()));
-  const lifted = jllInvestorStrandedStructured(listing);
+  const lifted = jllInvestorStrandedStructured(
+    listing,
+    base.jllInvestorSearchRow
+  );
   // canonicalUrl: the invest.jll.com detail page URL is the stable canonical
   // for investor listings. Use base.url (already normalized by srcJllInvestor).
   const canonicalUrl = clean(base.url) ?? undefined;
