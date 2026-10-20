@@ -57,16 +57,30 @@ test("same witnessed range permits either endpoint but not an interior locator",
   assert.throws(() => check(withEndpoint(html, "1600")), /identity/);
 });
 
+test("an additional POI is allowed only when it repeats the same witnessed endpoint and coordinates", () => {
+  const extended = `${html}<script>var extraMap={poi:[{"lat":37.424636,"lng":-121.976756,"address":"1641 El Dorado St","name":"1641 El Dorado St"}]};</script>`;
+  assert.doesNotThrow(() => check(extended));
+});
+
 for (const mutation of [
   "missing-offering-prose",
+  "missing-h1",
   "endpoint-only-typed-address",
+  "missing-second-typed-address",
   "reversed-feed-range",
   "wrong-city",
   "wrong-zip",
+  "unit-range",
+  "intersection-range",
   "extra-offered-range",
   "contradictory-poi",
   "malformed-poi",
   "wrong-geo",
+  "inconsistent-title-endpoint",
+  "wrong-canonical-url",
+  "wrong-og-url",
+  "wrong-remote-id",
+  "competing-real-estate-listing",
   "missing-feed-owner",
   "duplicate-feed-owner",
 ]) {
@@ -84,7 +98,11 @@ for (const mutation of [
       record.address.streetAddress = "1641 El Dorado St";
       record.propertyListing.address.streetAddress = "1641 El Dorado St";
     }
+    if (mutation === "missing-h1") $("h1").remove();
+    if (mutation === "missing-second-typed-address") delete record.propertyListing.address;
     if (mutation === "reversed-feed-range") row.street = "1641 - 1563 El Dorado St";
+    if (mutation === "unit-range") row.street = "1563 - 1641 El Dorado St, Suite 2";
+    if (mutation === "intersection-range") row.street = "1563 - 1641 El Dorado St & Other Rd";
     if (mutation === "wrong-city") {
       row.city = "Oakland";
       record.address.addressLocality = "Oakland";
@@ -105,6 +123,13 @@ for (const mutation of [
       $("body").append("<script>var extraMap={poi:unknown};</script>");
     }
     if (mutation === "wrong-geo") record.propertyListing.geo.latitude = 37.5;
+    if (mutation === "inconsistent-title-endpoint") $("title").text("1563 El Dorado St");
+    if (mutation === "wrong-canonical-url") $('link[rel="canonical"]').attr("href", "https://www.avisonyoung.us/properties/other");
+    if (mutation === "wrong-og-url") $('meta[property="og:url"]').attr("content", "https://www.avisonyoung.us/properties/other");
+    if (mutation === "wrong-remote-id") $("body").html($("body").html()?.replace("remote: 18071", "remote: 18072") ?? "");
+    if (mutation === "competing-real-estate-listing") {
+      $("body").append(`<script type="application/ld+json">${JSON.stringify({ ...record, name: "Other Property" })}</script>`);
+    }
     recordNode.text(JSON.stringify(record));
     const owners = mutation === "missing-feed-owner" ? undefined
       : mutation === "duplicate-feed-owner" ? { matchingExternalUrlRowIds: ["18071", "18072"] }
@@ -125,6 +150,7 @@ test("real source caller stages the original range and retained provider witness
   ];
   const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
   const feedRow = { ...evidence.feed_row, url: undefined };
+  let websiteRows: any[] = [feedRow];
   let detailCalls = 0;
   try {
     for (const key of envKeys) delete process.env[key];
@@ -134,7 +160,7 @@ test("real source caller stages the original range and retained provider witness
         return new Response("<script>SharpLaunch.PSE.create('0123456789abcdef0123456789abcdef')</script>");
       }
       assert.equal(url.hostname, "pse-api.sharplaunch.com");
-      return new Response(JSON.stringify({ items: url.searchParams.get("entity") === "website" ? [feedRow] : [] }));
+      return new Response(JSON.stringify({ items: url.searchParams.get("entity") === "website" ? websiteRows : [] }));
     };
     firecrawl.scrape = async (url: string) => {
       detailCalls++;
@@ -152,6 +178,12 @@ test("real source caller stages the original range and retained provider witness
     assert.deepEqual(listing.detailJsonLd.propertyListing.geo, { "@type": "GeoCoordinates", latitude: 37.424636, longitude: -121.976756 });
     assert.equal(listing.externalUrl, evidence.response_url);
     assert.match(listing.markdown, /properties located at 1563-1641 El Dorado Street/i);
+
+    // URL ownership is checked against the complete feed before active/transaction filtering.
+    websiteRows = [feedRow, { ...feedRow, id: 18072, status: "inactive" }];
+    const duplicateOwnerSource = await import("../../../sources/avison-young.js?range-offering-owner=unique");
+    const duplicateOwnerResult = await duplicateOwnerSource.srcAvisonYoung("sale", 1, false);
+    assert.match(duplicateOwnerResult.listings[0]!.detailError ?? "", /identity/);
   } finally {
     globalThis.fetch = oldFetch;
     firecrawl.scrape = oldScrape;

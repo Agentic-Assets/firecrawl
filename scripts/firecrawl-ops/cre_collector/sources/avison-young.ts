@@ -934,9 +934,109 @@ export function assertAvisonYoungDetailDoc(
     return true;
   })();
 
-  if (descriptionConflicts && !officialRangeScopeWitness) {
+  // This registered-page role keeps the feed's ordered range as the property
+  // identity while allowing the publisher's endpoint marker as its locator.
+  // It is intentionally independent of the older endpoint-first range scope.
+  const officialRangeOfferingLocator = (() => {
+    const parseRange = (value: any) => {
+      const match = /^(\d+)\s*[-–]\s*(\d+)\s+(.+)$/u.exec(clean(value) ?? "");
+      if (!match) return null;
+      const first = Number(match[1]);
+      const last = Number(match[2]);
+      const rangeStreet = clean(match[3]);
+      if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 1 || last <= first
+        || !rangeStreet || !strictPhysicalStreetKey(rangeStreet) || !streetRole.test(rangeStreet)) return null;
+      return { first, last, street: rangeStreet };
+    };
+    const feedRange = parseRange(base?.street);
+    if (!feedRange || !parseRange(base?.name)
+      || !strictPhysicalStreetMatches(parseRange(base?.name)?.street, feedRange.street)) return false;
+    const sameRange = (value: any): boolean => {
+      const parsed = parseRange(value);
+      return Boolean(parsed && parsed.first === feedRange.first && parsed.last === feedRange.last
+        && strictPhysicalStreetMatches(parsed.street, feedRange.street));
+    };
+    const parseEndpoint = (value: any): number | null => {
+      const match = /^(\d+)\s+(.+)$/u.exec(clean(value) ?? "");
+      if (!match) return null;
+      const number = Number(match[1]);
+      return Number.isSafeInteger(number) && (number === feedRange.first || number === feedRange.last)
+        && strictPhysicalStreetKey(match[2]) && streetRole.test(match[2])
+        && strictPhysicalStreetMatches(match[2], feedRange.street) ? number : null;
+    };
+    const titles = pageTitles.map(parseEndpoint);
+    if (!isRegisteredOfficialWrapper || !exactFeedUrlOwner || !urlMatches
+      || !clean(base?.postalCode) || !/^\d{5}$/.test(clean(base?.postalCode) ?? "")
+      || !clean(base?.city) || !clean(base?.state) || !titles.length || titles.some((value) => value === null)
+      || new Set(titles).size !== 1 || $("title").length !== 1
+      || $('meta[property="og:title"]').length !== 1 || $("h1").length !== 1
+      || !sameRange($("h1").text()) || records.length !== 1
+      || !sameIdentityUrl(record?.url, requested) || parseEndpoint(record?.name) !== titles[0]
+      || addresses.length !== 2 || !addresses.every((address) => sameRange(address?.streetAddress)
+        && strictLocalityText(address?.addressLocality) && normalizeCity(address.addressLocality) === city
+        && strictLocalityText(address?.addressRegion) && normalizeState(address.addressRegion) === state
+        && clean(address.postalCode) === clean(base?.postalCode))
+      || $('meta[property="og:url"]').length !== 1
+      || !sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
+      || canonicalUrls.length !== 1 || !sameIdentityUrl(canonicalUrls[0], requested)
+      || !doc.metadata?.sourceURL || !doc.metadata?.url
+      || !sameIdentityUrl(doc.metadata.sourceURL, requested) || !sameIdentityUrl(doc.metadata.url, requested)
+      || $(".hero__sub-title").length !== 1 || heroLocations.length !== 1 || heroLocations[0] !== true) return false;
+
+    const rangePattern = /\b(\d+)\s*[-–]\s*(\d+)\s+(.+?\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|highway|hwy\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|parkway|pkwy\.?|place|pl\.?|way|trail|trl\.?|circle|cir\.?))(?=$|[,.;!?])/giu;
+    const endpointPattern = /\b(\d+)\s+(.+?\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|highway|hwy\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|parkway|pkwy\.?|place|pl\.?|way|trail|trl\.?|circle|cir\.?))(?=$|[,.;!?])/giu;
+    const overviewTexts = building.find(".building__overview-text p, .building__overview-text li")
+      .toArray().map((element) => clean($(element).text()) ?? "");
+    const offerClaims = overviewTexts.flatMap((text) => [...text.matchAll(
+      /\bproperties\s+located\s+at\s+(\d+)\s*[-–]\s*(\d+)\s+(.+?\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|boulevard|blvd\.?|highway|hwy\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|parkway|pkwy\.?|place|pl\.?|way|trail|trl\.?|circle|cir\.?))(?=$|[,.;!?])/giu
+    )]);
+    if (offerClaims.length !== 1
+      || !sameRange(`${offerClaims[0]![1]}-${offerClaims[0]![2]} ${offerClaims[0]![3]}`)
+      || !overviewTexts.some((text) => text.length > 0)) return false;
+
+    const sourceTexts = [
+      ...overviewTexts,
+      ...descriptionNodes.map((element) => clean($(element).attr("content")) ?? ""),
+      clean(record?.description) ?? "",
+    ];
+    for (const text of sourceTexts) {
+      for (const match of text.matchAll(rangePattern)) {
+        if (!sameRange(`${match[1]}-${match[2]} ${match[3]}`)) return false;
+      }
+      for (const match of text.matchAll(endpointPattern)) {
+        if (parseEndpoint(`${match[1]} ${match[2]}`) === null) return false;
+      }
+    }
+
+    const geo = record?.propertyListing?.geo;
+    if (typeof geo?.latitude !== "number" || !Number.isFinite(geo.latitude)
+      || typeof geo?.longitude !== "number" || !Number.isFinite(geo.longitude)) return false;
+    let poiCount = 0;
+    for (const script of $("script").toArray()) {
+      const text = $(script).text();
+      const poiClaims = [...text.matchAll(/(?:\bpoi|"poi"|'poi')\s*:/g)];
+      const maps = [...text.matchAll(/(?:\bpoi|"poi"|'poi')\s*:\s*(\[[^\n]*\])/g)];
+      if (maps.length !== poiClaims.length) return false;
+      for (const map of maps) {
+        let points: any;
+        try { points = JSON.parse(map[1]!); } catch { return false; }
+        if (!Array.isArray(points) || points.length === 0) return false;
+        for (const point of points) {
+          poiCount++;
+          if (parseEndpoint(point?.address) !== titles[0] || parseEndpoint(point?.name) !== titles[0]
+            || point?.lat !== geo.latitude || point?.lng !== geo.longitude) return false;
+        }
+      }
+    }
+    if (poiCount === 0) return false;
+    const remoteIds = [...doc.rawHtml.matchAll(/\bremote\s*:\s*(\d+)\b/g)];
+    return remoteIds.length === 1 && remoteIds[0]![1] === clean(base?.id);
+  })();
+
+  if (descriptionConflicts && !officialRangeScopeWitness && !officialRangeOfferingLocator) {
     throw new Error("Avison Young detail identity does not match the requested property");
   }
+  if (officialRangeOfferingLocator) return record;
   if (officialStrictDisplayIdentity) return record;
   if (officialNamedPropertyIdentity) return record;
   const visiblePropertyIdentity = identityMetadataMatches && (name === street || addressHeroIdentity);
