@@ -153,7 +153,13 @@ const mutations: Array<[string, (state: Specimen) => void]> = [
   ["opposing-structured-tenure", s => { s.record.offers.businessFunction = "sale"; }],
   ["missing-structured-tenure", s => { delete s.record.offers.businessFunction; }],
   ["lost-building-overview", s => { s.$(".building__overview-text").remove(); }],
-  ["foreign-description", s => { s.$('meta[name="description"]').attr("content", "For lease - 24542 Pacific Park Drive, Aliso Viejo, CA 92656"); }],
+  ["foreign-description", s => {
+    const node = s.$('meta[property="og:description"]');
+    assert.equal(node.length, 1);
+    const before = node.attr("content");
+    node.attr("content", "For lease - 24542 Pacific Park Drive, Aliso Viejo, CA 92656");
+    assert.notEqual(node.attr("content"), before);
+  }],
   ["malformed-second-poi", s => { replacePoi(s, 1, "nullish"); }],
   ["conflicting-second-poi", s => { replacePoi(s, 1, JSON.stringify([{ name: s.row.name, address: "24542 Pacific Park Drive", lat: s.row.location.lat, lng: s.row.location.lng }])); }],
   ["wrong-poi-geo", s => { replacePoi(s, 0, JSON.stringify([{ name: s.row.name, address: s.row.address, lat: s.row.location.lat + 0.01, lng: s.row.location.lng }])); }],
@@ -161,9 +167,25 @@ const mutations: Array<[string, (state: Specimen) => void]> = [
 for (const [name, mutate] of mutations) {
   test(`official physical-purpose evidence refuses ${name}`, () => {
     const state = specimen();
+    const fingerprint = () => digest({ row: state.row, record: state.record, html: state.$.html(), owners: state.owners, metadataUrl: state.metadataUrl });
+    const before = fingerprint();
     mutate(state);
+    assert.notEqual(fingerprint(), before, "negative mutation must change an actual witness");
     assert.throws(() => check(state), /identity/);
   });
+}
+
+for (const location of ["listing", "place"] as const) {
+  for (const value of ["For lease - 24542 Pacific Park Drive, Aliso Viejo, CA 92656", { text: "malformed typed description" }]) {
+    test(`official physical-purpose typed description refuses ${location} ${typeof value === "string" ? "foreign address" : "nonstring value"}`, () => {
+      const state = specimen();
+      const target = location === "listing" ? state.record : state.record.propertyListing;
+      const before = digest(target);
+      target.description = value;
+      assert.notEqual(digest(target), before);
+      assert.throws(() => check(state), /identity/);
+    });
+  }
 }
 
 test("a populated POI may repeat the independently complete physical witness", () => {
@@ -219,7 +241,9 @@ test("real fresh property enrichment and canonical staging conserve the full com
     assert.deepEqual(urls, [originalRow.url, originalRow.external_url]);
     assert.equal(listing.detailError, undefined);
     assert.equal(listing.detailUnavailable, undefined);
-    assert.equal(listing.preserveChildCollections, undefined);
+    // The deliberately rejected native attempt keeps the established property-
+    // fallback child safeguard; official association does not authorize replacement.
+    assert.equal(listing.preserveChildCollections, true);
     assert.equal(listing.street, originalRow.address);
     assert.equal(listing.name, originalRow.name);
     assert.deepEqual(listing.rawSharpLaunch, base.rawSharpLaunch);
@@ -244,6 +268,7 @@ test("real fresh property enrichment and canonical staging conserve the full com
     assert.equal(row.address, originalRow.address);
     assert.equal(row.source_url, originalRow.external_url);
     assert.deepEqual(row.raw_data.rawSharpLaunch, listing.rawSharpLaunch);
+    assert.equal(row.raw_data.preserveChildCollections, true);
     assert.equal(row.raw_data.detailJsonLd.address.streetAddress, originalRow.address);
     assert.equal(row.raw_data.detailJsonLd.propertyListing.address.streetAddress, originalRow.address);
     assert.equal(row.raw_data.freshnessProvenance.generationId, "synthetic-physical-purpose-generation");
