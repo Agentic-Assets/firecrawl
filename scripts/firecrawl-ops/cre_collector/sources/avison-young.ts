@@ -562,7 +562,19 @@ export function assertAvisonYoungDetailDoc(
     ));
   };
   const strictPhysicalStreetKey = (value: any): string[] | null => {
-    const text = clean(value);
+    let text = clean(value);
+    if (!text) return null;
+    // Compare a complete provider address as a street only when its terminal
+    // locality agrees with this row's separately bound fields. Keep raw values.
+    const parts = text.split(",").map((part) => part.trim());
+    const region = /^(.*?)\s+(\d{5})$/.exec(parts.at(-1) ?? "");
+    if (parts.length === 3 && region && strictLocalityText(base?.city) && state
+      && /^\d{5}$/.test(clean(base?.postalCode) ?? "")
+      && strictLocalityText(parts[1]) && normalizeCity(parts[1]) === city
+      && strictLocalityText(region[1]) && normalizeState(region[1]) === state
+      && region[2] === clean(base?.postalCode)) {
+      text = parts[0]!;
+    }
     if (!text || /[&#,/@|]/.test(text)
       || /\b(?:and|at|nwc|nec|swc|sec|suite|ste|unit|apt|floor|building|bldg|lot)\b/i.test(text)
       || /^\d+\s*[-–]\s*\d+\b/.test(text)) return null;

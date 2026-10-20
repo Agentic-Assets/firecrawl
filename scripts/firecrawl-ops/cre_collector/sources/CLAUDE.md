@@ -537,6 +537,12 @@ Before retrying a source after a parser change, follow the
 Use the existing replay seams; do not discover each remaining layout through a
 separate first-failure production attempt.
 
+Avison's strict physical comparison may remove a terminal city/state/five-digit
+ZIP tuple only when it agrees with the row's separately bound locality fields.
+This comparison view never rewrites source or staged addresses and still rejects
+units, ranges and intersections under the existing simple-street grammar. It
+supplies no additional visible witness or marketing-hero acceptance role.
+
 The official intersection and office-sublease roles remain bounded to the exact
 registered-page identity envelope and complete-feed URL owner. Both require one
 unique owned URL, remote identity, structured listing, known five-digit feed ZIP,
