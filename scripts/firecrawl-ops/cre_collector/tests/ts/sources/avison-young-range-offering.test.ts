@@ -26,9 +26,9 @@ const check = (
   rawHtml = html,
   row = base,
   requestedUrl = evidence.response_url,
-  owners: typeof owner | undefined = owner,
+  owners: typeof owner | null = owner,
 ) =>
-  assertAvisonYoungDetailDoc(doc(rawHtml, requestedUrl), requestedUrl, row, owners);
+  assertAvisonYoungDetailDoc(doc(rawHtml, requestedUrl), requestedUrl, row, owners ?? undefined);
 
 function withEndpoint(raw: string, endpoint: string): string {
   const $ = cheerio.load(raw);
@@ -109,7 +109,6 @@ for (const mutation of [
       record.propertyListing.address.addressLocality = "Oakland";
     }
     if (mutation === "wrong-zip") {
-      row.postalCode = "95003";
       record.address.postalCode = "95003";
       record.propertyListing.address.postalCode = "95003";
     }
@@ -131,7 +130,7 @@ for (const mutation of [
       $("body").append(`<script type="application/ld+json">${JSON.stringify({ ...record, name: "Other Property" })}</script>`);
     }
     recordNode.text(JSON.stringify(record));
-    const owners = mutation === "missing-feed-owner" ? undefined
+    const owners = mutation === "missing-feed-owner" ? null
       : mutation === "duplicate-feed-owner" ? { matchingExternalUrlRowIds: ["18071", "18072"] }
         : owner;
     assert.throws(() => check($.html(), row, evidence.response_url, owners), /identity/);
