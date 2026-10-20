@@ -59,7 +59,23 @@ coverage gate or certify a full refresh.
 
 ## Run a supervised trial
 
-First read `cre_status.sh --scheduler external`, current sole-writer evidence,
+From the deployed Ubuntu collector directory, read the existing diagnostic with
+its approved private environment-file reference. Replace `REVIEWED_SHA` below
+with the full approved commit; use the configured environment-file path on
+another host, never a database URL on the command line:
+
+```bash
+REVIEWED_SHA='replace-with-full-approved-commit'
+CRE_ENV_FILE="$HOME/.config/cre/equire.env" bash cre_status.sh --scheduler external --expected-sha "$REVIEWED_SHA"
+```
+
+External mode does not discover the Windows task's explicit Linux environment
+file. It still checks legacy monitor/enrich/weekly artifacts: retain stale or
+missing-marker warnings, but do not treat them alone as a failed current Windows
+Task Scheduler/checkpoint-series refresh. Reconcile the configured task and source
+scope, same-operation launcher/checkpoint/validation/readback receipts,
+owner/recovery state and applicable queue gates. Never launch legacy tiers just
+to clear these warnings. Before a trial, also check current sole-writer evidence,
 the exact pushed commit and the source's current admission contract. Refresh
 remote tracking refs explicitly before a run. The entrypoint requires a clean
 checkout, exact expected SHA and a matching local `origin` tracking tip; it

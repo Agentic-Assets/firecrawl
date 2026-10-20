@@ -420,6 +420,8 @@ export function assertAvisonYoungDetailDoc(
       .replace(/\bboulevard\b/g, "blvd")
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
+  const decodeHtmlAmpForComparison = (value: any): string =>
+    (clean(value) ?? "").replace(/&amp;/gi, "&");
   const postDirectionals: Record<string, string> = {
     north: "n", northeast: "ne", east: "e", southeast: "se",
     south: "s", southwest: "sw", west: "w", northwest: "nw",
@@ -934,6 +936,173 @@ export function assertAvisonYoungDetailDoc(
     return true;
   })();
 
+  // Parse each source-owned map claim at its value offset. Map initialization
+  // may be explicitly absent (`null` or `[]`), but malformed values and every
+  // populated point still have to agree with the already-bound feed identity.
+  const readPoiClaims = (): Array<{ kind: "null" } | { kind: "array"; points: any[] }> | null => {
+    const claims: Array<{ kind: "null" } | { kind: "array"; points: any[] }> = [];
+    for (const script of $("script").toArray()) {
+      const source = $(script).text();
+      for (const match of source.matchAll(/(?:\bpoi|"poi"|'poi')\s*:/g)) {
+        let start = match.index! + match[0].length;
+        while (/\s/.test(source[start] ?? "")) start++;
+        if (source.slice(start).match(/^null(?=\s*[,}])/)) {
+          claims.push({ kind: "null" });
+          continue;
+        }
+        if (source[start] !== "[") return null;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        let end = -1;
+        for (let index = start; index < source.length; index++) {
+          const character = source[index]!;
+          if (inString) {
+            if (escaped) escaped = false;
+            else if (character === "\\") escaped = true;
+            else if (character === '"') inString = false;
+          } else if (character === '"') inString = true;
+          else if (character === "[") depth++;
+          else if (character === "]" && --depth === 0) {
+            end = index + 1;
+            break;
+          }
+        }
+        if (end < 0 || !/^\s*[,}]/.test(source.slice(end))) return null;
+        let points: unknown;
+        try { points = JSON.parse(source.slice(start, end)); } catch { return null; }
+        if (!Array.isArray(points)) return null;
+        claims.push({ kind: "array", points });
+      }
+    }
+    return claims;
+  };
+  const finiteFeedGeo = (): boolean => typeof base?.latitude === "number" && Number.isFinite(base.latitude)
+    && typeof base?.longitude === "number" && Number.isFinite(base.longitude);
+  const exactOfficialUrls = (): boolean => Boolean(exactFeedUrlOwner && urlMatches
+    && sameIdentityUrl(record?.url, requested)
+    && canonicalUrls.length === 1 && sameIdentityUrl(canonicalUrls[0], requested)
+    && $('meta[property="og:url"]').length === 1
+    && sameIdentityUrl($('meta[property="og:url"]').attr("content"), requested)
+    && sameIdentityUrl(doc.metadata?.sourceURL, requested)
+    && sameIdentityUrl(doc.metadata?.url, requested));
+  const exactRemoteIdentity = (): boolean => {
+    const remoteIds = [...doc.rawHtml.matchAll(/\bremote\s*:\s*(\d+)\b/g)];
+    const remoteComments = $("script").toArray().filter((element) =>
+      /^\s*\/\*\s*remote\s*:\s*\d+\b[^*]*\*\/\s*$/.test($(element).text()));
+    return remoteIds.length === 1 && remoteIds[0]![1] === clean(base?.id)
+      && remoteComments.length === 1 && /\bremote\s*:\s*(\d+)\b/.exec($(remoteComments[0]!).text())?.[1] === clean(base?.id);
+  };
+  const exactOfficialEnvelope = (): boolean => isRegisteredOfficialWrapper && exactOfficialUrls()
+    && exactRemoteIdentity() && records.length === 1 && addresses.length === 2
+    && sameIdentityUrl(record?.url, requested)
+    && normalizeIdentityText(decodeHtmlAmpForComparison(record?.name))
+      === normalizeIdentityText(decodeHtmlAmpForComparison(base?.name))
+    && $("h1").length === 1 && $("title").length === 1
+    && $('meta[property="og:title"]').length === 1 && $(".hero__sub-title").length === 1
+    && pageTitles.every((value) => normalizeIdentityText(decodeHtmlAmpForComparison(value))
+      === normalizeIdentityText(decodeHtmlAmpForComparison(base?.name)));
+
+  // The land-feed name includes a category suffix while the page heading and
+  // physical address contain the same ordered two-road intersection. Decode
+  // HTML entities only for this JSON-LD name comparison; raw source stays intact.
+  const parseOrderedIntersection = (value: any): [string, string] | null => {
+    const text = clean(value);
+    if (!text || /[,/#|]/.test(text)) return null;
+    const parts = text.split("&").map((part) => part.trim());
+    const roadComponent = (part: string): boolean => Boolean(strictPhysicalStreetKey(part))
+      && (streetRole.test(part) || /^(?:fm|us|state route|route)\s+\d+[a-z]?$/i.test(part));
+    if (parts.length !== 2 || !roadComponent(parts[0]!) || !roadComponent(parts[1]!)) return null;
+    return [parts[0]!, parts[1]!];
+  };
+  const sameOrderedIntersection = (value: any, expected: [string, string]): boolean => {
+    const parts = parseOrderedIntersection(value);
+    return Boolean(parts && strictPhysicalStreetMatches(parts[0], expected[0])
+      && strictPhysicalStreetMatches(parts[1], expected[1]));
+  };
+  const sameIntersectionTitle = (value: any, expected: [string, string]): boolean => {
+    const match = /^(.*?)\s+\|\s+Land$/i.exec(decodeHtmlAmpForComparison(clean(value) ?? ""));
+    return Boolean(match && sameOrderedIntersection(match[1], expected));
+  };
+  const officialIntersectionOffering = (() => {
+    const sourceName = clean(base?.name) ?? "";
+    const nameParts = /^(.*?)\s+\|\s+Land$/i.exec(sourceName);
+    const feedIntersection = parseOrderedIntersection(base?.street);
+    const namedIntersection = parseOrderedIntersection(nameParts?.[1]);
+    const sourceTypes = Array.isArray(base?.rawSharpLaunch?.type)
+      ? base.rawSharpLaunch.type.map((value: any) => clean(value)?.toLowerCase()).filter(Boolean)
+      : [];
+    const geo = record?.propertyListing?.geo;
+    const claims = readPoiClaims();
+    if (!exactOfficialEnvelope() || !nameParts || !feedIntersection || !namedIntersection
+      || !sameOrderedIntersection(nameParts[1], feedIntersection)
+      || sourceTypes.length !== 1 || sourceTypes[0] !== "land.other"
+      || (clean(base?.transactionType) ?? "").toLowerCase() !== "sale" || !finiteFeedGeo()
+      || building.length !== 1 || !hasBuildingOverview || $(".hero__text .hero__title").length !== 1
+      || !heroLocations.every(Boolean) || heroLocations.length !== 1
+      || normalizeIdentityText(decodeHtmlAmpForComparison(record?.name)) !== normalizeIdentityText(sourceName)
+      || !pageTitles.every((value) => normalizeIdentityText(decodeHtmlAmpForComparison(value))
+        === normalizeIdentityText(sourceName))
+      || !sameIntersectionTitle(record?.name, feedIntersection)
+      || !pageTitles.every((value) => sameIntersectionTitle(value, feedIntersection))
+      || !sameOrderedIntersection($("h1").text(), feedIntersection)
+      || record?.propertyListing?.["@type"] !== "Place"
+      || !Array.isArray(record?.propertyListing?.category)
+      || record.propertyListing.category.length !== 1 || record.propertyListing.category[0] !== sourceTypes[0]
+      || (clean(record?.offers?.businessFunction) ?? "").toLowerCase() !== "sale"
+      || addresses.length !== 2 || !addresses.every((address) =>
+        sameOrderedIntersection(address?.streetAddress, feedIntersection)
+        && strictLocalityText(address?.addressLocality) && normalizeCity(address.addressLocality) === city
+        && strictLocalityText(address?.addressRegion) && normalizeState(address.addressRegion) === state
+        && clean(address.postalCode) === clean(base?.postalCode))
+      || geo?.latitude !== base.latitude || geo?.longitude !== base.longitude
+      || !claims || claims.length === 0 || claims.some((claim) => claim.kind !== "array" || claim.points.length === 0
+        || claim.points.some((point) => !sameOrderedIntersection(point?.address, feedIntersection)
+          || !sameIntersectionTitle(point?.name, feedIntersection)
+          || point?.lat !== base.latitude || point?.lng !== base.longitude))) return false;
+    return true;
+  })();
+
+  // This official office-sublease role keeps identity on the registered feed,
+  // exact detail URL, typed address, and same-page structured record. The H1
+  // supplies marketing purpose; the visible building overview independently
+  // supplies the affirmative sublease-expiry claim.
+  const officialOfficeSublease = (() => {
+    const sourceTypes = Array.isArray(base?.rawSharpLaunch?.type)
+      ? base.rawSharpLaunch.type.map((value: any) => clean(value)?.toLowerCase()).filter(Boolean)
+      : [];
+    const heading = /^sublease available in (.+?)[’']s premier office building$/i.exec(clean($("h1").text()) ?? "");
+    const overviewTexts = building.find(".building__overview-text p, .building__overview-text li")
+      .toArray().map((element) => clean($(element).text()) ?? "");
+    const overviewClauses = overviewTexts.flatMap((text) => text.split("•").map((part) => part.trim()));
+    const subleaseClauses = overviewClauses.filter((part) => /\bsublease\b/i.test(part));
+    const explicitDenial = overviewClauses.some((part) =>
+      /\b(?:no|never|not|prior|previous(?:ly)?|historical|former|expired|withdrawn|excluded|terminated)\b[^.!?]{0,100}\b(?:sublease|space|offering)\b/i.test(part)
+      || /\b(?:sublease|space|offering)\b[^.!?]{0,100}\b(?:expired|no longer available|not available|excluded|withdrawn|terminated)\b/i.test(part));
+    const affirmativeExpiry = subleaseClauses.length === 1
+      && /^sublease\s+expires\s+[A-Z][a-z]+\s+\d{1,2},\s+\d{4}$/i.test(subleaseClauses[0]!);
+    const claims = readPoiClaims();
+    const geo = record?.propertyListing?.geo;
+    if (!exactOfficialEnvelope() || building.length !== 1 || !hasBuildingOverview
+      || $(".hero__text .hero__title").length !== 1
+      || (clean(base?.transactionType) ?? "").toLowerCase() !== "lease"
+      || sourceTypes.length !== 1 || !sourceTypes[0]!.startsWith("office.")
+      || !heading || normalizeCity(heading[1]) !== city || !heroLocations.every(Boolean) || heroLocations.length !== 1
+      || !ownedIdentityMetadata
+      || !finiteFeedGeo() || !strictStructuredAddresses || addresses.length !== 2
+      || !addresses.every((address) => clean(address.postalCode) === clean(base?.postalCode))
+      || record?.propertyListing?.["@type"] !== "Place"
+      || !Array.isArray(record?.propertyListing?.category)
+      || record.propertyListing.category.length !== 1
+      || !sourceTypes.every((value: string, index: number) => record.propertyListing.category[index] === value)
+      || (clean(record?.offers?.businessFunction) ?? "").toLowerCase() !== "lease"
+      || geo?.latitude !== base.latitude || geo?.longitude !== base.longitude
+      || !claims || explicitDenial || !affirmativeExpiry
+      || claims.some((claim) => claim.kind === "array" && claim.points.some((point) =>
+        !strictPhysicalStreetMatches(point?.address, base?.street)
+        || !subjectMatches(point?.name) || point?.lat !== base.latitude || point?.lng !== base.longitude))) return false;
+    return physicalSubjectClaimsAgree && strictPhysicalDescriptionsAgree();
+  })();
   // This registered-page role keeps the feed's ordered range as the property
   // identity while allowing the publisher's endpoint marker as its locator.
   // It is intentionally independent of the older endpoint-first range scope.
@@ -1041,7 +1210,8 @@ export function assertAvisonYoungDetailDoc(
     return remoteIds.length === 1 && remoteIds[0]![1] === clean(base?.id);
   })();
 
-  if (descriptionConflicts && !officialRangeScopeWitness && !officialRangeOfferingLocator) {
+  if (descriptionConflicts && !officialRangeScopeWitness && !officialRangeOfferingLocator
+    && !officialIntersectionOffering && !officialOfficeSublease) {
     throw new Error("Avison Young detail identity does not match the requested property");
   }
   if (officialRangeOfferingLocator) return record;
@@ -1123,7 +1293,7 @@ export function assertAvisonYoungDetailDoc(
     ))) throw new Error("Avison Young detail identity does not match the requested property");
     return listing;
   }
-  if ((capturedBuildingStructure || officialRangeScopeWitness) && isRegisteredOfficialWrapper) {
+  if ((capturedBuildingStructure || building.length > 0 || officialRangeScopeWitness) && isRegisteredOfficialWrapper) {
     // Complete registered structured identity can own the subject while H1 and
     // hero carry marketing/financial display text. A price is never location proof.
     const coherentHeroDisplay = namedHeroIdentity || addressHeroIdentity
@@ -1160,9 +1330,10 @@ export function assertAvisonYoungDetailDoc(
       && physicalDescriptionsAgree;
     const structuredPhysicalIdentity = officialPhysicalAnchor && (offeringHeading || marketingOfferingHeading)
       && $("h1").length === 1 && physicalDescriptionsAgree;
+    const acceptedNewOfficialRole = officialIntersectionOffering || officialOfficeSublease;
     if (!(identityMetadataMatches || structuredDisplayIdentity || structuredPhysicalIdentity
-      || officialStreetAcreageWitness || officialRangeScopeWitness)
-      || !structuredIdentityMatches || !urlMatches) {
+      || officialStreetAcreageWitness || officialRangeScopeWitness || acceptedNewOfficialRole)
+      || (!acceptedNewOfficialRole && !structuredIdentityMatches) || !urlMatches) {
       throw new Error("Avison Young detail identity does not match the requested property");
     }
     return record;

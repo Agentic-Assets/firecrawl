@@ -524,6 +524,24 @@ infer parcels, or make endpoint containment a general street comparison rule.
 Both endpoints are bounded roles; lower-endpoint tests are synthetic controls
 unless separately supported by retained source evidence.
 
+Minimized source-page fixtures must preserve the production selector/ancestor
+structure, structured-data types, and every identity claim's shape and count.
+Before using a minimized page, run the unchanged validator against both the
+retained original and the fixture and confirm the same outcome; otherwise a
+fixture can accidentally bypass the production identity branch. Remove unrelated
+chrome only, and keep raw source values unchanged when comparison needs decoding.
+
+The official intersection and office-sublease roles remain bounded to the exact
+registered-page identity envelope and complete-feed URL owner. Compare the two
+intersection roads in order using the literal `&` separator across the feed,
+visible heading, structured name, and every populated map point; keep entity
+decoding comparison-only. For the observed office sublease, use the same-page
+affirmative Building overview expiry bullet with its marketing heading and
+coherent hero. A `null` or empty-array map claim supplies no point; validate
+every populated claim and refuse malformed or conflicting claims. Do not require
+an incidental factbox, infer a missing photo/address, or let a recognized
+official Building page fall through to generic JSON-LD acceptance.
+
 A separate official scope witness may retain a wider description range only
 when an exact known-subject H1 and two complete endpoint-address/known-ZIP
 witnesses independently agree, with substantive highlights/availability. Every
