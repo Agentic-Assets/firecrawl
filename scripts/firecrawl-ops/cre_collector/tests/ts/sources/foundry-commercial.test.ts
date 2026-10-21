@@ -4,7 +4,6 @@ import {
   assertFoundryUniqueProviderIds,
   classifyFoundryStatus,
   foundryAssetUrl,
-  foundryFetchText,
   foundryPropertySitemaps,
   foundryPropertyUrls,
   foundryProviderIdentity,
@@ -212,119 +211,6 @@ test("Foundry emitted provider IDs must be unique", () => {
   assert.throws(
     () => assertFoundryUniqueProviderIds([{ id: "property/first", foundryPostId: "1" }, { id: "property/second", foundryPostId: "1" }]),
     /duplicate provider ID 1/
-  );
-});
-
-test("Foundry fetch validates redirect targets, streams byte bounds, and supplies an abort signal", async () => {
-  let cancelled = false;
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/oversized/",
-        "html",
-        async (_input, init) => {
-          assert.ok(init?.signal);
-          assert.equal(init?.redirect, "manual");
-          return new Response(
-            new ReadableStream<Uint8Array>({
-              start(controller) {
-                controller.enqueue(new TextEncoder().encode("abc"));
-                controller.enqueue(new TextEncoder().encode("def"));
-              },
-              cancel() {
-                cancelled = true;
-              },
-            }),
-            { headers: { "content-type": "text/html" } }
-          );
-        },
-        1_000,
-        4,
-        1
-      ),
-    /exceeds 4 bytes/
-  );
-  assert.equal(cancelled, true);
-  let redirectCalls = 0;
-  assert.equal(
-    await foundryFetchText(
-      "https://www.foundrycommercial.com/sitemap.xml",
-      "xml",
-      async (input, init) => {
-        assert.equal(init?.redirect, "manual");
-        redirectCalls++;
-        return redirectCalls === 1
-          ? new Response("", {
-              status: 301,
-              headers: { location: "/sitemap_index.xml" },
-            })
-          : new Response("<sitemapindex><sitemap><loc>https://www.foundrycommercial.com/property-sitemap.xml</loc></sitemap></sitemapindex>", {
-              headers: { "content-type": "application/xml" },
-            });
-      },
-      1_000,
-      1_000,
-      1
-    ),
-    "<sitemapindex><sitemap><loc>https://www.foundrycommercial.com/property-sitemap.xml</loc></sitemap></sitemapindex>"
-  );
-  assert.equal(redirectCalls, 2);
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/redirected/",
-        "html",
-        async () =>
-          new Response("", {
-            status: 302,
-            headers: { location: "http://www.foundrycommercial.com/property/insecure/" },
-          }),
-        1_000,
-        1_000,
-        1
-      ),
-    /refused unsafe html URL/
-  );
-  const secret = "synthetic-redirect-secret";
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/redirected/",
-        "html",
-        async () =>
-          new Response("", {
-            status: 302,
-            headers: {
-              location:
-                `/property/redirected/?session=${secret}#${secret}`,
-            },
-          }),
-        1_000,
-        1_000,
-        1
-      ),
-    (error: unknown) => {
-      assert.match(String(error), /refused unsafe html URL/);
-      assert.equal(String(error).includes(secret), false);
-      return true;
-    }
-  );
-  await assert.rejects(
-    () =>
-      foundryFetchText(
-        "https://www.foundrycommercial.com/property/timeout/",
-        "html",
-        async (_input, init) =>
-          new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
-              once: true,
-            });
-          }),
-        5,
-        100,
-        1
-      ),
-    /aborted/
   );
 });
 

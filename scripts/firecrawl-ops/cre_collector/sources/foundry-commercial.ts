@@ -323,12 +323,66 @@ export function parseFoundryCommercialDetail(
 
 type FetchKind = "html" | "xml";
 
+const FOUNDRY_RETRYABLE_NATIVE_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+const FOUNDRY_RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
+const FOUNDRY_BODY_CANCEL_TIMEOUT_MS = 1_000;
+
+class FoundryRetryableFetchError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "FoundryRetryableFetchError";
+  }
+}
+
+function foundryIsTransientTransportFailure(error: unknown, timedOut: boolean): boolean {
+  if (timedOut) return true;
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (!(error instanceof TypeError)) return false;
+  const cause = (error as TypeError & { cause?: unknown }).cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return false;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && FOUNDRY_RETRYABLE_NATIVE_CODES.has(code);
+}
+
+/** A failed or stalled cancel must never be followed by another request. */
+async function foundryCancelBody(
+  body: { cancel(): Promise<unknown> } | null,
+  timeoutMs = FOUNDRY_BODY_CANCEL_TIMEOUT_MS
+): Promise<boolean> {
+  if (!body) return true;
+  let cancellation: Promise<unknown>;
+  try {
+    cancellation = Promise.resolve(body.cancel());
+  } catch {
+    return false;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await Promise.race([
+    cancellation.then(() => true, () => false),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.min(timeoutMs, FOUNDRY_BODY_CANCEL_TIMEOUT_MS));
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return settled;
+}
+
 async function foundryBoundedResponseText(
   response: Response,
-  maxBytes: number
+  maxBytes: number,
+  timeoutMs: number,
+  signal: AbortSignal
 ): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await foundryCancelBody(response.body);
     throw new Error(`Foundry response exceeds ${maxBytes} bytes`);
   }
   if (!response.body) return "";
@@ -338,11 +392,29 @@ async function foundryBoundedResponseText(
   let text = "";
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        let readerClosedWithSameError = false;
+        try {
+          await reader.closed;
+        } catch (closedError) {
+          readerClosedWithSameError = closedError === error;
+        }
+        if (!readerClosedWithSameError && !await foundryCancelBody(reader, timeoutMs)) {
+          throw new Error("Foundry response body read failed and did not cancel", { cause: error });
+        }
+        if (!foundryIsTransientTransportFailure(error, signal.aborted)) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        throw new FoundryRetryableFetchError(`Foundry response body read failed: ${message}`, { cause: error });
+      }
+      const { done, value } = chunk;
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
+        const settled = await foundryCancelBody({ cancel: () => reader.cancel() });
+        if (!settled) throw new Error("Foundry response body did not settle after exceeding its size limit");
         throw new Error(`Foundry response exceeds ${maxBytes} bytes`);
       }
       text += decoder.decode(value, { stream: true });
@@ -372,25 +444,57 @@ export async function foundryFetchText(
         const allowed = foundryUrl(current, kind === "html" ? "detail" : "sitemap");
         if (!allowed) throw new Error(`Foundry refused unsafe ${kind} URL`);
         const strict = requireFreshDetails();
-        const response = await fetchImpl(allowed, {
-          redirect: "manual",
-          signal: controller.signal,
-          headers: {
-            "User-Agent": "Mozilla/5.0 CRE collector",
-            Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
-            ...(strict ? { "Cache-Control": "no-cache" } : {}),
-          },
-          ...(strict ? { cache: "no-store" as const } : {}),
-        });
+        let response: Response;
+        try {
+          response = await fetchImpl(allowed, {
+            redirect: "manual",
+            signal: controller.signal,
+            headers: {
+              "User-Agent": "Mozilla/5.0 CRE collector",
+              Accept: kind === "html" ? "text/html,application/xhtml+xml" : "application/xml,text/xml,text/plain",
+              ...(strict ? { "Cache-Control": "no-cache" } : {}),
+            },
+            ...(strict ? { cache: "no-store" as const } : {}),
+          });
+        } catch (error) {
+          if (foundryIsTransientTransportFailure(error, controller.signal.aborted)) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new FoundryRetryableFetchError(`Foundry transient transport failure: ${message}`, { cause: error });
+          }
+          throw error;
+        }
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
-          if (!location) throw new Error(`Foundry redirect ${response.status} lacks Location`);
-          current = new URL(location, allowed).toString();
+          if (!location) {
+            await foundryCancelBody(response.body);
+            throw new Error(`Foundry redirect ${response.status} lacks Location`);
+          }
+          let next: string;
+          try {
+            next = new URL(location, allowed).toString();
+          } catch {
+            await foundryCancelBody(response.body);
+            throw new Error(`Foundry redirect ${response.status} has invalid Location`);
+          }
+          if (!await foundryCancelBody(response.body, timeoutMs)) {
+            throw new Error("Foundry redirect body did not settle before the next request");
+          }
+          current = next;
           continue;
         }
-        if (!response.ok) throw new Error(`Foundry HTTP ${response.status}`);
+        if (!response.ok) {
+          const status = response.status;
+          const hasRetryAfter = response.headers.has("retry-after");
+          const cancelled = await foundryCancelBody(response.body, timeoutMs);
+          if (!cancelled) throw new Error(`Foundry HTTP ${status} response body did not settle`);
+          if (FOUNDRY_RETRYABLE_HTTP_STATUSES.has(status) && !hasRetryAfter) {
+            throw new FoundryRetryableFetchError(`Foundry HTTP ${status}`);
+          }
+          throw new Error(`Foundry HTTP ${status}`);
+        }
         const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
         if (contentType.includes("application/pdf")) {
+          await foundryCancelBody(response.body, timeoutMs);
           throw new Error("Foundry refused PDF response");
         }
         if (
@@ -399,16 +503,18 @@ export async function foundryFetchText(
           && !contentType.includes("text/html")
           && !contentType.includes("application/xhtml+xml")
         ) {
+          await foundryCancelBody(response.body, timeoutMs);
           throw new Error(`Foundry detail returned ${contentType}`);
         }
-        const body = await foundryBoundedResponseText(response, maxBytes);
+        const body = await foundryBoundedResponseText(response, maxBytes, timeoutMs, controller.signal);
         if (!body.trim()) throw new Error(`Foundry returned empty ${kind}`);
         return body;
       }
       throw new Error("Foundry exceeded redirect cap");
     } catch (error) {
       lastError = error;
-      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      if (!(error instanceof FoundryRetryableFetchError) || attempt >= attempts) break;
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
     } finally {
       clearTimeout(timer);
     }

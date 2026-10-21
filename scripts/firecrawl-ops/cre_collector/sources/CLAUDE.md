@@ -193,6 +193,13 @@ provenance. Native IDs and output keys must each be unique within an emitted
 source pass; changed paths never authorize aliases or rekeys. These recipes do
 not establish current availability, change strict detail/lifecycle checks or
 admit absent-baseline writes. Foundry's missing explicit status remains held.
+Foundry retries only its bounded transient transport failures and HTTP 429/500/
+502/503/504 responses without `Retry-After`. Definitive HTTP responses,
+`Retry-After`, unsafe redirects, invalid content, size-limit failures, and
+unexpected exceptions fail fast. A discarded response body must settle before
+retrying or following a redirect; failed or stalled cancellation stops the
+request chain. These retries do not change Foundry identity/status checks or
+prove inventory completeness.
 
 DAUM's explicit absent-baseline additive admission requires an uncapped strict
 sale+lease generation: serial selection remains singleton; the flat pipeline
