@@ -1,5 +1,6 @@
 """Deterministic scheduling probes for actual bounded pipeline control flow."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -42,6 +43,8 @@ def run_schedule(
     free_bytes=None,
     attempts_this_run=1,
     terminal_code=None,
+    failure_once=None,
+    deterministic_clock=False,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -63,6 +66,13 @@ def run_schedule(
     events = []
     alive = {}
     monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *a: None)
+    if deterministic_clock or failure_once is not None:
+        epoch = datetime(2026, 10, 21, tzinfo=UTC)
+
+        def utc_now():
+            return (epoch + timedelta(seconds=clock["now"])).isoformat()
+
+        monkeypatch.setattr(refresh, "utc_now", utc_now)
     monkeypatch.setattr(
         pipeline.time,
         "sleep",
@@ -82,7 +92,10 @@ def run_schedule(
         assert all(not lanes & refresh.source_worker_lanes(other) for other in alive)
         assert len(alive) < workers
         checkpoint = owner["sources"][source]
-        checkpoint["attempts"].append({"number": len(checkpoint["attempts"]) + 1, "started_at": refresh.utc_now()})
+        attempt_number = len(checkpoint["attempts"]) + 1
+        checkpoint["attempts"].append(
+            {"number": attempt_number, "started_at": refresh.utc_now()}
+        )
         checkpoint["state"] = "collecting"
         path = root / "sources" / f"{source}.tmp"
         path.parent.mkdir(exist_ok=True)
@@ -92,9 +105,15 @@ def run_schedule(
                 handle.truncate(temporary_bytes[source])
         ready_at = clock["now"] + (0.2 if source == sources[0] else 0.5)
         process = SimpleNamespace(poll=lambda: 0 if clock["now"] >= ready_at else None)
-        item = SimpleNamespace(source=source, process=process, tmp_artifact=path)
+        item = SimpleNamespace(
+            source=source,
+            process=process,
+            tmp_artifact=path,
+            attempt_started_at=checkpoint["attempts"][-1]["started_at"],
+            attempt_number=attempt_number,
+        )
         alive[source] = item
-        events.append(("start", source, clock["now"]))
+        events.append(("start", source, clock["now"], attempt_number))
         return item
 
     def publish(root, owner, item, **kwargs):
@@ -107,8 +126,10 @@ def run_schedule(
             else item.tmp_artifact.stat().st_size,
         }
         checkpoint["state"] = "candidate"
-        events.append(("published", item.source, clock["now"]))
-        if item.source == failure:
+        events.append(("published", item.source, clock["now"], item.attempt_number))
+        if item.source == failure or (
+            item.source == failure_once and item.attempt_number == 1
+        ):
             checkpoint["state"] = "collect_failed"
             if terminal_code:
                 checkpoint["terminal_collection_failure"] = {"code": terminal_code}
@@ -223,6 +244,73 @@ def test_pipeline_local_fetch_failure_preserves_other_verified_sources(
     assert manifest["pipeline"]["status"] == "partial"
     assert manifest["pipeline"]["source_results"]["savills"]["state"] == "failed"
     assert manifest["pipeline"]["source_results"]["transwestern"]["state"] == "verified"
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_pipeline_source_timing_uses_first_attempt_and_separates_wall_time(
+    tmp_path, monkeypatch, retry
+):
+    """Use simulated control-flow time only; this is not source acceptance evidence."""
+    from cre_performance_compare import source_stage_timing
+
+    sources = ("transwestern", "savills", "nai-global")
+    manifest, events, failures = run_schedule(
+        tmp_path,
+        monkeypatch,
+        1,
+        sources=sources,
+        failure_once="savills" if retry else None,
+        attempts_this_run=2,
+        deterministic_clock=True,
+    )
+
+    assert failures == []
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    attempts = [event for event in events if event[:2] == ("start", "savills")]
+    expected_attempts = 2 if retry else 1
+    assert [event[3] for event in attempts] == list(range(1, expected_attempts + 1))
+    completions = [event for event in events if event[:2] == ("published", "savills")]
+    assert [event[3] for event in completions] == list(
+        range(1, expected_attempts + 1)
+    )
+    attempt_records = manifest["sources"]["savills"]["attempts"]
+    assert [attempt["started_at"] for attempt in attempt_records] == [
+        (
+            datetime(2026, 10, 21, tzinfo=UTC)
+            + timedelta(seconds=event[2])
+        ).isoformat()
+        for event in attempts
+    ]
+
+    timing = manifest["pipeline"]["source_timings"]["savills"]
+    first_start = timing["collection_started_at"]
+    queued_at = timing["queued_at"]
+    first_start_from_pipeline_event = (
+            datetime(2026, 10, 21, tzinfo=UTC)
+        + timedelta(seconds=attempts[0][2])
+    ).isoformat()
+    assert first_start == first_start_from_pipeline_event
+
+    stages = source_stage_timing(timing)
+    expected_dispatch_wait = (
+        datetime.fromisoformat(first_start) - datetime.fromisoformat(queued_at)
+    ).total_seconds()
+    assert stages["dispatch_wait_seconds"] == pytest.approx(expected_dispatch_wait)
+    assert stages["dispatch_wait_seconds"] > 0
+    expected_source_elapsed = (
+        datetime.fromisoformat(timing["verified_at"])
+        - datetime.fromisoformat(first_start)
+    ).total_seconds()
+    assert stages["source_elapsed_seconds"] == pytest.approx(expected_source_elapsed)
+    attempt_active_seconds = sum(
+        completion[2] - attempt[2]
+        for attempt, completion in zip(attempts, completions, strict=True)
+    )
+    assert stages["collection_wall_seconds"] >= attempt_active_seconds
+    if retry:
+        assert attempts[1][2] > completions[0][2]
+        assert stages["source_elapsed_seconds"] > attempt_active_seconds
+    assert queued_at < first_start
 
 
 def test_pipeline_local_invalid_artifact_is_excluded_before_unit_seals(
