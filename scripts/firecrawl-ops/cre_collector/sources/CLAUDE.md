@@ -448,8 +448,14 @@ repeats agree. Publication `contentType` is not `assetType`; it remains in the
 unchanged raw post alongside the full content. Tags/prose are not inferred
 physical facts. Feed fallback and bulk-detail monitor selection stay unchanged.
 
-NAI Infabode post IDs identify publications; a stable property/offering key remains
-unproved under [AGENTIC-4284](https://linear.app/agenticassets/issue/AGENTIC-4284).
+NAI Infabode post IDs identify publications; an admitted Infabode-to-property/offering
+mapping remains unproved under [AGENTIC-4284](https://linear.app/agenticassets/issue/AGENTIC-4284).
+The advertised NAI Global Buildout catalog can contain separate sale and lease
+records sharing a physical address. Catalog record IDs are not established
+physical-property keys or Infabode publication IDs. A first page and its
+publisher-reported total do not prove complete inventory, supersession or a
+crosswalk between these namespaces. AGENTIC-4284 owns the current findings and
+next candidate-bound association proof; existing holds remain unchanged.
 The same `urlOriginal` can carry different content or images, so do not collapse
 posts by URL. Preserve exact `propertyId` routing parameters on NAI Global
 `/listings/?propertyId=...` links; a generic shell's canonical URL dropping the
