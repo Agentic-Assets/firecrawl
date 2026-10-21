@@ -30,6 +30,7 @@ def setup_collection(
     invalid=None,
     process_failure=False,
     write_failed_artifact=False,
+    unsafe_rejected_output=False,
     rejected_bytes=None,
 ):
     """Real local owned collectors and artifact compute; only provider/DB IO replaced."""
@@ -89,9 +90,18 @@ def setup_collection(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("a")
         code = (
-            "import pathlib,sys,time; time.sleep(0.02); "
-            "path=pathlib.Path(sys.argv[1]); path.write_text(sys.argv[2]); "
-            "path.chmod(0o644); sys.exit(int(sys.argv[3]))"
+            "import pathlib,sys,time\n"
+            "time.sleep(0.02)\n"
+            "path=pathlib.Path(sys.argv[1])\n"
+            "path.write_text(sys.argv[2])\n"
+            "target=path.with_suffix('.target')\n"
+            "if sys.argv[4]=='1':\n"
+            " target.write_text('immutable target')\n"
+            " path.unlink()\n"
+            " path.symlink_to(target)\n"
+            "else:\n"
+            " path.chmod(0o644)\n"
+            "sys.exit(int(sys.argv[3]))\n"
         )
         process = subprocess.Popen(
             [
@@ -101,6 +111,7 @@ def setup_collection(
                 str(temporary),
                 json.dumps(payload(source)),
                 str(rc),
+                "1" if unsafe_rejected_output and source == sources[0] else "0",
             ],
             stdout=log,
             stderr=log,
@@ -141,8 +152,15 @@ def setup_collection(
             return 1
         from pathlib import Path
 
-        Path(output).write_text(json.dumps(payload(source)))
-        Path(output).chmod(0o644)
+        candidate = Path(output)
+        candidate.write_text(json.dumps(payload(source)))
+        if unsafe_rejected_output:
+            target = candidate.with_suffix(".target")
+            target.write_text("immutable target")
+            candidate.unlink()
+            candidate.symlink_to(target)
+        else:
+            candidate.chmod(0o644)
         if process_failure and starts[source] == 1:
             return 1
         return 0
@@ -267,6 +285,63 @@ def test_nonzero_exit_without_temp_artifact_records_no_hash(
     assert attempt.get("rejected_artifact_sha256") is None
 
 
+@pytest.mark.parametrize("route", ["serial", "cohort"])
+@pytest.mark.skipif(
+    os.name != "posix", reason="artifact guard uses POSIX no-follow semantics"
+)
+def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
+    tmp_path, monkeypatch, route
+):
+    root, manifest, sources, starts, _database = setup_collection(
+        tmp_path,
+        monkeypatch,
+        process_failure=True,
+        write_failed_artifact=True,
+        unsafe_rejected_output=True,
+    )
+
+    with pytest.raises(
+        refresh.ArtifactValidationError, match="artifact private publication refused"
+    ):
+        if route == "cohort":
+            refresh.prepare_sources_cohort(
+                root,
+                manifest,
+                sources,
+                page_cap=400,
+                concurrency=1,
+                attempts_this_run=1,
+                env_file=None,
+                source_workers=1,
+            )
+        else:
+            refresh.collect_source(
+                root,
+                manifest,
+                sources[0],
+                transactions=("sale", "lease"),
+                page_cap=400,
+                concurrency=1,
+                attempts_this_run=1,
+            )
+
+    assert starts[sources[0]] == 1
+    attempt = manifest["sources"][sources[0]]["attempts"][0]
+    assert attempt["error"] == "collector exited 1"
+    assert attempt["rc"] == (
+        refresh.COHORT_SETTLED_FAILURE_EXIT if route == "cohort" else 1
+    )
+    assert attempt["finished_at"]
+    if route == "cohort":
+        assert starts[sources[1]] == 0
+    assert attempt["rejected_artifact"] is None
+    assert attempt["rejected_artifact_sha256"] is None
+    unsafe_outputs = [path for path in root.rglob("*.json") if path.is_symlink()]
+    assert len(unsafe_outputs) == 1
+    assert unsafe_outputs[0].read_bytes() == b"immutable target"
+    assert not (root / "rejected" / f"{sources[0]}-attempt-1.json").exists()
+
+
 @pytest.mark.skipif(
     os.name != "posix", reason="artifact guard uses POSIX no-follow semantics"
 )
@@ -324,6 +399,27 @@ def test_private_artifact_guard_refuses_unsafe_inputs_without_changing_them(
     else:
         assert artifact.read_bytes() == b"immutable fixture"
         assert stat.S_IMODE(artifact.stat().st_mode) == before_mode == 0o644
+
+
+def test_rejected_artifact_hash_failure_keeps_private_input_unpublished(
+    tmp_path, monkeypatch
+):
+    artifact = tmp_path / "candidate.json"
+    run_dir = tmp_path / "run"
+    original_bytes = b"rejected artifact bytes"
+    artifact.write_bytes(original_bytes)
+    artifact.chmod(0o644)
+
+    def fail_hash(_path):
+        raise OSError("synthetic hash read failure")
+
+    monkeypatch.setattr(refresh, "sha256_file", fail_hash)
+    with pytest.raises(OSError, match="synthetic hash read failure"):
+        refresh._archive_rejected(artifact, run_dir, "test-source", 1)
+
+    assert artifact.read_bytes() == original_bytes
+    assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+    assert not (run_dir / "rejected" / "test-source-attempt-1.json").exists()
 
 
 @pytest.mark.parametrize("invalid", ["source_error", "wrong_mode"])

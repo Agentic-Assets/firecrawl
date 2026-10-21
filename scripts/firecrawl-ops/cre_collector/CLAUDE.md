@@ -53,6 +53,11 @@ For independent captures, use a new output directory for every observation, even
 of the same build; reuse capture code, never frozen output paths. Follow the
 [capture evidence rules](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md#independent-verification-captures).
 
+New source attempts make retained rejected artifacts private and record
+`rejected_artifact_sha256` beside the existing `rejected_artifact` path. No
+output means no digest. Older records may lack this field; a later hash cannot
+retroactively attest their original bytes or reconstruct missing HTTP bodies.
+
 ## Read order
 
 For collector execution or test work on a fresh machine or clone, follow
@@ -91,9 +96,11 @@ work needs no environment setup or provider smoke.
    | Monitor or gate work | [Monitor subsystem](../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md); [historical first-apply handoff](HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md) only for that legacy history |
    | DAUM partial acceptance | [DAUM verified subset](../../../docs/firecrawl-ops/references/daum-verified-subset.md); a subset never proves complete brokerage coverage |
    | Throughput or matched measurements | [CRE performance telemetry](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md); distinguish staged from verified counts and use AGENTIC-2895, not an issue per run |
-   | Enrichment worker or schedule | [Enrichment worker design](ENRICHMENT_WORKER_DESIGN_2026-06-15.md); [`launchd/CLAUDE.md`](launchd/CLAUDE.md) |
+   | Enrichment worker or legacy Mac tiers | [Historical enrichment worker design](ENRICHMENT_WORKER_DESIGN_2026-06-15.md); [`launchd/CLAUDE.md`](launchd/CLAUDE.md) for that host path |
+   | Windows scheduled operation | [Guarded tier guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance) and current AGENTIC-3752 evidence |
    | CRE notifications | [`slack-setup.md`](slack-setup.md) for the private webhook and delivery checks; root Docker `.env` does not configure native Windows task notifications |
-   | Host/platform decision | [June hosting options](../../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md), a historical decision aid |
+   | Host/platform history | [June hosting options](../../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md), a historical decision aid |
+   | Phase-2 status-activation history | [Phase-2 board impact](../../../docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md) |
 
    Read other architecture, consumer, or host guides only when that boundary is
    in scope.

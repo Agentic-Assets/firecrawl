@@ -3748,6 +3748,7 @@ def _cohort_attempt(
             )[1].items()
         },
         "rejected_artifact": None,
+        "rejected_artifact_sha256": None,
         "error": None,
     }
     if source == "colliers-main":
@@ -3896,7 +3897,10 @@ def _finalize_cohort_collection(
     item.attempt["finished_at"] = utc_now()
     if rc != 0:
         item.attempt["error"] = f"collector exited {rc}"
-        item.attempt["rejected_artifact"] = _archive_rejected(
+        (
+            item.attempt["rejected_artifact"],
+            item.attempt["rejected_artifact_sha256"],
+        ) = _archive_rejected(
             item.tmp_artifact, run_dir, item.source, item.attempt["number"]
         )
         checkpoint["state"] = "collect_failed"
@@ -3965,7 +3969,10 @@ def _finalize_cohort_collection(
         )
     except ArtifactValidationError as exc:
         item.attempt["error"] = str(exc)
-        item.attempt["rejected_artifact"] = _archive_rejected(
+        (
+            item.attempt["rejected_artifact"],
+            item.attempt["rejected_artifact_sha256"],
+        ) = _archive_rejected(
             item.tmp_artifact, run_dir, item.source, item.attempt["number"]
         )
         checkpoint["state"] = "artifact_rejected"
@@ -4414,13 +4421,15 @@ def _relative_to_run(path: Path, run_dir: Path) -> str:
 
 def _archive_rejected(
     tmp_artifact: Path, run_dir: Path, source: str, attempt_number: int
-) -> str | None:
+) -> tuple[str | None, str | None]:
     if not tmp_artifact.exists():
-        return None
+        return None, None
+    make_private_artifact(tmp_artifact)
+    artifact_sha256 = sha256_file(tmp_artifact)
     rejected = run_dir / "rejected" / f"{source}-attempt-{attempt_number}.json"
     rejected.parent.mkdir(parents=True, exist_ok=True)
     os.replace(tmp_artifact, rejected)
-    return _relative_to_run(rejected, run_dir)
+    return _relative_to_run(rejected, run_dir), artifact_sha256
 
 
 def _checkpoint_artifact_valid(
@@ -4680,6 +4689,7 @@ def collect_source(
                 for key, value in overrides.items()
             },
             "rejected_artifact": None,
+            "rejected_artifact_sha256": None,
             "error": None,
         }
         if source == "colliers-main":
@@ -4731,7 +4741,10 @@ def collect_source(
         attempt["finished_at"] = utc_now()
         if rc != 0:
             attempt["error"] = collection_error or f"collector exited {rc}"
-            attempt["rejected_artifact"] = _archive_rejected(
+            (
+                attempt["rejected_artifact"],
+                attempt["rejected_artifact_sha256"],
+            ) = _archive_rejected(
                 tmp_artifact, run_dir, source, attempt_number
             )
             checkpoint["state"] = "collect_failed"
@@ -4775,7 +4788,10 @@ def collect_source(
             )
         except ArtifactValidationError as exc:
             attempt["error"] = str(exc)
-            attempt["rejected_artifact"] = _archive_rejected(
+            (
+                attempt["rejected_artifact"],
+                attempt["rejected_artifact_sha256"],
+            ) = _archive_rejected(
                 tmp_artifact, run_dir, source, attempt_number
             )
             checkpoint["state"] = "artifact_rejected"
