@@ -113,6 +113,15 @@ even when the initial snapshot is copied into a unit's evidence directory.
 Per-source rates use collection-to-verified wall time when available; the
 separate acquisition rate retains its collection-only meaning.
 
+Within one pipeline invocation, `collection_started_at` is the first actual
+collection start for that source. Retrying the source preserves that timestamp:
+collection-to-verified wall time includes earlier failed attempts and the waits
+between attempts, while command durations still sum only observed active work.
+Initial dispatch wait ends at the first start. Older saved reports may have
+overwritten the first start on retry; do not treat those per-source rates as
+equivalent measurements or silently reconstruct missing clocks. Keep their
+original artifacts intact. See [AGENTIC-4799](https://linear.app/agenticassets/issue/AGENTIC-4799).
+
 ## Saved evidence and meanings
 
 For pipeline series, `verified_current_inventory_unique` and

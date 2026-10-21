@@ -923,8 +923,9 @@ def run_bounded_pipeline(
             )
             if started is not None:
                 active.append(started)
-                state["source_timings"][source]["collection_started_at"] = (
-                    getattr(started, "attempt_started_at", None) or refresh.utc_now()
+                state["source_timings"][source].setdefault(
+                    "collection_started_at",
+                    getattr(started, "attempt_started_at", None) or refresh.utc_now(),
                 )
             else:
                 retry_or_fail(source)
