@@ -1,14 +1,16 @@
 """Typed artifact refusals end automatic collection; process retries stay bounded."""
 
+import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 from collections import Counter
 
-import pytest
-
 import cre_checkpoint_refresh as refresh
 import cre_refresh_pipeline as pipeline
+import pytest
 from cre_owned_processes import OwnedProcessGroup
 from test_cre_checkpoint_refresh import strict_artifact
 
@@ -20,7 +22,17 @@ def clear_guard_state():
     refresh._clear_cpu_guard_trip()
 
 
-def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=False):
+def setup_collection(
+    tmp_path,
+    monkeypatch,
+    *,
+    invalid=None,
+    process_failure=False,
+    write_failed_artifact=False,
+    unsafe_rejected_output=False,
+    unsafe_output_paths=None,
+    rejected_bytes=None,
+):
     """Real local owned collectors and artifact compute; only provider/DB IO replaced."""
     sources = ("transwestern", "savills")
     root = tmp_path / "2026-10-16T040000Z"
@@ -37,9 +49,16 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
     starts, alive, database = Counter(), {}, []
     original_command = refresh.run_command
     original_finalize = refresh._finalize_cohort_collection
+    original_archive_rejected = refresh._archive_rejected
 
     def payload(source):
-        stamp = refresh.utc_now()
+        attempt_started = manifest["sources"][source]["attempts"][-1]["started_at"]
+        stamp = max(
+            refresh.parse_iso8601(
+                manifest["started_at"], field="generation_started_at"
+            ),
+            refresh.parse_iso8601(attempt_started, field="attempt_started_at"),
+        ).isoformat()
         data = strict_artifact(
             source,
             detail_scope="detail_page",
@@ -69,6 +88,12 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
         )
         attempt, temporary, log_path, started = created
         starts[source] += 1
+        if (
+            unsafe_output_paths is not None
+            and unsafe_rejected_output
+            and source == sources[0]
+        ):
+            unsafe_output_paths[(source, attempt["number"])] = temporary
         rc = (
             refresh.COHORT_SETTLED_FAILURE_EXIT
             if process_failure and source == sources[0] and starts[source] == 1
@@ -76,7 +101,19 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
         )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("a")
-        code = "import pathlib,sys,time; time.sleep(0.02); pathlib.Path(sys.argv[1]).write_text(sys.argv[2]); sys.exit(int(sys.argv[3]))"
+        code = (
+            "import pathlib,sys\n"
+            "path=pathlib.Path(sys.argv[1])\n"
+            "path.write_text(sys.argv[2])\n"
+            "target=path.with_suffix('.target')\n"
+            "if sys.argv[4]=='1':\n"
+            " target.write_text('immutable target')\n"
+            " path.unlink()\n"
+            " path.symlink_to(target)\n"
+            "else:\n"
+            " path.chmod(0o644)\n"
+            "sys.exit(int(sys.argv[3]))\n"
+        )
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -85,6 +122,7 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
                 str(temporary),
                 json.dumps(payload(source)),
                 str(rc),
+                "1" if unsafe_rejected_output and source == sources[0] else "0",
             ],
             stdout=log,
             stderr=log,
@@ -100,6 +138,14 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
             OwnedProcessGroup.from_spawn(process),
         )
         alive[source] = item
+        if unsafe_rejected_output and len(alive) == len(sources):
+            for started_source, started_item in alive.items():
+                expected_rc = (
+                    refresh.COHORT_SETTLED_FAILURE_EXIT
+                    if process_failure and started_source == sources[0]
+                    else 0
+                )
+                assert started_item.process.wait(timeout=5) == expected_rc
         return item
 
     def finalize(run_dir, owner, item, **kwargs):
@@ -117,12 +163,40 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
             value.split("=", 1)[1] for value in argv if value.startswith("--out=")
         )
         starts[source] += 1
-        if process_failure and starts[source] == 1:
+        if (
+            process_failure
+            and starts[source] == 1
+            and not write_failed_artifact
+        ):
             return 1
         from pathlib import Path
 
-        Path(output).write_text(json.dumps(payload(source)))
+        candidate = Path(output)
+        if (
+            unsafe_output_paths is not None
+            and unsafe_rejected_output
+            and source == sources[0]
+        ):
+            attempt_number = manifest["sources"][source]["attempts"][-1]["number"]
+            unsafe_output_paths[(source, attempt_number)] = candidate
+        candidate.write_text(json.dumps(payload(source)))
+        if unsafe_rejected_output:
+            target = candidate.with_suffix(".target")
+            target.write_text("immutable target")
+            candidate.unlink()
+            candidate.symlink_to(target)
+        else:
+            candidate.chmod(0o644)
+        if process_failure and starts[source] == 1:
+            return 1
         return 0
+
+    def archive_rejected(tmp_artifact, run_dir, source, attempt_number):
+        if rejected_bytes is not None and tmp_artifact.exists():
+            rejected_bytes[(source, attempt_number)] = tmp_artifact.read_bytes()
+        return original_archive_rejected(
+            tmp_artifact, run_dir, source, attempt_number
+        )
 
     def db(run_dir, owner, unit, env_file, previous):
         database.extend(unit["sources"])
@@ -133,11 +207,295 @@ def setup_collection(tmp_path, monkeypatch, *, invalid=None, process_failure=Fal
     monkeypatch.setattr(refresh, "_start_cohort_collection", start)
     monkeypatch.setattr(refresh, "_finalize_cohort_collection", finalize)
     monkeypatch.setattr(refresh, "run_command", command)
+    if rejected_bytes is not None:
+        monkeypatch.setattr(refresh, "_archive_rejected", archive_rejected)
     monkeypatch.setattr(pipeline, "require_pipeline_owner", lambda *args: None)
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", db)
     monkeypatch.setattr(refresh, "advance_source", lambda *args, **kwargs: True)
     return root, manifest, sources, starts, database
+
+
+@pytest.mark.parametrize(
+    ("route", "failure", "expected_state", "expected_rc"),
+    [
+        ("serial", "nonzero", "collect_failed", 1),
+        (
+            "cohort",
+            "nonzero",
+            "collect_failed",
+            refresh.COHORT_SETTLED_FAILURE_EXIT,
+        ),
+        ("serial", "validation", "artifact_rejected", 0),
+        ("cohort", "validation", "artifact_rejected", 0),
+    ],
+)
+def test_rejected_artifact_is_private_and_hash_bound_on_public_failure_paths(
+    tmp_path,
+    monkeypatch,
+    route,
+    failure,
+    expected_state,
+    expected_rc,
+):
+    source_bytes = {}
+    root, manifest, sources, starts, database = setup_collection(
+        tmp_path,
+        monkeypatch,
+        invalid="wrong_mode" if failure == "validation" else None,
+        process_failure=failure == "nonzero",
+        write_failed_artifact=True,
+        rejected_bytes=source_bytes,
+    )
+    kwargs = {"page_cap": 400, "concurrency": 1, "attempts_this_run": 1}
+    if route == "serial":
+        result = refresh.collect_source(
+            root,
+            manifest,
+            sources[0],
+            transactions=("sale", "lease"),
+            **kwargs,
+        )
+        assert result is None
+    else:
+        failures = refresh.prepare_sources_cohort(
+            root,
+            manifest,
+            sources,
+            **kwargs,
+            env_file=None,
+            source_workers=2,
+        )
+        assert failures == [sources[0]]
+
+    checkpoint = manifest["sources"][sources[0]]
+    assert checkpoint["state"] == expected_state
+    assert sources[0] not in database
+    assert starts[sources[0]] == 1
+    attempt = checkpoint["attempts"][0]
+    assert attempt["rc"] == expected_rc
+    assert attempt["error"]
+    relative_path = attempt["rejected_artifact"]
+    assert relative_path == f"rejected/{sources[0]}-attempt-1.json"
+    rejected_path = root / relative_path
+    original_bytes = source_bytes[(sources[0], 1)]
+    retained_bytes = rejected_path.read_bytes()
+    assert retained_bytes == original_bytes
+    assert stat.S_IMODE(rejected_path.stat().st_mode) == 0o600
+    assert attempt["rejected_artifact_sha256"] == refresh.sha256_file(rejected_path)
+    assert attempt["rejected_artifact_sha256"] == hashlib.sha256(
+        original_bytes
+    ).hexdigest()
+
+
+def test_nonzero_exit_without_temp_artifact_records_no_hash(
+    tmp_path, monkeypatch
+):
+    root, manifest, sources, _starts, database = setup_collection(
+        tmp_path,
+        monkeypatch,
+        process_failure=True,
+    )
+    result = refresh.collect_source(
+        root,
+        manifest,
+        sources[0],
+        transactions=("sale", "lease"),
+        page_cap=400,
+        concurrency=1,
+        attempts_this_run=1,
+    )
+    assert result is None
+    checkpoint = manifest["sources"][sources[0]]
+    assert checkpoint["state"] == "collect_failed"
+    assert sources[0] not in database
+    attempt = checkpoint["attempts"][0]
+    assert attempt["rc"] == 1
+    assert attempt["error"] == "collector exited 1"
+    assert attempt["rejected_artifact"] is None
+    assert attempt.get("rejected_artifact_sha256") is None
+
+
+@pytest.mark.parametrize("route", ["serial", "cohort"])
+@pytest.mark.skipif(
+    os.name != "posix", reason="artifact guard uses POSIX no-follow semantics"
+)
+def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
+    tmp_path, monkeypatch, route
+):
+    unsafe_output_paths = {}
+    root, manifest, sources, starts, database = setup_collection(
+        tmp_path,
+        monkeypatch,
+        process_failure=True,
+        write_failed_artifact=True,
+        unsafe_rejected_output=True,
+        unsafe_output_paths=unsafe_output_paths,
+    )
+    settlements = []
+    if route == "cohort":
+        original_settle = refresh.settle_owned_groups
+
+        def record_settlement(groups, **kwargs):
+            groups = list(groups)
+            result = original_settle(groups, **kwargs)
+            settlements.append((groups, result))
+            return result
+
+        monkeypatch.setattr(refresh, "settle_owned_groups", record_settlement)
+
+    if route == "cohort":
+        with pytest.raises(
+            refresh.RefreshError,
+            match="cleanup completed with failed process or log evidence",
+        ) as captured:
+            refresh.prepare_sources_cohort(
+                root,
+                manifest,
+                sources,
+                page_cap=400,
+                concurrency=1,
+                attempts_this_run=1,
+                env_file=None,
+                source_workers=2,
+            )
+        pending = [captured.value]
+        seen = set()
+        causal_validation_refusal = False
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            causal_validation_refusal |= isinstance(
+                current, refresh.ArtifactValidationError
+            )
+            pending.extend((current.__cause__, current.__context__))
+        assert causal_validation_refusal
+    else:
+        with pytest.raises(
+            refresh.ArtifactValidationError,
+            match="artifact private publication refused",
+        ):
+            refresh.collect_source(
+                root,
+                manifest,
+                sources[0],
+                transactions=("sale", "lease"),
+                page_cap=400,
+                concurrency=1,
+                attempts_this_run=1,
+            )
+
+    assert starts[sources[0]] == 1
+    assert database == []
+    attempt = manifest["sources"][sources[0]]["attempts"][0]
+    assert attempt["error"] == f"collector exited {attempt['rc']}"
+    assert attempt["rc"] == (
+        refresh.COHORT_SETTLED_FAILURE_EXIT if route == "cohort" else 1
+    )
+    assert attempt["finished_at"]
+    if route == "cohort":
+        assert starts[sources[1]] == 1
+        assert len(settlements) == 1
+        groups, result = settlements[0]
+        assert len(groups) == sum(starts.values())
+        assert result.settled
+        assert all(
+            group["leader_reaped"] and group["group_gone"]
+            for group in result.groups
+        )
+    assert attempt["rejected_artifact"] is None
+    assert attempt["rejected_artifact_sha256"] is None
+    assert manifest["sources"][sources[0]]["artifact"] is None
+    unsafe_output = unsafe_output_paths[(sources[0], 1)]
+    if route == "cohort":
+        assert unsafe_output == root / attempt["temporary_artifact"]
+    else:
+        assert unsafe_output == root / "sources" / f"{sources[0]}.json.tmp"
+    assert unsafe_output.is_symlink()
+    assert unsafe_output.read_bytes() == b"immutable target"
+    assert not (root / "rejected" / f"{sources[0]}-attempt-1.json").exists()
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="artifact guard uses POSIX no-follow semantics"
+)
+@pytest.mark.parametrize(
+    "unsafe_kind", ["symlink", "hardlink", "nonregular", "unowned"]
+)
+def test_private_artifact_guard_refuses_unsafe_inputs_without_changing_them(
+    tmp_path, monkeypatch, unsafe_kind
+):
+    artifact = tmp_path / "candidate.json"
+    run_dir = tmp_path / "run"
+    rejected = run_dir / "rejected" / "test-source-attempt-1.json"
+    target = tmp_path / "target.json"
+    target.write_bytes(b"immutable fixture")
+    target.chmod(0o644)
+    artifact.write_bytes(b"immutable fixture")
+    artifact.chmod(0o644)
+    before_mode = stat.S_IMODE(artifact.stat().st_mode)
+
+    if unsafe_kind == "symlink":
+        artifact.unlink()
+        artifact.symlink_to(target)
+        expected_error = "artifact private publication refused"
+    elif unsafe_kind == "hardlink":
+        alias = tmp_path / "alias.json"
+        os.link(artifact, alias)
+        expected_error = "owned, singly linked regular file"
+    elif unsafe_kind == "nonregular":
+        artifact.unlink()
+        artifact.mkdir(mode=0o755)
+        before_mode = stat.S_IMODE(artifact.stat().st_mode)
+        expected_error = "owned, singly linked regular file"
+    else:
+        actual_uid = os.getuid()
+        monkeypatch.setattr(refresh.os, "getuid", lambda: actual_uid + 1)
+        expected_error = "owned, singly linked regular file"
+
+    with pytest.raises(refresh.ArtifactValidationError, match=expected_error):
+        refresh._archive_rejected(artifact, run_dir, "test-source", 1)
+
+    assert artifact.exists() or artifact.is_symlink()
+    assert not rejected.exists()
+
+    if unsafe_kind == "symlink":
+        assert artifact.is_symlink()
+        assert target.read_bytes() == b"immutable fixture"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    elif unsafe_kind == "hardlink":
+        assert artifact.read_bytes() == b"immutable fixture"
+        assert alias.read_bytes() == b"immutable fixture"
+        assert stat.S_IMODE(artifact.stat().st_mode) == before_mode == 0o644
+    elif unsafe_kind == "nonregular":
+        assert artifact.is_dir()
+        assert stat.S_IMODE(artifact.stat().st_mode) == before_mode
+    else:
+        assert artifact.read_bytes() == b"immutable fixture"
+        assert stat.S_IMODE(artifact.stat().st_mode) == before_mode == 0o644
+
+
+def test_rejected_artifact_hash_failure_keeps_private_input_unpublished(
+    tmp_path, monkeypatch
+):
+    artifact = tmp_path / "candidate.json"
+    run_dir = tmp_path / "run"
+    original_bytes = b"rejected artifact bytes"
+    artifact.write_bytes(original_bytes)
+    artifact.chmod(0o644)
+
+    def fail_hash(_path):
+        raise OSError("synthetic hash read failure")
+
+    monkeypatch.setattr(refresh, "sha256_file", fail_hash)
+    with pytest.raises(OSError, match="synthetic hash read failure"):
+        refresh._archive_rejected(artifact, run_dir, "test-source", 1)
+
+    assert artifact.read_bytes() == original_bytes
+    assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+    assert not (run_dir / "rejected" / "test-source-attempt-1.json").exists()
 
 
 @pytest.mark.parametrize("invalid", ["source_error", "wrong_mode"])
@@ -192,8 +550,15 @@ def test_typed_rejection_does_not_spend_remaining_collection_budget(
     assert rejected["state"] == "artifact_rejected"
     assert len(rejected["attempts"]) == 1
     assert rejected["attempts"][0]["error"]
-    assert (root / rejected["attempts"][0]["rejected_artifact"]).is_file()
+    attempt = rejected["attempts"][0]
+    rejected_path = root / attempt["rejected_artifact"]
+    assert rejected_path.is_file()
     assert sources[0] not in database
+    if route == "pipeline":
+        assert attempt["rejected_artifact_sha256"] == refresh.sha256_file(
+            rejected_path
+        )
+        assert stat.S_IMODE(rejected_path.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize("route", ["pipeline", "serial", "cohort"])
@@ -205,7 +570,7 @@ def test_settled_nonzero_collection_can_retry_then_succeed(
         monkeypatch,
         process_failure=True,
     )
-    kwargs = dict(page_cap=400, concurrency=1, attempts_this_run=3)
+    kwargs = {"page_cap": 400, "concurrency": 1, "attempts_this_run": 3}
     if route == "pipeline":
         assert (
             pipeline.run_bounded_pipeline(
