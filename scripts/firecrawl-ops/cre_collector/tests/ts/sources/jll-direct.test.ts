@@ -4,9 +4,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import {
   assertJllDirectUrl,
-  fetchJllDirectDoc,
+  fetchJllDirectDoc as fetchDirect,
   isJllPublicAddress,
-  jllDirectHtmlDoc,
   JLL_DIRECT_MAX_BYTES,
   JLL_DIRECT_START_INTERVAL_MS,
   requestJllPinned,
@@ -55,6 +54,14 @@ const response = (body = html): JllPinnedResponse => ({
   body,
 });
 const resolvePublic = async () => ["93.184.216.34"];
+// Explicit document fixture: transport tests do not require a native build.
+const fetchJllDirectDoc: typeof fetchDirect = (url, timeout, dependencies) => fetchDirect(url, timeout, {
+  reconstruct: async (rawHtml, context) => {
+    if (!rawHtml.trim()) throw new Error("empty fixture page");
+    return { rawHtml, markdown: "Fixture", links: [], metadata: { sourceURL: context.url } };
+  },
+  ...dependencies,
+});
 
 test("JLL direct URL and DNS admission rejects alternate targets and non-public ranges", () => {
   assert.equal(assertJllDirectUrl(url).hostname, "property.jll.com");
@@ -88,7 +95,8 @@ test("JLL direct URL and DNS admission rejects alternate targets and non-public 
   assert.ok(isJllPublicAddress("2606:4700:4700::1111"));
 });
 
-test("JLL direct captures full Markdown, HTML, links, images, and matching attribute selectors", async () => {
+test("JLL transport returns the injected reconstruction with actual acquisition metadata", async () => {
+  const reconstructed: Awaited<ReturnType<typeof fetchDirect>> = { rawHtml: html, markdown: "Independent fixture", links: [] };
   const doc = await fetchJllDirectDoc(url, 1000, {
     resolveHost: resolvePublic,
     requestPinned: async (target, address, signal) => {
@@ -97,23 +105,9 @@ test("JLL direct captures full Markdown, HTML, links, images, and matching attri
       assert.equal(signal.aborted, false);
       return response();
     },
+    reconstruct: async () => reconstructed,
   });
-  assert.equal(doc.rawHtml, html);
-  assert.match(doc.markdown, /Public property navigation/);
-  assert.match(doc.markdown, /Full property description/);
-  assert.match(doc.markdown, /<table>/);
-  assert.match(doc.markdown, /10,000 SF/);
-  assert.match(
-    doc.markdown,
-    /https:\/\/property.jll.com\/listings\/example-property\/flyer.pdf/,
-  );
-  assert.ok(doc.images?.includes("https://images.example/property.jpg"));
-  assert.equal(doc.attributes?.length, 5);
-  assert.ok(
-    doc.attributes?.some((block) =>
-      block.values.includes("https://videos.example/tour.mp4"),
-    ),
-  );
+  assert.equal(doc, reconstructed);
   assert.equal(doc.metadata?.transport, "direct_http");
 });
 

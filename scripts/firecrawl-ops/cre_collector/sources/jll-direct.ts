@@ -1,12 +1,12 @@
 // AGENTIC-2898 candidate transport: no collector wiring or admission claim.
 // Recovered from PR43 (8cde359239fb60c65ec5ea5b9450c43ab056ac70).
-import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
-import TurndownService from "turndown";
 import type { ScrapedDoc } from "../types.js";
 import { detailObservation } from "../lib/freshness.js";
+import { jllDirectHtmlDoc } from "./jll-html-doc.js";
+export { jllDirectHtmlDoc } from "./jll-html-doc.js";
 
 export const JLL_DIRECT_MAX_BYTES = 5 * 1024 * 1024;
 export const JLL_DIRECT_START_INTERVAL_MS = 150;
@@ -131,6 +131,7 @@ export type JllPinnedResponse = {
 };
 export type JllDirectDependencies = {
   signal?: AbortSignal;
+  reconstruct?: typeof jllDirectHtmlDoc;
   resolveHost?: (hostname: string) => Promise<string[]>;
   requestPinned?: (
     url: URL,
@@ -218,72 +219,6 @@ export function requestJllPinned(
   });
 }
 
-function absoluteUrl(value: string, base: string): string {
-  try {
-    return new URL(value, base).toString();
-  } catch {
-    return value;
-  }
-}
-
-// Experimental reconstruction, not scrapeDoc-equivalent capture: images use
-// img[src] only, and plain Turndown differs from the API's conversion pipeline.
-// Matching attribute selectors does not prove full document fidelity. Keep this
-// transport unadmitted until ordered content and target assets pass AGENTIC-2898.
-export function jllDirectHtmlDoc(rawHtml: string, url: string): ScrapedDoc {
-  const $ = cheerio.load(rawHtml);
-  const values = (selector: string, attribute: string) =>
-    $(selector)
-      .map((_, el) => $(el).attr(attribute))
-      .get()
-      .filter((value): value is string => Boolean(value))
-      .map((value) => absoluteUrl(value, url));
-  const attributes = [
-    { selector: "div[component=video]", attribute: "url" },
-    { selector: "iframe", attribute: "src" },
-    { selector: "a", attribute: "href" },
-    { selector: "video source", attribute: "src" },
-    { selector: "[data-video-url]", attribute: "data-video-url" },
-  ].map((entry) => ({
-    ...entry,
-    values: values(entry.selector, entry.attribute),
-  }));
-  const links = values("a[href]", "href");
-  const images = values("img[src]", "src");
-  const content = $("body").clone();
-  content.find("script, style, noscript").remove();
-  for (const [selector, attribute] of [
-    ["a[href]", "href"],
-    ["img[src]", "src"],
-  ]) {
-    content.find(selector).each((_, el) => {
-      $(el).attr(attribute, absoluteUrl($(el).attr(attribute) ?? "", url));
-    });
-  }
-  const converter = new TurndownService({
-    headingStyle: "atx",
-    bulletListMarker: "-",
-    codeBlockStyle: "fenced",
-  });
-  converter.keep(["table"]);
-  const markdown = converter.turndown(content.html() ?? "").trim();
-  if (!markdown)
-    throw new Error("JLL direct detail has no durable page Markdown");
-  return {
-    rawHtml,
-    markdown,
-    links,
-    images,
-    attributes,
-    metadata: {
-      statusCode: 200,
-      sourceURL: url,
-      url,
-      transport: "direct_http",
-    },
-  };
-}
-
 export async function fetchJllDirectDoc(
   url: string,
   timeoutMs = 15000,
@@ -366,22 +301,35 @@ export async function fetchJllDirectDoc(
       ) {
         throw new Error("JLL direct detail returned non-HTML content");
       }
-      const doc = jllDirectHtmlDoc(response.body, current.toString());
-      doc.metadata = {
-        ...doc.metadata,
-        providerAttempts,
-        redirectCount: providerAttempts - 1,
+      return {
+        body: response.body,
+        context: {
+          url: current.toString(),
+          statusCode: response.status,
+          contentType: response.contentType,
+        },
       };
-      controller.signal.throwIfAborted();
-      if (performance.now() - started > timeoutMs) throw deadlineError;
-      // Candidate acquisition evidence, deliberately outside admitted methods.
-      doc.detailObservation = detailObservation("jll_direct_candidate", "live");
-      return doc;
     }
     throw new Error("JLL direct detail exhausted redirects");
   };
   try {
-    return await Promise.race([run(), deadline, cancelled]);
+    const accepted = await Promise.race([run(), deadline, cancelled]);
+    // Conversion is deliberately outside the transport race: cancellation must
+    // await its settlement, even though native work cannot be preempted.
+    const doc = await (dependencies.reconstruct ?? jllDirectHtmlDoc)(
+      accepted.body,
+      accepted.context,
+    );
+    controller.signal.throwIfAborted();
+    if (performance.now() - started > timeoutMs) throw deadlineError;
+    doc.metadata = {
+      ...doc.metadata,
+      transport: "direct_http",
+      providerAttempts,
+      redirectCount: providerAttempts - 1,
+    };
+    doc.detailObservation = detailObservation("jll_direct_candidate", "live");
+    return doc;
   } finally {
     clearTimeout(timer!);
     parentSignal?.removeEventListener("abort", abort);

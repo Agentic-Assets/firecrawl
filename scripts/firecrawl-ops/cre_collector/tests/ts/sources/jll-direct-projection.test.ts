@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jllDirectHtmlDoc } from "../../../sources/jll-direct.js";
+import type { ScrapedDoc } from "../../../types.js";
 import {
   auditOfflineJllProjections,
   withOfflineJllProjection,
@@ -22,36 +22,46 @@ const member = {
   },
 };
 function doc(hidePrice = false) {
-  const captured = jllDirectHtmlDoc(
-    `<html><body><h1>Office Property</h1><p>Office description</p><script id="__NEXT_DATA__">${JSON.stringify(
-      {
-        props: {
-          pageProps: {
-            property: {
-              id: "123",
-              pageUrl: "/listings/office-property",
-              title: "Office Property",
-              address: "1 Main Street",
-              city: "Miami",
-              state: "FL",
-              hidePrice,
-              salePrice: { amount: 1250000, currency: "USD" },
-              description: "Office description",
-            },
-            brokers: [
-              {
-                firstName: "Real",
-                lastName: "Broker",
-                email: "broker@jll.com",
-                phone: "1234567890",
-              },
-            ],
+  const rawHtml = `<html><body><h1>Office Property</h1><p>Office description</p><script id="__NEXT_DATA__">${JSON.stringify(
+    {
+      props: {
+        pageProps: {
+          property: {
+            id: "123",
+            pageUrl: "/listings/office-property",
+            title: "Office Property",
+            address: "1 Main Street",
+            city: "Miami",
+            state: "FL",
+            hidePrice,
+            salePrice: { amount: 1250000, currency: "USD" },
+            description: "Office description",
           },
+          brokers: [
+            {
+              firstName: "Real",
+              lastName: "Broker",
+              email: "broker@jll.com",
+              phone: "1234567890",
+            },
+          ],
         },
       },
-    )}</script></body></html>`,
-    member.canonicalUrl,
-  );
+    },
+  )}</script></body></html>`;
+  // Independent synthetic document channels: this tests the auditor/parser, not conversion.
+  const captured: ScrapedDoc = {
+    rawHtml,
+    markdown: "Office Property\n\nOffice description",
+    links: [],
+    images: [],
+    attributes: [],
+    metadata: {
+      statusCode: 200,
+      sourceURL: member.canonicalUrl,
+      url: member.canonicalUrl,
+    },
+  };
   captured.detailObservation = {
     observedAt: new Date().toISOString(),
     generationId: "offline-audit-generation",
@@ -216,4 +226,21 @@ test("offline projection rejects shared or reused cache before replacing fetch",
       /cache_not_empty_owned_directory/,
     );
     assert.equal(globalThis.fetch, originalFetch);
+  }));
+
+// Characterizes the unchanged source contract; it does not approve a primary
+// selected from an unordered native extractor or prove DOM/gallery equivalence.
+test("legacy source with no gallery prefix preserves each explicitly supplied image order", async () =>
+  isolated(async () => {
+    const one = "https://images.example/one.jpg";
+    const two = "https://images.example/two.jpg";
+    await withOfflineJllProjection(async (project) => {
+      for (const permutation of [[one, two], [two, one]]) {
+        const captured = doc();
+        captured.images = [...permutation];
+        const result = await project(member, captured);
+        assert.deepEqual(result.listing.photos, permutation);
+        assert.equal(result.listing.photos[0], permutation[0]);
+      }
+    });
   }));

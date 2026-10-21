@@ -12,7 +12,7 @@ import {
   auditJllPairedDocs,
   runJllTransportMatrix,
 } from "../../../sources/jll-direct-benchmark.js";
-import { jllDirectHtmlDoc } from "../../../sources/jll-direct.js";
+import type { ScrapedDoc } from "../../../types.js";
 const members = Array.from({ length: 8 }, (_, index) => ({
   sampleId: `sample-${index + 1}`,
   baseRow: {
@@ -31,7 +31,7 @@ const cohort = (selected = members) => ({
   inventoryFinishedAt: "2026-10-12T10:00:02.000Z",
   members: selected,
 });
-function doc(member: JllBenchmarkMember = members[0]!) {
+function doc(member: JllBenchmarkMember = members[0]!): ScrapedDoc {
   const property = {
     id: member.providerId,
     pageUrl: new URL(member.canonicalUrl).pathname,
@@ -40,10 +40,29 @@ function doc(member: JllBenchmarkMember = members[0]!) {
     brochures: ["https://assets.example/brochure.pdf"],
     description: "Full property details",
   };
-  return jllDirectHtmlDoc(
-    `<html><body><h1>Office Property</h1><p>Full property details</p><a href="https://assets.example/brochure.pdf">Brochure</a><a href="https://broker.example/profile">Broker profile</a><img src="https://assets.example/photo.jpg"><iframe src="https://my.matterport.com/show/?m=abcdefg"></iframe><script id="__NEXT_DATA__">${JSON.stringify({ props: { pageProps: { property, brokers: [{ name: "Official Broker", email: "broker@jll.com" }] } } })}</script></body></html>`,
-    member.canonicalUrl,
-  );
+  const rawHtml = `<html><body><h1>Office Property</h1><p>Full property details</p><a href="https://assets.example/brochure.pdf">Brochure</a><a href="https://broker.example/profile">Broker profile</a><img src="https://assets.example/photo.jpg"><iframe src="https://my.matterport.com/show/?m=abcdefg"></iframe><script id="__NEXT_DATA__">${JSON.stringify({ props: { pageProps: { property, brokers: [{ name: "Official Broker", email: "broker@jll.com" }] } } })}</script></body></html>`;
+  // Independent synthetic document channels: this tests the auditor/parser, not conversion.
+  return {
+    rawHtml,
+    markdown: "Office Property\n\nFull property details",
+    links: [
+      "https://assets.example/brochure.pdf",
+      "https://broker.example/profile",
+    ],
+    images: ["https://assets.example/photo.jpg"],
+    attributes: [
+      {
+        selector: "iframe",
+        attribute: "src",
+        values: ["https://my.matterport.com/show/?m=abcdefg"],
+      },
+    ],
+    metadata: {
+      statusCode: 200,
+      sourceURL: member.canonicalUrl,
+      url: member.canonicalUrl,
+    },
+  };
 }
 // Synthetic projection fixtures test orchestration; real parser coverage lives
 // in jll-direct-projection.test.ts and fresh provider proof is separate.
@@ -176,13 +195,17 @@ test("paired audit rejects wrong response/primary identity and changed native br
 });
 test("paired audit detects rendered-only document/media/link/gallery channels without exceptions for chrome", () => {
   const captured = doc();
-  const direct = jllDirectHtmlDoc(
-    captured.rawHtml
+  const direct = {
+    ...captured,
+    rawHtml: captured.rawHtml
       .replace(/<a[^>]*>[\s\S]*?<\/a>/g, "")
       .replace(/<img[^>]*>/g, "")
       .replace(/<iframe[^>]*><\/iframe>/g, ""),
-    members[0]!.canonicalUrl,
-  );
+    links: [],
+    images: [],
+    attributes: [],
+  };
+  assert.notEqual(direct.rawHtml, captured.rawHtml);
   const audit = auditJllPairedDocs(members[0]!, direct, captured);
   for (const key of ["documents", "media", "links", "images"] as const)
     assert.equal(audit.omissions[key], 1, key);

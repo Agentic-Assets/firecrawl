@@ -14,6 +14,7 @@
     "lib/**/*.ts",
     "sources/**/*.ts",
     "capacity_c10/receipts/**/*.ts",
-    "tests/ts/**/*.ts"
+    "tests/ts/**/*.ts",
+    "tests/native/jll-direct-html.test.ts"
   ]
 }
