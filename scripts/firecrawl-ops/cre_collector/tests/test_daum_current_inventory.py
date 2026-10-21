@@ -8,11 +8,10 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 import cre_checkpoint_refresh as cp
 import cre_current_inventory_admission as admission
 import cre_daum_current_inventory as daum
+import pytest
 import test_essex_current_inventory as helpers
 
 SOURCE = "daum-commercial"
@@ -20,8 +19,17 @@ ROOT = Path(cp.__file__).parent
 DENY = ROOT / "tests/fixtures/daum-offline-deny.mjs"
 
 
-def produce(folder, *, total=100, all_sale=False, unknown_detail=False, reorder=False,
-            empty_title=False, subset_policy=None):
+def produce(
+    folder,
+    *,
+    total=100,
+    all_sale=False,
+    unknown_detail=False,
+    unknown_inventory=False,
+    reorder=False,
+    empty_title=False,
+    subset_policy=None,
+):
     preload = folder / "transport.mts"
     fixtures = ROOT / "tests/fixtures/daum-proof-pages.ts"
     preload.write_text(
@@ -34,7 +42,15 @@ globalThis.setTimeout=(fn,ms,...args)=>timer(fn,ms>0&&ms<=3000?0:ms,...args);
 const calls=[];
 globalThis.fetch=async(input,init)=>{
  const url=String(input);calls.push([init?.method??'GET',url]);
- if(init?.method==='POST' && /^https:\/\/daumcommercial[.]com\/property-search\/(?:page\/2\/)?$/.test(url))return new Response(daumProofPage(__TOTAL__,url.endsWith('/page/2/')?2:1,__ALL_SALE__,__REORDER__ && calls.filter(x=>x[0]==='POST').length>2));
+ if(init?.method==='POST' && /^https:\/\/daumcommercial[.]com\/property-search\/(?:page\/2\/)?$/.test(url)){
+  let html=daumProofPage(__TOTAL__,url.endsWith('/page/2/')?2:1,__ALL_SALE__,__REORDER__ && calls.filter(x=>x[0]==='POST').length>2);
+  if(__UNKNOWN_INVENTORY__){
+   const changed=html.replace(/<p class="listing-type">[^<]*<\/p>/,'<p class="listing-type"></p>');
+   if(changed===html)throw Error('UNKNOWN_INVENTORY_FIXTURE_MUTATION_MISSED');
+   html=changed;
+  }
+  return new Response(html);
+ }
  const match=url.match(/^https:\/\/daumcommercial[.]com\/property\/Synthetic-(\d+)\/$/);
  if(init?.method==='GET'&&match)return new Response(daumProofDetail(Number(match[1]),__ALL_SALE__).replace(__UNKNOWN_DETAIL__ ? /class="title-about">[^<]*</g : /UNMATCHABLE/, 'class="title-about"><').replace(__EMPTY_TITLE__ && Number(match[1])===100 ? /class="title-property">[^<]*</ : /UNMATCHABLE_TITLE/, 'class="title-property">   <'));
  throw Error('UNEXPECTED_OFFLINE_URL_NO_FALLBACK');
@@ -44,6 +60,7 @@ process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
         .replace("__ALL_SALE__", str(all_sale).lower())
         .replace("__UNKNOWN_DETAIL__", str(unknown_detail).lower())
         .replace("__EMPTY_TITLE__", str(empty_title).lower())
+        .replace("__UNKNOWN_INVENTORY__", str(unknown_inventory).lower())
         .replace("__REORDER__", str(reorder).lower())
     )
     start = (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
@@ -82,6 +99,7 @@ process.on('exit',()=>console.error('OFFLINE_CALLS '+JSON.stringify(calls)));
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert child.returncode == 0, child.stderr
     return json.loads(path.read_text()), child.stderr, start, generation

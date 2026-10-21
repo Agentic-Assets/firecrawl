@@ -339,3 +339,140 @@ test("held card serialization does not alias the acquired inventory or nested br
   assert.equal(inventory.title, "Original card");
   assert.deepEqual(inventory.brokerNames, ["Original broker"]);
 });
+
+
+function richHeldDetailHtml(body: string): string {
+  const $ = load(body);
+  $(".main-section").append(`
+    <ul class="property-summary">
+      <li><span class="title">Year Built:</span><span class="info">1984</span></li>
+      <li><span class="title">Public Zoning:</span><span class="info">M-1</span></li>
+    </ul>
+    <a href="/files/held-brochure.pdf">Published brochure</a>
+    <img src="/images/held-first.jpg">
+    <div data-bg-image="/images/held-second.jpg"></div>
+  `);
+  $(".info-wrap").append('<div class="info-units">$1.25 / SF / Month</div>');
+  $("body").append(`
+    <div class="units-info"><div class="left-side"><div class="content">
+      <p>Published held-property description.</p><ul><li>Published highlight</li></ul>
+    </div></div></div>
+    <div id="agent-contact"><div class="item">
+      <a class="name" href="/brokers/public-broker/">Public Broker</a>
+      <a class="email" href="mailto:public-broker@example.test">Email</a>
+      <a class="phone" href="tel:5550100">P 5550100</a>
+      <div class="content"><p>Published Office</p></div>
+      <div data-bg-image="/images/public-broker.jpg"></div>
+      <span>License: CA 12345</span>
+    </div></div>
+  `);
+  return $.html();
+}
+
+for (const policy of ["tenure-only-v1", "tenure-and-empty-title-v2"] as const) {
+  test(`${policy} retains full parsed held details without listing or request changes`, async t => {
+    const state = offline(t, 102);
+    process.env.DAUM_SUBSET_POLICY = policy;
+    state.unknownInventory.add(101);
+    state.unknownDetail.add(101);
+    if (policy === "tenure-only-v1") {
+      state.unknownInventory.add(100);
+      state.unknownDetail.add(100);
+    }
+    const parsed = new Map<number, ReturnType<typeof parseDaumDetail>>();
+    state.detailFault = (id, body) => {
+      if (id !== 100 && id !== 101) return body;
+      const $ = load(richHeldDetailHtml(body));
+      if (policy === "tenure-and-empty-title-v2" && id === 100) {
+        $(".title-property").text("   ");
+      }
+      const html = $.html();
+      parsed.set(id, parseDaumDetail(
+        html, `https://daumcommercial.com/property/Synthetic-${id}/`, true,
+      ));
+      return html;
+    };
+    const sale = await srcDaumCommercial("sale", Infinity, false);
+    const lease = await srcDaumCommercial("lease", Infinity, false);
+    const proof: any = sale.currentInventoryProof;
+    const leaseProof: any = lease.currentInventoryProof;
+    const expected = [100, 101].map(id => ({ postId: String(50000 + id), detail: parsed.get(id) }));
+    const rich = parsed.get(101)!;
+    assert.ok("facts" in rich);
+    assert.equal(rich.facts["Year Built"], "1984");
+    assert.equal(rich.facts["Public Zoning"], "M-1");
+    assert.equal(rich.leaseRateText, "$1.25 / SF / Month");
+    assert.match(rich.description!, /Published held-property description/);
+    assert.deepEqual(rich.highlights, ["Published highlight"]);
+    assert.deepEqual(rich.photos, [
+      "https://daumcommercial.com/images/held-first.jpg",
+      "https://daumcommercial.com/images/held-second.jpg",
+    ]);
+    assert.equal(rich.brochures[0].url, "https://daumcommercial.com/files/held-brochure.pdf");
+    assert.deepEqual(rich.contacts[0], {
+      name: "Public Broker", email: "public-broker@example.test", phone: "5550100",
+      office: "Published Office", profileUrl: "https://daumcommercial.com/brokers/public-broker/",
+      avatarUrl: "https://daumcommercial.com/images/public-broker.jpg", license: "CA 12345",
+    });
+    assert.deepEqual(proof.heldDetailObservations, expected);
+    assert.deepEqual(leaseProof.heldDetailObservations, expected);
+    assert.deepEqual(proof.held.map((row: string[]) => row[0]), ["50100", "50101"]);
+    assert.deepEqual(proof.heldDetailObservations.map((row: any) => row.postId), proof.held.map((row: string[]) => row[0]));
+    assert.equal(new Set([...sale.listings, ...lease.listings].map(row => row.daumPostId)).size, 100);
+    assert.equal([...sale.listings, ...lease.listings].some(row => ["50100", "50101"].includes(row.daumPostId)), false);
+    assert.equal(sale.truncated, true);
+    assert.equal(lease.truncated, true);
+    assert.equal(state.gets.length, 102);
+    assert.equal(state.posts, 4);
+    if (policy === "tenure-and-empty-title-v2") {
+      assert.deepEqual(Object.keys(proof.heldDetailObservations[0].detail).sort(), [
+        "emptyRequiredTitle", "observedCanonicalUrl", "postId", "tenure", "tenureText",
+      ]);
+    }
+    proof.heldDetailObservations[1].detail.facts["Year Built"] = "caller mutation";
+    proof.heldDetailObservations[1].detail.photos.push("caller mutation");
+    proof.heldDetailObservations[1].detail.contacts[0].name = "caller mutation";
+    assert.deepEqual(leaseProof.heldDetailObservations, expected);
+    assert.equal(rich.facts["Year Built"], "1984");
+    assert.equal(rich.photos.length, 2);
+    assert.equal(rich.contacts[0].name, "Public Broker");
+  });
+
+  test(`${policy} emits an empty detail audit only for subset proofs`, async t => {
+    offline(t, 100);
+    process.env.DAUM_SUBSET_POLICY = policy;
+    const result = await srcDaumCommercial("sale", Infinity, false);
+    assert.deepEqual((result.currentInventoryProof as any).heldDetailObservations, []);
+    delete process.env.DAUM_VERIFIED_SUBSET;
+    delete process.env.DAUM_SUBSET_POLICY;
+    const complete = await srcDaumCommercial("sale", Infinity, false);
+    assert.equal("heldDetailObservations" in complete.currentInventoryProof!, false);
+    const monitor = await srcDaumCommercial("sale", 1, true);
+    assert.equal(monitor.currentInventoryProof, undefined);
+  });
+}
+
+test("held detail serialization deep-clones the acquired full detail", () => {
+  const inventory = {
+    url: "https://daumcommercial.com/property/Synthetic-7/", title: "Original card",
+    tenure: "unknown" as const, tenureText: null, city: null, state: "AL", postalCode: null,
+    sizeText: null, spaceCount: null, assetType: null, salePriceText: null, leaseRateText: null,
+    brokerNames: [], imageUrl: null, latitude: null, longitude: null,
+  };
+  const $ = load(richHeldDetailHtml(daumProofDetail(7)));
+  $(".title-about").text("");
+  const detail = parseDaumDetail($.html(), inventory.url);
+  const original = structuredClone(detail);
+  const clock = "2026-10-21T00:00:00.000Z";
+  const cohort: DaumCompleteCohort = {
+    snapshot: { total: 1, rows: [inventory], lifecycleExact: true, reportedTotals: [1], passes: [], observedAt: clock },
+    details: [{ inventory, detail, observedAt: clock, bodySha256: "0".repeat(64) }],
+  };
+  const proof: any = daumProof(cohort, "sale", "detail-retention-test", clock, "verified_subset");
+  assert.deepEqual(proof.heldDetailObservations, [{ postId: "50007", detail: original }]);
+  proof.heldDetailObservations[0].detail.facts["Public Zoning"] = "changed";
+  proof.heldDetailObservations[0].detail.highlights.push("changed");
+  proof.heldDetailObservations[0].detail.brochures[0].name = "changed";
+  proof.heldDetailObservations[0].detail.contacts[0].email = "changed";
+  assert.deepEqual(detail, original);
+});

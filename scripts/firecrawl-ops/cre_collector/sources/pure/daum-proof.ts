@@ -22,10 +22,17 @@ export function daumProof(
   const details: DaumCurrentInventoryProof["details"] = rows.map(row => [
     String(row.detail.postId), row.detail.observedCanonicalUrl!, row.observedAt, row.bodySha256,
   ]);
-  const heldInventoryObservations = (held: ReadonlyArray<readonly [string, string]>) => {
+  const heldObservations = (held: ReadonlyArray<readonly [string, string]>) => {
     const ids = new Set(held.map(row => row[0]));
-    return rows.filter(row => ids.has(String(row.detail.postId)))
-      .map(({ inventory, detail }) => ({ postId: String(detail.postId), inventory: structuredClone(inventory) }));
+    const heldRows = rows.filter(row => ids.has(String(row.detail.postId)));
+    return {
+      heldInventoryObservations: heldRows.map(({ inventory, detail }) => ({
+        postId: String(detail.postId), inventory: structuredClone(inventory),
+      })),
+      heldDetailObservations: heldRows.map(({ detail }) => ({
+        postId: String(detail.postId), detail: structuredClone(detail),
+      })),
+    };
   };
   if (mode === "verified_subset_empty_title") {
     const titleObservations: DaumEmptyTitleSubsetProof["titleObservations"] = rows
@@ -37,7 +44,7 @@ export function daumProof(
     return {
       schema: "daum-verified-subset-v2", ...identity, kind: "verified_subset_with_holds", ...base,
       subsetPolicy: "tenure-and-empty-title-v2", cohort: members, details, titleObservations,
-      held, heldInventoryObservations: heldInventoryObservations(held),
+      held, ...heldObservations(held),
     };
   }
   if (mode === "verified_subset") {
@@ -46,7 +53,7 @@ export function daumProof(
     return {
       schema: "daum-verified-subset-v1", ...identity, kind: "verified_subset_with_holds", ...base,
       cohort: members, details,
-      held, heldInventoryObservations: heldInventoryObservations(held),
+      held, ...heldObservations(held),
     };
   }
   const complete: DaumCurrentInventoryProof["cohort"] = members.map(row => {

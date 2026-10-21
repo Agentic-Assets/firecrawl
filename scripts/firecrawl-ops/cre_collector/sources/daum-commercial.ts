@@ -4,7 +4,7 @@ import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshDetails } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
-import { SourceResult, Tx, type DaumInventoryPass, type DaumInventoryRow } from "../types.js";
+import { SourceResult, Tx, type DaumInventoryPass, type DaumInventoryRow, type DaumDetail, type DaumEmptyTitleObservation } from "../types.js";
 import { daumProof } from "./pure/daum-proof.js";
 import { clean, moneyToNumber, prune } from "../lib/util.js";
 import { canonicalDaumPropertyUrl, daumAbsoluteUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
@@ -12,7 +12,7 @@ import { DaumPoliteTransport } from "./daum-transport.js";
 
 export { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
 export { DAUM_MAX_RESPONSE_BYTES, DAUM_ROBOTS_DELAY_MS, DaumPoliteTransport } from "./daum-transport.js";
-export type { DaumInventoryRow } from "../types.js";
+export type { DaumInventoryRow, DaumDetail, DaumEmptyTitleObservation } from "../types.js";
 export const DAUM_PAGE_SIZE = 90;
 
 
@@ -22,35 +22,6 @@ export type DaumPage = {
   rows: DaumInventoryRow[];
 };
 
-export type DaumDetail = {
-  postId: number;
-  observedCanonicalUrl?: string | null;
-  facts: Record<string, string>;
-  title: string;
-  tenure: DaumTenure;
-  tenureText: string | null;
-  city: string | null;
-  state: string | null;
-  postalCode: string | null;
-  salePriceText: string | null;
-  leaseRateText: string | null;
-  sizeText: string | null;
-  description: string | null;
-  highlights: string[];
-  brochures: Array<{ name: string | null; url: string }>;
-  photos: string[];
-  contacts: Array<{
-    name: string | null;
-    email: string | null;
-    phone: string | null;
-    office: string | null;
-    profileUrl: string | null;
-    avatarUrl: string | null;
-    license: string | null;
-  }>;
-};
-
-export type DaumEmptyTitleObservation = Pick<DaumDetail, "postId" | "observedCanonicalUrl" | "tenure" | "tenureText"> & { emptyRequiredTitle: true };
 
 function parseDaumMapData(html: string): any[] {
   const match = html.match(/\bvar\s+propertySearchData\s*=\s*(\[[\s\S]*?\]);/);

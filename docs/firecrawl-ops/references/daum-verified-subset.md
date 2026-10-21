@@ -77,7 +77,7 @@ generation and start. The artifact worker passes the validated evidence through
 a private claims file; ingestion independently checks it again before writing.
 A raw subset artifact is not an ordinary ingest input.
 
-## Held-card observations (audit only)
+## Held inventory and detail observations (audit only)
 
 Subset V1 and V2 proofs retain `heldInventoryObservations` for the exact held
 IDs. Each URL-sorted observation contains the already-parsed 16-field search
@@ -86,12 +86,33 @@ empty array when there are no holds. Historical artifacts may omit the field
 and remain compatible, but that omission does not prove their held-card data
 was retained.
 
-These are parsed inventory-card observations, not raw HTML or all provider
-attributes. They are audit evidence only: they do not supply title, tenure,
+`heldDetailObservations` independently retains `{postId, detail}` for that same
+held set and order. Unknown-tenure holds retain the complete existing parsed
+17-field detail: source facts, title/location, tenure text, economics,
+description/highlights, document and photo references, and published broker
+contacts. Empty-title holds retain only the parser's existing five-field typed
+marker; no missing fields are reconstructed. Both transaction proofs own deep
+copies of their observations. New proofs emit `[]` when there are no holds;
+historical proofs may omit either audit field. Complete and monitor output
+remain unchanged.
+
+Python checks present observations against the independently derived held
+partition, with exact typed shapes, IDs, canonical URLs and tenure/text bindings
+to the existing cohort and detail receipts. A malformed present audit refuses;
+audit values cannot alter the partition or rescue a missing required fact.
+
+These are integrity-bound parsed observations, not authenticated raw HTML or
+all provider attributes. They are audit evidence only: they do not supply title, tenure,
 status, or other fallbacks; enter listings or SQL; change held reasons, counts,
 admission, or whole-source coverage; or unhold a record. The existing artifact
-byte hash and paired-proof equality bind the field; there is no separate
+byte hash and paired-proof equality bind both fields; there is no separate
 retention digest or admission rule.
+
+For replay that needs primary response bytes, follow the
+[independent verification capture procedure](development-and-runtime-checkouts.md#independent-verification-captures)
+and preserve permitted bodies, metadata, clocks and safe request provenance
+before removing a temporary clone. A hash or parsed observation cannot restore
+a discarded response, establish a fresh source fact or replace that evidence.
 
 As dated historical context, the retained October 19 qualification recorded
 557/560. The audit field alone does not newly qualify or unhold 29589, 52023,
