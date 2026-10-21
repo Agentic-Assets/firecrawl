@@ -855,12 +855,20 @@ freshness claim.
 The final validation records two distinct gates. A bounded source refresh
 requires successful query execution, no before/after quality regression, and
 an exact source freshness readback. The whole-database absolute-quality audit
-is also recorded, but historical defects outside the refreshed source do not
-block that source's additive refresh. They do block
+is also recorded, but pre-existing flags alone do not establish a regression
+in that source's additive refresh. Unresolved absolute-quality flags do block
 `cre_freshness_certificate.py`, so no whole-registry freshness certificate can
 be issued until the absolute-quality backlog is clean. This separation keeps a
-known legacy defect visible without making the serial 51-source refresh unable
+known legacy defect visible without making the 51-source refresh unable
 to make progress.
+
+`quality_by_source` groups all undeleted database rows by source; its SQL CTE
+named `active` does not filter on listing status or the current run generation.
+A flag can therefore belong to an older row from the same brokerage. Compare
+the exact flagged ID and source URL with the bound current artifact and saved
+readback before attributing it to the current mapper. Keep the quality check
+unchanged while investigating; absence from one artifact alone does not prove
+a normalization defect or authorize retirement of the stored listing.
 
 Certificate version 3 also requires every explicit checkpoint input to carry a
 valid `preflight.database_target` SHA256 fingerprint, with one identical target
