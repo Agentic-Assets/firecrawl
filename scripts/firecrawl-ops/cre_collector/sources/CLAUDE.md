@@ -193,6 +193,12 @@ provenance. Native IDs and output keys must each be unique within an emitted
 source pass; changed paths never authorize aliases or rekeys. These recipes do
 not establish current availability, change strict detail/lifecycle checks or
 admit absent-baseline writes. Foundry's missing explicit status remains held.
+DAUM transport preserves serial three-second physical-start spacing, two
+attempts, a 30-second per-attempt timeout and the five-megabyte response cap.
+Only recognized transient failures and 429/500/502/503/504 without
+`Retry-After` retry; POST replay is limited to generated empty inventory pages.
+Discarded bodies must settle before a retry; uncertain cleanup poisons that
+transport instance and prevents queued requests from starting.
 Foundry retries only its bounded transient transport failures and HTTP 429/500/
 502/503/504 responses without `Retry-After`. Definitive HTTP responses,
 `Retry-After`, unsafe redirects, invalid content, size-limit failures, and

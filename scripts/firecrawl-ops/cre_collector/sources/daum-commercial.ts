@@ -7,19 +7,13 @@ import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js"
 import { SourceResult, Tx, type DaumInventoryPass, type DaumInventoryRow } from "../types.js";
 import { daumProof } from "./pure/daum-proof.js";
 import { clean, moneyToNumber, prune } from "../lib/util.js";
-import { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
+import { canonicalDaumPropertyUrl, daumAbsoluteUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
+import { DaumPoliteTransport } from "./daum-transport.js";
 
 export { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
+export { DAUM_MAX_RESPONSE_BYTES, DAUM_ROBOTS_DELAY_MS, DaumPoliteTransport } from "./daum-transport.js";
 export type { DaumInventoryRow } from "../types.js";
 export const DAUM_PAGE_SIZE = 90;
-export const DAUM_ROBOTS_DELAY_MS = 3000;
-export const DAUM_MAX_RESPONSE_BYTES = 5_000_000;
-const DAUM_USER_AGENT = "Mozilla/5.0 (compatible; AgenticAssetsCRE/1.0)";
-
-type FetchLike = (
-  input: string | URL | Request,
-  init?: RequestInit
-) => Promise<Response>;
 
 
 export type DaumPage = {
@@ -57,59 +51,6 @@ export type DaumDetail = {
 };
 
 export type DaumEmptyTitleObservation = Pick<DaumDetail, "postId" | "observedCanonicalUrl" | "tenure" | "tenureText"> & { emptyRequiredTitle: true };
-
-async function daumBoundedResponseText(
-  response: Response,
-  maxBytes: number
-): Promise<string> {
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    throw new Error(`response Content-Length ${contentLength} exceeds ${maxBytes} bytes`);
-  }
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw new Error(`response body exceeds ${maxBytes} bytes`);
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-    return text;
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-
-function daumAbsoluteUrl(value: unknown): string | null {
-  const raw = clean(value);
-  if (!raw || /^(?:javascript|mailto|tel):/i.test(raw)) return null;
-  try {
-    const url = new URL(raw, DAUM_HOST);
-    if (
-      url.protocol !== "https:"
-      || url.hostname !== "daumcommercial.com"
-      || url.username
-      || url.password
-      || url.port
-    ) {
-      return null;
-    }
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
 
 function parseDaumMapData(html: string): any[] {
   const match = html.match(/\bvar\s+propertySearchData\s*=\s*(\[[\s\S]*?\]);/);
@@ -522,74 +463,6 @@ function daumShortlinkPostId(value: unknown): number | null {
     return Number.isSafeInteger(id) ? id : null;
   } catch {
     return null;
-  }
-}
-
-export class DaumPoliteTransport {
-  private lastStartedAt = 0;
-  private queue: Promise<unknown> = Promise.resolve();
-
-  constructor(
-    private readonly fetchImpl: FetchLike = fetch,
-    private readonly delayMs = DAUM_ROBOTS_DELAY_MS,
-    private readonly timeoutMs = 30_000,
-    private readonly maxResponseBytes = DAUM_MAX_RESPONSE_BYTES
-  ) {}
-
-  private request(url: string, method: "GET" | "POST"): Promise<string> {
-    const safeUrl = daumAbsoluteUrl(url);
-    if (!safeUrl) {
-      return Promise.reject(new Error(`DAUM refused unsafe URL ${url}`));
-    }
-    if (new URL(safeUrl).search) {
-      return Promise.reject(new Error(`DAUM robots policy forbids query URL ${url}`));
-    }
-    const task = this.queue.then(async () => {
-      const waitMs = Math.max(0, this.delayMs - (Date.now() - this.lastStartedAt));
-      if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
-      this.lastStartedAt = Date.now();
-      let lastError: unknown;
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-        try {
-          const response = await this.fetchImpl(safeUrl, {
-            method,
-            headers: {
-              "User-Agent": DAUM_USER_AGENT,
-              Accept: "text/html",
-              ...(method === "POST"
-                ? { "Content-Type": "application/x-www-form-urlencoded" }
-                : {}),
-            },
-            ...(method === "POST" ? { body: "" } : {}),
-            redirect: "manual",
-            signal: controller.signal,
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return await daumBoundedResponseText(response, this.maxResponseBytes);
-        } catch (error) {
-          lastError = error;
-          if (attempt === 2) break;
-          const retryWait = Math.max(0, this.delayMs - (Date.now() - this.lastStartedAt));
-          if (retryWait) await new Promise((resolve) => setTimeout(resolve, retryWait));
-          this.lastStartedAt = Date.now();
-        } finally {
-          clearTimeout(timeout);
-        }
-      }
-      throw new Error(`DAUM request failed for ${safeUrl}: ${String(lastError)}`);
-    });
-    this.queue = task.catch(() => undefined);
-    return task as Promise<string>;
-  }
-
-  get(url: string): Promise<string> {
-    return this.request(url, "GET");
-  }
-
-  post(url: string): Promise<string> {
-    return this.request(url, "POST");
   }
 }
 
