@@ -77,6 +77,28 @@ generation and start. The artifact worker passes the validated evidence through
 a private claims file; ingestion independently checks it again before writing.
 A raw subset artifact is not an ordinary ingest input.
 
+## Held-card observations (audit only)
+
+Subset V1 and V2 proofs retain `heldInventoryObservations` for the exact held
+IDs. Each URL-sorted observation contains the already-parsed 16-field search
+card, copied independently into each transaction proof; a new proof emits an
+empty array when there are no holds. Historical artifacts may omit the field
+and remain compatible, but that omission does not prove their held-card data
+was retained.
+
+These are parsed inventory-card observations, not raw HTML or all provider
+attributes. They are audit evidence only: they do not supply title, tenure,
+status, or other fallbacks; enter listings or SQL; change held reasons, counts,
+admission, or whole-source coverage; or unhold a record. The existing artifact
+byte hash and paired-proof equality bind the field; there is no separate
+retention digest or admission rule.
+
+As dated historical context, the retained October 19 qualification recorded
+557/560. The audit field alone does not newly qualify or unhold 29589, 52023,
+or 52271, and does not authorize retrying the closed 403 route. These facts do
+not establish current status. Credentials, schedules, and Mac state are
+outside this contract and remain unchanged.
+
 ## Database preservation
 
 Inside the existing guarded transaction, before the unchanged upserts, refuse

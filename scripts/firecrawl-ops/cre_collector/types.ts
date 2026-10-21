@@ -322,6 +322,24 @@ export type EssexCurrentInventoryProof = {
 };
 
 export type DaumTenureProof = "sale" | "lease" | "sale_or_lease" | "unknown";
+export type DaumInventoryRow = {
+  url: string;
+  title: string;
+  tenure: DaumTenureProof;
+  tenureText: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  sizeText: string | null;
+  spaceCount: number | null;
+  assetType: string | null;
+  salePriceText: string | null;
+  leaseRateText: string | null;
+  brokerNames: string[];
+  imageUrl: string | null;
+  latitude: number | null;
+  longitude: number | null;
+};
 export type DaumInventoryPass = {
   index: number;
   total: number;
@@ -346,6 +364,8 @@ export type DaumVerifiedSubsetInventoryProof = Omit<DaumCurrentInventoryProof, "
   cohort: Array<[string, string, string, DaumTenureProof, string | null, DaumTenureProof, string | null, DaumTenureProof]>;
   // Complete URL-sorted cohort partition: only unknown/unknown may be held.
   held: Array<[string, "unknown_inventory_and_detail_tenure"]>;
+  // Audit-only parsed cards from new producers, never listing authority.
+  heldInventoryObservations: Array<{ postId: string; inventory: DaumInventoryRow }>;
 };
 
 export type DaumEmptyTitleSubsetProof = Omit<DaumVerifiedSubsetInventoryProof, "schema" | "held"> & {

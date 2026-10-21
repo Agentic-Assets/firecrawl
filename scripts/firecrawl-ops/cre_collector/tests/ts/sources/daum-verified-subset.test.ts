@@ -3,7 +3,8 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { load } from "cheerio";
 import { readFileSync } from "node:fs";
-import { parseDaumDetail, srcDaumCommercial } from "../../../sources/daum-commercial.js";
+import { parseDaumDetail, srcDaumCommercial, type DaumCompleteCohort } from "../../../sources/daum-commercial.js";
+import { daumProof } from "../../../sources/pure/daum-proof.js";
 import { observationNow } from "../../../lib/observation-clock.js";
 import { daumProofPage, daumProofDetail } from "../../fixtures/daum-proof-pages.js";
 
@@ -269,4 +270,72 @@ test("v2 preserves the existing full parser for nonempty multiple title containe
   assert.equal(result.currentInventoryProof?.schema, "daum-verified-subset-v2");
   assert.deepEqual((result.currentInventoryProof as any).held, []);
   assert.ok(result.listings.some(row => row.daumPostId === "50000"));
+});
+
+for (const policy of ["tenure-only-v1", "tenure-and-empty-title-v2"] as const) {
+  test(`${policy} retains complete parsed cards for exactly held members without emitting them`, async t => {
+    const state = offline(t, 102);
+    process.env.DAUM_SUBSET_POLICY = policy;
+    state.unknownInventory.add(101); state.unknownDetail.add(101);
+    if (policy === "tenure-only-v1") {
+      state.unknownInventory.add(100); state.unknownDetail.add(100);
+    } else {
+      state.detailFault = (id, body) => id === 100
+        ? body.replace(/class="title-property">[^<]*</, 'class="title-property">   <') : body;
+    }
+    const sale = await srcDaumCommercial("sale", Infinity, false);
+    const lease = await srcDaumCommercial("lease", Infinity, false);
+    const proof: any = sale.currentInventoryProof;
+    const card = (id: number, tenure: string, tenureText: string | null) => ({
+      url: `https://daumcommercial.com/property/Synthetic-${id}/`, title: `Synthetic ${id}`,
+      tenure, tenureText, city: "Phoenix", state: "AZ", postalCode: "85001",
+      sizeText: "12,500 SF", spaceCount: null, assetType: null,
+      salePriceText: "$3,250,000", leaseRateText: null, brokerNames: [], imageUrl: null,
+      latitude: 33, longitude: -112,
+    });
+    assert.deepEqual(proof.heldInventoryObservations, [
+      { postId: "50100", inventory: card(100, policy === "tenure-only-v1" ? "unknown" : "lease", policy === "tenure-only-v1" ? null : "Lease") },
+      { postId: "50101", inventory: card(101, "unknown", null) },
+    ]);
+    assert.deepEqual(proof.heldInventoryObservations, (lease.currentInventoryProof as any).heldInventoryObservations);
+    assert.deepEqual(proof.held.map((row: string[]) => row[0]), ["50100", "50101"]);
+    const emitted = [...sale.listings, ...lease.listings];
+    assert.equal(new Set(emitted.map(row => row.daumPostId)).size, 100);
+    assert.equal(emitted.some(row => ["50100", "50101"].includes(row.daumPostId)), false);
+    assert.equal(state.gets.length, 102);
+    proof.heldInventoryObservations[0].inventory.title = "caller mutation";
+    assert.equal((lease.currentInventoryProof as any).heldInventoryObservations[0].inventory.title, "Synthetic 100");
+  });
+
+  test(`${policy} emits an explicit empty observation list when no members are held`, async t => {
+    offline(t, 100);
+    process.env.DAUM_SUBSET_POLICY = policy;
+    const result = await srcDaumCommercial("sale", Infinity, false);
+    assert.deepEqual((result.currentInventoryProof as any).heldInventoryObservations, []);
+    assert.deepEqual((result.currentInventoryProof as any).held, []);
+    delete process.env.DAUM_VERIFIED_SUBSET;
+    delete process.env.DAUM_SUBSET_POLICY;
+    const complete = await srcDaumCommercial("sale", Infinity, false);
+    assert.equal("heldInventoryObservations" in complete.currentInventoryProof!, false);
+  });
+}
+
+test("held card serialization does not alias the acquired inventory or nested broker names", () => {
+  const inventory = { url: "https://daumcommercial.com/property/Synthetic-7/", title: "Original card",
+    tenure: "unknown" as const, tenureText: null, city: null, state: "AL", postalCode: null,
+    sizeText: null, spaceCount: null, assetType: null, salePriceText: null, leaseRateText: null,
+    brokerNames: ["Original broker"], imageUrl: null, latitude: null, longitude: null };
+  const body = load(daumProofDetail(7)); body(".title-about").text("");
+  const clock = "2026-10-21T00:00:00.000Z";
+  const cohort: DaumCompleteCohort = {
+    snapshot: { total: 1, rows: [inventory], lifecycleExact: true, reportedTotals: [1], passes: [], observedAt: clock },
+    details: [{ inventory, detail: parseDaumDetail(body.html(), inventory.url), observedAt: clock, bodySha256: "0".repeat(64) }],
+  };
+  const proof: any = daumProof(cohort, "sale", "retention-test", clock, "verified_subset");
+  assert.equal(proof.heldInventoryObservations[0].inventory.city, null);
+  assert.equal(proof.heldInventoryObservations[0].inventory.state, "AL", "retain observed locality without inventing a correction");
+  proof.heldInventoryObservations[0].inventory.title = "changed";
+  proof.heldInventoryObservations[0].inventory.brokerNames.push("changed");
+  assert.equal(inventory.title, "Original card");
+  assert.deepEqual(inventory.brokerNames, ["Original broker"]);
 });

@@ -251,6 +251,11 @@ scope stays partial even with zero holds and grants no complete watermark,
 baseline or certificate. Cache identity includes scope, generation and start.
 Use the [DAUM subset contract](../../../../docs/firecrawl-ops/references/daum-verified-subset.md)
 for exact counts, preservation and qualification requirements.
+Subset V1/V2 proofs retain the already-parsed inventory card for each exact
+held ID in URL order as audit-only `heldInventoryObservations`; historical
+proofs may omit this field. It is not raw HTML or a fallback/admission source,
+and does not change held status, listings, counts, SQL, or partial coverage.
+See the linked contract's held-card observations section for the full boundary.
 
 ## Transport & Scrape Primitives
 
