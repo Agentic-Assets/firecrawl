@@ -90,8 +90,7 @@ def setup_collection(
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("a")
         code = (
-            "import pathlib,sys,time\n"
-            "time.sleep(0.02)\n"
+            "import pathlib,sys\n"
             "path=pathlib.Path(sys.argv[1])\n"
             "path.write_text(sys.argv[2])\n"
             "target=path.with_suffix('.target')\n"
@@ -127,6 +126,14 @@ def setup_collection(
             OwnedProcessGroup.from_spawn(process),
         )
         alive[source] = item
+        if unsafe_rejected_output and len(alive) == len(sources):
+            for started_source, started_item in alive.items():
+                expected_rc = (
+                    refresh.COHORT_SETTLED_FAILURE_EXIT
+                    if process_failure and started_source == sources[0]
+                    else 0
+                )
+                assert started_item.process.wait(timeout=5) == expected_rc
         return item
 
     def finalize(run_dir, owner, item, **kwargs):
@@ -297,7 +304,7 @@ def test_nonzero_exit_without_temp_artifact_records_no_hash(
 def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
     tmp_path, monkeypatch, route
 ):
-    root, manifest, sources, starts, _database = setup_collection(
+    root, manifest, sources, starts, database = setup_collection(
         tmp_path,
         monkeypatch,
         process_failure=True,
@@ -316,10 +323,11 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
 
         monkeypatch.setattr(refresh, "settle_owned_groups", record_settlement)
 
-    with pytest.raises(
-        refresh.ArtifactValidationError, match="artifact private publication refused"
-    ):
-        if route == "cohort":
+    if route == "cohort":
+        with pytest.raises(
+            refresh.RefreshError,
+            match="cleanup completed with failed process or log evidence",
+        ) as captured:
             refresh.prepare_sources_cohort(
                 root,
                 manifest,
@@ -330,7 +338,24 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
                 env_file=None,
                 source_workers=2,
             )
-        else:
+        pending = [captured.value]
+        seen = set()
+        causal_validation_refusal = False
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            causal_validation_refusal |= isinstance(
+                current, refresh.ArtifactValidationError
+            )
+            pending.extend((current.__cause__, current.__context__))
+        assert causal_validation_refusal
+    else:
+        with pytest.raises(
+            refresh.ArtifactValidationError,
+            match="artifact private publication refused",
+        ):
             refresh.collect_source(
                 root,
                 manifest,
@@ -342,6 +367,7 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
             )
 
     assert starts[sources[0]] == 1
+    assert database == []
     attempt = manifest["sources"][sources[0]]["attempts"][0]
     assert attempt["error"] == f"collector exited {attempt['rc']}"
     assert attempt["rc"] == (
@@ -360,9 +386,10 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
         )
     assert attempt["rejected_artifact"] is None
     assert attempt["rejected_artifact_sha256"] is None
-    unsafe_outputs = [path for path in root.rglob("*.json") if path.is_symlink()]
-    assert len(unsafe_outputs) == 1
-    assert unsafe_outputs[0].read_bytes() == b"immutable target"
+    assert manifest["sources"][sources[0]]["artifact"] is None
+    unsafe_output = root / attempt["temporary_artifact"]
+    assert unsafe_output.is_symlink()
+    assert unsafe_output.read_bytes() == b"immutable target"
     assert not (root / "rejected" / f"{sources[0]}-attempt-1.json").exists()
 
 
