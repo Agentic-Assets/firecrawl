@@ -340,6 +340,36 @@ export type DaumInventoryRow = {
   latitude: number | null;
   longitude: number | null;
 };
+export type DaumDetail = {
+  postId: number;
+  observedCanonicalUrl?: string | null;
+  facts: Record<string, string>;
+  title: string;
+  tenure: DaumTenureProof;
+  tenureText: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  salePriceText: string | null;
+  leaseRateText: string | null;
+  sizeText: string | null;
+  description: string | null;
+  highlights: string[];
+  brochures: Array<{ name: string | null; url: string }>;
+  photos: string[];
+  contacts: Array<{
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    office: string | null;
+    profileUrl: string | null;
+    avatarUrl: string | null;
+    license: string | null;
+  }>;
+};
+
+export type DaumEmptyTitleObservation = Pick<DaumDetail, "postId" | "observedCanonicalUrl" | "tenure" | "tenureText"> & { emptyRequiredTitle: true };
+
 export type DaumInventoryPass = {
   index: number;
   total: number;
@@ -366,6 +396,8 @@ export type DaumVerifiedSubsetInventoryProof = Omit<DaumCurrentInventoryProof, "
   held: Array<[string, "unknown_inventory_and_detail_tenure"]>;
   // Audit-only parsed cards from new producers, never listing authority.
   heldInventoryObservations: Array<{ postId: string; inventory: DaumInventoryRow }>;
+  // Audit-only parsed details/empty-title markers; never emitted as listings.
+  heldDetailObservations: Array<{ postId: string; detail: DaumDetail | DaumEmptyTitleObservation }>;
 };
 
 export type DaumEmptyTitleSubsetProof = Omit<DaumVerifiedSubsetInventoryProof, "schema" | "held"> & {

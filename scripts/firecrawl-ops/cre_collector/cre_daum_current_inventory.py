@@ -127,6 +127,65 @@ def _held_inventory_observations(proof, held, native):
                 and inventory["tenure"] == _tenure(inventory["tenureText"]))
 
 
+def _held_detail_observations(proof, held, native, details, v2, empty_titles):
+    """Check optional parsed-detail audit against the already-derived held partition."""
+    if "heldDetailObservations" not in proof:
+        return
+    observations = proof["heldDetailObservations"]
+    require(isinstance(observations, list) and len(observations) == len(held))
+    full_fields = {
+        "postId", "observedCanonicalUrl", "facts", "title", "tenure", "tenureText",
+        "city", "state", "postalCode", "salePriceText", "leaseRateText", "sizeText",
+        "description", "highlights", "brochures", "photos", "contacts",
+    }
+    marker_fields = {"postId", "observedCanonicalUrl", "tenure", "tenureText",
+                     "emptyRequiredTitle"}
+    nullable_text = {
+        "tenureText", "city", "state", "postalCode", "salePriceText",
+        "leaseRateText", "sizeText", "description",
+    }
+    contact_fields = {
+        "name", "email", "phone", "office", "profileUrl", "avatarUrl", "license",
+    }
+    for observation, (post, reason) in zip(observations, held, strict=True):
+        require(isinstance(observation, dict) and set(observation) == {"postId", "detail"})
+        require(observation["postId"] == post)
+        detail = observation["detail"]
+        require(isinstance(detail, dict))
+        require(type(detail.get("postId")) is int and detail["postId"] == int(post))
+        require(detail.get("observedCanonicalUrl") == native[post][0])
+        require(detail.get("tenure") == native[post][4]
+                and detail.get("tenureText") == native[post][5])
+        if reason == "empty_required_property_title":
+            require(v2 and post in empty_titles and set(detail) == marker_fields)
+            require(detail["emptyRequiredTitle"] is True)
+            continue
+        require(reason == "unknown_inventory_and_detail_tenure")
+        require(set(detail) == full_fields and post not in empty_titles)
+        require(detail["tenure"] in TENURES)
+        require(isinstance(detail["title"], str) and bool(detail["title"].strip()))
+        require(isinstance(detail["facts"], dict)
+                and all(isinstance(key, str) and isinstance(value, str)
+                        for key, value in detail["facts"].items()))
+        for key in nullable_text:
+            require(detail[key] is None or isinstance(detail[key], str))
+        require(isinstance(detail["highlights"], list)
+                and all(isinstance(value, str) for value in detail["highlights"]))
+        require(isinstance(detail["photos"], list)
+                and all(isinstance(value, str) for value in detail["photos"]))
+        require(isinstance(detail["brochures"], list))
+        for brochure in detail["brochures"]:
+            require(isinstance(brochure, dict) and set(brochure) == {"name", "url"})
+            require(brochure["name"] is None or isinstance(brochure["name"], str))
+            require(isinstance(brochure["url"], str))
+        require(isinstance(detail["contacts"], list))
+        for contact in detail["contacts"]:
+            require(isinstance(contact, dict) and set(contact) == contact_fields)
+            require(all(contact[key] is None or isinstance(contact[key], str)
+                        for key in contact_fields))
+        require(details[post][0] == detail["observedCanonicalUrl"])
+
+
 def _tenure(raw):
     require(raw is None or isinstance(raw, str))
     value = " ".join((raw or "").split()).lower()
@@ -425,6 +484,7 @@ def _admit(
                 for post, reason in held if reason == "unknown_inventory_and_detail_tenure")
         )
         _held_inventory_observations(proof, held, native)
+        _held_detail_observations(proof, held, native, details, v2, empty_titles)
     held_ids = {post for post, _ in held}
     emitted_total = total - len(held)
     require(emitted_total >= 100)
