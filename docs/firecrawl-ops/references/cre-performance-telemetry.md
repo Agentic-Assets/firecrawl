@@ -60,6 +60,7 @@ From `scripts/firecrawl-ops/cre_collector/`:
 
 ```bash
 python3 cre_series_status.py --watch 5
+python3 cre_series_status.py out/checkpoint-series/SERIES_ID --json
 python3 cre_performance_report.py
 python3 cre_performance_report.py out/checkpoint-series/SERIES_ID --json
 python3 cre_performance_report.py out/checkpoint-series/CURRENT_ID --baseline out/checkpoint-series/BASELINE_ID
@@ -72,6 +73,15 @@ Checkpoint and series coordinators save `performance-report.json` and
 `performance-report.md` on exit, including ordinary failure and interrupt paths.
 To save an offline report explicitly, append `--out-dir REPORT_DIRECTORY`. No server,
 browser dashboard, tracing vendor, database connection or scheduler is added.
+
+Use the explicit series path with `cre_series_status.py --json` for a one-shot
+progress read. Raw child `pipeline.counts` are internal coordinator counters:
+`pending` is `len(ready)`, not the queue of sources still awaiting dispatch.
+The raw `verified` label alone is not independent qualification evidence.
+`cre_series_status.py` traverses all selected sources and calls the maintained
+`pipeline_source_qualified(..., allow_running=True)` helper to qualify per-source
+progress. Qualified sources during an active run do not prove terminal
+settlement or completion of the whole run.
 
 The same report and comparison commands run on macOS and in Windows' WSL
 checkout. Comparison reads saved evidence only. JSON preserves each code SHA,
