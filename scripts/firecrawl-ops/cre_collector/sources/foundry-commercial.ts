@@ -396,7 +396,13 @@ async function foundryBoundedResponseText(
       try {
         chunk = await reader.read();
       } catch (error) {
-        if (!await foundryCancelBody(reader, timeoutMs)) {
+        let readerClosedWithSameError = false;
+        try {
+          await reader.closed;
+        } catch (closedError) {
+          readerClosedWithSameError = closedError === error;
+        }
+        if (!readerClosedWithSameError && !await foundryCancelBody(reader, timeoutMs)) {
           throw new Error("Foundry response body read failed and did not cancel", { cause: error });
         }
         if (!foundryIsTransientTransportFailure(error, signal.aborted)) throw error;
