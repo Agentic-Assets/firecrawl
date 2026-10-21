@@ -31,6 +31,7 @@ def setup_collection(
     process_failure=False,
     write_failed_artifact=False,
     unsafe_rejected_output=False,
+    unsafe_output_paths=None,
     rejected_bytes=None,
 ):
     """Real local owned collectors and artifact compute; only provider/DB IO replaced."""
@@ -52,9 +53,13 @@ def setup_collection(
     original_archive_rejected = refresh._archive_rejected
 
     def payload(source):
-        # Synthetic observations bind to this generation; a later wall-clock
-        # read can regress and make otherwise valid fixture evidence stale.
-        stamp = manifest["started_at"]
+        attempt_started = manifest["sources"][source]["attempts"][-1]["started_at"]
+        stamp = max(
+            refresh.parse_iso8601(
+                manifest["started_at"], field="generation_started_at"
+            ),
+            refresh.parse_iso8601(attempt_started, field="attempt_started_at"),
+        ).isoformat()
         data = strict_artifact(
             source,
             detail_scope="detail_page",
@@ -84,6 +89,12 @@ def setup_collection(
         )
         attempt, temporary, log_path, started = created
         starts[source] += 1
+        if (
+            unsafe_output_paths is not None
+            and unsafe_rejected_output
+            and source == sources[0]
+        ):
+            unsafe_output_paths[(source, attempt["number"])] = temporary
         rc = (
             refresh.COHORT_SETTLED_FAILURE_EXIT
             if process_failure and source == sources[0] and starts[source] == 1
@@ -162,6 +173,13 @@ def setup_collection(
         from pathlib import Path
 
         candidate = Path(output)
+        if (
+            unsafe_output_paths is not None
+            and unsafe_rejected_output
+            and source == sources[0]
+        ):
+            attempt_number = manifest["sources"][source]["attempts"][-1]["number"]
+            unsafe_output_paths[(source, attempt_number)] = candidate
         candidate.write_text(json.dumps(payload(source)))
         if unsafe_rejected_output:
             target = candidate.with_suffix(".target")
@@ -306,12 +324,14 @@ def test_nonzero_exit_without_temp_artifact_records_no_hash(
 def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
     tmp_path, monkeypatch, route
 ):
+    unsafe_output_paths = {}
     root, manifest, sources, starts, database = setup_collection(
         tmp_path,
         monkeypatch,
         process_failure=True,
         write_failed_artifact=True,
         unsafe_rejected_output=True,
+        unsafe_output_paths=unsafe_output_paths,
     )
     settlements = []
     if route == "cohort":
@@ -389,7 +409,11 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
     assert attempt["rejected_artifact"] is None
     assert attempt["rejected_artifact_sha256"] is None
     assert manifest["sources"][sources[0]]["artifact"] is None
-    unsafe_output = root / attempt["temporary_artifact"]
+    unsafe_output = unsafe_output_paths[(sources[0], 1)]
+    if route == "cohort":
+        assert unsafe_output == root / attempt["temporary_artifact"]
+    else:
+        assert unsafe_output == root / "sources" / f"{sources[0]}.json.tmp"
     assert unsafe_output.is_symlink()
     assert unsafe_output.read_bytes() == b"immutable target"
     assert not (root / "rejected" / f"{sources[0]}-attempt-1.json").exists()
