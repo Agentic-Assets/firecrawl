@@ -194,7 +194,12 @@ def setup_collection(
     ("route", "failure", "expected_state", "expected_rc"),
     [
         ("serial", "nonzero", "collect_failed", 1),
-        ("cohort", "nonzero", "collect_failed", 1),
+        (
+            "cohort",
+            "nonzero",
+            "collect_failed",
+            refresh.COHORT_SETTLED_FAILURE_EXIT,
+        ),
         ("serial", "validation", "artifact_rejected", 0),
         ("cohort", "validation", "artifact_rejected", 0),
     ],
@@ -299,6 +304,17 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
         write_failed_artifact=True,
         unsafe_rejected_output=True,
     )
+    settlements = []
+    if route == "cohort":
+        original_settle = refresh.settle_owned_groups
+
+        def record_settlement(groups, **kwargs):
+            groups = list(groups)
+            result = original_settle(groups, **kwargs)
+            settlements.append((groups, result))
+            return result
+
+        monkeypatch.setattr(refresh, "settle_owned_groups", record_settlement)
 
     with pytest.raises(
         refresh.ArtifactValidationError, match="artifact private publication refused"
@@ -312,7 +328,7 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
                 concurrency=1,
                 attempts_this_run=1,
                 env_file=None,
-                source_workers=1,
+                source_workers=2,
             )
         else:
             refresh.collect_source(
@@ -327,13 +343,21 @@ def test_unsafe_rejected_output_refusal_propagates_from_collection_path(
 
     assert starts[sources[0]] == 1
     attempt = manifest["sources"][sources[0]]["attempts"][0]
-    assert attempt["error"] == "collector exited 1"
+    assert attempt["error"] == f"collector exited {attempt['rc']}"
     assert attempt["rc"] == (
         refresh.COHORT_SETTLED_FAILURE_EXIT if route == "cohort" else 1
     )
     assert attempt["finished_at"]
     if route == "cohort":
-        assert starts[sources[1]] == 0
+        assert starts[sources[1]] == 1
+        assert len(settlements) == 1
+        groups, result = settlements[0]
+        assert len(groups) == sum(starts.values())
+        assert result.settled
+        assert all(
+            group["leader_reaped"] and group["group_gone"]
+            for group in result.groups
+        )
     assert attempt["rejected_artifact"] is None
     assert attempt["rejected_artifact_sha256"] is None
     unsafe_outputs = [path for path in root.rglob("*.json") if path.is_symlink()]
@@ -474,8 +498,15 @@ def test_typed_rejection_does_not_spend_remaining_collection_budget(
     assert rejected["state"] == "artifact_rejected"
     assert len(rejected["attempts"]) == 1
     assert rejected["attempts"][0]["error"]
-    assert (root / rejected["attempts"][0]["rejected_artifact"]).is_file()
+    attempt = rejected["attempts"][0]
+    rejected_path = root / attempt["rejected_artifact"]
+    assert rejected_path.is_file()
     assert sources[0] not in database
+    if route == "pipeline":
+        assert attempt["rejected_artifact_sha256"] == refresh.sha256_file(
+            rejected_path
+        )
+        assert stat.S_IMODE(rejected_path.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize("route", ["pipeline", "serial", "cohort"])

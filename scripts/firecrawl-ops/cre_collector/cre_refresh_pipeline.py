@@ -988,13 +988,16 @@ def run_bounded_pipeline(
                             candidate = checkpoint["candidate"]
                             checkpoint["state"] = "artifact_rejected"
                             checkpoint["attempts"][-1]["error"] = str(exc)
-                            checkpoint["attempts"][-1]["rejected_artifact"] = (
-                                refresh._archive_rejected(
-                                    run_dir / candidate["path"],
-                                    run_dir,
-                                    source,
-                                    checkpoint["attempts"][-1]["number"],
-                                )
+                            (
+                                checkpoint["attempts"][-1]["rejected_artifact"],
+                                checkpoint["attempts"][-1][
+                                    "rejected_artifact_sha256"
+                                ],
+                            ) = refresh._archive_rejected(
+                                run_dir / candidate["path"],
+                                run_dir,
+                                source,
+                                checkpoint["attempts"][-1]["number"],
                             )
                             retry_or_fail(source, "artifact validation failed")
                             continue
