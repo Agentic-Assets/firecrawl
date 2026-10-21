@@ -8,14 +8,18 @@ Parent context: repo `AGENTS.md`, root `CLAUDE.md`, and
 
 > **Historical runtime snapshot, 2026-07-11:** The Mac mini audit found no active
 > CRE launchd labels, plists, cron entries, markers, or collector artifacts.
-> Treat dated run-health and schedule claims below as historical evidence.
-> For current refresh, safety and database-write procedures, use
-> [START_HERE.md](cre_collector/START_HERE.md) and the execution evidence on
-> [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
+> Treat dated run-health and schedule claims below as historical evidence. For
+> current supervised refresh procedures, use the
+> [strict listing refresh](cre_collector/START_HERE.md#strict-listing-refresh)
+> and applicable recovery/resource sections. [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752)
+> owns current runtime, task and operation settlement evidence;
+> [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902) owns
+> source blockers and remaining-source acceptance.
 > Windows task installation and activation follow the
 > [guarded tier guide](../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance).
 > The [July operator runbook](../../tasks/2026-07-10-cre-consolidation-review/2026-07-11-firecrawl-operator-runbook.md)
-> remains historical recovery and OM-canary context, not a live scheduler contract.
+> is historical scheduler-recovery and OM-canary context; consult it only when
+> that history or recovery path is in scope, not as the current scheduler contract.
 
 ## Scope
 
@@ -38,21 +42,48 @@ references, not the default current route.
 
 ## Start Here
 
-For CRE listing work, read in order (fresh machine? `cre_collector/SETUP.md`
-first and run `bash cre_collector/cre_setup.sh`):
+For CRE listing work, use the applicable current procedure in
+[`cre_collector/START_HERE.md`](cre_collector/START_HERE.md); for refresh work,
+start with [Strict listing refresh](cre_collector/START_HERE.md#strict-listing-refresh).
+For collector execution or test work on a fresh machine or clone, follow
+[`cre_collector/SETUP.md`](cre_collector/SETUP.md) first and use its standalone
+verification requirements. Documentation-only work needs no environment setup
+or provider smoke.
 
-1. `cre_collector/START_HERE.md`
-2. `cre_collector/CLAUDE.md`
-3. `cre_collector/BROKERAGE_STATUS_2026-06-12.md`
-4. `../../docs/firecrawl-ops/references/cre-intelligence-system-design.md` (architecture + go-forward plan)
-5. `../../docs/firecrawl-ops/references/cre-equire-consumer-api.md` (how EQUIRE reads the data)
-6. `../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md`
-7. `../../docs/firecrawl-ops/references/cre-monitor-subsystem.md` (monitor run model + gotchas)
-8. `../../docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md` (Phase-2 status activation board impact)
-9. `cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md` (monitor hardening, modular refactor, first `--apply` seed)
-10. `cre_collector/ENRICHMENT_WORKER_DESIGN_2026-06-15.md` (Tier-B worker + launchd cadence; when touching enrich or tiers)
-11. `cre_collector/launchd/CLAUDE.md` (tier schedules, install, gates; when touching launchd)
-12. `../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md` (where to run the pipeline: cloud vs Mac mini, platform comparison, anti-bot IP risk; decision aid, not actioned)
+1. Read [`cre_collector/CLAUDE.md`](cre_collector/CLAUDE.md) for current
+   implementation and ownership gates. For source work, read
+   [`cre_collector/sources/CLAUDE.md`](cre_collector/sources/CLAUDE.md) and the
+   affected source contract; read other module guides only for the subsystem
+   being changed.
+2. For brokerage coverage or website variation, use the
+   [completion playbook](../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
+   and its current-blocker path. [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902)
+   owns source blockers and remaining-source acceptance;
+   [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752) owns
+   current runtime/task pins and operation settlement. Use
+   [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895) for
+   measurements and the learning log.
+3. Follow these additional guides only when their boundary is in scope:
+
+   | Work area | Guide |
+   | --- | --- |
+   | Collector architecture or EQUIRE consumption | [CRE system design](../../docs/firecrawl-ops/references/cre-intelligence-system-design.md); [EQUIRE consumer API](../../docs/firecrawl-ops/references/cre-equire-consumer-api.md) |
+   | Monitor or gate work | [Monitor subsystem](../../docs/firecrawl-ops/references/cre-monitor-subsystem.md); [historical first-apply handoff](cre_collector/HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md) only for that legacy history |
+   | DAUM partial acceptance | [DAUM verified subset](../../docs/firecrawl-ops/references/daum-verified-subset.md); a subset never proves complete brokerage coverage |
+   | Throughput or matched measurements | [CRE performance telemetry](../../docs/firecrawl-ops/references/cre-performance-telemetry.md); distinguish staged from verified counts and use the existing learning log, not an issue per run |
+   | Enrichment worker or schedule | [Enrichment worker design](cre_collector/ENRICHMENT_WORKER_DESIGN_2026-06-15.md); [`launchd/CLAUDE.md`](cre_collector/launchd/CLAUDE.md) |
+   | CRE notifications | [`slack-setup.md`](cre_collector/slack-setup.md); root Docker `.env` does not configure native Windows task notifications |
+   | Host/platform history | [June hosting options](../../docs/firecrawl-ops/references/cre-cloud-hosting-options-2026-06-14.md), a historical decision aid |
+   | Phase-2 status-activation history | [Phase-2 board impact](../../docs/firecrawl-ops/references/cre-phase2-board-impact-2026-06-13.md) |
+
+   The [operational recovery](cre_collector/START_HERE.md#operational-recovery)
+   section is gated Mac-tier recovery guidance; consult it only for that host
+   path and use current host and task evidence before acting.
+
+The June brokerage snapshot and dated handoffs are historical evidence. Consult
+them only to resolve a specific historical discrepancy, recover a legacy path,
+or work on the subsystem they document; do not use them as current source or
+runtime status.
 
 For local Firecrawl stack work, read:
 
