@@ -52,7 +52,9 @@ def setup_collection(
     original_archive_rejected = refresh._archive_rejected
 
     def payload(source):
-        stamp = refresh.utc_now()
+        # Synthetic observations bind to this generation; a later wall-clock
+        # read can regress and make otherwise valid fixture evidence stale.
+        stamp = manifest["started_at"]
         data = strict_artifact(
             source,
             detail_scope="detail_page",
@@ -272,7 +274,7 @@ def test_rejected_artifact_is_private_and_hash_bound_on_public_failure_paths(
 def test_nonzero_exit_without_temp_artifact_records_no_hash(
     tmp_path, monkeypatch
 ):
-    root, manifest, sources, starts, database = setup_collection(
+    root, manifest, sources, _starts, database = setup_collection(
         tmp_path,
         monkeypatch,
         process_failure=True,
@@ -545,7 +547,7 @@ def test_settled_nonzero_collection_can_retry_then_succeed(
         monkeypatch,
         process_failure=True,
     )
-    kwargs = dict(page_cap=400, concurrency=1, attempts_this_run=3)
+    kwargs = {"page_cap": 400, "concurrency": 1, "attempts_this_run": 3}
     if route == "pipeline":
         assert (
             pipeline.run_bounded_pipeline(
