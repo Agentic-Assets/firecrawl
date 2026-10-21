@@ -106,6 +106,46 @@ explicit Firecrawl scrape smoke (which POSTs a scrape request and accesses
 example.com), run `bash scripts/firecrawl-ops/firecrawl_healthcheck.sh` from the
 repo root. Do not treat that command as a read-only doctor.
 
+### Experimental JLL HTML reconstruction
+
+The experimental `sources/jll-direct.ts` helper is not used by ordinary JLL
+collection. Its converter requires the generated `apps/api/native/index.js`
+and matching platform addon from the existing API workspace native package.
+Ordinary collector imports, typecheck and unit tests do not require this addon.
+The experimental conversion fails clearly if it has not been built; it never
+falls back to the older incomplete HTML mapper.
+
+Build the existing native package only in a genuine isolated test clone using
+the API workspace's pinned pnpm version and its native build prerequisites
+(Rust/Cargo, linker and platform tools). Its package build command is
+`pnpm --dir apps/api/native build` from the repository root after installing
+the API workspace dependencies. This is an explicit developer prerequisite,
+not part of `cre_setup.sh`, a new collector build system or authorization to
+install anything into the production runtime. Do not copy an opaque addon
+from a running service or share platform binaries between Windows, WSL and
+macOS. A successful Linux build does not verify macOS or Windows native builds.
+
+Native dependency resolution is not fully frozen upstream: the package's
+Cargo lock is ignored and includes a Git dependency without a tracked revision
+pin. Retain the resolved Cargo lock, exact Git dependency commit, source/tree,
+toolchain, build command and generated loader/addon hashes with each QA result.
+The pnpm lock alone is insufficient evidence of native reproducibility.
+
+Run `npm run test:jll-native` from the isolated clone's collector directory
+for the separate native integration suite. It requires that build and fails
+if it is missing; normal unit tests remain independent. Saved rendered-page
+reconstruction is parser evidence only. It does not establish direct HTTP
+fidelity, new observation freshness, speed, source acceptance or deployment
+readiness. Follow [AGENTIC-2898](https://linear.app/agenticassets/issue/AGENTIC-2898)
+for the remaining transport and source gates.
+
+Known limitation: the native image extractor returns no guaranteed DOM order.
+If neither the native gallery nor the search/base row supplies a photo prefix,
+the unchanged JLL source preserves that supplied order, so the primary photo
+can vary. The explicit native suite checks anchored order and legacy input
+preservation; it does not certify unanchored repeat-order parity. That failed
+equivalence criterion remains open and blocks transport acceptance.
+
 ### Isolated verification
 
 For checkout roles, branch-versus-runtime pins, safe promotion, and rollback boundaries, see

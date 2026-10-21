@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { jllDirectHtmlDoc } from "../../../sources/jll-direct.js";
+import type { ScrapedDoc } from "../../../types.js";
 import { jllCohortSha256 } from "../../../sources/jll-direct-benchmark.js";
 import { withOfflineJllProjection } from "../../../sources/jll-direct-projection.js";
 import {
@@ -53,25 +53,35 @@ async function fixture(run: (f: any) => Promise<void>) {
   };
   const cohortSha256 = jllCohortSha256(cohort);
   const docs = members.map((member) => {
-    const doc = jllDirectHtmlDoc(
-      `<html><body><h1>Property ${member.providerId}</h1><p>Useful description.</p><script id="__NEXT_DATA__">${JSON.stringify(
-        {
-          props: {
-            pageProps: {
-              property: {
-                id: member.providerId,
-                pageUrl: new URL(member.canonicalUrl).pathname,
-                title: `Property ${member.providerId}`,
-                description: "Useful description.",
-                hidePrice: false,
-              },
-              brokers: [],
+    const rawHtml = `<html><body><h1>Property ${member.providerId}</h1><p>Useful description.</p><script id="__NEXT_DATA__">${JSON.stringify(
+      {
+        props: {
+          pageProps: {
+            property: {
+              id: member.providerId,
+              pageUrl: new URL(member.canonicalUrl).pathname,
+              title: `Property ${member.providerId}`,
+              description: "Useful description.",
+              hidePrice: false,
             },
+            brokers: [],
           },
         },
-      )}</script></body></html>`,
-      member.canonicalUrl,
-    );
+      },
+    )}</script></body></html>`;
+    // Independent synthetic document channels: this tests the auditor/parser, not conversion.
+    const doc: ScrapedDoc = {
+      rawHtml,
+      markdown: "Property\n\nUseful description.",
+      links: [],
+      images: [],
+      attributes: [],
+      metadata: {
+        statusCode: 200,
+        sourceURL: member.canonicalUrl,
+        url: member.canonicalUrl,
+      },
+    };
     doc.detailObservation = {
       observedAt: new Date(Date.now() - 1000).toISOString(),
       generationId: "rendered-gen",

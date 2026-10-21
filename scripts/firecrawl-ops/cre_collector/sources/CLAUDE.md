@@ -779,16 +779,32 @@ order when no anchor exists. [AGENTIC-4342](https://linear.app/agenticassets/iss
 owns this source boundary; production child-retention guards and separate
 performance/transport admission remain unchanged.
 
-`jll-direct.ts` is an experimental candidate, not the ordinary `jll.ts` detail
-route. Its `img[src]`-only capture and plain Turndown conversion are not equivalent
-to `scrapeDoc`. Saved rendered-HTML conversion experiments do not establish
-native HTTP completeness or full direct-document fidelity: links and attributes
-must be regenerated, and target-gallery order and the primary photo must remain
-correct, including when the native gallery is empty. Any canonical converter
-reuse needs an explicit portable dependency/build contract; copied runtime
-binaries are diagnostic evidence, not collector dependencies. Keep routing and
-admission unchanged until [AGENTIC-2898](https://linear.app/agenticassets/issue/AGENTIC-2898)
-qualifies the actual document mapper and transport.
+`jll-direct.ts` remains experimental and is not the ordinary `jll.ts` detail
+route. Its HTML reconstruction uses the existing API native package lazily,
+with Turndown/GFM, to rebuild Markdown, images, links, all five attribute
+channels and HTML-derived metadata. Request context must come from the actual
+response; never borrow rendered metadata or manufacture fresh observation
+evidence. Missing native build output refuses conversion without a lossy
+fallback; ordinary imports and collection do not require that build. See the
+[experimental prerequisite](../SETUP.md#experimental-jll-html-reconstruction).
+Conversion is awaited to settlement before abort/deadline checks and fresh
+candidate evidence; synchronous native work cannot be preemptively cancelled.
+
+Saved rendered-HTML experiments establish only the tested parser scope, not
+native HTTP completeness or transport acceptance. Preserve exact final photo
+order and primary, including empty native galleries; an image-set comparison
+alone is insufficient. The native image extractor has no DOM-order guarantee.
+When both native and base galleries are empty, the current source preserves its
+supplied image order: identical conversions can therefore choose different
+primaries. This remains an unresolved experimental transport-parity gate;
+legacy input-order tests do not satisfy it. Do not sort or change ordinary
+primary-photo behavior merely to make an equivalence test pass.
+Retain per-build source, resolved Cargo lock, toolchain
+and artifact hashes because upstream native dependency resolution is not fully
+pinned. Do not copy production binaries or install a new runtime prerequisite
+as a side effect of a parser test. Keep routing and admission unchanged until
+[AGENTIC-2898](https://linear.app/agenticassets/issue/AGENTIC-2898) qualifies the
+actual document mapper and transport.
 
 Matched JLL detail retains strictly boolean `property.isSubleaseOnly` in
 `jllDetail.isSubleaseOnly`, including `false` and price-withheld records. Absent,
