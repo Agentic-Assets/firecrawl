@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,15 +17,15 @@ from cre_current_inventory_admission import (
     _time,
     admission_configuration,
     configuration,
-    subset_configuration,
     require,
+    subset_configuration,
     validate_report_scope,
 )
 from cre_gate import count_artifacts
 from cre_ingest import (
+    merge_rows,
     strict_full_source_scope,
     to_row,
-    merge_rows,
     validate_strict_artifact_freshness,
 )
 from cre_source_policy import load_source_policy
@@ -86,6 +87,44 @@ def _post(value):
 
 
 TENURES = {"sale", "lease", "sale_or_lease", "unknown"}
+
+
+def _held_inventory_observations(proof, held, native):
+    """Check optional card audit against the already-derived held partition."""
+    if "heldInventoryObservations" not in proof:
+        return
+    observations = proof["heldInventoryObservations"]
+    require(isinstance(observations, list) and len(observations) == len(held))
+    nullable_text = {
+        "tenureText", "city", "state", "postalCode", "sizeText", "assetType",
+        "salePriceText", "leaseRateText", "imageUrl",
+    }
+    numeric = {"spaceCount", "latitude", "longitude"}
+    fields = nullable_text | numeric | {"url", "title", "tenure", "brokerNames"}
+    for observation, (post, _reason) in zip(observations, held, strict=True):
+        require(isinstance(observation, dict) and set(observation) == {"postId", "inventory"})
+        require(observation["postId"] == post)
+        inventory = observation["inventory"]
+        require(isinstance(inventory, dict) and set(inventory) == fields)
+        require(all(isinstance(inventory[key], str) for key in ("url", "title", "tenure")))
+        require(bool(inventory["title"].strip()))
+        require(all(inventory[key] is None or isinstance(inventory[key], str)
+                    for key in nullable_text))
+        for key in numeric:
+            value = inventory[key]
+            if value is not None:
+                require(type(value) in {int, float})
+                try:
+                    finite = math.isfinite(value)
+                except OverflowError:
+                    finite = False
+                require(finite)
+        require(isinstance(inventory["brokerNames"], list)
+                and all(isinstance(name, str) for name in inventory["brokerNames"]))
+        url, _key, tenure, raw, *_ = native[post]
+        require(inventory["url"] == url and inventory["tenure"] == tenure
+                and inventory["tenureText"] == raw
+                and inventory["tenure"] == _tenure(inventory["tenureText"]))
 
 
 def _tenure(raw):
@@ -385,6 +424,7 @@ def _admit(
             all(native[post][2] == native[post][4] == "unknown"
                 for post, reason in held if reason == "unknown_inventory_and_detail_tenure")
         )
+        _held_inventory_observations(proof, held, native)
     held_ids = {post for post, _ in held}
     emitted_total = total - len(held)
     require(emitted_total >= 100)

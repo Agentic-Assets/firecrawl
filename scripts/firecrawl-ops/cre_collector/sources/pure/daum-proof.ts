@@ -22,23 +22,31 @@ export function daumProof(
   const details: DaumCurrentInventoryProof["details"] = rows.map(row => [
     String(row.detail.postId), row.detail.observedCanonicalUrl!, row.observedAt, row.bodySha256,
   ]);
+  const heldInventoryObservations = (held: ReadonlyArray<readonly [string, string]>) => {
+    const ids = new Set(held.map(row => row[0]));
+    return rows.filter(row => ids.has(String(row.detail.postId)))
+      .map(({ inventory, detail }) => ({ postId: String(detail.postId), inventory: structuredClone(inventory) }));
+  };
   if (mode === "verified_subset_empty_title") {
     const titleObservations: DaumEmptyTitleSubsetProof["titleObservations"] = rows
       .filter(row => "emptyRequiredTitle" in row.detail).map(row => [String(row.detail.postId), 1, "empty"]);
     const empty = new Set(titleObservations.map(row => row[0]));
+    const held: DaumEmptyTitleSubsetProof["held"] = members
+      .filter(row => empty.has(row[0]) || row[7] === "unknown")
+      .map(row => [row[0], empty.has(row[0]) ? "empty_required_property_title" : "unknown_inventory_and_detail_tenure"]);
     return {
       schema: "daum-verified-subset-v2", ...identity, kind: "verified_subset_with_holds", ...base,
       subsetPolicy: "tenure-and-empty-title-v2", cohort: members, details, titleObservations,
-      held: members.filter(row => empty.has(row[0]) || row[7] === "unknown")
-        .map(row => [row[0], empty.has(row[0]) ? "empty_required_property_title" : "unknown_inventory_and_detail_tenure"]),
+      held, heldInventoryObservations: heldInventoryObservations(held),
     };
   }
   if (mode === "verified_subset") {
+    const held: DaumVerifiedSubsetInventoryProof["held"] = members.filter(row => row[7] === "unknown")
+      .map(row => [row[0], "unknown_inventory_and_detail_tenure"]);
     return {
       schema: "daum-verified-subset-v1", ...identity, kind: "verified_subset_with_holds", ...base,
       cohort: members, details,
-      held: members.filter(row => row[7] === "unknown")
-        .map(row => [row[0], "unknown_inventory_and_detail_tenure"]),
+      held, heldInventoryObservations: heldInventoryObservations(held),
     };
   }
   const complete: DaumCurrentInventoryProof["cohort"] = members.map(row => {

@@ -4,12 +4,13 @@ import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshDetails } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
-import { SourceResult, Tx, type DaumInventoryPass } from "../types.js";
+import { SourceResult, Tx, type DaumInventoryPass, type DaumInventoryRow } from "../types.js";
 import { daumProof } from "./pure/daum-proof.js";
 import { clean, moneyToNumber, prune } from "../lib/util.js";
 import { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
 
 export { canonicalDaumPropertyUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
+export type { DaumInventoryRow } from "../types.js";
 export const DAUM_PAGE_SIZE = 90;
 export const DAUM_ROBOTS_DELAY_MS = 3000;
 export const DAUM_MAX_RESPONSE_BYTES = 5_000_000;
@@ -20,25 +21,6 @@ type FetchLike = (
   init?: RequestInit
 ) => Promise<Response>;
 
-
-export type DaumInventoryRow = {
-  url: string;
-  title: string;
-  tenure: DaumTenure;
-  tenureText: string | null;
-  city: string | null;
-  state: string | null;
-  postalCode: string | null;
-  sizeText: string | null;
-  spaceCount: number | null;
-  assetType: string | null;
-  salePriceText: string | null;
-  leaseRateText: string | null;
-  brokerNames: string[];
-  imageUrl: string | null;
-  latitude: number | null;
-  longitude: number | null;
-};
 
 export type DaumPage = {
   reportedTotal: number;
