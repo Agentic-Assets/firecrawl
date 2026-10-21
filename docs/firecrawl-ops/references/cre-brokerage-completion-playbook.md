@@ -2,7 +2,7 @@ Parent: [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 # CRE Brokerage Completion Playbook
 
-Last reviewed: 2026-10-20.
+Last reviewed: 2026-10-21.
 
 Use this playbook when upgrading one brokerage website from shallow coverage to
 complete public-feed coverage for EQUIRE. It is adapter-development guidance,
@@ -10,6 +10,53 @@ not production refresh authorization. Investigate independent sources and shared
 provider families in parallel while keeping evidence and acceptance source-bound.
 Use the existing collection slots and serial database lane; never duplicate an
 active writer or test owner.
+
+## Choose the next step from the current blocker
+
+Start at the unresolved decision, not at the beginning of website discovery.
+[AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902) owns the
+current remaining-source checklist; this guide does not duplicate its live counts.
+Use the owning issue's existing evidence, rejected hypotheses and next permissible
+step. Read deeper history when needed to resolve a discrepancy, not on every wake-up.
+
+| Current blocker | Smallest useful next step |
+|---|---|
+| Reproducible parser, mapping or provider-family defect | Reproduce with retained authentic inputs, fix the shared cause and test affected adapters and negative controls. |
+| Missing identity, tenure, status or inventory authority | Seek the exact missing first-party fact through a permitted route. More workers or repeated suites cannot supply that fact. |
+| Access denial or rejected action | Retain the stop and seek supported access restoration or authoritative policy clarification; do not switch executors or routes to evade it. |
+| Supported fix ready for acceptance | Finish applicable code verification and review, then use the existing guarded source acceptance path. |
+
+Each experiment needs a question, the evidence that would change the decision,
+and a finite stopping condition. Reuse unchanged, hash-bound results within their
+declared scope and freshness limits. Reopen a closed experiment only for new
+evidence, a relevant code change, or a demonstrated flaw in the earlier test.
+If none exists, record the precise dependency and move independent work forward;
+do not repeatedly audit the same corpus or rerun a production trial.
+
+Investigate independent sources in parallel and fix a shared provider cause once.
+Batch related fixes into one coherent candidate and review, with per-source
+regression cases and acceptance retained. Shared code success does not transfer
+identity, access or freshness evidence between brokerages.
+
+## Verify at the appropriate boundary
+
+| Work being done | Required verification at this stage |
+|---|---|
+| Evidence-only investigation | Validate the observation/replay and its provenance. Do not launch software suites solely because an investigation or reminder ran. |
+| Documentation-only change | Focused diff, links and structural checks; review proportional to the guidance changed. No collector or live-source suite for unchanged executable code. |
+| Collector-code iteration | Run the smallest regression set that exposes the defect, then affected source/shared-helper tests. Fail fast and fix the cause before a broad run. |
+| Integrated code candidate | Run all applicable repository-required checks from `AGENTS.md` and `SETUP.md`, with exact SHA, dependency and scope evidence; independently review substantive changes. |
+| Production source acceptance | Retain complete fresh scope, listing fidelity, required validation/no-regression, generation-exact database readback and owner/recovery settlement. Development tests do not replace these. |
+
+Run the required broader checks once on the integrated candidate, not after each
+small edit or each brokerage using the same fix. Broaden or repeat when changes,
+failures or unresolved risks invalidate prior proof. Reuse prior results only
+with explicit unchanged input/code/dependency bindings and their actual scope;
+never relabel an older result as a new candidate pass. Collector suites still
+require genuine standalone `git clone --no-hardlinks` clones. Independent suites
+may run in parallel in separate clones when host capacity permits; production
+database writes remain in the existing single lane. `npm test` already includes
+collector typecheck; a separate identical typecheck is unnecessary in that pass.
 
 ## Completion Standard
 
@@ -27,10 +74,13 @@ A brokerage is complete only when all of these are true:
 
 ## Diagnose the full available corpus before retrying
 
-After an identity or layout refusal, replay all available retained responses
-through the real validator, including previously accepted controls and every
-saved candidate endpoint. Catch and group each result independently instead of
-using another production run to discover only its first failure. Compare the
+After an identity or layout refusal, use the existing diagnosis if its relevant
+inputs and validator are unchanged. For a proposed identity/layout rule change,
+start with a minimal reproducer; before a fresh source trial, replay the full
+available retained corpus through the real validator, including previously
+accepted controls and every saved candidate endpoint. Catch and group each
+result independently instead of using another production run to discover only
+its first failure. Compare the
 previous and proposed source blobs against identical feed, response and complete
 URL-ownership inputs. Keep original bytes and exact hashes; report missing bodies,
 changed routes and historical observation times explicitly.
@@ -92,7 +142,11 @@ facts; tenant rent or lease type does not establish the offered transaction.
 Retention follows source visibility/redaction and shared ownership rules; use
 structured provenance rather than promising complete raw HTML/header retention.
 
-Trace a representative fresh detail record through each existing boundary:
+For a fidelity change or reported data gap, trace a representative fresh detail
+record through the affected boundaries below. Reuse verified mapping/consumer
+evidence for unchanged boundaries; this is not a requirement to repeat an
+unrelated UI audit for every parser fix. Required source and database acceptance
+checks still apply.
 
 1. Permitted public detail/feed payload: identify the source field, value,
    unit, URL/record identity and observation time; include relevant variation
@@ -218,25 +272,19 @@ contract; do not add a collector PDF/OM extraction writer or OM-facts writes.
 ## Investigation Workflow
 
 Read the owning issue, its canonical plan, and the latest decision and proof
-comments before selecting a probe. Reconcile completed steps and retained
-evidence with the current frontier; an outdated summary is not a reason to
-repeat discovery. Update stale canonical guidance with verified findings while
-preserving historical observations and unresolved scope or authority limits.
+comments before selecting a probe. Reconcile completed work with the current
+frontier; an outdated summary is not a reason to repeat discovery. Select only
+the recipes below that answer the unresolved question.
+Keep verified source-contract changes current and preserve dated evidence.
 
-1. Start with the source folder:
+### Discover only what is missing
 
-```bash
-# From the repository root on macOS, Linux, or Ubuntu/WSL:
-bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
-cd scripts/firecrawl-ops/cre_collector
-npm run typecheck
-```
-
-2. Inspect the public website with browser devtools or the Browser plugin:
+When the existing evidence does not establish the endpoint or missing field,
+inspect the permitted public website with browser devtools or the Browser plugin:
 
 - Search for XHR and fetch requests while loading the listing page.
 - Change filters, pagination, map/list mode, and text search.
-- Record GET endpoints first. Treat POST-only or consent-gated paths as blocked until a repeatable safe path is found.
+- Record endpoint shapes within the source's access contract. POST-only or consent-gated paths need their own permitted contract; this recipe grants none.
 - Save endpoint shape, required query params, page size, and total-count fields.
 
 Published keyword, geography and property-type filters do not by themselves
@@ -246,24 +294,32 @@ native identity union before using those filters for sharding. A filtered
 omission alone does not establish the cause of a count gap or offering status;
 see [AGENTIC-4297](https://linear.app/agenticassets/issue/AGENTIC-4297).
 
-3. Test endpoints through local Firecrawl:
+Use the registered client and permitted formats; a structured feed does not need
+a browser and Firecrawl comparison merely to satisfy this guide. If a new local
+Firecrawl probe is actually needed, run the existing healthcheck first and save
+the bounded request's result. In the examples, replace `source-target-UNIQUE`
+with a new private observation directory. From the repository root:
 
 ```bash
+bash scripts/firecrawl-ops/firecrawl_healthcheck.sh
 python3 scripts/firecrawl-ops/firecrawl_request.py scrape '<api-url>' \
-  --formats rawHtml --out /tmp/source-api.json
+  --formats rawHtml --out .scratch/source-target-UNIQUE/api-response.json
 ```
 
 Use the source's registered transport and access contract. A direct-client
 challenge does not authorize switching clients to bypass it; respect applicable
 robots, pacing and challenge-stop rules before using local Firecrawl.
 
-4. Build the collector adapter:
+### Change the affected adapter or shared helper
+
+Reuse an existing provider engine where its semantics match. Add source-specific
+configuration or parsing only where the observed response requires it.
 
 - Prefer public JSON APIs over rendered cards.
 - Prefer first-party structured records and semantic fields over selectors tied
   to card position or visual order. Use DOM or rendered-page fallbacks only when
   primary evidence shows the required public field is unavailable elsewhere.
-- Use full pagination and cap by `--max-items`.
+- Implement full pagination. A bounded `--max-items` probe is diagnostic, not complete-inventory proof.
 - Preserve source raw rows in `raw_data`.
 - Add bounded concurrency and explicit per-listing failure evidence.
 - Exploratory probes may retain a feed row with `detailError`. Strict admission
@@ -276,20 +332,21 @@ robots, pacing and challenge-stop rules before using local Firecrawl.
   whitespace, or optional `www` equivalence is allowed only where that contract
   says so. Do not change an identity recipe as a harmless normalization.
 
-5. Detail-page enrichment:
+For required detail enrichment, request the source contract's useful formats
+and inspect structured fields before adding another acquisition path:
 
-- Scrape `rawHtml`, `markdown`, and `links`.
+- Use `rawHtml`, `markdown`, `links` and structured attributes when the mapper needs them; a format change needs fidelity proof.
 - Parse JSON-LD when present.
 - Scan raw HTML for asset URLs. Do not rely only on Firecrawl's extracted links.
 - Dedupe image variants and prefer high-width URLs when the CDN exposes width params.
 - Exclude related-listing photos by using page-specific media IDs, document media IDs, or the first listing media group.
 
-6. Targeted proof:
+### Prove the change on small authentic inputs first
 
-- Pick one known listing with manually visible documents, photos, contacts, and facts.
-- Add a temporary or environment-gated query hook when the source supports text search.
-- Save a small targeted artifact under `/tmp`.
-- Confirm counts for document URLs, image URLs, contact URLs, and key facts.
+- Use representative known listings with visible documents, photos, contacts and facts, plus the relevant variations and conflict/missing-field controls.
+- Prefer retained payloads and existing source selection controls. Do not add a temporary query hook when those already reproduce the defect.
+- Save new permitted evidence privately under ignored `.scratch/`, with its request, observation and hash bindings.
+- Assert fact meaning, units and asset roles, not only counts. Run the affected mapper/verifier tests while iterating.
 
 For a regression replay, pin the recorded input bytes, requested formats and
 unchanged dependencies. Run both mapper versions against the same inputs before
@@ -298,46 +355,41 @@ equivalent to a collector request that includes them. Preserve failed results
 and explain any corrected oracle; offline replay does not refresh source age or
 prove full-source, database or performance acceptance.
 
-7. Ingest proof:
+When the change affects staged fields, child retention or merge semantics,
+inspect the dry-run output against the same artifact. From the repository root:
 
 ```bash
-python3 cre_ingest.py --in /tmp/source_target_probe.json \
-  --dry-run --keep-artifacts /tmp/source_target_ingest_check
+python3 scripts/firecrawl-ops/cre_collector/cre_ingest.py \
+  --in .scratch/source-target-UNIQUE/probe.json --dry-run \
+  --keep-artifacts .scratch/source-target-UNIQUE/ingest-check
 ```
 
 Check that staged child rows contain URLs only and no binary payload fields.
 
-8. Development artifact proof (not CPU-guarded and never a production refresh):
+### Accept through the existing guarded operation
 
-```bash
-npx tsx collect.ts --source=<source-key> --transaction=both \
-  --max-items=0 --page-cap=400 --concurrency=2 \
-  --out=out/<source>_full_<timestamp>.json
-python3 cre_ingest.py --in out/<source>_full_<timestamp>.json --dry-run
-```
+After applicable final code verification and review, use the separately admitted
+`cre_checkpoint_refresh.py` selected-source or `cre_checkpoint_series.py` path
+and the resource/ownership procedures in
+[START_HERE.md](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md).
+Do not require a second uncapped, unguarded development crawl before that same
+guarded acquisition unless it answers a distinct unresolved question. The guarded
+path already binds a clean pushed SHA, fresh generation, source and aggregate
+gates, staging/dry-run, additive ingest and exact database readback. Use that
+operation's evidence rather than launching a duplicate refresh to check it.
 
-Do not treat the direct artifact/dry-run pair as production proof or use it for
-a full registry. A supervised production refresh uses
-`cre_checkpoint_refresh.py` for a selected source or `cre_checkpoint_series.py`
-for the registry, with the CPU resource profile in `START_HERE.md`. Those paths
-bind a clean pushed SHA, freshness generation, source and aggregate gates,
-dry-run, additive ingest, and exact database readback. Lifecycle reconciliation
-is separate and requires the exact source gate to report `mark_missing_safe`,
-explicit founder approval for the exact scope, and the applicable operator
-readback. Adapter completion does not grant lifecycle authority.
+Scheduled-operation acceptance remains separate; an adapter test does not enable
+a schedule. Lifecycle reconciliation also remains separate and requires the
+exact source gate to report `mark_missing_safe`, explicit founder approval for
+the exact scope and applicable operator readback. Adapter completion grants none
+of that lifecycle authority.
 
-9. Monitor enablement (when enumeration key matches ingest `external_id`):
-
-```bash
-npx tsx collect.ts --source=<source-key> --transaction=both --monitor \
-  --max-items=0 --out=/tmp/<source>_monitor.json
-python3 cre_monitor.py --in /tmp/<source>_monitor.json
-```
-
-Sources whose persisted id is detail-derived (`jll`, `jll-investor`,
+Monitor support is a separate capability, not a prerequisite or automatic next
+step for a source fix. Follow `cre-monitor-subsystem.md` and the source monitor
+matrix when that work is in scope. Sources whose persisted id is detail-derived
+(`jll`, `jll-investor`,
 `cbre-dealflow`, `colliers` SalesTracker) must stay on full-sweep cadence and
-return zero monitor rows. Never feed a monitor artifact to `cre_ingest.py`. See
-`cre-monitor-subsystem.md` and `sources/CLAUDE.md` (monitor matrix).
+return zero monitor rows. Never feed a monitor artifact to `cre_ingest.py`.
 
 ## Website variation and evidence policy
 
