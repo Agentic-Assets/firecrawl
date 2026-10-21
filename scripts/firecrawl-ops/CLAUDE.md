@@ -239,7 +239,10 @@ Durable cautions:
 
 - Colliers has two folded sources under the `colliers` brokerage: `colliers`
   (SalesTracker investment-sale subset) and `colliers-main` (full public site
-  via XML sitemap, `main:` ids). Main-site full run COMPLETE 2026-06-14.
+  with `main:` ids). The June 14, 2026 main-site sitemap run is historical,
+  not current acceptance. Follow `cre_collector/sources/CLAUDE.md` for the
+  configured transport and terminal bootstrap-denial behavior; current
+  main-site acceptance remains on [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
 - Keep daily ingest additive (`cre_daily_update.sh --no-mark-missing`) while
   Savills sale remains structurally capped (no public US commercial-sale feed).
   Use `--mark-missing` only after a clean all-source run and explicit go-ahead.

@@ -439,7 +439,9 @@ Cushman & Wakefield's historical adapter investigation established the API and
 detail patterns below:
 
 - Finding the public API in browser network traffic.
-- Verifying local Firecrawl could fetch the API even when direct urllib got `403`.
+- Comparing the configured transport with a direct-client response. Historical
+  access differences do not establish current authorization; use only the
+  configured transport and fallbacks explicitly allowed by that source's contract.
 - Replacing rendered-card scraping with full API pagination.
 - Scraping detail pages for facts, JSON-LD, contacts, PDFs, and images.
 - Scanning raw HTML for PDF URLs because Firecrawl's extracted links omitted them.
@@ -452,38 +454,41 @@ existing children. It proves inventory freshness, not a new rendered-detail or
 fresh-child sweep. Reuse the investigation techniques above, but follow each
 source's registered admission and child contract.
 
-## Sitemap-Discovery Pattern To Reuse (Cloudflare-protected sites)
+## Sitemap discovery and historical Colliers evidence
 
-Colliers main (`colliers-main`, 2026-06-13) was unblocked when neither a public
-search GET nor a usable Coveo POST existed, by discovering listings through the
-site's own XML sitemap. Reuse this when a brokerage hides search behind
-Cloudflare/JS but still publishes a sitemap:
+The June 2026 Colliers-main investigation demonstrated sitemap discovery and
+rendered-detail parsing. It does not establish current access or acceptance.
+The strict checkpoint now selects the exact-ID anonymous Coveo transport;
+the sitemap/JSON-LD renderer remains fallback code. A confirmed bootstrap
+denial must not trigger a route, client or proxy switch. Follow the
+[source contract](../../../scripts/firecrawl-ops/cre_collector/sources/CLAUDE.md)
+and [AGENTIC-4522](https://linear.app/agenticassets/issue/AGENTIC-4522) for the
+typed numeric `bootstrapStatus: 403` stop and its distinction from bounded
+transient retries. Current whole-source acceptance remains on
+[AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902); the separate
+SalesTracker feed does not qualify Colliers main.
 
-1. Fetch `robots.txt` through local Firecrawl (not direct GET, which Cloudflare
-   403s). Read the declared `Sitemap:` URL and confirm `User-agent: *` allows
-   crawling. Try the bare `/sitemap` path, not only `sitemap.xml`.
-2. Fetch the sitemap through local Firecrawl. Walk the `<sitemapindex>` to the
-   relevant child (e.g. `?type=properties`), then parse the `<urlset>` for
-   detail `<loc>` URLs plus `<lastmod>` (refresh semantics). Generic helpers
-   `extractSitemapLocs()` in `sources/colliers-main.ts` and shared
-   `extractSitemapUrlEntries()` in `lib/html.ts` do this.
-3. Render each detail URL through local Firecrawl with `proxy: stealth` and a
-   `waitFor`. Parse `RealEstateListing` JSON-LD for the reliable fields
-   (transaction in `name`, category, canonical URL, primary image) and the
-   markdown/HTML for the rest (price, size, coordinates, photos, named PDF docs,
-   broker contacts).
-4. Handle Cloudflare rate-limiting: under sustained paging the site returns 429
-   "Just a moment..." challenge shells. Detect them and retry with backoff; the
-   stealth proxy rotates IPs per request, so a retry usually lands clean
-   (`scrapeColliersMainDetailDoc`).
-5. Tombstone non-listings so they are cached, not re-fetched, and never
-   ingested: 404 / "Property Not Found" (`skip:"not_found"`) and real 200 pages
-   on an alternate template with no JSON-LD (`skip:"no_structured_data"`).
-6. Cache enriched rows in a durable JSONL file so a multi-hour run resumes
-   across attempts; memoize across the sale and lease passes and partition by
-   transaction client-side.
-7. Fold into the parent brokerage with a prefixed external_id (`main:<id>`) in
-   `SOURCE_TO_BROKERAGE`, and add a matching `external_id LIKE` branch to
-   `cre_validate.py`'s source-key CASE so the report attributes folded rows.
+For a source whose current access contract permits sitemap discovery:
 
-Document/image URLs only; no POST replay, auth, or gated documents.
+1. Use its registered transport and published sitemap locations. Check robots
+   and access rules before acquisition. A denial on a required route is not a
+   reason to bypass it. Use only fallback routes explicitly allowed by that
+   source's current contract; do not rotate identities to evade a denial.
+2. Walk the relevant `<sitemapindex>` and parse `<urlset>` entries with the
+   shared `extractSitemapUrlEntries()` helper in `lib/html.ts`. Retain original
+   URLs and `<lastmod>` values. Sitemap membership alone proves neither an
+   active offering nor complete sale/lease inventory.
+3. Parse permitted owned details for JSON-LD, visible facts, documents, images
+   and contacts. Require source-specific identity, transaction and status
+   witnesses; absent JSON-LD, a 404 or an alternate template must follow that
+   source's failure/eligibility contract, not a generic retirement rule.
+4. Reuse cached details only under the source's existing freshness and identity
+   rules. A retained cache or memoized sale/lease pass does not prove a fresh
+   complete inventory or authorize retrying a denial.
+5. Preserve the registered external-ID recipe and folded-source attribution
+   consistently through collection, ingest and validation. Do not derive a new
+   identity prefix from another brokerage's example.
+
+Retain document/image URLs under the normal ownership contract. This guidance
+does not authorize gated documents, form submissions, POST replay or a new
+production collection attempt.
