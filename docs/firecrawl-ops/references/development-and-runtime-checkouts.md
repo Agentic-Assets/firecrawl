@@ -74,6 +74,12 @@ captures or reuse their directory for a later readback. A sealed packet's refere
 must continue to resolve to the exact bytes reviewed; a matching build SHA does
 not make two observations interchangeable.
 
+Use one declared observation directory throughout admission qualification,
+copy construction and authorization. Verify that the qualification receipt's
+named input hashes match the actual copied inputs before authorizing a handoff;
+matching build SHAs alone cannot bind two different captures. Recheck the
+existing freshness limits rather than treating a copied receipt as newly observed.
+
 Before removing a temporary test clone, preserve any policy-permitted primary
 research response needed for replay in a unique ignored `.scratch/` directory in
 the stable development checkout. Keep response bytes, metadata, safe request
@@ -104,6 +110,14 @@ enable a schedule, or change a runtime.
 After the candidate has passed its isolated checks and is merged or otherwise selected through
 the approved release path:
 
+Development may be newer than the selected tested release. Bind the exact clean
+development SHA/tree and tracking identity separately from the selected release
+SHA/tree, and prove the selected release is its ancestor. Revalidate those
+development conditions before the apply path acquires ownership or mutates a
+runtime. Keep each runtime's exact old-to-selected checks and forward-only
+tracking updates; do not rewind development or tracking refs to make the identities
+match. A selected release does not acquire the acceptance of newer unselected code.
+
 1. Record the reviewed commit SHA and verify the development tree is clean. Enumerate **all CRE
    task definitions targeting either checkout**, including finite-cohort tasks and disabled tasks;
    save their identities, full definitions, prior pins and enabled states. Prevent new launches
@@ -119,6 +133,13 @@ the approved release path:
    runtime checks in cre_status.sh and START HERE. Recheck the expected source definitions and
    exact code SHA; the selected task SHA is only the code pin and grants no runtime or data
    admission.
+   If dependency manifests or lockfiles change, include the required installation
+   and installed-dependency verification in the reviewed maintenance procedure
+   under the same task hold and ownership. `cre_setup.sh --check` alone does not
+   prove installed dependency-tree parity or native-addon readiness. Keep host
+   dependencies local; do not copy them from a test clone or install an unused
+   experimental stack merely to deliver an unrelated fix. A separately tested
+   selected release without those dependency changes may be used when appropriate.
 4. Run only under the existing foreground-owner, database, and scheduler gates in [START
    HERE](../../../scripts/firecrawl-ops/cre_collector/START_HERE.md). Restore each affected task to
    its recorded prior enabled state after the supervised operation; do not enable a previously
