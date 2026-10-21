@@ -24,11 +24,14 @@ _IN_CALLBACK: ContextVar[bool] = ContextVar("cre_pipeline_in_callback", default=
 
 
 @contextmanager
-def command_poll_hook(callback: Callable[[], None]) -> Iterator[None]:
+def command_poll_hook(
+    callback: Callable[[], None],
+) -> Iterator[Callable[[], None]]:
     """Keep one owner's acquisitions moving during DB/compute command waits.
 
     Only the main coordinator may install this hook. Its callback must perform
     bounded collection settlement/publication/dispatch, never database work.
+    The yielded callable and command-wait polling share the reentrancy guard.
     """
     if threading.current_thread() is not threading.main_thread():
         raise RuntimeError("pipeline polling requires the main owner thread")
@@ -48,7 +51,7 @@ def command_poll_hook(callback: Callable[[], None]) -> Iterator[None]:
 
     token = _CALLBACK.set(invoke)
     try:
-        yield
+        yield invoke
     finally:
         _CALLBACK.reset(token)
 
@@ -933,9 +936,9 @@ def run_bounded_pipeline(
         counts()
 
     try:
-        with command_poll_hook(tick):
+        with command_poll_hook(tick) as poll:
             while pending or active or ready:
-                tick()
+                poll()
                 if ready:
                     oversized_index = next(
                         (

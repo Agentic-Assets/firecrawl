@@ -65,18 +65,22 @@ def test_pipeline_callback_advances_while_command_blocked(tmp_path):
     assert ticks and released.read_text() == "refilled"
 
 
-def test_pipeline_poll_callback_cannot_reenter():
+def test_pipeline_poll_callback_cannot_reenter(tmp_path):
     from cre_refresh_pipeline import command_poll_hook, poll_hook
 
     calls = []
 
     def callback():
         calls.append(1)
+        assert refresh.run_command(
+            [sys.executable, "-c", "import time; time.sleep(0.15)"],
+            tmp_path / "nested-command.log",
+        ) == 0
         poll_hook()()
 
     assert poll_hook() is None
-    with command_poll_hook(callback):
-        poll_hook()()
+    with command_poll_hook(callback) as poll:
+        poll()
         assert calls == [1]
         with pytest.raises(RuntimeError, match="nested"):
             with command_poll_hook(callback):
