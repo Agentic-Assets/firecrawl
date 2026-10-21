@@ -8,10 +8,9 @@ import subprocess
 import sys
 from collections import Counter
 
-import pytest
-
 import cre_checkpoint_refresh as refresh
 import cre_refresh_pipeline as pipeline
+import pytest
 from cre_owned_processes import OwnedProcessGroup
 from test_cre_checkpoint_refresh import strict_artifact
 
@@ -248,7 +247,7 @@ def test_rejected_artifact_is_private_and_hash_bound_on_public_failure_paths(
         write_failed_artifact=True,
         rejected_bytes=source_bytes,
     )
-    kwargs = dict(page_cap=400, concurrency=1, attempts_this_run=1)
+    kwargs = {"page_cap": 400, "concurrency": 1, "attempts_this_run": 1}
     if route == "serial":
         result = refresh.collect_source(
             root,
