@@ -762,7 +762,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `marcus-millichap.ts` | Map ActivityId tiles + detail HTML; JSONL detail cache |
 | `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/`; strict runs set `JLL_DETAIL_CACHE_MIN_CACHED_AT` |
 | `jll-investor.ts` | Two matching complete U.S. search snapshots + fresh structured detail; sale only |
-| `colliers-main.ts` | XML sitemap + JSON-LD; resumable JSONL cache; live sitemap `lastmod` controls reuse; CF challenge retries |
+| `colliers-main.ts` | Strict checkpoint: exact-ID anonymous Coveo transport; confirmed bootstrap denial is terminal (see AGENTIC-4522 above). Sitemap/JSON-LD renderer and JSONL cache remain fallback code, not an alternate route after denial. |
 | `buildout.ts` | Shared fail-closed inventory adapter |
 | `buildout-registry.ts` | Governed single-token Buildout source definitions |
 | `savills.ts` | Sale and lease: structured `__NEXT_DATA__`; provider `NextUrl` pagination; direct fetch with validated Firecrawl fallback |
