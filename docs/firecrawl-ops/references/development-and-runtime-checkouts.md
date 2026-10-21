@@ -74,6 +74,15 @@ captures or reuse their directory for a later readback. A sealed packet's refere
 must continue to resolve to the exact bytes reviewed; a matching build SHA does
 not make two observations interchangeable.
 
+Before removing a temporary test clone, preserve any policy-permitted primary
+research response needed for replay in a unique ignored `.scratch/` directory in
+the stable development checkout. Keep response bytes, metadata, safe request
+provenance and observation times together; verify copied bytes against their
+original hashes and sizes. Keep credentials out of the packet, follow source
+visibility and redaction rules, and identify any transformed evidence explicitly.
+A hash or field projection cannot reconstruct a missing response. If retention
+is not permitted, record that replay limitation rather than promising raw bytes.
+
 If old capture bytes have already been overwritten, preserve the currently
 available bytes in a new incident directory and report the lost-evidence gap on
 [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752). Do not fabricate
