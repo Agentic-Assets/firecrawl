@@ -510,4 +510,3 @@ test("Foundry cancels a redirect response body before requesting its validated t
   assert.equal(body, "<sitemapindex></sitemapindex>");
   assert.equal(calls, 2);
 });
-
