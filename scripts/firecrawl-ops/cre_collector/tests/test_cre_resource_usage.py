@@ -265,7 +265,7 @@ def test_unsafe_or_full_journals_never_change_workflow(
     assert capsys.readouterr().err == usage.WARNING + "\n"
 
 
-def test_stop_during_sample_prevents_late_journal_write(sampled, monkeypatch):
+def test_stop_during_sample_prevents_late_journal_write(sampled, monkeypatch, capsys):
     sampler, _ = sampled
     entered, release = threading.Event(), threading.Event()
     original = sampler._command
@@ -284,6 +284,7 @@ def test_stop_during_sample_prevents_late_journal_write(sampled, monkeypatch):
     sampler.stop()
     assert not sampler.thread.is_alive()
     assert not (sampler.run_dir / "resource-usage.jsonl").exists()
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("stage", ["constructor", "start", "stop"])
