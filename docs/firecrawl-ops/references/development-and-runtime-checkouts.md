@@ -110,6 +110,10 @@ call providers/databases, create tasks, change cadence or roll back automaticall
 
 Invoke tooling from a separate clean, pinned Windows-mapped tooling checkout that remains stable
 while both runtime checkouts advance. Pass input/output paths explicitly.
+The development and tooling roles may share that checkout when their declared
+identities match. Windows and WSL spellings normalize to the same role path;
+the native source root and its clean SHA/tree must match declared tooling before
+dispatch. Tooling remains outside both updated runtime checkouts.
 The default preview validates saved evidence with no scheduler, runtime, process
 or network observation:
 
@@ -135,27 +139,58 @@ merged log; native capture has actual separate-stream EOF/drain facts. Reuse
 requires reviewed executed/final identities and unchanged input hashes.
 PR327-specific experiments or test counts are release evidence, never mandatory
 actions for future releases. Unknown producer shapes refuse.
+The pinned `runtime_snapshot` role holds the reviewed five-container identity,
+image/start epoch/caps/environment-digest snapshot. Admission/restoration/readback
+retain and qualify browser healthy/zero pages/four-page cap, normal Linux memory
+with at least 8 GiB available and CPU below 90 percent, plus actual native
+CheckOnly measurements. Docker raw environment values are never durable output.
 
 After preview, use separate new exclusive outputs for read-only observation and
 reviewed authorization publication:
 
 ```bash
 python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json --observe --output /mnt/c/path/new-observation
-python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json --authorize --observation /mnt/c/path/new-observation/observation.json --authorization /mnt/c/path/new-authorization.json --review /mnt/c/path/independent-review.md --reviewer REVIEWER --approval-ref AGENTIC-3752 --output /mnt/c/path/new-operation
+python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json --authorize --observation /mnt/c/path/new-observation/observation.json --authorization /mnt/c/path/new-authorization.json --review /mnt/c/path/review-attestation.json --reviewer REVIEWER --approval-ref AGENTIC-3752 --output /mnt/c/path/new-operation
 ```
 
 Authorization binds original release/capture/review bytes and one operation output.
+Its separate `cre-code-review-v1` attestation binds the exact release digest and
+tooling identity, review-body path/hash/size, reviewer, reference, approved verdict
+and `code-only-release` scope. It lives outside the immutable release to avoid a
+circular digest. QA has its own pinned attestation for exact executed identity,
+tooling and QA scope. Intact old review bytes cannot approve a different subject.
 Capture age stays below 300 seconds and enabled triggers at least 900 seconds away
 at publication and apply boundaries. Expiry or incomplete publication requires new
 outputs, never timestamp rewriting or generic resume.
 
-Only a separately authorized `--apply --observation ... --authorization ...
---output ...` acquires the canonical recovery-required lease, holds the fleet,
-performs guarded ff-only updates/read-only dependency checks, repins exact XML
-and restores prior Enabled states. Uncertain child/task/readback evidence retains
-the recovery fence and task hold. A terminal code receipt still needs independent
+Only a separately authorized apply acquires the canonical recovery-required
+lease, holds the fleet, performs ff-only updates/read-only dependency checks,
+repins while disabled, and durably records held readiness before restoring prior
+Enabled states. The native `Invoke-CreCodeHandoff.ps1 -Mode Apply` foreground
+wrapper records actual outer stream completion around the Linux operation.
+
+Before commit, any child/task/publication failure invokes the exact inventoried
+fleet's dedicated failure hold. Cleanup requires the immutable mutation-start
+binding, so rejected pre-admission requests disable nothing. Cleanup ignores
+admission expiry/current code pins, records per-task uncertainty and never stops
+a running owner or reacquires a lock. The original error remains authoritative.
+After restored-task readback and durable `commit-ready.json`, commit begins at
+canonical recovery clearing. Clearing, lease exit or release-proof failure is
+`commit-uncertain`; terminal publication and later outer native EOF failure are
+postcommit confirmation failures. They attempt the same exact task hold but do
+not claim that a cleared or unknown recovery fence was retained. Independent
+readback/recovery remains necessary; there is no automatic code rollback.
+
+A committed terminal plus successful native completion still needs independent
 `--postreadback --operation /mnt/c/path/new-operation --output /mnt/c/path/new-independent-readback`
-with the same release input. A merged tooling PR or prepared input authorizes no
+with the same release input. Postreadback emits `cre-code-transition-v1`, joining
+the original mutation/auth/output tuple, commit-ready/terminal/native receipts,
+complete before/final/independent XML and unchanged task tuples. This actual
+producer feeds the next release's failed-task lineage directly; historical edges
+retain their original producer schema. `commit-ready.json` alone is never a
+successful transition. Disabled-task next-run semantics remain unproven; held
+checks preserve trigger XML and recheck enabled clocks after restoration.
+A merged tooling PR or prepared input authorizes no
 runtime delivery, data acceptance or scheduling change.
 
 Before any runtime handoff, use the current runbook and host tools to establish fresh idleness

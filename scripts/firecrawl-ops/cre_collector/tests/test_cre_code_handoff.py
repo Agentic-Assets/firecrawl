@@ -1,8 +1,11 @@
 """Offline contracts: use real consumers, never import copied operational helpers."""
 
 import copy
-from datetime import datetime, timedelta, timezone
 import json
+import os
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,20 +13,51 @@ import pytest
 
 import cre_code_handoff as operation
 from cre_code_handoff_evidence import (
-    Evidence, HandoffError, TASKS, TASK_PATH, json_bytes, sha, unique,
-    validate_authorization, validate_lineage, validate_observation, validate_owned_qa,
-    validate_qa, validate_xml_transition,
+    TASK_PATH,
+    TASKS,
+    Evidence,
+    HandoffError,
+    json_bytes,
+    role_paths,
+    sha,
+    unique,
+    validate_authorization,
+    validate_lineage,
+    validate_observation,
+    validate_owned_qa,
+    validate_qa,
+    validate_release,
+    validate_xml_transition,
 )
-from cre_code_handoff_git import read_file, local_path, windows_path
+from cre_code_handoff_git import Git, local_path, read_file, windows_path
+from cre_code_handoff_host import qualify_host, qualify_native
+from cre_code_handoff_transition import make_transition, reference, validate_transition
 
 FIXTURES = Path(__file__).parent / "fixtures/code_handoff"
-NOW = datetime(2026, 10, 22, 9, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 22, 9, tzinfo=UTC)
 OLD = {"sha": "a" * 40, "tree": "b" * 40}
 NEW = {"sha": "c" * 40, "tree": "d" * 40}
 
 
 def encoded(value):
     return json.dumps(value).encode()
+
+
+def host_observation():
+    containers = [{"id": str(i), "name": "/playwright" if i == 0 else f"/service-{i}",
+                   "image": f"sha256:{i}", "status": "running", "started_at": NOW.isoformat(),
+                   "memory": 1024, "nano_cpus": 1, "cpu_quota": 1, "cpu_period": 1,
+                   "environment_sha256": "0"*64} for i in range(5)]
+    return {"containers": containers, "browser": {"status": "healthy", "activePages": 0, "maxConcurrentPages": 4},
+            "linux_resources": {"cpu_percent": 20, "memory_level": 1,
+                                "memory": {"host": {"memory_available_bytes": 8*1024**3}, "causes": []}},
+            "windows_resources": {"admitted": True, "cpuPercent": 20, "availablePhysicalGiB": 8}}
+
+
+def attestation(subject, body_path, body, scope="code-only-release"):
+    return {"schema": "cre-code-review-v1", "subject": subject, "scope": scope,
+            "body": {"path": str(body_path), "sha256": sha(body), "bytes": len(body)},
+            "verdict": "approved", "reviewer": "independent", "approval_ref": "AGENTIC-test"}
 
 
 def xml(commit, enabled=True):
@@ -60,13 +94,15 @@ def admitted():
                          "next_run_utc": (NOW+timedelta(hours=2)).isoformat(),
                          "actions": [{"execute": "pwsh.exe", "arguments": "original", "working_directory": "C:/runtime"}],
                          "xml": role})
-    release = {"deployed": OLD, "selected": NEW, "task_baseline": baseline}
+    inputs.add("runtime_snapshot", {"containers": host_observation()["containers"]})
+    release = {"deployed": OLD, "selected": NEW, "tooling": NEW, "task_baseline": baseline}
     evidence = inputs.evidence(release)
     observed = {"schema": "cre-code-observation-v1", "observed_at": NOW.isoformat(),
                 "native": OLD, "runtime": OLD, "owner_clear": True,
                 "resources_ok": True, "queues_idle": True,
                 "tasks": [dict(row, state="Ready", xml_sha256=sha(inputs.data[row["xml"]]))
                           for row in baseline]}
+    observed.update(host_observation())
     return release, evidence, observed, inputs
 
 
@@ -157,9 +193,11 @@ def test_real_retained_readback_unique_sets_and_failed_terminal_shape():
 
 def test_changed_hash_is_detected_again_at_authorization_boundary(admitted):
     release, evidence, observed, inputs = admitted
-    inputs.add("review", b"independent exact input review")
-    evidence = inputs.evidence(release)
     release_raw, observation_raw = encoded(release), encoded(observed)
+    # The attestation is outside the immutable release, avoiding a circular hash.
+    inputs.data["review-body"] = b"independent exact input review"
+    inputs.data["review"] = encoded(attestation({"release_sha256": sha(release_raw), "tooling": NEW},
+                                              "review-body", inputs.data["review-body"]))
     auth = {"schema": "cre-code-authorization-v1", "release_sha256": sha(release_raw),
             "observation_sha256": sha(observation_raw), "authorized_at": NOW.isoformat(),
             "expires_at": (NOW+timedelta(seconds=299)).isoformat(),
@@ -175,7 +213,10 @@ def test_authorization_publication_rechecks_before_final_commit(tmp_path, monkey
     release, evidence, observed, _ = admitted
     release_path, observation_path, review_path = [tmp_path/name for name in ("release.json", "observation.json", "review.txt")]
     release_raw = encoded(release)
-    release_path.write_bytes(release_raw); observation_path.write_bytes(encoded(observed)); review_path.write_bytes(b"review")
+    body_path=tmp_path/"review-body.md"; body_path.write_bytes(b"review")
+    release_path.write_bytes(release_raw); observation_path.write_bytes(encoded(observed))
+    review_path.write_bytes(encoded(attestation({"release_sha256": sha(release_raw), "tooling": NEW},
+                                               body_path, b"review")))
     args = SimpleNamespace(release=release_path, observation=observation_path, review=review_path,
                            authorization=tmp_path/"authorization.json", output=tmp_path/"operation",
                            reviewer="independent", approval_ref="AGENTIC-test")
@@ -217,7 +258,7 @@ def test_uncertain_owned_command_keeps_actual_error_and_no_success_receipt(tmp_p
         pass
     def command(*args, **kwargs):
         raise Uncertain("group settlement unknown")
-    checkpoint = SimpleNamespace(run_command=command, safe_process_env=lambda: {})
+    checkpoint = SimpleNamespace(run_command=command, safe_process_env=dict)
     runner = operation.Foreground({}, checkpoint, tmp_path)
     with pytest.raises(Uncertain, match="settlement unknown"):
         runner.run("fixture", ["fixture"])
@@ -229,7 +270,14 @@ def lineage_case(admitted):
     release, _, _, inputs = admitted
     original = {"sha": "1"*40, "tree": "2"*40}
     intermediate = {"sha": "3"*40, "tree": "4"*40}
-    terminal = json_bytes((FIXTURES/"failed-terminal.json").read_bytes())
+    # Explicitly synthetic producer-shaped case; authentic fixture stays untouched.
+    terminal = {"operation": {"task_instance_id": "fixture-instance", "audit": "fixture-audit",
+                "series_id": "fixture-series", "checkpoint_run_id": "fixture-run",
+                "parent_invocation_id": "fixture-parent", "child_invocation_id": "fixture-child"},
+                "native": {"last_task_result": 1, "task_state": "Ready"}, "evidence_files": {},
+                "linux": {"parent_local_settlement": "confirmed", "guards_stopped": True,
+                          "nested_cleanup_confirmed": True, "canonical_lock_directory_exists": False,
+                          "authority_state": "normal"}}
     key = "qualified"
     baseline = release["task_baseline"][2]
     baseline["last_task_result"] = 1
@@ -249,7 +297,8 @@ def lineage_case(admitted):
                      collector_git_sha=original["sha"], collector_git_tree=original["tree"])}
     edges = []
     for index, (before, after) in enumerate(((original, intermediate), (intermediate, OLD))):
-        readback = json_bytes((FIXTURES/"readback.json").read_bytes())
+        readback = {"read_only": True, "all_checks_passed": True,
+                    "checks": {"exact_three_task_lineage": True, "task_state_result_and_clocks_unchanged": True}}
         readback.update(deployment_sha=after["sha"], deployment_tree=after["tree"])
         definitions=[]
         comparisons, tasks=[], []
@@ -325,8 +374,10 @@ def test_new_owned_qa_uses_actual_merged_log_contract_without_invented_eof():
     receipt_role=inputs.add("receipt",receipt)
     gate={"name":"offline fixture","receipt":receipt_role,"executed":NEW,"argv":["fixture"],
           "cwd":"/fixture","command_log":log}
-    release={"selected":NEW,"qa":{"producer":"owned-gates-v1","scope":"offline fixtures",
-             "final_executed":NEW,"gates":[gate],"independent_review":"review"}}
+    inputs.add("qa-attestation", attestation({"qa_identity": NEW, "tooling": NEW},
+               "review", inputs.data["review"], "offline fixtures"))
+    release={"selected":NEW,"tooling":NEW,"qa":{"producer":"owned-gates-v1","scope":"offline fixtures",
+             "final_executed":NEW,"gates":[gate],"independent_review":"review", "review_attestation":"qa-attestation"}}
     evidence=inputs.evidence(release)
     validate_owned_qa(release,evidence)
     gate["executed"]=OLD
@@ -357,3 +408,336 @@ def test_linux_process_observer_excludes_only_ancestry_and_emits_no_commands(tmp
     foreign=tmp_path/"20";foreign.mkdir()
     (foreign/"cmdline").write_bytes(b"python3\0/other/cre_code_handoff.py\0--apply\0private-value\0")
     assert operation.visible_linux_frontends(tmp_path,pid=10) == [{"pid":20,"roles":["cre_code_handoff.py"]}]
+
+
+@pytest.fixture
+def complete_case(admitted):
+    release, _, observed, inputs = admitted
+    path="scripts/firecrawl-ops/cre_collector/fixture.py"
+    inputs.add("allowed_paths_nul",path.encode()+b"\0")
+    inputs.add("bundle",b"explicit synthetic bundle fixture; never fetched")
+    inputs.add("qa-body",b"review of the complete synthetic gate scope")
+    inputs.add("qa-attestation",attestation({"qa_identity":NEW,"tooling":NEW},"qa-body",inputs.data["qa-body"],"offline fixture scope"))
+    inputs.add("gate-log",b"fixture command completed\n")
+    inputs.add("gate",{"schema":"cre-owned-gate-v1","producer":"checkpoint-run-command-v1",
+        "identity":NEW,"argv":["fixture"],"cwd":"/fixture","exit_code":0,"local_settlement":"confirmed",
+        "unchanged":True,"log_closed":True,"started_at":NOW.isoformat(),"finished_at":NOW.isoformat(),
+        "command_log_sha256":sha(inputs.data["gate-log"])})
+    release.update(schema="cre-code-release-v1",development=NEW,
+        roots={"native":"C:/native","runtime":"/fixture/runtime","development":"C:/dev","tooling":"/mnt/c/dev"},
+        programs={"native_git":"C:/Git/git.exe","powershell":"C:/PowerShell/pwsh.exe"},
+        wsl={"distro":"fixture-Ubuntu","user":"fixture"},allowed_paths=[path],
+        objects={path:{"before":None,"after":{"mode":"100644","type":"blob","oid":"e"*40}}},
+        runtime_env_file="/fixture/private.env",preserve_files=["/fixture/private.env"],
+        qa={"producer":"owned-gates-v1","scope":"offline fixture scope","final_executed":NEW,
+            "independent_review":"qa-body","review_attestation":"qa-attestation",
+            "gates":[{"name":"fixture","receipt":"gate","executed":NEW,"argv":["fixture"],
+                      "cwd":"/fixture","command_log":"gate-log"}]})
+    return release, inputs.evidence(release), observed, inputs
+
+
+def test_complete_positive_immutable_release_and_qa_consumer_join(complete_case):
+    release,evidence,observed,_=complete_case
+    validate_release(release,evidence)
+    validate_observation(release,evidence,observed,NOW)
+    roots=role_paths(release)
+    assert roots["development"] == roots["tooling"] == "C:/dev"
+
+
+@pytest.mark.parametrize("mutation",["release","tooling"])
+def test_old_review_body_cannot_authorize_another_subject(admitted,mutation):
+    release,evidence,observed,inputs=admitted
+    raw=encoded(release);observation=encoded(observed)
+    inputs.data["body"]=b"same perfectly intact prior review"
+    inputs.data["attestation"]=encoded(attestation({"release_sha256":sha(raw),"tooling":NEW},"body",inputs.data["body"]))
+    auth={"schema":"cre-code-authorization-v1","release_sha256":sha(raw),"observation_sha256":sha(observation),
+          "authorized_at":NOW.isoformat(),"expires_at":(NOW+timedelta(seconds=299)).isoformat(),
+          "review":{"path":"attestation","sha256":sha(inputs.data["attestation"]),"reviewer":"independent","approval_ref":"AGENTIC-test"}}
+    validate_authorization(raw,release,evidence,observation,auth,NOW)
+    if mutation == "release":
+        raw+=b" ";auth["release_sha256"]=sha(raw)
+    else:
+        release["tooling"]=OLD
+    with pytest.raises(HandoffError,match="review subject"):
+        validate_authorization(raw,release,evidence,observation,auth,NOW)
+
+
+@pytest.mark.parametrize("mutation",["memory_bool","memory_low","container_epoch","browser_cap","native_bool","native_low"])
+def test_actual_host_qualifiers_reject_weakened_resources(mutation):
+    observed=host_observation();expected=copy.deepcopy(observed)
+    if mutation == "memory_bool":observed["linux_resources"]["memory_level"]=True
+    elif mutation == "memory_low":observed["linux_resources"]["memory"]["host"]["memory_available_bytes"]-=1
+    elif mutation == "container_epoch":observed["containers"][0]["started_at"]="another epoch"
+    elif mutation == "browser_cap":observed["browser"]["maxConcurrentPages"]=5
+    elif mutation == "native_bool":observed["windows_resources"]["admitted"]=1
+    else:observed["windows_resources"]["availablePhysicalGiB"]=7.99
+    with pytest.raises(HandoffError):
+        qualify_host(observed,expected)
+        qualify_native(observed["windows_resources"])
+
+
+def git_command(repo,*arguments):
+    return subprocess.run(["git","-C",str(repo),*arguments],check=True,capture_output=True).stdout
+
+
+@pytest.fixture
+def git_case(tmp_path,monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL",os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM","1")
+    source=tmp_path/"source";source.mkdir()
+    git_command(source,"init","-b","main")
+    git_command(source,"config","user.email","fixture@example.invalid")
+    git_command(source,"config","user.name","Offline Fixture")
+    path="scripts/firecrawl-ops/cre_collector/fixture.py"
+    leaf=source/path;leaf.parent.mkdir(parents=True);leaf.write_text("old\n")
+    git_command(source,"add",".");git_command(source,"commit","-m","fixture old")
+    old={"sha":git_command(source,"rev-parse","HEAD").decode().strip(),"tree":git_command(source,"rev-parse","HEAD^{tree}").decode().strip()}
+    target=tmp_path/"target"
+    subprocess.run(["git","clone","--no-hardlinks",str(source),str(target)],check=True,capture_output=True)
+    leaf.write_text("new\n");git_command(source,"commit","-am","fixture new")
+    new={"sha":git_command(source,"rev-parse","HEAD").decode().strip(),"tree":git_command(source,"rev-parse","HEAD^{tree}").decode().strip()}
+    git_command(source,"update-ref","refs/remotes/origin/main",new["sha"])
+    bundle=tmp_path/"fixture.bundle";git_command(source,"bundle","create",str(bundle),"refs/remotes/origin/main")
+    git=Git("unused-native-git")
+    release={"deployed":old,"selected":new,"allowed_paths":[path],
+             "objects":{path:{"before":git.entries(source,old["sha"])[path],"after":git.entries(source,new["sha"])[path]}}}
+    return git,target,release,bundle,path
+
+
+def test_real_temporary_git_fast_forward_and_object_guards(git_case):
+    git,target,release,bundle,_=git_case
+    git.fast_forward(target,release,bundle)
+    git.clean(target,release["selected"],tracking=release["selected"]["sha"])
+
+
+@pytest.mark.parametrize("mutation",["hardlink","hook","object"])
+def test_temporary_git_guards_refuse_before_checkout_change(git_case,tmp_path,mutation):
+    git,target,release,bundle,path=git_case
+    if mutation == "hardlink":(tmp_path/"alias").hardlink_to(target/path)
+    elif mutation == "hook":(target/".git/hooks/post-merge").write_text("exit 0\n")
+    else:release["objects"][path]["after"]["oid"]="0"*40
+    with pytest.raises(HandoffError):git.fast_forward(target,release,bundle)
+    assert git.text(target,"rev-parse","HEAD") == release["deployed"]["sha"]
+
+
+@pytest.fixture
+def apply_case(complete_case,tmp_path,monkeypatch):
+    release,evidence,observed,inputs=complete_case
+    release_file=tmp_path/"release.json";raw=encoded(release);release_file.write_bytes(raw)
+    observation_file=tmp_path/"observation.json";observation_file.write_bytes(encoded(observed))
+    body=tmp_path/"review.md";body.write_bytes(b"exact complete fixture review")
+    review=tmp_path/"review.json";review.write_bytes(encoded(attestation({"release_sha256":sha(raw),"tooling":NEW},body,body.read_bytes())))
+    output=tmp_path/"operation";auth_file=tmp_path/"authorization.json"
+    auth={"schema":"cre-code-authorization-v1","release_sha256":sha(raw),"observation_sha256":sha(observation_file.read_bytes()),
+          "authorized_at":NOW.isoformat(),"expires_at":(NOW+timedelta(seconds=299)).isoformat(),
+          "operation_output":str(output),"review":{"path":str(review),"sha256":sha(review.read_bytes()),"reviewer":"independent","approval_ref":"AGENTIC-test"}}
+    auth_file.write_bytes(encoded(auth))
+    state={"fault":None,"calls":[],"enabled":[True]*3,"recovery":None,"acquisitions":0}
+    class Lease:
+        def __init__(self,path,*,recovery_required):
+            assert path == tmp_path/"canonical-lock" and recovery_required is True
+        def __enter__(self):state["acquisitions"]+=1;state["recovery"]=True;return self
+        def clear_recovery_requirement(self):
+            state["calls"].append("clear")
+            if state["fault"] == "clear_before":raise HandoffError("injected clear_before")
+            state["recovery"]=False
+            if state["fault"] == "clear_after":raise HandoffError("injected clear_after")
+        def __exit__(self,*args):
+            state["calls"].append("lease_exit")
+            if state["fault"] == "lease_exit":raise HandoffError("injected lease_exit")
+    def lock_path(root):
+        assert root == local_path(release["roots"]["runtime"])
+        return tmp_path/"canonical-lock"
+    def command(argv,log_path,*,env):
+        assert argv[:2] == ["bash","-c"] and argv[4].endswith("/scripts/firecrawl-ops/cre_collector")
+        log_path.write_text("mocked dependency command; no process was dispatched\n")
+        return 0
+    checkpoint=SimpleNamespace(SharedLock=Lease,canonical_shared_lock_dir=lock_path,
+        safe_process_env=dict,run_command=command,COLLECTOR_DIR=tmp_path/"tooling-collector")
+    git=SimpleNamespace(development=lambda _:state["calls"].append("development"),
+                        clean=lambda *args,**kwargs:None,
+                        fast_forward=lambda root,_release,_bundle:state["calls"].append("ff:"+root))
+    def readiness(*args,selected=False,**kwargs):
+        assert kwargs["evidence"] is evidence
+        if selected and "Verify" in state["calls"] and state["fault"] == "post_restore_readiness":
+            raise HandoffError("injected post_restore_readiness")
+        return dict(host_observation(),native=NEW if selected else OLD,runtime=NEW if selected else OLD,
+                    owner_clear=True,resources_ok=True,queues_idle=True)
+    def native(self,mode,*args,**kwargs):
+        state["calls"].append(mode)
+        if mode == "Hold":
+            if state["fault"] == "before_hold":raise HandoffError("injected before_hold")
+            operation.write_new(output/"mutation-start.json",{"schema":"cre-code-mutation-v1",
+                "release_sha256":sha(raw),"authorization_sha256":sha(auth_file.read_bytes()),
+                "operation_output":str(output),"tooling":NEW,"fleet":release["task_baseline"]})
+            state["enabled"]=[False]*3
+            for row in release["task_baseline"]:(output/(row["key"]+"-before.xml")).write_bytes(inputs.data[row["xml"]])
+        elif mode == "Restore":
+            state["enabled"][0]=True
+            if state["fault"] in {"first_enable","cleanup_receipt","failure_receipt"}:raise HandoffError("injected "+state["fault"])
+            state["enabled"]=[True]*3
+            for row in release["task_baseline"]:
+                (output/(row["key"]+"-final.xml")).write_bytes(inputs.data[row["xml"]].replace(OLD["sha"].encode(),NEW["sha"].encode()))
+            if state["fault"] == "native_receipt":raise HandoffError("injected native_receipt")
+        elif mode == "Verify":
+            tasks=[]
+            for row in release["task_baseline"]:
+                tasks.append(dict(row,state="Ready",xml_sha256=sha((output/(row["key"]+"-final.xml")).read_bytes())))
+            operation.write_new(output/"native-observation.json",{"observed_at":NOW.isoformat(),"tasks":tasks,
+                                "windows_resources":host_observation()["windows_resources"]})
+        elif mode == "FailureHold":
+            assert operation.mutation_started(output,release,raw,auth_file.read_bytes())
+            state["enabled"]=[False]*3
+            if state["fault"] == "cleanup_receipt":raise OSError("injected failure-hold receipt write")
+        elif mode != "Repin":raise AssertionError("unexpected external dispatcher")
+    real_write=operation.write_new
+    def write(path,value):
+        if state["fault"] == "failure_receipt" and Path(path).name == "failure.json":raise OSError("injected failure receipt write")
+        if Path(path).name == state["fault"]:raise HandoffError("injected "+state["fault"])
+        real_write(path,value)
+    monkeypatch.setattr(operation,"now",lambda:NOW)
+    monkeypatch.setattr(operation,"load_release",lambda _: (raw,release,evidence))
+    monkeypatch.setattr(operation,"Git",lambda _:git)
+    monkeypatch.setattr(operation,"runtime_modules",lambda *_:(checkpoint,None,None,None))
+    monkeypatch.setattr(operation,"readiness",readiness)
+    monkeypatch.setattr(operation,"preserved",lambda _: {"unchanged":"digest"})
+    monkeypatch.setattr(operation,"installed_dependencies",lambda _: {"package":"unchanged"})
+    monkeypatch.setattr(operation,"lock_clear",lambda *_:state["calls"].append("released"))
+    monkeypatch.setattr(operation.Foreground,"native",native)
+    monkeypatch.setattr(operation,"write_new",write)
+    argv=["--release",str(release_file),"--apply","--observation",str(observation_file),
+          "--authorization",str(auth_file),"--output",str(output)]
+    return state,output,argv
+
+
+def test_actual_python_entrypoint_apply_positive_with_all_external_boundaries_mocked(apply_case):
+    state,output,argv=apply_case
+    assert operation.main(argv) == 0
+    assert state["enabled"] == [True]*3 and state["recovery"] is False
+    assert [call for call in state["calls"] if call in {"Hold","Repin","Restore","Verify","clear","released"}] == ["Hold","Repin","Restore","Verify","clear","released"]
+    assert json.loads((output/"terminal.json").read_text())["status"] == "committed"
+
+
+@pytest.mark.parametrize("fault,classification,mutated",[
+    ("before_hold","precommit-failure",False),("first_enable","precommit-failure",True),
+    ("native_receipt","precommit-failure",True),("post_restore_readiness","precommit-failure",True),
+    ("held-ready.json","precommit-failure",True),("commit-ready.json","precommit-failure",True),
+    ("clear_before","commit-uncertain",True),("clear_after","commit-uncertain",True),
+    ("lease_exit","commit-uncertain",True),("terminal.json","postcommit-confirmation-failure",True),
+    ("cleanup_receipt","precommit-failure",True),
+])
+def test_apply_failure_boundaries_preserve_original_and_classify_actual_recovery(apply_case,fault,classification,mutated):
+    state,output,argv=apply_case;state["fault"]=fault
+    with pytest.raises(HandoffError,match="injected "+fault):operation.main(argv)
+    record=json.loads((output/"failure.json").read_text())
+    assert record["classification"] == classification
+    assert record["original_error"] == "injected "+fault
+    assert state["acquisitions"] == 1
+    assert ("FailureHold" in state["calls"]) is mutated
+    assert state["enabled"] == ([False]*3 if mutated else [True]*3)
+    assert record["recovery_retained"].startswith("not asserted")
+
+
+def test_failure_receipt_error_does_not_mask_original(apply_case,capsys):
+    state,_,argv=apply_case;state["fault"]="failure_receipt"
+    with pytest.raises(HandoffError,match="injected failure_receipt"):operation.main(argv)
+    assert "Original HandoffError: injected failure_receipt" in capsys.readouterr().err
+    assert state["enabled"] == [False]*3
+
+
+@pytest.mark.skipif(sys.platform != "linux",reason="canonical owned command uses POSIX process groups")
+def test_real_canonical_owned_command_producer_joins_qa_reader(git_case,tmp_path):
+    import cre_checkpoint_refresh as checkpoint
+
+    git,target,release,_,_=git_case
+    selected=release["deployed"]
+    collector=target/"scripts/firecrawl-ops/cre_collector"
+    output=tmp_path/"gate-output";output.mkdir()
+    command=["bash","-c",'cd -- "$1" && shift && exec "$@"',"offline-gate",str(collector),
+             sys.executable,"-I","-c","print('owned offline fixture')"]
+    runner=operation.Foreground({"roots":{"runtime":str(target)},"programs":{"native_git":"unused"},"selected":selected},checkpoint,output)
+    receipt=runner.run("fixture",command,effective_cwd=collector)
+    inputs=Inputs();inputs.add("receipt",(output/"01-fixture.json").read_bytes());inputs.add("log",(output/"01-fixture.log").read_bytes())
+    inputs.add("body",b"review of actual offline subprocess")
+    inputs.add("review",attestation({"qa_identity":selected,"tooling":selected},"body",inputs.data["body"],"owned fixture"))
+    source={"selected":selected,"tooling":selected,"qa":{"producer":"owned-gates-v1","scope":"owned fixture",
+        "final_executed":selected,"independent_review":"body","review_attestation":"review",
+        "gates":[{"name":"fixture","receipt":"receipt","executed":selected,"argv":command,"cwd":str(collector),"command_log":"log"}]}}
+    validate_owned_qa(source,inputs.evidence(source))
+    assert receipt["local_settlement"] == "confirmed" and "stdout_eof" not in receipt
+    git.clean(target,selected,tracking=selected["sha"])
+
+
+def synthetic_transition_files(root,source,inputs):
+    """A complete synthetic producer instance; no historical metadata is rewritten."""
+    operation_root=root/"operation";operation_root.mkdir(parents=True)
+    independent=root/"independent";independent.mkdir()
+    release_path=root/"release.json";release_raw=encoded(source);release_path.write_bytes(release_raw)
+    digest=sha(release_raw);auth_digest="5"*64;output=str(operation_root)
+    mutation={"schema":"cre-code-mutation-v1","release_sha256":digest,"authorization_sha256":auth_digest,
+              "operation_output":output,"tooling":source["tooling"],"fleet":source["task_baseline"]}
+    (operation_root/"mutation-start.json").write_bytes(encoded(mutation))
+    ready={"schema":"cre-code-commit-ready-v1","release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output}
+    ready_raw=encoded(ready);(operation_root/"commit-ready.json").write_bytes(ready_raw)
+    terminal={"schema":"cre-code-terminal-v1","status":"committed","selected":source["selected"],
+              "release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,
+              "commit_ready_sha256":sha(ready_raw),"canonical_lease_released":True}
+    terminal_raw=encoded(terminal);(operation_root/"terminal.json").write_bytes(terminal_raw)
+    stdout=b"synthetic native completion fixture";stderr=b""
+    Path(str(operation_root)+".stdout.raw").write_bytes(stdout);Path(str(operation_root)+".stderr.raw").write_bytes(stderr)
+    native={"schema":"cre-code-native-completion-v1","release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,
+            "capture":{"Started":True,"Failed":False,"NativeExitCode":0,"Stdout":{"Eof":True,"Truncated":False},"Stderr":{"Eof":True,"Truncated":False}},
+            "stdout_sha256":sha(stdout),"stderr_sha256":sha(stderr)}
+    native_raw=encoded(native);Path(str(operation_root)+".native.json").write_bytes(native_raw)
+    rows=[]
+    for baseline in source["task_baseline"]:
+        key=baseline["key"];before=inputs.data[baseline["xml"]]
+        final=before.replace(source["deployed"]["sha"].encode(),source["selected"]["sha"].encode())
+        (operation_root/(key+"-before.xml")).write_bytes(before)
+        (operation_root/(key+"-final.xml")).write_bytes(final)
+        (independent/(key+"-observed.xml")).write_bytes(final)
+        actions=[{field:value.replace(source["deployed"]["sha"],source["selected"]["sha"]) for field,value in action.items()} for action in baseline["actions"]]
+        rows.append(dict(baseline,actions=actions,state="Ready",xml_sha256=sha(final)))
+    observation={"schema":"cre-code-observation-v1","native":source["selected"],"runtime":source["selected"],
+                 "operation_terminal_sha256":sha(terminal_raw),"native_completion_sha256":sha(native_raw),
+                 "release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,"tasks":rows}
+    (independent/"observation.json").write_bytes(encoded(observation))
+    receipt=make_transition(source,release_path,operation_root,independent,read_file)
+    validate_transition(receipt,source["deployed"],source["selected"],read_file)
+    return receipt
+
+
+def test_two_successive_maintained_producers_feed_same_failure_lineage(lineage_case,tmp_path):
+    release,_,inputs=lineage_case
+    for index,new in enumerate((NEW,{"sha":"e"*40,"tree":"f"*40})):
+        release["selected"]=new
+        source=copy.deepcopy(release)
+        receipt=synthetic_transition_files(tmp_path/str(index),source,inputs)
+        xml_roles=[]
+        for row in receipt["tasks"]:
+            before=read_file(row["before_xml"]["path"]);after=read_file(row["final_xml"]["path"])
+            prior=inputs.add(f"maintained-{index}-{row['key']}-before",before)
+            final=inputs.add(f"maintained-{index}-{row['key']}-final",after)
+            xml_roles.append({"key":row["key"],"before":prior,"after":final})
+            next(b for b in release["task_baseline"] if b["key"] == row["key"])["xml"]=final
+        for ref in [receipt[name] for name in ("release","mutation","commit_ready","terminal","native_completion","native_stdout","native_stderr","independent_observation")]+[row[field] for row in receipt["tasks"] for field in ("before_xml","final_xml","independent_xml")]:
+            inputs.data[ref["path"]]=read_file(ref["path"])
+        role=inputs.add(f"maintained-{index}",receipt)
+        release["task_baseline"][2]["failure"]["transitions"].append({"old":source["deployed"],"new":new,"xml":xml_roles,"readback":role})
+        release["deployed"]=new
+    validate_lineage(release,inputs.evidence(release))
+    release["task_baseline"][2]["failure"]["transitions"].pop(-2)
+    with pytest.raises(HandoffError,match="lineage edge"):
+        validate_lineage(release,inputs.evidence(release))
+
+
+def test_same_release_identical_xml_cannot_mix_two_operation_attempts(admitted,tmp_path):
+    release,_,_,inputs=admitted
+    receipt=synthetic_transition_files(tmp_path/"first",release,inputs)
+    other=json_bytes(read_file(receipt["native_completion"]["path"]))
+    other["operation_output"]=str(tmp_path/"other-operation")
+    other["authorization_sha256"]="9"*64
+    other_path=tmp_path/"other-native.json";other_path.write_bytes(encoded(other))
+    receipt["native_completion"]=reference(other_path,read_file)
+    with pytest.raises(HandoffError,match="mixes distinct operation"):
+        validate_transition(receipt,OLD,NEW,read_file)

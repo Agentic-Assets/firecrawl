@@ -4,12 +4,12 @@ Readers are explicit dependencies so tests use retained producer bytes without
 loading operational scripts. The reviewed input is data, never executable policy.
 """
 
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import PurePosixPath
 import re
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 
 class HandoffError(RuntimeError):
@@ -50,9 +50,50 @@ def sha(raw):
 
 def clock(value):
     require(isinstance(value, str), "UTC clock missing")
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value)
     require(parsed.tzinfo is not None, "clock must include timezone")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
+
+
+def canonical_path(value):
+    require(isinstance(value, str) and value and "\0" not in value, "invalid role path")
+    value = value.replace("\\", "/").rstrip("/")
+    if re.match(r"^/mnt/[a-z]/", value):
+        value = value[5].upper() + ":/" + value[7:]
+    if re.match(r"^[A-Za-z]:/", value):
+        value = value[0].upper() + value[1:]
+    require(value.startswith("/") or re.match(r"^[A-Z]:/", value), "absolute role path required")
+    require(all(part not in {".", ".."} for part in value.split("/")), "role path traversal")
+    return value
+
+
+def role_paths(release):
+    roots = {key: canonical_path(value) for key, value in release["roots"].items()}
+    keys = {key: value.casefold() if re.match(r"^[A-Z]:/", value) else value for key, value in roots.items()}
+    require(keys["native"] != keys["runtime"], "native/runtime alias")
+    require(keys["tooling"] not in {keys["native"], keys["runtime"]}, "tooling aliases updated checkout")
+    if keys["development"] == keys["tooling"]:
+        require(release["development"] == release["tooling"], "co-located DEV/tooling identities differ")
+    return roots
+
+
+def validate_review(attestation, body, subject, scope):
+    require(attestation.get("schema") == "cre-code-review-v1"
+            and attestation.get("subject") == subject
+            and attestation.get("scope") == scope
+            and attestation.get("verdict") == "approved"
+            and isinstance(attestation.get("reviewer"), str) and attestation["reviewer"]
+            and isinstance(attestation.get("approval_ref"), str) and attestation["approval_ref"]
+            and attestation.get("body", {}).get("sha256") == sha(body)
+            and attestation["body"].get("bytes") == len(body), "review subject/scope/body binding differs")
+
+
+def validate_qa_review(release, evidence, final):
+    policy = release["qa"]
+    attestation = evidence.obj(policy["review_attestation"])
+    body = evidence.raw(policy["independent_review"])
+    scope = policy.get("scope") or policy["expectations"]["scope"]
+    validate_review(attestation, body, {"qa_identity": final, "tooling": release["tooling"]}, scope)
 
 
 def identity(value):
@@ -154,8 +195,7 @@ def validate_release(release, evidence):
             "explicit checkout roots missing")
     require(all(isinstance(value, str) and value and "\0" not in value
                 for value in release["roots"].values()), "invalid checkout root")
-    require(len(set(value.replace("\\", "/") for value in release["roots"].values())) == 4,
-            "checkout roles must be separate")
+    role_paths(release)
     require(set(release.get("programs", {})) == {"native_git", "powershell"},
             "explicit native tools missing")
     require(set(release.get("wsl", {})) == {"distro", "user"}
@@ -166,6 +206,7 @@ def validate_release(release, evidence):
             and release.get("runtime_env_file") in preserved,
             "explicit private environment preservation reference missing")
     evidence.raw("bundle")
+    unique(evidence.obj("runtime_snapshot").get("containers"), "id")
     unique(release.get("task_baseline"), "key", TASKS)
     validate_qa(release, evidence)
     validate_lineage(release, evidence)
@@ -214,7 +255,7 @@ def validate_qa(release, evidence):
         require(sha(raw) == row["sha256"] and len(raw) == row["bytes"],
                 "QA manifest payload changed")
         evidence.original_payloads[row["path"]] = raw
-    evidence.raw(policy["independent_review"])
+    validate_qa_review(release, evidence, {"sha": final["head"], "tree": final["tree"]})
     merge = evidence.obj(policy["merge"])
     require(merge.get("state") == "MERGED"
             and merge.get("mergeCommit", {}).get("oid") == release["selected"]["sha"]
@@ -270,7 +311,7 @@ def validate_owned_qa(release, evidence):
             evidence.raw(reuse["review"])
         else:
             require("reuse" not in gate, "final execution must not claim reuse")
-    evidence.raw(policy["independent_review"])
+    validate_qa_review(release, evidence, final)
 
 
 def validate_lineage(release, evidence):
@@ -331,6 +372,32 @@ def validate_lineage(release, evidence):
             require(before == original, "lineage XML gap")
             validate_xml_transition(before, after, current["sha"], following["sha"])
             readback = evidence.obj(edge["readback"])
+            if readback.get("schema") == "cre-code-transition-v1":
+                from cre_code_handoff_transition import bound, validate_transition
+
+                maintained = validate_transition(readback, current, following, evidence.read,
+                                                 retain=evidence.original_payloads)
+                provenance = unique(readback.get("original_failures"), "key")
+                require(key in provenance and provenance[key].get("operation") == failure["operation"]
+                        and provenance[key].get("terminal_sha256") == evidence.inputs[failure["terminal"]]["sha256"],
+                        "maintained edge lost original failed provenance")
+                fleet = {}
+                for member, member_baseline in baseline.items():
+                    prior = evidence.raw(xml_rows[member]["before"])
+                    following_xml = evidence.raw(xml_rows[member]["after"])
+                    require(bound(maintained[member]["before_xml"], evidence.read) == prior
+                            and bound(maintained[member]["final_xml"], evidence.read) == following_xml,
+                            "maintained edge XML role differs")
+                    if previous_fleet is not None:
+                        require(previous_fleet[member] == prior, "maintained fleet XML gap")
+                    wanted = maintained[member]["after_tuple"]
+                    require(all(wanted[field] == member_baseline[field] for field in
+                                ("enabled", "last_task_result", "last_run_utc", "next_run_utc")),
+                            "maintained edge failed task tuple changed")
+                    fleet[member] = following_xml
+                original, current, previous_fleet = after, following, fleet
+                seen.add(current["sha"])
+                continue
             require(readback.get("read_only") is True and readback.get("all_checks_passed") is True
                     and readback.get("checks", {}).get("exact_three_task_lineage") is True
                     and readback.get("checks", {}).get("task_state_result_and_clocks_unchanged") is True
@@ -383,6 +450,8 @@ def validate_lineage(release, evidence):
 
 
 def validate_observation(release, evidence, observation, now, *, selected=False):
+    from cre_code_handoff_host import qualify_host, qualify_native
+
     require(observation.get("schema") == "cre-code-observation-v1", "unknown observation schema")
     age = (now - clock(observation["observed_at"])).total_seconds()
     require(0 <= age < 300, "observation expired or from the future")
@@ -391,6 +460,8 @@ def validate_observation(release, evidence, observation, now, *, selected=False)
             "old/new readiness identity mixup")
     require(observation.get("owner_clear") is True and observation.get("resources_ok") is True
             and observation.get("queues_idle") is True, "runtime admission refused")
+    qualify_host(observation, evidence.obj("runtime_snapshot"))
+    qualify_native(observation.get("windows_resources"))
     tasks = unique(observation.get("tasks"), "key", TASKS)
     for key, baseline in unique(release["task_baseline"], "key", TASKS).items():
         task = tasks[key]
@@ -412,7 +483,7 @@ def validate_observation(release, evidence, observation, now, *, selected=False)
                     "enabled task trigger too close")
 
 
-def validate_authorization(release_raw, release, evidence, observation_raw, authorization, now):
+def validate_authorization(release_raw, release, evidence, observation_raw, authorization, now, *, review_reader=None):
     require(authorization.get("schema") == "cre-code-authorization-v1"
             and authorization.get("release_sha256") == sha(release_raw)
             and authorization.get("observation_sha256") == sha(observation_raw),
@@ -422,7 +493,14 @@ def validate_authorization(release_raw, release, evidence, observation_raw, auth
     require((clock(authorization["expires_at"]) - clock(authorization["authorized_at"])).total_seconds() <= 300,
             "authorization lifetime exceeds admission")
     review = authorization.get("review")
-    require(isinstance(review, dict) and review.get("sha256") == sha(evidence.read(review["path"]))
-            and review.get("approval_ref") and review.get("reviewer"), "independent authorization review missing")
+    reader = review_reader or evidence.read
+    require(isinstance(review, dict), "independent authorization review missing")
+    raw = reader(review["path"])
+    require(sha(raw) == review.get("sha256"), "review attestation changed")
+    attestation = json_bytes(raw)
+    validate_review(attestation, reader(attestation["body"]["path"]),
+                    {"release_sha256": sha(release_raw), "tooling": release["tooling"]}, "code-only-release")
+    require(review.get("reviewer") == attestation["reviewer"]
+            and review.get("approval_ref") == attestation["approval_ref"], "reviewer/reference differs")
     evidence.recheck()
     validate_observation(release, evidence, json_bytes(observation_raw), now)

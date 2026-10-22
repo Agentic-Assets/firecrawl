@@ -6,22 +6,37 @@ Run maintained tooling from a separate reviewed clean checkout, never a capsule.
 """
 
 import argparse
-from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
 import sys
 import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from cre_code_handoff_evidence import (
-    Evidence, HandoffError, json_bytes, require, sha, validate_authorization,
-    validate_observation, validate_release,
+    Evidence,
+    HandoffError,
+    canonical_path,
+    json_bytes,
+    require,
+    role_paths,
+    sha,
+    validate_authorization,
+    validate_observation,
+    validate_release,
 )
-from cre_code_handoff_git import Git, installed_dependencies, local_path, read_file, windows_path
+from cre_code_handoff_git import (
+    Git,
+    installed_dependencies,
+    local_path,
+    read_file,
+    windows_path,
+)
+from cre_code_handoff_host import observe_host, qualify_host
 
 
 def now():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def write_new(path, value):
@@ -38,6 +53,7 @@ def load_release(path):
     release = json_bytes(raw)
     evidence = Evidence(release, read_file)
     validate_release(release, evidence)
+    release["roots"] = role_paths(release)
     return raw, release, evidence
 
 
@@ -45,8 +61,14 @@ def runtime_modules(release, git):
     require(sys.platform == "linux" and os.geteuid() != 0, "nonroot Ubuntu required")
     tooling = local_path(release["roots"]["tooling"])
     windows_path(tooling)  # This first route invokes its native helper from a Windows-mapped checkout.
-    require(tooling not in {local_path(release["roots"]["runtime"]), local_path(release["roots"]["native"])},
+    runtime = local_path(release["roots"]["runtime"])
+    native = local_path(release["roots"]["native"])
+    require(not native.samefile(runtime), "native/runtime filesystem alias")
+    require(not tooling.samefile(runtime) and not tooling.samefile(native),
             "tooling must remain stable outside updated checkouts")
+    development = local_path(release["roots"]["development"])
+    if development.samefile(tooling):
+        require(release["development"] == release["tooling"], "co-located DEV/tooling pins differ")
     require(Path(__file__).resolve().parent == tooling / "scripts/firecrawl-ops/cre_collector",
             "invoked tooling path differs")
     git.clean(tooling, release["tooling"])
@@ -161,6 +183,14 @@ class Foreground:
         """Canonical merged regular log and group settlement, never invented EOF."""
         from cre_refresh_pipeline import command_poll_hook
         self.counter += 1
+        identity = None
+        command_git = None
+        if effective_cwd is not None:
+            root = local_path(self.release["roots"]["runtime"])
+            require(local_path(effective_cwd) == root / "scripts/firecrawl-ops/cre_collector", "unexpected effective command cwd")
+            command_git = Git(self.release["programs"]["native_git"])
+            identity = self.release["selected"]
+            command_git.clean(root, identity, tracking=identity["sha"])
         log = self.output / f"{self.counter:02d}-{name}.log"
         require(not log.exists(), "command output replay")
         started, monotonic = now(), time.monotonic()
@@ -178,15 +208,21 @@ class Foreground:
         with command_poll_hook(poll):
             rc = self.checkpoint.run_command(argv, log, env=environment)
         poll()
-        write_new(log.with_suffix(".json"), {
-            "schema": "cre-code-command-v1", "producer": "checkpoint-run-command-v1",
+        if command_git is not None:
+            command_git.clean(root, identity, tracking=identity["sha"])
+        receipt = {
+            "schema": "cre-owned-gate-v1" if identity else "cre-code-command-v1", "producer": "checkpoint-run-command-v1",
             "argv": argv, "dispatch_cwd": str(getattr(self.checkpoint, "COLLECTOR_DIR", Path.cwd())),
             "effective_cwd": str(effective_cwd) if effective_cwd else None, "started_at": started.isoformat(),
             "finished_at": now().isoformat(), "exit_code": rc,
             "local_settlement": "confirmed", "log_closed": True,
             "command_log_sha256": sha(read_file(log)),
-        })
+        }
+        if identity:
+            receipt.update(identity=identity, unchanged=True, cwd=str(effective_cwd))
+        write_new(log.with_suffix(".json"), receipt)
         require(rc == 0, f"{name} failed ({rc}); preserve held tasks and recovery")
+        return receipt
 
     def native(self, mode, release_path, release_sha, observation=None, authorization=None):
         script = Path(__file__).resolve().parent / "windows/Invoke-CreCodeHandoff.ps1"
@@ -201,7 +237,7 @@ class Foreground:
         self.run("native-" + mode.lower(), argv)
 
 
-def readiness(release, checkpoint, memory_type, client, idle, git, *, selected=False, owned=False):
+def readiness(release, checkpoint, memory_type, client, idle, git, *, selected=False, owned=False, evidence=None):
     expected = release["selected" if selected else "deployed"]
     for key in ("runtime", "native"):
         git.clean(release["roots"][key], expected)
@@ -212,15 +248,12 @@ def readiness(release, checkpoint, memory_type, client, idle, git, *, selected=F
         lock_clear(checkpoint, lock)
     frontends = visible_linux_frontends()
     require(not frontends, "visible competing Linux CRE frontend exists")
-    cpu = checkpoint.read_host_cpu_percent()
-    memory = memory_type()
-    level = memory()
-    require(cpu < 90 and level == 1, "Linux resource admission refused")
-    queues = idle(client("http://127.0.0.1:3002", timeout_seconds=5))
-    return {"native": expected, "runtime": expected, "owner_clear": True,
-            "resources_ok": True, "linux_resources": {"cpu_percent": cpu, "memory": memory.last_sample},
-            "queues_idle": True, "queues": queues, "linux_frontends": frontends,
-            "linux_visibility": "current UID /proc roles; own ancestry excluded; PID/role only"}
+    host = observe_host(checkpoint, memory_type, client, idle)
+    qualify_host(host, evidence.obj("runtime_snapshot"))
+    host.update(native=expected, runtime=expected, owner_clear=True, resources_ok=True,
+                queues_idle=True, linux_frontends=frontends,
+                linux_visibility="current UID /proc roles; own ancestry excluded; PID/role only")
+    return host
 
 
 def preserved(release):
@@ -257,15 +290,50 @@ def authorize(args, release_raw, release, evidence):
     }
     require(not local_path(args.output).exists(), "operation output already exists")
     # Two distinct checks around publication; original bytes remain the oracle.
-    validate_authorization(release_raw, release, evidence, observation_raw, authorization, now())
+    validate_authorization(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
     temporary = Path(str(args.authorization) + ".pending")
     write_new(temporary, authorization)
-    validate_authorization(release_raw, release, evidence, observation_raw, authorization, now())
+    validate_authorization(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
     require(read_file(args.release) == release_raw and read_file(args.observation) == observation_raw,
             "publication inputs changed")
     # link is exclusive (rename could overwrite); failed pending publication is never resumed.
     os.link(temporary, args.authorization, follow_symlinks=False)
     temporary.unlink()
+
+
+def mutation_started(output, release, release_raw, authorization_raw):
+    path = output / "mutation-start.json"
+    if not path.exists():
+        return False
+    marker = json_bytes(read_file(path))
+    require(marker.get("schema") == "cre-code-mutation-v1"
+            and marker.get("release_sha256") == sha(release_raw)
+            and marker.get("authorization_sha256") == sha(authorization_raw)
+            and canonical_path(marker.get("operation_output")) == canonical_path(str(output))
+            and marker.get("tooling") == release["tooling"]
+            and marker.get("fleet") == release["task_baseline"], "mutation-start binding differs")
+    return True
+
+
+def record_failure(args, release, release_raw, authorization_raw, checkpoint, output, classification, original):
+    record = {"schema": "cre-code-failure-v1", "classification": classification,
+              "original_error_type": type(original).__name__, "original_error": str(original),
+              "recovery_retained": "not asserted; inspect canonical state",
+              "failure_hold": "not attempted before mutation", "cleanup_error": None}
+    try:
+        require(read_file(args.release) == release_raw and read_file(args.authorization) == authorization_raw,
+                "cleanup immutable inputs changed")
+        if mutation_started(output, release, release_raw, authorization_raw):
+            cleanup = Foreground(release, checkpoint, output)
+            cleanup.counter = 999
+            cleanup.native("FailureHold", args.release, sha(release_raw), args.observation, args.authorization)
+            record["failure_hold"] = "attempted; inspect per-task failure-hold.json"
+    except BaseException as cleanup_error:
+        record["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+    try:
+        write_new(output / "failure.json", record)
+    except BaseException as receipt_error:
+        print(f"Original {type(original).__name__}: {original}; failure receipt unavailable: {type(receipt_error).__name__}; cleanup: {record['cleanup_error']}", file=sys.stderr)
 
 
 def apply(args, release_raw, release, evidence, git, modules):
@@ -278,50 +346,69 @@ def apply(args, release_raw, release, evidence, git, modules):
     def admitted():
         require(read_file(args.release) == release_raw and read_file(args.observation) == observation_raw
                 and read_file(args.authorization) == authorization_raw, "apply input changed")
-        validate_authorization(release_raw, release, evidence, observation_raw, authorization, now())
+        validate_authorization(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
     admitted()
     git.development(release)
-    readiness(release, checkpoint, memory, client, idle, git)
+    readiness(release, checkpoint, memory, client, idle, git, evidence=evidence)
     output = local_path(args.output)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     lock = checkpoint.canonical_shared_lock_dir(local_path(release["roots"]["runtime"]))
     baseline = preserved(release)
-    with checkpoint.SharedLock(lock, recovery_required=True) as lease:
-        runner = Foreground(release, checkpoint, output, lock)
-        admitted()
-        runner.native("Hold", args.release, sha(release_raw), args.observation, args.authorization)
-        admitted()
-        bundle = evidence.inputs["bundle"]["path"]
-        for key in ("native", "runtime"):
+    classification = "precommit-failure"
+    try:
+        with checkpoint.SharedLock(lock, recovery_required=True) as lease:
+            runner = Foreground(release, checkpoint, output, lock)
+            admitted()
+            runner.native("Hold", args.release, sha(release_raw), args.observation, args.authorization)
+            admitted()
+            bundle = evidence.inputs["bundle"]["path"]
+            for key in ("native", "runtime"):
+                evidence.recheck()
+                git.fast_forward(release["roots"][key], release, bundle)
+            require(preserved(release) == baseline, "environment/dependency/skill preservation changed")
+            collector = local_path(release["roots"]["runtime"]) / "scripts/firecrawl-ops/cre_collector"
+            parity = installed_dependencies(collector)
+            for name, argv in (
+                ("npm-ls", ["npm", "ls", "--all", "--json"]),
+                ("doctor", ["bash", "cre_setup.sh", "--check"]),
+                ("gfm", ["node", "--import", "tsx", "--input-type=module", "--eval",
+                 'const {createRequire}=await import("node:module");const r=createRequire(process.cwd()+"/package.json");if(!r.resolve("joplin-turndown-plugin-gfm").startsWith(process.cwd()+"/node_modules/"))throw Error("foreign GFM");if(typeof r("joplin-turndown-plugin-gfm").gfm!=="function")throw Error("GFM export");await import("./sources/jll-html-doc.ts");']),
+            ):
+                runner.run(name, ["bash", "-c", 'cd -- "$1" && shift && exec "$@"', "cre-handoff", str(collector), *argv],
+                           effective_cwd=collector)
+            require(installed_dependencies(collector) == parity and preserved(release) == baseline,
+                    "read-only dependency checks changed preserved files")
+            runner.native("Repin", args.release, sha(release_raw), args.observation, args.authorization)
+            held = readiness(release, checkpoint, memory, client, idle, git, selected=True, owned=True, evidence=evidence)
+            write_new(output / "held-ready.json", {"schema": "cre-code-held-ready-v1", "readiness": held,
+                      "dependencies": parity, "release_sha256": sha(release_raw), "tasks_held": True})
+            admitted()
+            runner.native("Restore", args.release, sha(release_raw), args.observation, args.authorization)
+            runner.native("Verify", args.release, sha(release_raw), args.observation, args.authorization)
+            native = json_bytes(read_file(output / "native-observation.json"))
+            final = readiness(release, checkpoint, memory, client, idle, git, selected=True, owned=True, evidence=evidence)
+            final.update(schema="cre-code-observation-v1", observed_at=native["observed_at"],
+                         tasks=native["tasks"], windows_resources=native["windows_resources"])
+            validate_observation(release, evidence, final, now(), selected=True)
             evidence.recheck()
-            git.fast_forward(release["roots"][key], release, bundle)
-        require(preserved(release) == baseline, "environment/dependency/skill preservation changed")
-        collector = local_path(release["roots"]["runtime"]) / "scripts/firecrawl-ops/cre_collector"
-        parity = installed_dependencies(collector)
-        for name, argv in (
-            ("npm-ls", ["npm", "ls", "--all", "--json"]),
-            ("doctor", ["bash", "cre_setup.sh", "--check"]),
-            ("gfm", ["node", "--import", "tsx", "--input-type=module", "--eval",
-             'const {createRequire}=await import("node:module");const r=createRequire(process.cwd()+"/package.json");if(!r.resolve("joplin-turndown-plugin-gfm").startsWith(process.cwd()+"/node_modules/"))throw Error("foreign GFM");if(typeof r("joplin-turndown-plugin-gfm").gfm!=="function")throw Error("GFM export");await import("./sources/jll-html-doc.ts");']),
-        ):
-            runner.run(name, ["bash", "-c", 'cd -- "$1" && shift && exec "$@"', "cre-handoff", str(collector), *argv],
-                       effective_cwd=collector)
-        require(installed_dependencies(collector) == parity and preserved(release) == baseline,
-                "read-only dependency checks changed preserved files")
-        readiness(release, checkpoint, memory, client, idle, git, selected=True, owned=True)
-        admitted()
-        runner.native("Publish", args.release, sha(release_raw), args.observation, args.authorization)
-        readiness(release, checkpoint, memory, client, idle, git, selected=True, owned=True)
-        evidence.recheck()
-        write_new(output / "code-verified.json", {"status": "passed", "selected": release["selected"],
+            write_new(output / "commit-ready.json", {"schema": "cre-code-commit-ready-v1", "selected": release["selected"],
+                      "release_sha256": sha(release_raw), "authorization_sha256": sha(authorization_raw),
+                      "operation_output": canonical_path(str(output)),
+                      "readiness": final, "dependencies": parity, "recovery_required_at_publication": True})
+            admitted()  # Real current trigger margin, review and hashes immediately before commit.
+            classification = "commit-uncertain"
+            lease.clear_recovery_requirement()
+        lock_clear(checkpoint, lock)
+        classification = "postcommit-confirmation-failure"
+        write_new(output / "terminal.json", {"schema": "cre-code-terminal-v1", "status": "committed",
+                  "selected": release["selected"], "finished_at": now().isoformat(),
                   "release_sha256": sha(release_raw), "authorization_sha256": sha(authorization_raw),
-                  "dependencies": parity, "database_or_provider_writes": False})
-        lease.clear_recovery_requirement()
-    lock_clear(checkpoint, lock)
-    write_new(output / "terminal.json", {"schema": "cre-code-terminal-v1", "status": "passed",
-              "selected": release["selected"], "finished_at": now().isoformat(),
-              "release_sha256": sha(release_raw), "authorization_sha256": sha(authorization_raw),
-              "canonical_lease_released": True, "independent_postreadback_required": True})
+                  "operation_output": canonical_path(str(output)),
+                  "commit_ready_sha256": sha(read_file(output / "commit-ready.json")),
+                  "canonical_lease_released": True, "native_completion_and_independent_readback_required": True})
+    except BaseException as original:
+        record_failure(args, release, release_raw, authorization_raw, checkpoint, output, classification, original)
+        raise
 
 
 def main(argv=None):
@@ -350,7 +437,7 @@ def main(argv=None):
     if args.check_authorization:
         require(args.observation and args.authorization, "explicit admission inputs required")
         validate_authorization(raw, release, evidence, read_file(args.observation),
-                               json_bytes(read_file(args.authorization)), now())
+                               json_bytes(read_file(args.authorization)), now(), review_reader=read_file)
         return 0
     if args.authorize:
         require(all((args.observation, args.authorization, args.review, args.reviewer, args.approval_ref, args.output)),
@@ -371,7 +458,7 @@ def main(argv=None):
         if args.postreadback:
             require(args.operation, "independent postreadback requires the original operation")
             terminal = json_bytes(read_file(local_path(args.operation) / "terminal.json"))
-            require(terminal.get("schema") == "cre-code-terminal-v1" and terminal.get("status") == "passed"
+            require(terminal.get("schema") == "cre-code-terminal-v1" and terminal.get("status") == "committed"
                     and terminal.get("canonical_lease_released") is True
                     and terminal.get("selected") == release["selected"]
                     and terminal.get("release_sha256") == sha(raw), "original operation terminal binding differs")
@@ -380,11 +467,24 @@ def main(argv=None):
         runner = Foreground(release, modules[0], output)
         runner.native("Postreadback" if args.postreadback else "Observe", args.release, sha(raw))
         native = json_bytes(read_file(output / "native-observation.json"))
-        observation = readiness(release, *modules, git, selected=args.postreadback)
+        observation = readiness(release, *modules, git, selected=args.postreadback, evidence=evidence)
         observation.update(schema="cre-code-observation-v1", observed_at=native["observed_at"], tasks=native["tasks"])
+        observation["windows_resources"] = native["windows_resources"]
+        observation["release_sha256"] = sha(raw)
+        if args.postreadback:
+            observation["operation_terminal_sha256"] = sha(read_file(local_path(args.operation) / "terminal.json"))
+            observation["operation_output"] = canonical_path(str(local_path(args.operation)))
+            observation["authorization_sha256"] = terminal["authorization_sha256"]
+            observation["native_completion_sha256"] = sha(read_file(str(local_path(args.operation)) + ".native.json"))
         validate_observation(release, evidence, observation, now(), selected=args.postreadback)
         evidence.recheck()
         write_new(output / "observation.json", observation)
+        if args.postreadback:
+            from cre_code_handoff_transition import make_transition, validate_transition
+
+            transition = make_transition(release, args.release, local_path(args.operation), output, read_file)
+            validate_transition(transition, release["deployed"], release["selected"], read_file)
+            write_new(output / "transition.json", transition)
     return 0
 
 

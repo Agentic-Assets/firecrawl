@@ -2,9 +2,9 @@
 
 import json
 import os
-from pathlib import Path
 import stat
 import subprocess
+from pathlib import Path
 
 from cre_code_handoff_evidence import require, safe_relative, sha
 
@@ -55,7 +55,7 @@ class Git:
         native = str(repo).startswith("/mnt/")
         argv = [self.native_git if native else "git", "-C",
                 windows_path(repo) if native else str(repo), *args]
-        result = subprocess.run(argv, input=input_bytes, capture_output=True, timeout=60)
+        result = subprocess.run(argv, check=False, input=input_bytes, capture_output=True, timeout=60)
         require(result.returncode in allowed, f"Git {args[0]} failed ({result.returncode})")
         return result.stdout
 
