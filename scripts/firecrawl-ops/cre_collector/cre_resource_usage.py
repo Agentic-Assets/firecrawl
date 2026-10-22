@@ -572,11 +572,11 @@ class ResourceUsageSampler:
             },
             "unavailable_fields": sorted(set(gaps)),
         }
-        if gaps:
-            self._warn()
         with self._write_lock:
             if self.stop_event.is_set():
                 return None
+            if gaps:
+                self._warn()
             try:
                 _append_record(self.run_dir / "resource-usage.jsonl", record)
             except (OSError, TypeError, UnicodeError, ValueError):
