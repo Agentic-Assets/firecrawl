@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-from cre_posix import fcntl
 import json
 import math
 import os
@@ -24,8 +23,9 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from cre_performance import resolve_runtime_target, utc_now
 from cre_linux_telemetry import LinuxMemorySampler, LinuxTelemetryError, memory_policy
+from cre_performance import resolve_runtime_target, utc_now
+from cre_posix import fcntl
 from cre_runtime_observability import sanitize_context
 
 SCHEMA_VERSION = 1

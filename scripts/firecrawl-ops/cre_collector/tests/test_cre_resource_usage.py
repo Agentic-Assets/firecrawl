@@ -10,9 +10,10 @@ import subprocess
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 import cre_resource_usage as usage
 from cre_linux_telemetry import LinuxMemorySampler
-import pytest
 
 VM = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n" + "\n".join(
     f"{key}: {index}."

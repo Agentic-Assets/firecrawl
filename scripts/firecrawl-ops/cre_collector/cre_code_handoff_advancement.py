@@ -4,8 +4,17 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
+from itertools import pairwise
 
-from cre_code_handoff_evidence import TASK_PATH, TASKS, HandoffError, clock, identity, require, unique
+from cre_code_handoff_evidence import (
+    TASK_PATH,
+    TASKS,
+    HandoffError,
+    clock,
+    identity,
+    require,
+    unique,
+)
 from cre_code_handoff_host import qualify_native
 
 SOURCES = {"interra": "interra-realty", "newmark": "newmark"}
@@ -66,7 +75,7 @@ def scheduler_events(roles, evidence, bridge, task, execute):
                              clock(system.find("e:TimeCreated", NS).get("SystemTime")), data)
     require(set(records) == set(EVENTS), "scheduler terminal/start event missing")
     ordered = [records[key] for key in EVENTS]
-    require(all(a[0] < b[0] and a[1] <= b[1] for a, b in zip(ordered, ordered[1:], strict=False))
+    require(all(a[0] < b[0] and a[1] <= b[1] for a, b in pairwise(ordered))
             and bridge.get("scheduler_event_record_ids") == [row[0] for row in ordered[:4]],
             "scheduler event chronology/bridge differs")
     guid = instance(bridge.get("task_instance_guid"))

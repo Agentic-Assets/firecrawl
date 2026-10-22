@@ -3,9 +3,15 @@
 from datetime import timedelta
 
 import pytest
-
 import test_cre_code_handoff as fixtures
-from cre_code_handoff_evidence import HandoffError, clock, json_bytes, sha, validate_lineage
+
+from cre_code_handoff_evidence import (
+    HandoffError,
+    clock,
+    json_bytes,
+    sha,
+    validate_lineage,
+)
 
 # Reuse the existing complete synthetic provenance fixture without duplicating it.
 admitted = fixtures.admitted
