@@ -101,6 +101,63 @@ this guidance does not relocate them or introduce another writer or lease.
 
 ## Moving a reviewed build to a runtime
 
+The maintained Windows/Ubuntu code-only route is
+`scripts/firecrawl-ops/cre_collector/cre_code_handoff.py`, with native fleet
+operations in `windows/Invoke-CreCodeHandoff.ps1`. AGENTIC-4845 owns the tooling;
+AGENTIC-3752 owns each operation and independent readback. This first route
+supports unchanged dependency manifests/locks only. It does not install, collect,
+call providers/databases, create tasks, change cadence or roll back automatically.
+
+Invoke tooling from a separate clean, pinned Windows-mapped tooling checkout that remains stable
+while both runtime checkouts advance. Pass input/output paths explicitly.
+The default preview validates saved evidence with no scheduler, runtime, process
+or network observation:
+
+```bash
+python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json
+```
+
+The immutable `cre-code-release-v1` input contains distinct `deployed`, `selected`,
+`development` and `tooling` SHA/tree objects, explicit checkout `roots`, native
+tool paths and Ubuntu distro/user. It binds a NUL changed-path input, complete
+before/after Git object map, bundle, evidence roles (path/hash/size), explicit
+`runtime_env_file`/`preserve_files` private host-local references, QA scope and
+exact three-task baseline. The baseline includes complete XML references,
+Enabled/result/action tuple and last/next UTC clocks. Unexpected tasks refuse,
+including disabled tasks. Nonzero results need original terminal, settlement and
+partial-data proof plus every contiguous SHA-only XML/readback edge for the whole
+fleet. A current baseline never replaces original failed-operation provenance.
+
+`combined-candidate-v1` reads the actual historical combined QA producer.
+`owned-gates-v1` reads new gate receipts with actual command/cwd/identity, exit,
+unchanged-tree and settlement evidence. Checkpoint commands have one closed
+merged log; native capture has actual separate-stream EOF/drain facts. Reuse
+requires reviewed executed/final identities and unchanged input hashes.
+PR327-specific experiments or test counts are release evidence, never mandatory
+actions for future releases. Unknown producer shapes refuse.
+
+After preview, use separate new exclusive outputs for read-only observation and
+reviewed authorization publication:
+
+```bash
+python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json --observe --output /mnt/c/path/new-observation
+python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json --authorize --observation /mnt/c/path/new-observation/observation.json --authorization /mnt/c/path/new-authorization.json --review /mnt/c/path/independent-review.md --reviewer REVIEWER --approval-ref AGENTIC-3752 --output /mnt/c/path/new-operation
+```
+
+Authorization binds original release/capture/review bytes and one operation output.
+Capture age stays below 300 seconds and enabled triggers at least 900 seconds away
+at publication and apply boundaries. Expiry or incomplete publication requires new
+outputs, never timestamp rewriting or generic resume.
+
+Only a separately authorized `--apply --observation ... --authorization ...
+--output ...` acquires the canonical recovery-required lease, holds the fleet,
+performs guarded ff-only updates/read-only dependency checks, repins exact XML
+and restores prior Enabled states. Uncertain child/task/readback evidence retains
+the recovery fence and task hold. A terminal code receipt still needs independent
+`--postreadback --operation /mnt/c/path/new-operation --output /mnt/c/path/new-independent-readback`
+with the same release input. A merged tooling PR or prepared input authorizes no
+runtime delivery, data acceptance or scheduling change.
+
 Before any runtime handoff, use the current runbook and host tools to establish fresh idleness
 and ownership on the exact target host: inspect active run/lock authority and actual scheduler
 state. Preserve the prior source definitions, deployed code SHA, and scheduler enabled/disabled

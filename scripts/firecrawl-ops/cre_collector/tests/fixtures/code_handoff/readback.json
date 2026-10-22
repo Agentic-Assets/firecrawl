@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-10-22T04:04:10.486872+00:00",
+  "read_only": true,
+  "deployment_sha": "2cc673b4852950d63a45761b722474dc20c9355d",
+  "deployment_tree": "b106a86d6773a66bd8257fe896e366c9980b0229",
+  "root_release_marker": "ROOT_REVIEWED_CODE_ONLY_EXECUTION",
+  "native_observed_at": "2026-10-22T04:03:56.7886855Z",
+  "linux_observed_at": "2026-10-22T04:04:01.040986+00:00",
+  "checks": {
+    "native_git_exact_clean_main": true,
+    "linux_git_exact_clean_main": true,
+    "collector_lock_transition_and_readonly_installed_parity": true,
+    "root_env_hashes_match_prior": true,
+    "skill_hashes_unchanged_from_prior": true,
+    "native_and_linux_skill_aliases": true,
+    "exact_three_task_lineage": true,
+    "task_state_result_and_clocks_unchanged": true,
+    "canonical_owner_and_recovery_clear": true,
+    "no_visible_runtime_cre_processes": true,
+    "native_api_healthy": true,
+    "local_api_queues_idle": true,
+    "five_container_identity_images_and_caps_unchanged": true,
+    "containers_running": true,
+    "browser_healthy_and_idle": true,
+    "normal_resource_pressure": true,
+    "no_native_guarded_launcher": true
+  },
+  "all_checks_passed": true,
+  "task_comparisons": [
+    {
+      "key": "newmark",
+      "prior_xml_sha256": "b82c9aa0be26b6ec3e3cd780fa6b8ea8a71cc336fb9509a2bde0d7183d755cfe",
+      "observed_xml_sha256": "616d50500ef5ed28a33b6fa322a9485364ea75c3dca692199d899acf3252e777",
+      "new_sha_occurrences": 2,
+      "old_sha_occurrences": 0,
+      "raw_xml_equal_after_only_sha_replacement": true,
+      "enabled_before": true,
+      "enabled_after": true,
+      "state_before": "Ready",
+      "state_after": "Ready",
+      "result_before": 0,
+      "result_after": 0,
+      "last_run_unchanged": true,
+      "next_run_unchanged": true
+    },
+    {
+      "key": "interra",
+      "prior_xml_sha256": "1866558ace74d31f77e07a88bb2ae15eb12175ddceb5aa61825c3150b6e00db3",
+      "observed_xml_sha256": "6f7ff98b2d09b322e2ee70a15af1bf5e7ebd29ed0ab282efa10cd9ecba602cf7",
+      "new_sha_occurrences": 2,
+      "old_sha_occurrences": 0,
+      "raw_xml_equal_after_only_sha_replacement": true,
+      "enabled_before": true,
+      "enabled_after": true,
+      "state_before": "Ready",
+      "state_after": "Ready",
+      "result_before": 0,
+      "result_after": 0,
+      "last_run_unchanged": true,
+      "next_run_unchanged": true
+    },
+    {
+      "key": "qualified",
+      "prior_xml_sha256": "6785b8688e521c485878d9701c37e38139a63a1350ada576816efe8bb22b5add",
+      "observed_xml_sha256": "0e6d63256dca2d4155e9586e114f9a75f0ee2aec016ef0ab9ec40b629a6f2adc",
+      "new_sha_occurrences": 2,
+      "old_sha_occurrences": 0,
+      "raw_xml_equal_after_only_sha_replacement": true,
+      "enabled_before": true,
+      "enabled_after": true,
+      "state_before": "Ready",
+      "state_after": "Ready",
+      "result_before": 1,
+      "result_after": 1,
+      "last_run_unchanged": true,
+      "next_run_unchanged": true
+    }
+  ],
+  "tasks": [
+    {
+      "key": "newmark",
+      "enabled": true,
+      "state": "Ready",
+      "last_result": 0,
+      "last_run_utc": "2026-10-22T00:15:01Z",
+      "next_run_utc": "2026-10-22T12:15:00Z",
+      "xml_sha256": "616d50500ef5ed28a33b6fa322a9485364ea75c3dca692199d899acf3252e777"
+    },
+    {
+      "key": "interra",
+      "enabled": true,
+      "state": "Ready",
+      "last_result": 0,
+      "last_run_utc": "2026-10-22T00:00:01Z",
+      "next_run_utc": "2026-10-22T12:00:00Z",
+      "xml_sha256": "6f7ff98b2d09b322e2ee70a15af1bf5e7ebd29ed0ab282efa10cd9ecba602cf7"
+    },
+    {
+      "key": "qualified",
+      "enabled": true,
+      "state": "Ready",
+      "last_result": 1,
+      "last_run_utc": "2026-10-22T02:00:01Z",
+      "next_run_utc": "2026-10-22T14:00:00Z",
+      "xml_sha256": "0e6d63256dca2d4155e9586e114f9a75f0ee2aec016ef0ab9ec40b629a6f2adc"
+    }
+  ],
+  "owner_recovery": {
+    "present": false,
+    "lock_owner_alive": false,
+    "authority_owner_alive": false,
+    "recovery_required": false
+  },
+  "runtime": {
+    "visible_cre_processes": [],
+    "api_queues": {
+      "jobs_in_queue": 0,
+      "active_jobs_in_queue": 0,
+      "waiting_jobs_in_queue": 0,
+      "active_crawl_count": 0
+    },
+    "containers": [
+      {
+        "name": "/firecrawl-api-1",
+        "status": "running",
+        "health": null
+      },
+      {
+        "name": "/firecrawl-nuq-postgres-1",
+        "status": "running",
+        "health": "healthy"
+      },
+      {
+        "name": "/firecrawl-redis-1",
+        "status": "running",
+        "health": null
+      },
+      {
+        "name": "/firecrawl-rabbitmq-1",
+        "status": "running",
+        "health": "healthy"
+      },
+      {
+        "name": "/firecrawl-playwright-service-1",
+        "status": "running",
+        "health": null
+      }
+    ],
+    "browser": {
+      "status": "healthy",
+      "maxConcurrentPages": 4,
+      "activePages": 0
+    },
+    "memory_pressure": 1,
+    "memory_available_bytes": 41918820352,
+    "cpu_percent": 0.8264462809917356
+  },
+  "evidence_hashes": {
+    "native_ready": "5818c28989e041e4e9df456867c893abc69bf827f1603a8c2c642cee4b1a9e5e",
+    "linux_ready": "8444292641f7b2ed26ce8263e3fee8eb7d8b9f7c3c52a5402b1146d56d467204",
+    "linux_skills": "87af50049242949214e6f7f2da244a6faac351438e387a22661a81bd3da14f0d",
+    "actual_deployment_final_verification": "50bbe988aafc8a2b27d0a114b58a3155b6e00809d1b73c3998512b3753b362f8",
+    "dependency_check": "01fd1f2d3e223b151d908c26039c61e9215085366052c7fdaf54d19b82abf806",
+    "code_verified": "44b56881a7999e05ee276ee4165b5bba7b03a279abe101946fae8a1425ccc541",
+    "installed_package_lock": "0080d59eb677cb4f78086cd34bfe93b803ddb588b6446e0b62a50b693a0a8be0",
+    "task_state_before": "c2f9333febc9b62b08de7e5e3a18f511b6c4696f01e0698a13ac4d3dde77821f",
+    "proof_script": "730d784071c6f25852222313e6ab711860f20228fd2e9dea8e8cfa5b9772b9be"
+  },
+  "boundary": "Read-only host, task-definition and runtime observation; no task starts, provider requests, database calls, tests, or runtime mutations."
+}

@@ -1,5 +1,12 @@
 # CRE Collector Start Here
 
+For a reviewed Windows/Ubuntu **code-only handoff**, follow the maintained
+[checkout and runtime handoff procedure](../../../docs/firecrawl-ops/references/development-and-runtime-checkouts.md#moving-a-reviewed-build-to-a-runtime).
+The foreground tooling defaults to offline preview. Observation, independent
+authorization, apply and independent postreadback are distinct gates. This route
+does not authorize a refresh, dependency installation, source/data acceptance,
+task scope/cadence expansion or changes to another host.
+
 > **Current ownership, 2026-07-11:** GetCREdata is the sole production OM
 > extraction writer. `om_parse.py --apply` fails closed with exit `78`, and
 > `cre_enrich.py` has no OM-parse invocation. The dated snapshots below are

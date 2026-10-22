@@ -1,0 +1,758 @@
+{
+  "scope": "Local candidate proof with explicit unchanged-input reuse; no production acceptance",
+  "final_candidate": {
+    "head": "0081bbfa8e8cc9a326f28956650f0e51dfb3e7ae",
+    "tree": "7ae96cac911f65c08f14a2b91578ad8507f0ab49",
+    "status": "",
+    "files": {
+      "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+      "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "71e5c5bfd26b9955dbd8e8fb071394aeba1fa7b3e2b6ac5a92afd0816214ea6f",
+      "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "b77309a4a4eda00becd8f63ea3c1a37f1b2639ad8cbf315353b33a5df4a96d2c",
+      "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "d177a9987ef8a91dab349fe9ff500e25bb9b6925bc58d9d6dba7d8ad9a5337c0",
+      "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json": "ce7020f20043a7369349c8a64dd8a8ec6dbae204d9920aad2c12f1c0331dee82"
+    }
+  },
+  "broad_executed_candidate": {
+    "head": "0a8c1dba8df2feae162a0dda36c00f2d054c1fb2",
+    "tree": "f6c54bb60daefec4aadce2586d3aabe524a9d8b5",
+    "status": "",
+    "files": {
+      "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+      "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "7c861223c50b2b0a31ef8fafc42814087173a0505e0f5c4d49151125f861fc86",
+      "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "88e501586fbd6e23354de6d450d6709aa04f3248bb47d01f556c77342370f9ee",
+      "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "96e793da11a692a67c644727950549d357725429d74199982628613e738550a2",
+      "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+    }
+  },
+  "full_python": {
+    "passed": 6762,
+    "skipped": 32,
+    "subtests_passed": 80
+  },
+  "node": {
+    "passed": 3190,
+    "failed": 0,
+    "includes_typecheck": true
+  },
+  "ops": {
+    "run": 224,
+    "passed": 223,
+    "skipped": 1
+  },
+  "final_focused_passed": 131,
+  "phases": {
+    "compile-format-v5": {
+      "receipt_sha256": "83300b31066537c22ec7658aef1f62970fdf0c8124d974d2fa594db87fa8ba27",
+      "receipt": {
+        "label": "compile",
+        "cwd": "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/scripts/firecrawl-ops/cre_collector",
+        "argv": [
+          "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/.venv/bin/python",
+          "-m",
+          "py_compile",
+          "cre_validate.py",
+          "tests/run_source_key_postgres_contract.py",
+          "tests/test_cre_validate.py",
+          "tests/test_source_key_singletons.py"
+        ],
+        "pid": 3824677,
+        "start_utc": "2026-10-22T07:06:21.517122+00:00",
+        "end_utc": "2026-10-22T07:06:21.561664+00:00",
+        "elapsed_seconds": 0.03283738199388608,
+        "exit_code": 0,
+        "child_settled": true,
+        "before": {
+          "head": "0081bbfa8e8cc9a326f28956650f0e51dfb3e7ae",
+          "tree": "7ae96cac911f65c08f14a2b91578ad8507f0ab49",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "71e5c5bfd26b9955dbd8e8fb071394aeba1fa7b3e2b6ac5a92afd0816214ea6f",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "b77309a4a4eda00becd8f63ea3c1a37f1b2639ad8cbf315353b33a5df4a96d2c",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "d177a9987ef8a91dab349fe9ff500e25bb9b6925bc58d9d6dba7d8ad9a5337c0",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json": "ce7020f20043a7369349c8a64dd8a8ec6dbae204d9920aad2c12f1c0331dee82"
+          }
+        },
+        "after": {
+          "head": "0081bbfa8e8cc9a326f28956650f0e51dfb3e7ae",
+          "tree": "7ae96cac911f65c08f14a2b91578ad8507f0ab49",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "71e5c5bfd26b9955dbd8e8fb071394aeba1fa7b3e2b6ac5a92afd0816214ea6f",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "b77309a4a4eda00becd8f63ea3c1a37f1b2639ad8cbf315353b33a5df4a96d2c",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "d177a9987ef8a91dab349fe9ff500e25bb9b6925bc58d9d6dba7d8ad9a5337c0",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json": "ce7020f20043a7369349c8a64dd8a8ec6dbae204d9920aad2c12f1c0331dee82"
+          }
+        },
+        "unchanged": true,
+        "output_sha256": {
+          "stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "focused-format-v5": {
+      "receipt_sha256": "787baf31b844f74b54627e1e7c56cb09f62986d5bdfe391f92e07ba77494c4dd",
+      "receipt": {
+        "label": "focused",
+        "cwd": "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/scripts/firecrawl-ops/cre_collector",
+        "argv": [
+          "unshare",
+          "--user",
+          "--map-current-user",
+          "--net",
+          "--keep-caps",
+          "--",
+          "sh",
+          "-c",
+          "ip link set lo up && exec \"$@\"",
+          "qa",
+          "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/.venv/bin/python",
+          "-B",
+          "-m",
+          "pytest",
+          "tests/test_cre_validate.py",
+          "tests/test_source_key_singletons.py",
+          "-q",
+          "--maxfail=1"
+        ],
+        "pid": 3824701,
+        "start_utc": "2026-10-22T07:06:21.728049+00:00",
+        "end_utc": "2026-10-22T07:06:22.170276+00:00",
+        "elapsed_seconds": 0.4297398190246895,
+        "exit_code": 0,
+        "child_settled": true,
+        "before": {
+          "head": "0081bbfa8e8cc9a326f28956650f0e51dfb3e7ae",
+          "tree": "7ae96cac911f65c08f14a2b91578ad8507f0ab49",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "71e5c5bfd26b9955dbd8e8fb071394aeba1fa7b3e2b6ac5a92afd0816214ea6f",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "b77309a4a4eda00becd8f63ea3c1a37f1b2639ad8cbf315353b33a5df4a96d2c",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "d177a9987ef8a91dab349fe9ff500e25bb9b6925bc58d9d6dba7d8ad9a5337c0",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json": "ce7020f20043a7369349c8a64dd8a8ec6dbae204d9920aad2c12f1c0331dee82"
+          }
+        },
+        "after": {
+          "head": "0081bbfa8e8cc9a326f28956650f0e51dfb3e7ae",
+          "tree": "7ae96cac911f65c08f14a2b91578ad8507f0ab49",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "71e5c5bfd26b9955dbd8e8fb071394aeba1fa7b3e2b6ac5a92afd0816214ea6f",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "b77309a4a4eda00becd8f63ea3c1a37f1b2639ad8cbf315353b33a5df4a96d2c",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "d177a9987ef8a91dab349fe9ff500e25bb9b6925bc58d9d6dba7d8ad9a5337c0",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json": "ce7020f20043a7369349c8a64dd8a8ec6dbae204d9920aad2c12f1c0331dee82"
+          }
+        },
+        "unchanged": true,
+        "output_sha256": {
+          "stdout.txt": "3fde425c018316a7e8fd94cde101aefa51381b8060e75e2731bcc3a1fb06d81d",
+          "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "fixture-format-v5": {
+      "receipt_sha256": "b286e2bcdaf2c82276515262628495aa908315fb31708404ffe63e936a90c46b",
+      "receipt": {
+        "label": "fixture",
+        "cwd": "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/scripts/firecrawl-ops/cre_collector",
+        "argv": [
+          "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/.venv/bin/python",
+          "-B",
+          "tests/run_source_key_postgres_contract.py",
+          "--out",
+          "/mnt/c/Users/CSEAGRAVES2018/GitHub/firecrawl-dev/.scratch/2026-10-22-4844-root-fixture-json-v5-71e5/synthetic.json",
+          "--source-counts-json-root-control",
+          "tests/fixtures/source_counts_before_decoded_source_key.json"
+        ],
+        "pid": 3824727,
+        "start_utc": "2026-10-22T07:06:22.339686+00:00",
+        "end_utc": "2026-10-22T07:06:28.568582+00:00",
+        "elapsed_seconds": 6.218182606971823,
+        "exit_code": 0,
+        "child_settled": true,
+        "before": {
+          "head": "0081bbfa8e8cc9a326f28956650f0e51dfb3e7ae",
+          "tree": "7ae96cac911f65c08f14a2b91578ad8507f0ab49",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "71e5c5bfd26b9955dbd8e8fb071394aeba1fa7b3e2b6ac5a92afd0816214ea6f",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "b77309a4a4eda00becd8f63ea3c1a37f1b2639ad8cbf315353b33a5df4a96d2c",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "d177a9987ef8a91dab349fe9ff500e25bb9b6925bc58d9d6dba7d8ad9a5337c0",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json": "ce7020f20043a7369349c8a64dd8a8ec6dbae204d9920aad2c12f1c0331dee82"
+          }
+        },
+        "after": {
+          "head": "0081bbfa8e8cc9a326f28956650f0e51dfb3e7ae",
+          "tree": "7ae96cac911f65c08f14a2b91578ad8507f0ab49",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "71e5c5bfd26b9955dbd8e8fb071394aeba1fa7b3e2b6ac5a92afd0816214ea6f",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "b77309a4a4eda00becd8f63ea3c1a37f1b2639ad8cbf315353b33a5df4a96d2c",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "d177a9987ef8a91dab349fe9ff500e25bb9b6925bc58d9d6dba7d8ad9a5337c0",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json": "ce7020f20043a7369349c8a64dd8a8ec6dbae204d9920aad2c12f1c0331dee82"
+          }
+        },
+        "unchanged": true,
+        "output_sha256": {
+          "stdout.txt": "4d0d7c00302bfdf07230906d5ba1a0840ac380e426f121a6079e75c0ae9ae99a",
+          "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "full_python-final-v4": {
+      "receipt_sha256": "17720d2e5a130040e5d3db8274fe380731da0bf2e4431447014b3ee67b9f0880",
+      "receipt": {
+        "label": "full_python",
+        "cwd": "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/scripts/firecrawl-ops/cre_collector",
+        "argv": [
+          "unshare",
+          "--user",
+          "--map-current-user",
+          "--net",
+          "--keep-caps",
+          "--",
+          "sh",
+          "-c",
+          "ip link set lo up && exec \"$@\"",
+          "qa",
+          "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/.venv/bin/python",
+          "-B",
+          "-m",
+          "pytest",
+          "tests/",
+          "-q",
+          "--maxfail=1"
+        ],
+        "pid": 3808325,
+        "start_utc": "2026-10-22T06:51:57.296744+00:00",
+        "end_utc": "2026-10-22T06:58:00.231773+00:00",
+        "elapsed_seconds": 363.12849351600744,
+        "exit_code": 0,
+        "child_settled": true,
+        "before": {
+          "head": "0a8c1dba8df2feae162a0dda36c00f2d054c1fb2",
+          "tree": "f6c54bb60daefec4aadce2586d3aabe524a9d8b5",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "7c861223c50b2b0a31ef8fafc42814087173a0505e0f5c4d49151125f861fc86",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "88e501586fbd6e23354de6d450d6709aa04f3248bb47d01f556c77342370f9ee",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "96e793da11a692a67c644727950549d357725429d74199982628613e738550a2",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+          }
+        },
+        "after": {
+          "head": "0a8c1dba8df2feae162a0dda36c00f2d054c1fb2",
+          "tree": "f6c54bb60daefec4aadce2586d3aabe524a9d8b5",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "7c861223c50b2b0a31ef8fafc42814087173a0505e0f5c4d49151125f861fc86",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "88e501586fbd6e23354de6d450d6709aa04f3248bb47d01f556c77342370f9ee",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "96e793da11a692a67c644727950549d357725429d74199982628613e738550a2",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+          }
+        },
+        "unchanged": true,
+        "output_sha256": {
+          "stdout.txt": "e8a4e92014f56c28fc534237a40e992b8b809e3e5ac585f27e4f31f979146af8",
+          "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "npm-final-v4": {
+      "receipt_sha256": "24fd05ea009bbcf5cf79ce1fbd70ffc5b4eadbce5c635f73730e2db97e40933a",
+      "receipt": {
+        "label": "npm",
+        "cwd": "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/scripts/firecrawl-ops/cre_collector",
+        "argv": [
+          "unshare",
+          "--user",
+          "--map-current-user",
+          "--net",
+          "--keep-caps",
+          "--",
+          "sh",
+          "-c",
+          "ip link set lo up && exec \"$@\"",
+          "qa",
+          "npm",
+          "test"
+        ],
+        "pid": 3821720,
+        "start_utc": "2026-10-22T06:58:00.397074+00:00",
+        "end_utc": "2026-10-22T06:58:36.936966+00:00",
+        "elapsed_seconds": 36.54851228004554,
+        "exit_code": 0,
+        "child_settled": true,
+        "before": {
+          "head": "0a8c1dba8df2feae162a0dda36c00f2d054c1fb2",
+          "tree": "f6c54bb60daefec4aadce2586d3aabe524a9d8b5",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "7c861223c50b2b0a31ef8fafc42814087173a0505e0f5c4d49151125f861fc86",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "88e501586fbd6e23354de6d450d6709aa04f3248bb47d01f556c77342370f9ee",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "96e793da11a692a67c644727950549d357725429d74199982628613e738550a2",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+          }
+        },
+        "after": {
+          "head": "0a8c1dba8df2feae162a0dda36c00f2d054c1fb2",
+          "tree": "f6c54bb60daefec4aadce2586d3aabe524a9d8b5",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "7c861223c50b2b0a31ef8fafc42814087173a0505e0f5c4d49151125f861fc86",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "88e501586fbd6e23354de6d450d6709aa04f3248bb47d01f556c77342370f9ee",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "96e793da11a692a67c644727950549d357725429d74199982628613e738550a2",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+          }
+        },
+        "unchanged": true,
+        "output_sha256": {
+          "stdout.txt": "727c14535d2545176d66d4b5d18917f9b9c8cd7dedf002bb3fbb9ff21447ad53",
+          "stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      }
+    },
+    "ops-final-v4": {
+      "receipt_sha256": "d0f8ecb2d417fe8d13378de9b686a6d74d1fb0a441c989b79f8d6eda1aab92f3",
+      "receipt": {
+        "label": "ops",
+        "cwd": "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c",
+        "argv": [
+          "unshare",
+          "--user",
+          "--map-current-user",
+          "--net",
+          "--keep-caps",
+          "--",
+          "sh",
+          "-c",
+          "ip link set lo up && exec \"$@\"",
+          "qa",
+          "/home/cayman/code/firecrawl-ag4840-qa-20261022-0400-a13c/.venv/bin/python",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "scripts/firecrawl-ops/tests"
+        ],
+        "pid": 3823861,
+        "start_utc": "2026-10-22T06:58:37.098475+00:00",
+        "end_utc": "2026-10-22T06:58:41.371052+00:00",
+        "elapsed_seconds": 4.281436781981029,
+        "exit_code": 0,
+        "child_settled": true,
+        "before": {
+          "head": "0a8c1dba8df2feae162a0dda36c00f2d054c1fb2",
+          "tree": "f6c54bb60daefec4aadce2586d3aabe524a9d8b5",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "7c861223c50b2b0a31ef8fafc42814087173a0505e0f5c4d49151125f861fc86",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "88e501586fbd6e23354de6d450d6709aa04f3248bb47d01f556c77342370f9ee",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "96e793da11a692a67c644727950549d357725429d74199982628613e738550a2",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+          }
+        },
+        "after": {
+          "head": "0a8c1dba8df2feae162a0dda36c00f2d054c1fb2",
+          "tree": "f6c54bb60daefec4aadce2586d3aabe524a9d8b5",
+          "status": "",
+          "files": {
+            "scripts/firecrawl-ops/cre_collector/cre_validate.py": "f2f4c703e0d41203ca3692978a27e7b25c1d892619312db6289417f4a6a744bd",
+            "scripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py": "7c861223c50b2b0a31ef8fafc42814087173a0505e0f5c4d49151125f861fc86",
+            "scripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py": "88e501586fbd6e23354de6d450d6709aa04f3248bb47d01f556c77342370f9ee",
+            "scripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py": "96e793da11a692a67c644727950549d357725429d74199982628613e738550a2",
+            "scripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+          }
+        },
+        "unchanged": true,
+        "output_sha256": {
+          "stdout.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr.txt": "a290a90e5772009b8a8d8bd24c7b5b861c2627141364ab2971089e220a1236c6"
+        }
+      }
+    }
+  },
+  "fixture_path": "/mnt/c/Users/CSEAGRAVES2018/GitHub/firecrawl-dev/.scratch/2026-10-22-4844-root-fixture-json-v5-71e5/synthetic.json",
+  "fixture_sha256": "d91248b8396fa76e6a65836f97dce398fecdeca12d3c6e1950f333776cd9afb3",
+  "fixture_result": {
+    "kind": "synthetic_source_key_parity",
+    "productionPerformanceClaim": false,
+    "image": "sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3",
+    "fixtureRows": 3386,
+    "largeRows": 256,
+    "largePayloadStringBytes": 32768,
+    "replicates": 2,
+    "oracleSha256": "1fb36cd434c81b66b13a77be22970ca76b9d9554533c8bf78477a1dd16bb9b52",
+    "sourceCountsControlSha256": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93",
+    "fallbackFixtureRows": 2304,
+    "ownedRuntime": {
+      "id": "597c9ecf498fafdb680a27d93dacc8b2dc07583e9a740154f4e47435092ebabc",
+      "owner": "485a8e3a3c424351995f4f02f2a37d73",
+      "caps": {
+        "NetworkMode": "none",
+        "NanoCpus": 1000000000,
+        "Memory": 536870912,
+        "MemorySwap": 536870912,
+        "PidsLimit": 128,
+        "ShmSize": 16777216,
+        "Tmpfs": {
+          "/var/lib/postgresql/data": "rw,nosuid,nodev,size=128m"
+        }
+      },
+      "noPublishedPorts": true,
+      "noHostBinds": true
+    },
+    "querySha256": {
+      "source_counts": {
+        "old": "c762168b4e24b08c83c5b6b1239521d11c2f637be169faf2c24ad711989505f1",
+        "new": "fe63fd632aa6cb71eb9575287e11b4daebd01f6aff0abfb92490e7cf6094595f"
+      }
+    },
+    "fallbackStorageProof": [
+      {
+        "cohort": "compressible",
+        "slug": "cbre",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 32768,
+        "minPgColumnBytes": 472,
+        "maxPgColumnBytes": 472
+      },
+      {
+        "cohort": "compressible",
+        "slug": "colliers",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 32768,
+        "minPgColumnBytes": 472,
+        "maxPgColumnBytes": 472
+      },
+      {
+        "cohort": "compressible",
+        "slug": "jll",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 32768,
+        "minPgColumnBytes": 472,
+        "maxPgColumnBytes": 472
+      },
+      {
+        "cohort": "incompressible",
+        "slug": "cbre",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 32768,
+        "minPgColumnBytes": 32845,
+        "maxPgColumnBytes": 32845
+      },
+      {
+        "cohort": "incompressible",
+        "slug": "colliers",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 32768,
+        "minPgColumnBytes": 32845,
+        "maxPgColumnBytes": 32845
+      },
+      {
+        "cohort": "incompressible",
+        "slug": "jll",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 32768,
+        "minPgColumnBytes": 32844,
+        "maxPgColumnBytes": 32844
+      },
+      {
+        "cohort": "small",
+        "slug": "cbre",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 64,
+        "minPgColumnBytes": 145,
+        "maxPgColumnBytes": 145
+      },
+      {
+        "cohort": "small",
+        "slug": "colliers",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 64,
+        "minPgColumnBytes": 145,
+        "maxPgColumnBytes": 145
+      },
+      {
+        "cohort": "small",
+        "slug": "jll",
+        "rows": 256,
+        "lateSourceKeyRows": 256,
+        "nonFoldedNativeIdRows": 256,
+        "latePathOnlyRows": 256,
+        "maxPayloadBytes": 64,
+        "minPgColumnBytes": 144,
+        "maxPgColumnBytes": 144
+      }
+    ],
+    "timestampErrorSqlstates": [
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22007",
+      "22008",
+      "22008",
+      "22008",
+      "22008"
+    ],
+    "rootValueAndTypeDifferences": 0,
+    "parityDifferences": {
+      "mixed": {
+        "scalar": "0",
+        "source_counts": "0"
+      },
+      "small": {
+        "source_counts": "0"
+      },
+      "compressible": {
+        "source_counts": "0"
+      },
+      "incompressible": {
+        "source_counts": "0"
+      }
+    },
+    "serverExecutionMs": {
+      "mixed": {
+        "source_counts": {
+          "old": [
+            58.97,
+            54.626
+          ],
+          "new": [
+            26.594,
+            30.721
+          ]
+        }
+      },
+      "small": {
+        "source_counts": {
+          "old": [
+            2.6,
+            2.219
+          ],
+          "new": [
+            2.239,
+            2.57
+          ]
+        }
+      },
+      "compressible": {
+        "source_counts": {
+          "old": [
+            21.998,
+            21.904
+          ],
+          "new": [
+            5.244,
+            5.869
+          ]
+        }
+      },
+      "incompressible": {
+        "source_counts": {
+          "old": [
+            25.095,
+            21.495
+          ],
+          "new": [
+            10.424,
+            14.887
+          ]
+        }
+      }
+    },
+    "medianRatioOldOverNew": {
+      "mixed": {
+        "source_counts": 1.9819593474657595
+      },
+      "small": {
+        "source_counts": 1.002079434393845
+      },
+      "compressible": {
+        "source_counts": 3.9505084135696933
+      },
+      "incompressible": {
+        "source_counts": 1.8407016712101458
+      }
+    },
+    "cohortStorageProof": {
+      "small": [
+        {
+          "cohort": "small",
+          "slug": "cbre",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 64,
+          "minPgColumnBytes": 145,
+          "maxPgColumnBytes": 145
+        },
+        {
+          "cohort": "small",
+          "slug": "colliers",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 64,
+          "minPgColumnBytes": 145,
+          "maxPgColumnBytes": 145
+        },
+        {
+          "cohort": "small",
+          "slug": "jll",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 64,
+          "minPgColumnBytes": 144,
+          "maxPgColumnBytes": 144
+        }
+      ],
+      "compressible": [
+        {
+          "cohort": "compressible",
+          "slug": "cbre",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 32768,
+          "minPgColumnBytes": 472,
+          "maxPgColumnBytes": 472
+        },
+        {
+          "cohort": "compressible",
+          "slug": "colliers",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 32768,
+          "minPgColumnBytes": 472,
+          "maxPgColumnBytes": 472
+        },
+        {
+          "cohort": "compressible",
+          "slug": "jll",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 32768,
+          "minPgColumnBytes": 472,
+          "maxPgColumnBytes": 472
+        }
+      ],
+      "incompressible": [
+        {
+          "cohort": "incompressible",
+          "slug": "cbre",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 32768,
+          "minPgColumnBytes": 32845,
+          "maxPgColumnBytes": 32845
+        },
+        {
+          "cohort": "incompressible",
+          "slug": "colliers",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 32768,
+          "minPgColumnBytes": 32845,
+          "maxPgColumnBytes": 32845
+        },
+        {
+          "cohort": "incompressible",
+          "slug": "jll",
+          "rows": 256,
+          "lateSourceKeyRows": 256,
+          "nonFoldedNativeIdRows": 256,
+          "latePathOnlyRows": 256,
+          "maxPayloadBytes": 32768,
+          "minPgColumnBytes": 32844,
+          "maxPgColumnBytes": 32844
+        }
+      ]
+    },
+    "timingScope": "mixed source_counts plus separately repopulated fallback cohorts",
+    "cleanup": "stopped_and_removed_verified"
+  },
+  "decoded_control_sql_sha256": "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93",
+  "ruff": {
+    "introduced": 0,
+    "inherited": 5,
+    "report_sha256": "02852112612a32264e6f5cd8192b5adb60282ec7e1313e4808e2c5c1c0097dde"
+  },
+  "broad_reuse_delta": "A\tscripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.json\nD\tscripts/firecrawl-ops/cre_collector/tests/fixtures/source_counts_before_decoded_source_key.sql\nM\tscripts/firecrawl-ops/cre_collector/tests/run_source_key_postgres_contract.py\nM\tscripts/firecrawl-ops/cre_collector/tests/test_cre_validate.py\nM\tscripts/firecrawl-ops/cre_collector/tests/test_source_key_singletons.py",
+  "reuse_boundary": "Broad suites actually ran on 0a8c1dba. Final delta is lossless fixture encoding plus loader/test contracts; final focused and PostgreSQL fixture reran. These are not final-SHA broad runs.",
+  "production_change": "Only source_counts canonical classifier input alias; no configuration or write action",
+  "remaining_gates": [
+    "Matched actual-target performance evidence",
+    "Full51 source and unattended acceptance"
+  ],
+  "preserved_failures": [
+    "Original synthetic failure: specific cause/cohort unknown",
+    "Diagnostic synthetic failure: ENOSPC at incompressible load, not proven WAL-only",
+    "First full Python run: missing documented sidecar tsx prerequisite; failed case reran before corrected full pass"
+  ]
+}
