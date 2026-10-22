@@ -609,8 +609,14 @@ def apply_case(complete_case,tmp_path,monkeypatch):
         assert actual_checkpoint is checkpoint and path == tmp_path/"canonical-lock" and pid == os.getpid()
         assert state["acquisitions"] == 1 and state["recovery"] is True
         state["ownership_calls"]+=1
-    def released(*args):
+    release_receipt=object()
+    def captured(actual_checkpoint,lease):
+        assert actual_checkpoint is checkpoint and isinstance(lease,Lease)
+        assert state["recovery"] is False and state["calls"][-1] == "clear"
+        return release_receipt
+    def released(*args,**kwargs):
         assert args == (checkpoint,tmp_path/"canonical-lock")
+        assert kwargs == {"released":release_receipt}
         point("lock_clear");state["calls"].append("released")
     real_authorization=operation.validate_authorization
     def authorization(*args,**kwargs):
@@ -624,6 +630,7 @@ def apply_case(complete_case,tmp_path,monkeypatch):
     monkeypatch.setattr(operation,"preserved",lambda _: {"unchanged":"digest"})
     monkeypatch.setattr(operation,"installed_dependencies",lambda _: dict.fromkeys(("package.json","package-lock.json","node_modules/.package-lock.json"),"0"*64))
     monkeypatch.setattr(operation,"assert_owned",owned)
+    monkeypatch.setattr(operation,"released_authority",captured)
     monkeypatch.setattr(operation,"lock_clear",released)
     monkeypatch.setattr(operation,"validate_authorization",authorization)
     monkeypatch.setattr(operation.Foreground,"native",native)

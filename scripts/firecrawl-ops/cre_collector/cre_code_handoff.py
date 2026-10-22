@@ -79,21 +79,49 @@ def runtime_modules(release, git):
     return checkpoint, LinuxMemorySampler, ReadOnlyLoopbackClient, idle_snapshot
 
 
-def lock_clear(checkpoint, lock):
+def released_authority(checkpoint, lease):
+    """Bind a normal authority to this still-held, just-cleared operation."""
+    lease._require_authority()
+    require(lease.held and not lease.recovery_required and not lease.authority_recovery_required
+            and lease._authority_fd_matches_path(), "released authority is not owned and normal")
+    fields = checkpoint.SharedLock._authority_fields(lease.authority_fd)
+    require(fields == (os.getpid(), lease.authority_token, lease.authority_generation, False)
+            and lease.lease_token == fields[2], "released authority identity differs")
+    identity = lease.authority_identity
+    lease._require_authority()
+    return fields, identity
+
+
+def lock_clear(checkpoint, lock, *, released=None):
     from cre_posix import fcntl
     require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
     authority = lock.with_name(lock.name + ".authority")
     fd = os.open(authority, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        fields = checkpoint.SharedLock._authority_fields(fd)
-        require(fields is not None and not fields[3]
-                and (fields[0] == 0 or not Path("/proc", str(fields[0])).exists()),
-                "canonical owner/recovery not clear")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise HandoffError("canonical authority is held") from error
-        else:
+        try:
+            opened = os.fstat(fd)
+            identity = opened.st_dev, opened.st_ino
+            named = authority.lstat()
+            require(identity == (named.st_dev, named.st_ino), "canonical authority pathname changed")
+            fields = checkpoint.SharedLock._authority_fields(fd)
+            require(fields is not None and not fields[3], "canonical owner/recovery not clear")
+            if released is None:
+                require(fields[0] == 0 or not Path("/proc", str(fields[0])).exists(),
+                        "canonical owner/recovery not clear")
+            else:
+                require((fields, identity) == released and fields[0] == os.getpid(),
+                        "released authority identity differs")
+            require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
+            named = authority.lstat()
+            require(identity == (named.st_dev, named.st_ino)
+                    and checkpoint.SharedLock._authority_fields(fd) == fields,
+                    "canonical authority changed during clearance")
+            require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
+        finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
@@ -403,7 +431,8 @@ def apply(args, release_raw, release, evidence, git, modules):
             admitted()  # Real current trigger margin, review and hashes immediately before commit.
             classification = "commit-uncertain"
             lease.clear_recovery_requirement()
-        lock_clear(checkpoint, lock)
+            released = released_authority(checkpoint, lease)
+        lock_clear(checkpoint, lock, released=released)
         classification = "postcommit-confirmation-failure"
         write_new(output / "terminal.json", {"schema": "cre-code-terminal-v1", "status": "committed",
                   "selected": release["selected"], "finished_at": now().isoformat(),
