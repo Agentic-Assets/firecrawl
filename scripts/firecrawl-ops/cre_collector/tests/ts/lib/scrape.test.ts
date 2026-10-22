@@ -239,3 +239,35 @@ describe("JSON parse backoff", () => {
     });
   }
 });
+
+describe("observed JSON scrape context", () => {
+  it("returns the Firecrawl rawHtml and metadata beside parsed plain or wrapped JSON", async t => {
+    const scrapeModule = await import("../../../lib/scrape.js");
+    const scrapeJsonWithObservation = (scrapeModule as any).scrapeJsonWithObservation;
+    assert.equal(typeof scrapeJsonWithObservation, "function");
+
+    const original = firecrawl.scrape;
+    const observations = [
+      {
+        rawHtml: '{"Documents":[],"DocumentCount":0}',
+        metadata: { statusCode: 200, sourceURL: "https://example.com/inventory", url: "https://example.com/final" },
+      },
+      {
+        rawHtml: '<html><pre>{&quot;Documents&quot;:[],&quot;DocumentCount&quot;:0}</pre></html>',
+        metadata: { statusCode: 206, sourceURL: "https://example.com/wrapped", url: "https://example.com/wrapped-final" },
+      },
+    ];
+    let calls = 0;
+    t.mock.method(firecrawl, "scrape", async () => observations[calls++]!);
+    t.after(() => { (firecrawl as any).scrape = original; });
+
+    for (const observation of observations) {
+      const result = await scrapeJsonWithObservation("https://example.com/inventory");
+      assert.deepEqual(result.data, { Documents: [], DocumentCount: 0 });
+      assert.equal(result.response.rawHtml, observation.rawHtml);
+      assert.deepEqual(result.response.metadata, observation.metadata);
+      assert.equal("sha256" in result.response, false, "ordinary observations omit diagnostic digests");
+    }
+    assert.equal(calls, observations.length);
+  });
+});

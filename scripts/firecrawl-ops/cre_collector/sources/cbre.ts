@@ -6,7 +6,9 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { parseLeaseRate } from "../lib/parse.js";
-import { scrapeJson } from "../lib/scrape.js";
+import { scrapeJson, scrapeJsonWithObservation } from "../lib/scrape.js";
+import type { ScrapeResponseObservation } from "../lib/scrape.js";
+import { logCbreValidationDiagnostic } from "./cbre-diagnostics.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import { clean, num, pmap, prune } from "../lib/util.js";
 import {
@@ -180,7 +182,29 @@ export type CbreSnapshotOptions = {
   concurrency?: number;
 };
 
-type CbrePageFetcher = (page: number, pass: number) => Promise<any>;
+type CbrePageFetcher = (
+  page: number,
+  pass: number,
+  observe?: (response: ScrapeResponseObservation) => void,
+) => Promise<any>;
+
+async function fetchValidatedCbrePage(
+  fetchPage: CbrePageFetcher,
+  page: number,
+  pass: number,
+  pageSize: number,
+  expectedTotal: number | null,
+  strict: boolean,
+): Promise<CbreValidatedPage> {
+  let observation: ScrapeResponseObservation | undefined;
+  const response = await fetchPage(page, pass, (value) => { observation = value; });
+  try {
+    return assertCbrePage(response, page, pageSize, expectedTotal, strict);
+  } catch (error) {
+    if (observation) logCbreValidationDiagnostic(response, page, pass, observation);
+    throw error;
+  }
+}
 
 // The public API accepts 500-row pages, including exact short terminal pages
 // and an empty sentinel. The smaller request count keeps two membership passes
@@ -486,12 +510,8 @@ async function fetchCbreSnapshotPass(
   CbreSnapshot & { fingerprint: string; identityFingerprint: string }
 > {
   const pages = new Map<number, CbreValidatedPage>();
-  const first = assertCbrePage(
-    await fetchPage(1, pass),
-    1,
-    pageSize,
-    null,
-    true,
+  const first = await fetchValidatedCbrePage(
+    fetchPage, 1, pass, pageSize, null, true,
   );
   pages.set(1, first);
   console.error(
@@ -513,12 +533,8 @@ async function fetchCbreSnapshotPass(
     ).filter((page) => !pages.has(page));
     if (missingPages.length === 0) break;
     const fetched = await pmap(missingPages, concurrency, async (page) => {
-      const value = assertCbrePage(
-        await fetchPage(page, pass),
-        page,
-        pageSize,
-        null,
-        true,
+      const value = await fetchValidatedCbrePage(
+        fetchPage, page, pass, pageSize, null, true,
       );
       console.error(
         `  cbre: convergence pass ${pass} page ${page} ` +
@@ -732,11 +748,14 @@ export async function srcCbre(
   if (strict && !Number.isFinite(max)) {
     const cacheSeed = `${refreshGenerationId()}:${Date.now()}:${randomUUID()}`;
     const snapshot = await fetchCbreSnapshot(
-      (page, pass) =>
-        scrapeJson(
+      async (page, pass, observe) => {
+        const result = await scrapeJsonWithObservation(
           cbreInventoryUrl(aspect, page, CBRE_PAGE_SIZE, cacheSeed, pass),
           opts,
-        ),
+        );
+        observe?.(result.response);
+        return result.data;
+      },
       { concurrency: CBRE_SNAPSHOT_CONCURRENCY, maxPasses: 4 },
     );
     total = snapshot.total;

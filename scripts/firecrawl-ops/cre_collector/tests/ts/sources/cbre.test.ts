@@ -3,6 +3,7 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -859,11 +860,23 @@ test("CBRE real strict source rejects a malformed envelope without another pass"
   const originalScrape = firecrawl.scrape;
   const originalStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   const originalGeneration = process.env.CRE_REFRESH_GENERATION;
+  const rawHtml = JSON.stringify({ DocumentCount: 1, diagnosticSentinel: "private-body-🔒" });
   let calls = 0;
+  let metadata: unknown = {
+    statusCode: 503,
+    sourceURL: "https://user:credential@www.cbre.com/listings-api/propertylistings/query?token=private-query",
+    url: "https://www.cbre.com/listings-api/propertylistings/query?token=private-query",
+  };
+  let throwOnDiagnostic = false;
+  const diagnostics: string[] = [];
   (firecrawl as any).scrape = async () => {
     calls++;
-    return { rawHtml: JSON.stringify({ DocumentCount: 1 }) };
+    return { rawHtml, metadata };
   };
+  t.mock.method(console, "error", (...parts: unknown[]) => {
+    diagnostics.push(parts.map(String).join(" "));
+    if (throwOnDiagnostic) throw new Error("private logger failure");
+  });
   process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
   process.env.CRE_REFRESH_GENERATION = "cbre-malformed-caller-test";
   t.after(() => {
@@ -875,6 +888,31 @@ test("CBRE real strict source rejects a malformed envelope without another pass"
   });
   await assert.rejects(srcCbre("sale", Number.POSITIVE_INFINITY, false), /missing a Documents array/);
   assert.equal(calls, 1);
+  assert.equal(diagnostics.length, 1, "a malformed page emits one bounded diagnostic before the original error propagates");
+  const diagnostic = diagnostics[0]!;
+  assert.match(diagnostic, /CBRE.*diagnostic/i);
+  assert.match(diagnostic, /page[=: ]+1/i);
+  assert.match(diagnostic, /pass[=: ]+1/i);
+  assert.match(diagnostic, /firecrawlStatus=503/);
+  assert.match(diagnostic, /firecrawlSourceURL=https:\/\/www\.cbre\.com\/listings-api\/propertylistings\/query/);
+  assert.match(diagnostic, new RegExp(createHash("sha256").update(rawHtml, "utf8").digest("hex")));
+  assert.match(diagnostic, new RegExp(String(Buffer.byteLength(rawHtml, "utf8"))));
+  assert.doesNotMatch(diagnostic, /credential|private-query|diagnosticSentinel|private-body/);
+
+  metadata = {
+    statusCode: "503",
+    sourceURL: "https://evil.example/private-path?token=private-query",
+    url: "not a URL",
+  };
+  await assert.rejects(srcCbre("sale", Number.POSITIVE_INFINITY, false), /missing a Documents array/);
+  assert.match(diagnostics[1]!, /firecrawlStatus=unknown/);
+  assert.match(diagnostics[1]!, /firecrawlSourceURL=redacted/);
+  assert.match(diagnostics[1]!, /firecrawlFinalURL=unknown/);
+  assert.doesNotMatch(diagnostics[1]!, /evil\.example|private-path|private-query/);
+
+  throwOnDiagnostic = true;
+  await assert.rejects(srcCbre("sale", Number.POSITIVE_INFINITY, false), /missing a Documents array/);
+  assert.equal(calls, 3);
 });
 
 for (const kind of ["denial", "transport", "schema", "count", "missing-ID", "same-page-duplicate", "page-cap", "sentinel-gap"] as const) {
