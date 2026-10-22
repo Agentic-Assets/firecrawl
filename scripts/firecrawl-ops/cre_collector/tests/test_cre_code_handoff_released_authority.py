@@ -10,6 +10,16 @@ import cre_code_handoff as handoff
 from cre_posix import fcntl
 
 
+@pytest.fixture(autouse=True)
+def isolated_resource_trip_state():
+    """Earlier fault tests can leave a synthetic sticky cleanup-unknown trip."""
+    checkpoint._clear_cpu_guard_trip()
+    try:
+        yield
+    finally:
+        checkpoint._clear_cpu_guard_trip()
+
+
 @pytest.fixture
 def cleared(tmp_path):
     path = tmp_path / "fixture.lock"
@@ -24,6 +34,27 @@ def cleared(tmp_path):
     assert Path("/proc", str(os.getpid())).exists()
     assert lease.authority_fd == -1
     return path, receipt
+
+
+def test_unknown_cleanup_during_real_lease_retains_recovery(tmp_path):
+    path = tmp_path / "uncertain-fixture.lock"
+    with checkpoint.SharedLock(path, recovery_required=True) as lease:
+        lease.clear_recovery_requirement()
+        receipt = handoff.released_authority(checkpoint, lease)
+        checkpoint._set_cpu_guard_trip(
+            "synthetic owned cleanup remains unknown",
+            evidence_valid=False,
+            owned_processes_reaped=False,
+        )
+    assert path.is_dir()
+    assert lease.retain_on_exit
+    descriptor = os.open(lease.authority_path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        assert checkpoint.SharedLock._authority_fields(descriptor)[3] is True
+    finally:
+        os.close(descriptor)
+    with pytest.raises(handoff.HandoffError, match="directory present"):
+        handoff.lock_clear(checkpoint, path, released=receipt)
 
 
 def test_real_release_preserves_normal_record_and_accepts_only_exact_own_receipt(cleared):
