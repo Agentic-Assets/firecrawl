@@ -147,7 +147,7 @@ namespace CreWindowsCapture {
         public static CaptureResult Run(string exe,string[] args,string output,string error,string prefix) {
             if(exe!="wsl.exe")throw new Exception("Unexpected executable");
             File.WriteAllText(output,"mocked native adapter only");File.WriteAllText(error,"");
-            if(MutationMarkerPath!=null) { Directory.CreateDirectory(Path.GetDirectoryName(MutationMarkerPath));File.WriteAllText(MutationMarkerPath,MutationMarkerJson); }
+            if(!String.IsNullOrEmpty(MutationMarkerPath)) { Directory.CreateDirectory(Path.GetDirectoryName(MutationMarkerPath));File.WriteAllText(MutationMarkerPath,MutationMarkerJson); }
             if(ThrowAfterStart)throw new Exception("injected post-start capture exception");
             CaptureResult result=new CaptureResult();result.Stdout.Eof=!BadEof;return result;
         }
@@ -249,7 +249,7 @@ namespace CreWindowsCapture {
     $eofHold=[IO.File]::ReadAllText((Join-Path $eof 'outer-failure-hold.json'))|ConvertFrom-Json
     Assert-Fixture ($eofHold.tasks.Count -eq 3 -and @($eofHold.tasks|Where-Object {-not $_.disable_attempted -or -not $_.disabled -or $_.error}).Count -eq 0) 'EOF cleanup must report all three mocked tasks held without task errors'
     [CreWindowsCapture.Capture]::BadEof=$false
-    [CreWindowsCapture.Capture]::MutationMarkerPath=$null
+    [CreWindowsCapture.Capture]::MutationMarkerPath=''
     $success=Join-Path $root 'capture-complete'
     & $frontdoor -Mode Apply -ReleasePath $frontdoorRelease -ReleaseSha $releaseHash -Output $success -Observation $path -Authorization $authPath
     $completion=[IO.File]::ReadAllText($success+'.native.json')|ConvertFrom-Json
