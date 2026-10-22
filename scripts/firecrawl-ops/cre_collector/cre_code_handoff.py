@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from cre_code_handoff_evidence import (
+    DEPENDENCY_CHECKS,
     Evidence,
     HandoffError,
     canonical_path,
@@ -24,6 +25,10 @@ from cre_code_handoff_evidence import (
     validate_authorization,
     validate_observation,
     validate_release,
+    validate_restoration,
+    validate_restoration_authorization,
+    validate_restoration_enable_boundary,
+    validate_restoration_observation,
 )
 from cre_code_handoff_git import (
     Git,
@@ -52,7 +57,10 @@ def load_release(path):
     raw = read_file(path)
     release = json_bytes(raw)
     evidence = Evidence(release, read_file)
-    validate_release(release, evidence)
+    if release.get("schema") == "cre-code-restoration-v1":
+        validate_restoration(release, evidence)
+    else:
+        validate_release(release, evidence)
     release["roots"] = role_paths(release)
     return raw, release, evidence
 
@@ -127,7 +135,7 @@ def lock_clear(checkpoint, lock, *, released=None):
         os.close(fd)
 
 
-def assert_owned(checkpoint, lock, expected_pid):
+def assert_owned(checkpoint, lock, expected_pid, *, restoration_inputs=None):
     """Narrow foreign observer using the existing owner/authority readers."""
     from cre_posix import fcntl
     directory = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -154,6 +162,18 @@ def assert_owned(checkpoint, lock, expected_pid):
         command = Path("/proc", str(expected_pid), "cmdline").read_bytes().split(b"\0")
         require(str(Path(__file__).resolve()).encode() in command and b"--apply" in command,
                 "foreign maintenance command")
+        require((command.count(b"--release"), command.count(b"--restoration-packet")) in {(1, 0), (0, 1)},
+                "maintenance input selector differs")
+        if restoration_inputs is not None:
+            require(command.count(b"--restoration-packet") == 1 and b"--release" not in command,
+                    "restoration owner command scope differs")
+            for flag, value in restoration_inputs.items():
+                encoded_flag = flag.encode()
+                require(command.count(encoded_flag) == 1, "restoration owner input missing/duplicate")
+                index = command.index(encoded_flag)
+                require(index + 1 < len(command)
+                        and canonical_path(command[index + 1].decode()) == canonical_path(value),
+                        "restoration owner belongs to another operation")
         require(checkpoint.SharedLock._authority_fields(fd) == fields
                 and checkpoint.SharedLock._owned_pid(directory) == expected_pid, "ownership changed")
     finally:
@@ -256,7 +276,9 @@ class Foreground:
         script = Path(__file__).resolve().parent / "windows/Invoke-CreCodeHandoff.ps1"
         argv = [str(local_path(self.release["programs"]["powershell"])), "-NoProfile", "-NonInteractive",
                 "-File", windows_path(script), "-Mode", mode,
-                "-ReleasePath", windows_path(local_path(release_path)), "-ReleaseSha", release_sha,
+                "-RestorationPath" if self.release.get("schema") == "cre-code-restoration-v1" else "-ReleasePath",
+                windows_path(local_path(release_path)),
+                "-RestorationSha" if self.release.get("schema") == "cre-code-restoration-v1" else "-ReleaseSha", release_sha,
                 "-Output", windows_path(self.output), "-OwnerPid", str(os.getpid())]
         if observation:
             argv += ["-Observation", windows_path(local_path(observation))]
@@ -266,7 +288,7 @@ class Foreground:
 
 
 def readiness(release, checkpoint, memory_type, client, idle, git, *, selected=False, owned=False, evidence=None):
-    expected = release["selected" if selected else "deployed"]
+    expected = release["code"] if release.get("schema") == "cre-code-restoration-v1" else release["selected" if selected else "deployed"]
     for key in ("runtime", "native"):
         git.clean(release["roots"][key], expected)
     lock = checkpoint.canonical_shared_lock_dir(local_path(release["roots"]["runtime"]))
@@ -318,12 +340,18 @@ def authorize(args, release_raw, release, evidence):
                    "reviewer": args.reviewer, "approval_ref": args.approval_ref},
         "operation_output": str(local_path(args.output).absolute()),
     }
+    restoration = release.get("schema") == "cre-code-restoration-v1"
+    validate = validate_restoration_authorization if restoration else validate_authorization
+    if restoration:
+        authorization.update(schema="cre-code-restoration-authorization-v1", scope="restore-held-task-states",
+                             restoration_sha256=authorization.pop("release_sha256"))
+        restoration_enable_boundary(release, evidence)
     require(not local_path(args.output).exists(), "operation output already exists")
     # Two distinct checks around publication; original bytes remain the oracle.
-    validate_authorization(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
+    validate(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
     temporary = Path(str(args.authorization) + ".pending")
     write_new(temporary, authorization)
-    validate_authorization(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
+    validate(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
     require(read_file(args.release) == release_raw and read_file(args.observation) == observation_raw,
             "publication inputs changed")
     # link is exclusive (rename could overwrite); failed pending publication is never resumed.
@@ -336,8 +364,9 @@ def mutation_started(output, release, release_raw, authorization_raw):
     if not path.exists():
         return False
     marker = json_bytes(read_file(path))
-    require(marker.get("schema") == "cre-code-mutation-v1"
-            and marker.get("release_sha256") == sha(release_raw)
+    restoration = release.get("schema") == "cre-code-restoration-v1"
+    require(marker.get("schema") == ("cre-code-restoration-mutation-v1" if restoration else "cre-code-mutation-v1")
+            and marker.get("restoration_sha256" if restoration else "release_sha256") == sha(release_raw)
             and marker.get("authorization_sha256") == sha(authorization_raw)
             and canonical_path(marker.get("operation_output")) == canonical_path(str(output))
             and marker.get("tooling") == release["tooling"]
@@ -346,7 +375,7 @@ def mutation_started(output, release, release_raw, authorization_raw):
 
 
 def record_failure(args, release, release_raw, authorization_raw, checkpoint, output, classification, original):
-    record = {"schema": "cre-code-failure-v1", "classification": classification,
+    record = {"schema": "cre-code-restoration-failure-v1" if release.get("schema") == "cre-code-restoration-v1" else "cre-code-failure-v1", "classification": classification,
               "original_error_type": type(original).__name__, "original_error": str(original),
               "recovery_retained": "not asserted; inspect canonical state",
               "failure_hold": "not attempted before mutation", "cleanup_error": None}
@@ -400,12 +429,7 @@ def apply(args, release_raw, release, evidence, git, modules):
             require(preserved(release) == baseline, "environment/dependency/skill preservation changed")
             collector = local_path(release["roots"]["runtime"]) / "scripts/firecrawl-ops/cre_collector"
             parity = installed_dependencies(collector)
-            for name, argv in (
-                ("npm-ls", ["npm", "ls", "--all", "--json"]),
-                ("doctor", ["bash", "cre_setup.sh", "--check"]),
-                ("gfm", ["node", "--import", "tsx", "--input-type=module", "--eval",
-                 'const {createRequire}=await import("node:module");const r=createRequire(process.cwd()+"/package.json");if(!r.resolve("joplin-turndown-plugin-gfm").startsWith(process.cwd()+"/node_modules/"))throw Error("foreign GFM");if(typeof r("joplin-turndown-plugin-gfm").gfm!=="function")throw Error("GFM export");await import("./sources/jll-html-doc.ts");']),
-            ):
+            for name, argv in DEPENDENCY_CHECKS.items():
                 runner.run(name, ["bash", "-c", 'cd -- "$1" && shift && exec "$@"', "cre-handoff", str(collector), *argv],
                            effective_cwd=collector)
             require(installed_dependencies(collector) == parity and preserved(release) == baseline,
@@ -445,9 +469,121 @@ def apply(args, release_raw, release, evidence, git, modules):
         raise
 
 
+def restoration_enable_boundary(packet, evidence):
+    validate_restoration_enable_boundary(packet, evidence, now())
+
+
+def restoration_capture(packet, evidence, args, git, modules, output, *, packet_raw, final=False, owned=False):
+    native = json_bytes(read_file(output / "native-observation.json"))
+    observation = readiness(packet, *modules, git, owned=owned, evidence=evidence)
+    observation.update(schema="cre-code-restoration-observation-v1", observed_at=native["observed_at"],
+                       tasks=native["tasks"], windows_resources=native["windows_resources"],
+                       restoration_sha256=sha(packet_raw), qualified_at=now().isoformat())
+    if final:
+        from cre_code_handoff_transition import reference
+
+        for task in observation["tasks"]:
+            task["xml_reference"] = reference(output / (task["key"] + "-observed.xml"), read_file)
+    validate_restoration_observation(packet, evidence, observation, now(), final=final, owned=owned)
+    return observation
+
+
+def apply_restoration(args, packet_raw, packet, evidence, git, modules):
+    checkpoint = modules[0]
+    observed_raw, authorization_raw = read_file(args.observation), read_file(args.authorization)
+    authorization = json_bytes(authorization_raw)
+    output = local_path(args.output)
+    require(canonical_path(authorization.get("operation_output")) == canonical_path(str(output)),
+            "restoration authorization belongs to another output")
+
+    def admitted():
+        require(read_file(args.release) == packet_raw and read_file(args.observation) == observed_raw
+                and read_file(args.authorization) == authorization_raw, "restoration immutable input changed")
+        validate_restoration_authorization(packet_raw, packet, evidence, observed_raw, authorization,
+                                           now(), review_reader=read_file)
+        restoration_enable_boundary(packet, evidence)
+
+    admitted()  # Unsupported catch-up admission must refuse before any mutation/lease.
+    git.clean(packet["roots"]["development"], packet["development"], tracking=packet["development"]["sha"])
+    git.command(packet["roots"]["development"], "merge-base", "--is-ancestor", packet["code"]["sha"], packet["development"]["sha"])
+    readiness(packet, *modules, git, evidence=evidence)
+    output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    lock = checkpoint.canonical_shared_lock_dir(local_path(packet["roots"]["runtime"]))
+    baseline = preserved(packet)
+    collector = local_path(packet["roots"]["runtime"]) / "scripts/firecrawl-ops/cre_collector"
+    dependencies = installed_dependencies(collector)
+    classification = "precommit-failure"
+    try:
+        with checkpoint.SharedLock(lock, recovery_required=True) as lease:
+            runner = Foreground(packet, checkpoint, output, lock)
+            admitted()
+            readiness(packet, *modules, git, owned=True, evidence=evidence)
+            runner.native("Restore", args.release, sha(packet_raw), args.observation, args.authorization)
+            runner.native("Verify", args.release, sha(packet_raw), args.observation, args.authorization)
+            final = restoration_capture(packet, evidence, args, git, modules, output, packet_raw=packet_raw, final=True, owned=True)
+            require(preserved(packet) == baseline and installed_dependencies(collector) == dependencies,
+                    "restoration changed preserved environment/dependencies")
+            evidence.recheck()
+            write_new(output / "restoration-ready.json", {"schema": "cre-code-restoration-ready-v1",
+                      "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
+                      "operation_output": canonical_path(str(output)), "code": packet["code"],
+                      "readiness": final, "dependencies": dependencies, "recovery_required_at_publication": True})
+            admitted()
+            classification = "commit-uncertain"
+            lease.clear_recovery_requirement()
+            released = released_authority(checkpoint, lease)
+        lock_clear(checkpoint, lock, released=released)
+        classification = "postcommit-confirmation-failure"
+        write_new(output / "restoration-terminal.json", {"schema": "cre-code-restoration-terminal-v1",
+                  "status": "restored", "code": packet["code"], "finished_at": now().isoformat(),
+                  "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
+                  "operation_output": canonical_path(str(output)), "canonical_lease_released": True,
+                  "ready_sha256": sha(read_file(output / "restoration-ready.json")),
+                  "failed_predecessor_release_sha256": sha(evidence.raw(packet["failed_handoff"]["release"]))})
+    except BaseException as original:
+        record_failure(args, packet, packet_raw, authorization_raw, checkpoint, output, classification, original)
+        raise
+
+
+def observe_restoration(args, raw, packet, evidence, git, modules):
+    operation = local_path(args.operation) if args.operation else None
+    terminal_raw = None
+    if args.postreadback:
+        require(operation is not None, "restoration postreadback requires distinct original operation")
+        terminal_raw = read_file(operation / "restoration-terminal.json")
+        terminal = json_bytes(terminal_raw)
+        require(terminal.get("schema") == "cre-code-restoration-terminal-v1" and terminal.get("status") == "restored"
+                and terminal.get("restoration_sha256") == sha(raw) and terminal.get("code") == packet["code"]
+                and canonical_path(terminal.get("operation_output")) == canonical_path(str(operation))
+                and terminal.get("canonical_lease_released") is True, "restoration terminal binding differs")
+    output = local_path(args.output)
+    output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    Foreground(packet, modules[0], output).native("Postreadback" if args.postreadback else "Observe", args.release, sha(raw))
+    observation = restoration_capture(packet, evidence, args, git, modules, output, packet_raw=raw, final=args.postreadback)
+    if args.postreadback:
+        observation.update(operation_output=canonical_path(str(operation)),
+                           operation_terminal_sha256=sha(terminal_raw),
+                           authorization_sha256=terminal["authorization_sha256"],
+                           native_completion_sha256=sha(read_file(str(operation) + ".native.json")))
+    evidence.recheck()
+    require(read_file(args.release) == raw, "restoration input changed before observation publication")
+    write_new(output / "observation.json", observation)
+    if args.postreadback:
+        from cre_code_handoff_transition import (
+            make_reconciliation,
+            validate_reconciliation,
+        )
+
+        receipt = make_reconciliation(packet, args.release, operation, output, read_file)
+        validate_reconciliation(receipt, receipt["old"], packet["code"], read_file)
+        write_new(output / "reconciliation.json", receipt)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release", required=True)
+    input_kind = parser.add_mutually_exclusive_group(required=True)
+    input_kind.add_argument("--release")
+    input_kind.add_argument("--restoration-packet")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--observe", action="store_true")
     mode.add_argument("--authorize", action="store_true")
@@ -463,15 +599,25 @@ def main(argv=None):
     parser.add_argument("--approval-ref")
     parser.add_argument("--operation")
     args = parser.parse_args(argv)
+    if args.restoration_packet:
+        args.release = args.restoration_packet
     raw, release, evidence = load_release(args.release)
+    restoration = release.get("schema") == "cre-code-restoration-v1"
+    require(restoration is bool(args.restoration_packet), "explicit input selector/schema differs")
     if not any((args.observe, args.authorize, args.apply, args.postreadback, args.assert_owned_pid, args.check_authorization)):
-        print(json.dumps({"preview_only": True, "execution": False, "selected": release["selected"],
-                          "release_sha256": sha(raw)}))
+        print(json.dumps({"preview_only": True, "execution": False,
+                          "code" if restoration else "selected": release["code"] if restoration else release["selected"],
+                          "restoration_sha256" if restoration else "release_sha256": sha(raw)}))
         return 0
     if args.check_authorization:
         require(args.observation and args.authorization, "explicit admission inputs required")
-        validate_authorization(raw, release, evidence, read_file(args.observation),
-                               json_bytes(read_file(args.authorization)), now(), review_reader=read_file)
+        validator = validate_restoration_authorization if restoration else validate_authorization
+        validator(raw, release, evidence, read_file(args.observation),
+                  json_bytes(read_file(args.authorization)), now(), review_reader=read_file)
+        if restoration:
+            require(args.output and canonical_path(json_bytes(read_file(args.authorization)).get("operation_output"))
+                    == canonical_path(str(local_path(args.output))), "restoration native output differs from authorization")
+            restoration_enable_boundary(release, evidence)
         return 0
     if args.authorize:
         require(all((args.observation, args.authorization, args.review, args.reviewer, args.approval_ref, args.output)),
@@ -482,13 +628,26 @@ def main(argv=None):
     modules = runtime_modules(release, git)
     if args.assert_owned_pid:
         lock = modules[0].canonical_shared_lock_dir(local_path(release["roots"]["runtime"]))
-        assert_owned(modules[0], lock, args.assert_owned_pid)
+        if restoration:
+            require(args.output and args.authorization and args.observation, "restoration owner operation inputs required")
+            assert_owned(modules[0], lock, args.assert_owned_pid, restoration_inputs={
+                "--restoration-packet": args.release, "--output": args.output,
+                "--authorization": args.authorization, "--observation": args.observation,
+            })
+        else:
+            assert_owned(modules[0], lock, args.assert_owned_pid)
         return 0
     require(args.output, "exclusive output directory required")
     if args.apply:
         require(args.observation and args.authorization, "explicit admission required")
-        apply(args, raw, release, evidence, git, modules)
+        if restoration:
+            apply_restoration(args, raw, release, evidence, git, modules)
+        else:
+            apply(args, raw, release, evidence, git, modules)
     else:
+        if restoration:
+            observe_restoration(args, raw, release, evidence, git, modules)
+            return 0
         if args.postreadback:
             require(args.operation, "independent postreadback requires the original operation")
             terminal = json_bytes(read_file(local_path(args.operation) / "terminal.json"))
