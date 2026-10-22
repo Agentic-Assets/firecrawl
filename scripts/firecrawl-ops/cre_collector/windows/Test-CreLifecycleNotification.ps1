@@ -79,7 +79,9 @@ foreach ($case in $cases) {
     $source=$source.Replace($readiness.Extent.Text,$readinessStub)
     $source=$source.Replace('function Write-CreAudit {','function Write-CreAuditReal {')
     $fault=if($case -eq 'initial-audit-error'){'$script:auditCalls -eq 1'}elseif($case -eq 'terminal-audit-error'){'$script:auditCalls -eq 4'}elseif($case -eq 'notification-audit-error'){'$script:auditCalls -eq 5'}elseif($case -eq 'persistent-audit-error'){'$script:auditCalls -ge 4'}else{'$false'}
-    $auditStub="`n`$script:auditCalls=0`nfunction Write-CreAudit { param([string]`$Path,[System.Collections.IDictionary]`$Record) `$script:auditCalls++; [IO.File]::AppendAllText('$eventLiteral',('audit-'+`$script:auditCalls+[Environment]::NewLine)); if($fault){throw 'synthetic audit fault'}; Write-CreAuditReal `$Path `$Record }`n"
+    $auditBeforeFailure = Join-Path $root 'audit-before-notification-write-failure.json'
+    $snapshotLiteral = if($case -eq 'notification-audit-error') { $auditBeforeFailure.Replace("'", "''") } else { '' }
+    $auditStub="`n`$script:auditCalls=0`nfunction Write-CreAudit { param([string]`$Path,[System.Collections.IDictionary]`$Record) `$script:auditCalls++; [IO.File]::AppendAllText('$eventLiteral',('audit-'+`$script:auditCalls+[Environment]::NewLine)); if($fault){ if('$snapshotLiteral' -and [IO.File]::Exists(`$Path)) { [IO.File]::Copy(`$Path,'$snapshotLiteral',`$true) }; throw 'synthetic audit fault SECRET_CANARY' }; Write-CreAuditReal `$Path `$Record }`n"
     $source=$source.Replace('if ($CheckOnly) {',$auditStub+'if ($CheckOnly) {')
     $scriptFile=Join-Path $windows 'Invoke-CreGuardedTier.ps1'
     [IO.File]::WriteAllText($scriptFile,$source,(New-Object Text.UTF8Encoding($true)))
@@ -93,6 +95,7 @@ foreach ($case in $cases) {
     $execution=[CreWindowsCapture.Capture]::Run($hostExe,$arguments,$stdout,$stderr,$null)
     Assert-Cre (-not $execution.Failed) "$case host must drain."
     $console=[IO.File]::ReadAllText($stdout)+[IO.File]::ReadAllText($stderr)
+    $stderrText=[IO.File]::ReadAllText($stderr)
     Assert-Cre (-not $console.Contains('SECRET_CANARY')) "$case console must exclude credentials."
     $calls=@(if([IO.File]::Exists($fakeCurl+'.calls.jsonl')){[IO.File]::ReadAllLines($fakeCurl+'.calls.jsonl')|ForEach-Object{$_|ConvertFrom-Json}})
     $expected=if($case -in @('bad-endpoint','invalid-mode','unconfigured','check-only','check-denied','check-error','default-success')){0}elseif($case -in @('invalid-scope','initial-audit-error')){1}else{2}
@@ -125,6 +128,16 @@ foreach ($case in $cases) {
         Assert-Cre ($audits.Count -eq 1) "$case must retain one attempt audit."
         $json=[IO.File]::ReadAllText($audits[0].FullName); $record=$json|ConvertFrom-Json
         Assert-Cre (-not $json.Contains('SECRET_CANARY') -and $record.linuxSettlement -ceq 'unverified') "$case audit must exclude secrets and preserve Linux uncertainty."
+        if($case -eq 'notification-audit-error'){
+            $warning='Windows post-notification audit publication failed; the prior receipt may omit the notification outcome.'
+            # Windows PowerShell 5.1 may wrap ErrorRecord text at the host width.
+            $stderrFlat=$stderrText -replace '\s+',' '
+            Assert-Cre ($stderrFlat.Contains($warning) -and -not $stderrText.Contains('synthetic audit fault')) 'Failed post-notification audit publication must emit only its fixed redacted diagnostic.'
+            $before=[Convert]::ToBase64String([IO.File]::ReadAllBytes($auditBeforeFailure))
+            $after=[Convert]::ToBase64String([IO.File]::ReadAllBytes($audits[0].FullName))
+            Assert-Cre ($before -ceq $after) 'Failed post-notification write must preserve the previous audit bytes atomically.'
+            Assert-Cre ($record.status -ceq 'returned' -and $record.nativeExitCode -eq 0 -and $record.wrapperExitCode -eq 0 -and $record.notificationStart.Status -ceq 'http_accepted' -and $record.notification.Status -ceq 'not_attempted' -and $record.notification.Reason -ceq 'invocation_pending') 'The retained receipt must remain parseable and show the pending terminal notification without changing success.'
+        }
         if($case -eq 'bad-endpoint'){
             Assert-Cre ($record.status -ceq 'notification_config_refused_no_dispatch' -and $record.dispatch -ceq 'not_attempted' -and -not $record.notificationConfig.configured -and -not $record.notificationConfig.networkCalled) 'Invalid StartFinish configuration must fail before readiness and Linux dispatch.'
             Assert-Cre ($events -notcontains 'ready' -and $events -notcontains 'admit' -and $record.notificationStart.Status -ceq 'not_attempted') 'Rejected configuration must not claim a start or sample resources.'
