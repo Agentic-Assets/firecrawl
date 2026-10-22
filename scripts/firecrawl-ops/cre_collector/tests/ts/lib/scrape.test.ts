@@ -129,6 +129,60 @@ describe("parseJsonBody", () => {
     assert.deepEqual(parseJsonBody(wrapped), { items: ["a", "b"] });
   });
 
+  it("prefers an entity-decoded enclosing object over its nested empty array", () => {
+    const wrapped = '<html><pre>{&quot;Documents&quot;:[],&quot;DocumentCount&quot;:0}</pre></html>';
+    assert.deepEqual(parseJsonBody(wrapped), { Documents: [], DocumentCount: 0 });
+  });
+
+  it("prefers an entity-decoded enclosing object over its nested nonempty arrays", () => {
+    const wrapped = '<html><pre>{&quot;Documents&quot;:[[1,2]],&quot;DocumentCount&quot;:2}</pre></html>';
+    assert.deepEqual(parseJsonBody(wrapped), {
+      Documents: [[1, 2]],
+      DocumentCount: 2,
+    });
+  });
+
+  it("does not salvage a parseable array from a malformed enclosing object", () => {
+    const malformed = '<html><pre>{&quot;Documents&quot;:[],broken}</pre></html>';
+    assert.equal(parseJsonBody(malformed), null);
+  });
+
+  it("does not salvage a parseable object from a malformed enclosing array", () => {
+    assert.equal(parseJsonBody('[{"native":1},broken]'), null);
+  });
+
+  it("does not salvage nested arrays when the enclosing object is incomplete", () => {
+    assert.equal(parseJsonBody('{"rows":[]'), null);
+  });
+
+  it("does not salvage a nested object when the enclosing array is incomplete", () => {
+    assert.equal(parseJsonBody('[{"native":1}'), null);
+  });
+
+  it("preserves literal PRE JSON string contents without HTML decoding", () => {
+    const value = {
+      html: "<b>Retail &amp; office</b>",
+      url: "https://example.test/listing?left=1&right=2",
+      text: 'literal &quot; plus {braces} [brackets] and "quoted" text',
+    };
+    const wrapped = `<html><pre>${JSON.stringify(value)}</pre></html>`;
+    assert.deepEqual(parseJsonBody(wrapped), value);
+  });
+
+  it("keeps a disjoint decoded root after balanced script and style prefix delimiters", () => {
+    const wrapped =
+      '<style>/* [style-prefix] */</style><script>const marker = [script-prefix];</script><pre>{&quot;ok&quot;:true}</pre>';
+    assert.deepEqual(parseJsonBody(wrapped), { ok: true });
+  });
+
+  it("preserves a parseable disjoint array after a complete malformed object", () => {
+    assert.deepEqual(parseJsonBody("{broken} [1,2]"), [1, 2]);
+  });
+
+  it("does not treat an unmatched wrapper prefix as an incomplete JSON root", () => {
+    assert.deepEqual(parseJsonBody('prefix [ marker <pre>{"native":1}</pre>'), { native: 1 });
+  });
+
   it("repairs unescaped inner quotes in string values", () => {
     const broken = '{"title":"12" Main St"}';
     assert.deepEqual(parseJsonBody(broken), { title: '12" Main St' });
@@ -271,7 +325,7 @@ describe("observed JSON scrape context", () => {
     assert.equal(calls, observations.length);
   });
 
-  it("preserves the legacy parse result for an entity-encoded empty-array fragment", async t => {
+  it("preserves the enclosing entity-encoded object in plain and observed JSON", async t => {
     const scrapeModule = await import("../../../lib/scrape.js");
     const scrapeJsonWithObservation = (scrapeModule as any).scrapeJsonWithObservation;
     const rawHtml = '<html><pre>{&quot;Documents&quot;:[],&quot;DocumentCount&quot;:0}</pre></html>';
@@ -280,9 +334,10 @@ describe("observed JSON scrape context", () => {
     t.mock.method(firecrawl, "scrape", async () => { calls++; return { rawHtml }; });
     t.after(() => { (firecrawl as any).scrape = original; });
 
-    assert.deepEqual(await scrapeJson("https://example.com/legacy-parse"), []);
+    const expected = { Documents: [], DocumentCount: 0 };
+    assert.deepEqual(await scrapeJson("https://example.com/legacy-parse"), expected);
     const observed = await scrapeJsonWithObservation("https://example.com/observed-parse");
-    assert.deepEqual(observed.data, []);
+    assert.deepEqual(observed.data, expected);
     assert.equal(observed.response.rawHtml, rawHtml);
     assert.equal(calls, 2);
   });
