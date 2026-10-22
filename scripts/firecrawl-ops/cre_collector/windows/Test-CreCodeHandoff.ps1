@@ -42,6 +42,9 @@ Refuses {Pin-ReviewedXml ($xml.Replace('-ExpectedSha','-WrongSha')) $old $new} '
 Refuses {Pin-ReviewedXml ($xml.Replace('-ExpectedSha','-ExpectedSha '+$old+' -ExpectedSha')) $old $new} 'Duplicate action pin must refuse'
 Refuses {Pin-ReviewedXml ($xml.Replace('Reviewed '+$old,'Reviewed other')) $old $new} 'Missing description pin must refuse'
 Assert-Fixture ((Get-CreTaskContract $xml) -cne (Get-CreTaskContract ($xml.Replace('2099-01-01','2099-01-02')))) 'Trigger drift must remain visible'
+$explicitHardTerminate=$xml.Replace('<Settings>','<Settings><AllowHardTerminate>true</AllowHardTerminate>')
+Assert-Fixture ((Get-CreTaskContract $xml) -ceq (Get-CreTaskContract $explicitHardTerminate)) 'Omitted AllowHardTerminate must equal documented true default'
+Assert-Fixture ((Get-CreTaskContract $xml) -cne (Get-CreTaskContract ($explicitHardTerminate.Replace('<AllowHardTerminate>true</AllowHardTerminate>','<AllowHardTerminate>false</AllowHardTerminate>')))) 'Explicit false AllowHardTerminate must remain different'
 Set-Item Function:Get-CimInstance -Value ({
     param($ClassName,$Filter,$ErrorAction)
     if($Filter -like 'ProcessId=*') {return [pscustomobject]@{ProcessId=$PID;ParentProcessId=0}}
