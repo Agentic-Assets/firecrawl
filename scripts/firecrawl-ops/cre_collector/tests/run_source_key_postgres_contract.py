@@ -95,7 +95,7 @@ def fixture_sql(rows):
     sql = """
 CREATE SCHEMA credeals;
 CREATE TABLE credeals.cre_brokerages(id integer PRIMARY KEY, slug text);
-CREATE TABLE credeals.cre_listings(
+CREATE UNLOGGED TABLE credeals.cre_listings(
  id bigint PRIMARY KEY, brokerage_id integer, external_id text, source_url text,
  raw_data jsonb, deleted_at timestamptz, transaction_type text DEFAULT 'sale',
  scraped_at timestamptz DEFAULT '2026-01-01T00:00:00Z', canonical_url text,
