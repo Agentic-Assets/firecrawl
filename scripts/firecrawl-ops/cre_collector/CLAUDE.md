@@ -44,10 +44,16 @@ required for the collector.
 
 ## Live counts and run-health (agents)
 
-No Markdown file is a live-count source. Before quoting board totals,
-per-source rows, tests, launchd state, or index sizes, run `cre_status.sh`,
-re-run the relevant test suites, and obtain a fresh `cre_validate.py` or exact
-checkpoint-manifest readback. Dated docs are operational history.
+No Markdown file is a live-count source. For live operating claims such as
+scheduler state or index size, use current runtime/scheduler observations and
+artifact readback. For listing counts, use a current `cre_validate.py` result or
+generation-exact checkpoint readback; saved results support only their recorded
+time and scope. When reporting tests, include the exact command and output,
+candidate SHA, code/input/dependency bindings, and scope. Reuse unchanged,
+hash-bound results only within their declared scope and freshness limits; rerun
+when relevant changes, failures, or unresolved risks invalidate prior proof, or
+required final-candidate checks remain. Never present an older result as a new
+candidate pass.
 
 For independent captures, use a new output directory for every observation, even
 of the same build; reuse capture code, never frozen output paths. Follow the
