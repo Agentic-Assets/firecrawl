@@ -391,7 +391,7 @@ ORDER BY metric;
     "source_counts": f"""
 WITH base AS (
   SELECT
-    {SOURCE_KEY_SQL} AS source_key,
+    {source_key_sql("decoded")} AS source_key,
     b.slug AS brokerage_slug,
     l.transaction_type,
     l.scraped_at,
