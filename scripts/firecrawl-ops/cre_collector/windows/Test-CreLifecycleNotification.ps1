@@ -130,7 +130,9 @@ foreach ($case in $cases) {
         Assert-Cre (-not $json.Contains('SECRET_CANARY') -and $record.linuxSettlement -ceq 'unverified') "$case audit must exclude secrets and preserve Linux uncertainty."
         if($case -eq 'notification-audit-error'){
             $warning='Windows post-notification audit publication failed; the prior receipt may omit the notification outcome.'
-            Assert-Cre ($stderrText.Contains($warning) -and -not $stderrText.Contains('synthetic audit fault')) 'Failed post-notification audit publication must emit only its fixed redacted diagnostic.'
+            # Windows PowerShell 5.1 may wrap ErrorRecord text at the host width.
+            $stderrFlat=$stderrText -replace '\s+',' '
+            Assert-Cre ($stderrFlat.Contains($warning) -and -not $stderrText.Contains('synthetic audit fault')) 'Failed post-notification audit publication must emit only its fixed redacted diagnostic.'
             $before=[Convert]::ToBase64String([IO.File]::ReadAllBytes($auditBeforeFailure))
             $after=[Convert]::ToBase64String([IO.File]::ReadAllBytes($audits[0].FullName))
             Assert-Cre ($before -ceq $after) 'Failed post-notification write must preserve the previous audit bytes atomically.'
