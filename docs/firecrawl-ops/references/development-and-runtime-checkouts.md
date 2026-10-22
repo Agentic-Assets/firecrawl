@@ -101,6 +101,117 @@ this guidance does not relocate them or introduce another writer or lease.
 
 ## Moving a reviewed build to a runtime
 
+The maintained Windows/Ubuntu code-only route is
+`scripts/firecrawl-ops/cre_collector/cre_code_handoff.py`, with native fleet
+operations in `windows/Invoke-CreCodeHandoff.ps1`. AGENTIC-4845 owns the tooling;
+AGENTIC-3752 owns each operation and independent readback. This first route
+supports unchanged dependency manifests/locks only. It does not install, collect,
+call providers/databases, create tasks, change cadence or roll back automatically.
+
+Invoke tooling from a separate clean, pinned Windows-mapped tooling checkout that remains stable
+while both runtime checkouts advance. Pass input/output paths explicitly.
+The development and tooling roles may share that checkout when their declared
+identities match. Windows and WSL spellings normalize to the same role path;
+the native source root and its clean SHA/tree must match declared tooling before
+dispatch. Tooling remains outside both updated runtime checkouts.
+The default preview validates saved evidence with no scheduler, runtime, process
+or network observation:
+
+```bash
+python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json
+```
+
+The immutable `cre-code-release-v1` input contains distinct `deployed`, `selected`,
+`development` and `tooling` SHA/tree objects, explicit checkout `roots`, native
+tool paths and Ubuntu distro/user. It binds a NUL changed-path input, complete
+before/after Git object map, bundle, evidence roles (path/hash/size), explicit
+`runtime_env_file`/`preserve_files` private host-local references, QA scope and
+exact three-task baseline. The baseline includes complete XML references,
+Enabled/result/action tuple and last/next UTC clocks. Unexpected tasks refuse,
+including disabled tasks. Nonzero results need original terminal, settlement and
+partial-data proof plus every contiguous SHA-only XML/readback edge for the whole
+fleet. A current baseline never replaces original failed-operation provenance.
+
+`combined-candidate-v1` reads the actual historical combined QA producer.
+`owned-gates-v1` reads new gate receipts with actual command/cwd/identity, exit,
+unchanged-tree and settlement evidence. Checkpoint commands have one closed
+merged log; native capture has actual separate-stream EOF/drain facts. Reuse
+requires reviewed executed/final identities and unchanged input hashes.
+PR327-specific experiments or test counts are release evidence, never mandatory
+actions for future releases. Unknown producer shapes refuse.
+
+Maintained transitions qualify the complete saved commit readiness and independent
+observation against their original pinned container snapshot and task XML. They
+record `observed_at` and the actual `qualified_at` boundary: historical age and
+trigger margins use that recorded clock, while live admission still uses current
+time. Commit readiness explicitly proves `owned-maintenance` with recovery
+required; independent readback proves `released-clear`. Complete integer-zero
+queue measurements, frontend visibility, host/native resources, selected identity
+and the exact three dependency digests remain required. Original pinned bytes are
+retained for the enclosing publication recheck; historical QA is not replayed.
+Native tooling refuses effective Git hooks and fsmonitor before invoking status.
+The native handoff fixture requires an independently verified Git executable with
+one hard link and no reparse ancestors; a PATH shim may correctly fail this guard.
+Select that executable explicitly when needed, in fresh PowerShell 7 and 5.1:
+`./scripts/firecrawl-ops/cre_collector/windows/Test-CreCodeHandoff.ps1 -GitExecutable 'C:/Program Files/Git/bin/git.exe'`.
+Native JSON ingestion preserves exact clock strings using
+`ConvertFrom-Json -DateKind String`, or the qualified Desktop Windows PowerShell 5.1 reader.
+Modern readers without `DateKind` refuse; clock coercion or reformatting cannot
+substitute for the original reviewed strings.
+The pinned `runtime_snapshot` role holds the reviewed five-container identity,
+image/start epoch/caps/environment-digest snapshot. Admission/restoration/readback
+retain and qualify browser healthy/zero pages/four-page cap, normal Linux memory
+with at least 8 GiB available and CPU below 90 percent, plus actual native
+CheckOnly measurements. Docker raw environment values are never durable output.
+
+After preview, use separate new exclusive outputs for read-only observation and
+reviewed authorization publication:
+
+```bash
+python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json --observe --output /mnt/c/path/new-observation
+python3 -B scripts/firecrawl-ops/cre_collector/cre_code_handoff.py --release /path/release.json --authorize --observation /mnt/c/path/new-observation/observation.json --authorization /mnt/c/path/new-authorization.json --review /mnt/c/path/review-attestation.json --reviewer REVIEWER --approval-ref AGENTIC-3752 --output /mnt/c/path/new-operation
+```
+
+Authorization binds original release/capture/review bytes and one operation output.
+Its separate `cre-code-review-v1` attestation binds the exact release digest and
+tooling identity, review-body path/hash/size, reviewer, reference, approved verdict
+and `code-only-release` scope. It lives outside the immutable release to avoid a
+circular digest. QA has its own pinned attestation for exact executed identity,
+tooling and QA scope. Intact old review bytes cannot approve a different subject.
+Capture age stays below 300 seconds and enabled triggers at least 900 seconds away
+at publication and apply boundaries. Expiry or incomplete publication requires new
+outputs, never timestamp rewriting or generic resume.
+
+Only a separately authorized apply acquires the canonical recovery-required
+lease, holds the fleet, performs ff-only updates/read-only dependency checks,
+repins while disabled, and durably records held readiness before restoring prior
+Enabled states. The native `Invoke-CreCodeHandoff.ps1 -Mode Apply` foreground
+wrapper records actual outer stream completion around the Linux operation.
+
+Before commit, any child/task/publication failure invokes the exact inventoried
+fleet's dedicated failure hold. Cleanup requires the immutable mutation-start
+binding, so rejected pre-admission requests disable nothing. Cleanup ignores
+admission expiry/current code pins, records per-task uncertainty and never stops
+a running owner or reacquires a lock. The original error remains authoritative.
+After restored-task readback and durable `commit-ready.json`, commit begins at
+canonical recovery clearing. Clearing, lease exit or release-proof failure is
+`commit-uncertain`; terminal publication and later outer native EOF failure are
+postcommit confirmation failures. They attempt the same exact task hold but do
+not claim that a cleared or unknown recovery fence was retained. Independent
+readback/recovery remains necessary; there is no automatic code rollback.
+
+A committed terminal plus successful native completion still needs independent
+`--postreadback --operation /mnt/c/path/new-operation --output /mnt/c/path/new-independent-readback`
+with the same release input. Postreadback emits `cre-code-transition-v1`, joining
+the original mutation/auth/output tuple, commit-ready/terminal/native receipts,
+complete before/final/independent XML and unchanged task tuples. This actual
+producer feeds the next release's failed-task lineage directly; historical edges
+retain their original producer schema. `commit-ready.json` alone is never a
+successful transition. Disabled-task next-run semantics remain unproven; held
+checks preserve trigger XML and recheck enabled clocks after restoration.
+A merged tooling PR or prepared input authorizes no
+runtime delivery, data acceptance or scheduling change.
+
 Before any runtime handoff, use the current runbook and host tools to establish fresh idleness
 and ownership on the exact target host: inspect active run/lock authority and actual scheduler
 state. Preserve the prior source definitions, deployed code SHA, and scheduler enabled/disabled

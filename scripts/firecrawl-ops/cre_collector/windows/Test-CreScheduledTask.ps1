@@ -154,10 +154,7 @@ $creDecoded = [CreTaskArguments]::Decode($creNotificationAction)
 $creWebhookIndex = [Array]::IndexOf($creDecoded,'-AlertWebhookFile')
 Assert-Cre ($creWebhookIndex -ge 0 -and $creDecoded[$creWebhookIndex+1] -ceq $creNotificationPath) 'Windows argv decoding must preserve the private path including spaces, apostrophe and ampersand.'
 Assert-Cre ($creDecoded[$creWebhookIndex+2] -ceq '-NotificationMode' -and $creDecoded[$creWebhookIndex+3] -ceq 'StartFinish') 'Windows argv decoding must preserve the explicit notification mode.'
-$creTokens=$null; $creErrors=$null
-$creInstallerAst=[Management.Automation.Language.Parser]::ParseFile($creInstaller,[ref]$creTokens,[ref]$creErrors)
-$creContractFunction=@($creInstallerAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-CreTaskContract'},$true))[0]
-. ([scriptblock]::Create($creContractFunction.Extent.Text))
+. (Join-Path $PSScriptRoot 'CreTaskContract.ps1')
 $creEnabledXml=$crePreview.Replace('<Enabled>false</Enabled><Hidden>','<Enabled>true</Enabled><Hidden>')
 $creDefaultEnabledXml=$creEnabledXml.Replace('<Enabled>true</Enabled><Hidden>','<Hidden>')
 Assert-Cre ((Get-CreTaskContract $creEnabledXml) -ceq (Get-CreTaskContract $creDefaultEnabledXml)) 'Native omission of Settings/Enabled must equal its documented true default.'
