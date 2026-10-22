@@ -130,7 +130,39 @@ namespace CreWindowsCapture {
 }
 '@
     $fakeGit=Join-Path $root 'fixture-git.ps1'
-    [IO.File]::WriteAllText($fakeGit,('if($args[-1] -ceq ''HEAD''){'''+('c'*40)+'''}elseif($args[-1] -ceq ''HEAD^{tree}''){'''+('d'*40)+'''}elseif($args -notcontains ''status''){throw ''Unexpected Git fixture request''};$global:LASTEXITCODE=0'),[Text.UTF8Encoding]::new($false))
+    $fixtureHooks=Join-Path $root 'empty-hooks';[void][IO.Directory]::CreateDirectory($fixtureHooks)
+    [IO.File]::WriteAllText($fakeGit,('if($args[-1] -ceq ''hooks''){'''+$fixtureHooks+'''}elseif($args[-1] -ceq ''core.fsmonitor''){''false''}elseif($args[-1] -ceq ''HEAD''){'''+('c'*40)+'''}elseif($args[-1] -ceq ''HEAD^{tree}''){'''+('d'*40)+'''}elseif($args -notcontains ''status''){throw ''Unexpected Git fixture request''};$global:LASTEXITCODE=0'),[Text.UTF8Encoding]::new($false))
+    # An actual contained Git checkout proves the fsmonitor refuses BEFORE
+    # status could dispatch the monitor. All mutations belong to this fixture.
+    $priorGlobal=$env:GIT_CONFIG_GLOBAL;$priorNoSystem=$env:GIT_CONFIG_NOSYSTEM
+    $emptyGlobal=Join-Path $root 'empty.gitconfig';[IO.File]::WriteAllText($emptyGlobal,'')
+    $env:GIT_CONFIG_GLOBAL=$emptyGlobal;$env:GIT_CONFIG_NOSYSTEM='1'
+    try {
+    $realGit=(Get-Command git.exe -ErrorAction Stop).Source
+    $gitRoot=Join-Path $root 'git-admission';[void][IO.Directory]::CreateDirectory($gitRoot)
+    $null=& $realGit -C $gitRoot init
+    if($LASTEXITCODE -ne 0) {throw 'Fixture Git init failed'}
+    [IO.File]::WriteAllText((Join-Path $gitRoot 'fixture.txt'),'offline fixture')
+    $null=& $realGit -c core.fsmonitor=false -c core.hooksPath=$fixtureHooks -C $gitRoot add fixture.txt
+    if($LASTEXITCODE -ne 0) {throw 'Fixture Git add failed'}
+    $null=& $realGit -c core.fsmonitor=false -c core.hooksPath=$fixtureHooks -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid -C $gitRoot commit -m fixture
+    if($LASTEXITCODE -ne 0) {throw 'Fixture Git commit failed'}
+    $gitRelease=@{roots=@{tooling=$gitRoot};programs=@{native_git=$realGit};tooling=@{sha=(& $realGit -C $gitRoot rev-parse HEAD);tree=(& $realGit -C $gitRoot rev-parse 'HEAD^{tree}')}}
+    $null=& $realGit -C $gitRoot config core.fsmonitor false
+    $null=& $realGit -C $gitRoot config core.hooksPath $fixtureHooks
+    Assert-CreHandoffTooling $gitRelease $gitRoot
+    Assert-Fixture $true 'Actual clean native Git admission succeeds'
+    $monitorMarker=Join-Path $root 'monitor-invoked.txt'
+    $monitorCommand=Join-Path $root 'monitor.cmd'
+    [IO.File]::WriteAllText($monitorCommand,('@echo off'+"`r`n"+'echo invoked > "'+$monitorMarker+'"'+"`r`n"))
+    $null=& $realGit -C $gitRoot config core.fsmonitor ('"'+$monitorCommand+'"')
+    Refuses {Assert-CreHandoffTooling $gitRelease $gitRoot} 'Effective fsmonitor must refuse before status'
+    Assert-Fixture (-not (Test-Path -LiteralPath $monitorMarker)) 'Refused monitor must never execute'
+    $null=& $realGit -C $gitRoot config core.fsmonitor false
+    [IO.File]::WriteAllText((Join-Path $fixtureHooks 'post-index-change'),'fixture hook must not execute')
+    Refuses {Assert-CreHandoffTooling $gitRelease $gitRoot} 'Effective hook must refuse before status'
+    Remove-Item -LiteralPath (Join-Path $fixtureHooks 'post-index-change')
+    } finally {$env:GIT_CONFIG_GLOBAL=$priorGlobal;$env:GIT_CONFIG_NOSYSTEM=$priorNoSystem}
     $release|Add-Member -NotePropertyName programs -NotePropertyValue @{native_git=$fakeGit; powershell=$fakeGit}
     $release|Add-Member -NotePropertyName wsl -NotePropertyValue @{distro='fixture';user='fixture'}
     $wire=$release|ConvertTo-Json -Depth 15

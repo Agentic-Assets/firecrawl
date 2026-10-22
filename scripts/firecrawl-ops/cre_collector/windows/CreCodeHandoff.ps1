@@ -254,6 +254,15 @@ function Assert-CreHandoffTooling($Release,[string]$ActualRoot) {
     $declared=ConvertTo-CreHandoffPath $Release.roots.tooling
     if($actual -cne $declared) { throw 'Invoked native source root differs from declared tooling' }
     $git=ConvertTo-CreHandoffPath $Release.programs.native_git
+    $hooks=& $git --no-optional-locks -C $actual rev-parse --git-path hooks
+    if($LASTEXITCODE -ne 0 -or @($hooks).Count -ne 1) { throw 'Effective native hooks path unavailable' }
+    if(-not [IO.Path]::IsPathRooted($hooks)) { $hooks=Join-Path $actual $hooks }
+    $hooks=ConvertTo-CreHandoffPath $hooks
+    foreach($name in @('post-merge','pre-merge-commit','reference-transaction','pre-auto-gc','post-index-change')) {
+        if($null -ne (Get-Item -LiteralPath (Join-Path $hooks $name) -Force -ErrorAction SilentlyContinue)) { throw 'Effective native Git hook refused' }
+    }
+    $monitor=@(& $git --no-optional-locks -C $actual config --get core.fsmonitor)
+    if($LASTEXITCODE -notin @(0,1) -or (($monitor -join "`n").Trim() -cnotin @('','false'))) { throw 'Effective native Git fsmonitor refused' }
     $head=& $git --no-optional-locks -C $actual rev-parse HEAD
     if($LASTEXITCODE -ne 0 -or $head -cne $Release.tooling.sha) { throw 'Actual native tooling SHA differs' }
     $tree=& $git --no-optional-locks -C $actual rev-parse 'HEAD^{tree}'

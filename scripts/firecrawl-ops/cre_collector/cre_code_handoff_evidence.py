@@ -449,16 +449,26 @@ def validate_lineage(release, evidence):
                     "whole fleet lineage does not reach current baseline")
 
 
-def validate_observation(release, evidence, observation, now, *, selected=False):
+def validate_observation(release, evidence, observation, now, *, selected=False, ownership_phase="released-clear"):
     from cre_code_handoff_host import qualify_host, qualify_native
 
     require(observation.get("schema") == "cre-code-observation-v1", "unknown observation schema")
-    age = (now - clock(observation["observed_at"])).total_seconds()
+    observed_at = clock(observation.get("observed_at"))
+    qualified_at = clock(observation.get("qualified_at"))
+    require(observed_at <= qualified_at <= now, "observation qualification clock differs")
+    age = (now - observed_at).total_seconds()
     require(0 <= age < 300, "observation expired or from the future")
     expected = release["selected" if selected else "deployed"]
     require(observation.get("native") == observation.get("runtime") == expected,
             "old/new readiness identity mixup")
-    require(observation.get("owner_clear") is True and observation.get("resources_ok") is True
+    require(ownership_phase in {"owned-maintenance", "released-clear"}
+            and isinstance(observation.get("ownership"), dict)
+            and observation["ownership"].get("verified") is True
+            and observation["ownership"].get("recovery_required") is (ownership_phase == "owned-maintenance")
+            and observation.get("ownership") == {
+                "phase": ownership_phase, "verified": True,
+                "recovery_required": ownership_phase == "owned-maintenance",
+            } and observation.get("resources_ok") is True
             and observation.get("queues_idle") is True, "runtime admission refused")
     qualify_host(observation, evidence.obj("runtime_snapshot"))
     qualify_native(observation.get("windows_resources"))

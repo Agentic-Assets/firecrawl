@@ -49,6 +49,8 @@ def host_observation():
                    "memory": 1024, "nano_cpus": 1, "cpu_quota": 1, "cpu_period": 1,
                    "environment_sha256": "0"*64} for i in range(5)]
     return {"containers": containers, "browser": {"status": "healthy", "activePages": 0, "maxConcurrentPages": 4},
+            "queues": dict.fromkeys(("jobs_in_queue", "active_jobs_in_queue", "waiting_jobs_in_queue", "active_crawl_count"), 0),
+            "linux_frontends": [], "linux_visibility": "synthetic current UID PID/role observation",
             "linux_resources": {"cpu_percent": 20, "memory_level": 1,
                                 "memory": {"host": {"memory_available_bytes": 8*1024**3}, "causes": []}},
             "windows_resources": {"admitted": True, "cpuPercent": 20, "availablePhysicalGiB": 8}}
@@ -97,8 +99,8 @@ def admitted():
     inputs.add("runtime_snapshot", {"containers": host_observation()["containers"]})
     release = {"deployed": OLD, "selected": NEW, "tooling": NEW, "task_baseline": baseline}
     evidence = inputs.evidence(release)
-    observed = {"schema": "cre-code-observation-v1", "observed_at": NOW.isoformat(),
-                "native": OLD, "runtime": OLD, "owner_clear": True,
+    observed = {"schema": "cre-code-observation-v1", "observed_at": NOW.isoformat(), "qualified_at": NOW.isoformat(),
+                "native": OLD, "runtime": OLD, "ownership": {"phase": "released-clear", "verified": True, "recovery_required": False},
                 "resources_ok": True, "queues_idle": True,
                 "tasks": [dict(row, state="Ready", xml_sha256=sha(inputs.data[row["xml"]]))
                           for row in baseline]}
@@ -116,7 +118,7 @@ def test_real_xml_consumer_only_allows_two_exact_pin_changes():
         validate_xml_transition(before.replace(b"-ExpectedSha", b"-WrongPin"), after, OLD["sha"], NEW["sha"])
 
 
-@pytest.mark.parametrize("field,value", [("native", NEW), ("runtime", NEW), ("owner_clear", False),
+@pytest.mark.parametrize("field,value", [("native", NEW), ("runtime", NEW), ("ownership", {}),
                                         ("resources_ok", False), ("queues_idle", False)])
 def test_readiness_mismatches_refuse(admitted, field, value):
     release, evidence, observed, _ = admitted
@@ -532,19 +534,23 @@ def apply_case(complete_case,tmp_path,monkeypatch):
           "authorized_at":NOW.isoformat(),"expires_at":(NOW+timedelta(seconds=299)).isoformat(),
           "operation_output":str(output),"review":{"path":str(review),"sha256":sha(review.read_bytes()),"reviewer":"independent","approval_ref":"AGENTIC-test"}}
     auth_file.write_bytes(encoded(auth))
-    state={"fault":None,"calls":[],"enabled":[True]*3,"recovery":None,"acquisitions":0}
+    state={"fault":None,"calls":[],"enabled":[True]*3,"recovery":None,"acquisitions":0,"reached":[],"ownership_calls":0,"interrupt":None}
+    def point(name):
+        state["reached"].append(name)
+        if state["fault"] == name:
+            raise state["interrupt"] if state["interrupt"] is not None else HandoffError("injected "+name)
     class Lease:
         def __init__(self,path,*,recovery_required):
             assert path == tmp_path/"canonical-lock" and recovery_required is True
         def __enter__(self):state["acquisitions"]+=1;state["recovery"]=True;return self
         def clear_recovery_requirement(self):
             state["calls"].append("clear")
-            if state["fault"] == "clear_before":raise HandoffError("injected clear_before")
+            point("clear_before")
             state["recovery"]=False
-            if state["fault"] == "clear_after":raise HandoffError("injected clear_after")
+            point("clear_after")
         def __exit__(self,*args):
             state["calls"].append("lease_exit")
-            if state["fault"] == "lease_exit":raise HandoffError("injected lease_exit")
+            point("lease_exit")
     def lock_path(root):
         assert root == local_path(release["roots"]["runtime"])
         return tmp_path/"canonical-lock"
@@ -559,14 +565,14 @@ def apply_case(complete_case,tmp_path,monkeypatch):
                         fast_forward=lambda root,_release,_bundle:state["calls"].append("ff:"+root))
     def readiness(*args,selected=False,**kwargs):
         assert kwargs["evidence"] is evidence
-        if selected and "Verify" in state["calls"] and state["fault"] == "post_restore_readiness":
-            raise HandoffError("injected post_restore_readiness")
+        if selected and "Verify" in state["calls"]:point("post_restore_readiness")
         return dict(host_observation(),native=NEW if selected else OLD,runtime=NEW if selected else OLD,
-                    owner_clear=True,resources_ok=True,queues_idle=True)
+                    ownership={"phase":"owned-maintenance" if kwargs.get("owned") else "released-clear",
+                               "verified":True,"recovery_required":kwargs.get("owned",False)},resources_ok=True,queues_idle=True)
     def native(self,mode,*args,**kwargs):
         state["calls"].append(mode)
         if mode == "Hold":
-            if state["fault"] == "before_hold":raise HandoffError("injected before_hold")
+            point("before_hold")
             operation.write_new(output/"mutation-start.json",{"schema":"cre-code-mutation-v1",
                 "release_sha256":sha(raw),"authorization_sha256":sha(auth_file.read_bytes()),
                 "operation_output":str(output),"tooling":NEW,"fleet":release["task_baseline"]})
@@ -574,11 +580,12 @@ def apply_case(complete_case,tmp_path,monkeypatch):
             for row in release["task_baseline"]:(output/(row["key"]+"-before.xml")).write_bytes(inputs.data[row["xml"]])
         elif mode == "Restore":
             state["enabled"][0]=True
-            if state["fault"] in {"first_enable","cleanup_receipt","failure_receipt"}:raise HandoffError("injected "+state["fault"])
+            point("first_enable")
+            if state["fault"] in {"cleanup_receipt","failure_receipt"}:point(state["fault"])
             state["enabled"]=[True]*3
             for row in release["task_baseline"]:
                 (output/(row["key"]+"-final.xml")).write_bytes(inputs.data[row["xml"]].replace(OLD["sha"].encode(),NEW["sha"].encode()))
-            if state["fault"] == "native_receipt":raise HandoffError("injected native_receipt")
+            point("native_receipt")
         elif mode == "Verify":
             tasks=[]
             for row in release["task_baseline"]:
@@ -588,21 +595,36 @@ def apply_case(complete_case,tmp_path,monkeypatch):
         elif mode == "FailureHold":
             assert operation.mutation_started(output,release,raw,auth_file.read_bytes())
             state["enabled"]=[False]*3
+            if state["interrupt"] is not None:raise SystemExit("secondary cleanup interruption")
             if state["fault"] == "cleanup_receipt":raise OSError("injected failure-hold receipt write")
         elif mode != "Repin":raise AssertionError("unexpected external dispatcher")
     real_write=operation.write_new
     def write(path,value):
+        if Path(path).name == "failure.json" and state["interrupt"] is not None:raise KeyboardInterrupt("secondary publication interruption")
         if state["fault"] == "failure_receipt" and Path(path).name == "failure.json":raise OSError("injected failure receipt write")
-        if Path(path).name == state["fault"]:raise HandoffError("injected "+state["fault"])
+        point(Path(path).name)
         real_write(path,value)
+    def owned(actual_checkpoint,path,pid):
+        assert actual_checkpoint is checkpoint and path == tmp_path/"canonical-lock" and pid == os.getpid()
+        assert state["acquisitions"] == 1 and state["recovery"] is True
+        state["ownership_calls"]+=1
+    def released(*args):
+        assert args == (checkpoint,tmp_path/"canonical-lock")
+        point("lock_clear");state["calls"].append("released")
+    real_authorization=operation.validate_authorization
+    def authorization(*args,**kwargs):
+        real_authorization(*args,**kwargs)
+        if (output/"commit-ready.json").exists():point("precommit")
     monkeypatch.setattr(operation,"now",lambda:NOW)
     monkeypatch.setattr(operation,"load_release",lambda _: (raw,release,evidence))
     monkeypatch.setattr(operation,"Git",lambda _:git)
     monkeypatch.setattr(operation,"runtime_modules",lambda *_:(checkpoint,None,None,None))
     monkeypatch.setattr(operation,"readiness",readiness)
     monkeypatch.setattr(operation,"preserved",lambda _: {"unchanged":"digest"})
-    monkeypatch.setattr(operation,"installed_dependencies",lambda _: {"package":"unchanged"})
-    monkeypatch.setattr(operation,"lock_clear",lambda *_:state["calls"].append("released"))
+    monkeypatch.setattr(operation,"installed_dependencies",lambda _: dict.fromkeys(("package.json","package-lock.json","node_modules/.package-lock.json"),"0"*64))
+    monkeypatch.setattr(operation,"assert_owned",owned)
+    monkeypatch.setattr(operation,"lock_clear",released)
+    monkeypatch.setattr(operation,"validate_authorization",authorization)
     monkeypatch.setattr(operation.Foreground,"native",native)
     monkeypatch.setattr(operation,"write_new",write)
     argv=["--release",str(release_file),"--apply","--observation",str(observation_file),
@@ -613,6 +635,7 @@ def apply_case(complete_case,tmp_path,monkeypatch):
 def test_actual_python_entrypoint_apply_positive_with_all_external_boundaries_mocked(apply_case):
     state,output,argv=apply_case
     assert operation.main(argv) == 0
+    assert state["ownership_calls"] == 6
     assert state["enabled"] == [True]*3 and state["recovery"] is False
     assert [call for call in state["calls"] if call in {"Hold","Repin","Restore","Verify","clear","released"}] == ["Hold","Repin","Restore","Verify","clear","released"]
     assert json.loads((output/"terminal.json").read_text())["status"] == "committed"
@@ -622,13 +645,15 @@ def test_actual_python_entrypoint_apply_positive_with_all_external_boundaries_mo
     ("before_hold","precommit-failure",False),("first_enable","precommit-failure",True),
     ("native_receipt","precommit-failure",True),("post_restore_readiness","precommit-failure",True),
     ("held-ready.json","precommit-failure",True),("commit-ready.json","precommit-failure",True),
+    ("precommit","precommit-failure",True),
     ("clear_before","commit-uncertain",True),("clear_after","commit-uncertain",True),
-    ("lease_exit","commit-uncertain",True),("terminal.json","postcommit-confirmation-failure",True),
+    ("lease_exit","commit-uncertain",True),("lock_clear","commit-uncertain",True),("terminal.json","postcommit-confirmation-failure",True),
     ("cleanup_receipt","precommit-failure",True),
 ])
 def test_apply_failure_boundaries_preserve_original_and_classify_actual_recovery(apply_case,fault,classification,mutated):
     state,output,argv=apply_case;state["fault"]=fault
     with pytest.raises(HandoffError,match="injected "+fault):operation.main(argv)
+    assert fault in state["reached"]
     record=json.loads((output/"failure.json").read_text())
     assert record["classification"] == classification
     assert record["original_error"] == "injected "+fault
@@ -643,6 +668,17 @@ def test_failure_receipt_error_does_not_mask_original(apply_case,capsys):
     with pytest.raises(HandoffError,match="injected failure_receipt"):operation.main(argv)
     assert "Original HandoffError: injected failure_receipt" in capsys.readouterr().err
     assert state["enabled"] == [False]*3
+
+
+@pytest.mark.parametrize("exception_type",[KeyboardInterrupt,SystemExit])
+def test_original_interrupt_survives_cleanup_and_publication_interruptions(apply_case,capsys,exception_type):
+    state,_,argv=apply_case
+    original=exception_type("original operation interruption")
+    state.update(fault="first_enable",interrupt=original)
+    with pytest.raises(exception_type) as caught:operation.main(argv)
+    assert caught.value is original and "first_enable" in state["reached"]
+    assert "FailureHold" in state["calls"] and state["enabled"] == [False]*3
+    assert f"Original {exception_type.__name__}: original operation interruption" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform != "linux",reason="canonical owned command uses POSIX process groups")
@@ -672,17 +708,18 @@ def synthetic_transition_files(root,source,inputs):
     """A complete synthetic producer instance; no historical metadata is rewritten."""
     operation_root=root/"operation";operation_root.mkdir(parents=True)
     independent=root/"independent";independent.mkdir()
+    roles={"runtime_snapshot",*(row["xml"] for row in source["task_baseline"])}
+    source=copy.deepcopy(source)
+    for index,row in enumerate(source["inputs"]):
+        if row["role"] in roles:
+            pinned=root/f"pinned-{index}.data"
+            raw=inputs.data[row["path"]];pinned.write_bytes(raw)
+            row["path"]=str(pinned);inputs.data[str(pinned)]=raw
     release_path=root/"release.json";release_raw=encoded(source);release_path.write_bytes(release_raw)
     digest=sha(release_raw);auth_digest="5"*64;output=str(operation_root)
     mutation={"schema":"cre-code-mutation-v1","release_sha256":digest,"authorization_sha256":auth_digest,
               "operation_output":output,"tooling":source["tooling"],"fleet":source["task_baseline"]}
     (operation_root/"mutation-start.json").write_bytes(encoded(mutation))
-    ready={"schema":"cre-code-commit-ready-v1","release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output}
-    ready_raw=encoded(ready);(operation_root/"commit-ready.json").write_bytes(ready_raw)
-    terminal={"schema":"cre-code-terminal-v1","status":"committed","selected":source["selected"],
-              "release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,
-              "commit_ready_sha256":sha(ready_raw),"canonical_lease_released":True}
-    terminal_raw=encoded(terminal);(operation_root/"terminal.json").write_bytes(terminal_raw)
     stdout=b"synthetic native completion fixture";stderr=b""
     Path(str(operation_root)+".stdout.raw").write_bytes(stdout);Path(str(operation_root)+".stderr.raw").write_bytes(stderr)
     native={"schema":"cre-code-native-completion-v1","release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,
@@ -698,7 +735,21 @@ def synthetic_transition_files(root,source,inputs):
         (independent/(key+"-observed.xml")).write_bytes(final)
         actions=[{field:value.replace(source["deployed"]["sha"],source["selected"]["sha"]) for field,value in action.items()} for action in baseline["actions"]]
         rows.append(dict(baseline,actions=actions,state="Ready",xml_sha256=sha(final)))
-    observation={"schema":"cre-code-observation-v1","native":source["selected"],"runtime":source["selected"],
+    readiness=dict(host_observation(),schema="cre-code-observation-v1",native=source["selected"],runtime=source["selected"],
+                   observed_at=NOW.isoformat(),qualified_at=(NOW+timedelta(seconds=1)).isoformat(),tasks=rows,
+                   ownership={"phase":"owned-maintenance","verified":True,"recovery_required":True},resources_ok=True,queues_idle=True)
+    ready={"schema":"cre-code-commit-ready-v1","release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,
+           "selected":source["selected"],"recovery_required_at_publication":True,"readiness":readiness,
+           "dependencies":dict.fromkeys(("package.json","package-lock.json","node_modules/.package-lock.json"),"0"*64)}
+    ready_raw=encoded(ready);(operation_root/"commit-ready.json").write_bytes(ready_raw)
+    terminal={"schema":"cre-code-terminal-v1","status":"committed","selected":source["selected"],
+              "release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,
+              "finished_at":(NOW+timedelta(seconds=2)).isoformat(),
+              "commit_ready_sha256":sha(ready_raw),"canonical_lease_released":True}
+    terminal_raw=encoded(terminal);(operation_root/"terminal.json").write_bytes(terminal_raw)
+    observation={**host_observation(),"schema":"cre-code-observation-v1","native":source["selected"],"runtime":source["selected"],
+                 "observed_at":(NOW+timedelta(seconds=3)).isoformat(),"qualified_at":(NOW+timedelta(seconds=4)).isoformat(),
+                 "ownership":{"phase":"released-clear","verified":True,"recovery_required":False},"resources_ok":True,"queues_idle":True,
                  "operation_terminal_sha256":sha(terminal_raw),"native_completion_sha256":sha(native_raw),
                  "release_sha256":digest,"authorization_sha256":auth_digest,"operation_output":output,"tasks":rows}
     (independent/"observation.json").write_bytes(encoded(observation))
@@ -740,4 +791,60 @@ def test_same_release_identical_xml_cannot_mix_two_operation_attempts(admitted,t
     other_path=tmp_path/"other-native.json";other_path.write_bytes(encoded(other))
     receipt["native_completion"]=reference(other_path,read_file)
     with pytest.raises(HandoffError,match="mixes distinct operation"):
+        validate_transition(receipt,OLD,NEW,read_file)
+
+
+@pytest.mark.parametrize("field",[
+    "selected","recovery_required_at_publication","dependencies","readiness","ownership",
+    "queues_missing","queues_bool","queues_busy","linux_frontends","linux_visibility",
+    "resources","native_resources","xml","qualified_at","stale","margin","chronology",
+    "independent_ownership","independent_clock","independent_queues",
+])
+def test_maintained_transition_qualifies_complete_producer_facts(admitted,tmp_path,field):
+    source,_,_,inputs=admitted
+    receipt=synthetic_transition_files(tmp_path/field,source,inputs)
+    ready_path=receipt["commit_ready"]["path"];ready=json_bytes(read_file(ready_path))
+    terminal_path=receipt["terminal"]["path"];terminal=json_bytes(read_file(terminal_path))
+    observed_path=receipt["independent_observation"]["path"];observed=json_bytes(read_file(observed_path))
+    readiness=ready["readiness"]
+    if field in {"selected","recovery_required_at_publication","dependencies","readiness"}:ready.pop(field)
+    elif field == "ownership":readiness["ownership"]={"phase":"released-clear","verified":True,"recovery_required":False}
+    elif field == "queues_missing":readiness.pop("queues")
+    elif field == "queues_bool":readiness["queues"]["active_crawl_count"]=False
+    elif field == "queues_busy":readiness["queues"]["active_crawl_count"]=1
+    elif field == "linux_frontends":readiness["linux_frontends"]=[{"pid":123,"role":"apply"}]
+    elif field == "linux_visibility":readiness.pop("linux_visibility")
+    elif field == "resources":readiness["linux_resources"]["memory_level"]=True
+    elif field == "native_resources":readiness["windows_resources"]["admitted"]=1
+    elif field == "xml":readiness["tasks"][0]["xml_sha256"]="0"*64
+    elif field == "qualified_at":readiness.pop("qualified_at")
+    elif field == "stale":readiness["observed_at"]=(NOW-timedelta(seconds=300)).isoformat()
+    elif field == "margin":
+        readiness["observed_at"]=readiness["qualified_at"]=(NOW+timedelta(hours=2)).isoformat()
+        terminal["finished_at"]=(NOW+timedelta(hours=2,seconds=1)).isoformat()
+        observed["observed_at"]=(NOW+timedelta(hours=2,seconds=2)).isoformat()
+        observed["qualified_at"]=(NOW+timedelta(hours=2,seconds=3)).isoformat()
+    elif field == "chronology":terminal["finished_at"]=(NOW-timedelta(seconds=1)).isoformat()
+    elif field == "independent_ownership":observed["ownership"]=readiness["ownership"]
+    elif field == "independent_clock":observed.pop("qualified_at")
+    elif field == "independent_queues":observed["queues"]={}
+    Path(ready_path).write_bytes(encoded(ready));receipt["commit_ready"]=reference(ready_path,read_file)
+    terminal["commit_ready_sha256"]=sha(read_file(ready_path))
+    Path(terminal_path).write_bytes(encoded(terminal));receipt["terminal"]=reference(terminal_path,read_file)
+    observed["operation_terminal_sha256"]=sha(read_file(terminal_path))
+    Path(observed_path).write_bytes(encoded(observed));receipt["independent_observation"]=reference(observed_path,read_file)
+    with pytest.raises(HandoffError):validate_transition(receipt,OLD,NEW,read_file)
+
+
+def test_transition_retains_original_pinned_subset_for_outer_recheck(admitted,tmp_path):
+    source,_,_,inputs=admitted
+    receipt=synthetic_transition_files(tmp_path/"retained",source,inputs)
+    retained={}
+    validate_transition(receipt,OLD,NEW,read_file,retain=retained)
+    release=json_bytes(read_file(receipt["release"]["path"]))
+    pinned={row["path"] for row in release["inputs"] if row["role"] in {"runtime_snapshot",*TASKS}}
+    assert pinned <= retained.keys()
+    path=next(iter(pinned));Path(path).write_bytes(b"changed original pinned bytes")
+    assert read_file(path) != retained[path]
+    with pytest.raises(HandoffError,match="changed input"):
         validate_transition(receipt,OLD,NEW,read_file)

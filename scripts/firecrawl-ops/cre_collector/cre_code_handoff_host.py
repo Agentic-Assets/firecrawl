@@ -44,6 +44,15 @@ def observe_host(checkpoint, memory_type, client, idle, docker=docker_output):
 
 
 def qualify_host(observation, expected):
+    queues = observation.get("queues")
+    require(isinstance(queues, dict) and set(queues) == {
+        "jobs_in_queue", "active_jobs_in_queue", "waiting_jobs_in_queue", "active_crawl_count",
+    } and all(type(value) is int and value == 0 for value in queues.values()),
+            "complete idle queue measurements required")
+    require(observation.get("linux_frontends") == []
+            and isinstance(observation.get("linux_frontends"), list)
+            and isinstance(observation.get("linux_visibility"), str) and observation["linux_visibility"],
+            "Linux frontend visibility missing or competing frontend present")
     containers = unique(observation.get("containers"), "id")
     pinned = unique(expected.get("containers"), "id")
     require(len(containers) == len(pinned) == 5 and set(containers) == set(pinned), "container fleet identity differs")

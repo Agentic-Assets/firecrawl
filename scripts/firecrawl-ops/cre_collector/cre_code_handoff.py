@@ -249,10 +249,12 @@ def readiness(release, checkpoint, memory_type, client, idle, git, *, selected=F
     frontends = visible_linux_frontends()
     require(not frontends, "visible competing Linux CRE frontend exists")
     host = observe_host(checkpoint, memory_type, client, idle)
-    qualify_host(host, evidence.obj("runtime_snapshot"))
-    host.update(native=expected, runtime=expected, owner_clear=True, resources_ok=True,
+    host.update(native=expected, runtime=expected,
+                ownership={"phase": "owned-maintenance" if owned else "released-clear",
+                           "verified": True, "recovery_required": owned}, resources_ok=True,
                 queues_idle=True, linux_frontends=frontends,
                 linux_visibility="current UID /proc roles; own ancestry excluded; PID/role only")
+    qualify_host(host, evidence.obj("runtime_snapshot"))
     return host
 
 
@@ -328,11 +330,13 @@ def record_failure(args, release, release_raw, authorization_raw, checkpoint, ou
             cleanup.counter = 999
             cleanup.native("FailureHold", args.release, sha(release_raw), args.observation, args.authorization)
             record["failure_hold"] = "attempted; inspect per-task failure-hold.json"
-    except BaseException as cleanup_error:
+    # Cleanup interruptions must not replace the original operation exception.
+    except BaseException as cleanup_error:  # noqa: BLE001
         record["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
     try:
         write_new(output / "failure.json", record)
-    except BaseException as receipt_error:
+    # Publication interruptions likewise preserve the original BaseException.
+    except BaseException as receipt_error:  # noqa: BLE001
         print(f"Original {type(original).__name__}: {original}; failure receipt unavailable: {type(receipt_error).__name__}; cleanup: {record['cleanup_error']}", file=sys.stderr)
 
 
@@ -389,7 +393,8 @@ def apply(args, release_raw, release, evidence, git, modules):
             final = readiness(release, checkpoint, memory, client, idle, git, selected=True, owned=True, evidence=evidence)
             final.update(schema="cre-code-observation-v1", observed_at=native["observed_at"],
                          tasks=native["tasks"], windows_resources=native["windows_resources"])
-            validate_observation(release, evidence, final, now(), selected=True)
+            final["qualified_at"] = now().isoformat()
+            validate_observation(release, evidence, final, now(), selected=True, ownership_phase="owned-maintenance")
             evidence.recheck()
             write_new(output / "commit-ready.json", {"schema": "cre-code-commit-ready-v1", "selected": release["selected"],
                       "release_sha256": sha(release_raw), "authorization_sha256": sha(authorization_raw),
@@ -476,6 +481,7 @@ def main(argv=None):
             observation["operation_output"] = canonical_path(str(local_path(args.operation)))
             observation["authorization_sha256"] = terminal["authorization_sha256"]
             observation["native_completion_sha256"] = sha(read_file(str(local_path(args.operation)) + ".native.json"))
+        observation["qualified_at"] = now().isoformat()
         validate_observation(release, evidence, observation, now(), selected=args.postreadback)
         evidence.recheck()
         write_new(output / "observation.json", observation)

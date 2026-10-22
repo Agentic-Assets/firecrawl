@@ -139,6 +139,17 @@ merged log; native capture has actual separate-stream EOF/drain facts. Reuse
 requires reviewed executed/final identities and unchanged input hashes.
 PR327-specific experiments or test counts are release evidence, never mandatory
 actions for future releases. Unknown producer shapes refuse.
+
+Maintained transitions qualify the complete saved commit readiness and independent
+observation against their original pinned container snapshot and task XML. They
+record `observed_at` and the actual `qualified_at` boundary: historical age and
+trigger margins use that recorded clock, while live admission still uses current
+time. Commit readiness explicitly proves `owned-maintenance` with recovery
+required; independent readback proves `released-clear`. Complete integer-zero
+queue measurements, frontend visibility, host/native resources, selected identity
+and the exact three dependency digests remain required. Original pinned bytes are
+retained for the enclosing publication recheck; historical QA is not replayed.
+Native tooling refuses effective Git hooks and fsmonitor before invoking status.
 The pinned `runtime_snapshot` role holds the reviewed five-container identity,
 image/start epoch/caps/environment-digest snapshot. Admission/restoration/readback
 retain and qualify browser healthy/zero pages/four-page cap, normal Linux memory

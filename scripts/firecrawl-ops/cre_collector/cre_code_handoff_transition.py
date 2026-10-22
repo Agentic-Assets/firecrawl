@@ -1,12 +1,17 @@
 """Maintained postreadback receipt producer and finite lineage consumer."""
 
+import re
+
 from cre_code_handoff_evidence import (
     TASKS,
+    Evidence,
     canonical_path,
+    clock,
     json_bytes,
     require,
     sha,
     unique,
+    validate_observation,
     validate_xml_transition,
 )
 
@@ -95,6 +100,7 @@ def validate_transition(receipt, old, new, read, *, retain=None):
                 "transition mixes distinct operation attempts")
     require(ready.get("schema") == "cre-code-commit-ready-v1"
             and ready.get("release_sha256") == release_digest
+            and ready.get("selected") == new and ready.get("recovery_required_at_publication") is True
             and terminal.get("schema") == "cre-code-terminal-v1" and terminal.get("status") == "committed"
             and terminal.get("selected") == new and terminal.get("release_sha256") == release_digest
             and terminal.get("canonical_lease_released") is True
@@ -117,6 +123,25 @@ def validate_transition(receipt, old, new, read, *, retain=None):
             and observation.get("authorization_sha256") == authorization_digest
             and observation.get("native_completion_sha256") == sha(native_raw),
             "independent transition observation differs")
+    dependencies = ready.get("dependencies")
+    require(isinstance(dependencies, dict) and set(dependencies) == {
+        "package.json", "package-lock.json", "node_modules/.package-lock.json",
+    } and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+              for value in dependencies.values()), "transition dependency parity missing")
+    # Only the original pinned host snapshot and baseline XML are needed here.
+    # Reopening historical QA/releases recursively would change this finite contract.
+    roles = {"runtime_snapshot", *(row["xml"] for row in source["task_baseline"])}
+    pinned = Evidence({"inputs": [row for row in source["inputs"] if row["role"] in roles]}, read)
+    if retain is not None:
+        for role, raw in pinned.original.items():
+            retain[pinned.inputs[role]["path"]] = raw
+    readiness = ready.get("readiness")
+    require(isinstance(readiness, dict), "transition commit readiness missing")
+    qualified = clock(readiness.get("qualified_at"))
+    finished = clock(terminal.get("finished_at"))
+    require(qualified <= finished <= clock(observation.get("observed_at")), "transition chronology differs")
+    validate_observation(source, pinned, readiness, qualified, selected=True, ownership_phase="owned-maintenance")
+    validate_observation(source, pinned, observation, clock(observation.get("qualified_at")), selected=True)
     observed = unique(observation.get("tasks"), "key", TASKS)
     rows = unique(receipt.get("tasks"), "key", TASKS)
     baselines = unique(source.get("task_baseline"), "key", TASKS)
