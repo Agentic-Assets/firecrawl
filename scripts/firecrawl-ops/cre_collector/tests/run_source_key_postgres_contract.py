@@ -20,8 +20,9 @@ import cre_validate as validate  # noqa: E402
 IMAGE = "sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
 LABEL = "firecrawl.source-key-contract-owner"
 ORACLE = Path(__file__).parent / "fixtures/source_key_sql_before_singletons.sql"
+# JSON lines retain the original SQL's blank-line whitespace byte-for-byte.
 SOURCE_COUNTS_CONTROL = (
-    Path(__file__).parent / "fixtures/source_counts_before_decoded_source_key.sql"
+    Path(__file__).parent / "fixtures/source_counts_before_decoded_source_key.json"
 )
 SOURCE_COUNTS_CONTROL_SHA256 = (
     "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
@@ -139,7 +140,9 @@ ANALYZE;
 
 def queries(source_counts_json_root_control=None):
     if source_counts_json_root_control is not None:
-        control_bytes = source_counts_json_root_control.read_bytes()
+        control_bytes = "".join(
+            json.loads(source_counts_json_root_control.read_text())
+        ).encode("utf-8")
         if hashlib.sha256(control_bytes).hexdigest() != SOURCE_COUNTS_CONTROL_SHA256:
             raise RuntimeError("Frozen source_counts control hash mismatch")
         control = control_bytes.decode("utf-8").strip().removesuffix(";")

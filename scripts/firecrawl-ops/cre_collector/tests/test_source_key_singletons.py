@@ -1,6 +1,7 @@
 """Singleton attribution optimization; old SQL oracle is frozen independently."""
 
 import hashlib
+import json
 from pathlib import Path
 
 import cre_ingest as ingest
@@ -106,14 +107,15 @@ def test_source_counts_json_root_control_is_frozen_and_compares_distinct_arms(
     control_path = (
         Path(__file__).parent
         / "fixtures"
-        / "source_counts_before_decoded_source_key.sql"
+        / "source_counts_before_decoded_source_key.json"
     )
     arms = runner["queries"](control_path)["source_counts"]
-    assert arms["old"] == control_path.read_text().strip().removesuffix(";")
+    control_sql = "".join(json.loads(control_path.read_text()))
+    assert arms["old"] == control_sql.strip().removesuffix(";")
     assert arms["new"] == validate.QUERIES["source_counts"].strip().removesuffix(";")
     assert arms["old"] != arms["new"]
 
-    invalid_control = tmp_path / "mutable-control.sql"
-    invalid_control.write_text("SELECT 1;\n")
+    invalid_control = tmp_path / "mutable-control.json"
+    invalid_control.write_text(json.dumps(["SELECT 1;\n"]))
     with pytest.raises(RuntimeError, match="control hash mismatch"):
         runner["queries"](invalid_control)

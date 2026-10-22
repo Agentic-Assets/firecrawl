@@ -323,9 +323,9 @@ def test_source_counts_decoded_alias_is_the_only_frozen_query_change():
     control = (
         Path(__file__).parent
         / "fixtures"
-        / "source_counts_before_decoded_source_key.sql"
+        / "source_counts_before_decoded_source_key.json"
     )
-    original = control.read_bytes()
+    original = "".join(json.loads(control.read_text())).encode("utf-8")
     assert (
         hashlib.sha256(original).hexdigest()
         == "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
