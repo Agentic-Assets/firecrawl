@@ -153,7 +153,7 @@ def validate_advancements(release, evidence, previous):
                 and parent["stop_owner"].get("owner_role") == "checkpoint_series_one_shot_cli"
                 and parent.get("last_checkpoint", {}).get("run_id") == run_id
                 and parent["last_checkpoint"].get("child_invocation_id") == child_id
-                and run.get("schema_version") == 2 and run.get("run_id") == run_id
+                and type(run.get("schema_version")) is int and run["schema_version"] == 2 and run.get("run_id") == run_id
                 and run.get("collector_git_sha") == code and run.get("collector_git_dirty") is False
                 and run.get("status") in {"supported_scope_complete", "additive_scope_complete_current_inventory"}
                 and selected.get("checkpoint_status") == run["status"]

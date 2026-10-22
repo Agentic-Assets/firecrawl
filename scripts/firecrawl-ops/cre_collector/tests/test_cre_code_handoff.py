@@ -961,7 +961,7 @@ def test_maintained_old_edge_keeps_its_own_clocks_before_natural_advancement(lin
     validate_lineage(release,inputs.evidence(release))
 
 
-@pytest.mark.parametrize("mutation",["missing","duplicate","failed_key","wrong_source","wrong_sha","missing_bridge","unsettled_parent","running_child","nonzero","xml","wrong_parent","wrong_stamp","unfinished_task","missed","clock_regression","failed_clock","extra","wrong_run","event_result","event_guid","event_pid","capture_start","capture_failed","capture_deadline","series_bool","child_bool","checkpoint_status"])
+@pytest.mark.parametrize("mutation",["missing","duplicate","failed_key","wrong_source","wrong_sha","missing_bridge","unsettled_parent","running_child","nonzero","xml","wrong_parent","wrong_stamp","unfinished_task","missed","clock_regression","failed_clock","extra","wrong_run","event_result","event_guid","event_pid","capture_start","capture_failed","capture_deadline","series_bool","child_bool","checkpoint_status","run_float","run_bool"])
 def test_natural_advancement_refuses_incomplete_or_cross_operation_proof(natural_advancement_case,mutation):
     release,inputs,pointer=natural_advancement_case
     if mutation == "missing":release["natural_advancements"]=[]
@@ -977,7 +977,7 @@ def test_natural_advancement_refuses_incomplete_or_cross_operation_proof(natural
         next(row for row in inputs.rows if row["role"]==role).update(bytes=len(raw),sha256=sha(raw))
     else:
         role=pointer[{"wrong_source":"audit","wrong_sha":"audit","missing_bridge":"bridge","unsettled_parent":"parent_control",
-            "running_child":"child_control","nonzero":"audit","xml":"xml","wrong_parent":"bridge","wrong_stamp":"bridge","unfinished_task":"observation","missed":"observation","wrong_run":"child_control","capture_start":"audit","capture_failed":"audit","capture_deadline":"audit","series_bool":"series","child_bool":"child_control","checkpoint_status":"series"}[mutation]]
+            "running_child":"child_control","nonzero":"audit","xml":"xml","wrong_parent":"bridge","wrong_stamp":"bridge","unfinished_task":"observation","missed":"observation","wrong_run":"child_control","capture_start":"audit","capture_failed":"audit","capture_deadline":"audit","series_bool":"series","child_bool":"child_control","checkpoint_status":"series","run_float":"run","run_bool":"run"}[mutation]]
         value=json.loads(inputs.data[role]) if mutation != "xml" else None
         if mutation == "wrong_source":value["source"]="newmark"
         elif mutation == "wrong_sha":value["expectedSha"]=NEW["sha"]
@@ -991,7 +991,7 @@ def test_natural_advancement_refuses_incomplete_or_cross_operation_proof(natural
         elif mutation == "missed":value["tasks"][0]["missed_runs"]=1
         elif mutation == "wrong_run":value["run_id"]="different"
         elif mutation in {"capture_start","capture_failed","capture_deadline"}:value["capture"][{"capture_start":"StartAttempted","capture_failed":"StartFailed","capture_deadline":"ReadOnlyDeadlineExpired"}[mutation]]=mutation!="capture_start"
-        elif mutation in {"series_bool","child_bool"}:value["schema_version"]=True
+        elif mutation in {"series_bool","child_bool","run_float","run_bool"}:value["schema_version"]=2.0 if mutation=="run_float" else True
         elif mutation == "checkpoint_status":value["sources"]["interra-realty"]["checkpoint_status"]="different"
         raw=xml(NEW["sha"]) if mutation == "xml" else encoded(value)
         inputs.data[role]=raw

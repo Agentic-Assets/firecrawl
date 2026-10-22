@@ -419,6 +419,7 @@ def validate_lineage(release, evidence):
                 comparison, task = comparisons[member], tasks[member]
                 enabled = member_baseline["enabled"]
                 expected_state = "Ready" if enabled else "Disabled"
+                last_run, next_run = clock(task.get("last_run_utc")), clock(task.get("next_run_utc"))
                 require(comparison.get("prior_xml_sha256") == sha(prior)
                         and comparison.get("observed_xml_sha256") == sha(following_xml)
                         and comparison.get("raw_xml_equal_after_only_sha_replacement") is True
@@ -431,7 +432,7 @@ def validate_lineage(release, evidence):
                         and comparison.get("next_run_unchanged") is True
                         and task.get("enabled") is enabled and task.get("state") == expected_state
                         and type(task.get("last_result")) is int and task["last_result"] == member_baseline["last_task_result"]
-                        and clock(task.get("last_run_utc")) < clock(task.get("next_run_utc"))
+                        and (not enabled or last_run < next_run)
                         and (member != key or all(task.get(field) == member_baseline[field]
                                                 for field in ("last_run_utc", "next_run_utc")))
                         and task.get("xml_sha256") == sha(following_xml), "whole fleet lineage changed")
