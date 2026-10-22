@@ -22,6 +22,16 @@ export type CollectorScrapeOpts = ScrapeOpts & {
 
 const DEFAULT_SCRAPE_MAX_ATTEMPTS = 3;
 
+export type ScrapeResponseObservation = {
+  rawHtml: string;
+  metadata?: unknown;
+};
+
+export type ObservedJsonScrape = {
+  data: any;
+  response: ScrapeResponseObservation;
+};
+
 /** Resolve the benchmark-only retry reduction without changing normal runs. */
 export function configuredScrapeMaxAttempts(
   environment: NodeJS.ProcessEnv = process.env
@@ -88,7 +98,10 @@ export async function withRequestDeadline<T>(
   }
 }
 
-export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Promise<string> {
+async function scrapeRawWithObservation(
+  url: string,
+  opts: CollectorScrapeOpts = {},
+): Promise<ScrapeResponseObservation> {
   recordLogicalScrapeCall("raw");
   let lastErr: unknown = null;
   const maxAttempts = configuredScrapeMaxAttempts();
@@ -105,10 +118,14 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
         ...(opts.maxAge !== undefined ? { maxAge: opts.maxAge } : {}),
         timeout,
       }, { signal }), timeout);
-      const body = (doc as any).rawHtml ?? "";
-      if (!body) throw new Error("empty response body");
+      const response = doc as any;
+      const rawHtml = response.rawHtml ?? "";
+      if (!rawHtml) throw new Error("empty response body");
       recordClientAttemptCompleted(performanceAttempt, { outcome: "succeeded" });
-      return body;
+      return {
+        rawHtml,
+        ...(response.metadata !== undefined ? { metadata: response.metadata } : {}),
+      };
     } catch (err) {
       recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
@@ -122,6 +139,10 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
     }
   }
   throw lastErr;
+}
+
+export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Promise<string> {
+  return (await scrapeRawWithObservation(url, opts)).rawHtml;
 }
 
 export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Promise<ScrapedDoc> {
@@ -260,7 +281,10 @@ export function repairUnescapedJsonStringQuotes(body: string): string {
   return out;
 }
 
-export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): Promise<any> {
+export async function scrapeJsonWithObservation(
+  url: string,
+  opts: CollectorScrapeOpts = {},
+): Promise<ObservedJsonScrape> {
   recordLogicalScrapeCall("json");
   // A successful scrape can still return a non-JSON body (rate-limit or
   // challenge interstitial, e.g. Buildout under sustained paging). Retry the
@@ -268,9 +292,9 @@ export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): P
   const attempts = opts.jsonAttempts ?? 3;
   const backoffMs = opts.jsonBackoffMs ?? 8000;
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const body = await scrapeRaw(url, opts);
-    const parsed = parseJsonBody(body);
-    if (parsed !== null) return parsed;
+    const response = await scrapeRawWithObservation(url, opts);
+    const parsed = parseJsonBody(response.rawHtml);
+    if (parsed !== null) return { data: parsed, response };
     if (attempt >= attempts) break;
     console.error(`non-JSON body from ${url} (attempt ${attempt}); backing off`);
     const delayMs = backoffMs * attempt;
@@ -278,4 +302,8 @@ export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): P
     await new Promise((r) => setTimeout(r, delayMs));
   }
   throw new Error(`response from ${url} contained no parseable JSON object`);
+}
+
+export async function scrapeJson(url: string, opts: CollectorScrapeOpts = {}): Promise<any> {
+  return (await scrapeJsonWithObservation(url, opts)).data;
 }
