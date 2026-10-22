@@ -75,8 +75,13 @@ python3 tests/run_transwestern_image_transition_postgres_contract.py \
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
 parametrized and data-driven cases (the shell-syntax guard is parametrized over
-every `*.sh` in the collector), so always re-run it and report the exact output
-rather than quoting a frozen total or counting `def test_`.
+every `*.sh` in the collector), so totals depend on the candidate and inputs.
+When reporting a run, include its exact command and output, candidate SHA,
+code/input/dependency bindings, and scope; do not infer totals from this file
+or count `def test_`. Reuse prior results only while those bindings, scope, and
+freshness still apply. Rerun when changes, failures, or unresolved risks invalidate
+prior proof, and run all applicable repository-required checks on the integrated
+final candidate. Never present an older result as a new candidate pass.
 
 The PostgreSQL contract runner is intentionally outside pytest: it applies the
 source OM-facts migration and executes the generated production upsert in an
