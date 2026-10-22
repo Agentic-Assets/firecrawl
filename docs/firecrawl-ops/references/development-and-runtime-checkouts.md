@@ -132,6 +132,17 @@ including disabled tasks. Nonzero results need original terminal, settlement and
 partial-data proof plus every contiguous SHA-only XML/readback edge for the whole
 fleet. A current baseline never replaces original failed-operation provenance.
 
+Historical fleet edges retain their own task clocks. A later successful Interra
+or Newmark run requires one `natural_advancements` entry for that changed member
+at the final historical-to-current boundary. It pins the original six Scheduler
+event XML records, live action-to-WSL PID/creation bridge and source/SHA/Windows
+admission stamp, native audit and drained streams, series/run manifests, settled
+parent/child controls, and terminal task observation/XML. Each proof qualifies
+its own member; later progress by another member does not rewrite that snapshot.
+Ready/result zero alone is insufficient. The failed Qualified operation/result
+and last-run provenance remain exact; fresh admission still binds every task's
+complete current tuple. Missing, ambiguous or reused operation evidence refuses.
+
 `combined-candidate-v1` reads the actual historical combined QA producer.
 `owned-gates-v1` reads new gate receipts with actual command/cwd/identity, exit,
 unchanged-tree and settlement evidence. Checkpoint commands have one closed

@@ -329,6 +329,7 @@ def lineage_case(admitted):
 def test_original_failure_reaches_current_baseline_through_every_real_shape_edge(lineage_case):
     release, evidence, _ = lineage_case
     validate_lineage(release, evidence)
+    for field in ("last_run_utc","next_run_utc"):release["task_baseline"][0][field]=release["task_baseline"][0][field].replace("+00:00","Z");validate_lineage(release,evidence)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "reversed", "cycle", "wrong_original", "result", "other_task"])
@@ -850,23 +851,23 @@ def test_transition_retains_original_pinned_subset_for_outer_recheck(admitted,tm
         validate_transition(receipt,OLD,NEW,read_file)
 
 
-@pytest.fixture
-def natural_advancement_case(lineage_case):
+def add_natural_advancement(release,inputs,key="interra"):
     """Synthetic complete instances of the inspected native/Linux producers."""
-    release,_,inputs=lineage_case
-    row=release["task_baseline"][0];key=row["key"];source="interra-realty"
-    start=NOW+timedelta(hours=2,seconds=1);finish=start+timedelta(seconds=120)
-    row.update(last_run_utc=start.isoformat(),next_run_utc=(NOW+timedelta(hours=14)).isoformat())
+    row=next(member for member in release["task_baseline"] if member["key"]==key);source={"interra":"interra-realty","newmark":"newmark"}[key]
+    offset=0 if key=="interra" else 15;status="additive_scope_complete_current_inventory" if offset==0 else "supported_scope_complete"
+    start=NOW+timedelta(hours=2,minutes=offset,seconds=1);finish=start+timedelta(seconds=120)
+    row.update(last_run_utc=start.isoformat(),next_run_utc=(NOW+timedelta(hours=14,minutes=offset)).isoformat())
     release["roots"]={"runtime":"/home/fixture/runtime"}
     series=(start+timedelta(seconds=4)).strftime("%Y-%m-%dT%H%M%SZ")
-    run=series+"-"+"f"*12;parent="1"*32;child="2"*32;instance="{12345678-1234-1234-1234-123456789abc}"
+    run=series+"-"+"f"*12;parent=("1" if offset==0 else "3")*32;child=("2" if offset==0 else "4")*32
+    instance="{12345678-1234-1234-1234-123456789ab"+("c}" if offset==0 else "d}")
     directory=release["roots"]["runtime"]+"/scripts/firecrawl-ops/cre_collector/out/checkpoint-series/"+series
     stamp=int((start+timedelta(seconds=4)).timestamp()*1000)
     pointer={"key":key,"code":OLD}
-    def put(name,value):pointer[name]=inputs.add("advance-"+name,value)
+    def put(name,value):pointer[name]=inputs.add("advance-"+key+"-"+name,value)
     put("stdout",b"synthetic original native stdout");put("stderr",b"")
     stream=lambda size:dict.fromkeys(("Truncated","ReadFailed","WriteFailed","FlushFailed","CloseFailed","DrainTimedOut","ReaderDidNotStop","RunReferenceConflict","Failed"),False)|{"Eof":True,"ObservedBytes":size,"CapturedBytes":size,"ObservedRunDirectory":None}
-    capture={"Started":True,"StartAttempted":True,"StartFailed":False,"Failed":False,"NativeExitCode":0,
+    capture={"Started":True,"StartAttempted":True,"StartFailed":False,"ReadOnlyDeadlineExpired":False,"Failed":False,"NativeExitCode":0,
              "Stdout":stream(len(inputs.data[pointer["stdout"]])),"Stderr":stream(0)}
     capture["Stdout"]["ObservedRunDirectory"]=directory
     summary={"schema_version":1,"verified":True,"source":source,"collector_git_sha":OLD["sha"],
@@ -887,12 +888,12 @@ def natural_advancement_case(lineage_case):
         if event_id in {200,201}:data.update(TaskInstanceId=instance,ActionName=row["actions"][0]["execute"],EnginePID="1234")
         if event_id == 201:data["ResultCode"]="0"
         at=start+timedelta(milliseconds=100*(index+1)) if index<4 else finish+timedelta(seconds=1,milliseconds=100*index)
-        record_ids.append(100+index)
+        record_ids.append(100+offset*10+index)
         event=(f'<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-TaskScheduler"/>'
-               f'<EventID>{event_id}</EventID><EventRecordID>{100+index}</EventRecordID><TimeCreated SystemTime="{at.isoformat()}"/>'
+               f'<EventID>{event_id}</EventID><EventRecordID>{100+offset*10+index}</EventRecordID><TimeCreated SystemTime="{at.isoformat()}"/>'
                '<Channel>Microsoft-Windows-TaskScheduler/Operational</Channel></System><EventData>'
                +''.join(f'<Data Name="{name}">{value}</Data>' for name,value in data.items())+'</EventData></Event>')
-        event_roles.append(inputs.add("advance-event-"+str(event_id),event.encode()))
+        event_roles.append(inputs.add("advance-"+key+"-event-"+str(event_id),event.encode()))
     pointer["events"]=event_roles
     put("bridge",{"observed_at":(start+timedelta(seconds=20)).isoformat(),"task_instance_guid":instance,"task_path":task,
         "scheduler_event_record_ids":record_ids[:4],"action_pid":1234,"action_creation_utc":(start+timedelta(milliseconds=150)).isoformat(),
@@ -902,12 +903,12 @@ def natural_advancement_case(lineage_case):
         "started_at":(start+timedelta(seconds=4,milliseconds=300)).isoformat(),"finished_at":finish.isoformat(),
         "latest_invocation_admission":{"expected_sha":OLD["sha"],"windows_admission_unix_ms":stamp},
         "latest_invocation_control":{"invocation_id":parent,"receipt":".series-control/"+parent+".json"},
-        "sources":{source:{"state":"complete","checkpoint_run":"runs/"+run,"attempts":[{"number":1,"rc":0,"series_control_child_id":child}]}}})
+        "sources":{source:{"state":"complete","checkpoint_status":status,"checkpoint_run":"runs/"+run,"attempts":[{"number":1,"rc":0,"series_control_child_id":child}]}}})
     put("parent_control",{"status":"complete","local_settlement":"confirmed","started_unix_ms":stamp+300,
         "finished_unix_ms":int(finish.timestamp()*1000),"last_checkpoint":{"child_invocation_id":child,"run_id":run,"pid":12},
         "stop_owner":{"invocation_id":parent,"owner_role":"checkpoint_series_one_shot_cli"}})
     put("run",{"schema_version":2,"collector_git_sha":OLD["sha"],"collector_git_dirty":False,"run_id":run,
-        "status":"additive_scope_complete_current_inventory","sources":{source:{"state":"ingested"}},
+        "status":status,"sources":{source:{"state":"ingested"}},
         "started_at":(start+timedelta(seconds=5)).isoformat(),"finished_at":(finish-timedelta(seconds=1)).isoformat()})
     put("child_control",{"schema_version":1,"invocation_id":parent,"child_invocation_id":child,"run_id":run,"collector_git_sha":OLD["sha"],
         "guards_stopped":True,"nested_cleanup_confirmed":True,"terminal_evidence_saved":True})
@@ -915,24 +916,68 @@ def natural_advancement_case(lineage_case):
     put("observation",{"observed_at":(finish+timedelta(seconds=30)).isoformat(),"errors":[],"running_instances":[],
         "tasks":[{**{field:member[field] for field in ("key","task_path","task_name","enabled","last_run_utc","next_run_utc")},
                   "last_result":member["last_task_result"],"state":"Ready","missed_runs":0} for member in release["task_baseline"]]})
-    release["natural_advancements"]=[pointer]
+    release.setdefault("natural_advancements",[]).append(pointer)
+    return pointer
+
+
+@pytest.fixture
+def natural_advancement_case(lineage_case):
+    release,_,inputs=lineage_case
+    pointer=add_natural_advancement(release,inputs)
     return release,inputs,pointer
 
 
 def test_settled_same_code_natural_run_bridges_healthy_clock_advance(natural_advancement_case):
-    release,inputs,_=natural_advancement_case
+    release,inputs,_=natural_advancement_case;validate_lineage(release,inputs.evidence(release))
+
+
+def test_two_healthy_runs_keep_their_independent_original_observation_clocks(natural_advancement_case):
+    release,inputs,first=natural_advancement_case
+    add_natural_advancement(release,inputs,"newmark")
+    first_snapshot=json.loads(inputs.data[first["observation"]])
+    assert first_snapshot["tasks"][1]["last_run_utc"] != release["task_baseline"][1]["last_run_utc"]
     validate_lineage(release,inputs.evidence(release))
 
 
-@pytest.mark.parametrize("mutation",["missing","duplicate","failed_key","wrong_source","wrong_sha","missing_bridge","unsettled_parent","running_child","nonzero","xml","wrong_parent","wrong_stamp","unfinished_task"])
+def test_independent_members_cannot_reuse_a_scheduler_instance(natural_advancement_case):
+    release,inputs,first=natural_advancement_case;second=add_natural_advancement(release,inputs,"newmark")
+    role=second["bridge"];bridge=json.loads(inputs.data[role]);bridge["task_instance_guid"]=json.loads(inputs.data[first["bridge"]])["task_instance_guid"]
+    raw=encoded(bridge);inputs.data[role]=raw;next(row for row in inputs.rows if row["role"]==role).update(bytes=len(raw),sha256=sha(raw))
+    with pytest.raises(HandoffError,match="reused natural operation"):validate_lineage(release,inputs.evidence(release))
+
+
+def test_maintained_old_edge_keeps_its_own_clocks_before_natural_advancement(lineage_case,tmp_path):
+    release,_,inputs=lineage_case
+    edge=release["task_baseline"][2]["failure"]["transitions"][-1]
+    source=copy.deepcopy(release);source.update(deployed=edge["old"],selected=edge["new"])
+    source["task_baseline"][2]["failure"]["transitions"].pop()
+    for member in source["task_baseline"]:member["xml"]=next(row["before"] for row in edge["xml"] if row["key"]==member["key"])
+    receipt=synthetic_transition_files(tmp_path/"maintained-before-natural",source,inputs)
+    refs=[receipt[name] for name in ("release","mutation","commit_ready","terminal","native_completion","native_stdout","native_stderr","independent_observation")]
+    refs.extend(row[field] for row in receipt["tasks"] for field in ("before_xml","final_xml","independent_xml"))
+    for ref in refs:inputs.data[ref["path"]]=read_file(ref["path"])
+    edge["readback"]=inputs.add("maintained-before-natural",receipt)
+    add_natural_advancement(release,inputs)
+    validate_lineage(release,inputs.evidence(release))
+
+
+@pytest.mark.parametrize("mutation",["missing","duplicate","failed_key","wrong_source","wrong_sha","missing_bridge","unsettled_parent","running_child","nonzero","xml","wrong_parent","wrong_stamp","unfinished_task","missed","clock_regression","failed_clock","extra","wrong_run","event_result","event_guid","event_pid","capture_start","capture_failed","capture_deadline","series_bool","child_bool","checkpoint_status"])
 def test_natural_advancement_refuses_incomplete_or_cross_operation_proof(natural_advancement_case,mutation):
     release,inputs,pointer=natural_advancement_case
     if mutation == "missing":release["natural_advancements"]=[]
     elif mutation == "duplicate":release["natural_advancements"].append(copy.deepcopy(pointer))
     elif mutation == "failed_key":pointer["key"]="qualified"
+    elif mutation == "extra":release["natural_advancements"].append(dict(pointer,key="newmark"))
+    elif mutation == "failed_clock":release["task_baseline"][2]["last_run_utc"]=NOW.isoformat()
+    elif mutation == "clock_regression":release["task_baseline"][0]["last_run_utc"]=(NOW-timedelta(days=2)).isoformat()
+    elif mutation.startswith("event_"):
+        role=pointer["events"][4]
+        before,after={"event_result":(b'ResultCode">0',b'ResultCode">1'),"event_guid":(b'123456789abc',b'123456789abd'),"event_pid":(b'EnginePID">1234',b'EnginePID">9999')}[mutation]
+        raw=inputs.data[role].replace(before,after);inputs.data[role]=raw
+        next(row for row in inputs.rows if row["role"]==role).update(bytes=len(raw),sha256=sha(raw))
     else:
         role=pointer[{"wrong_source":"audit","wrong_sha":"audit","missing_bridge":"bridge","unsettled_parent":"parent_control",
-            "running_child":"child_control","nonzero":"audit","xml":"xml","wrong_parent":"bridge","wrong_stamp":"bridge","unfinished_task":"observation"}[mutation]]
+            "running_child":"child_control","nonzero":"audit","xml":"xml","wrong_parent":"bridge","wrong_stamp":"bridge","unfinished_task":"observation","missed":"observation","wrong_run":"child_control","capture_start":"audit","capture_failed":"audit","capture_deadline":"audit","series_bool":"series","child_bool":"child_control","checkpoint_status":"series"}[mutation]]
         value=json.loads(inputs.data[role]) if mutation != "xml" else None
         if mutation == "wrong_source":value["source"]="newmark"
         elif mutation == "wrong_sha":value["expectedSha"]=NEW["sha"]
@@ -943,6 +988,11 @@ def test_natural_advancement_refuses_incomplete_or_cross_operation_proof(natural
         elif mutation == "wrong_parent":value["direct_wsl_parent_pid"]=9999
         elif mutation == "wrong_stamp":value["scalar_argv"]["windows-admission-unix-ms"]="1"
         elif mutation == "unfinished_task":value["running_instances"]=[{"path":pointer["key"]}]
+        elif mutation == "missed":value["tasks"][0]["missed_runs"]=1
+        elif mutation == "wrong_run":value["run_id"]="different"
+        elif mutation in {"capture_start","capture_failed","capture_deadline"}:value["capture"][{"capture_start":"StartAttempted","capture_failed":"StartFailed","capture_deadline":"ReadOnlyDeadlineExpired"}[mutation]]=mutation!="capture_start"
+        elif mutation in {"series_bool","child_bool"}:value["schema_version"]=True
+        elif mutation == "checkpoint_status":value["sources"]["interra-realty"]["checkpoint_status"]="different"
         raw=xml(NEW["sha"]) if mutation == "xml" else encoded(value)
         inputs.data[role]=raw
         next(row for row in inputs.rows if row["role"]==role).update(bytes=len(raw),sha256=sha(raw))

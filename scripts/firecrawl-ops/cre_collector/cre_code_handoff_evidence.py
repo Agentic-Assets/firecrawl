@@ -316,6 +316,7 @@ def validate_owned_qa(release, evidence):
 
 def validate_lineage(release, evidence):
     baseline = unique(release["task_baseline"], "key", TASKS)
+    latest_tasks = None
     for key, row in baseline.items():
         require(row.get("task_path") == TASK_PATH and row.get("task_name") == TASKS[key]
                 and type(row.get("enabled")) is bool
@@ -391,11 +392,13 @@ def validate_lineage(release, evidence):
                     if previous_fleet is not None:
                         require(previous_fleet[member] == prior, "maintained fleet XML gap")
                     wanted = maintained[member]["after_tuple"]
-                    require(all(wanted[field] == member_baseline[field] for field in
-                                ("enabled", "last_task_result", "last_run_utc", "next_run_utc")),
+                    require(type(wanted["last_task_result"]) is int and all(wanted[field] == member_baseline[field] for field in
+                                (("enabled", "last_task_result", "last_run_utc", "next_run_utc") if member == key
+                                 else ("enabled", "last_task_result"))),
                             "maintained edge failed task tuple changed")
                     fleet[member] = following_xml
                 original, current, previous_fleet = after, following, fleet
+                latest_tasks = {member: maintained[member]["after_tuple"] for member in baseline}
                 seen.add(current["sha"])
                 continue
             require(readback.get("read_only") is True and readback.get("all_checks_passed") is True
@@ -418,16 +421,19 @@ def validate_lineage(release, evidence):
                 expected_state = "Ready" if enabled else "Disabled"
                 require(comparison.get("prior_xml_sha256") == sha(prior)
                         and comparison.get("observed_xml_sha256") == sha(following_xml)
+                        and comparison.get("raw_xml_equal_after_only_sha_replacement") is True
                         and comparison.get("enabled_before") is enabled
                         and comparison.get("enabled_after") is enabled
                         and comparison.get("state_before") == comparison.get("state_after") == expected_state
                         and comparison.get("result_before") == comparison.get("result_after") == member_baseline["last_task_result"]
+                        and all(type(comparison.get(field)) is int for field in ("result_before", "result_after"))
                         and comparison.get("last_run_unchanged") is True
                         and comparison.get("next_run_unchanged") is True
                         and task.get("enabled") is enabled and task.get("state") == expected_state
-                        and task.get("last_result") == member_baseline["last_task_result"]
-                        and task.get("last_run_utc") == member_baseline["last_run_utc"]
-                        and task.get("next_run_utc") == member_baseline["next_run_utc"]
+                        and type(task.get("last_result")) is int and task["last_result"] == member_baseline["last_task_result"]
+                        and clock(task.get("last_run_utc")) < clock(task.get("next_run_utc"))
+                        and (member != key or all(task.get(field) == member_baseline[field]
+                                                for field in ("last_run_utc", "next_run_utc")))
                         and task.get("xml_sha256") == sha(following_xml), "whole fleet lineage changed")
             comparison, task = comparisons[key], tasks[key]
             require(comparison.get("prior_xml_sha256") == sha(before)
@@ -441,12 +447,18 @@ def validate_lineage(release, evidence):
                     and task.get("xml_sha256") == sha(after), "lineage task changed")
             original, current = after, following
             previous_fleet = fleet
+            latest_tasks = {member: {"enabled": task["enabled"], "last_task_result": task["last_result"],
+                                    "last_run_utc": task["last_run_utc"], "next_run_utc": task["next_run_utc"]}
+                            for member, task in tasks.items()}
             seen.add(current["sha"])
         require(current == release["deployed"] and original == evidence.raw(row["xml"]),
                 "failure lineage does not reach deployed baseline")
         if previous_fleet is not None:
             require(all(previous_fleet[k] == evidence.raw(v["xml"]) for k, v in baseline.items()),
                     "whole fleet lineage does not reach current baseline")
+    from cre_code_handoff_advancement import validate_advancements
+
+    validate_advancements(release, evidence, latest_tasks)
 
 
 def validate_observation(release, evidence, observation, now, *, selected=False, ownership_phase="released-clear"):
