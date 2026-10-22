@@ -848,3 +848,102 @@ def test_transition_retains_original_pinned_subset_for_outer_recheck(admitted,tm
     assert read_file(path) != retained[path]
     with pytest.raises(HandoffError,match="changed input"):
         validate_transition(receipt,OLD,NEW,read_file)
+
+
+@pytest.fixture
+def natural_advancement_case(lineage_case):
+    """Synthetic complete instances of the inspected native/Linux producers."""
+    release,_,inputs=lineage_case
+    row=release["task_baseline"][0];key=row["key"];source="interra-realty"
+    start=NOW+timedelta(hours=2,seconds=1);finish=start+timedelta(seconds=120)
+    row.update(last_run_utc=start.isoformat(),next_run_utc=(NOW+timedelta(hours=14)).isoformat())
+    release["roots"]={"runtime":"/home/fixture/runtime"}
+    series=(start+timedelta(seconds=4)).strftime("%Y-%m-%dT%H%M%SZ")
+    run=series+"-"+"f"*12;parent="1"*32;child="2"*32;instance="{12345678-1234-1234-1234-123456789abc}"
+    directory=release["roots"]["runtime"]+"/scripts/firecrawl-ops/cre_collector/out/checkpoint-series/"+series
+    stamp=int((start+timedelta(seconds=4)).timestamp()*1000)
+    pointer={"key":key,"code":OLD}
+    def put(name,value):pointer[name]=inputs.add("advance-"+name,value)
+    put("stdout",b"synthetic original native stdout");put("stderr",b"")
+    stream=lambda size:dict.fromkeys(("Truncated","ReadFailed","WriteFailed","FlushFailed","CloseFailed","DrainTimedOut","ReaderDidNotStop","RunReferenceConflict","Failed"),False)|{"Eof":True,"ObservedBytes":size,"CapturedBytes":size,"ObservedRunDirectory":None}
+    capture={"Started":True,"StartAttempted":True,"StartFailed":False,"Failed":False,"NativeExitCode":0,
+             "Stdout":stream(len(inputs.data[pointer["stdout"]])),"Stderr":stream(0)}
+    capture["Stdout"]["ObservedRunDirectory"]=directory
+    summary={"schema_version":1,"verified":True,"source":source,"collector_git_sha":OLD["sha"],
+             "windows_admission_unix_ms":stamp,"series_id":series,"invocation_id":parent,"run_id":run,
+             "measurement":"generation_exact_current_inventory","quality_no_regression":True,
+             "local_settlement":"confirmed","verified_listings":1,"transaction_scope":["sale","lease"]}
+    put("audit",{"createdAt":(start+timedelta(seconds=1)).isoformat(),"returnedAt":(finish+timedelta(milliseconds=500)).isoformat(),
+        "tier":"series","source":source,"pipeline":False,"expectedSha":OLD["sha"],"status":"returned","dispatch":"returned",
+        "nativeExitCode":0,"wrapperExitCode":0,"exitCode":0,"linuxSettlement":"unverified","admitted":True,
+        "cpuPercent":20,"availablePhysicalGiB":8,"windowsAdmissionUnixMs":stamp,"capture":capture,
+        "notificationSummaryStatus":"verified","notificationSummary":summary})
+    event_roles=[];record_ids=[]
+    task=row["task_path"]+row["task_name"]
+    for index,event_id in enumerate((107,129,100,200,201,102)):
+        data={"TaskName":task}
+        if event_id in {107,100,102}:data["InstanceId"]=instance
+        if event_id == 129:data["ProcessID"]="1234"
+        if event_id in {200,201}:data.update(TaskInstanceId=instance,ActionName=row["actions"][0]["execute"],EnginePID="1234")
+        if event_id == 201:data["ResultCode"]="0"
+        at=start+timedelta(milliseconds=100*(index+1)) if index<4 else finish+timedelta(seconds=1,milliseconds=100*index)
+        record_ids.append(100+index)
+        event=(f'<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-TaskScheduler"/>'
+               f'<EventID>{event_id}</EventID><EventRecordID>{100+index}</EventRecordID><TimeCreated SystemTime="{at.isoformat()}"/>'
+               '<Channel>Microsoft-Windows-TaskScheduler/Operational</Channel></System><EventData>'
+               +''.join(f'<Data Name="{name}">{value}</Data>' for name,value in data.items())+'</EventData></Event>')
+        event_roles.append(inputs.add("advance-event-"+str(event_id),event.encode()))
+    pointer["events"]=event_roles
+    put("bridge",{"observed_at":(start+timedelta(seconds=20)).isoformat(),"task_instance_guid":instance,"task_path":task,
+        "scheduler_event_record_ids":record_ids[:4],"action_pid":1234,"action_creation_utc":(start+timedelta(milliseconds=150)).isoformat(),
+        "direct_wsl_pid":5678,"direct_wsl_parent_pid":1234,"direct_wsl_creation_utc":(start+timedelta(seconds=4,milliseconds=200)).isoformat(),
+        "scalar_argv":{"expected-sha":OLD["sha"],"sources":source,"windows-admission-unix-ms":str(stamp)}})
+    put("series",{"schema_version":1,"collector_git_sha":OLD["sha"],"collector_git_dirty":False,"series_id":series,"status":"complete",
+        "started_at":(start+timedelta(seconds=4,milliseconds=300)).isoformat(),"finished_at":finish.isoformat(),
+        "latest_invocation_admission":{"expected_sha":OLD["sha"],"windows_admission_unix_ms":stamp},
+        "latest_invocation_control":{"invocation_id":parent,"receipt":".series-control/"+parent+".json"},
+        "sources":{source:{"state":"complete","checkpoint_run":"runs/"+run,"attempts":[{"number":1,"rc":0,"series_control_child_id":child}]}}})
+    put("parent_control",{"status":"complete","local_settlement":"confirmed","started_unix_ms":stamp+300,
+        "finished_unix_ms":int(finish.timestamp()*1000),"last_checkpoint":{"child_invocation_id":child,"run_id":run,"pid":12},
+        "stop_owner":{"invocation_id":parent,"owner_role":"checkpoint_series_one_shot_cli"}})
+    put("run",{"schema_version":2,"collector_git_sha":OLD["sha"],"collector_git_dirty":False,"run_id":run,
+        "status":"additive_scope_complete_current_inventory","sources":{source:{"state":"ingested"}},
+        "started_at":(start+timedelta(seconds=5)).isoformat(),"finished_at":(finish-timedelta(seconds=1)).isoformat()})
+    put("child_control",{"schema_version":1,"invocation_id":parent,"child_invocation_id":child,"run_id":run,"collector_git_sha":OLD["sha"],
+        "guards_stopped":True,"nested_cleanup_confirmed":True,"terminal_evidence_saved":True})
+    put("xml",inputs.data[row["xml"]])
+    put("observation",{"observed_at":(finish+timedelta(seconds=30)).isoformat(),"errors":[],"running_instances":[],
+        "tasks":[{**{field:member[field] for field in ("key","task_path","task_name","enabled","last_run_utc","next_run_utc")},
+                  "last_result":member["last_task_result"],"state":"Ready","missed_runs":0} for member in release["task_baseline"]]})
+    release["natural_advancements"]=[pointer]
+    return release,inputs,pointer
+
+
+def test_settled_same_code_natural_run_bridges_healthy_clock_advance(natural_advancement_case):
+    release,inputs,_=natural_advancement_case
+    validate_lineage(release,inputs.evidence(release))
+
+
+@pytest.mark.parametrize("mutation",["missing","duplicate","failed_key","wrong_source","wrong_sha","missing_bridge","unsettled_parent","running_child","nonzero","xml","wrong_parent","wrong_stamp","unfinished_task"])
+def test_natural_advancement_refuses_incomplete_or_cross_operation_proof(natural_advancement_case,mutation):
+    release,inputs,pointer=natural_advancement_case
+    if mutation == "missing":release["natural_advancements"]=[]
+    elif mutation == "duplicate":release["natural_advancements"].append(copy.deepcopy(pointer))
+    elif mutation == "failed_key":pointer["key"]="qualified"
+    else:
+        role=pointer[{"wrong_source":"audit","wrong_sha":"audit","missing_bridge":"bridge","unsettled_parent":"parent_control",
+            "running_child":"child_control","nonzero":"audit","xml":"xml","wrong_parent":"bridge","wrong_stamp":"bridge","unfinished_task":"observation"}[mutation]]
+        value=json.loads(inputs.data[role]) if mutation != "xml" else None
+        if mutation == "wrong_source":value["source"]="newmark"
+        elif mutation == "wrong_sha":value["expectedSha"]=NEW["sha"]
+        elif mutation == "missing_bridge":value.pop("direct_wsl_pid")
+        elif mutation == "unsettled_parent":value["local_settlement"]="unverified"
+        elif mutation == "running_child":value["guards_stopped"]=False
+        elif mutation == "nonzero":value["exitCode"]=1
+        elif mutation == "wrong_parent":value["direct_wsl_parent_pid"]=9999
+        elif mutation == "wrong_stamp":value["scalar_argv"]["windows-admission-unix-ms"]="1"
+        elif mutation == "unfinished_task":value["running_instances"]=[{"path":pointer["key"]}]
+        raw=xml(NEW["sha"]) if mutation == "xml" else encoded(value)
+        inputs.data[role]=raw
+        next(row for row in inputs.rows if row["role"]==role).update(bytes=len(raw),sha256=sha(raw))
+    with pytest.raises(HandoffError):validate_lineage(release,inputs.evidence(release))
