@@ -417,6 +417,22 @@ def main():
     creation_attempted = False
     env = dict(os.environ, DOCKER_CONTEXT="default")
     env.pop("DOCKER_HOST", None)
+    docker_failure_count = 0
+
+    def preserve_docker_failure(stderr, input):
+        nonlocal docker_failure_count
+        docker_failure_count += 1
+        stem = f"docker-failure-{docker_failure_count:02d}"
+        artifacts = []
+        for suffix, content in (("stderr.txt", stderr), ("sql.txt", input)):
+            if content is None:
+                continue
+            path = output.parent / f"{stem}.{suffix}"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content.encode("utf-8"))
+            artifacts.append(path.name)
+        return ", ".join(artifacts)
 
     def docker(*argv, timeout=20, input=None, check=True):
         result = subprocess.run(
@@ -429,7 +445,16 @@ def main():
             check=False,
         )
         if check and result.returncode:
-            raise RuntimeError("Synthetic Docker command failed")
+            try:
+                artifacts = preserve_docker_failure(result.stderr, input)
+            except OSError as error:
+                raise RuntimeError(
+                    "Synthetic Docker command failed; private diagnostics could not be saved"
+                ) from error
+            raise RuntimeError(
+                f"Synthetic Docker command failed (exit {result.returncode}); "
+                f"saved {artifacts}"
+            )
         return result
 
     def record():
