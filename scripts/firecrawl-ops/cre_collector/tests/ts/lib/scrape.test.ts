@@ -253,7 +253,7 @@ describe("observed JSON scrape context", () => {
         metadata: { statusCode: 200, sourceURL: "https://example.com/inventory", url: "https://example.com/final" },
       },
       {
-        rawHtml: '<html><pre>{&quot;Documents&quot;:[],&quot;DocumentCount&quot;:0}</pre></html>',
+        rawHtml: '<html><pre>{"Documents":[],"DocumentCount":0}</pre></html>',
         metadata: { statusCode: 206, sourceURL: "https://example.com/wrapped", url: "https://example.com/wrapped-final" },
       },
     ];
@@ -269,5 +269,21 @@ describe("observed JSON scrape context", () => {
       assert.equal("sha256" in result.response, false, "ordinary observations omit diagnostic digests");
     }
     assert.equal(calls, observations.length);
+  });
+
+  it("preserves the legacy parse result for an entity-encoded empty-array fragment", async t => {
+    const scrapeModule = await import("../../../lib/scrape.js");
+    const scrapeJsonWithObservation = (scrapeModule as any).scrapeJsonWithObservation;
+    const rawHtml = '<html><pre>{&quot;Documents&quot;:[],&quot;DocumentCount&quot;:0}</pre></html>';
+    const original = firecrawl.scrape;
+    let calls = 0;
+    t.mock.method(firecrawl, "scrape", async () => { calls++; return { rawHtml }; });
+    t.after(() => { (firecrawl as any).scrape = original; });
+
+    assert.deepEqual(await scrapeJson("https://example.com/legacy-parse"), []);
+    const observed = await scrapeJsonWithObservation("https://example.com/observed-parse");
+    assert.deepEqual(observed.data, []);
+    assert.equal(observed.response.rawHtml, rawHtml);
+    assert.equal(calls, 2);
   });
 });
