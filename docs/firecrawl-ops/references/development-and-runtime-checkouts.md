@@ -223,6 +223,23 @@ checks preserve trigger XML and recheck enabled clocks after restoration.
 A merged tooling PR or prepared input authorizes no
 runtime delivery, data acceptance or scheduling change.
 
+The draft held-task restoration extension accepts a distinct
+`cre-code-restoration-v1` packet through `--restoration-packet` (native
+`-RestorationPath/-RestorationSha`), with a new review, authorization and exclusive
+output. It preserves the failed predecessor and uses separate restoration
+mutation, ready, terminal, native-completion and reconciliation records. It never
+updates code, registers tasks or reuses a spent code-release authorization.
+Its only supported Enable boundary is `zero-missed-no-crossed-trigger-v1`: every
+fresh held and sealed-audit missed count must be zero, current/audit/original next
+clocks must match, and each original desired Enabled trigger must remain at least
+900 seconds away. Current missed or rolled-clock cases refuse. Empty instances
+or a bounded no-catch-up observation cannot satisfy this boundary. This draft
+does not recover the current missed-run state and is not production accepted;
+catch-up policy and any wider restoration route require separate approval and
+source/packet proof. The canonical task contract treats omitted
+`AllowHardTerminate` as its documented true default while preserving explicit
+false. Diagnostic-only termination overrides do not prove production equivalence.
+
 Before any runtime handoff, use the current runbook and host tools to establish fresh idleness
 and ownership on the exact target host: inspect active run/lock authority and actual scheduler
 state. Preserve the prior source definitions, deployed code SHA, and scheduler enabled/disabled
