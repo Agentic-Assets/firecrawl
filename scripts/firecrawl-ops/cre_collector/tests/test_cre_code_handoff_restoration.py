@@ -89,37 +89,37 @@ def restoration_case(complete_case, lineage_case):
         held = final.replace(b"<Enabled>true</Enabled>", b"<Enabled>false</Enabled>")
         before_role, final_role, held_role = (put(key + "-" + name, data) for name, data in
                                               (("before", before), ("final", final), ("held", held)))
-        xml_rows.append(dict(key=key, before=before_role, final=final_role, audited=held_role))
+        xml_rows.append({"key": key, "before": before_role, "final": final_role, "audited": held_role})
         actions = [{field: value.replace(OLD["sha"], NEW["sha"]) for field, value in action.items()}
                    for action in baseline["actions"]]
         rows.append(dict(baseline, actions=actions, state="Ready", xml_sha256=sha(final)))
         current.append(dict(baseline, actions=actions, enabled=False, desired_enabled=baseline["enabled"],
                             missed_runs=1 if key == "qualified" else 0, xml=held_role,
                             next_run_utc=(NOW + timedelta(days=1)).isoformat() if key == "qualified" else baseline["next_run_utc"]))
-        audit_tasks.append(dict(key=key, enabled=False, state="Disabled", last_result=baseline["last_task_result"],
-                                last_run_utc=baseline["last_run_utc"], next_run_utc=baseline["next_run_utc"], missed_runs=0))
-        pins.append(dict(key=key, xml_sha256=sha(held), xml_path=path(held_role), expected_sha_values=[NEW["sha"]]))
+        audit_tasks.append({"key": key, "enabled": False, "state": "Disabled", "last_result": baseline["last_task_result"],
+                                "last_run_utc": baseline["last_run_utc"], "next_run_utc": baseline["next_run_utc"], "missed_runs": 0})
+        pins.append({"key": key, "xml_sha256": sha(held), "xml_path": path(held_role), "expected_sha_values": [NEW["sha"]]})
     readiness = dict(fixtures.host_observation(), schema="cre-code-observation-v1", native=NEW, runtime=NEW,
                      tasks=rows, observed_at=(NOW - timedelta(seconds=4)).isoformat(),
                      qualified_at=(NOW - timedelta(seconds=3)).isoformat(), resources_ok=True,
-                     queues_idle=True, ownership=dict(phase="owned-maintenance", verified=True, recovery_required=True))
+                     queues_idle=True, ownership={"phase": "owned-maintenance", "verified": True, "recovery_required": True})
     dependencies = dict.fromkeys(("package.json", "package-lock.json", "node_modules/.package-lock.json"), "0" * 64)
-    failed["commit_ready"] = put("failed-ready", dict(schema="cre-code-commit-ready-v1", selected=NEW,
-        release_sha256=digest, authorization_sha256=auth_digest, operation_output=output,
-        readiness=readiness, dependencies=dependencies, recovery_required_at_publication=True))
-    failed["held_ready"] = put("failed-held", dict(schema="cre-code-held-ready-v1", tasks_held=True,
-        release_sha256=digest, dependencies=dependencies))
-    failed["failure"] = put("failed-error", dict(schema="cre-code-failure-v1", classification="commit-uncertain",
-        original_error_type="HandoffError", original_error="canonical owner/recovery not clear"))
-    failed["outer_failure"] = put("failed-outer", dict(schema="cre-code-outer-failure-v1", release_sha256=digest,
-                                                       operation_output=output))
+    failed["commit_ready"] = put("failed-ready", {"schema": "cre-code-commit-ready-v1", "selected": NEW,
+        "release_sha256": digest, "authorization_sha256": auth_digest, "operation_output": output,
+        "readiness": readiness, "dependencies": dependencies, "recovery_required_at_publication": True})
+    failed["held_ready"] = put("failed-held", {"schema": "cre-code-held-ready-v1", "tasks_held": True,
+        "release_sha256": digest, "dependencies": dependencies})
+    failed["failure"] = put("failed-error", {"schema": "cre-code-failure-v1", "classification": "commit-uncertain",
+        "original_error_type": "HandoffError", "original_error": "canonical owner/recovery not clear"})
+    failed["outer_failure"] = put("failed-outer", {"schema": "cre-code-outer-failure-v1", "release_sha256": digest,
+                                                       "operation_output": output})
     commands = []
     for index, name in enumerate(("hold", "npm-ls", "doctor", "gfm", "repin", "restore", "verify")):
         log = put("command-" + name + "-log", b"synthetic actual producer stream model\n")
-        receipt = dict(producer="checkpoint-run-command-v1", exit_code=0, local_settlement="confirmed", log_closed=True,
-                       started_at=(NOW - timedelta(seconds=20 - index * 2)).isoformat(),
-                       finished_at=(NOW - timedelta(seconds=18 - index * 2)).isoformat(),
-                       command_log_sha256=sha(raw(log)))
+        receipt = {"producer": "checkpoint-run-command-v1", "exit_code": 0, "local_settlement": "confirmed", "log_closed": True,
+                       "started_at": (NOW - timedelta(seconds=20 - index * 2)).isoformat(),
+                       "finished_at": (NOW - timedelta(seconds=18 - index * 2)).isoformat(),
+                       "command_log_sha256": sha(raw(log))}
         if name in {"hold", "repin", "restore", "verify"}:
             receipt.update(schema="cre-code-command-v1", argv=[source["programs"]["powershell"], "-NoProfile", "-NonInteractive",
                 "-File", "C:/dev/scripts/firecrawl-ops/cre_collector/windows/Invoke-CreCodeHandoff.ps1",
@@ -130,23 +130,23 @@ def restoration_case(complete_case, lineage_case):
             cwd = source["roots"]["runtime"] + "/scripts/firecrawl-ops/cre_collector"
             receipt.update(schema="cre-owned-gate-v1", identity=NEW, unchanged=True, effective_cwd=cwd, cwd=cwd,
                            argv=["bash", "-c", 'cd -- "$1" && shift && exec "$@"', "cre-handoff", cwd, *DEPENDENCY_CHECKS[name]])
-        commands.append(dict(name=name, log=log, receipt=put("command-" + name, receipt)))
+        commands.append({"name": name, "log": log, "receipt": put("command-" + name, receipt)})
     failed["commands"] = commands
-    failed["native_steps"] = [dict(mode=mode, receipt=put("step-" + mode, dict(
-        status="passed", mode=mode, owner_pid=42, release_sha256=digest))) for mode in ("Hold", "Repin", "Restore")]
+    failed["native_steps"] = [{"mode": mode, "receipt": put("step-" + mode, {
+        "status": "passed", "mode": mode, "owner_pid": 42, "release_sha256": digest})} for mode in ("Hold", "Repin", "Restore")]
     failed["xml"] = xml_rows
     failed["native_git"] = put("native-git", [dict(role="native", root=source["roots"]["native"], status="", **NEW)])
-    report = dict(tasks=audit_tasks, task_pins=pins, canonical_directory_exists=False, quarantine_guard_exists=False,
-                  actual_authority_recovery_required=False, authority_owner_pid=42, authority_owner_pid_exists=False,
-                  authority_nonblocking_flock_available=True, authority_probe_released=True, authority_bytes_unchanged=True,
-                  current_com_instances=[], relevant_current_uid_frontends=[], mutations_performed=[], pending_handles=[],
-                  current_linux_git=dict(NEW, status=""),
-                  current_windows_observed_at=(NOW - timedelta(seconds=2)).isoformat(),
-                  current_linux_observed_at=(NOW - timedelta(seconds=1)).isoformat(),
-                  saved_failed_operation=dict(terminal_exists=False, native_completion_exists=False, original_exit=1))
+    report = {"tasks": audit_tasks, "task_pins": pins, "canonical_directory_exists": False, "quarantine_guard_exists": False,
+                  "actual_authority_recovery_required": False, "authority_owner_pid": 42, "authority_owner_pid_exists": False,
+                  "authority_nonblocking_flock_available": True, "authority_probe_released": True, "authority_bytes_unchanged": True,
+                  "current_com_instances": [], "relevant_current_uid_frontends": [], "mutations_performed": [], "pending_handles": [],
+                  "current_linux_git": dict(NEW, status=""),
+                  "current_windows_observed_at": (NOW - timedelta(seconds=2)).isoformat(),
+                  "current_linux_observed_at": (NOW - timedelta(seconds=1)).isoformat(),
+                  "saved_failed_operation": {"terminal_exists": False, "native_completion_exists": False, "original_exit": 1}}
     failed["settlement_report"] = put("audit-report", report)
     sealed = [failed["settlement_report"], failed["native_git"], *(row["audited"] for row in xml_rows)]
-    failed["settlement_seal"] = put("audit-seal", [dict(path=path(role), bytes=len(raw(role)), sha256=sha(raw(role))) for role in sealed])
+    failed["settlement_seal"] = put("audit-seal", [{"path": path(role), "bytes": len(raw(role)), "sha256": sha(raw(role))} for role in sealed])
     packet = {field: copy.deepcopy(source[field]) for field in
               ("tooling", "development", "roots", "programs", "wsl", "preserve_files", "runtime_env_file", "qa")}
     packet.update(schema="cre-code-restoration-v1", scope="restore-held-task-states", code=NEW,
@@ -210,7 +210,7 @@ def held_observation(packet, inputs):
     return dict(fixtures.host_observation(), schema="cre-code-restoration-observation-v1", native=NEW, runtime=NEW,
                 restoration_sha256=sha(fixtures.encoded(packet)),
                 observed_at=NOW.isoformat(), qualified_at=NOW.isoformat(), resources_ok=True, queues_idle=True,
-                ownership=dict(phase="released-clear", verified=True, recovery_required=False),
+                ownership={"phase": "released-clear", "verified": True, "recovery_required": False},
                 tasks=[dict(row, state="Disabled", xml_sha256=sha(inputs.data[next(
                     item["path"] for item in inputs.rows if item["role"] == row["xml"])])) for row in packet["task_baseline"]])
 
@@ -257,10 +257,10 @@ def test_restoration_authorization_binds_distinct_subject_and_fresh_held_facts(r
     elif change == "tooling": attestation["subject"]["tooling"] = OLD
     attestation_raw = fixtures.encoded(attestation)
     reviewed = {"/synthetic/review": attestation_raw, "/synthetic/review-body": body}
-    authorization = dict(schema="cre-code-restoration-authorization-v1", scope="restore-held-task-states",
-        restoration_sha256=sha(packet_raw), observation_sha256=sha(observation_raw),
-        authorized_at=NOW.isoformat(), expires_at=(NOW + timedelta(seconds=299)).isoformat(),
-        review=dict(path="/synthetic/review", sha256=sha(attestation_raw), reviewer="independent", approval_ref="AGENTIC-test"))
+    authorization = {"schema": "cre-code-restoration-authorization-v1", "scope": "restore-held-task-states",
+        "restoration_sha256": sha(packet_raw), "observation_sha256": sha(observation_raw),
+        "authorized_at": NOW.isoformat(), "expires_at": (NOW + timedelta(seconds=299)).isoformat(),
+        "review": {"path": "/synthetic/review", "sha256": sha(attestation_raw), "reviewer": "independent", "approval_ref": "AGENTIC-test"}}
     if change == "packet": authorization["restoration_sha256"] = "0" * 64
     elif change == "expired": authorization["expires_at"] = NOW.isoformat()
     elif change == "capture": authorization["observation_sha256"] = "0" * 64
@@ -298,7 +298,7 @@ def test_final_readback_qualifies_original_flags_and_fresh_history(restoration_c
         if change == "enabled-xml" and task["key"] == "qualified": raw = raw.replace(b"<Enabled>true", b"<Enabled>false")
         if change == "action" and task["key"] == "qualified": raw = raw.replace(b"pwsh.exe", b"foreign.exe")
         role = put("observed-final-" + task["key"], raw)
-        task.update(xml_sha256=sha(raw), xml_reference=dict(path=path(role), bytes=len(raw), sha256=sha(raw)))
+        task.update(xml_sha256=sha(raw), xml_reference={"path": path(role), "bytes": len(raw), "sha256": sha(raw)})
     if change == "margin":
         packet["task_baseline"][2]["next_run_utc"] = (NOW + timedelta(seconds=899)).isoformat()
         observed["tasks"][2]["next_run_utc"] = packet["task_baseline"][2]["next_run_utc"]
@@ -332,7 +332,7 @@ def test_supported_zero_missed_case_requires_original_trigger_still_in_future(re
 
 @pytest.mark.parametrize("fault", [None, "first-enable"])
 def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(restoration_case, tmp_path, monkeypatch, fault):
-    packet, evidence, inputs = zero_missed_packet(restoration_case)
+    packet, _evidence, inputs = zero_missed_packet(restoration_case)
     packet_path, observed_path, auth_path = (tmp_path / name for name in ("packet.json", "observation.json", "auth.json"))
     output = tmp_path / "operation"
     packet_raw, observed_raw = fixtures.encoded(packet), fixtures.encoded(held_observation(packet, inputs))
@@ -341,12 +341,12 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
     body_path.write_bytes(b"synthetic exact zero-missed restoration case review")
     review_path.write_bytes(fixtures.encoded(fixtures.attestation(
         {"restoration_sha256": sha(packet_raw), "tooling": NEW}, body_path, body_path.read_bytes(), "restore-held-task-states")))
-    authorization = dict(schema="cre-code-restoration-authorization-v1", scope="restore-held-task-states",
-        restoration_sha256=sha(packet_raw), observation_sha256=sha(observed_raw),
-        authorized_at=NOW.isoformat(), expires_at=(NOW + timedelta(seconds=299)).isoformat(), operation_output=str(output),
-        review=dict(path=str(review_path), sha256=sha(review_path.read_bytes()), reviewer="independent", approval_ref="AGENTIC-test"))
+    authorization = {"schema": "cre-code-restoration-authorization-v1", "scope": "restore-held-task-states",
+        "restoration_sha256": sha(packet_raw), "observation_sha256": sha(observed_raw),
+        "authorized_at": NOW.isoformat(), "expires_at": (NOW + timedelta(seconds=299)).isoformat(), "operation_output": str(output),
+        "review": {"path": str(review_path), "sha256": sha(review_path.read_bytes()), "reviewer": "independent", "approval_ref": "AGENTIC-test"}}
     auth_raw = fixtures.encoded(authorization); auth_path.write_bytes(auth_raw)
-    state = dict(calls=[], enabled=[False] * 3, owned=False, cleared=False)
+    state = {"calls": [], "enabled": [False] * 3, "owned": False, "cleared": False}
     lock_path = tmp_path / "noncanonical.lock"
     released_receipt = object()
 
@@ -383,16 +383,16 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
     def ready(actual, *args, owned=False, **kwargs):
         assert owned is state["owned"] and actual["schema"] == "cre-code-restoration-v1"
         return dict(fixtures.host_observation(), native=NEW, runtime=NEW, resources_ok=True, queues_idle=True,
-                    ownership=dict(phase="owned-maintenance" if owned else "released-clear", verified=True, recovery_required=owned))
+                    ownership={"phase": "owned-maintenance" if owned else "released-clear", "verified": True, "recovery_required": owned})
 
     def native(self, mode, *args):
         state["calls"].append(mode)
         assert mode in {"Restore", "Verify", "FailureHold"}
         if mode == "Restore":
             assert state["owned"]
-            operation.write_new(output / "mutation-start.json", dict(schema="cre-code-restoration-mutation-v1",
-                restoration_sha256=sha(packet_raw), authorization_sha256=sha(auth_raw), operation_output=str(output),
-                tooling=packet["tooling"], fleet=packet["task_baseline"]))
+            operation.write_new(output / "mutation-start.json", {"schema": "cre-code-restoration-mutation-v1",
+                "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(auth_raw), "operation_output": str(output),
+                "tooling": packet["tooling"], "fleet": packet["task_baseline"]})
             for index in range(3):
                 assert operation.mutation_started(output, packet, packet_raw, auth_raw)
                 state["enabled"][index] = True
@@ -408,8 +408,8 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
                     b"<Enabled>false</Enabled>", b"<Enabled>true</Enabled>")
                 (output / (task["key"] + "-observed.xml")).write_bytes(raw)
                 task.update(enabled=True, state="Ready", xml_sha256=sha(raw))
-            operation.write_new(output / "native-observation.json", dict(observed_at=NOW.isoformat(), tasks=tasks,
-                                                                        windows_resources=fixtures.host_observation()["windows_resources"]))
+            operation.write_new(output / "native-observation.json", {"observed_at": NOW.isoformat(), "tasks": tasks,
+                                                                        "windows_resources": fixtures.host_observation()["windows_resources"]})
 
     def captured(actual, lease):
         assert actual is checkpoint and state["owned"] and state["cleared"]
@@ -450,11 +450,11 @@ def synthetic_reconciliation(case):
         files[str(path)] = value if isinstance(value, bytes) else fixtures.encoded(value)
 
     auth = "6" * 64
-    common = dict(restoration_sha256=sha(raw), authorization_sha256=auth, operation_output=str(root))
+    common = {"restoration_sha256": sha(raw), "authorization_sha256": auth, "operation_output": str(root)}
     write(root / "mutation-start.json", dict(common, schema="cre-code-restoration-mutation-v1",
           tooling=packet["tooling"], fleet=packet["task_baseline"]))
     ready = held_observation(packet, inputs)
-    ready["ownership"] = dict(phase="owned-maintenance", verified=True, recovery_required=True)
+    ready["ownership"] = {"phase": "owned-maintenance", "verified": True, "recovery_required": True}
     for row in ready["tasks"]:
         before = inputs.data[next(item["path"] for item in inputs.rows if item["role"] == row["xml"])]
         final = before.replace(b"<Enabled>false</Enabled>", b"<Enabled>true</Enabled>")
@@ -462,7 +462,7 @@ def synthetic_reconciliation(case):
                      independent / (row["key"] + "-observed.xml")):
             write(path, final)
         row.update(enabled=True, state="Ready", xml_sha256=sha(final),
-                   xml_reference=dict(path=str(root / (row["key"] + "-observed.xml")), bytes=len(final), sha256=sha(final)))
+                   xml_reference={"path": str(root / (row["key"] + "-observed.xml")), "bytes": len(final), "sha256": sha(final)})
     write(root / "restoration-ready.json", dict(common, schema="cre-code-restoration-ready-v1", code=NEW,
           readiness=ready, recovery_required_at_publication=True,
           dependencies=dict.fromkeys(("package.json", "package-lock.json", "node_modules/.package-lock.json"), "0" * 64)))
@@ -472,13 +472,13 @@ def synthetic_reconciliation(case):
           ready_sha256=sha(files[str(root / "restoration-ready.json")]), failed_predecessor_release_sha256=failed_source["sha256"]))
     write(str(root) + ".stdout.raw", b"synthetic real-stream-shaped completion"); write(str(root) + ".stderr.raw", b"")
     write(str(root) + ".native.json", dict(common, schema="cre-code-restoration-native-completion-v1",
-          capture=dict(Started=True, Failed=False, NativeExitCode=0,
-                       Stdout=dict(Eof=True, Truncated=False), Stderr=dict(Eof=True, Truncated=False)),
+          capture={"Started": True, "Failed": False, "NativeExitCode": 0,
+                       "Stdout": {"Eof": True, "Truncated": False}, "Stderr": {"Eof": True, "Truncated": False}},
           stdout_sha256=sha(files[str(root) + ".stdout.raw"]), stderr_sha256=sha(b"")))
     observed = copy.deepcopy(ready)
     observed.update(common, observed_at=(NOW + timedelta(seconds=2)).isoformat(),
                     qualified_at=(NOW + timedelta(seconds=3)).isoformat(),
-                    ownership=dict(phase="released-clear", verified=True, recovery_required=False),
+                    ownership={"phase": "released-clear", "verified": True, "recovery_required": False},
                     operation_terminal_sha256=sha(files[str(root / "restoration-terminal.json")]),
                     native_completion_sha256=sha(files[str(root) + ".native.json"]))
     write(independent / "observation.json", observed)
@@ -503,11 +503,11 @@ def test_reconciliation_then_ordinary_delivery_feeds_next_release(restoration_ca
         key = row["key"]
         before = inputs.add("reconciled-before-" + key, inputs.data[path(failed_xml[key]["before"])])
         final = inputs.add("reconciled-final-" + key, inputs.data[path(failed_xml[key]["final"])])
-        definitions.append(dict(key=key, before=before, after=final))
+        definitions.append({"key": key, "before": before, "after": final})
         row.update(xml=final, actions=[{field: value.replace(OLD["sha"], NEW["sha"]) for field, value in action.items()}
                                        for action in row["actions"]])
     failed = release["task_baseline"][2]["failure"]
-    failed["transitions"].append(dict(old=OLD, new=NEW, xml=definitions, readback=role))
+    failed["transitions"].append({"old": OLD, "new": NEW, "xml": definitions, "readback": role})
     following = {"sha": "e" * 40, "tree": "f" * 40}
     release.update(deployed=NEW, selected=following, inputs=inputs.rows)
     continued = fixtures.synthetic_transition_files(tmp_path / "ordinary", release, inputs)
@@ -519,11 +519,11 @@ def test_reconciliation_then_ordinary_delivery_feeds_next_release(restoration_ca
         before_raw = inputs.data[row["xml"]]
         final_raw = before_raw.replace(NEW["sha"].encode(), following["sha"].encode())
         before, final = inputs.add("ordinary-before-" + key, before_raw), inputs.add("ordinary-final-" + key, final_raw)
-        continued_rows.append(dict(key=key, before=before, after=final))
+        continued_rows.append({"key": key, "before": before, "after": final})
         row.update(xml=final, actions=[{field: value.replace(NEW["sha"], following["sha"]) for field, value in action.items()}
                                        for action in row["actions"]])
-    failed["transitions"].append(dict(old=NEW, new=following, xml=continued_rows,
-                                       readback=inputs.add("ordinary-after-reconciliation", continued)))
+    failed["transitions"].append({"old": NEW, "new": following, "xml": continued_rows,
+                                       "readback": inputs.add("ordinary-after-reconciliation", continued)})
     release["deployed"] = following
     if change == "reordered": failed["transitions"][-2:] = reversed(failed["transitions"][-2:])
     elif change == "xml":

@@ -569,7 +569,10 @@ def observe_restoration(args, raw, packet, evidence, git, modules):
     require(read_file(args.release) == raw, "restoration input changed before observation publication")
     write_new(output / "observation.json", observation)
     if args.postreadback:
-        from cre_code_handoff_transition import make_reconciliation, validate_reconciliation
+        from cre_code_handoff_transition import (
+            make_reconciliation,
+            validate_reconciliation,
+        )
 
         receipt = make_reconciliation(packet, args.release, operation, output, read_file)
         validate_reconciliation(receipt, receipt["old"], packet["code"], read_file)

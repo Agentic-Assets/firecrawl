@@ -371,7 +371,6 @@ def validate_lineage(release, evidence):
                 "original failed code identity differs")
         seen = {current["sha"]}
         previous_fleet = None
-        edges = failure["transitions"]
         for edge in failure["transitions"]:
             require(edge["old"] == current, "missing/reordered lineage edge")
             following = identity(edge["new"])
@@ -382,7 +381,11 @@ def validate_lineage(release, evidence):
             validate_xml_transition(before, after, current["sha"], following["sha"])
             readback = evidence.obj(edge["readback"])
             if readback.get("schema") in {"cre-code-transition-v1", "cre-code-reconciled-failure-v1"}:
-                from cre_code_handoff_transition import bound, validate_reconciliation, validate_transition
+                from cre_code_handoff_transition import (
+                    bound,
+                    validate_reconciliation,
+                    validate_transition,
+                )
 
                 reconciliation = readback["schema"] == "cre-code-reconciled-failure-v1"
                 validator = validate_reconciliation if reconciliation else validate_transition
