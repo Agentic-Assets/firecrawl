@@ -2,6 +2,18 @@
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'CreTaskContract.ps1')
 
+function Read-CreHandoffJson([string]$Text) {
+    $reader=Get-Command 'Microsoft.PowerShell.Utility\ConvertFrom-Json' -CommandType Cmdlet -ErrorAction Stop
+    if($reader.Parameters.ContainsKey('DateKind')) {return & $reader -InputObject $Text -DateKind String}
+    if($PSVersionTable.PSEdition -ceq 'Desktop' -and $PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -eq 1) {
+        $sentinel='2001-02-03T04:05:06Z'
+        $probe=& $reader -InputObject ('{"clock":"'+$sentinel+'"}')
+        if($probe.clock -isnot [string] -or $probe.clock -cne $sentinel) {throw 'Legacy JSON reader does not preserve clock strings'}
+        return & $reader -InputObject $Text
+    }
+    throw 'Native handoff requires JSON DateKind String or qualified Windows PowerShell 5.1'
+}
+
 function ConvertTo-CreHandoffPath([string]$Path) {
     $normalized=$Path.Replace('\','/')
     if($normalized -cmatch '^/mnt/([a-z])/(.+)$') {
@@ -115,7 +127,7 @@ function Get-CreHandoffAdmission($Release,[string]$Output,[string]$Stage='observ
         $stdout,$stderr,15000)
     Save-CreHandoffExclusive (Join-Path $Output ($Stage+'-windows-admission.capture.json')) ($result|ConvertTo-Json -Depth 8)
     if($result.Failed -or $result.NativeExitCode -ne 0 -or -not $result.Stdout.Eof -or -not $result.Stderr.Eof -or $result.Stdout.Truncated -or $result.Stderr.Truncated) { throw 'Windows CheckOnly resource observation unsettled/refused' }
-    $admission=[IO.File]::ReadAllText($stdout)|ConvertFrom-Json
+    $admission=Read-CreHandoffJson ([IO.File]::ReadAllText($stdout))
     if($admission.admitted -isnot [bool] -or $admission.admitted -ne $true -or
        $admission.cpuPercent -is [bool] -or $admission.availablePhysicalGiB -is [bool] -or
        [double]::IsNaN([double]$admission.cpuPercent) -or [double]::IsInfinity([double]$admission.cpuPercent) -or
@@ -216,7 +228,7 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     # valid only after this exact operation durably entered its first mutation.
     $markerPath=Join-Path $Output 'mutation-start.json'
     if(-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return @{attempted=$false;reason='no-mutation-start'} }
-    $marker=[IO.File]::ReadAllText((ConvertTo-CreHandoffPath $markerPath))|ConvertFrom-Json
+    $marker=Read-CreHandoffJson ([IO.File]::ReadAllText((ConvertTo-CreHandoffPath $markerPath)))
     $authPath=ConvertTo-CreHandoffPath $Authorization
     if($marker.schema -cne 'cre-code-mutation-v1' -or $marker.release_sha256 -cne $ReleaseSha -or
        $marker.authorization_sha256 -cne (Get-CreHandoffHash ([IO.File]::ReadAllText($authPath))) -or

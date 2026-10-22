@@ -19,7 +19,7 @@ $releaseFile=ConvertTo-CreHandoffPath $ReleasePath
 $releaseBytes=[IO.File]::ReadAllBytes($releaseFile)
 $releaseText=[Text.UTF8Encoding]::new($false,$true).GetString($releaseBytes)
 if((Get-CreHandoffHash $releaseText) -cne $ReleaseSha) { throw 'Release input changed' }
-$release=$releaseText|ConvertFrom-Json
+$release=Read-CreHandoffJson $releaseText
 if($release.schema -cne 'cre-code-release-v1') { throw 'Unknown release schema' }
 $actualSourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
 if((ConvertTo-CreHandoffPath $actualSourceRoot) -cne (ConvertTo-CreHandoffPath $release.roots.tooling)) { throw 'Invoked native source root differs from declared tooling' }

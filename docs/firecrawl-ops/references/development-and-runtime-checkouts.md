@@ -154,6 +154,10 @@ The native handoff fixture requires an independently verified Git executable wit
 one hard link and no reparse ancestors; a PATH shim may correctly fail this guard.
 Select that executable explicitly when needed, in fresh PowerShell 7 and 5.1:
 `./scripts/firecrawl-ops/cre_collector/windows/Test-CreCodeHandoff.ps1 -GitExecutable 'C:/Program Files/Git/bin/git.exe'`.
+Native JSON ingestion preserves exact clock strings using
+`ConvertFrom-Json -DateKind String`, or the qualified Desktop Windows PowerShell 5.1 reader.
+Modern readers without `DateKind` refuse; clock coercion or reformatting cannot
+substitute for the original reviewed strings.
 The pinned `runtime_snapshot` role holds the reviewed five-container identity,
 image/start epoch/caps/environment-digest snapshot. Admission/restoration/readback
 retain and qualify browser healthy/zero pages/four-page cap, normal Linux memory
