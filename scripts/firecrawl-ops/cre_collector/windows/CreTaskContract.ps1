@@ -22,6 +22,7 @@ function Get-CreTaskContract([string]$Xml) {
     foreach ($entry in @(
         @('/t:Task/t:Principals/t:Principal','RunLevel','LeastPrivilege'),
         @('/t:Task/t:Settings','Enabled','true'),
+        @('/t:Task/t:Settings','AllowHardTerminate','true'),
         @('/t:Task/t:Settings','AllowStartOnDemand','true'),
         @('/t:Task/t:Settings','Hidden','false'),
         @('/t:Task/t:Settings','RunOnlyIfIdle','false'),
