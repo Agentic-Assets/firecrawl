@@ -150,6 +150,10 @@ queue measurements, frontend visibility, host/native resources, selected identit
 and the exact three dependency digests remain required. Original pinned bytes are
 retained for the enclosing publication recheck; historical QA is not replayed.
 Native tooling refuses effective Git hooks and fsmonitor before invoking status.
+The native handoff fixture requires an independently verified Git executable with
+one hard link and no reparse ancestors; a PATH shim may correctly fail this guard.
+Select that executable explicitly when needed, in fresh PowerShell 7 and 5.1:
+`./scripts/firecrawl-ops/cre_collector/windows/Test-CreCodeHandoff.ps1 -GitExecutable 'C:/Program Files/Git/bin/git.exe'`.
 The pinned `runtime_snapshot` role holds the reviewed five-container identity,
 image/start epoch/caps/environment-digest snapshot. Admission/restoration/readback
 retain and qualify browser healthy/zero pages/four-page cap, normal Linux memory

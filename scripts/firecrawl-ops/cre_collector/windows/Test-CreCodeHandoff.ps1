@@ -1,4 +1,6 @@
 # Fully mocked native consumer tests; never contact Task Scheduler or WSL.
+param([string]$GitExecutable)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CreCodeHandoff.ps1')
@@ -138,7 +140,7 @@ namespace CreWindowsCapture {
     $emptyGlobal=Join-Path $root 'empty.gitconfig';[IO.File]::WriteAllText($emptyGlobal,'')
     $env:GIT_CONFIG_GLOBAL=$emptyGlobal;$env:GIT_CONFIG_NOSYSTEM='1'
     try {
-    $realGit=(Get-Command git.exe -ErrorAction Stop).Source
+    $realGit=if($GitExecutable) {$GitExecutable} else {(Get-Command git.exe -ErrorAction Stop).Source}
     $gitRoot=Join-Path $root 'git-admission';[void][IO.Directory]::CreateDirectory($gitRoot)
     $null=& $realGit -C $gitRoot init
     if($LASTEXITCODE -ne 0) {throw 'Fixture Git init failed'}
