@@ -1,6 +1,7 @@
 """Singleton attribution optimization; old SQL oracle is frozen independently."""
 
 import hashlib
+import json
 from pathlib import Path
 
 import cre_ingest as ingest
@@ -61,7 +62,8 @@ def test_only_query_attribution_changes_and_profiles_still_share_sql():
     full = validate.queries_for_profile("full")
     assert len(preflight) == 8
     assert all(sql == full[name] for name, sql in preflight.items())
-    for name in ("source_counts", "duplicates", "child_counts", "quality_by_source"):
+    assert ingest.source_key_sql("decoded") in preflight["source_counts"]
+    for name in ("duplicates", "child_counts", "quality_by_source"):
         assert ingest.source_key_sql() in preflight[name]
 
 
@@ -92,3 +94,28 @@ def test_native_oracle_queries_cannot_silently_compare_current_sql_with_itself(
         context.setitem(validate.QUERIES, "duplicates", "SELECT 1;")
         with pytest.raises(RuntimeError, match="not bound"):
             runner["queries"]()
+
+
+def test_source_counts_json_root_control_is_frozen_and_compares_distinct_arms(
+    tmp_path,
+):
+    import runpy
+
+    runner = runpy.run_path(
+        str(Path(__file__).parent / "run_source_key_postgres_contract.py")
+    )
+    control_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "source_counts_before_decoded_source_key.json"
+    )
+    arms = runner["queries"](control_path)["source_counts"]
+    control_sql = "".join(json.loads(control_path.read_text()))
+    assert arms["old"] == control_sql.strip().removesuffix(";")
+    assert arms["new"] == validate.QUERIES["source_counts"].strip().removesuffix(";")
+    assert arms["old"] != arms["new"]
+
+    invalid_control = tmp_path / "mutable-control.json"
+    invalid_control.write_text(json.dumps(["SELECT 1;\n"]))
+    with pytest.raises(RuntimeError, match="control hash mismatch"):
+        runner["queries"](invalid_control)

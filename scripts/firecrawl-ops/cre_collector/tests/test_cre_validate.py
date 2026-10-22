@@ -13,6 +13,7 @@ No network, no live DB, no psql connection.  All subprocess calls are
 intercepted via monkeypatch.
 """
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ import pytest
 
 # conftest.py already puts cre_collector/ on sys.path.
 import cre_validate
-from cre_ingest import source_key_from_values
+from cre_ingest import source_key_from_values, source_key_sql
 from cre_validate import (
     LIFECYCLE_SCHEMA_CONTRACT_ITEMS,
     QUERIES,
@@ -310,11 +311,32 @@ def test_source_counts_separates_inventory_and_detail_observation():
 
 def test_source_counts_reuses_one_decoded_json_root_without_changing_attribution():
     sql = QUERIES["source_counts"]
-    assert SOURCE_KEY_SQL in sql
+    assert source_key_sql("decoded") in sql
+    assert SOURCE_KEY_SQL not in sql
     assert "NULLIF(decoded.raw_data->>'inventoryObservedAt', '')::timestamptz" in sql
     assert "jsonb_path_exists(decoded.raw_data, '$.**.detailUnavailable')" in sql
     assert "SELECT l.external_id, l.raw_data #> '{}'::text[] AS raw_data" in sql
     assert sql.count("OFFSET 0") == 1
+
+
+def test_source_counts_decoded_alias_is_the_only_frozen_query_change():
+    control = (
+        Path(__file__).parent
+        / "fixtures"
+        / "source_counts_before_decoded_source_key.json"
+    )
+    original = "".join(json.loads(control.read_text())).encode("utf-8")
+    assert (
+        hashlib.sha256(original).hexdigest()
+        == "4f7fd081b55e93f8b87199499b6867bd3892a78870f59160d16d606b159d3a93"
+    )
+    original_sql = original.decode("utf-8").strip().removesuffix(";")
+    old_expression = source_key_sql()
+    new_expression = source_key_sql("decoded")
+    assert original_sql.count(old_expression) == 1
+    assert QUERIES["source_counts"].strip().removesuffix(";") == original_sql.replace(
+        old_expression, new_expression, 1
+    )
 
 
 def test_inventory_generation_fingerprint_matches_consumer_readback_tuple():
