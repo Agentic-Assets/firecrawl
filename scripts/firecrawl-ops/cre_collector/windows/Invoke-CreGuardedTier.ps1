@@ -862,6 +862,9 @@ catch {
 if ($result -ne 0 -or $NotificationMode -eq 'StartFinish') {
     Set-CreNotification $record $basename $result
     # Notification publication is best effort and never changes the tier exit.
-    if ($AlertWebhookFile) { try { Write-CreAudit $auditPath $record } catch { } }
+    if ($AlertWebhookFile) {
+        try { Write-CreAudit $auditPath $record }
+        catch { Write-Error 'Windows post-notification audit publication failed; the prior receipt may omit the notification outcome.' -ErrorAction Continue }
+    }
 }
 exit $result
