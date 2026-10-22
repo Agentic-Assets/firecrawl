@@ -231,7 +231,17 @@ export function parseJsonBody(body: string): any | null {
         { start: candidate.indexOf("["), end: candidate.lastIndexOf("]") },
       ].filter((s) => s.start !== -1 && s.end > s.start);
       spans.sort((a, b) => a.start - b.start);
+      const rootStart = candidate.search(/\S/);
+      const rootCloser = candidate[rootStart] === "{" ? "}" : candidate[rootStart] === "[" ? "]" : null;
+      const incompleteJsonRoot = rootCloser !== null && candidate.lastIndexOf(rootCloser) <= rootStart;
       for (const { start, end } of spans) {
+        // A failed enclosing root must not turn its nested fragment into the response.
+        if (
+          (incompleteJsonRoot && start !== rootStart) ||
+          spans.some((outer) => outer.start < start && outer.end > end)
+        ) {
+          continue;
+        }
         try {
           return JSON.parse(candidate.slice(start, end + 1));
         } catch {
