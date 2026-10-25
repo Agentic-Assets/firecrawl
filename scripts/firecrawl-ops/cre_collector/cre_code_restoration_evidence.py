@@ -23,6 +23,42 @@ def retained_reference(reference, evidence):
     return raw
 
 
+def canonical_restoration_principal(baseline_xml, principal, record):
+    """Bind the original XML SID before admitting OS-resolved event names."""
+    def sid(value):
+        if not isinstance(value, str) or not re.fullmatch(r"S-1-(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*)){1,15}", value):
+            return False
+        numbers = [int(part) for part in value.split("-")[2:]]
+        return numbers[0] < 2**48 and all(number < 2**32 for number in numbers[1:])
+
+    root = ET.fromstring(baseline_xml)
+    original = root.findtext("{*}Principals/{*}Principal/{*}UserId")
+    resolved_sid = principal.get("sid")
+    # All three original definitions use SIDs. An XML account-name variant needs
+    # an actual OS resolution producer; aliases alone cannot establish identity.
+    require(sid(original) and sid(resolved_sid) and original == resolved_sid,
+            "restoration Scheduler canonical principal SID differs")
+    user, aliases = principal.get("user_id"), principal.get("aliases")
+    require(isinstance(user, str) and user and user == user.strip()
+            and isinstance(aliases, list) and len(aliases) == 3
+            and all(isinstance(value, str) and value and value == value.strip()
+                    and not any(ord(character) < 32 for character in value) for value in aliases)
+            and aliases[0] == user and aliases[1] == resolved_sid,
+            "restoration Scheduler resolver aliases differ")
+    account = aliases[2]
+    parts = account.split("\\")
+    require(len(parts) == 2 and all(parts) and not parts[1].startswith("S-1-"),
+            "restoration Scheduler resolved account name malformed")
+    require((sid(user) and user == resolved_sid)
+            or (not user.startswith("S-1-")
+                and user.casefold() == (account if "\\" in user else parts[1]).casefold()),
+            "restoration Scheduler raw and resolved account names conflict")
+    require(type(record.get("observer_is_admin")) is bool and sid(record.get("observer_sid"))
+            and (record["observer_is_admin"] or record["observer_sid"] == resolved_sid),
+            "restoration Scheduler instance visibility insufficient")
+    return frozenset(value.casefold() for value in aliases)
+
+
 def restoration_execution(packet, evidence, observation):
     """Authenticate bounded native history; never certify source settlement."""
     record = json_bytes(retained_reference(observation.get("execution"), evidence))
@@ -44,16 +80,8 @@ def restoration_execution(packet, evidence, observation):
     principals = unique(record.get("principals"), "key", TASKS)
     paths = {row["task_path"] + row["task_name"]: key for key, row in tasks.items()}
     baselines = unique(packet["task_baseline"], "key", TASKS)
-    for key, baseline in baselines.items():
-        root = ET.fromstring(evidence.raw(baseline["xml"]))
-        user = root.findtext("{*}Principals/{*}Principal/{*}UserId")
-        require(isinstance(user, str) and principals[key].get("user_id") == user,
-                "restoration Scheduler principal differs")
-        require(type(record.get("observer_is_admin")) is bool
-                and isinstance(principals[key].get("sid"), str)
-                and principals[key]["sid"].startswith("S-1-")
-                and (record["observer_is_admin"] or record.get("observer_sid") == principals[key]["sid"]),
-                "restoration Scheduler instance visibility insufficient")
+    principal_names = {key: canonical_restoration_principal(evidence.raw(baseline["xml"]), principals[key], record)
+                       for key, baseline in baselines.items()}
     raw_events = record.get("events")
     require(isinstance(raw_events, list) and len(raw_events) <= 768, "restoration Scheduler event bound exceeded")
     seen, instances, process_events = set(), {}, []
@@ -124,7 +152,7 @@ def restoration_execution(packet, evidence, observation):
             require(all(a[0] < b[0] and a[1] <= b[1] for a, b in zip(ordered, ordered[1:])),
                     "restoration scheduled event chronology differs")
             require(events[100][2].get("UserContext", "").casefold() in
-                    {alias.casefold() for alias in principals[key]["aliases"]},
+                    principal_names[key],
                     "restoration scheduled event principal differs")
             action = events[200][2]
             require(action.get("ActionName") == task["actions"][0]["execute"]

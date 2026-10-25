@@ -11,6 +11,7 @@ from pathlib import Path
 
 from cre_code_handoff_advancement import NS, instance
 from cre_code_handoff_evidence import HandoffError, TASKS, TASK_PATH, clock, json_bytes, require, sha, unique
+from cre_code_restoration_evidence import canonical_restoration_principal
 
 PROC = Path('/proc')
 SOURCES = {'interra': 'interra-realty', 'newmark': 'newmark'}
@@ -130,9 +131,7 @@ def _native(packet, record, bridge, source, code, stamp, evidence):
     task = unique(record.get('tasks'), 'key', TASKS)[key]
     principal = unique(record.get('principals'), 'key', TASKS)[key]
     baseline = unique(packet['task_baseline'], 'key', TASKS)[key]
-    baseline_xml = ET.fromstring(evidence.raw(baseline['xml']))
-    require(principal.get('user_id') == baseline_xml.findtext('{*}Principals/{*}Principal/{*}UserId'),
-            'native principal not bound to installed baseline')
+    principal_names = canonical_restoration_principal(evidence.raw(baseline['xml']), principal, record)
     guid = instance(bridge.get('task_instance_guid'))
     matching = [row for row in record.get('instances', []) if row.get('key') == key
                 and instance(row.get('instance_guid')) == guid]
@@ -181,7 +180,7 @@ def _native(packet, record, bridge, source, code, stamp, evidence):
             and all(a[0] < b[0] and a[1] <= b[1] for a, b in zip(ordered, ordered[1:])),
             'native event bridge chronology differs')
     require(events[100][2].get('UserContext', '').casefold() in
-            {alias.casefold() for alias in principal.get('aliases', [principal['user_id']])}
+            principal_names
             and events[200][2].get('ActionName') == task['actions'][0]['execute']
             and events[200][2].get('EnginePID') == str(bridge['action_pid']), 'native action/principal differs')
     admitted = datetime.fromtimestamp(stamp / 1000, UTC)
