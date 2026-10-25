@@ -17,6 +17,7 @@ complete_case = fixtures.complete_case
 lineage_case = fixtures.lineage_case
 admitted = fixtures.admitted
 NOW = fixtures.NOW
+SYNTHETIC_SID = "S-1-5-21-111111111-222222222-333333333-1001"
 
 
 def approved_packet(case):
@@ -63,7 +64,8 @@ def scheduler_case(outcome):
     baselines, tasks = [], []
     for key, name in TASKS.items():
         raw = fixtures.xml(fixtures.NEW["sha"], False).replace(
-            b"<Actions>", b"<Principals><Principal><UserId>test-user</UserId></Principal></Principals><Actions>")
+            b"<Actions>", ("<Principals><Principal><UserId>" + SYNTHETIC_SID
+                           + "</UserId></Principal></Principals><Actions>").encode())
         role = inputs.add("held-" + key, raw)
         row = {"key": key, "task_path": TASK_PATH, "task_name": name, "enabled": False,
                "desired_enabled": True, "state": "Disabled", "xml": role, "missed_runs": 6,
@@ -80,9 +82,9 @@ def scheduler_case(outcome):
               "watermark_reference": {"path": "/synthetic/lower.json", "sha256": sha(raw_lower), "bytes": len(raw_lower)},
               "channel": lower["channel"], "computer": lower["computer"], "upper_record_id": 110,
               "started_at": (NOW + timedelta(seconds=1)).isoformat(), "finished_at": (NOW + timedelta(seconds=10)).isoformat(),
-              "events": [], "instances": [], "principals": [{"key": key, "user_id": "test-user", "sid": "S-1-5-21",
-                                                            "aliases": ["test-user"]} for key in TASKS],
-              "observer_sid": "S-1-5-21", "observer_is_admin": False, "tasks": tasks}
+              "events": [], "instances": [], "principals": [{"key": key, "user_id": "test-user", "sid": SYNTHETIC_SID,
+                                                            "aliases": ["test-user", SYNTHETIC_SID, "HOST\\test-user"]} for key in TASKS],
+              "observer_sid": SYNTHETIC_SID, "observer_is_admin": False, "tasks": tasks}
     guid = "{11111111-2222-3333-4444-555555555555}"
     if outcome != "none":
         task = tasks[2]
@@ -93,7 +95,7 @@ def scheduler_case(outcome):
             data = {"TaskName": TASK_PATH + TASKS["qualified"]}
             if event != 129:
                 data["InstanceId" if event in {107, 100, 102} else "TaskInstanceId"] = guid
-            if event == 100: data["UserContext"] = "test-user"
+            if event == 100: data["UserContext"] = "HOST\\test-user"
             if event == 129: data["ProcessID"] = "1234"
             if event in {200, 201}: data.update(ActionName="pwsh.exe", EnginePID="1234")
             if event == 201: data["ResultCode"] = str(task["last_task_result"])
@@ -114,7 +116,8 @@ def scheduler_case(outcome):
 
 
 @pytest.mark.parametrize("outcome", ["none", "busy", "success", "running"])
-@pytest.mark.parametrize("change", [None, "foreign", "truncated", "duplicate", "unexplained", "principal", "result"])
+@pytest.mark.parametrize("change", [None, "foreign", "truncated", "duplicate", "unexplained", "principal", "result",
+                                   "missing-sid", "foreign-sid", "conflicting-sid-alias", "conflicting-name-alias", "extra-alias"])
 def test_bounded_native_history_never_claims_source_settlement(outcome, change):
     packet, inputs, record, observed = scheduler_case(outcome)
     if change == "foreign": record["computer"] = "foreign-host"
@@ -125,6 +128,11 @@ def test_bounded_native_history_never_claims_source_settlement(outcome, change):
     elif change == "unexplained": observed["tasks"][0]["last_run_utc"] = NOW.isoformat()
     elif change == "principal": record["observer_sid"] = "S-1-foreign"
     elif change == "result": observed["tasks"][2]["last_task_result"] = 9
+    elif change == "missing-sid": del record["principals"][2]["sid"]
+    elif change == "foreign-sid": record["principals"][2]["sid"] = "S-1-5-21-111111111-222222222-333333333-1002"
+    elif change == "conflicting-sid-alias": record["principals"][2]["aliases"][1] = "S-1-5-18"
+    elif change == "conflicting-name-alias": record["principals"][2]["aliases"][2] = "HOST\\foreign-user"
+    elif change == "extra-alias": record["principals"][2]["aliases"].append("foreign-user")
     raw = fixtures.encoded(record)
     inputs.data["/synthetic/execution.json"] = raw
     observed["execution"] = {"path": "/synthetic/execution.json", "sha256": sha(raw), "bytes": len(raw)}

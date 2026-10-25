@@ -122,7 +122,8 @@ def test_scalar_projection_contains_only_closed_flags(monkeypatch):
 def native():
     guid = '{00000000-0000-0000-0000-000000000001}'
     task_path = subject.TASK_PATH + subject.TASKS['newmark']
-    principal = 'S-1-5-21-example'
+    principal = 'test-user'
+    principal_sid = 'S-1-5-21-111111111-222222222-333333333-1001'
     events = []
     for number, event in enumerate((107, 129, 100, 200), 1):
         fields = {'TaskName': task_path}
@@ -133,7 +134,7 @@ def native():
         else:
             fields['InstanceId'] = guid
         if event == 100:
-            fields['UserContext'] = principal
+            fields['UserContext'] = 'HOST\\test-user'
         data = ''.join('<Data Name="' + key + '">' + value + '</Data>' for key, value in fields.items())
         events.append('<Event xmlns="' + subject.NS['e'] + '"><System><Provider Name="Microsoft-Windows-TaskScheduler"/>'
                       '<Channel>Microsoft-Windows-TaskScheduler/Operational</Channel><Computer>HOST</Computer>'
@@ -143,14 +144,16 @@ def native():
     record = {'computer': 'HOST', 'started_at': '2026-10-25T03:00:00Z', 'finished_at': '2026-10-25T03:00:10Z',
               'watermark': {'record_id': 10, 'captured_at': '2026-10-25T03:00:00Z'}, 'upper_record_id': 14,
               'events': events, 'principals': [], 'tasks': [],
+              'observer_sid': principal_sid, 'observer_is_admin': False,
               'instances': [{'key': 'newmark', 'instance_guid': guid, 'engine_pid': 222}]}
     packet = {'task_baseline': []}
     for key in subject.TASKS:
         packet['task_baseline'].append({'key': key, 'xml': key + '-xml',
                                        'actions': [{'arguments': '-Sources ' + ('newmark' if key == 'newmark' else 'other')} ]})
         record['tasks'].append({'key': key, 'state': 'Running', 'actions': [{'execute': 'powershell.exe'}]})
-        record['principals'].append({'key': key, 'user_id': principal})
-    evidence = types.SimpleNamespace(raw=lambda role: ('<Task><Principals><Principal><UserId>' + principal
+        record['principals'].append({'key': key, 'user_id': principal, 'sid': principal_sid,
+                                    'aliases': [principal, principal_sid, 'HOST\\test-user']})
+    evidence = types.SimpleNamespace(raw=lambda role: ('<Task><Principals><Principal><UserId>' + principal_sid
                                           + '</UserId></Principal></Principals></Task>').encode())
     stamp = int(subject.clock('2026-10-25T03:00:05Z').timestamp() * 1000)
     code = 'a' * 40
@@ -168,7 +171,9 @@ def test_native_original_instance_process_and_stamp_join(native):
     assert native.call() == 'newmark'
 
 
-@pytest.mark.parametrize('mutation', ['foreign-pid', 'wrong-stamp', 'missing-event', 'outside-watermark', 'foreign-principal'])
+@pytest.mark.parametrize('mutation', ['foreign-pid', 'wrong-stamp', 'missing-event', 'outside-watermark', 'foreign-principal',
+                                    'missing-sid', 'foreign-sid', 'conflicting-sid-alias', 'conflicting-name-alias',
+                                    'extra-alias', 'observer-sid'])
 def test_native_missing_or_foreign_bridge_refused(native, mutation):
     if mutation == 'foreign-pid':
         native.bridge['direct_wsl_parent_pid'] = 999
@@ -178,6 +183,12 @@ def test_native_missing_or_foreign_bridge_refused(native, mutation):
         native.record['events'].pop()
     elif mutation == 'outside-watermark':
         native.record['watermark']['record_id'] = 11
+    elif mutation == 'missing-sid': del native.record['principals'][1]['sid']
+    elif mutation == 'foreign-sid': native.record['principals'][1]['sid'] = 'S-1-5-18'
+    elif mutation == 'conflicting-sid-alias': native.record['principals'][1]['aliases'][1] = 'S-1-5-18'
+    elif mutation == 'conflicting-name-alias': native.record['principals'][1]['aliases'][2] = 'HOST\\foreign-user'
+    elif mutation == 'extra-alias': native.record['principals'][1]['aliases'].append('foreign-user')
+    elif mutation == 'observer-sid': native.record['observer_sid'] = 'S-1-5-18'
     else:
         native.record['principals'][1]['user_id'] = 'foreign'
     with pytest.raises(HandoffError):
