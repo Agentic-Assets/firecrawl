@@ -1,6 +1,9 @@
 # Offline native restoration fault proof. No real task or child process dispatch.
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Output)
+param(
+    [Parameter(Mandatory=$true)][string]$Output,
+    [Parameter(Mandatory=$true)][string]$GitExecutable
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 if(Test-Path -LiteralPath $Output){throw 'Exclusive native proof output required'}
@@ -52,7 +55,7 @@ namespace CreWindowsCapture {
 }
 '@
 $toolingRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
-$git=(Get-Command git -CommandType Application -ErrorAction Stop).Source
+$git=$GitExecutable
 $head=(& $git -C $toolingRoot rev-parse HEAD).Trim()
 $tree=(& $git -C $toolingRoot rev-parse 'HEAD^{tree}').Trim()
 $nativeRelease=@{schema='cre-code-restoration-v1';code=@{sha=$head;tree=$tree};
