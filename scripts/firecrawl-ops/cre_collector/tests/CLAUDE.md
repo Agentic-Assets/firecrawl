@@ -74,6 +74,13 @@ python3 tests/run_transwestern_image_transition_postgres_contract.py \
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
+the finite restoration suites `test_cre_code_handoff_restoration.py`,
+`test_cre_code_restoration_execution.py` and `test_cre_code_restoration_successor.py`.
+They cover owned cleanup/release faults, packet-bound missed-run approval,
+bounded native history and exact active successor joins using synthetic/private
+temporary evidence. Native helper changes also require fresh PowerShell 7/5.1
+capture proof. No offline result authorizes restoring a live task.
+The suite includes
 parametrized and data-driven cases (the shell-syntax guard is parametrized over
 every `*.sh` in the collector), so totals depend on the candidate and inputs.
 When reporting a run, include its exact command and output, candidate SHA,

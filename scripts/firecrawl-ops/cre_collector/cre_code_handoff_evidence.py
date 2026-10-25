@@ -11,6 +11,13 @@ import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
+DEPENDENCY_CHECKS = {
+    "npm-ls": ("npm", "ls", "--all", "--json"),
+    "doctor": ("bash", "cre_setup.sh", "--check"),
+    "gfm": ("node", "--import", "tsx", "--input-type=module", "--eval",
+            'const {createRequire}=await import("node:module");const r=createRequire(process.cwd()+"/package.json");if(!r.resolve("joplin-turndown-plugin-gfm").startsWith(process.cwd()+"/node_modules/"))throw Error("foreign GFM");if(typeof r("joplin-turndown-plugin-gfm").gfm!=="function")throw Error("GFM export");await import("./sources/jll-html-doc.ts");'),
+}
+
 
 class HandoffError(RuntimeError):
     pass
@@ -266,13 +273,13 @@ def validate_qa(release, evidence):
             "actual merge producer differs")
 
 
-def validate_owned_qa(release, evidence):
+def validate_owned_qa(release, evidence, *, expected_tree=None):
     """Finite command-receipt consumer for new proof, not a historical adapter."""
     policy = release["qa"]
     gates = unique(policy.get("gates"), "name")
     require(gates and isinstance(policy.get("scope"), str) and policy["scope"], "QA scope missing")
     final = identity(policy["final_executed"])
-    require(final["tree"] == release["selected"]["tree"], "final executed tree differs")
+    require(final["tree"] == (expected_tree or release["selected"]["tree"]), "final executed tree differs")
     for gate in gates.values():
         receipt = evidence.obj(gate["receipt"])
         executed = identity(gate["executed"])
@@ -325,6 +332,19 @@ def validate_lineage(release, evidence):
                 "baseline task tuple malformed")
         evidence.raw(row["xml"])
         result = row["last_task_result"]
+        prior_failure = row.get("failure")
+        if isinstance(prior_failure, dict):
+            for edge in prior_failure.get("transitions", []):
+                readback = evidence.obj(edge["readback"])
+                if readback.get("schema") == "cre-code-reconciled-failure-v1":
+                    from cre_code_handoff_transition import validate_reconciliation
+
+                    reconciled = validate_reconciliation(readback, edge["old"], edge["new"], evidence.read,
+                                                         retain=evidence.original_payloads)
+                    before, after = reconciled[key]["before_tuple"], reconciled[key]["after_tuple"]
+                    require(all(before[field] == after[field] == row[field]
+                                for field in ("last_task_result", "last_run_utc")),
+                            "restored scheduled execution requires distinct current source settlement; original failure is historical")
         if result == 0:
             continue
         failure = row.get("failure")
@@ -373,11 +393,16 @@ def validate_lineage(release, evidence):
             require(before == original, "lineage XML gap")
             validate_xml_transition(before, after, current["sha"], following["sha"])
             readback = evidence.obj(edge["readback"])
-            if readback.get("schema") == "cre-code-transition-v1":
-                from cre_code_handoff_transition import bound, validate_transition
+            if readback.get("schema") in {"cre-code-transition-v1", "cre-code-reconciled-failure-v1"}:
+                from cre_code_handoff_transition import (
+                    bound,
+                    validate_reconciliation,
+                    validate_transition,
+                )
 
-                maintained = validate_transition(readback, current, following, evidence.read,
-                                                 retain=evidence.original_payloads)
+                reconciliation = readback["schema"] == "cre-code-reconciled-failure-v1"
+                validator = validate_reconciliation if reconciliation else validate_transition
+                maintained = validator(readback, current, following, evidence.read, retain=evidence.original_payloads)
                 provenance = unique(readback.get("original_failures"), "key")
                 require(key in provenance and provenance[key].get("operation") == failure["operation"]
                         and provenance[key].get("terminal_sha256") == evidence.inputs[failure["terminal"]]["sha256"],
@@ -527,3 +552,33 @@ def validate_authorization(release_raw, release, evidence, observation_raw, auth
             and review.get("approval_ref") == attestation["approval_ref"], "reviewer/reference differs")
     evidence.recheck()
     validate_observation(release, evidence, json_bytes(observation_raw), now)
+
+
+def xml_enabled(raw):
+    root = ET.fromstring(raw.decode("utf-8-sig"))
+    nodes = root.findall("t:Settings/t:Enabled", NS)
+    require(len(nodes) <= 1 and (not nodes or nodes[0].text in {"true", "false"}), "invalid task XML Enabled")
+    return not nodes or nodes[0].text == "true"
+
+
+def enabled_xml_contract(raw, enabled):
+    """Compare every XML attribute/leaf, changing only the Enabled setting."""
+    root = ET.fromstring(raw.decode("utf-8-sig"))
+    settings = root.find("t:Settings", NS)
+    require(settings is not None, "task settings missing")
+    nodes = settings.findall("t:Enabled", NS)
+    require(len(nodes) <= 1, "duplicate task Enabled setting")
+    node = nodes[0] if nodes else ET.SubElement(settings, "{" + NS["t"] + "}Enabled")
+    node.text = "true" if enabled else "false"
+    # Scheduler exports can omit Enabled=true and place Enabled=false before
+    # ExecutionTimeLimit. Canonicalize only this one setting's position.
+    settings.remove(node)
+    settings.append(node)
+
+    def contract(element):
+        children = list(element)
+        return (element.tag, tuple(sorted(element.attrib.items())),
+                element.text if not children else None,
+                tuple(contract(child) for child in children))
+
+    return contract(root)

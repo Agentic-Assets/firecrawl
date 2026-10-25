@@ -1,6 +1,7 @@
 # Inert native fleet operations. Importing this file makes no host calls.
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'CreTaskContract.ps1')
+. (Join-Path $PSScriptRoot 'CreRestorationExecution.ps1')
 
 function Read-CreHandoffJson([string]$Text) {
     $reader=Get-Command 'Microsoft.PowerShell.Utility\ConvertFrom-Json' -CommandType Cmdlet -ErrorAction Stop
@@ -93,7 +94,7 @@ function Assert-CreHandoffFleet($Release) {
     foreach($name in $expected) { if(@($relevant|Where-Object {$_ -ceq $name}).Count -ne 1) { throw 'Unexpected or missing CRE task' } }
 }
 
-function Get-CreHandoffTask($Baseline,[string]$Xml,[bool]$RequireNext=$true) {
+function Get-CreHandoffTask($Baseline,[string]$Xml,[bool]$RequireNext=$true,[bool]$IncludeMissed=$false,[bool]$ExecutionSample=$false) {
     $task=Get-ScheduledTask -TaskPath $Baseline.task_path -TaskName $Baseline.task_name -ErrorAction Stop
     $info=Get-ScheduledTaskInfo -TaskPath $Baseline.task_path -TaskName $Baseline.task_name -ErrorAction Stop
     if($task.Settings.Enabled -isnot [bool]) { throw 'Enabled must be Boolean' }
@@ -101,11 +102,17 @@ function Get-CreHandoffTask($Baseline,[string]$Xml,[bool]$RequireNext=$true) {
     if((Get-CreTaskContract $live) -cne (Get-CreTaskContract $Xml)) { throw 'Complete task definition changed' }
     $last=$info.LastRunTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $next=$info.NextRunTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-    if([int]$info.LastTaskResult -ne $Baseline.last_task_result -or $last -cne $Baseline.last_run_utc -or ($RequireNext -and $next -cne $Baseline.next_run_utc)) { throw 'Task history/result/clocks changed' }
-    return [ordered]@{key=$Baseline.key;task_path=[string]$task.TaskPath;task_name=[string]$task.TaskName;
-        enabled=$task.Settings.Enabled;state=[string]$task.State;last_task_result=[int]$info.LastTaskResult;
+    if(-not $ExecutionSample -and ([int]$info.LastTaskResult -ne $Baseline.last_task_result -or $last -cne $Baseline.last_run_utc -or ($RequireNext -and $next -cne $Baseline.next_run_utc))) { throw 'Task history/result/clocks changed' }
+    $record=[ordered]@{key=$Baseline.key;task_path=[string]$task.TaskPath;task_name=[string]$task.TaskName;
+        enabled=$task.Settings.Enabled;state=[string]$task.State;last_task_result=[long]$info.LastTaskResult;
         last_run_utc=$last;next_run_utc=$next;xml_sha256=(Get-CreHandoffHash $live);xml=$live;
         actions=@($task.Actions|ForEach-Object {[ordered]@{execute=[string]$_.Execute;arguments=[string]$_.Arguments;working_directory=[string]$_.WorkingDirectory}})}
+    if($IncludeMissed) {
+        $missed=$info.NumberOfMissedRuns
+        if(($missed -isnot [int] -and $missed -isnot [uint32]) -or $missed -lt 0 -or (-not $ExecutionSample -and $missed -ne $Baseline.missed_runs)) {throw 'Restoration missed count changed'}
+        $record['missed_runs']=[int]$missed
+    }
+    return $record
 }
 
 function Read-CreHandoffBaselineXml($Release,$Baseline) {
@@ -122,8 +129,9 @@ function Get-CreHandoffAdmission($Release,[string]$Output,[string]$Stage='observ
     if(-not ('CreWindowsCapture.Capture' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'CreNativeCapture.cs') }
     $stdout=Join-Path $Output ($Stage+'-windows-admission.stdout.raw')
     $stderr=Join-Path $Output ($Stage+'-windows-admission.stderr.raw')
+    $expectedSha=if($Release.schema -ceq 'cre-code-restoration-v1'){$Release.code.sha}else{$Release.deployed.sha}
     $result=[CreWindowsCapture.Capture]::RunReadOnly((ConvertTo-CreHandoffPath $Release.programs.powershell),
-        ([string[]]@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'Invoke-CreGuardedTier.ps1'),'-CheckOnly','-ExpectedSha',$Release.deployed.sha)),
+            ([string[]]@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'Invoke-CreGuardedTier.ps1'),'-CheckOnly','-ExpectedSha',$expectedSha)),
         $stdout,$stderr,15000)
     Save-CreHandoffExclusive (Join-Path $Output ($Stage+'-windows-admission.capture.json')) ($result|ConvertTo-Json -Depth 8)
     if($result.Failed -or $result.NativeExitCode -ne 0 -or -not $result.Stdout.Eof -or -not $result.Stderr.Eof -or $result.Stdout.Truncated -or $result.Stderr.Truncated) { throw 'Windows CheckOnly resource observation unsettled/refused' }
@@ -153,23 +161,37 @@ function Get-CreHandoffNativeFrontends {
         } | ForEach-Object {[ordered]@{pid=[int]$_.ProcessId;name=[string]$_.Name}})
 }
 
-function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptblock]$AssertOwner,$Operation=$null) {
+function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptblock]$AssertOwner,$Operation=$null,[string]$OperationOutput='') {
+    $restoration=$Release.schema -ceq 'cre-code-restoration-v1'
+    $catchup=$restoration -and $Release.enable_boundary -ceq 'founder-approved-catchup-v1'
+    $executionSample=$catchup -and $Mode -in @('Verify','Postreadback')
+    if($restoration -and $Mode -notin @('Observe','Postreadback','Verify','Restore')) {throw 'Unsupported restoration task mode'}
     Assert-CreHandoffFleet $Release
     $rows=@($Release.task_baseline)
     if($rows.Count -ne 3 -or @($rows.key|Select-Object -Unique).Count -ne 3) { throw 'Duplicate or missing baseline task' }
     if($Mode -in @('Observe','Postreadback','Verify')) {
-        $admission=Get-CreHandoffAdmission $Release $Output $Mode.ToLowerInvariant()
-        if(-not $admission.admitted) { throw 'Windows resource admission refused' }
+        $releasedSample=$catchup -and $Mode -eq 'Postreadback'
+        $admission=if($releasedSample){@{scope='post-release observation; current resource admission not asserted'}}else{Get-CreHandoffAdmission $Release $Output $Mode.ToLowerInvariant()}
+        if(-not $releasedSample -and -not $admission.admitted) { throw 'Windows resource admission refused' }
         $frontends=@(Get-CreHandoffNativeFrontends)
-        if($frontends.Count) { throw 'Visible competing native CRE frontend exists' }
+        if($frontends.Count -and -not $executionSample) { throw 'Visible competing native CRE frontend exists' }
         $tasks=@(foreach($row in $rows) {
             $xml=Read-CreHandoffBaselineXml $Release $row
-            if($Mode -ne 'Observe') { $xml=Pin-ReviewedXml $xml $Release.deployed.sha $Release.selected.sha }
-            $record=Get-CreHandoffTask $row $xml
+            if($Mode -ne 'Observe') {
+                if($restoration) {$xml=Set-CreHandoffEnabledXml $xml ([bool]$row.desired_enabled)}
+                else {$xml=Pin-ReviewedXml $xml $Release.deployed.sha $Release.selected.sha}
+            }
+            $record=Get-CreHandoffTask $row $xml $true $restoration $executionSample
             Save-CreHandoffExclusive (Join-Path $Output ($row.key+'-observed.xml')) $record.xml
             $record.Remove('xml'); $record
         })
-        return [ordered]@{observed_at=[DateTime]::UtcNow.ToString('o');tasks=$tasks;windows_resources=$admission;
+        $execution=$null
+        if($executionSample) {
+            $origin=if($Mode -eq 'Verify'){$Output}else{$OperationOutput}
+            if(-not $origin){throw 'Original restoration output required for execution observation'}
+            $execution=Get-CreRestorationExecution $Release $origin $Output $tasks
+        }
+        return [ordered]@{observed_at=[DateTime]::UtcNow.ToString('o');tasks=$tasks;windows_resources=$admission;execution=$execution;
             native_frontends=$frontends;native_visibility='pwsh/powershell only; own bounded ancestry excluded; no command lines retained'}
     }
     & $AssertOwner
@@ -181,8 +203,12 @@ function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptbl
         foreach($row in $rows) {
             $xml=Read-CreHandoffBaselineXml $Release $row
             if($Mode -in @('Repin','Restore')) { $xml=Set-CreHandoffEnabledXml $xml $false }
-            if($Mode -eq 'Restore') { $xml=Pin-ReviewedXml $xml $Release.deployed.sha $Release.selected.sha }
-            $observed=Get-CreHandoffTask $row $xml ($Mode -eq 'Hold')
+            if($Mode -eq 'Restore' -and -not $restoration) { $xml=Pin-ReviewedXml $xml $Release.deployed.sha $Release.selected.sha }
+            $observed=Get-CreHandoffTask $row $xml ($restoration -or $Mode -eq 'Hold') $restoration
+            if($restoration) {
+                if($observed.enabled -or $observed.state -cne 'Disabled') {throw 'Restoration requires exact held fleet'}
+                Save-CreHandoffExclusive (Join-Path $Output ($row.key+'-before.xml')) $observed.xml
+            }
             if($Mode -eq 'Hold' -and $observed.xml -cne $xml) { throw 'Fresh admission complete XML bytes changed' }
         }
         if($Mode -ne 'Restore') { foreach($row in $rows) {
@@ -208,14 +234,26 @@ function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptbl
             Assert-CreHandoffFleet $Release
             & $AssertOwner
             foreach($row in $rows) {
-                if($row.enabled -and ([DateTimeOffset]::Parse($row.next_run_utc)-[DateTimeOffset]::UtcNow).TotalSeconds -lt 900) { throw 'Next trigger too close for restoration' }
+                $desired=if($restoration){$row.desired_enabled}else{$row.enabled}
+                if($desired -isnot [bool]) {throw 'Original desired Enabled flag missing'}
+                if($desired -and ([DateTimeOffset]::Parse($row.next_run_utc)-[DateTimeOffset]::UtcNow).TotalSeconds -lt 900) { throw 'Next trigger too close for restoration' }
+            }
+            if($restoration) {
+                if(-not $Operation -or $Operation.schema -cne 'cre-code-restoration-mutation-v1') {throw 'Own restoration mutation context missing'}
+                # Whole fleet, fresh owner/auth and margin were checked before this durable boundary.
+                Save-CreHandoffExclusive (Join-Path $Output 'mutation-start.json') ($Operation|ConvertTo-Json -Depth 15)
+                if($catchup) {Save-CreRestorationWatermark $Output}
             }
             foreach($row in $rows) {
                 & $AssertOwner
-                if($row.enabled) { $null=Enable-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop }
-                $wanted=Set-CreHandoffEnabledXml (Pin-ReviewedXml (Read-CreHandoffBaselineXml $Release $row) $Release.deployed.sha $Release.selected.sha) ([bool]$row.enabled)
-                $record=Get-CreHandoffTask $row $wanted
-                if($record.enabled -ne $row.enabled -or $record.state -cne $(if($row.enabled){'Ready'}else{'Disabled'})) { throw 'Restoration state uncertain' }
+                $desired=if($restoration){$row.desired_enabled}else{$row.enabled}
+                if($desired -and ([DateTimeOffset]::Parse($row.next_run_utc)-[DateTimeOffset]::UtcNow).TotalSeconds -lt 900) { throw 'Next trigger too close at Enable boundary' }
+                if($desired) { $null=Enable-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop }
+                $wanted=Read-CreHandoffBaselineXml $Release $row
+                if(-not $restoration) {$wanted=Pin-ReviewedXml $wanted $Release.deployed.sha $Release.selected.sha}
+                $wanted=Set-CreHandoffEnabledXml $wanted ([bool]$desired)
+                $record=Get-CreHandoffTask $row $wanted $true $restoration $catchup
+                if($record.enabled -ne $desired -or (-not $catchup -and $record.state -cne $(if($desired){'Ready'}else{'Disabled'}))) { throw 'Restoration state uncertain' }
                 Save-CreHandoffExclusive (Join-Path $Output ($row.key+'-final.xml')) $record.xml
             }
         }
@@ -223,14 +261,21 @@ function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptbl
     }
 }
 
-function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseSha,[string]$Authorization,[string]$ReceiptName='failure-hold.json') {
+function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseSha,[string]$Authorization,[string]$ReceiptName='failure-hold.json',[scriptblock]$AssertOwner=$null) {
     # This cleanup never admits a new operation or stops a running owner. It is
     # valid only after this exact operation durably entered its first mutation.
     $markerPath=Join-Path $Output 'mutation-start.json'
     if(-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return @{attempted=$false;reason='no-mutation-start'} }
     $marker=Read-CreHandoffJson ([IO.File]::ReadAllText((ConvertTo-CreHandoffPath $markerPath)))
     $authPath=ConvertTo-CreHandoffPath $Authorization
-    if($marker.schema -cne 'cre-code-mutation-v1' -or $marker.release_sha256 -cne $ReleaseSha -or
+    $restoration=$Release.schema -ceq 'cre-code-restoration-v1'
+    if($restoration) {
+        if(Test-Path -LiteralPath (Join-Path $Output 'release-start.json')) {throw 'Restoration release started; failure hold forbidden'}
+        if(-not $AssertOwner) {throw 'Current restoration authority assertion required'}
+        & $AssertOwner
+    }
+    $digest=if($restoration){$marker.restoration_sha256}else{$marker.release_sha256}
+    if($marker.schema -cne $(if($restoration){'cre-code-restoration-mutation-v1'}else{'cre-code-mutation-v1'}) -or $digest -cne $ReleaseSha -or
        $marker.authorization_sha256 -cne (Get-CreHandoffHash ([IO.File]::ReadAllText($authPath))) -or
        $marker.operation_output -cne (ConvertTo-CreHandoffPath $Output) -or
        $marker.tooling.sha -cne $Release.tooling.sha -or $marker.tooling.tree -cne $Release.tooling.tree) { throw 'Failure hold operation/source binding differs' }
@@ -243,6 +288,10 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     $attempts=@(foreach($row in $rows) {
         $record=[ordered]@{key=$row.key;task_path=$row.task_path;task_name=$row.task_name;disable_attempted=$false;disabled=$false;state=$null;error=$null}
         try {
+            if($restoration) {
+                if(Test-Path -LiteralPath (Join-Path $Output 'release-start.json')) {throw 'Restoration release started; failure hold forbidden'}
+                & $AssertOwner
+            }
             $record.disable_attempted=$true
             $null=Disable-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop
             $task=Get-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop
@@ -254,9 +303,10 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     })
     $frontends=$null;$visibilityError=$null
     try {$frontends=@(Get-CreHandoffNativeFrontends)} catch {$visibilityError=$_.Exception.GetType().FullName}
-    $receipt=[ordered]@{schema='cre-code-failure-hold-v1';attempted=$true;release_sha256=$ReleaseSha;tasks=$attempts;does_not_stop_running_owner=$true;
+    $receipt=[ordered]@{schema=$(if($restoration){'cre-code-restoration-failure-hold-v1'}else{'cre-code-failure-hold-v1'});attempted=$true;tasks=$attempts;does_not_stop_running_owner=$true;
         concurrent_native_frontends=$frontends;visibility_error=$visibilityError;future_hold_stability='not asserted while another frontend/owner may remain';
         recovery_state='not asserted; inspect canonical authority';observed_at=[DateTime]::UtcNow.ToString('o')}
+    $receipt[$(if($restoration){'restoration_sha256'}else{'release_sha256'})]=$ReleaseSha
     Save-CreHandoffExclusive (Join-Path $Output $ReceiptName) ($receipt|ConvertTo-Json -Depth 15)
     return $receipt
 }
