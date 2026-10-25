@@ -132,5 +132,6 @@ if(@($warnings|Where-Object {$_ -is [Management.Automation.WarningRecord] -and $
 if($script:disableCount -ne 0 -or -not (Test-Path -LiteralPath ($outer+'.outer-failure.json'))){throw 'Native outer failure mutated tasks or lost its receipt'}
 Save-CreHandoffExclusive (Join-Path $Output 'result.json') (@{schema='cre-native-restoration-fault-proof-v1';
     powershell=$PSVersionTable.PSVersion.ToString();owned_expired_admission_hold=$true;
+    scheduler_original_fleet_com_lookup=$true;foreign_root_malformed_queries_refused=$true;
     release_start_blocks_hold=$true;outer_drain_receipt_only=$true;task_mutations='mocked only';child_dispatches=0}|ConvertTo-Json)
-Write-Output 'PASS: owned expiry cleanup; release-start refusal; native outer drain receipt-only'
+Write-Output 'PASS: original fleet COM lookup; scope refusals; owned expiry cleanup; release-start refusal; native outer drain receipt-only'

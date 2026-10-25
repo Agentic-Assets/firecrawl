@@ -13,6 +13,18 @@ function Save-CreRestorationWatermark([string]$Output) {
     Save-CreHandoffExclusive (Join-Path $Output 'scheduler-watermark.json') ($watermark|ConvertTo-Json)
 }
 
+function Get-CreRestorationRegisteredTask($Service,$Baseline) {
+    $names=@{interra='Interra Refresh';newmark='Newmark Refresh';qualified='Qualified Brokerage Pipeline'}
+    if($Baseline.task_path -cne '\Agentic Assets\CRE\' -or
+       -not ($names.Keys -ccontains $Baseline.key) -or $Baseline.task_name -cne $names[$Baseline.key]) {
+        throw 'COM task query outside original restoration fleet'
+    }
+    # Installed TaskPath is an identity string with a trailing separator.
+    # Schedule.Service.GetFolder requires the non-root folder without it.
+    $folder=([string]$Baseline.task_path).TrimEnd([char]'\')
+    return $Service.GetFolder($folder).GetTask([string]$Baseline.task_name)
+}
+
 function Get-CreRestorationExecution($Release,[string]$Origin,[string]$Output,$Tasks) {
     $started=[DateTime]::UtcNow.ToString('o')
     $watermarkPath=Join-Path (ConvertTo-CreHandoffPath $Origin) 'scheduler-watermark.json'
@@ -43,7 +55,7 @@ function Get-CreRestorationExecution($Release,[string]$Origin,[string]$Output,$T
     $observer=[Security.Principal.WindowsPrincipal]::new($identity)
     $observerAdmin=$observer.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     foreach($row in $Release.task_baseline) {
-        $registered=$service.GetFolder([string]$row.task_path).GetTask([string]$row.task_name)
+        $registered=Get-CreRestorationRegisteredTask $service $row
         $user=[string]$registered.Definition.Principal.UserId
         $account=if($user -match '^S-1-') {[Security.Principal.SecurityIdentifier]::new($user)}else{[Security.Principal.NTAccount]::new($user)}
         $sid=$account.Translate([Security.Principal.SecurityIdentifier])
