@@ -1,7 +1,11 @@
 """Finite catch-up policy and authentic Scheduler history boundaries."""
 
 import copy
+import json
+import subprocess
+import sys
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 import test_cre_code_handoff as fixtures
@@ -167,3 +171,63 @@ def test_real_successor_keeps_its_authority_when_original_release_is_observed(tm
         with pytest.raises(HandoffError): operation.lock_clear(checkpoint, lock, released=released)
         assert successor.held and successor.authority_token == token and successor.authority_generation == generation
         assert checkpoint._lock_directory_identity(lock) == successor.directory_identity
+
+
+def test_independent_postreadback_accepts_exact_clear_from_distinct_exited_owner(tmp_path, monkeypatch):
+    """Use the real lease and flock through the released capture front door."""
+    lock = tmp_path / ".cre.lock"
+    program = """
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import cre_checkpoint_refresh as checkpoint
+import cre_code_handoff as operation
+with checkpoint.SharedLock(Path(sys.argv[2]), recovery_required=True) as lease:
+    lease.clear_recovery_requirement()
+    released = operation.released_authority(checkpoint, lease)
+print(json.dumps(released))
+"""
+    child = subprocess.run([sys.executable, "-c", program, str(fixtures.Path(operation.__file__).parent), str(lock)],
+                           check=True, capture_output=True, text=True, timeout=15)
+    released = json.loads(child.stdout)
+    assert released[0][0] != operation.os.getpid() and not lock.exists()
+    packet, inputs, record, native = scheduler_case("none")
+    packet.update(enable_boundary="founder-approved-catchup-v1", code=fixtures.NEW,
+                  roots={"runtime": str(tmp_path / "runtime"), "native": str(tmp_path / "native")})
+    host = fixtures.host_observation()
+    inputs.add("runtime_snapshot", host)
+    packet["inputs"] = inputs.rows
+    packet_raw = fixtures.encoded(packet)
+    original = tmp_path / "original"
+    output = tmp_path / "independent"
+    original.mkdir(); output.mkdir()
+    ready_tasks = copy.deepcopy(native["tasks"])
+    for task, ready_task in zip(native["tasks"], ready_tasks, strict=True):
+        raw = inputs.data[task["xml"]].replace(b"<Enabled>false</Enabled>", b"<Enabled>true</Enabled>")
+        target = output / (task["key"] + "-observed.xml")
+        target.write_bytes(raw)
+        task["xml_sha256"] = ready_task["xml_sha256"] = sha(raw)
+        ready_task["xml_reference"] = {"path": str(target), "bytes": len(raw), "sha256": sha(raw)}
+    record["tasks"] = copy.deepcopy(native["tasks"])
+    execution_raw = fixtures.encoded(record)
+    inputs.data["/synthetic/execution.json"] = execution_raw
+    execution = {"path": "/synthetic/execution.json", "bytes": len(execution_raw), "sha256": sha(execution_raw)}
+    ready = dict(host, schema="cre-code-restoration-observation-v1", native=fixtures.NEW, runtime=fixtures.NEW,
+                 observed_at=(NOW + timedelta(seconds=11)).isoformat(), qualified_at=(NOW + timedelta(seconds=12)).isoformat(),
+                 tasks=ready_tasks, execution=execution, restoration_sha256=sha(packet_raw),
+                 ownership={"phase": "owned-maintenance", "verified": True, "recovery_required": True},
+                 resources_ok=True, queues_idle=True)
+    (original / "restoration-ready.json").write_bytes(fixtures.encoded({
+        "schema": "cre-code-restoration-ready-v1", "code": fixtures.NEW, "restoration_sha256": sha(packet_raw),
+        "recovery_required_at_publication": True, "readiness": ready}))
+    (original / "restoration-terminal.json").write_bytes(fixtures.encoded({"released_authority": released}))
+    native.update(execution=execution, windows_resources={"scope": "post-release observation"})
+    (output / "native-observation.json").write_bytes(fixtures.encoded(native))
+    monkeypatch.setattr(checkpoint, "canonical_shared_lock_dir", lambda root: lock)
+    monkeypatch.setattr(operation, "now", lambda: NOW + timedelta(seconds=16))
+    evidence = Evidence(packet, lambda path: inputs.data[str(path)] if str(path) in inputs.data else operation.read_file(path))
+    observed = operation.restoration_capture(packet, evidence, SimpleNamespace(operation=str(original)),
+        SimpleNamespace(clean=lambda *args: None), (checkpoint, None, None, None), output,
+        packet_raw=packet_raw, final=True)
+    assert observed["ownership"] == {"phase": "released-clear", "verified": True, "recovery_required": False}
+    assert not lock.exists()
