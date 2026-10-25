@@ -104,7 +104,7 @@ function Get-CreHandoffTask($Baseline,[string]$Xml,[bool]$RequireNext=$true,[boo
     $next=$info.NextRunTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     if(-not $ExecutionSample -and ([int]$info.LastTaskResult -ne $Baseline.last_task_result -or $last -cne $Baseline.last_run_utc -or ($RequireNext -and $next -cne $Baseline.next_run_utc))) { throw 'Task history/result/clocks changed' }
     $record=[ordered]@{key=$Baseline.key;task_path=[string]$task.TaskPath;task_name=[string]$task.TaskName;
-        enabled=$task.Settings.Enabled;state=[string]$task.State;last_task_result=[int]$info.LastTaskResult;
+        enabled=$task.Settings.Enabled;state=[string]$task.State;last_task_result=[long]$info.LastTaskResult;
         last_run_utc=$last;next_run_utc=$next;xml_sha256=(Get-CreHandoffHash $live);xml=$live;
         actions=@($task.Actions|ForEach-Object {[ordered]@{execute=[string]$_.Execute;arguments=[string]$_.Arguments;working_directory=[string]$_.WorkingDirectory}})}
     if($IncludeMissed) {
@@ -170,8 +170,9 @@ function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptbl
     $rows=@($Release.task_baseline)
     if($rows.Count -ne 3 -or @($rows.key|Select-Object -Unique).Count -ne 3) { throw 'Duplicate or missing baseline task' }
     if($Mode -in @('Observe','Postreadback','Verify')) {
-        $admission=Get-CreHandoffAdmission $Release $Output $Mode.ToLowerInvariant()
-        if(-not $admission.admitted) { throw 'Windows resource admission refused' }
+        $releasedSample=$catchup -and $Mode -eq 'Postreadback'
+        $admission=if($releasedSample){@{scope='post-release observation; current resource admission not asserted'}}else{Get-CreHandoffAdmission $Release $Output $Mode.ToLowerInvariant()}
+        if(-not $releasedSample -and -not $admission.admitted) { throw 'Windows resource admission refused' }
         $frontends=@(Get-CreHandoffNativeFrontends)
         if($frontends.Count -and -not $executionSample) { throw 'Visible competing native CRE frontend exists' }
         $tasks=@(foreach($row in $rows) {

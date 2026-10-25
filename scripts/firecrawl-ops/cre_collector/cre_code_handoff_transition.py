@@ -200,7 +200,7 @@ def make_reconciliation(packet, packet_path, operation, independent, read):
                       "independent_xml": reference(independent / (key + "-observed.xml"), read),
                       "before_tuple": {field: baseline[field] for field in TUPLE_FIELDS},
                       "after_tuple": {field: observed[key][field] for field in (*TUPLE_FIELDS, "missed_runs")}})
-    return {"schema": "cre-code-reconciled-failure-v1", "old": source["deployed"], "new": packet["code"],
+    receipt = {"schema": "cre-code-reconciled-failure-v1", "old": source["deployed"], "new": packet["code"],
             "failed_predecessor_remains_failed": True, "original_failures": original_failures(source),
             "restoration_packet": reference(packet_path, read),
             "mutation": reference(operation / "mutation-start.json", read),
@@ -210,6 +210,10 @@ def make_reconciliation(packet, packet_path, operation, independent, read):
             "native_stdout": reference(str(operation) + ".stdout.raw", read),
             "native_stderr": reference(str(operation) + ".stderr.raw", read),
             "independent_observation": reference(independent / "observation.json", read), "tasks": tasks}
+    if packet.get("enable_boundary") == "founder-approved-catchup-v1":
+        receipt.update(release_start=reference(operation / "release-start.json", read),
+                       release_observation=reference(operation / "release-observation.json", read))
+    return receipt
 
 
 def validate_reconciliation(receipt, old, new, read, *, retain=None):
@@ -253,6 +257,27 @@ def validate_reconciliation(receipt, old, new, read, *, retain=None):
             and terminal.get("ready_sha256") == sha(ready_raw)
             and terminal.get("failed_predecessor_release_sha256") == sha(pinned.raw(packet["failed_handoff"]["release"])),
             "reconciliation lacks actual restoration terminal")
+    if packet.get("enable_boundary") == "founder-approved-catchup-v1":
+        started_raw, released_raw = (payload(receipt[field]) for field in ("release_start", "release_observation"))
+        started, released = json_bytes(started_raw), json_bytes(released_raw)
+        for record in (started, released):
+            require(record.get("restoration_sha256") == sha(packet_raw)
+                    and record.get("authorization_sha256") == authorization
+                    and canonical_path(record.get("operation_output")) == operation,
+                    "reconciliation release attempt differs")
+        require(started.get("schema") == "cre-code-restoration-release-start-v1"
+                and started.get("mutation_sha256") == sha(payload(receipt["mutation"]))
+                and started.get("ready_sha256") == sha(ready_raw)
+                and started.get("owned_authority", {}).get("recovery_required") is True
+                and released.get("schema") == "cre-code-restoration-release-observation-v1"
+                and released.get("release_start_sha256") == terminal.get("release_start_sha256") == sha(started_raw)
+                and terminal.get("release_observation_sha256") == sha(released_raw)
+                and released.get("released_authority") == terminal.get("released_authority")
+                and released.get("ownership", {}).get("verified") is True
+                and released["ownership"].get("phase") in {"released-clear", "released-scheduled-successor"}
+                and clock(ready["readiness"]["qualified_at"]) <= clock(started["started_at"])
+                <= clock(released["observed_at"]) <= clock(terminal["finished_at"]),
+                "reconciliation release was not authenticated/confirmed")
     capture = native.get("capture", {})
     require(native.get("schema") == "cre-code-restoration-native-completion-v1"
             and capture.get("Started") is True and capture.get("Failed") is False

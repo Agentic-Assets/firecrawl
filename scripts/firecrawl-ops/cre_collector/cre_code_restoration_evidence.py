@@ -56,7 +56,7 @@ def restoration_execution(packet, evidence, observation):
                 "restoration Scheduler instance visibility insufficient")
     raw_events = record.get("events")
     require(isinstance(raw_events, list) and len(raw_events) <= 768, "restoration Scheduler event bound exceeded")
-    seen, instances = set(), {}
+    seen, instances, process_events = set(), {}, []
     for raw in raw_events:
         require(isinstance(raw, str) and "<!DOCTYPE" not in raw.upper() and "<!ENTITY" not in raw.upper(),
                 "restoration Scheduler XML declaration refused")
@@ -82,11 +82,19 @@ def restoration_execution(packet, evidence, observation):
         if event_id not in EVENTS:
             # Registration/trigger metadata cannot stand in for execution proof.
             continue
+        if event_id == 129:
+            process_events.append((paths[data["TaskName"]], rid, when, data))
+            continue
         guid = instance(data.get("InstanceId") or data.get("TaskInstanceId"))
         key = paths[data["TaskName"]]
         group = instances.setdefault((key, guid), {})
         require(event_id not in group, "duplicate restoration instance event")
         group[event_id] = (rid, when, data)
+    for key, rid, when, data in process_events:
+        candidates = [group for (member, _), group in instances.items() if member == key
+                      and 200 in group and group[200][2].get("EnginePID") == data.get("ProcessID")]
+        require(len(candidates) == 1 and 129 not in candidates[0], "ambiguous native process-start event")
+        candidates[0][129] = (rid, when, data)
     active = record.get("instances")
     require(isinstance(active, list), "restoration native instances missing")
     active_ids = set()
@@ -365,12 +373,39 @@ def validate_restoration_observation(packet, evidence, observation, current, *, 
     observed, qualified = clock(observation.get("observed_at")), clock(observation.get("qualified_at"))
     require(observed <= qualified <= current and 0 <= (current - observed).total_seconds() < 300,
             "restoration observation expired/future")
-    require(observation.get("ownership") == {"phase": "owned-maintenance" if owned else "released-clear",
-            "verified": True, "recovery_required": owned}
-            and observation.get("resources_ok") is True and observation.get("queues_idle") is True,
-            "restoration ownership/admission differs")
-    qualify_host(observation, evidence.obj("runtime_snapshot"))
-    qualify_native(observation.get("windows_resources"))
+    released = final and not owned and packet.get("enable_boundary") == "founder-approved-catchup-v1"
+    if released:
+        ready = json_bytes(retained_reference(observation.get("admission_reference"), evidence))
+        require(ready.get("schema") == "cre-code-restoration-ready-v1"
+                and ready.get("restoration_sha256") == observation.get("restoration_sha256")
+                and ready.get("code") == packet["code"] and ready.get("recovery_required_at_publication") is True,
+                "released observation lacks original owned admission")
+        validate_restoration_observation(packet, evidence, ready["readiness"],
+                                         clock(ready["readiness"]["qualified_at"]), final=True, owned=True)
+        ownership = observation.get("ownership", {})
+        require(ownership.get("verified") is True and type(ownership.get("recovery_required")) is bool
+                and ownership.get("phase") in {"released-clear", "released-scheduled-successor"},
+                "released observation ownership is unverified")
+        if ownership["phase"] == "released-clear":
+            require(ownership["recovery_required"] is False, "released clear ownership still recovery fenced")
+        else:
+            require(ownership.get("source_settlement") == "unverified"
+                    and ownership.get("key") in TASKS
+                    and ownership.get("child_birth", {}).get("pid") != ownership.get("parent_birth", {}).get("pid")
+                    and all(type(ownership.get("child_birth", {}).get(field)) is int
+                            and ownership["child_birth"][field] > 0 for field in ("pid", "start_ticks"))
+                    and all(isinstance(ownership.get(field), str) and re.fullmatch("[0-9a-f]{64}", ownership[field])
+                            for field in ("authority_token_sha256", "authority_generation_sha256")),
+                    "scheduled successor identity missing")
+            for field in ("run_reference", "manifest_reference"):
+                retained_reference(ownership.get(field), evidence)
+    else:
+        require(observation.get("ownership") == {"phase": "owned-maintenance" if owned else "released-clear",
+                "verified": True, "recovery_required": owned}
+                and observation.get("resources_ok") is True and observation.get("queues_idle") is True,
+                "restoration ownership/admission differs")
+        qualify_host(observation, evidence.obj("runtime_snapshot"))
+        qualify_native(observation.get("windows_resources"))
     tasks = unique(observation.get("tasks"), "key", TASKS)
     catchup = final and packet.get("enable_boundary") == "founder-approved-catchup-v1"
     if catchup:
@@ -444,10 +479,10 @@ def validate_restoration_enable_boundary(packet, evidence, current):
         decision = evidence.obj(policy["decision"])
         require(decision.get("catchup", {}).get("received") is True
                 and decision["catchup"].get("answer") == "Authorize one-time catch-up recovery (Recommended)"
-                and isinstance(decision["catchup"].get("questionItemId"), str)
-                and decision["catchup"]["questionItemId"]
-                and decision.get("outreach", {}).get("received") is True
-                and decision["outreach"].get("answer") == "Keep all outreach unsent",
+                and decision["catchup"].get("questionItemId") ==
+                '["request_user_input_async","call_564c89f05bae4490afe3bb3e601391bb",0]'
+                and decision.get("original_approval_prompt", {}).get("catchupIssue") == "AGENTIC-4845"
+                and decision["original_approval_prompt"].get("originalTasks") == list(TASKS.values()),
                 "explicit one-time human catch-up choice missing")
     for key, row in unique(packet["task_baseline"], "key", TASKS).items():
         require(type(row.get("missed_runs")) is int and row["missed_runs"] >= 0,

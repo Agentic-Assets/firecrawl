@@ -332,7 +332,9 @@ def test_supported_zero_missed_case_requires_original_trigger_still_in_future(re
         validate_restoration_enable_boundary(packet, evidence, NOW)
 
 
-@pytest.mark.parametrize("fault", [None, "first-enable", "clear-recovery", "released-observation", "terminal-publication"])
+@pytest.mark.parametrize("fault", [None, "pre-lease", "first-enable", "expired-after-enable", "restoration-ready",
+                                   "release-start-publication", "clear-recovery", "lease-exit",
+                                   "released-observation", "terminal-publication"])
 def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(restoration_case, tmp_path, monkeypatch, fault):
     packet, _evidence, inputs = zero_missed_packet(restoration_case)
     packet_path, observed_path, auth_path = (tmp_path / name for name in ("packet.json", "observation.json", "auth.json"))
@@ -367,6 +369,7 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
             state["cleared"] = True
         def __exit__(self, *args):
             state["calls"].append("exit"); state["owned"] = False
+            if fault == "lease-exit": raise OSError("synthetic lease-exit failure")
 
     checkpoint = SimpleNamespace(SharedLock=Lease, canonical_shared_lock_dir=lambda root: lock_path)
     class Git:
@@ -387,6 +390,7 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
 
     def ready(actual, *args, owned=False, **kwargs):
         assert owned is state["owned"] and actual["schema"] == "cre-code-restoration-v1"
+        if fault == "pre-lease" and not owned: raise OSError("synthetic pre-lease failure")
         return dict(fixtures.host_observation(), native=NEW, runtime=NEW, resources_ok=True, queues_idle=True,
                     ownership={"phase": "owned-maintenance" if owned else "released-clear", "verified": True, "recovery_required": owned})
 
@@ -402,6 +406,9 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
                 assert operation.mutation_started(output, packet, packet_raw, auth_raw)
                 state["enabled"][index] = True
                 if fault == "first-enable": raise OSError("synthetic first-enable receipt failure")
+                if fault == "expired-after-enable":
+                    monkeypatch.setattr(operation, "now", lambda: NOW + timedelta(seconds=300))
+                    raise OSError("synthetic expired-after-enable failure")
         elif mode == "FailureHold":
             assert state["owned"] and not state["cleared"], "failure hold requires this operation's held lease"
             assert operation.mutation_started(output, packet, packet_raw, auth_raw)
@@ -433,6 +440,10 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
     def write(path, value):
         if fault == "terminal-publication" and path.name == "restoration-terminal.json":
             raise OSError("synthetic terminal-publication failure")
+        if fault == "restoration-ready" and path.name == "restoration-ready.json":
+            raise OSError("synthetic restoration-ready failure")
+        if fault == "release-start-publication" and path.name == "release-start.json":
+            raise OSError("synthetic release-start-publication failure")
         original_write(path, value)
 
     monkeypatch.setattr(operation, "readiness", ready)
@@ -447,9 +458,12 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
             "--authorization", str(auth_path), "--output", str(output)]
     if fault:
         with pytest.raises(OSError, match="synthetic " + fault): operation.main(argv)
-        if fault == "first-enable":
+        if fault == "pre-lease":
+            assert state["enabled"] == [False] * 3 and state["calls"] == []
+        elif fault in {"first-enable", "expired-after-enable", "restoration-ready"}:
             assert state["enabled"] == [False] * 3
-            assert state["calls"] == ["lease", "Restore", "FailureHold", "exit"]
+            assert state["calls"] == (["lease", "Restore", "Verify", "FailureHold", "exit"]
+                                      if fault == "restoration-ready" else ["lease", "Restore", "FailureHold", "exit"])
         else:
             assert state["enabled"] == [True] * 3
             assert "FailureHold" not in state["calls"]
@@ -512,6 +526,29 @@ def synthetic_reconciliation(case):
     receipt = make_reconciliation(packet, packet_path, root, independent, read)
     validate_reconciliation(receipt, OLD, NEW, read)
     return packet, receipt, files
+
+
+@pytest.mark.parametrize("new_result", [0, 1])
+def test_future_release_does_not_attach_historical_failure_to_new_run(restoration_case, monkeypatch, new_result):
+    """Isolate future-release policy after the finite reader authenticates an edge."""
+    packet, receipt, files = synthetic_reconciliation(restoration_case)
+    _, _, inputs, _, path = restoration_case
+    inputs.data.update(files)
+    source = json_bytes(inputs.data[path(packet["failed_handoff"]["release"])])
+    release = copy.deepcopy(source)
+    role = inputs.add("restoration-with-new-native-history", receipt)
+    failure = release["task_baseline"][2]["failure"]
+    failure["transitions"] = [{"old": OLD, "new": NEW, "readback": role}]
+    rows = {row["key"]: copy.deepcopy(row) for row in receipt["tasks"]}
+    rows["qualified"]["after_tuple"].update(last_task_result=new_result, last_run_utc=NOW.isoformat())
+    release["task_baseline"][2].update(last_task_result=new_result, last_run_utc=NOW.isoformat())
+    release["inputs"] = inputs.rows
+    import cre_code_handoff_transition as transition
+
+    monkeypatch.setattr(transition, "validate_reconciliation", lambda *args, **kwargs: rows)
+    with pytest.raises(HandoffError, match="distinct current source settlement"):
+        validate_lineage(release, inputs.evidence(release))
+    assert failure["operation"] == source["task_baseline"][2]["failure"]["operation"]
 
 
 @pytest.mark.parametrize("change", [None, "reordered", "xml", "new-history"])

@@ -229,14 +229,39 @@ The draft held-task restoration extension accepts a distinct
 output. It preserves the failed predecessor and uses separate restoration
 mutation, ready, terminal, native-completion and reconciliation records. It never
 updates code, registers tasks or reuses a spent code-release authorization.
-Its only supported Enable boundary is `zero-missed-no-crossed-trigger-v1`: every
+The ordinary Enable boundary is `zero-missed-no-crossed-trigger-v1`: every
 fresh held and sealed-audit missed count must be zero, current/audit/original next
 clocks must match, and each original desired Enabled trigger must remain at least
-900 seconds away. Current missed or rolled-clock cases refuse. Empty instances
-or a bounded no-catch-up observation cannot satisfy this boundary. This draft
-does not recover the current missed-run state and is not production accepted;
-catch-up policy and any wider restoration route require separate approval and
-source/packet proof. The canonical task contract treats omitted
+900 seconds away. Empty instances or a bounded no-catch-up observation cannot
+satisfy this ordinary boundary.
+
+AGENTIC-4845 adds the finite `founder-approved-catchup-v1` boundary for the
+explicit one-time human choice concerning the original Interra, Newmark and
+Qualified Brokerage Pipeline jobs. Its packet binds that choice, original failed
+A release, tooling and the then-current complete held fleet, missed counts,
+history, XML and desired flags. Future nominal triggers still require a fresh
+900-second margin before each Enable. Automatic missed-trigger execution may
+occur inside that buffer; no task definition, source scope or action changes.
+This implementation does not establish production acceptance or authorize any
+additional operation without its independent review and fresh admission.
+
+Restoration cleanup runs only while the same maintenance lease remains owned.
+A durable `release-start.json` precedes clearing its recovery requirement; all
+later failures, including native drain and terminal publication, are receipt-only.
+Context-manager return does not prove release. Confirmation requires the exact
+normal clear authority or an authentic distinct scheduled successor. A successor
+join uses the actual native instance/action/PID and WSL admission scalar bridge,
+Linux process birth and parent/control/run identity, and canonical authority
+token, generation and directory. Missing, foreign or racing evidence remains
+unverified without disabling, stopping, clearing or reacquiring over that owner.
+
+Bounded Scheduler watermarks, raw events and instance samples distinguish no
+observed execution, running native execution and completed native execution with
+its actual result. They do not prove an empty delayed queue or successful source
+settlement. Original A remains failed; its provenance is retained separately from
+new after-tuples. A future ordinary delivery cannot attach that historical failure
+to a changed scheduled run and requires distinct current source settlement.
+The canonical task contract treats omitted
 `AllowHardTerminate` as its documented true default while preserving explicit
 false. Diagnostic-only termination overrides do not prove production equivalence.
 

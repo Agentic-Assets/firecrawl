@@ -490,9 +490,61 @@ def restoration_enable_boundary(packet, evidence):
     validate_restoration_enable_boundary(packet, evidence, now())
 
 
+def restoration_released_owner(packet, checkpoint, lock, released, native, evidence):
+    """Observe release once; an authenticated successor is never maintenance."""
+    try:
+        lock_clear(checkpoint, lock, released=released)
+    except HandoffError:
+        from cre_code_restoration_evidence import restoration_execution, retained_reference
+        from cre_code_restoration_successor import observe_scheduled_successor
+
+        restoration_execution(packet, evidence, native)
+        record = json_bytes(retained_reference(native["execution"], evidence))
+        return observe_scheduled_successor(packet, checkpoint, lock, released, record, evidence, read_file=read_file)
+    return {"phase": "released-clear", "verified": True, "recovery_required": False}
+
+
+def restoration_release_confirmation(args, packet_raw, packet, evidence, checkpoint, lock, released, output):
+    """Confirm exact release or observe an actual scheduled successor, read-only."""
+    try:
+        lock_clear(checkpoint, lock, released=released)
+        return {"phase": "released-clear", "verified": True, "recovery_required": False}
+    except HandoffError:
+        capture = output / "release-observation"
+        capture.mkdir(mode=0o700)
+        Foreground(packet, checkpoint, capture).native("Postreadback", args.release, sha(packet_raw), operation=output)
+        native = json_bytes(read_file(capture / "native-observation.json"))
+        # The native reader compares complete definitions; bind the exported bytes
+        # as well before accepting any process/authority successor relationship.
+        for row in native["tasks"]:
+            baseline = next(item for item in packet["task_baseline"] if item["key"] == row["key"])
+            raw = read_file(capture / (row["key"] + "-observed.xml"))
+            from cre_code_handoff_evidence import enabled_xml_contract, xml_enabled
+
+            require(sha(raw) == row["xml_sha256"] and xml_enabled(raw) is baseline["desired_enabled"]
+                    and enabled_xml_contract(raw, baseline["desired_enabled"])
+                    == enabled_xml_contract(evidence.raw(baseline["xml"]), baseline["desired_enabled"]),
+                    "released successor task definition differs")
+        return restoration_released_owner(packet, checkpoint, lock, released, native, evidence)
+
+
 def restoration_capture(packet, evidence, args, git, modules, output, *, packet_raw, final=False, owned=False):
     native = json_bytes(read_file(output / "native-observation.json"))
-    observation = readiness(packet, *modules, git, owned=owned, evidence=evidence)
+    released = final and not owned and packet.get("enable_boundary") == "founder-approved-catchup-v1"
+    if released:
+        from cre_code_handoff_transition import reference
+
+        operation = local_path(args.operation)
+        terminal = json_bytes(read_file(operation / "restoration-terminal.json"))
+        witness = terminal["released_authority"]
+        for key in ("native", "runtime"):
+            git.clean(packet["roots"][key], packet["code"])
+        lock = modules[0].canonical_shared_lock_dir(local_path(packet["roots"]["runtime"]))
+        ownership = restoration_released_owner(packet, modules[0], lock, (tuple(witness[0]), tuple(witness[1])), native, evidence)
+        observation = {"native": packet["code"], "runtime": packet["code"], "ownership": ownership,
+                       "admission_reference": reference(operation / "restoration-ready.json", read_file)}
+    else:
+        observation = readiness(packet, *modules, git, owned=owned, evidence=evidence)
     observation.update(schema="cre-code-restoration-observation-v1", observed_at=native["observed_at"],
                        tasks=native["tasks"], windows_resources=native["windows_resources"],
                        restoration_sha256=sha(packet_raw), qualified_at=now().isoformat())
@@ -568,14 +620,29 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
                                classification, original, allow_hold=classification == "precommit-failure")
                 failure_recorded = True
                 raise
-        lock_clear(checkpoint, lock, released=released)
+        catchup = packet.get("enable_boundary") == "founder-approved-catchup-v1"
+        ownership = (restoration_release_confirmation(args, packet_raw, packet, evidence, checkpoint, lock, released, output)
+                     if catchup else None)
+        if not catchup:
+            lock_clear(checkpoint, lock, released=released)
         classification = "postcommit-confirmation-failure"
-        write_new(output / "restoration-terminal.json", {"schema": "cre-code-restoration-terminal-v1",
+        terminal = {"schema": "cre-code-restoration-terminal-v1",
                   "status": "restored", "code": packet["code"], "finished_at": now().isoformat(),
                   "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
                   "operation_output": canonical_path(str(output)), "canonical_lease_released": True,
                   "ready_sha256": sha(read_file(output / "restoration-ready.json")),
-                  "failed_predecessor_release_sha256": sha(evidence.raw(packet["failed_handoff"]["release"]))})
+                  "failed_predecessor_release_sha256": sha(evidence.raw(packet["failed_handoff"]["release"]))}
+        if catchup:
+            write_new(output / "release-observation.json", {"schema": "cre-code-restoration-release-observation-v1",
+                      "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
+                      "operation_output": canonical_path(str(output)), "ownership": ownership, "observed_at": now().isoformat(),
+                      "release_start_sha256": sha(read_file(output / "release-start.json")),
+                      "released_authority": released})
+            terminal.update(released_authority=released,
+                            release_start_sha256=sha(read_file(output / "release-start.json")),
+                            release_observation_sha256=sha(read_file(output / "release-observation.json")))
+            terminal["finished_at"] = now().isoformat()
+        write_new(output / "restoration-terminal.json", terminal)
     except BaseException as original:
         if not failure_recorded:
             record_failure(args, packet, packet_raw, authorization_raw, checkpoint, output,

@@ -7,6 +7,9 @@ import pytest
 import test_cre_code_handoff as fixtures
 from test_cre_code_handoff_restoration import restoration_case  # noqa: F401
 
+import cre_checkpoint_refresh as checkpoint
+import cre_code_handoff as operation
+
 from cre_code_handoff_evidence import Evidence, HandoffError, TASK_PATH, TASKS, sha
 from cre_code_restoration_evidence import restoration_execution, validate_restoration_enable_boundary
 
@@ -24,7 +27,8 @@ def approved_packet(case):
         row["next_run_utc"] = (NOW + timedelta(hours=3)).isoformat()
     decision = put("human-catchup-choice", {
         "catchup": {"received": True, "answer": "Authorize one-time catch-up recovery (Recommended)",
-                    "questionItemId": "explicit-synthetic-human-reply"},
+                    "questionItemId": '["request_user_input_async","call_564c89f05bae4490afe3bb3e601391bb",0]'},
+        "original_approval_prompt": {"catchupIssue": "AGENTIC-4845", "originalTasks": list(TASKS.values())},
         "outreach": {"received": True, "answer": "Keep all outreach unsent"},
     })
     failed = next(row for row in packet["inputs"] if row["role"] == packet["failed_handoff"]["release"])
@@ -87,7 +91,8 @@ def scheduler_case(outcome):
         codes = (107, 129, 100, 200) if outcome == "running" else (107, 129, 100, 200, 201, 102)
         for offset, event in enumerate(codes):
             data = {"TaskName": TASK_PATH + TASKS["qualified"]}
-            data["InstanceId" if event in {107, 100, 102} else "TaskInstanceId"] = guid
+            if event != 129:
+                data["InstanceId" if event in {107, 100, 102} else "TaskInstanceId"] = guid
             if event == 100: data["UserContext"] = "test-user"
             if event == 129: data["ProcessID"] = "1234"
             if event in {200, 201}: data.update(ActionName="pwsh.exe", EnginePID="1234")
@@ -130,3 +135,27 @@ def test_bounded_native_history_never_claims_source_settlement(outcome, change):
         assert outcomes["qualified"]["state"].startswith("no-observed" if outcome == "none" else outcome if outcome == "running" else "completed")
     else:
         with pytest.raises(HandoffError): restoration_execution(packet, evidence, observed)
+
+
+def test_real_lease_suppressed_removal_failure_is_not_release_proof(tmp_path, monkeypatch):
+    lock = tmp_path / ".cre.lock"
+    lease = checkpoint.SharedLock(lock, recovery_required=True)
+    with lease:
+        lease.clear_recovery_requirement()
+        released = operation.released_authority(checkpoint, lease)
+        monkeypatch.setattr(checkpoint.shutil, "rmtree", lambda path, **kwargs: None)
+    assert not lease.held and lock.is_dir()
+    with pytest.raises(HandoffError, match="directory present"):
+        operation.lock_clear(checkpoint, lock, released=released)
+
+
+def test_real_successor_keeps_its_authority_when_original_release_is_observed(tmp_path):
+    lock = tmp_path / ".cre.lock"
+    with checkpoint.SharedLock(lock, recovery_required=True) as predecessor:
+        predecessor.clear_recovery_requirement()
+        released = operation.released_authority(checkpoint, predecessor)
+    with checkpoint.SharedLock(lock) as successor:
+        token, generation = successor.authority_token, successor.authority_generation
+        with pytest.raises(HandoffError): operation.lock_clear(checkpoint, lock, released=released)
+        assert successor.held and successor.authority_token == token and successor.authority_generation == generation
+        assert checkpoint._lock_directory_identity(lock) == successor.directory_identity

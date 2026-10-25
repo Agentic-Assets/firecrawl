@@ -59,6 +59,11 @@ function Get-CreRestorationExecution($Release,[string]$Origin,[string]$Output,$T
             if($actionEvent.Count -ne 1){continue}
             $actionData=@{};foreach($item in $actionEvent[0].Event.EventData.Data){$actionData[[string]$item.Name]=[string]$item.'#text'}
             $actionPid=[int]$actionData.EnginePID
+            $related+=@($events|ForEach-Object {[xml]$_}|Where-Object {
+                if([int]$_.Event.System.EventID -ne 129){return $false}
+                $data=@{};foreach($item in $_.Event.EventData.Data){$data[[string]$item.Name]=[string]$item.'#text'}
+                $data['TaskName'] -ceq ([string]$row.task_path+[string]$row.task_name) -and $data['ProcessID'] -ceq [string]$actionPid
+            }|Where-Object {$candidate=[string]$_.Event.System.EventRecordID;@($related|Where-Object {[string]$_.Event.System.EventRecordID -ceq $candidate}).Count -eq 0})
             $process=Get-CimInstance Win32_Process -Filter ('ProcessId='+$actionPid) -ErrorAction Stop
             if(-not $process){continue}
             $children=@(Get-CimInstance Win32_Process -Filter ("ParentProcessId="+$actionPid+" AND Name='wsl.exe'") -ErrorAction Stop)
@@ -66,9 +71,9 @@ function Get-CreRestorationExecution($Release,[string]$Origin,[string]$Output,$T
             $child=$children[0];$scalars=@{};$valid=$true
             foreach($flag in @('expected-sha','sources','windows-admission-unix-ms')) {
                 $pattern='(?:^|\s)"?--'+$flag+'"?\s+"?([A-Za-z0-9,_-]+)"?(?=\s|$)'
-                $matches=[regex]::Matches([string]$child.CommandLine,$pattern)
-                if($matches.Count -ne 1){$valid=$false;break}
-                $scalars[$flag]=$matches[0].Groups[1].Value
+                $scalarMatches=[regex]::Matches([string]$child.CommandLine,$pattern)
+                if($scalarMatches.Count -ne 1){$valid=$false;break}
+                $scalars[$flag]=$scalarMatches[0].Groups[1].Value
             }
             if(-not $valid){continue}
             $ordered=@(foreach($eventId in @(107,129,100,200)) {
