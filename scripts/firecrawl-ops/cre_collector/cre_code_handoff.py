@@ -374,7 +374,7 @@ def mutation_started(output, release, release_raw, authorization_raw):
     return True
 
 
-def record_failure(args, release, release_raw, authorization_raw, checkpoint, output, classification, original):
+def record_failure(args, release, release_raw, authorization_raw, checkpoint, output, classification, original, *, allow_hold=True):
     record = {"schema": "cre-code-restoration-failure-v1" if release.get("schema") == "cre-code-restoration-v1" else "cre-code-failure-v1", "classification": classification,
               "original_error_type": type(original).__name__, "original_error": str(original),
               "recovery_retained": "not asserted; inspect canonical state",
@@ -382,7 +382,7 @@ def record_failure(args, release, release_raw, authorization_raw, checkpoint, ou
     try:
         require(read_file(args.release) == release_raw and read_file(args.authorization) == authorization_raw,
                 "cleanup immutable inputs changed")
-        if mutation_started(output, release, release_raw, authorization_raw):
+        if allow_hold and mutation_started(output, release, release_raw, authorization_raw):
             cleanup = Foreground(release, checkpoint, output)
             cleanup.counter = 999
             cleanup.native("FailureHold", args.release, sha(release_raw), args.observation, args.authorization)
@@ -513,25 +513,40 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
     collector = local_path(packet["roots"]["runtime"]) / "scripts/firecrawl-ops/cre_collector"
     dependencies = installed_dependencies(collector)
     classification = "precommit-failure"
+    failure_recorded = False
     try:
         with checkpoint.SharedLock(lock, recovery_required=True) as lease:
-            runner = Foreground(packet, checkpoint, output, lock)
-            admitted()
-            readiness(packet, *modules, git, owned=True, evidence=evidence)
-            runner.native("Restore", args.release, sha(packet_raw), args.observation, args.authorization)
-            runner.native("Verify", args.release, sha(packet_raw), args.observation, args.authorization)
-            final = restoration_capture(packet, evidence, args, git, modules, output, packet_raw=packet_raw, final=True, owned=True)
-            require(preserved(packet) == baseline and installed_dependencies(collector) == dependencies,
-                    "restoration changed preserved environment/dependencies")
-            evidence.recheck()
-            write_new(output / "restoration-ready.json", {"schema": "cre-code-restoration-ready-v1",
-                      "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
-                      "operation_output": canonical_path(str(output)), "code": packet["code"],
-                      "readiness": final, "dependencies": dependencies, "recovery_required_at_publication": True})
-            admitted()
-            classification = "commit-uncertain"
-            lease.clear_recovery_requirement()
-            released = released_authority(checkpoint, lease)
+            try:
+                runner = Foreground(packet, checkpoint, output, lock)
+                admitted()
+                readiness(packet, *modules, git, owned=True, evidence=evidence)
+                runner.native("Restore", args.release, sha(packet_raw), args.observation, args.authorization)
+                runner.native("Verify", args.release, sha(packet_raw), args.observation, args.authorization)
+                final = restoration_capture(packet, evidence, args, git, modules, output, packet_raw=packet_raw, final=True, owned=True)
+                require(preserved(packet) == baseline and installed_dependencies(collector) == dependencies,
+                        "restoration changed preserved environment/dependencies")
+                evidence.recheck()
+                write_new(output / "restoration-ready.json", {"schema": "cre-code-restoration-ready-v1",
+                          "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
+                          "operation_output": canonical_path(str(output)), "code": packet["code"],
+                          "readiness": final, "dependencies": dependencies, "recovery_required_at_publication": True})
+                admitted()
+                classification = "release-started"
+                write_new(output / "release-start.json", {"schema": "cre-code-restoration-release-start-v1",
+                          "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
+                          "operation_output": canonical_path(str(output)),
+                          "mutation_sha256": sha(read_file(output / "mutation-start.json")),
+                          "ready_sha256": sha(read_file(output / "restoration-ready.json")),
+                          "started_at": now().isoformat()})
+                lease.clear_recovery_requirement()
+                released = released_authority(checkpoint, lease)
+            except BaseException as original:
+                # Cleanup belongs inside this lease. Once release starts, even
+                # an uncertain clear/exit is observation-only forever.
+                record_failure(args, packet, packet_raw, authorization_raw, checkpoint, output,
+                               classification, original, allow_hold=classification == "precommit-failure")
+                failure_recorded = True
+                raise
         lock_clear(checkpoint, lock, released=released)
         classification = "postcommit-confirmation-failure"
         write_new(output / "restoration-terminal.json", {"schema": "cre-code-restoration-terminal-v1",
@@ -541,7 +556,9 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
                   "ready_sha256": sha(read_file(output / "restoration-ready.json")),
                   "failed_predecessor_release_sha256": sha(evidence.raw(packet["failed_handoff"]["release"]))})
     except BaseException as original:
-        record_failure(args, packet, packet_raw, authorization_raw, checkpoint, output, classification, original)
+        if not failure_recorded:
+            record_failure(args, packet, packet_raw, authorization_raw, checkpoint, output,
+                           classification, original, allow_hold=False)
         raise
 
 

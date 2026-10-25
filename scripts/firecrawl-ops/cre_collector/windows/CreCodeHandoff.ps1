@@ -248,7 +248,7 @@ function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptbl
     }
 }
 
-function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseSha,[string]$Authorization,[string]$ReceiptName='failure-hold.json') {
+function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseSha,[string]$Authorization,[string]$ReceiptName='failure-hold.json',[scriptblock]$AssertOwner=$null) {
     # This cleanup never admits a new operation or stops a running owner. It is
     # valid only after this exact operation durably entered its first mutation.
     $markerPath=Join-Path $Output 'mutation-start.json'
@@ -256,6 +256,11 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     $marker=Read-CreHandoffJson ([IO.File]::ReadAllText((ConvertTo-CreHandoffPath $markerPath)))
     $authPath=ConvertTo-CreHandoffPath $Authorization
     $restoration=$Release.schema -ceq 'cre-code-restoration-v1'
+    if($restoration) {
+        if(Test-Path -LiteralPath (Join-Path $Output 'release-start.json')) {throw 'Restoration release started; failure hold forbidden'}
+        if(-not $AssertOwner) {throw 'Current restoration authority assertion required'}
+        & $AssertOwner
+    }
     $digest=if($restoration){$marker.restoration_sha256}else{$marker.release_sha256}
     if($marker.schema -cne $(if($restoration){'cre-code-restoration-mutation-v1'}else{'cre-code-mutation-v1'}) -or $digest -cne $ReleaseSha -or
        $marker.authorization_sha256 -cne (Get-CreHandoffHash ([IO.File]::ReadAllText($authPath))) -or
@@ -270,6 +275,10 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     $attempts=@(foreach($row in $rows) {
         $record=[ordered]@{key=$row.key;task_path=$row.task_path;task_name=$row.task_name;disable_attempted=$false;disabled=$false;state=$null;error=$null}
         try {
+            if($restoration) {
+                if(Test-Path -LiteralPath (Join-Path $Output 'release-start.json')) {throw 'Restoration release started; failure hold forbidden'}
+                & $AssertOwner
+            }
             $record.disable_attempted=$true
             $null=Disable-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop
             $task=Get-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop

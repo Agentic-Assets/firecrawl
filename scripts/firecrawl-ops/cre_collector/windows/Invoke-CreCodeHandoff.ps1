@@ -78,7 +78,9 @@ if($Mode -eq 'Apply') {
         Save-CreHandoffExclusive ($outputRoot+'.native.json') ($completion|ConvertTo-Json -Depth 10)
     } catch {
         $original=$_
-        try {$null=Invoke-CreHandoffFailureHold $release $outputRoot $ReleaseSha $Authorization 'outer-failure-hold.json'} catch {Write-Warning ('Failure hold uncertain: '+$_.Exception.Message)}
+        if(-not $restoration) {
+            try {$null=Invoke-CreHandoffFailureHold $release $outputRoot $ReleaseSha $Authorization 'outer-failure-hold.json'} catch {Write-Warning ('Failure hold uncertain: '+$_.Exception.Message)}
+        }
         try {
             $failure=@{schema=$(if($restoration){'cre-code-restoration-outer-failure-v1'}else{'cre-code-outer-failure-v1'});
                 original_error_type=$original.Exception.GetType().FullName;original_error=$original.Exception.Message;
@@ -93,7 +95,7 @@ if($Mode -eq 'Apply') {
 }
 Assert-Input
 if($Mode -eq 'FailureHold') {
-    $null=Invoke-CreHandoffFailureHold $release $outputRoot $ReleaseSha $Authorization
+    $null=Invoke-CreHandoffFailureHold $release $outputRoot $ReleaseSha $Authorization -AssertOwner ${function:Assert-Owner}
     return
 }
 if($Mode -in @('Hold','Repin','Restore','Verify')) { Assert-Owner }
