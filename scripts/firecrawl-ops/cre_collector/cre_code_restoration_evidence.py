@@ -45,7 +45,7 @@ def canonical_restoration_principal(baseline_xml, principal, record):
         numbers = [int(part) for part in value.split("-")[2:]]
         return numbers[0] < 2**48 and all(number < 2**32 for number in numbers[1:])
 
-    root = ET.fromstring(baseline_xml)
+    root = ET.fromstring(baseline_xml.decode("utf-8-sig"))
     original = root.findtext("{*}Principals/{*}Principal/{*}UserId")
     resolved_sid = principal.get("sid")
     # All three original definitions use SIDs. An XML account-name variant needs
