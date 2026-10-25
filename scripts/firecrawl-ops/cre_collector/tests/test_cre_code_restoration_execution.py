@@ -4,6 +4,7 @@ import copy
 import json
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -151,6 +152,34 @@ def test_bounded_native_history_never_claims_source_settlement(outcome, change):
         assert outcomes["qualified"]["state"].startswith("no-observed" if outcome == "none" else outcome if outcome == "running" else "completed")
     else:
         with pytest.raises(HandoffError): restoration_execution(packet, evidence, observed)
+
+
+@pytest.mark.parametrize("encoding_case", ["export-utf16-declaration", "export-with-utf8-bom", "malformed-utf8", "missing-principal"])
+def test_execution_reads_native_export_utf8_bytes_without_rewriting(encoding_case):
+    packet, inputs, record, observed = scheduler_case("busy")
+    originals = {}
+    for baseline in packet["task_baseline"]:
+        role = baseline["xml"]
+        raw = inputs.data[role]
+        if encoding_case == "malformed-utf8": raw += b"\xff"
+        elif encoding_case == "missing-principal":
+            raw = raw.replace(("<UserId>" + SYNTHETIC_SID + "</UserId>").encode(), b"")
+        else:
+            raw = b'<?xml version="1.0" encoding="UTF-16"?>\r\n' + raw
+            if encoding_case == "export-with-utf8-bom": raw = b"\xef\xbb\xbf" + raw
+        inputs.data[role] = originals[role] = raw
+        pin = next(row for row in inputs.rows if row["role"] == role)
+        pin.update(bytes=len(raw), sha256=sha(raw))
+    raw_record = fixtures.encoded(record)
+    inputs.data["/synthetic/execution.json"] = raw_record
+    observed["execution"] = {"path": "/synthetic/execution.json", "bytes": len(raw_record), "sha256": sha(raw_record)}
+    evidence = Evidence(packet, inputs.data.__getitem__)
+    if encoding_case in {"malformed-utf8", "missing-principal"}:
+        with pytest.raises((UnicodeError, ET.ParseError, HandoffError)):
+            restoration_execution(packet, evidence, observed)
+    else:
+        assert restoration_execution(packet, evidence, observed)["qualified"]["state"] == "completed-native-source-settlement-unverified"
+    assert all(inputs.data[role] == raw and evidence.raw(role) == raw for role, raw in originals.items())
 
 
 def test_real_lease_suppressed_removal_failure_is_not_release_proof(tmp_path, monkeypatch):

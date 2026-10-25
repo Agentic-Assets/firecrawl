@@ -2,6 +2,7 @@
 import copy
 import json
 import types
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -170,6 +171,24 @@ def native():
 
 def test_native_original_instance_process_and_stamp_join(native):
     assert native.call() == 'newmark'
+
+
+@pytest.mark.parametrize('encoding_case', ['export-utf16-declaration', 'export-with-utf8-bom', 'malformed-utf8', 'missing-principal'])
+def test_successor_reads_native_export_utf8_bytes_without_rewriting(native, encoding_case):
+    raw = native.evidence.raw('newmark-xml')
+    if encoding_case == 'malformed-utf8': raw += b'\xff'
+    elif encoding_case == 'missing-principal':
+        raw = raw.replace(('<UserId>' + native.principal_sid + '</UserId>').encode(), b'')
+    else:
+        raw = b'<?xml version="1.0" encoding="UTF-16"?>\r\n' + raw
+        if encoding_case == 'export-with-utf8-bom': raw = b'\xef\xbb\xbf' + raw
+    native.evidence.raw = lambda role: raw
+    if encoding_case in {'malformed-utf8', 'missing-principal'}:
+        with pytest.raises((UnicodeError, ET.ParseError, HandoffError)):
+            native.call()
+    else:
+        assert native.call() == 'newmark'
+    assert native.evidence.raw('newmark-xml') == raw
 
 
 @pytest.mark.parametrize('mutation', ['foreign-pid', 'wrong-stamp', 'missing-event', 'outside-watermark', 'foreign-principal',
