@@ -342,7 +342,8 @@ def validate_lineage(release, evidence):
                     reconciled = validate_reconciliation(readback, edge["old"], edge["new"], evidence.read,
                                                          retain=evidence.original_payloads)
                     before, after = reconciled[key]["before_tuple"], reconciled[key]["after_tuple"]
-                    require(all(before[field] == after[field] for field in ("last_task_result", "last_run_utc")),
+                    require(all(before[field] == after[field] == row[field]
+                                for field in ("last_task_result", "last_run_utc")),
                             "restored scheduled execution requires distinct current source settlement; original failure is historical")
         if result == 0:
             continue

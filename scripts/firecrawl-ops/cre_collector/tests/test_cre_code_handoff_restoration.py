@@ -529,7 +529,8 @@ def synthetic_reconciliation(case):
 
 
 @pytest.mark.parametrize("new_result", [0, 1])
-def test_future_release_does_not_attach_historical_failure_to_new_run(restoration_case, monkeypatch, new_result):
+@pytest.mark.parametrize("edge_has_new_execution", [False, True])
+def test_future_release_does_not_attach_historical_failure_to_new_run(restoration_case, monkeypatch, new_result, edge_has_new_execution):
     """Isolate future-release policy after the finite reader authenticates an edge."""
     packet, receipt, files = synthetic_reconciliation(restoration_case)
     _, _, inputs, _, path = restoration_case
@@ -545,7 +546,8 @@ def test_future_release_does_not_attach_historical_failure_to_new_run(restoratio
     release["inputs"] = inputs.rows
     import cre_code_handoff_transition as transition
 
-    monkeypatch.setattr(transition, "validate_reconciliation", lambda *args, **kwargs: rows)
+    if edge_has_new_execution:
+        monkeypatch.setattr(transition, "validate_reconciliation", lambda *args, **kwargs: rows)
     with pytest.raises(HandoffError, match="distinct current source settlement"):
         validate_lineage(release, inputs.evidence(release))
     assert failure["operation"] == source["task_baseline"][2]["failure"]["operation"]
