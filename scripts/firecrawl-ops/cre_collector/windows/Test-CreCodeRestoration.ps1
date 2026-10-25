@@ -10,6 +10,61 @@ if(Test-Path -LiteralPath $Output){throw 'Exclusive native proof output required
 $null=New-Item -ItemType Directory -Path $Output
 $Output=[IO.Path]::GetFullPath($Output)
 . (Join-Path $PSScriptRoot 'CreCodeHandoff.ps1')
+
+# Exercise the actual execution producer with a Schedule.Service mock. Installed
+# TaskPath retains its trailing separator; the COM API must receive none.
+$producerOutput=Join-Path $Output 'scheduler-producer'
+$null=New-Item -ItemType Directory -Path $producerOutput
+$script:schedulerFolders=[Collections.Generic.List[string]]::new()
+$script:schedulerTasks=[Collections.Generic.List[string]]::new()
+$script:schedulerTip=[pscustomobject]@{LogName='Microsoft-Windows-TaskScheduler/Operational';MachineName='fixture-host';RecordId=100}
+$script:schedulerTip|Add-Member -MemberType ScriptMethod -Name ToXml -Value {return '<Event>offline-fixture-anchor</Event>'}
+$script:schedulerRegistered=[pscustomobject]@{Definition=[pscustomobject]@{Principal=[pscustomobject]@{UserId=[Security.Principal.WindowsIdentity]::GetCurrent().Name}}}
+$script:schedulerRegistered|Add-Member -MemberType ScriptMethod -Name GetInstances -Value {param([int]$Flags) if($Flags -ne 0){throw 'Unexpected instance flag'};return @()}
+$script:schedulerFolder=[pscustomobject]@{}
+$script:schedulerFolder|Add-Member -MemberType ScriptMethod -Name GetTask -Value {
+    param([string]$TaskName)
+    if($TaskName -cnotin @('Interra Refresh','Newmark Refresh','Qualified Brokerage Pipeline')){throw 'Foreign mock task lookup'}
+    $script:schedulerTasks.Add($TaskName)
+    return $script:schedulerRegistered
+}
+$script:schedulerService=[pscustomobject]@{}
+$script:schedulerService|Add-Member -MemberType ScriptMethod -Name Connect -Value {}
+$script:schedulerService|Add-Member -MemberType ScriptMethod -Name GetFolder -Value {
+    param([string]$FolderPath)
+    $script:schedulerFolders.Add($FolderPath)
+    if($FolderPath -cne '\Agentic Assets\CRE'){throw 'COM mock rejects trailing or foreign folder syntax'}
+    return $script:schedulerFolder
+}
+function New-Object {param([string]$ComObject) if($ComObject -cne 'Schedule.Service'){throw 'Foreign COM factory'};return $script:schedulerService}
+function Get-CreRestorationLogTip {return $script:schedulerTip}
+function Get-WinEvent {param([string]$LogName,[string]$FilterXPath,[int]$MaxEvents,$ErrorAction) return $script:schedulerTip}
+$schedulerRows=@(
+    [pscustomobject]@{key='interra';task_path='\Agentic Assets\CRE\';task_name='Interra Refresh'},
+    [pscustomobject]@{key='newmark';task_path='\Agentic Assets\CRE\';task_name='Newmark Refresh'},
+    [pscustomobject]@{key='qualified';task_path='\Agentic Assets\CRE\';task_name='Qualified Brokerage Pipeline'}
+)
+$originalRows=$schedulerRows|ConvertTo-Json -Depth 5 -Compress
+Save-CreRestorationWatermark $producerOutput
+$produced=Get-CreRestorationExecution @{task_baseline=$schedulerRows} $producerOutput $producerOutput $schedulerRows
+$producerRecord=Read-CreHandoffJson ([IO.File]::ReadAllText($produced.path))
+if($script:schedulerFolders.Count -ne 3 -or $script:schedulerTasks.Count -ne 3 -or @($producerRecord.principals).Count -ne 3){throw 'Original fleet producer lookup incomplete'}
+if(($schedulerRows|ConvertTo-Json -Depth 5 -Compress) -cne $originalRows -or ($producerRecord.tasks|ConvertTo-Json -Depth 5 -Compress) -cne $originalRows){throw 'COM lookup changed installed task identities'}
+$badPaths=@('\Foreign\','\','\Agentic Assets\CRE\\')
+for($case=0;$case -lt 4;$case++) {
+    $negative=Join-Path $producerOutput ('negative-'+$case)
+    $null=New-Item -ItemType Directory -Path $negative
+    $negativeRows=@(foreach($row in $schedulerRows){[pscustomobject]@{key=$row.key;task_path=$row.task_path;task_name=$row.task_name}})
+    if($case -lt 3){$negativeRows[0].task_path=$badPaths[$case]}else{$negativeRows[0].task_name='Foreign Refresh'}
+    Save-CreRestorationWatermark $negative
+    $before=$script:schedulerFolders.Count;$rejected=$false
+    try {$null=Get-CreRestorationExecution @{task_baseline=$negativeRows} $negative $negative $negativeRows}
+    catch {$rejected=$_.Exception.Message -like '*outside original restoration fleet*'}
+    if(-not $rejected -or $script:schedulerFolders.Count -ne $before){throw 'Out-of-scope COM lookup was attempted'}
+}
+Remove-Item Function:\New-Object,Function:\Get-WinEvent,Function:\Get-CreRestorationLogTip
+. (Join-Path $PSScriptRoot 'CreRestorationExecution.ps1')
+
 $script:disableCount=0;$script:leaseCount=0
 function Disable-ScheduledTask {param($TaskPath,$TaskName,$ErrorAction) $script:disableCount++}
 function Get-ScheduledTask {param($TaskPath,$TaskName,$ErrorAction) return @{State='Disabled';Settings=@{Enabled=$false}}}
