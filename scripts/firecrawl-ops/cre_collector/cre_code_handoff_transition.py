@@ -2,6 +2,11 @@
 
 import re
 
+from cre_code_restoration_evidence import (
+    validate_restoration,
+    validate_restoration_enable_boundary,
+    validate_restoration_observation,
+)
 from cre_code_handoff_evidence import (
     TASKS,
     Evidence,
@@ -13,9 +18,6 @@ from cre_code_handoff_evidence import (
     sha,
     unique,
     validate_observation,
-    validate_restoration,
-    validate_restoration_enable_boundary,
-    validate_restoration_observation,
     validate_xml_transition,
     xml_enabled,
 )
@@ -177,6 +179,8 @@ def restoration_history_inputs(packet):
     for row in failed["commands"]:
         roles.update((row["receipt"], row["log"]))
     roles.update(row["receipt"] for row in failed["native_steps"])
+    if packet.get("enable_boundary") == "founder-approved-catchup-v1":
+        roles.add(packet["catchup_policy"]["decision"])
     for row in failed["xml"]:
         roles.update(row[field] for field in ("before", "final", "audited"))
     return [row for row in packet["inputs"] if row["role"] in roles]
@@ -285,7 +289,8 @@ def validate_reconciliation(receipt, old, new, read, *, retain=None):
         after = {field: observed[key][field] for field in (*TUPLE_FIELDS, "missed_runs")}
         require(row["before_tuple"] == prior and row["after_tuple"] == after
                 and all(prior[field] == after[field] for field in
-                        ("task_path", "task_name", "enabled", "last_task_result", "last_run_utc")),
+                        (("task_path", "task_name", "enabled") if packet.get("enable_boundary") == "founder-approved-catchup-v1"
+                         else ("task_path", "task_name", "enabled", "last_task_result", "last_run_utc"))),
                 "reconciliation changed original task execution history")
     if retain is not None:
         retain.update(pinned.original_payloads)

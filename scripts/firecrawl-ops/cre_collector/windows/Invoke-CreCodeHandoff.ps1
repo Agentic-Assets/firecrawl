@@ -12,6 +12,7 @@ param(
     [string]$Output,
     [string]$Observation,
     [string]$Authorization,
+    [string]$OperationOutput,
     [int]$OwnerPid=0
 )
 Set-StrictMode -Version Latest
@@ -49,12 +50,15 @@ $common=@('-d',[string]$release.wsl.distro,'-u',[string]$release.wsl.user,'--exe
 function Assert-Input {
     if((Get-CreHandoffHash ([IO.File]::ReadAllText($releaseFile))) -cne $ReleaseSha) { throw 'Release changed at native boundary' }
 }
-function Assert-Owner {
+function Assert-LeaseOwner {
     Assert-Input
     if($OwnerPid -le 0) { throw 'Exact live maintenance owner required' }
     $ownedInputs=if($restoration){@('--output',(ConvertTo-CreWslPath $Output),'--observation',(ConvertTo-CreWslPath $Observation),'--authorization',(ConvertTo-CreWslPath $Authorization))}else{@()}
     & wsl.exe @common --assert-owned-pid $OwnerPid @ownedInputs
     if($LASTEXITCODE -ne 0) { throw 'Canonical ownership not proven' }
+}
+function Assert-Owner {
+    Assert-LeaseOwner
     $authorizationOutput=if($restoration){@('--output',(ConvertTo-CreWslPath $Output))}else{@()}
     & wsl.exe @common --check-authorization --observation (ConvertTo-CreWslPath $Observation) --authorization (ConvertTo-CreWslPath $Authorization) @authorizationOutput
     if($LASTEXITCODE -ne 0) { throw 'Immutable current authorization refused' }
@@ -95,7 +99,7 @@ if($Mode -eq 'Apply') {
 }
 Assert-Input
 if($Mode -eq 'FailureHold') {
-    $null=Invoke-CreHandoffFailureHold $release $outputRoot $ReleaseSha $Authorization -AssertOwner ${function:Assert-Owner}
+    $null=Invoke-CreHandoffFailureHold $release $outputRoot $ReleaseSha $Authorization -AssertOwner ${function:Assert-LeaseOwner}
     return
 }
 if($Mode -in @('Hold','Repin','Restore','Verify')) { Assert-Owner }
@@ -119,7 +123,7 @@ if($Mode -eq 'Hold' -or ($restoration -and $Mode -eq 'Restore')) {
         operation_output=$outputRoot;tooling=$release.tooling;fleet=@($release.task_baseline);entered_at=[DateTime]::UtcNow.ToString('o')}
     $operation[$digestField]=$ReleaseSha
 }
-$result=Invoke-CreHandoffTasks $release $Mode $outputRoot ${function:Assert-Owner} $operation
+$result=Invoke-CreHandoffTasks $release $Mode $outputRoot ${function:Assert-Owner} $operation $OperationOutput
 if($Mode -in @('Observe','Postreadback','Verify')) {
     Save-CreHandoffExclusive (Join-Path $outputRoot 'native-observation.json') ($result|ConvertTo-Json -Depth 15)
 } else {

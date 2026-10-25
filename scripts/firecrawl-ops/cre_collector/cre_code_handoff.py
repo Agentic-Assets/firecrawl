@@ -13,6 +13,12 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from cre_code_restoration_evidence import (
+    validate_restoration,
+    validate_restoration_authorization,
+    validate_restoration_enable_boundary,
+    validate_restoration_observation,
+)
 from cre_code_handoff_evidence import (
     DEPENDENCY_CHECKS,
     Evidence,
@@ -25,10 +31,6 @@ from cre_code_handoff_evidence import (
     validate_authorization,
     validate_observation,
     validate_release,
-    validate_restoration,
-    validate_restoration_authorization,
-    validate_restoration_enable_boundary,
-    validate_restoration_observation,
 )
 from cre_code_handoff_git import (
     Git,
@@ -98,6 +100,19 @@ def released_authority(checkpoint, lease):
     identity = lease.authority_identity
     lease._require_authority()
     return fields, identity
+
+
+def owned_authority(checkpoint, lease):
+    """Record the still-owned recovery lease before its irreversible release."""
+    assert_owned(checkpoint, lease.path, os.getpid())
+    lease._require_authority()
+    fields = checkpoint.SharedLock._authority_fields(lease.authority_fd)
+    require(fields == (os.getpid(), lease.authority_token, lease.authority_generation, True)
+            and lease.lease_token == fields[2] and lease._authority_fd_matches_path(),
+            "release-start authority identity differs")
+    return {"pid": fields[0], "token": fields[1], "generation": fields[2],
+            "recovery_required": True, "authority_identity": list(lease.authority_identity),
+            "directory_identity": list(lease.directory_identity)}
 
 
 def lock_clear(checkpoint, lock, *, released=None):
@@ -272,7 +287,7 @@ class Foreground:
         require(rc == 0, f"{name} failed ({rc}); preserve held tasks and recovery")
         return receipt
 
-    def native(self, mode, release_path, release_sha, observation=None, authorization=None):
+    def native(self, mode, release_path, release_sha, observation=None, authorization=None, *, operation=None):
         script = Path(__file__).resolve().parent / "windows/Invoke-CreCodeHandoff.ps1"
         argv = [str(local_path(self.release["programs"]["powershell"])), "-NoProfile", "-NonInteractive",
                 "-File", windows_path(script), "-Mode", mode,
@@ -284,6 +299,8 @@ class Foreground:
             argv += ["-Observation", windows_path(local_path(observation))]
         if authorization:
             argv += ["-Authorization", windows_path(local_path(authorization))]
+        if operation:
+            argv += ["-OperationOutput", windows_path(local_path(operation))]
         self.run("native-" + mode.lower(), argv)
 
 
@@ -479,6 +496,8 @@ def restoration_capture(packet, evidence, args, git, modules, output, *, packet_
     observation.update(schema="cre-code-restoration-observation-v1", observed_at=native["observed_at"],
                        tasks=native["tasks"], windows_resources=native["windows_resources"],
                        restoration_sha256=sha(packet_raw), qualified_at=now().isoformat())
+    if native.get("execution"):
+        observation["execution"] = native["execution"]
     if final:
         from cre_code_handoff_transition import reference
 
@@ -531,11 +550,13 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
                           "operation_output": canonical_path(str(output)), "code": packet["code"],
                           "readiness": final, "dependencies": dependencies, "recovery_required_at_publication": True})
                 admitted()
+                authority = owned_authority(checkpoint, lease)
                 classification = "release-started"
                 write_new(output / "release-start.json", {"schema": "cre-code-restoration-release-start-v1",
                           "restoration_sha256": sha(packet_raw), "authorization_sha256": sha(authorization_raw),
                           "operation_output": canonical_path(str(output)),
                           "mutation_sha256": sha(read_file(output / "mutation-start.json")),
+                          "owned_authority": authority,
                           "ready_sha256": sha(read_file(output / "restoration-ready.json")),
                           "started_at": now().isoformat()})
                 lease.clear_recovery_requirement()
@@ -575,7 +596,7 @@ def observe_restoration(args, raw, packet, evidence, git, modules):
                 and terminal.get("canonical_lease_released") is True, "restoration terminal binding differs")
     output = local_path(args.output)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
-    Foreground(packet, modules[0], output).native("Postreadback" if args.postreadback else "Observe", args.release, sha(raw))
+    Foreground(packet, modules[0], output).native("Postreadback" if args.postreadback else "Observe", args.release, sha(raw), operation=operation)
     observation = restoration_capture(packet, evidence, args, git, modules, output, packet_raw=raw, final=args.postreadback)
     if args.postreadback:
         observation.update(operation_output=canonical_path(str(operation)),

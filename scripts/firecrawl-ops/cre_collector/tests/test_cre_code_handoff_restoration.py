@@ -9,18 +9,20 @@ import pytest
 import test_cre_code_handoff as fixtures
 
 import cre_code_handoff as operation
+from cre_code_restoration_evidence import (
+    validate_failed_handoff,
+    validate_restoration,
+    validate_restoration_authorization,
+    validate_restoration_enable_boundary,
+    validate_restoration_observation,
+)
 from cre_code_handoff_evidence import (
     DEPENDENCY_CHECKS,
     HandoffError,
     enabled_xml_contract,
     json_bytes,
     sha,
-    validate_failed_handoff,
     validate_lineage,
-    validate_restoration,
-    validate_restoration_authorization,
-    validate_restoration_enable_boundary,
-    validate_restoration_observation,
 )
 from cre_code_handoff_transition import make_reconciliation, validate_reconciliation
 
@@ -436,6 +438,9 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
     monkeypatch.setattr(operation, "readiness", ready)
     monkeypatch.setattr(operation.Foreground, "native", native)
     monkeypatch.setattr(operation, "released_authority", captured)
+    monkeypatch.setattr(operation, "owned_authority", lambda actual, lease: {
+        "pid": 123, "token": "synthetic-owned-token", "generation": "synthetic-generation",
+        "recovery_required": True, "authority_identity": [1, 2], "directory_identity": [1, 3]})
     monkeypatch.setattr(operation, "lock_clear", clear)
     monkeypatch.setattr(operation, "write_new", write)
     argv = ["--restoration-packet", str(packet_path), "--apply", "--observation", str(observed_path),
