@@ -227,7 +227,7 @@ checks preserve trigger XML and recheck enabled clocks after restoration.
 A merged tooling PR or prepared input authorizes no
 runtime delivery, data acceptance or scheduling change.
 
-The draft held-task restoration extension accepts a distinct
+The held-task restoration path accepts a distinct
 `cre-code-restoration-v1` packet through `--restoration-packet` (native
 `-RestorationPath/-RestorationSha`), with a new review, authorization and exclusive
 output. It preserves the failed predecessor and uses separate restoration
