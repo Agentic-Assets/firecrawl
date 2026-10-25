@@ -330,7 +330,7 @@ def test_supported_zero_missed_case_requires_original_trigger_still_in_future(re
         validate_restoration_enable_boundary(packet, evidence, NOW)
 
 
-@pytest.mark.parametrize("fault", [None, "first-enable"])
+@pytest.mark.parametrize("fault", [None, "first-enable", "clear-recovery", "released-observation", "terminal-publication"])
 def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(restoration_case, tmp_path, monkeypatch, fault):
     packet, _evidence, inputs = zero_missed_packet(restoration_case)
     packet_path, observed_path, auth_path = (tmp_path / name for name in ("packet.json", "observation.json", "auth.json"))
@@ -359,7 +359,10 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
             return self
         def clear_recovery_requirement(self):
             assert state["owned"] and (output / "restoration-ready.json").is_file()
-            state["calls"].append("clear"); state["cleared"] = True
+            state["calls"].append("clear")
+            if fault == "clear-recovery":
+                raise OSError("synthetic clear-recovery failure")
+            state["cleared"] = True
         def __exit__(self, *args):
             state["calls"].append("exit"); state["owned"] = False
 
@@ -398,6 +401,7 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
                 state["enabled"][index] = True
                 if fault == "first-enable": raise OSError("synthetic first-enable receipt failure")
         elif mode == "FailureHold":
+            assert state["owned"] and not state["cleared"], "failure hold requires this operation's held lease"
             assert operation.mutation_started(output, packet, packet_raw, auth_raw)
             state["enabled"] = [False] * 3
         else:
@@ -419,16 +423,32 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
         assert actual is checkpoint and path == lock_path and released is released_receipt
         assert not state["owned"] and state["cleared"]
         state["calls"].append("released")
+        if fault == "released-observation":
+            raise OSError("synthetic released-observation failure")
+
+    original_write = operation.write_new
+
+    def write(path, value):
+        if fault == "terminal-publication" and path.name == "restoration-terminal.json":
+            raise OSError("synthetic terminal-publication failure")
+        original_write(path, value)
 
     monkeypatch.setattr(operation, "readiness", ready)
     monkeypatch.setattr(operation.Foreground, "native", native)
     monkeypatch.setattr(operation, "released_authority", captured)
     monkeypatch.setattr(operation, "lock_clear", clear)
+    monkeypatch.setattr(operation, "write_new", write)
     argv = ["--restoration-packet", str(packet_path), "--apply", "--observation", str(observed_path),
             "--authorization", str(auth_path), "--output", str(output)]
     if fault:
-        with pytest.raises(OSError, match="first-enable receipt failure"): operation.main(argv)
-        assert state["enabled"] == [False] * 3 and state["calls"] == ["lease", "Restore", "exit", "FailureHold"]
+        with pytest.raises(OSError, match="synthetic " + fault): operation.main(argv)
+        if fault == "first-enable":
+            assert state["enabled"] == [False] * 3
+            assert state["calls"] == ["lease", "Restore", "FailureHold", "exit"]
+        else:
+            assert state["enabled"] == [True] * 3
+            assert "FailureHold" not in state["calls"]
+            assert not state["owned"]
         assert not (output / "restoration-terminal.json").exists()
     else:
         assert operation.main(argv) == 0
