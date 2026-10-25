@@ -165,6 +165,10 @@ The native handoff fixture requires an independently verified Git executable wit
 one hard link and no reparse ancestors; a PATH shim may correctly fail this guard.
 Select that executable explicitly when needed, in fresh PowerShell 7 and 5.1:
 `./scripts/firecrawl-ops/cre_collector/windows/Test-CreCodeHandoff.ps1 -GitExecutable 'C:/Program Files/Git/bin/git.exe'`.
+Run the offline restoration fault fixture in separate fresh PowerShell 7 and 5.1
+processes with a new proof output each time:
+`./scripts/firecrawl-ops/cre_collector/windows/Test-CreCodeRestoration.ps1 -Output '<fresh-proof-directory>' -GitExecutable 'C:/Program Files/Git/bin/git.exe'`.
+Its task operations and child capture are mocked; it never restores live tasks.
 Native JSON ingestion preserves exact clock strings using
 `ConvertFrom-Json -DateKind String`, or the qualified Desktop Windows PowerShell 5.1 reader.
 Modern readers without `DateKind` refuse; clock coercion or reformatting cannot
@@ -249,11 +253,17 @@ Restoration cleanup runs only while the same maintenance lease remains owned.
 A durable `release-start.json` precedes clearing its recovery requirement; all
 later failures, including native drain and terminal publication, are receipt-only.
 Context-manager return does not prove release. Confirmation requires the exact
-normal clear authority or an authentic distinct scheduled successor. A successor
-join uses the actual native instance/action/PID and WSL admission scalar bridge,
+normal clear authority or an authentic distinct scheduled successor. The
+in-process clear check retains its same-PID witness. Later independent postreadback
+binds the authenticated terminal and native completion to that exact authority
+tuple and inode, proves its original PID exited, and observes the available flock
+with no canonical directory or recovery requirement. A foreign normal sidecar
+does not qualify. A successor join uses the actual native instance/action/PID and WSL admission scalar bridge,
 Linux process birth and parent/control/run identity, and canonical authority
 token, generation and directory. Missing, foreign or racing evidence remains
 unverified without disabling, stopping, clearing or reacquiring over that owner.
+The original XML principal SID must match the OS-resolved COM principal SID;
+bound resolver account names qualify event identity only after that SID match.
 
 Bounded Scheduler watermarks, raw events and instance samples distinguish no
 observed execution, running native execution and completed native execution with

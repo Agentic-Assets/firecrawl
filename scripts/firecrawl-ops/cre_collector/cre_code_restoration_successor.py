@@ -7,16 +7,30 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 
 from cre_code_handoff_advancement import NS, instance
-from cre_code_handoff_evidence import HandoffError, TASKS, TASK_PATH, clock, json_bytes, require, sha, unique
+from cre_code_handoff_evidence import (
+    TASK_PATH,
+    TASKS,
+    HandoffError,
+    clock,
+    json_bytes,
+    require,
+    sha,
+    unique,
+)
 from cre_code_restoration_evidence import canonical_restoration_principal
 
 PROC = Path('/proc')
 SOURCES = {'interra': 'interra-realty', 'newmark': 'newmark'}
-COMMON = set('out-root sources page-cap concurrency source-workers attempts-per-source max-resume-age-hours max-host-cpu-percent cpu-sustain-seconds cpu-sample-seconds memory-sustain-seconds memory-sample-seconds env-file admit-current-inventory-source daum-subset-policy'.split())
-PARENT = COMMON | set('work-deadline-seconds expected-sha windows-admission-unix-ms nice max-resource-recoveries-per-source recovery-low-cpu-percent recovery-low-cpu-seconds recovery-cpu-sample-seconds max-recovery-cooldown-seconds max-series-recovery-seconds'.split())
+COMMON = {'out-root', 'sources', 'page-cap', 'concurrency', 'source-workers', 'attempts-per-source',
+          'max-resume-age-hours', 'max-host-cpu-percent', 'cpu-sustain-seconds', 'cpu-sample-seconds',
+          'memory-sustain-seconds', 'memory-sample-seconds', 'env-file', 'admit-current-inventory-source', 'daum-subset-policy'}
+PARENT = COMMON | {'work-deadline-seconds', 'expected-sha', 'windows-admission-unix-ms', 'nice',
+                   'max-resource-recoveries-per-source', 'recovery-low-cpu-percent', 'recovery-low-cpu-seconds',
+                   'recovery-cpu-sample-seconds', 'max-recovery-cooldown-seconds', 'max-series-recovery-seconds'}
 CHILD = COMMON | {'transactions', 'run-id', 'series-control-invocation-id', 'series-control-child-id'}
 
 
@@ -177,7 +191,7 @@ def _native(packet, record, bridge, source, code, stamp, evidence):
     require(set(events) == {107, 129, 100, 200}, 'native scheduled start bridge incomplete')
     ordered = [events[event] for event in (107, 129, 100, 200)]
     require(bridge.get('scheduler_event_record_ids') == [row[0] for row in ordered]
-            and all(a[0] < b[0] and a[1] <= b[1] for a, b in zip(ordered, ordered[1:])),
+            and all(a[0] < b[0] and a[1] <= b[1] for a, b in pairwise(ordered)),
             'native event bridge chronology differs')
     require(events[100][2].get('UserContext', '').casefold() in
             principal_names

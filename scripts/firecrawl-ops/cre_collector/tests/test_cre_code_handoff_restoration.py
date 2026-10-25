@@ -9,13 +9,6 @@ import pytest
 import test_cre_code_handoff as fixtures
 
 import cre_code_handoff as operation
-from cre_code_restoration_evidence import (
-    validate_failed_handoff,
-    validate_restoration,
-    validate_restoration_authorization,
-    validate_restoration_enable_boundary,
-    validate_restoration_observation,
-)
 from cre_code_handoff_evidence import (
     DEPENDENCY_CHECKS,
     HandoffError,
@@ -25,6 +18,13 @@ from cre_code_handoff_evidence import (
     validate_lineage,
 )
 from cre_code_handoff_transition import make_reconciliation, validate_reconciliation
+from cre_code_restoration_evidence import (
+    validate_failed_handoff,
+    validate_restoration,
+    validate_restoration_authorization,
+    validate_restoration_enable_boundary,
+    validate_restoration_observation,
+)
 
 admitted = fixtures.admitted
 complete_case = fixtures.complete_case

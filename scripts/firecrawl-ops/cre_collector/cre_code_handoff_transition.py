@@ -2,11 +2,6 @@
 
 import re
 
-from cre_code_restoration_evidence import (
-    validate_restoration,
-    validate_restoration_enable_boundary,
-    validate_restoration_observation,
-)
 from cre_code_handoff_evidence import (
     TASKS,
     Evidence,
@@ -20,6 +15,11 @@ from cre_code_handoff_evidence import (
     validate_observation,
     validate_xml_transition,
     xml_enabled,
+)
+from cre_code_restoration_evidence import (
+    validate_restoration,
+    validate_restoration_enable_boundary,
+    validate_restoration_observation,
 )
 
 TUPLE_FIELDS = ("task_path", "task_name", "enabled", "last_task_result", "last_run_utc", "next_run_utc", "actions")

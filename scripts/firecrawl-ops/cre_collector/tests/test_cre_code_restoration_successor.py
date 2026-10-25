@@ -5,6 +5,7 @@ import types
 from pathlib import Path
 
 import pytest
+
 import cre_code_restoration_successor as subject
 from cre_code_handoff_evidence import HandoffError
 
@@ -17,14 +18,14 @@ def active(monkeypatch):
     run = '2026-10-25T030000Z-' + 'a' * 12
     invocation, child_id = 'b' * 32, 'c' * 32
     code = 'd' * 40
-    parent = dict(pid=120, ppid=110, start_ticks=90, boot_id='0' * 8 + '-0000-0000-0000-' + '0' * 12,
-                  uid=1000, pid_namespace_identity=[4, 999])
+    parent = {'pid': 120, 'ppid': 110, 'start_ticks': 90, 'boot_id': '0' * 8 + '-0000-0000-0000-' + '0' * 12,
+              'uid': 1000, 'pid_namespace_identity': [4, 999]}
     child = dict(parent, pid=121, ppid=120, start_ticks=91)
-    authority = dict(pid=121, authority_token='new-token', authority_generation='new-generation',
-                     authority_identity=[1, 2], lock_directory_identity=[1, 3], authority_fd=4,
-                     lease_token='new-generation')
+    authority = {'pid': 121, 'authority_token': 'new-token', 'authority_generation': 'new-generation',
+                 'authority_identity': [1, 2], 'lock_directory_identity': [1, 3], 'authority_fd': 4,
+                 'lease_token': 'new-generation'}
     owner = {key: value for key, value in parent.items() if key != 'ppid'}
-    receipt = dict(status='running', stop_owner=owner)
+    receipt = {'status': 'running', 'stop_owner': owner}
     args = {'out-root': str(series / 'runs'), 'sources': 'newmark', 'transactions': 'both',
             'run-id': run, 'series-control-invocation-id': invocation, 'series-control-child-id': child_id}
     pargs = {'sources': 'newmark', 'expected-sha': code, 'windows-admission-unix-ms': '1000'}

@@ -2,14 +2,28 @@
 
 import re
 import xml.etree.ElementTree as ET
+from itertools import pairwise
 
-from cre_code_handoff_advancement import EVENTS, NS as EVENT_NS, instance
-
+from cre_code_handoff_advancement import EVENTS, instance
+from cre_code_handoff_advancement import NS as EVENT_NS
 from cre_code_handoff_evidence import (
-    DEPENDENCY_CHECKS, TASKS, Evidence, canonical_path, clock,
-    enabled_xml_contract, identity, json_bytes, require, role_paths, sha, unique,
-    validate_observation, validate_owned_qa, validate_review,
-    validate_xml_transition, xml_enabled,
+    DEPENDENCY_CHECKS,
+    TASKS,
+    Evidence,
+    canonical_path,
+    clock,
+    enabled_xml_contract,
+    identity,
+    json_bytes,
+    require,
+    role_paths,
+    sha,
+    unique,
+    validate_observation,
+    validate_owned_qa,
+    validate_review,
+    validate_xml_transition,
+    xml_enabled,
 )
 
 
@@ -149,7 +163,7 @@ def restoration_execution(packet, evidence, observation):
         for guid, events in matches:
             require({107, 129, 100, 200} <= events.keys(), "restoration scheduled start/action history missing")
             ordered = [events[event] for event in EVENTS if event in events]
-            require(all(a[0] < b[0] and a[1] <= b[1] for a, b in zip(ordered, ordered[1:])),
+            require(all(a[0] < b[0] and a[1] <= b[1] for a, b in pairwise(ordered)),
                     "restoration scheduled event chronology differs")
             require(events[100][2].get("UserContext", "").casefold() in
                     principal_names[key],

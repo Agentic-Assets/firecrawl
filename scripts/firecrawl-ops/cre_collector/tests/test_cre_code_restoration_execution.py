@@ -5,21 +5,25 @@ import json
 import subprocess
 import sys
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import test_cre_code_handoff as fixtures
-from test_cre_code_handoff_restoration import restoration_case  # noqa: F401
+import test_cre_code_handoff_restoration as restoration_fixtures
 
 import cre_checkpoint_refresh as checkpoint
 import cre_code_handoff as operation
-
-from cre_code_handoff_evidence import Evidence, HandoffError, TASK_PATH, TASKS, sha
-from cre_code_restoration_evidence import restoration_execution, validate_restoration_enable_boundary
+from cre_code_handoff_evidence import TASK_PATH, TASKS, Evidence, HandoffError, sha
+from cre_code_restoration_evidence import (
+    restoration_execution,
+    validate_restoration_enable_boundary,
+)
 
 complete_case = fixtures.complete_case
 lineage_case = fixtures.lineage_case
 admitted = fixtures.admitted
+restoration_case = restoration_fixtures.restoration_case
 NOW = fixtures.NOW
 SYNTHETIC_SID = "S-1-5-21-111111111-222222222-333333333-1001"
 
@@ -173,7 +177,8 @@ def test_real_successor_keeps_its_authority_when_original_release_is_observed(tm
         assert checkpoint._lock_directory_identity(lock) == successor.directory_identity
 
 
-def test_independent_postreadback_accepts_exact_clear_from_distinct_exited_owner(tmp_path, monkeypatch):
+@pytest.mark.parametrize("change", [None, "replaced-sidecar", "foreign-tuple", "recovery-required"])
+def test_independent_postreadback_accepts_exact_clear_from_distinct_exited_owner(tmp_path, monkeypatch, change):
     """Use the real lease and flock through the released capture front door."""
     lock = tmp_path / ".cre.lock"
     program = """
@@ -187,10 +192,22 @@ with checkpoint.SharedLock(Path(sys.argv[2]), recovery_required=True) as lease:
     released = operation.released_authority(checkpoint, lease)
 print(json.dumps(released))
 """
-    child = subprocess.run([sys.executable, "-c", program, str(fixtures.Path(operation.__file__).parent), str(lock)],
+    child = subprocess.run([sys.executable, "-c", program, str(Path(operation.__file__).parent), str(lock)],
                            check=True, capture_output=True, text=True, timeout=15)
     released = json.loads(child.stdout)
     assert released[0][0] != operation.os.getpid() and not lock.exists()
+    with pytest.raises(HandoffError, match="released authority owner differs"):
+        operation.lock_clear(checkpoint, lock, released=(tuple(released[0]), tuple(released[1])))
+    authority = lock.with_name(lock.name + ".authority")
+    if change == "replaced-sidecar":
+        raw_authority = authority.read_bytes()
+        authority.rename(tmp_path / "displaced-authority")
+        authority.write_bytes(raw_authority)
+    elif change == "foreign-tuple":
+        authority.write_bytes(authority.read_bytes().replace(released[0][1].encode(), b"z" * len(released[0][1])))
+    elif change == "recovery-required":
+        authority.write_bytes(authority.read_bytes().replace(b" normal", b" recovery-required"))
+    authority_before = authority.read_bytes()
     packet, inputs, record, native = scheduler_case("none")
     packet.update(enable_boundary="founder-approved-catchup-v1", code=fixtures.NEW,
                   roots={"runtime": str(tmp_path / "runtime"), "native": str(tmp_path / "native")})
@@ -221,13 +238,21 @@ print(json.dumps(released))
         "schema": "cre-code-restoration-ready-v1", "code": fixtures.NEW, "restoration_sha256": sha(packet_raw),
         "recovery_required_at_publication": True, "readiness": ready}))
     (original / "restoration-terminal.json").write_bytes(fixtures.encoded({"released_authority": released}))
-    native.update(execution=execution, windows_resources={"scope": "post-release observation"})
+    native.update(execution=execution, windows_resources={"scope": "post-release observation"},
+                  observed_at=(NOW + timedelta(seconds=15)).isoformat())
     (output / "native-observation.json").write_bytes(fixtures.encoded(native))
     monkeypatch.setattr(checkpoint, "canonical_shared_lock_dir", lambda root: lock)
     monkeypatch.setattr(operation, "now", lambda: NOW + timedelta(seconds=16))
     evidence = Evidence(packet, lambda path: inputs.data[str(path)] if str(path) in inputs.data else operation.read_file(path))
-    observed = operation.restoration_capture(packet, evidence, SimpleNamespace(operation=str(original)),
-        SimpleNamespace(clean=lambda *args: None), (checkpoint, None, None, None), output,
-        packet_raw=packet_raw, final=True)
-    assert observed["ownership"] == {"phase": "released-clear", "verified": True, "recovery_required": False}
+    def capture():
+        return operation.restoration_capture(packet, evidence, SimpleNamespace(operation=str(original)),
+            SimpleNamespace(clean=lambda *args: None), (checkpoint, None, None, None), output,
+            packet_raw=packet_raw, final=True)
+
+    if change is None:
+        observed = capture()
+        assert observed["ownership"] == {"phase": "released-clear", "verified": True, "recovery_required": False}
+    else:
+        with pytest.raises(HandoffError): capture()
+    assert authority.read_bytes() == authority_before
     assert not lock.exists()

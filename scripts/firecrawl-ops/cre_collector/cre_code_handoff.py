@@ -13,12 +13,6 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cre_code_restoration_evidence import (
-    validate_restoration,
-    validate_restoration_authorization,
-    validate_restoration_enable_boundary,
-    validate_restoration_observation,
-)
 from cre_code_handoff_evidence import (
     DEPENDENCY_CHECKS,
     Evidence,
@@ -40,6 +34,12 @@ from cre_code_handoff_git import (
     windows_path,
 )
 from cre_code_handoff_host import observe_host, qualify_host
+from cre_code_restoration_evidence import (
+    validate_restoration,
+    validate_restoration_authorization,
+    validate_restoration_enable_boundary,
+    validate_restoration_observation,
+)
 
 
 def now():
@@ -116,6 +116,21 @@ def owned_authority(checkpoint, lease):
 
 
 def lock_clear(checkpoint, lock, *, released=None):
+    _clear_authority(checkpoint, lock, released=released)
+
+
+def predecessor_clear(checkpoint, lock, released):
+    """Observe the exact normal authority of an exited original operation."""
+    require(released is not None and len(released) == 2
+            and isinstance(released[0], (tuple, list)) and len(released[0]) == 4
+            and isinstance(released[1], (tuple, list)) and len(released[1]) == 2
+            and type(released[0][0]) is int and released[0][0] > 0
+            and released[0][0] != os.getpid() and released[0][3] is False,
+            "independent predecessor authority witness malformed")
+    _clear_authority(checkpoint, lock, released=(tuple(released[0]), tuple(released[1])), independent=True)
+
+
+def _clear_authority(checkpoint, lock, *, released=None, independent=False):
     from cre_posix import fcntl
     require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
     authority = lock.with_name(lock.name + ".authority")
@@ -136,14 +151,22 @@ def lock_clear(checkpoint, lock, *, released=None):
                 require(fields[0] == 0 or not Path("/proc", str(fields[0])).exists(),
                         "canonical owner/recovery not clear")
             else:
-                require((fields, identity) == released and fields[0] == os.getpid(),
+                require((fields, identity) == released,
                         "released authority identity differs")
+                if independent:
+                    require(not Path("/proc", str(fields[0])).exists(), "original predecessor is still live")
+                else:
+                    require(fields[0] == os.getpid(), "released authority owner differs")
             require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
+            if independent:
+                require(not Path("/proc", str(fields[0])).exists(), "original predecessor birth became ambiguous")
             named = authority.lstat()
             require(identity == (named.st_dev, named.st_ino)
                     and checkpoint.SharedLock._authority_fields(fd) == fields,
                     "canonical authority changed during clearance")
             require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
+            if independent:
+                require(not Path("/proc", str(fields[0])).exists(), "original predecessor birth became ambiguous")
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
@@ -490,12 +513,18 @@ def restoration_enable_boundary(packet, evidence):
     validate_restoration_enable_boundary(packet, evidence, now())
 
 
-def restoration_released_owner(packet, checkpoint, lock, released, native, evidence):
+def restoration_released_owner(packet, checkpoint, lock, released, native, evidence, *, independent=False):
     """Observe release once; an authenticated successor is never maintenance."""
     try:
-        lock_clear(checkpoint, lock, released=released)
+        if independent:
+            predecessor_clear(checkpoint, lock, released)
+        else:
+            lock_clear(checkpoint, lock, released=released)
     except HandoffError:
-        from cre_code_restoration_evidence import restoration_execution, retained_reference
+        from cre_code_restoration_evidence import (
+            restoration_execution,
+            retained_reference,
+        )
         from cre_code_restoration_successor import observe_scheduled_successor
 
         restoration_execution(packet, evidence, native)
@@ -540,7 +569,8 @@ def restoration_capture(packet, evidence, args, git, modules, output, *, packet_
         for key in ("native", "runtime"):
             git.clean(packet["roots"][key], packet["code"])
         lock = modules[0].canonical_shared_lock_dir(local_path(packet["roots"]["runtime"]))
-        ownership = restoration_released_owner(packet, modules[0], lock, (tuple(witness[0]), tuple(witness[1])), native, evidence)
+        ownership = restoration_released_owner(packet, modules[0], lock, (tuple(witness[0]), tuple(witness[1])), native, evidence,
+                                              independent=True)
         observation = {"native": packet["code"], "runtime": packet["code"], "ownership": ownership,
                        "admission_reference": reference(operation / "restoration-ready.json", read_file)}
     else:
@@ -661,6 +691,19 @@ def observe_restoration(args, raw, packet, evidence, git, modules):
                 and terminal.get("restoration_sha256") == sha(raw) and terminal.get("code") == packet["code"]
                 and canonical_path(terminal.get("operation_output")) == canonical_path(str(operation))
                 and terminal.get("canonical_lease_released") is True, "restoration terminal binding differs")
+        completion = json_bytes(read_file(str(operation) + ".native.json"))
+        capture = completion.get("capture", {})
+        require(completion.get("schema") == "cre-code-restoration-native-completion-v1"
+                and completion.get("restoration_sha256") == sha(raw)
+                and completion.get("authorization_sha256") == terminal.get("authorization_sha256")
+                and canonical_path(completion.get("operation_output")) == canonical_path(str(operation))
+                and capture.get("Started") is True and capture.get("Failed") is False
+                and type(capture.get("NativeExitCode")) is int and capture["NativeExitCode"] == 0
+                and all(capture.get(stream, {}).get("Eof") is True
+                        and capture[stream].get("Truncated") is False for stream in ("Stdout", "Stderr"))
+                and completion.get("stdout_sha256") == sha(read_file(str(operation) + ".stdout.raw"))
+                and completion.get("stderr_sha256") == sha(read_file(str(operation) + ".stderr.raw")),
+                "restoration original native completion/drain unverified")
     output = local_path(args.output)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     Foreground(packet, modules[0], output).native("Postreadback" if args.postreadback else "Observe", args.release, sha(raw), operation=operation)
