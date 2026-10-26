@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import io
+import json
 import signal
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -256,42 +258,103 @@ def test_nested_shutdown_graces_leave_time_for_inner_cleanup():
 
 
 def test_nested_dummy_process_is_reaped_before_cohort_worker_shutdown(tmp_path, monkeypatch):
-    """Exercise actual nested groups with scaled shutdown grace and no I/O services."""
-    monkeypatch.setattr(refresh, "COHORT_INTERRUPT_GRACE_SECONDS", 0.8)
-    child_code = (
-        "import os,signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); "
-        'print("DUMMY_PID="+str(os.getpid()),flush=True); time.sleep(5)'
+    """Require owned readiness, then reap the nested group before worker exit."""
+    child_ready = tmp_path / "child-ready.json"
+    worker_ready = tmp_path / "worker-ready.json"
+    release = tmp_path / "release"
+    expired = tmp_path / "expired"
+    readiness_delay = 0.0
+    readiness_ceiling = 15.0
+    child_code = textwrap.dedent(
+        """\
+        import json, os, signal, sys, time
+        from pathlib import Path
+        ready, release, expired = map(Path, sys.argv[1:4])
+        delay = float(sys.argv[4])
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        started = time.monotonic()
+        published = False
+        while not release.exists():
+            elapsed = time.monotonic() - started
+            if elapsed >= 120:
+                expired.write_text("emergency watchdog expired\\n")
+                sys.exit(91)
+            if not published and elapsed >= delay:
+                temporary = ready.with_suffix(".tmp")
+                temporary.write_text(json.dumps({"pid": os.getpid()}))
+                temporary.replace(ready)
+                published = True
+            time.sleep(0.01)
+        """
     )
-    worker_code = (
-        "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
-        "import cre_checkpoint_refresh as r; r.COMMAND_INTERRUPT_GRACE_SECONDS=0.2\n"
-        "try:\n"
-        " r.run_command([sys.executable,'-u','-c',sys.argv[2]],Path(sys.argv[3]),env={})\n"
-        "except KeyboardInterrupt as exc:\n"
-        " if r._cleanup_unknown_in_chain(exc): raise\n"
-        " sys.exit(r.COHORT_SETTLED_INTERRUPT_EXIT)\n"
+    worker_code = textwrap.dedent(
+        """\
+        import json, sys, time
+        from pathlib import Path
+        started = time.monotonic()
+        sys.path.insert(0, sys.argv[1])
+        import cre_checkpoint_refresh as r
+        ready = Path(sys.argv[3])
+        original_wait = r.wait_with_poll_hook
+        def owned_wait(process):
+            bootstrap = time.monotonic() - started
+            inner_grace = max(0.2, min(2.0, 2 * bootstrap))
+            r.COMMAND_INTERRUPT_GRACE_SECONDS = inner_grace
+            temporary = ready.with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "pid": process.pid, "bootstrap": bootstrap,
+                "inner_grace": inner_grace,
+            }))
+            temporary.replace(ready)
+            return original_wait(process)
+        r.wait_with_poll_hook = owned_wait
+        try:
+            r.run_command([sys.executable, '-u', '-c', sys.argv[2], *sys.argv[5:]],
+                          Path(sys.argv[4]), env={})
+        except KeyboardInterrupt as exc:
+            if r._cleanup_unknown_in_chain(exc):
+                raise
+            sys.exit(r.COHORT_SETTLED_INTERRUPT_EXIT)
+        """
     )
     worker = None
     inner_pid = None
-    inner_reaped = False
+    spawned = time.monotonic()
     try:
         worker = subprocess.Popen(
             [sys.executable, "-u", "-c", worker_code, str(refresh.COLLECTOR_DIR),
-             child_code, str(tmp_path / "child.log")],
+             child_code, str(worker_ready), str(tmp_path / "child.log"),
+             str(child_ready), str(release), str(expired), str(readiness_delay)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        deadline = time.monotonic() + 2.0
+        deadline = spawned + readiness_ceiling
         while time.monotonic() < deadline:
-            if (tmp_path / "child.log").exists():
-                for line in (tmp_path / "child.log").read_text().splitlines():
-                    if line.startswith("DUMMY_PID="):
-                        inner_pid = int(line.partition("=")[2])
-            if inner_pid is not None:
+            if worker_ready.exists() and child_ready.exists():
+                ownership = json.loads(worker_ready.read_text())
+                child = json.loads(child_ready.read_text())
+                assert ownership["pid"] == child["pid"], "nested readiness PID mismatch"
+                inner_pid = child["pid"]
                 break
+            assert worker.poll() is None, "cohort worker exited before nested startup readiness"
             time.sleep(0.01)
-        assert inner_pid is not None, "inert nested child did not start"
+        assert inner_pid is not None, "nested startup readiness deadline exceeded"
+        startup = time.monotonic() - spawned
+        # Reserve the production inner kill/reap budget as well as startup margin.
+        monkeypatch.setattr(
+            refresh, "COHORT_INTERRUPT_GRACE_SECONDS",
+            ownership["inner_grace"] + 5.0 + max(1.0, 2 * startup),
+        )
+        probe = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(inner_pid)],
+            capture_output=True, text=True, check=False, timeout=2,
+        )
+        assert probe.returncode == 0 and not probe.stderr, "nested liveness probe failed"
+        status = probe.stdout.strip()
+        assert status and not status.startswith("Z"), "nested child must be live before cleanup"
+        assert not release.exists(), "release must not precede cleanup assertions"
+        assert not expired.exists(), "nested child emergency watchdog expired"
         item = refresh.CohortCollectionProcess(
             "transwestern", worker, io.StringIO(), tmp_path / "unused",
             {"number": 1}, "2026-09-13T12:00:00+00:00",
@@ -299,23 +362,31 @@ def test_nested_dummy_process_is_reaped_before_cohort_worker_shutdown(tmp_path, 
 
         refresh._terminate_cohort_processes([item])
 
-        status = subprocess.run(
+        # This is an immediate observation: zombies and delayed disappearance fail.
+        probe = subprocess.run(
             ["ps", "-o", "stat=", "-p", str(inner_pid)],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout.strip()
+            capture_output=True, text=True, check=False, timeout=2,
+        )
+        assert probe.returncode in (0, 1) and not probe.stderr, "nested reaping probe failed"
+        status = probe.stdout.strip()
         assert worker.poll() == refresh.COHORT_SETTLED_INTERRUPT_EXIT
         assert not status, "nested child must be reaped, including any zombie"
-        inner_reaped = True
+        assert not expired.exists(), "nested child emergency watchdog expired"
+        assert not release.exists(), "release must not precede cleanup assertions"
     finally:
-        if worker is not None and worker.poll() is None:
-            worker.kill()
-            worker.wait(timeout=2)
-        if inner_pid is not None and not inner_reaped:
-            # Only the worker owned the inner leader. Never signal that numeric
-            # PGID after worker reap; the inert fixture exits naturally in 5s.
-            time.sleep(5.1)
+        original_error = sys.exception()
+        try:
+            release.write_text("release\n")
+            if worker is not None and worker.poll() is None:
+                try:
+                    worker.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                    worker.wait(timeout=5)
+        except Exception as cleanup_error:
+            if original_error is None:
+                raise
+            original_error.add_note(f"nested fixture cleanup failed: {cleanup_error!r}")
 
 
 def test_series_reaps_child_that_exits_between_poll_and_signal(monkeypatch):
