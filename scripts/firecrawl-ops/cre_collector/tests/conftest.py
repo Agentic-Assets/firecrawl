@@ -26,6 +26,7 @@ unchanged, and fails the test loudly if it is not.
 
 import hashlib
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -42,7 +43,7 @@ _PARENT = os.path.dirname(_HERE)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from cre_platform import UNSUPPORTED_MESSAGE
+from cre_platform import UNSUPPORTED_MESSAGE  # noqa: E402 - collector sys.path is set above
 
 _SUPPORTED_PLATFORM = sys.platform in {"linux", "darwin"}
 
@@ -58,6 +59,47 @@ if _SUPPORTED_PLATFORM:
     import cre_checkpoint_refresh as _refresh
     import cre_checkpoint_series as _series
     import cre_memory_guard as _memory_guard
+
+
+@pytest.fixture(scope="session")
+def collector_node_dependencies() -> None:
+    """Skip absent local prerequisites, but fail broken installed dependencies."""
+    collector = Path(_PARENT)
+    install = "cd scripts/firecrawl-ops/cre_collector && npm ci --ignore-scripts"
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(f"Node 24 is required; install Node 24, then run `{install}`")
+
+    def require_local_directory(path: Path) -> None:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            pytest.skip(
+                f"Clone-local collector Node prerequisites (tsx/cheerio) are missing "
+                f"at {path}; run `{install}` in this standalone clone"
+            )
+        if not stat.S_ISDIR(path.stat().st_mode):
+            pytest.fail(f"Expected a clone-local Node directory at {path}", pytrace=False)
+
+    modules = collector / "node_modules"
+    require_local_directory(modules)
+    for dependency in ("tsx", "cheerio"):
+        require_local_directory(modules / dependency)
+
+    result = subprocess.run(
+        [node, "--import", "tsx", "--input-type=module", "--eval", 'await import("cheerio")'],
+        cwd=collector,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"Collector Node prerequisite check failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)

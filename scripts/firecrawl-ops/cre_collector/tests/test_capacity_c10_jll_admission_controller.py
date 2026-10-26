@@ -190,6 +190,7 @@ def _binding() -> dict[str, str]:
     }
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_controller_runs_exact_jll_receipt_set_and_seals_manifest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -211,6 +212,7 @@ def test_controller_runs_exact_jll_receipt_set_and_seals_manifest(
     assert len(store.values) >= 17
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_controller_rejects_malformed_enumeration_before_terminal_manifest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -254,6 +256,7 @@ def test_production_gate_rejects_imported_controller_without_active_authority(
         )
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_controller_rejects_tampered_sidecar_signature_before_sealing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -408,6 +411,7 @@ def _has_manifest(store_values: dict[str, bytes]) -> bool:
 # --- 1. Issued capability shape + selection order -------------------------
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_issued_capability_shape_and_selection_order(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -468,6 +472,7 @@ def test_issued_capability_shape_and_selection_order(
     assert member_urls == expected_routes
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_session_digest_differs_across_runs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -511,6 +516,7 @@ def test_session_digest_differs_across_runs(
 # --- 2. Exact card pinning (static _validate_card) -------------------------
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_validate_card_static_pins_exact_card_shape(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -711,6 +717,7 @@ def test_run_and_execute_have_no_members_parameter() -> None:
 # --- 5. Seal bounds -------------------------------------------------------
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_seal_bounds_reject_excess_artifact_count(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -732,6 +739,7 @@ def test_seal_bounds_reject_excess_artifact_count(
         controller._run(binding=_binding(), adapter_implementation_sha256="d" * 64)
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_seal_bounds_reject_excess_byte_total(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -780,6 +788,7 @@ class _TamperingStore(_MemoryStore):
 
 
 @pytest.mark.parametrize("mode", ["member", "artifacts"])
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_manifest_binding_rejects_state_it_did_not_observe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
 ) -> None:
@@ -804,6 +813,7 @@ def test_manifest_binding_rejects_state_it_did_not_observe(
 # --- 7. Large member bodies and large enumeration body ---------------------
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_large_member_bodies_and_large_enumeration_succeed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -925,6 +935,7 @@ def test_oversized_unframed_line_is_rejected(
 # --- 9. Tampered member-stage evidence --------------------------------
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_member_evidence_final_url_mismatch_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -951,6 +962,7 @@ def test_member_evidence_final_url_mismatch_rejected(
     assert not _has_manifest(store.values)
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_member_evidence_tampered_signature_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1037,6 +1049,7 @@ class _DiskStore:
             return handle.read()
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_cross_language_manifest_satisfies_independent_python_validator(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1126,6 +1139,7 @@ def test_cross_language_manifest_satisfies_independent_python_validator(
 # `jll_admission._verify_controller_completion` requires it.
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_reviewer_recovery_probe_manifest_without_completion_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1183,6 +1197,7 @@ def test_reviewer_recovery_probe_manifest_without_completion_is_rejected(
         )
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_completion_from_a_different_accepted_run_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1243,6 +1258,7 @@ def test_completion_from_a_different_accepted_run_is_rejected(
         )
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_quarantine_marker_rejects_an_otherwise_accepted_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1338,6 +1354,7 @@ def test_child_cannot_seal_a_completion_stem_artifact(
     assert not store.values
 
 
+@pytest.mark.usefixtures("collector_node_dependencies")
 def test_child_is_reaped_after_a_failure_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
