@@ -17,7 +17,8 @@ class CheckoutAdmissionError(Exception):
 def admitted_lock_path(collector_dir: Path) -> Path:
     """Require ordinary, local Git metadata and unredirected collector paths.
 
-    Preserve the inherited Git environment: production's resolver uses it too.
+    Match production's default resolver cwd and inherited Git environment;
+    relative Git settings must have the same meaning in both probes.
     Inspect only path topology, never lock contents or authority ownership.
     """
     try:
@@ -37,7 +38,7 @@ def admitted_lock_path(collector_dir: Path) -> Path:
             raise CheckoutAdmissionError(".git must be a local directory, not a worktree gitfile or redirect")
         result = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"],
-            cwd=collector,
+            cwd=root,
             capture_output=True,
             text=True,
             check=True,

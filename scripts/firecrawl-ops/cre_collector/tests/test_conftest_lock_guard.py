@@ -83,6 +83,6 @@ def test_admitted_clone_lock_matches_the_production_resolver() -> None:
     collector = Path(_conftest._PARENT)
     assert _conftest.admitted_lock_path(collector) == _conftest._REAL_CANONICAL_LOCK_DIR
     assert (
-        _conftest._REAL_CANONICAL_SHARED_LOCK_DIR(collector).resolve()
+        _conftest._REAL_CANONICAL_SHARED_LOCK_DIR().resolve()
         == _conftest._REAL_CANONICAL_LOCK_DIR
     )
