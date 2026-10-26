@@ -26,6 +26,7 @@ unchanged, and fails the test loudly if it is not.
 
 import hashlib
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -58,6 +59,53 @@ if _SUPPORTED_PLATFORM:
     import cre_checkpoint_refresh as _refresh
     import cre_checkpoint_series as _series
     import cre_memory_guard as _memory_guard
+
+
+@pytest.fixture(scope="session")
+def collector_node_dependencies() -> None:
+    """Skip absent local prerequisites, but fail broken installed dependencies."""
+    collector = Path(_PARENT)
+    install = "cd scripts/firecrawl-ops/cre_collector && npm ci --ignore-scripts"
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip(f"Node 24 is required; install Node 24, then run `{install}`")
+
+    probe = """
+for (const dependency of ["tsx", "cheerio"]) {
+  try { import.meta.resolve(dependency); }
+  catch (error) {
+    if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
+    process.stdout.write(dependency);
+    process.exit(78);
+  }
+}
+await import("tsx");
+await import("cheerio");
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "--eval", probe],
+        cwd=collector,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    missing = result.stdout
+    if (
+        result.returncode == 78
+        and missing in {"tsx", "cheerio"}
+        and not os.path.lexists(collector / "node_modules" / missing)
+    ):
+        pytest.skip(
+            f"Collector Node dependency {missing!r} is missing at {collector}; "
+            f"run `{install}` in this standalone clone"
+        )
+    if result.returncode != 0:
+        pytest.fail(
+            f"Collector Node prerequisite check failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)
