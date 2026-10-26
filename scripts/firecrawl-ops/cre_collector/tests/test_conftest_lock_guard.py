@@ -76,12 +76,13 @@ def test_lock_change_verdict_warns_instead_of_failing_for_external_owner(
     assert owner_pid == 999999
 
 
-def test_git_fallback_path_matches_the_git_derived_real_lock_dir() -> None:
-    """M4: the `git rev-parse` failure fallback
-    (`Path(__file__).parents[1] / "out/daily/.cre.lock"`) must resolve to the
-    exact same real lock dir that the git-derived `canonical_shared_lock_dir()`
-    call produces on this checkout."""
+def test_admitted_clone_lock_matches_the_production_resolver() -> None:
+    """Admission's local lock formula must match the actual Git resolver."""
     from pathlib import Path
 
-    fallback = (Path(_conftest._PARENT) / "out" / "daily" / ".cre.lock").resolve()
-    assert fallback == _conftest._REAL_CANONICAL_LOCK_DIR
+    collector = Path(_conftest._PARENT)
+    assert _conftest.admitted_lock_path(collector) == _conftest._REAL_CANONICAL_LOCK_DIR
+    assert (
+        _conftest._REAL_CANONICAL_SHARED_LOCK_DIR().resolve()
+        == _conftest._REAL_CANONICAL_LOCK_DIR
+    )

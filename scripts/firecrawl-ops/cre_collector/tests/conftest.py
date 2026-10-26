@@ -43,7 +43,7 @@ _PARENT = os.path.dirname(_HERE)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from cre_platform import UNSUPPORTED_MESSAGE  # noqa: E402 - collector sys.path is set above
+from cre_platform import UNSUPPORTED_MESSAGE
 
 _SUPPORTED_PLATFORM = sys.platform in {"linux", "darwin"}
 
@@ -56,6 +56,16 @@ def pytest_configure(config):
 
 
 if _SUPPORTED_PLATFORM:
+    from _checkout_admission import CheckoutAdmissionError, admitted_lock_path
+
+    try:
+        _REAL_CANONICAL_LOCK_DIR = admitted_lock_path(Path(_PARENT))
+    except CheckoutAdmissionError as exc:
+        raise pytest.UsageError(
+            f"Collector test checkout refused: {exc}. "
+            "Use a separate `git clone --no-hardlinks` as documented in SETUP.md."
+        ) from exc
+
     import cre_checkpoint_refresh as _refresh
     import cre_checkpoint_series as _series
     import cre_memory_guard as _memory_guard
@@ -111,28 +121,17 @@ def _offline_refresh_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_series, "save_report", lambda *_a, **_kw: None)
     monkeypatch.setattr(_memory_guard, "read_memory_pressure", lambda **_kw: 1)
 
-# `canonical_shared_lock_dir()` resolves the real lock dir via
-# `git rev-parse --path-format=absolute --git-common-dir` (with `check=True`,
-# so it raises on any git failure). Captured once, at collection time, before
-# any test can monkeypatch it -- this is the one reference we trust to
-# compute what the REAL canonical lock path is; every module-local
+# Preserve the production resolver's function identity before any test can
+# monkeypatch it. Startup admission above has already proved its local lock
+# formula without a second, unbounded production Git query. Every module-local
 # `canonical_shared_lock_dir` binding discovered below is compared against
 # this exact function object by identity, and every resolution funnelled
 # back through it is checked against the real result.
 _REAL_CANONICAL_SHARED_LOCK_DIR = (
     _refresh.canonical_shared_lock_dir if _SUPPORTED_PLATFORM else None
 )
-try:
-    if not _SUPPORTED_PLATFORM:
-        raise OSError("Unsupported platform; no canonical lock inspection")
-    _REAL_CANONICAL_LOCK_DIR = _REAL_CANONICAL_SHARED_LOCK_DIR(Path(_PARENT)).resolve()
-except (OSError, subprocess.CalledProcessError):
-    # git is unavailable or this checkout has no `.git` (e.g. a tarball
-    # export); fall back to the path relative to the collector dir that
-    # `canonical_shared_lock_dir()` would derive from the primary checkout on
-    # an ordinary clone. A test-collection failure here would silently
-    # disable the real-lock safety net below for the whole session, which is
-    # worse than a best-effort fallback.
+if not _SUPPORTED_PLATFORM:
+    # pytest_configure exits before collection; no Git/runtime access here.
     _REAL_CANONICAL_LOCK_DIR = (Path(_PARENT) / "out" / "daily" / ".cre.lock").resolve()
 _REAL_AUTHORITY_PATH = _REAL_CANONICAL_LOCK_DIR.with_name(
     f"{_REAL_CANONICAL_LOCK_DIR.name}.authority"
