@@ -22,6 +22,7 @@ import {
 import {
   createC10BrowserListener,
   readC10BrowserListenerConfig,
+  type C10BrowserListenerDependencies,
 } from "./c10_browser_listener";
 import { BrowserResourceLeakError } from "./permit_lease";
 
@@ -89,7 +90,8 @@ class FakeC10Context {
 }
 
 async function startListener(
-  createContext: () => Promise<{ context: BrowserContext }>,
+  createContext: C10BrowserListenerDependencies["createContext"],
+  environment: NodeJS.ProcessEnv = {},
 ) {
   const coordinator = pemPair();
   const sidecar = pemPair();
@@ -99,6 +101,7 @@ async function startListener(
     PLAYWRIGHT_HOST_TRANSPORT_V3_KEY: TRANSPORT_KEY,
     C10_BROWSER_INTERNAL_PORT: "40000",
     C10_PROFILE_SHA256: "f".repeat(64),
+    ...environment,
   });
   const semaphore = new Semaphore(CAPACITY);
   const listener = createC10BrowserListener({
@@ -181,6 +184,49 @@ async function startListener(
     await new Promise((resolve) => server.close(() => resolve(undefined)));
   };
   return { semaphore, execute, activePages, stop };
+}
+
+// AGENTIC-3737: local-target admission must never disable certificate validation.
+// These signed requests exercise the real listener; only browser I/O is synthetic.
+for (const { name, environment, allowLocalTargets } of [
+  { name: "default", environment: {}, allowLocalTargets: false },
+  {
+    name: "test flag false",
+    environment: { NODE_ENV: "test", C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS: "false" },
+    allowLocalTargets: false,
+  },
+  {
+    name: "test local targets enabled",
+    environment: { NODE_ENV: "test", C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS: "true" },
+    allowLocalTargets: true,
+  },
+  {
+    name: "production flag true",
+    environment: { NODE_ENV: "production", C10_BROWSER_INTERNAL_ALLOW_TEST_LOCAL_TARGETS: "true" },
+    allowLocalTargets: false,
+  },
+]) {
+  test(`AGENTIC-3737: ${name} preserves TLS verification on signed execution`, async (t) => {
+    const options: Parameters<C10BrowserListenerDependencies["createContext"]>[0][] = [];
+    const context = new FakeC10Context();
+    const harness = await startListener(async (receivedOptions) => {
+      options.push(receivedOptions);
+      return { context: context as unknown as BrowserContext };
+    }, environment);
+    try {
+      const result = await harness.execute();
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(typeof result.body.evidenceSignature, "string");
+      assert.equal(context.closeCalls, 1);
+      assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY);
+      assert.equal(await harness.activePages(), 0);
+      t.diagnostic(`createContext options=${JSON.stringify(options)}`);
+      assert.deepEqual(options, [{ allowLocalTargets, skipTlsVerification: false }],
+        "local-target admission must not switch off TLS verification");
+    } finally {
+      await harness.stop();
+    }
+  });
 }
 
 /** Resolves true if the request is answered within `ms`. */

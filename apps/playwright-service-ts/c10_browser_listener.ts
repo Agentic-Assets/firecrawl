@@ -334,7 +334,7 @@ export function createC10BrowserListener(
         () =>
           dependencies.createContext({
             allowLocalTargets: config.allowTestLocalTargets,
-            skipTlsVerification: config.allowTestLocalTargets,
+            skipTlsVerification: false,
           }),
         (allocation) => bounded(() => allocation),
         (lateBundle) => lateBundle.context.close(),
