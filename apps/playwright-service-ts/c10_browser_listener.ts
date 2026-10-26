@@ -26,7 +26,6 @@ import {
   PermitLease,
   type PermitSource,
   awaitAllocation,
-  releaseAfterClose,
 } from "./permit_lease";
 
 /**
@@ -447,23 +446,30 @@ export function createC10BrowserListener(
           // background close releases the capacity or quarantines it.
           console.error("C10 v3 deadline exhausted before cleanup; closing in the background");
           lease.handOff();
-          void releaseAfterClose(lease, closePage, closeContext);
+          void lease.releaseAfterClose(closePage, closeContext);
         }
       }
     }
     const terminalEvidence = c10TerminalEvidence(
       evidence,
-      executionFailed,
+      executionFailed || Date.now() >= deadlineAt,
       cleanupConfirmed,
     );
     if (terminalEvidence) {
-      return res.json({
-        ...terminalEvidence,
-        evidenceSignature: signC10Evidence(
-          sidecarEvidencePrivateKey,
-          terminalEvidence,
-        ),
-      });
+      const responseBody = Buffer.from(
+        JSON.stringify({
+          ...terminalEvidence,
+          evidenceSignature: signC10Evidence(
+            sidecarEvidencePrivateKey,
+            terminalEvidence,
+          ),
+        }),
+        "utf8",
+      );
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      // Signing, serialization and encoding can consume the remaining card
+      // budget. Admit the prepared response only at the emission boundary.
+      if (Date.now() < deadlineAt) return res.end(responseBody);
     }
     console.error("C10 internal browser execution quarantined");
     return res.status(502).json({

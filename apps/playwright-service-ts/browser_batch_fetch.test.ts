@@ -5,7 +5,7 @@ import {
   parseBrowserBatchFetchInput,
 } from "./browser_batch_fetch";
 import { Semaphore, withHardTimeout } from "./browser_resources";
-import { PermitLease, releaseAfterClose } from "./permit_lease";
+import { PermitLease } from "./permit_lease";
 
 function validInput() {
   return {
@@ -147,8 +147,7 @@ test("bounded cleanup retains the shared permit after an unconfirmed context clo
     [{ source: semaphore, countsBrowser: true }],
     () => 1,
   );
-  const closed = await releaseAfterClose(
-    lease,
+  const closed = await lease.releaseAfterClose(
     () => new Promise(() => {}),
     () => new Promise(() => {}),
     1,
@@ -157,14 +156,14 @@ test("bounded cleanup retains the shared permit after an unconfirmed context clo
   assert.equal(semaphore.getAvailablePermits(), 0);
 });
 
-test("bounded cleanup releases after context close confirms page teardown", async () => {
+test("bounded cleanup releases after context close confirms page teardown", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
   const semaphore = new Semaphore(1);
   const lease = await PermitLease.acquire(
     [{ source: semaphore, countsBrowser: true }],
     () => 1,
   );
-  const closed = await releaseAfterClose(
-    lease,
+  const closed = await lease.releaseAfterClose(
     () => Promise.reject(new Error("page close failed")),
     async () => {},
     1,

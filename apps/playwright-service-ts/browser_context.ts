@@ -273,8 +273,9 @@ export function createBrowserPool(settings: {
       // Never hand back (or silently drop) a half-configured context, which
       // could lack the per-request SSRF route guard above. The caller's lease
       // decides what an unconfirmed close means for its permit.
-      const closed = await closeBrowserResources(null, () => newContext.close());
-      throw closed ? error : new BrowserResourceLeakError(error);
+      const closed = await closeBrowserResources(null, () => newContext.close())
+        .result;
+      throw closed === "closed" ? error : new BrowserResourceLeakError(error);
     }
 
     return { context: newContext, securityState };
