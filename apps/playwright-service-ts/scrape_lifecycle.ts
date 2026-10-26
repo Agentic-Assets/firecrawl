@@ -213,7 +213,7 @@ export async function runScrapeLifecycle<C, P, R>(options: {
           () => options.closePage(latePage),
           null,
           options.cleanupTimeoutMs,
-        );
+        ).result;
       },
     );
     const result = await bounded(() =>

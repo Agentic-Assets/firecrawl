@@ -26,7 +26,6 @@ import {
   PermitLease,
   type PermitSource,
   awaitAllocation,
-  releaseAfterClose,
 } from "./permit_lease";
 
 /**
@@ -447,13 +446,13 @@ export function createC10BrowserListener(
           // background close releases the capacity or quarantines it.
           console.error("C10 v3 deadline exhausted before cleanup; closing in the background");
           lease.handOff();
-          void releaseAfterClose(lease, closePage, closeContext);
+          void lease.releaseAfterClose(closePage, closeContext);
         }
       }
     }
     const terminalEvidence = c10TerminalEvidence(
       evidence,
-      executionFailed,
+      executionFailed || Date.now() >= deadlineAt,
       cleanupConfirmed,
     );
     if (terminalEvidence) {

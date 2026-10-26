@@ -147,42 +147,50 @@ export function withHardTimeout<T>(
   });
 }
 
+type CleanupResult = "closed" | "failed" | "timedOut";
+
+type BrowserCleanup = Readonly<{
+  result: Promise<CleanupResult>;
+  completion: Promise<boolean>;
+}>;
+
 /**
- * Closes a page and/or context within timeoutMs each and reports whether the
- * browser resources are confirmed gone. Permits are the caller's business.
+ * Starts teardown once, with one response budget and a separate observation
+ * of eventual closure. A closed context confirms all its pages are gone.
+ * Permits are the caller's business.
  */
-export async function closeBrowserResources(
+export function closeBrowserResources(
   closePage: (() => Promise<unknown>) | null,
   closeContext: (() => Promise<unknown>) | null,
   timeoutMs = 5_000,
-): Promise<boolean> {
-  let pageClosed = closePage === null;
-  let contextClosed = closeContext === null;
-  try {
-    if (closePage) {
-      await withHardTimeout(
-        closePage(),
-        timeoutMs,
-        "Browser batch page cleanup timed out",
-      );
-      pageClosed = true;
+): BrowserCleanup {
+  const deadlineAt = Date.now() + timeoutMs;
+  const close = async (
+    operation: (() => Promise<unknown>) | null,
+    resource: "page" | "context",
+  ): Promise<boolean> => {
+    try {
+      await operation?.();
+      return true;
+    } catch (error) {
+      console.error(`Browser batch ${resource} cleanup error:`, error);
+      return false;
     }
-  } catch (error) {
-    console.error("Browser batch page cleanup error:", error);
-  }
-  try {
-    if (closeContext) {
-      await withHardTimeout(
-        closeContext(),
-        timeoutMs,
-        "Browser batch context cleanup timed out",
-      );
-      contextClosed = true;
-    }
-  } catch (error) {
-    console.error("Browser batch context cleanup error:", error);
-  }
-  // A successfully closed context owns and tears down all of its pages, even
-  // when the earlier page.close() call timed out.
-  return closeContext ? contextClosed : pageClosed;
+  };
+  // Install the deadline timer before invoking either callback. Context close
+  // must start even if its subordinate page close never settles.
+  const completion = Promise.resolve().then(() => {
+    const pageClosed = close(closePage, "page");
+    return closeContext ? close(closeContext, "context") : pageClosed;
+  });
+  const result = withHardTimeout(
+    completion,
+    timeoutMs,
+    "Browser resource cleanup timed out",
+  ).then<CleanupResult, CleanupResult>(
+    (closed) =>
+      Date.now() >= deadlineAt ? "timedOut" : closed ? "closed" : "failed",
+    () => "timedOut",
+  );
+  return { result, completion };
 }

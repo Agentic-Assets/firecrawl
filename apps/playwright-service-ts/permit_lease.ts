@@ -1,7 +1,7 @@
 /**
  * One owner for a request's capacity permits. A lease is held by the request,
- * handed off to a browser allocation that outlived the request, released
- * exactly once, or quarantined while a browser context may still be live.
+ * handed off to a browser allocation that outlived the request, owned by
+ * cleanup until confirmed closed, or quarantined after failed teardown.
  * /scrape, /browser-batch-fetch, /health and the C10 listener all settle their
  * permits through it, so "who releases" has a single implementation.
  */
@@ -41,7 +41,7 @@ export type LeaseGate = Readonly<{
 
 type HeldPermit = Readonly<{ release: () => void; countsBrowser: boolean }>;
 
-type LeaseState = "held" | "handedOff" | "released" | "quarantined";
+type LeaseState = "held" | "handedOff" | "closing" | "released" | "quarantined";
 
 export class PermitLease {
   private state: LeaseState = "held";
@@ -103,18 +103,21 @@ export class PermitLease {
    * permit is returned independently, so one that throws cannot strand the rest.
    */
   release(): void {
-    if (this.state === "released" || this.state === "quarantined") return;
+    if (this.state !== "held" && this.state !== "handedOff") return;
     this.state = "released";
+    this.returnHeldPermits();
+  }
+
+  private returnHeldPermits(): void {
     for (const permit of this.permits.splice(0).reverse()) {
       PermitLease.returnPermit(permit);
     }
   }
 
   /**
-   * The request's own cleanup: closes its page and context, then releases or
-   * quarantines the lease (see releaseAfterClose). After a hand-off a late
-   * allocation owns the lease, so this does nothing and returns false, and a
-   * caller can never return a permit early.
+   * The request's own cleanup settles the lease (see releaseAfterClose).
+   * After a hand-off a late allocation owns the lease, so this does nothing
+   * and returns false. A caller can never return a permit early.
    */
   async settleByRequest(
     closePage: (() => Promise<unknown>) | null,
@@ -122,7 +125,49 @@ export class PermitLease {
     timeoutMs?: number,
   ): Promise<boolean> {
     if (!this.heldByRequest) return false;
-    return releaseAfterClose(this, closePage, closeContext, timeoutMs);
+    return this.releaseAfterClose(closePage, closeContext, timeoutMs);
+  }
+
+  /**
+   * The cleanup owner, including a late allocation, starts teardown once.
+   * A response timeout returns admission slots; browser capacity stays owned
+   * until that same cleanup confirms closure or fails into final quarantine.
+   */
+  async releaseAfterClose(
+    closePage: (() => Promise<unknown>) | null,
+    closeContext: (() => Promise<unknown>) | null,
+    timeoutMs?: number,
+  ): Promise<boolean> {
+    if (this.state !== "held" && this.state !== "handedOff") return false;
+    this.state = "closing";
+    const cleanup = closeBrowserResources(closePage, closeContext, timeoutMs);
+    void cleanup.completion.then((closed) => {
+      if (this.state !== "closing") return;
+      if (closed) {
+        this.state = "released";
+        this.returnHeldPermits();
+      } else {
+        this.quarantine("Browser resource cleanup failed");
+      }
+    });
+    return cleanup.result.then((result) => {
+      if (result === "timedOut" && this.state === "closing") {
+        this.returnAdmissionPermits();
+        console.error(
+          "Browser resource cleanup timed out; retaining browser capacity until confirmed closed",
+        );
+      }
+      return result === "closed" && this.state === "released";
+    });
+  }
+
+  private returnAdmissionPermits(): void {
+    const admissions = this.permits.filter((permit) => !permit.countsBrowser);
+    const browser = this.permits.filter((permit) => permit.countsBrowser);
+    this.permits.splice(0, this.permits.length, ...browser);
+    for (const permit of admissions.reverse()) {
+      PermitLease.returnPermit(permit);
+    }
   }
 
   private static returnPermit(permit: HeldPermit): void {
@@ -140,31 +185,10 @@ export class PermitLease {
   quarantine(reason: string): void {
     if (this.state === "released" || this.state === "quarantined") return;
     this.state = "quarantined";
-    for (const permit of this.permits.splice(0).reverse()) {
-      if (!permit.countsBrowser) PermitLease.returnPermit(permit);
-    }
+    this.returnAdmissionPermits();
+    this.permits.length = 0;
     console.error(`${reason}; retaining the capacity permit`);
   }
-}
-
-/**
- * Closes the request's page and context, then releases the lease, or
- * quarantines it when the close cannot be confirmed. Returns whether the
- * close was confirmed.
- */
-export async function releaseAfterClose(
-  lease: PermitLease,
-  closePage: (() => Promise<unknown>) | null,
-  closeContext: (() => Promise<unknown>) | null,
-  timeoutMs?: number,
-): Promise<boolean> {
-  const closed = await closeBrowserResources(closePage, closeContext, timeoutMs);
-  if (closed) {
-    lease.release();
-  } else {
-    lease.quarantine("Browser resource cleanup was not confirmed");
-  }
-  return closed;
 }
 
 /**
@@ -202,7 +226,7 @@ export async function awaitAllocation<T>(
     lease.handOff();
     allocation.then(
       (late) =>
-        releaseAfterClose(lease, null, () => closeLate(late), cleanupTimeoutMs),
+        lease.releaseAfterClose(null, () => closeLate(late), cleanupTimeoutMs),
       (lateError: unknown) => {
         if (lateError instanceof BrowserResourceLeakError) {
           lease.quarantine("Late browser context setup leaked a context");
