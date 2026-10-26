@@ -43,7 +43,7 @@ _PARENT = os.path.dirname(_HERE)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from cre_platform import UNSUPPORTED_MESSAGE
+from cre_platform import UNSUPPORTED_MESSAGE  # noqa: E402 - collector sys.path is set above
 
 _SUPPORTED_PLATFORM = sys.platform in {"linux", "darwin"}
 
@@ -70,36 +70,30 @@ def collector_node_dependencies() -> None:
     if node is None:
         pytest.skip(f"Node 24 is required; install Node 24, then run `{install}`")
 
-    probe = """
-for (const dependency of ["tsx", "cheerio"]) {
-  try { import.meta.resolve(dependency); }
-  catch (error) {
-    if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
-    process.stdout.write(dependency);
-    process.exit(78);
-  }
-}
-await import("tsx");
-await import("cheerio");
-"""
+    def require_local_directory(path: Path) -> None:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            pytest.skip(
+                f"Clone-local collector Node prerequisites (tsx/cheerio) are missing "
+                f"at {path}; run `{install}` in this standalone clone"
+            )
+        if not stat.S_ISDIR(path.stat().st_mode):
+            pytest.fail(f"Expected a clone-local Node directory at {path}", pytrace=False)
+
+    modules = collector / "node_modules"
+    require_local_directory(modules)
+    for dependency in ("tsx", "cheerio"):
+        require_local_directory(modules / dependency)
+
     result = subprocess.run(
-        [node, "--input-type=module", "--eval", probe],
+        [node, "--import", "tsx", "--input-type=module", "--eval", 'await import("cheerio")'],
         cwd=collector,
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
-    missing = result.stdout
-    if (
-        result.returncode == 78
-        and missing in {"tsx", "cheerio"}
-        and not os.path.lexists(collector / "node_modules" / missing)
-    ):
-        pytest.skip(
-            f"Collector Node dependency {missing!r} is missing at {collector}; "
-            f"run `{install}` in this standalone clone"
-        )
     if result.returncode != 0:
         pytest.fail(
             f"Collector Node prerequisite check failed (exit {result.returncode}): "

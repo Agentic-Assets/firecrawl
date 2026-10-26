@@ -182,8 +182,9 @@ Both suites run only in that standalone clone. The Node packages above are
 test prerequisites, not additional production services. Recheck the sidecar's
 `packageManager` pin after pulling a revision that changes it.
 The JLL controller tests that launch the real Node child skip with an install
-command when Node or the collector's direct `tsx`/`cheerio` prerequisites are
-absent. Their pure Python and pre-spawn refusal tests still run. Broken installed
+command when Node or the collector's clone-local `tsx`/`cheerio` prerequisites are
+absent; ancestor-only installations do not satisfy this fixture. Pure Python and
+pre-spawn refusal tests still run. Broken entries and installed
 dependencies remain failures; a prerequisite skip does not satisfy full-suite
 verification. These controller tests do not require the sidecar's Node packages.
 Before a full suite, verify `node --import tsx --eval 'void 0'` from the sidecar
