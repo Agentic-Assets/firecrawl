@@ -117,9 +117,10 @@ for `/scrape`, `/browser-batch-fetch`, `/health`, and the C10 listener:
 - The C10 listener stops browser work early enough to keep part of the card
   window (a quarter, at most 2 s) for cleanup, so a navigation that times out
   still closes its context and returns its permit and page slot. Its response
-  waits for at most one cleanup budget and never signs success after the card
-  deadline. Late confirmed teardown restores capacity without changing that
-  failed response.
+  waits for at most one cleanup budget. It prepares the signed response before
+  its final deadline check and emits success only while still within the card
+  window. Late confirmed teardown restores capacity without changing a failed
+  response.
 
 An unhandled rejection with Playwright's closed-target message ("Target page,
 context or browser has been closed"), which the stealth plugin can raise when

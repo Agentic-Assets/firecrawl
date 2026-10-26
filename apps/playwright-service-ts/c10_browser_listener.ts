@@ -456,13 +456,20 @@ export function createC10BrowserListener(
       cleanupConfirmed,
     );
     if (terminalEvidence) {
-      return res.json({
-        ...terminalEvidence,
-        evidenceSignature: signC10Evidence(
-          sidecarEvidencePrivateKey,
-          terminalEvidence,
-        ),
-      });
+      const responseBody = Buffer.from(
+        JSON.stringify({
+          ...terminalEvidence,
+          evidenceSignature: signC10Evidence(
+            sidecarEvidencePrivateKey,
+            terminalEvidence,
+          ),
+        }),
+        "utf8",
+      );
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      // Signing, serialization and encoding can consume the remaining card
+      // budget. Admit the prepared response only at the emission boundary.
+      if (Date.now() < deadlineAt) return res.end(responseBody);
     }
     console.error("C10 internal browser execution quarantined");
     return res.status(502).json({

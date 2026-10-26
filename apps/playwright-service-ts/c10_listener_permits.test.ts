@@ -204,6 +204,37 @@ test("C10 control: success signs evidence and returns lease and permit", async (
   }
 });
 
+// AGENTIC-3767 F6: serialization itself may consume the remaining card deadline.
+test("F6: C10 signed-response serialization crossing the deadline cannot emit success", async (t) => {
+  const originalNow = Date.now;
+  const originalStringify = JSON.stringify;
+  let responseSerializations = 0;
+  let crossedDeadline = false;
+  const context = new FakeC10Context();
+  const harness = await startListener(async () => ({ context: context as unknown as BrowserContext }));
+  t.mock.method(Date, "now", () => crossedDeadline ? originalNow() + CARD_TIMEOUT_MS + 1 : originalNow());
+  t.mock.method(JSON, "stringify", ((value: unknown, ...args: unknown[]) => {
+    const serialized = Reflect.apply(originalStringify, JSON, [value, ...args]);
+    if (value !== null && typeof value === "object" && "evidenceSignature" in value) {
+      responseSerializations += 1;
+      crossedDeadline = true;
+    }
+    return serialized;
+  }) as typeof JSON.stringify);
+  try {
+    const result = await harness.execute();
+    assert.equal(responseSerializations, 1, "signed response serialization must actually execute");
+    assert.equal(context.closeCalls, 1, "context teardown must be confirmed");
+    assert.equal(harness.semaphore.getAvailablePermits(), CAPACITY);
+    assert.equal(await harness.activePages(), 0);
+    assert.equal(result.status, 502, "serialization crossing the card deadline must refuse success");
+    assert.equal(result.body.evidenceSignature, undefined);
+  } finally {
+    t.mock.restoreAll();
+    await harness.stop();
+  }
+});
+
 // AGENTIC-3767 F2: both closes share one remaining card cleanup budget.
 test("F2: C10 hung page and context cleanup answers within one card deadline", async (t) => {
   const pageClose = deferred<void>();

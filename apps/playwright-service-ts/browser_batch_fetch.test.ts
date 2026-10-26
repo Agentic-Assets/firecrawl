@@ -156,7 +156,8 @@ test("bounded cleanup retains the shared permit after an unconfirmed context clo
   assert.equal(semaphore.getAvailablePermits(), 0);
 });
 
-test("bounded cleanup releases after context close confirms page teardown", async () => {
+test("bounded cleanup releases after context close confirms page teardown", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
   const semaphore = new Semaphore(1);
   const lease = await PermitLease.acquire(
     [{ source: semaphore, countsBrowser: true }],
