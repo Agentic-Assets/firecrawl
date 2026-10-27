@@ -20,7 +20,7 @@ test("Matthews ignores a noncooperative read result arriving after its body time
         releaseLock() { releases++; },
       };
     },
-  } as unknown as ReadableStream<Uint8Array>;
+  } as unknown as NonNullable<Response["body"]>;
   const controller = new AbortController();
 
   await assert.rejects(
