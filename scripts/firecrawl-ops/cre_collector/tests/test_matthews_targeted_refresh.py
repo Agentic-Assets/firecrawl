@@ -572,7 +572,7 @@ def test_real_producer_worker_cli_sql_and_witnessed_omissions(
         """
 import { MATTHEWS_FETCH_TIMEOUT_MS } from "SOURCE_MODULE";
 const original = globalThis.setTimeout;
-globalThis.setTimeout = (callback, delay, ...args) => original(callback, delay===MATTHEWS_FETCH_TIMEOUT_MS?2:0, ...args);
+globalThis.setTimeout = (callback, delay, ...args) => original(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS)?2:0, ...args);
 globalThis.fetch = async input => {
  const url=String(input);
  if(url==='https://www.matthews.com/sitemap.xml')return new Response(XML);

@@ -24,7 +24,7 @@ async function setup(t: TestContext, header: any, inventory: string = sitemap([s
   const received: Record<string, number> = {};
   let generic = 0;
   (firecrawl as any).scrape = async () => { generic++; throw new Error("Forbidden fallback"); };
-  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => oldTimeout(callback, delay === MATTHEWS_FETCH_TIMEOUT_MS ? 2 : 0, ...args)) as typeof setTimeout;
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => oldTimeout(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS) ? 2 : 0, ...args)) as typeof setTimeout;
   globalThis.fetch = async (input, options) => {
     const url = String(input); requested.push(url);
     assert.equal(options?.cache, "no-store");

@@ -8,6 +8,7 @@
 
 | File | Owns |
 |------|------|
+| `response-body.ts` | Reader-only capped UTF-8 accumulation and absolute monotonic body deadlines for Foundry, Lyon and Matthews; bounded cancellation acknowledgement and exact-read-error settlement witnesses for the two WordPress callers. Callers own reader acquisition/release, controllers, HTTP/header policy and retry decisions. |
 | `config.ts` | CLI `parseArgs` (strict, import-time); `API_URL`, `flags`, `PAGE_CAP`, `CONCURRENCY`, `OUT_PATH` |
 | `scrape.ts` | Firecrawl singleton; `scrapeRaw` / `scrapeDoc` / `scrapeJson` (up to 3× retry, no retry after a client deadline with unknown remote settlement); `parseJsonBody` for HTML-wrapped JSON. `scrapeDoc` requests `markdown`/`links`/`images`/`rawHtml` + an `attributes` selector block (video/iframe/anchor) for the harvester |
 | `scrape_transport.ts` | Fork-owned v2 scrape HTTP transport. An AbortSignal stays outside JSON and aborts HTTP/body/backoff waits; bounded 502 retry and SDK error/data shapes are retained. The pinned SDK exposes no public scrape signal. |

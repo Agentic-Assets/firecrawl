@@ -156,7 +156,7 @@ test("Matthews overflow is terminal and preserves typed cause and redacted body 
   const event = JSON.parse(logs[0].slice("  matthews/http ".length));
   assert.equal(event.phase, "body"); assert.equal(event.status, 200);
   assert.equal(event.cooldownMs, 0); assert.equal(event.nextAction, "terminal_failure");
-  assert.ok(waits.every(delay => delay === MATTHEWS_FETCH_TIMEOUT_MS));
+  assert.ok(waits.every(delay => (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS)));
   assert.equal(matthewsRetryableFetchFailure(200, new MatthewsResponseLimitError(8)), false);
   assert.equal(matthewsRetryableFetchFailure(200, new Error("ordinary stream failure")), true);
 });

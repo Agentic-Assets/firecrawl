@@ -25,7 +25,7 @@ function invoke(options: { optIn?: boolean; header?: boolean; mutation?: string 
 import { appendFileSync } from "node:fs";
 import { MATTHEWS_FETCH_TIMEOUT_MS } from ${JSON.stringify(new URL("../../../sources/matthews.ts", import.meta.url).href)};
 const oldTimeout = globalThis.setTimeout;
-globalThis.setTimeout = ((callback, delay, ...args) => oldTimeout(callback, delay === MATTHEWS_FETCH_TIMEOUT_MS ? 2 : 0, ...args));
+globalThis.setTimeout = ((callback, delay, ...args) => oldTimeout(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS) ? 2 : 0, ...args));
 globalThis.fetch = async (input, options) => {
   const url = String(input);
   appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ url, redirect: options?.redirect, cache: options?.cache }) + "\\n");

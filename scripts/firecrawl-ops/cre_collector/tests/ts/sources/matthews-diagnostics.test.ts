@@ -20,7 +20,7 @@ async function run(t: TestContext, reply: (call: number, options: RequestInit) =
   };
   globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
     waits.push(delay ?? 0);
-    if (delay === MATTHEWS_FETCH_TIMEOUT_MS) {
+    if ((typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS)) {
       const timer = originalTimeout(() => { activePhaseTimers.delete(timer); callback(...args); }, 5);
       activePhaseTimers.add(timer);
       return timer;
@@ -65,8 +65,8 @@ for (const phase of ["headers", "body"] as const) {
     assert.deepEqual(r.events.map(e => e.attempt), [1,2,3,4,5,6]);
     assert.ok(r.events.every(e => e.maxAttempts === 6 && e.phase === phase && e.role === "sitemap" && e.status === (phase === "headers" ? null : 200)));
     assert.deepEqual(r.events.map(e => e.cooldownMs), [21250,36250,51250,66250,81250,96250]);
-    assert.deepEqual(r.waits.filter(ms => ms !== MATTHEWS_FETCH_TIMEOUT_MS), [21250,36250,51250,66250,81250,96250]);
-    assert.equal(r.waits.filter(ms => ms === MATTHEWS_FETCH_TIMEOUT_MS).length, phase === "headers" ? 6 : 12);
+    assert.deepEqual(r.waits.filter(ms => !(ms > MATTHEWS_FETCH_TIMEOUT_MS - 100 && ms <= MATTHEWS_FETCH_TIMEOUT_MS)), [21250,36250,51250,66250,81250,96250]);
+    assert.equal(r.waits.filter(ms => (ms > MATTHEWS_FETCH_TIMEOUT_MS - 100 && ms <= MATTHEWS_FETCH_TIMEOUT_MS)).length, phase === "headers" ? 6 : 12);
     assert.ok(r.signals.every(signal => signal.aborted));
     assert.ok(r.events.slice(0,5).every(e => e.nextAction === "retry_after_cooldown"));
     assert.equal(r.events[5].nextAction, "final_cooldown_before_failure");
@@ -79,7 +79,7 @@ for (const status of [429,403,503]) {
     assert.match(String(r.error), /throttled after retries/);
     assert.equal(r.events.length, 6);
     assert.ok(r.events.every(e => e.phase === "http" && e.status === status));
-    assert.deepEqual(r.waits.filter(ms => ms !== MATTHEWS_FETCH_TIMEOUT_MS), [21250,36250,51250,66250,81250,96250]);
+    assert.deepEqual(r.waits.filter(ms => !(ms > MATTHEWS_FETCH_TIMEOUT_MS - 100 && ms <= MATTHEWS_FETCH_TIMEOUT_MS)), [21250,36250,51250,66250,81250,96250]);
   });
 }
 test("Matthews terminal HTTP404 logs no retry or cooldown", async t => {
@@ -115,6 +115,6 @@ test("Matthews diagnostic sink failure cannot change request outcome or retries"
 test("Matthews overlapping successful calls retain the capped process-local pacing wait", async t => {
   const r = await run(t, async () => new Response("unchanged"), undefined, false, true);
   assert.equal(r.error, undefined); assert.equal(r.calls, 2); assert.equal(r.events.length, 0);
-  assert.deepEqual(r.waits.filter(ms => ms !== MATTHEWS_FETCH_TIMEOUT_MS), [7000]);
-  assert.equal(r.waits.filter(ms => ms === MATTHEWS_FETCH_TIMEOUT_MS).length, 4);
+  assert.deepEqual(r.waits.filter(ms => !(ms > MATTHEWS_FETCH_TIMEOUT_MS - 100 && ms <= MATTHEWS_FETCH_TIMEOUT_MS)), [7000]);
+  assert.equal(r.waits.filter(ms => (ms > MATTHEWS_FETCH_TIMEOUT_MS - 100 && ms <= MATTHEWS_FETCH_TIMEOUT_MS)).length, 4);
 });
