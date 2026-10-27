@@ -77,10 +77,12 @@ export async function fetchAvisonYoungText(
     let text = "";
     while (true) {
       controller.signal.throwIfAborted();
+      if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
       let chunk: Awaited<ReturnType<ResponseBodyReader["read"]>>;
       try { chunk = await reader.read(); }
       catch (error) { readFailure = { error }; throw error; }
       controller.signal.throwIfAborted();
+      if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
       if (chunk.done) return text + decoder.decode();
       text += decoder.decode(chunk.value, { stream: true });
     }
