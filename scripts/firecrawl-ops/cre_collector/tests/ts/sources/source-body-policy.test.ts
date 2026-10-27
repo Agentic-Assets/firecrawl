@@ -164,3 +164,56 @@ for (const source of sources) {
     });
   }
 }
+
+for (const source of sources) {
+  test(`${source.name} cleanup crossing its attempt timer does not reclassify an unknown read error`, { timeout: 3000 }, async () => {
+    const originalError = new Error("unknown independent body-read failure");
+    const observed: { signal?: AbortSignal | null; acknowledgedOnAbort: boolean } = { acknowledgedOnAbort: false };
+    let requests = 0, cancellations = 0;
+    let resolveAcknowledgement!: () => void;
+    const acknowledgement = new Promise<void>(resolve => { resolveAcknowledgement = resolve; });
+    let onAbort: (() => void) | undefined;
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({ start(value) { controller = value; } }, { highWaterMark: 0 });
+    const response = new Response(body);
+    Object.defineProperty(body, "getReader", { value: () => ({
+      read: () => Promise.reject(originalError),
+      closed: Promise.resolve(), // Fulfillment is deliberately not settlement proof.
+      cancel() {
+        cancellations++;
+        onAbort = () => {
+          observed.acknowledgedOnAbort = true;
+          resolveAcknowledgement();
+        };
+        if (observed.signal?.aborted) onAbort();
+        else observed.signal?.addEventListener("abort", onAbort, { once: true });
+        return acknowledgement;
+      },
+      releaseLock() {},
+    }) });
+    // The barrier normally resolves on the actual attempt abort, not this timer.
+    // Its fallback keeps all fixture promises finite after an unexpected failure.
+    const fallback = setTimeout(resolveAcknowledgement, 500);
+    let caught: unknown;
+    try {
+      try {
+        await source.fetchText(source.url, "html", async (_url, init) => {
+          requests++;
+          if (requests > 1) return new Response("<html>forbidden reclassified retry</html>", { headers: { "Content-Type": "text/html" } });
+          observed.signal = init?.signal;
+          return response;
+        }, 80, 1024, 2);
+      } catch (error) { caught = error; }
+      assert.equal(observed.acknowledgedOnAbort, true);
+      assert.equal(observed.signal?.aborted, true);
+      assert.equal(cancellations, 1);
+      assert.equal(requests, 1, "an unknown read error must not become retryable during cleanup");
+      assert.equal(caught, originalError);
+    } finally {
+      clearTimeout(fallback);
+      if (onAbort) observed.signal?.removeEventListener("abort", onAbort);
+      resolveAcknowledgement();
+      controller.close();
+    }
+  });
+}
