@@ -61,14 +61,14 @@ test("AY failed required feed drains its started sibling, retries uncached, and 
 test("AY settled bootstrap headers failure retains fallback", { concurrency: false }, async (t) => {
   const originalFetch = globalThis.fetch;
   let aborted = false;
-  let release!: () => void;
-  let timer: ReturnType<typeof setTimeout>;
+  let release: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => await new Promise<Response>((resolve, reject) => {
     release = () => resolve(new Response(keyHtml));
     timer = setTimeout(release, 2000);
     init?.signal?.addEventListener("abort", () => { aborted = true; reject(new DOMException("Owned header abort", "AbortError")); });
   })) as typeof fetch;
-  t.after(() => { clearTimeout(timer); release(); globalThis.fetch = originalFetch; });
+  t.after(() => { if (timer) clearTimeout(timer); release?.(); globalThis.fetch = originalFetch; });
   const result = await source.fetchAvisonYoungApiKey(80);
   assert.equal(aborted, true);
   assert.equal(typeof result, "string");
@@ -83,8 +83,8 @@ test("AY native missing close acknowledgment blocks retry alternate and later fe
   let fetches = 0;
   let closes = 0;
   let destroyed = 0;
-  let release!: () => void;
-  let timer: ReturnType<typeof setTimeout>;
+  let release: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   globalThis.fetch = (async () => { fetches++; throw new Error("Forbidden later feed transport"); }) as typeof fetch;
   nativeDispatch = (_url: URL, _options: any, callback: (value: any) => void) => {
     requests++;
@@ -98,7 +98,7 @@ test("AY native missing close acknowledgment blocks retry alternate and later fe
     request.end = () => queueMicrotask(() => callback(response));
     return request;
   };
-  t.after(() => { clearTimeout(timer); release(); globalThis.fetch = originalFetch; });
+  t.after(() => { if (timer) clearTimeout(timer); release?.(); globalThis.fetch = originalFetch; });
   const url = "https://www.avisonyoung.us/properties/owned-missing-close";
   const resolver = async () => ["8.8.8.8"];
   const typed = (error: unknown) => error instanceof Error && error.name === "AvisonYoungUnsettledError";
@@ -110,7 +110,7 @@ test("AY native missing close acknowledgment blocks retry alternate and later fe
   await assert.rejects(() => source.fetchAvisonYoungDirectDoc("https://www.avisonyoung.us/properties/alternate", 80, resolver), typed);
   await assert.rejects(() => source.getAvisonYoungFeed(80), typed);
   assert.equal(requests, 1); assert.equal(fetches, 0);
-  clearTimeout(timer); release();
+  if (timer) clearTimeout(timer); release?.();
   await new Promise<void>((resolve) => setImmediate(resolve));
   t.diagnostic(JSON.stringify({ elapsed: performance.now() - started, requests, fetches, destroyed, closes }));
 });
