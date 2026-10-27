@@ -69,7 +69,10 @@ test("shared body stops after a late read without another read or byte access", 
   }, { highWaterMark: 0 });
   const reader = new Response(body).body!.getReader();
   await assert.rejects(readBoundedUtf8(reader, { maxBytes: 1, signal: new AbortController().signal, deadlineAt: performance.now() + 10 }), ResponseBodyDeadlineError);
-  const unexpected = { get byteLength() { byteInspections++; throw new Error("late bytes processed"); } } as Uint8Array;
+  const unexpected = new Uint8Array([97]);
+  Object.defineProperty(unexpected, "byteLength", {
+    get() { byteInspections++; throw new Error("late bytes processed"); },
+  });
   streamController!.enqueue(unexpected);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(pulls, 1);
