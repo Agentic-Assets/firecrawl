@@ -1,4 +1,5 @@
 import { NoObjectGeneratedError } from "ai";
+import { CostLimitExceededError } from "../../../../lib/cost-tracking";
 import { vi } from "vitest";
 
 const { structuredOutputConfig, generateCompletionsMock, getModelMock } =
@@ -21,7 +22,8 @@ vi.mock("../../../../lib/generic-ai", () => ({
 
 vi.mock("../../../../config", () => ({ config: structuredOutputConfig }));
 
-import { extractData, resolveStructuredResult } from "../extractSmartScrape";
+import { extractData } from "../extractSmartScrape";
+import { resolveStructuredResult } from "../structuredOutputFallback";
 
 const schema = {
   type: "object",
@@ -188,8 +190,7 @@ describe("extractData structured-output compatibility", () => {
     );
     expect(generateCompletionsMock.mock.calls[1][0]).toMatchObject({
       model: { modelId: "deepseek/deepseek-v4-pro-0813" },
-      disableInternalRateLimitRetry: true,
-      disableInternalObjectRepair: true,
+      boundedStructuredOutput: true,
       options: { schema },
     });
   });
@@ -285,9 +286,7 @@ describe("extractData structured-output compatibility", () => {
     expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
     expect(
       generateCompletionsMock.mock.calls.every(
-        ([options]) =>
-          options.disableInternalRateLimitRetry === true &&
-          options.disableInternalObjectRepair === true,
+        ([options]) => options.boundedStructuredOutput === true,
       ),
     ).toBe(true);
   });
@@ -305,8 +304,209 @@ describe("extractData structured-output compatibility", () => {
       ignoreModelOverride: true,
     });
     expect(generateCompletionsMock.mock.calls[0][0]).toMatchObject({
-      disableInternalRateLimitRetry: true,
-      disableInternalObjectRepair: true,
+      boundedStructuredOutput: true,
+    });
+  });
+});
+
+// Pins the exact user-facing warnings and call bounds of the one-time
+// structured-output fallback, so refactors of the fallback module are proven
+// behavior-preserving.
+describe("extractData structured-output fallback warnings", () => {
+  const FALLBACK_MODEL = "deepseek/deepseek-v4-pro-0813";
+  const invalid = { title: "Example Domain" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    generateCompletionsMock.mockReset();
+    structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK =
+      FALLBACK_MODEL;
+  });
+
+  it("keeps the accepted primary's warning", async () => {
+    generateCompletionsMock.mockResolvedValueOnce(
+      completion(directResult, "primary warning"),
+    );
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([directResult]);
+    expect(result.warning).toBe("primary warning");
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses only the accepted fallback's warning", async () => {
+    generateCompletionsMock
+      .mockResolvedValueOnce(completion(invalid, "primary warning"))
+      .mockResolvedValueOnce(completion(directResult, "fallback warning"));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([directResult]);
+    expect(result.warning).toBe("fallback warning");
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins both warnings when the fallback is also invalid", async () => {
+    generateCompletionsMock
+      .mockResolvedValueOnce(completion(invalid, "primary warning"))
+      .mockResolvedValueOnce(completion(invalid, "fallback warning"));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toBe("primary warning fallback warning");
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the primary warning when an invalid fallback has none", async () => {
+    generateCompletionsMock
+      .mockResolvedValueOnce(completion(invalid, "primary warning"))
+      .mockResolvedValueOnce(completion(invalid));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toBe("primary warning");
+  });
+
+  it("returns no warning when neither invalid attempt has one", async () => {
+    generateCompletionsMock
+      .mockResolvedValueOnce(completion(invalid))
+      .mockResolvedValueOnce(completion(invalid));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("appends a thrown fallback failure to the primary warning", async () => {
+    generateCompletionsMock
+      .mockResolvedValueOnce(completion(invalid, "primary warning"))
+      .mockRejectedValueOnce(new Error("fallback unavailable"));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toBe(
+      "primary warning JSON extraction fallback failed: fallback unavailable",
+    );
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a thrown invalid primary with the fallback's warning", async () => {
+    const primaryError = invalidStructuredOutputError();
+    generateCompletionsMock
+      .mockRejectedValueOnce(primaryError)
+      .mockResolvedValueOnce(completion(invalid, "fallback warning"));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toBe(
+      `JSON extraction failed: ${primaryError.message} fallback warning`,
+    );
+  });
+
+  it("caps each failure reason at 300 characters", async () => {
+    const longReason = "x".repeat(400);
+    generateCompletionsMock
+      .mockResolvedValueOnce(completion(invalid))
+      .mockRejectedValueOnce(new Error(longReason));
+
+    const result = await runExtraction();
+
+    expect(result.warning).toBe(
+      `JSON extraction fallback failed: ${"x".repeat(300)}`,
+    );
+  });
+
+  it("reports a provider failure on the primary without a fallback call", async () => {
+    generateCompletionsMock.mockRejectedValueOnce(new Error("rate limit"));
+
+    const result = await runExtraction();
+
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(result.warning).toBe("JSON extraction failed: rate limit");
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a cost-limit failure on the primary without a fallback call", async () => {
+    generateCompletionsMock.mockRejectedValueOnce(new CostLimitExceededError());
+
+    await expect(runExtraction()).rejects.toBeInstanceOf(
+      CostLimitExceededError,
+    );
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a cost-limit failure on the fallback", async () => {
+    generateCompletionsMock
+      .mockResolvedValueOnce(completion(invalid))
+      .mockRejectedValueOnce(new CostLimitExceededError());
+
+    await expect(runExtraction()).rejects.toBeInstanceOf(
+      CostLimitExceededError,
+    );
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an invalid SmartScrape envelope after one fallback", async () => {
+    generateCompletionsMock
+      .mockResolvedValueOnce(
+        completion({ extractedData: invalid, shouldUseSmartscrape: false }),
+      )
+      .mockResolvedValueOnce(
+        completion({ extractedData: invalid, shouldUseSmartscrape: false }),
+      );
+
+    const result = await runExtraction(schema, true);
+
+    expect(result.extractedDataArray).toEqual([undefined]);
+    expect(generateCompletionsMock).toHaveBeenCalledTimes(2);
+  });
+
+  describe("without a configured fallback", () => {
+    beforeEach(() => {
+      structuredOutputConfig.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK = undefined;
+    });
+
+    it("keeps the primary warning of a schema-invalid result after one call", async () => {
+      generateCompletionsMock.mockResolvedValueOnce(
+        completion(invalid, "primary warning"),
+      );
+
+      const result = await runExtraction();
+
+      expect(result.extractedDataArray).toEqual([undefined]);
+      expect(result.warning).toBe("primary warning");
+      expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports a thrown invalid primary after one call", async () => {
+      const primaryError = invalidStructuredOutputError();
+      generateCompletionsMock.mockRejectedValueOnce(primaryError);
+
+      const result = await runExtraction();
+
+      expect(result.extractedDataArray).toEqual([undefined]);
+      expect(result.warning).toBe(
+        `JSON extraction failed: ${primaryError.message}`,
+      );
+      expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("passes a schema-less result through unvalidated", async () => {
+      generateCompletionsMock.mockResolvedValueOnce(
+        completion({ anything: 1 }, "primary warning"),
+      );
+
+      const result = await runExtraction(null);
+
+      expect(result.extractedDataArray).toEqual([{ anything: 1 }]);
+      expect(result.warning).toBe("primary warning");
+      expect(generateCompletionsMock).toHaveBeenCalledTimes(1);
     });
   });
 });
