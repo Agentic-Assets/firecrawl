@@ -367,9 +367,13 @@ Matthews failed HTTP attempts emit bounded `matthews/http` diagnostics containin
 only request role, attempt/max, header/body/HTTP phase, numeric status when known,
 elapsed milliseconds and the planned cooldown. Successful requests stay quiet;
 URLs, headers, response bodies and exception text are never included in these
-lines. The existing 30-second per-phase deadlines, six attempts, provider pacing
-and all cooldowns remain unchanged. A final cooldown is labeled before failure,
-not as a seventh retry: it may protect the next transaction or outer acquisition.
+lines. The source-owned transport bounds actual decoded HTTP body bytes at
+32 MiB, independently of Content-Length. Oversized bodies fail without returning
+a truncated prefix and emit one terminal body diagnostic with zero cooldown.
+The existing 30-second per-phase deadlines, six ordinary transient attempts,
+provider pacing and their cooldowns remain unchanged. A final cooldown is labeled
+before failure, not as a seventh retry: it may protect the next transaction or
+outer acquisition. The byte ceiling does not prove complete source inventory.
 
 Pyramid's WordPress inventory requests only `_embed=wp:term`: the mapper needs
 those taxonomy labels for state, city, county and property type. Numeric term IDs

@@ -352,7 +352,7 @@ test("Matthews fetch options abort a stalled request at the supplied timeout", a
 
 test("Matthews response body deadline aborts a stream that never completes", async () => {
   const controller = new AbortController();
-  const never = { text: () => new Promise<string>(() => {}) };
+  const never = new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}) }));
   await assert.rejects(
     matthewsResponseText(never, controller, 1),
     /response body timed out/
@@ -488,14 +488,9 @@ test("Matthews retries a failed HTTP-200 response body before admitting a later 
   globalThis.fetch = async () => {
     calls += 1;
     if (calls === 1) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers(),
-        text: async () => {
-          throw new Error("Matthews response body timed out after 30000ms");
-        },
-      } as unknown as Response;
+      return new Response(new ReadableStream<Uint8Array>({
+        pull() { throw new Error("Matthews response body timed out after 30000ms"); },
+      }));
     }
     return new Response("recovered", { status: 200 });
   };

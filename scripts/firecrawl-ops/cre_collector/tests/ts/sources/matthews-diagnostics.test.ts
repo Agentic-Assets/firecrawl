@@ -58,7 +58,7 @@ async function run(t: TestContext, reply: (call: number, options: RequestInit) =
 
 for (const phase of ["headers", "body"] as const) {
   test(`Matthews logs bounded ${phase} timeouts and keeps all six final cooldowns`, async t => {
-    const r = await run(t, async () => phase === "headers" ? new Promise<Response>(() => {}) : ({ ok: true, status: 200, text: () => new Promise<string>(() => {}) }) as Response);
+    const r = await run(t, async () => phase === "headers" ? new Promise<Response>(() => {}) : new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}) })));
     assert.equal(r.calls, 6);
     assert.match(String(r.error), new RegExp(`response ${phase === "headers" ? "headers" : "body"} timed out`));
     assert.equal(r.events.length, 6);
