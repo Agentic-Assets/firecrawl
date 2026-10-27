@@ -3,7 +3,6 @@ import { extractAvisonLeaseFacts } from "./pure/avison-lease-facts.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
-import { request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
 import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
@@ -20,6 +19,15 @@ import {
   requireFreshDetails,
   requireFreshPropertyDetails,
 } from "../lib/freshness.js";
+import {
+  assertAvisonYoungTransportSettled,
+  avisonYoungDeadlineError,
+  AvisonYoungUnsettledError,
+  fetchAvisonYoungText,
+  requestAvisonYoungPinned,
+  withinAvisonYoungDeadline,
+  type AvisonYoungPinnedResponse,
+} from "./avison-young-transport.js";
 
 
 // --- Avison Young: SharpLaunch search app ---
@@ -174,29 +182,29 @@ export async function mapAvisonYoungStrictDetails<T, R>(
   return results;
 }
 
-export async function fetchAvisonYoungApiKey(): Promise<string> {
+export async function fetchAvisonYoungApiKey(timeoutMs = 30_000): Promise<string> {
+  assertAvisonYoungTransportSettled();
   try {
-    const res = await fetch(AVISON_YOUNG_PAGE_URL, {
+    const html = await fetchAvisonYoungText(AVISON_YOUNG_PAGE_URL, {
       headers: { "User-Agent": "Mozilla/5.0 CRE collector" },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const html = await res.text();
+    }, timeoutMs, (status) => new Error(`HTTP ${status}`));
     const key = html.match(/SharpLaunch\.PSE\.create\(\s*['"]([a-f0-9]{32})['"]/i)?.[1];
     if (key) return key;
     console.error("  avison-young: SharpLaunch key not found on page; using documented fallback");
   } catch (err) {
+    if (err instanceof AvisonYoungUnsettledError) throw err;
     console.error(`  avison-young: failed to fetch page key (${err}); using documented fallback`);
   }
   return AVISON_YOUNG_FALLBACK_API_KEY;
 }
 
-export async function fetchAvisonYoungEntity(entity: string, apiKey: string): Promise<any[]> {
+export async function fetchAvisonYoungEntity(entity: string, apiKey: string, timeoutMs = 30_000): Promise<any[]> {
   const url = new URL(AVISON_YOUNG_API_BASE);
   url.searchParams.set("entity", entity);
   if (entity === "website") url.searchParams.set("status", "active");
-  const res = await fetch(url, { headers: { "X-Api-Key": apiKey } });
-  if (!res.ok) throw new Error(`Avison Young SharpLaunch ${entity} API HTTP ${res.status}`);
-  const data = await res.json();
+  const text = await fetchAvisonYoungText(url, { headers: { "X-Api-Key": apiKey } }, timeoutMs,
+    (status) => new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
+  const data = JSON.parse(text);
   return avisonYoungEntityItems(data, entity);
 }
 
@@ -225,21 +233,26 @@ export function avisonYoungTeamFeedState(
   return { rows, complete: true, reason: null };
 }
 
-export async function getAvisonYoungFeed(): Promise<{
+export async function getAvisonYoungFeed(timeoutMs = 30_000): Promise<{
   apiKey: string;
   websiteRows: any[];
   teamMembers: Map<string, any>;
   teamFeedComplete: boolean;
   teamFeedReason: string | null;
 }> {
+  assertAvisonYoungTransportSettled();
   if (avisonYoungCache) return avisonYoungCache;
-  const apiKey = await fetchAvisonYoungApiKey();
-  const [websiteRows, rawTeamState] = await Promise.all([
-    fetchAvisonYoungEntity("website", apiKey),
-    fetchAvisonYoungEntity("team_member", apiKey)
-      .then((rows) => avisonYoungTeamFeedState(rows))
-      .catch((error) => avisonYoungTeamFeedState([], error)),
+  const apiKey = await fetchAvisonYoungApiKey(timeoutMs);
+  const [website, team] = await Promise.allSettled([
+    fetchAvisonYoungEntity("website", apiKey, timeoutMs),
+    fetchAvisonYoungEntity("team_member", apiKey, timeoutMs),
   ]);
+  assertAvisonYoungTransportSettled();
+  if (website.status === "rejected") throw website.reason;
+  const websiteRows = website.value;
+  const rawTeamState = team.status === "fulfilled"
+    ? avisonYoungTeamFeedState(team.value)
+    : avisonYoungTeamFeedState([], team.reason);
   const { rows: teamRows, complete: teamFeedComplete, reason: teamFeedReason } = rawTeamState;
   const teamMembers = new Map<string, any>();
   for (const member of teamRows) {
@@ -1583,11 +1596,6 @@ export function isPublicAvisonYoungAddress(address: string): boolean {
 }
 
 type AvisonYoungResolver = (hostname: string) => Promise<string[]>;
-type AvisonYoungPinnedResponse = {
-  status: number;
-  location: string | null;
-  body: string;
-};
 type AvisonYoungPinnedRequest = (
   url: URL,
   address: string,
@@ -1599,83 +1607,32 @@ async function resolveAvisonYoungHost(hostname: string): Promise<string[]> {
     .map((entry) => entry.address);
 }
 
-async function requestAvisonYoungPinned(
-  url: URL,
-  address: string,
-  timeoutMs: number
-): Promise<AvisonYoungPinnedResponse> {
-  return await new Promise((resolve, reject) => {
-    const request = httpsRequest(
-      url,
-      {
-        headers: {
-          accept: "text/html,application/xhtml+xml",
-          "user-agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-        },
-        lookup: ((_hostname: string, options: any, callback: Function) => {
-          const family = isIP(address);
-          if (options?.all === true) {
-            callback(null, [{ address, family }]);
-          } else {
-            callback(null, address, family);
-          }
-        }) as any,
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        let bytes = 0;
-        response.on("data", (chunk: Buffer | string) => {
-          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          bytes += buffer.length;
-          if (bytes > 5 * 1024 * 1024) {
-            request.destroy(new Error("Avison Young direct detail exceeded 5 MiB"));
-            return;
-          }
-          chunks.push(buffer);
-        });
-        response.on("end", () => {
-          resolve({
-            status: response.statusCode ?? 0,
-            location:
-              typeof response.headers.location === "string"
-                ? response.headers.location
-                : null,
-            body: Buffer.concat(chunks).toString("utf8"),
-          });
-        });
-      }
-    );
-    request.setTimeout(timeoutMs, () => {
-      request.destroy(
-        new Error(`Avison Young direct detail timed out after ${timeoutMs}ms`)
-      );
-    });
-    request.on("error", reject);
-    request.end();
-  });
-}
-
 export async function fetchAvisonYoungDirectDoc(
   url: string,
   timeoutMs = AVISON_YOUNG_DIRECT_DETAIL_TIMEOUT_MS,
   resolveHost: AvisonYoungResolver = resolveAvisonYoungHost,
   requestPinned: AvisonYoungPinnedRequest = requestAvisonYoungPinned
 ): Promise<ScrapedDoc> {
+  assertAvisonYoungTransportSettled();
+  const deadlineAt = performance.now() + timeoutMs;
   let currentUrl = new URL(url);
   let response: AvisonYoungPinnedResponse | null = null;
   for (let redirect = 0; redirect <= 5; redirect++) {
     if (!isAvisonYoungDirectDetailUrl(currentUrl.toString())) {
       throw new Error(`Avison Young direct detail URL is not approved: ${currentUrl.hostname}`);
     }
-    const addresses = await resolveHost(currentUrl.hostname);
+    if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
+    const addresses = await withinAvisonYoungDeadline(resolveHost(currentUrl.hostname), deadlineAt);
     if (!addresses.length || addresses.some((address) => !isPublicAvisonYoungAddress(address))) {
       throw new Error(
         `Avison Young direct detail resolved to a non-public address: ${currentUrl.hostname}`
       );
     }
-    response = await requestPinned(currentUrl, addresses[0]!, timeoutMs);
+    assertAvisonYoungTransportSettled();
+    const remaining = deadlineAt - performance.now();
+    if (remaining <= 0) throw avisonYoungDeadlineError();
+    response = await requestPinned(currentUrl, addresses[0]!, remaining);
+    if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
     if (response.status < 300 || response.status >= 400) break;
     const location = response.location;
     if (!location) {
@@ -1736,6 +1693,7 @@ export async function fetchAvisonYoungDirectDoc(
       .filter((value): value is string => Boolean(value))
       .join("\n\n");
   }
+  if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
   return {
     rawHtml,
     markdown,
@@ -2351,9 +2309,11 @@ export async function fetchAvisonYoungDirectDocWithRetry(
 ): Promise<ScrapedDoc> {
   let lastError: unknown = new Error("Avison Young direct detail was not attempted");
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    assertAvisonYoungTransportSettled();
     try {
       return await fetchDetail(url);
     } catch (error) {
+      if (error instanceof AvisonYoungUnsettledError) throw error;
       if (error instanceof AvisonYoungHttpStatusError && error.status === 404) {
         throw error;
       }
@@ -2374,6 +2334,7 @@ export async function enrichAvisonYoungListing(
   directFetch: (url: string) => Promise<ScrapedDoc> = fetchAvisonYoungDirectDoc,
   officialFeedIdentity?: AvisonYoungOfficialFeedIdentityContext
 ): Promise<any> {
+  assertAvisonYoungTransportSettled();
   const requireLiveDetails = strict || requireFreshPropertyDetails();
   const detailUrls = dedupeStrings([clean(base.sharpLaunchUrl), clean(base.externalUrl)]).filter((url) =>
     /^https?:\/\//i.test(url)
@@ -2394,6 +2355,7 @@ export async function enrichAvisonYoungListing(
   const errors: string[] = [];
   const missingDetails: AvisonYoungTerminalDetailFailure[] = [];
   for (const url of detailUrls) {
+    assertAvisonYoungTransportSettled();
     try {
       const doc =
         process.env.AVISON_YOUNG_DETAIL_TRANSPORT === "direct"
@@ -2408,6 +2370,7 @@ export async function enrichAvisonYoungListing(
       assertAvisonYoungDetailDoc(doc, url, base, officialFeedIdentity);
       docs.push({ url, doc });
     } catch (err) {
+      if (err instanceof AvisonYoungUnsettledError) throw err;
       const error = `${url}: ${String(err)}`;
       if (err instanceof AvisonYoungHttpStatusError && err.status === 404) {
         const role =

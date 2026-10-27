@@ -14,6 +14,7 @@ import { DetailObservation, LinkItem, ScrapedDoc, SourceResult, Tx } from "../ty
 import { boundedInt, clean, num, pmap } from "../lib/util.js";
 import { naiDocumentUrls, naiImageUrls } from "./pure/nai-assets.js";
 import { naiPublicPostId } from "./pure/nai-identity.js";
+import { cancelResponseBody, settleResponseBodyRead, type ResponseBodyReader } from "../lib/response-body.js";
 
 
 // --- NAI Global: Infabode public GraphQL feed ---
@@ -104,6 +105,13 @@ function naiDiscoveryError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+class NaiDiscoveryUnsettledError extends Error {
+  constructor(cause: unknown) {
+    super(`NAI discovery response cleanup was not acknowledged: ${naiDiscoveryError(cause)}`, { cause });
+    this.name = "NaiDiscoveryUnsettledError";
+  }
+}
+
 async function fetchNaiDiscoveryText(
   url: string,
   fetchImpl: typeof fetch,
@@ -111,6 +119,9 @@ async function fetchNaiDiscoveryText(
   referer = NAI_WIDGET_URL
 ): Promise<string> {
   const controller = new AbortController();
+  let response: Response | undefined;
+  let reader: ResponseBodyReader | undefined;
+  let readFailure: { error: unknown } | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
@@ -119,7 +130,7 @@ async function fetchNaiDiscoveryText(
     }, timeoutMs);
   });
   try {
-    const response = await Promise.race([
+    response = await Promise.race([
       fetchImpl(url, {
         headers: {
           referer,
@@ -135,16 +146,17 @@ async function fetchNaiDiscoveryText(
       throw new Error(`body exceeds ${NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES} bytes`);
     }
     if (!response.body) return "";
-    const reader = response.body.getReader();
+    reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
     while (true) {
-      const { done, value } = await Promise.race([reader.read(), deadline]);
+      const { done, value } = await Promise.race([
+        reader.read().catch((error: unknown) => { readFailure = { error }; throw error; }),
+        deadline,
+      ]);
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES) {
-        controller.abort();
-        await reader.cancel();
         throw new Error(`body exceeds ${NAI_SOURCE_DISCOVERY_MAX_BODY_BYTES} bytes`);
       }
       chunks.push(value);
@@ -156,8 +168,25 @@ async function fetchNaiDiscoveryText(
       offset += chunk.byteLength;
     }
     return new TextDecoder().decode(body);
+  } catch (error) {
+    controller.abort();
+    await Promise.resolve();
+    // A separate one-second cleanup allowance bounds refusal; it is not an
+    // observed provider duration or permission to continue without an ACK.
+    const readError = readFailure ? readFailure.error : error;
+    let settled = reader
+      ? await settleResponseBodyRead(reader, readError, 1_000)
+      : await cancelResponseBody(response?.body ?? null, 1_000);
+    if (!settled && reader && readFailure && readFailure.error !== readError) {
+      settled = await settleResponseBodyRead(reader, readFailure.error, 0);
+    }
+    if (!settled) {
+      throw new NaiDiscoveryUnsettledError(error);
+    }
+    throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
+    reader?.releaseLock();
   }
 }
 
@@ -292,12 +321,14 @@ export async function discoverNaiSourceIds(
           return discovered;
         }
       } catch (error) {
+        if (error instanceof NaiDiscoveryUnsettledError) throw error;
         scriptErrors.push(`${scriptUrl}: ${naiDiscoveryError(error)}`);
       }
     }
     const suffix = scriptErrors.length ? `; ${scriptErrors.join("; ")}` : "";
     throw new Error(`no validated domestic NAI office config found in ${scriptUrls.length} chunks${suffix}`);
   } catch (error) {
+    if (error instanceof NaiDiscoveryUnsettledError) throw error;
     const wrapped = new Error(`NAI source organization discovery failed: ${naiDiscoveryError(error)}`);
     if (strict) throw wrapped;
     return naiDocumentedSourceIdFallback(wrapped, widgetUrl);
@@ -313,6 +344,7 @@ async function resolveNaiSourceIds(strict: boolean): Promise<NaiSourceIdDiscover
   try {
     return await naiLiveSourceIdDiscovery;
   } catch (error) {
+    if (error instanceof NaiDiscoveryUnsettledError) throw error;
     naiLiveSourceIdDiscovery = null;
     if (strict) throw error;
     return naiDocumentedSourceIdFallback(error, NAI_WIDGET_URL);
