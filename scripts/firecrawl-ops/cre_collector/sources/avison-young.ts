@@ -1599,7 +1599,8 @@ type AvisonYoungResolver = (hostname: string) => Promise<string[]>;
 type AvisonYoungPinnedRequest = (
   url: URL,
   address: string,
-  timeoutMs: number
+  timeoutMs: number,
+  deadlineAt?: number
 ) => Promise<AvisonYoungPinnedResponse>;
 
 async function resolveAvisonYoungHost(hostname: string): Promise<string[]> {
@@ -1631,7 +1632,7 @@ export async function fetchAvisonYoungDirectDoc(
     assertAvisonYoungTransportSettled();
     const remaining = deadlineAt - performance.now();
     if (remaining <= 0) throw avisonYoungDeadlineError();
-    response = await requestPinned(currentUrl, addresses[0]!, remaining);
+    response = await requestPinned(currentUrl, addresses[0]!, remaining, deadlineAt);
     if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
     if (response.status < 300 || response.status >= 400) break;
     const location = response.location;

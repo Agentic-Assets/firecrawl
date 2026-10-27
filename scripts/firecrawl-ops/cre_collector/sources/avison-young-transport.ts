@@ -62,6 +62,7 @@ export async function fetchAvisonYoungText(
   let headerSettled = false;
   const headers = Promise.resolve().then(() => {
     assertAvisonYoungTransportSettled();
+    if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
     return fetch(url, { ...init, signal: controller.signal });
   })
     .then((value) => { response = value; headerSettled = true; return value; },
@@ -131,9 +132,11 @@ export type AvisonYoungPinnedResponse = { status: number; location: string | nul
 export async function requestAvisonYoungPinned(
   url: URL,
   address: string,
-  timeoutMs: number
+  timeoutMs: number,
+  deadlineAt = performance.now() + timeoutMs
 ): Promise<AvisonYoungPinnedResponse> {
   assertAvisonYoungTransportSettled();
+  if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
   return await new Promise((resolve, reject) => {
     let request: ClientRequest | undefined;
     let response: IncomingMessage | undefined;
@@ -142,8 +145,7 @@ export async function requestAvisonYoungPinned(
     let finished = false;
     let failure: { error: unknown } | undefined;
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
-    const deadlineAt = performance.now() + timeoutMs;
-    const timer = setTimeout(() => fail(avisonYoungDeadlineError()), Math.max(0, Math.ceil(timeoutMs)));
+    const timer = setTimeout(() => fail(avisonYoungDeadlineError()), Math.max(0, Math.ceil(deadlineAt - performance.now())));
     const clearTimers = () => { clearTimeout(timer); if (cleanupTimer) clearTimeout(cleanupTimer); };
     const acknowledge = () => {
       if (!finished && failure && requestClosed && (!response || responseClosed)) {
@@ -167,6 +169,7 @@ export async function requestAvisonYoungPinned(
       acknowledge();
     };
     try {
+      if (performance.now() >= deadlineAt) throw avisonYoungDeadlineError();
       request = httpsRequest(url, {
         headers: {
           accept: "text/html,application/xhtml+xml",
