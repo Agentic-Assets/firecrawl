@@ -18,7 +18,7 @@ for (const source of sources) {
     try {
       const text = await source.fetchText(source.url, "html", async (_url, init) => {
         requests++;
-        if (requests > 1) return new Response("<html>recovered fixture</html>");
+        if (requests > 1) return new Response("<html>recovered fixture</html>", { headers: { "Content-Type": "text/html" } });
         observed.signal = init?.signal;
         return new Response(new ReadableStream<Uint8Array>({
           start(controller) {
@@ -135,7 +135,7 @@ for (const source of sources) {
         requests++;
         if (requests === 1) return fixture.response;
         assert.equal(fixture.acknowledged(), true, "retry must wait for positive cancellation acknowledgement");
-        return new Response("<html>acknowledged successor</html>");
+        return new Response("<html>acknowledged successor</html>", { headers: { "Content-Type": "text/html" } });
       }, 1000, 1024, 2);
       assert.equal(text, "<html>acknowledged successor</html>");
       assert.equal(requests, 2);
@@ -153,7 +153,7 @@ for (const source of sources) {
         try {
           await source.fetchText(source.url, "html", async () => {
             requests++;
-            return requests === 1 ? fixture.response : new Response("<html>forbidden successor</html>");
+            return requests === 1 ? fixture.response : new Response("<html>forbidden successor</html>", { headers: { "Content-Type": "text/html" } });
           }, 40, 1024, 2);
         } catch { rejected = true; }
         assert.ok(performance.now() - started < 250, "cleanup proof must remain bounded despite an unresolved reader.closed");
