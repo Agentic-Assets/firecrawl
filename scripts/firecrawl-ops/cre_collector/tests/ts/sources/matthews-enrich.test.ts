@@ -117,7 +117,7 @@ for (const phase of ["headers", "body", "transport"] as const) {
       signals.push(options.signal as AbortSignal);
       if (phase === "headers") return new Promise<Response>(() => {});
       if (phase === "transport") throw new Error("Synthetic transport error");
-      return { ok: true, status: 200, text: () => new Promise<string>(() => {}) } as Response;
+      return new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => {}) }));
     });
     assert.equal(result.requests, 6);
     assert.deepEqual(result.listings, []);
