@@ -500,6 +500,10 @@ physical-property keys or Infabode publication IDs. A first page and its
 publisher-reported total do not prove complete inventory, supersession or a
 crosswalk between these namespaces. AGENTIC-4284 owns the current findings and
 next candidate-bound association proof; existing holds remain unchanged.
+Discovery response refusals require acknowledged cancellation or the exact owned
+read error as closure evidence, with a separate new one-second cleanup bound.
+Unacknowledged cleanup stops script/fallback continuation and retains the rejected
+discovery promise across later transactions. This does not change publicPosts.
 The same `urlOriginal` can carry different content or images, so do not collapse
 posts by URL. Preserve exact `propertyId` routing parameters on NAI Global
 `/listings/?propertyId=...` links; a generic shell's canonical URL dropping the
@@ -517,6 +521,21 @@ Require a provider-supported association/supersession contract and exact
 historical compatibility proof before proposing a merge, rekey or retirement.
 
 Avison detail identity supports feed-bound SharpLaunch street-as-name headings with a separate city/state location (full US state names and postal abbreviations), including location-suffixed titles. A registered `www.avisonyoung.us/properties/` wrapper can instead bind one unambiguous `RealEstateListing` name/address/URL to coherent visible name/location and page metadata. Map/script text alone is not street evidence for these layouts. Unsupported native pages may still use a validated official alternate through the existing property-detail child-preserving mode; explicit strict mode continues to require every selected URL.
+
+Avison's bootstrap and entity headers/body now have an explicit 30-second
+per-request elapsed budget. Settled bootstrap failure retains the documented
+key fallback. The optional timeout argument on the key, entity and feed functions
+sets this per-request budget for callers; the feed has no new overall budget.
+Website inventory stays required and settled team failure stays
+degraded. Both started feeds drain before failure or caching. Native detail has
+one monotonic budget across DNS, redirects, headers and body, retaining the 5 MiB
+limit and existing URL/IP/TLS/pinning rules. DNS expiry bounds caller return and
+prevents late HTTP dispatch; it does not cancel the OS resolver. Native timeout
+or response failure destroys owned request/response and requires close ACKs.
+A separate new one-second cleanup bound is not measured provider latency.
+Unconfirmed feed/native cleanup stops later Avison dispatch, fallback, retry and
+alternate routes in this process. These bounds do not preempt synchronous parsing
+or satisfy AGENTIC-4294 source acceptance.
 
 Exact feed `name` and `headline` (`meta_title`) are known subject labels for
 owned title/OG, complete description and structured-subject comparisons. A
