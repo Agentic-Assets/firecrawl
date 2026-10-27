@@ -41,11 +41,23 @@ export type FoundryParseContext = {
   strict?: boolean;
 };
 
+type FoundryHeldObservation = {
+  id: string;
+  foundryPostId: string;
+  url: string;
+  propertyNotes: string[];
+  status: string | null;
+  reason: string;
+  requestedTransaction: Tx;
+  inventoryObservedAt?: string;
+  detailObservedAt?: string;
+};
+
 export type FoundryParseOutcome =
   | { kind: "accepted"; listing: any; status: string }
   | { kind: "terminal"; status: string; reason: string }
   | { kind: "other_tenure"; status: string; reason: string }
-  | { kind: "held"; status: string | null; reason: string }
+  | { kind: "held"; status: string | null; reason: string; observation: FoundryHeldObservation }
   | { kind: "rejected"; reason: string };
 
 type FetchLike = (
@@ -201,6 +213,22 @@ export function parseFoundryCommercialDetail(
   }
   const notes = foundryPropertyNotes(html);
   const status = foundryStatusFromNotes(notes);
+  const heldOutcome = (reason: string): Extract<FoundryParseOutcome, { kind: "held" }> => ({
+    kind: "held",
+    status: status.status,
+    reason,
+    observation: {
+      id: foundryListingId(requestedUrl),
+      foundryPostId: identity,
+      url: requestedUrl,
+      propertyNotes: [...notes],
+      status: status.status,
+      reason,
+      requestedTransaction: tx,
+      ...(context.inventoryObservedAt !== undefined ? { inventoryObservedAt: context.inventoryObservedAt } : {}),
+      ...(context.detailObservedAt !== undefined ? { detailObservedAt: context.detailObservedAt } : {}),
+    },
+  });
   if (status.disposition === "terminal") {
     return {
       kind: "terminal",
@@ -209,15 +237,11 @@ export function parseFoundryCommercialDetail(
     };
   }
   if (status.disposition === "held") {
-    return { kind: "held", status: status.status, reason: status.reason };
+    return heldOutcome(status.reason);
   }
   const tenures = status.tenures.length ? status.tenures : explicitFoundryTenures(notes);
   if (!tenures.length) {
-    return {
-      kind: "held",
-      status: status.status,
-      reason: `${status.reason}; no explicit sale or lease tenure found`,
-    };
+    return heldOutcome(`${status.reason}; no explicit sale or lease tenure found`);
   }
   if (!tenures.includes(tx)) {
     return {
@@ -552,10 +576,18 @@ export async function srcFoundryCommercial(
   const outcomes = await pmap(take, FOUNDRY_DETAIL_CONCURRENCY, async (url) => {
     try {
       const html = await foundryFetchText(url, "html");
-      return parseFoundryCommercialDetail(html, url, tx, {
+      const outcome = parseFoundryCommercialDetail(html, url, tx, {
         inventoryObservedAt,
         detailObservedAt: observationNow(),
       });
+      if (outcome.kind === "held") {
+        console.error(JSON.stringify({
+          event: "foundry_held_observation",
+          schema: "foundry-held-observation-v1",
+          observation: outcome.observation,
+        }));
+      }
+      return outcome;
     } catch (error) {
       fetchFailures++;
       console.error(`  foundry-commercial/${tx}: ${url} failed: ${error}`);
