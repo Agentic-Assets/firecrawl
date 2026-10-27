@@ -210,6 +210,12 @@ proof or source admission. A process/host crash before log flush is not covered.
 
 DAUM transport preserves serial three-second physical-start spacing, two
 attempts, a 30-second per-attempt timeout and the five-megabyte response cap.
+Owned body reads use the shared reader's absolute monotonic deadline from that
+attempt's start after pacing, including elapsed header time. Pending reads and
+immediately ready zero-byte chunks cannot extend that body budget. DAUM retains
+reader ownership and requires exact read-error settlement or acknowledged
+cancellation within its separate one-second cleanup allowance before recovery.
+This does not independently bound a header fetch that ignores its AbortSignal.
 Only recognized transient failures and 429/500/502/503/504 without
 `Retry-After` retry; POST replay is limited to generated empty inventory pages.
 Discarded bodies must settle before a retry; uncertain cleanup poisons that
