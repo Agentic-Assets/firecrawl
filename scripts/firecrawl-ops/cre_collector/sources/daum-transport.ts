@@ -1,4 +1,11 @@
 import { DAUM_SEARCH_URL, daumAbsoluteUrl, daumPageUrl } from "./pure/daum-identity.js";
+import {
+  cancelResponseBody,
+  readBoundedUtf8,
+  ResponseBodyDeadlineError,
+  ResponseBodyLimitError,
+  settleResponseBodyRead,
+} from "../lib/response-body.js";
 
 export const DAUM_ROBOTS_DELAY_MS = 3_000;
 export const DAUM_MAX_RESPONSE_BYTES = 5_000_000;
@@ -47,28 +54,14 @@ function daumCanRetry(method: DaumRequestMethod, url: string): boolean {
 }
 
 async function daumCancelBody(body: { cancel(): Promise<unknown> } | null): Promise<boolean> {
-  if (!body) return true;
-  let cancellation: Promise<unknown>;
-  try {
-    cancellation = Promise.resolve(body.cancel());
-  } catch {
-    return false;
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const settled = await Promise.race([
-    cancellation.then(() => true, () => false),
-    new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), DAUM_BODY_CLEANUP_TIMEOUT_MS);
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
-  return settled;
+  return cancelResponseBody(body, DAUM_BODY_CLEANUP_TIMEOUT_MS);
 }
 
 async function daumBoundedResponseText(
   response: Response,
   maxBytes: number,
-  signal: AbortSignal,
+  controller: AbortController,
+  deadlineAt: number,
 ): Promise<string> {
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
@@ -79,42 +72,27 @@ async function daumBoundedResponseText(
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
   try {
-    while (true) {
-      let chunk: ReadableStreamReadResult<Uint8Array>;
-      try {
-        chunk = await reader.read();
-      } catch (error) {
-        let readerClosedWithSameError = false;
-        try {
-          await reader.closed;
-        } catch (closedError) {
-          readerClosedWithSameError = closedError === error;
-        }
-        if (!readerClosedWithSameError && !await daumCancelBody(reader)) {
-          throw new DaumUnsettledBodyError("DAUM response body read failed and did not settle", { cause: error });
-        }
-        if (!daumKnownTransientError(error, signal.aborted)) throw error;
-        throw new DaumRetryableTransportError("DAUM response body read failed", { cause: error });
+    return await readBoundedUtf8(reader, { maxBytes, signal: controller.signal, deadlineAt });
+  } catch (error) {
+    if (error instanceof ResponseBodyLimitError) {
+      if (!await daumCancelBody(reader)) {
+        throw new DaumUnsettledBodyError("DAUM response body did not settle after exceeding its size limit", { cause: error });
       }
-      const { done, value } = chunk;
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        if (!await daumCancelBody(reader)) {
-          throw new DaumUnsettledBodyError("DAUM response body did not settle after exceeding its size limit");
-        }
-        throw new Error(`response body exceeds ${maxBytes} bytes`);
-      }
-      text += decoder.decode(value, { stream: true });
+      throw new Error(`response body exceeds ${maxBytes} bytes`, { cause: error });
     }
-    text += decoder.decode();
-    return text;
+    const timedOut = error instanceof ResponseBodyDeadlineError || controller.signal.aborted;
+    // An abort-induced closure must not impersonate the reader's deadline error.
+    if (error instanceof ResponseBodyDeadlineError) {
+      controller.abort(new Error("DAUM response body deadline exceeded", { cause: error }));
+    }
+    if (!await settleResponseBodyRead(reader, error, DAUM_BODY_CLEANUP_TIMEOUT_MS)) {
+      throw new DaumUnsettledBodyError("DAUM response body read failed and did not settle", { cause: error });
+    }
+    if (!daumKnownTransientError(error, timedOut)) throw error;
+    throw new DaumRetryableTransportError("DAUM response body read failed", { cause: error });
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch { /* preserve the primary outcome */ }
   }
 }
 
@@ -152,6 +130,7 @@ export class DaumPoliteTransport {
         }
 
         const controller = new AbortController();
+        const deadlineAt = performance.now() + this.timeoutMs;
         const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
         this.lastStartedAt = Date.now();
         try {
@@ -190,7 +169,7 @@ export class DaumPoliteTransport {
             }
             throw new Error(`HTTP ${response.status}`);
           }
-          return await daumBoundedResponseText(response, this.maxResponseBytes, controller.signal);
+          return await daumBoundedResponseText(response, this.maxResponseBytes, controller, deadlineAt);
         } catch (error) {
           lastError = error;
           if (error instanceof DaumUnsettledBodyError) this.poisoned = true;
