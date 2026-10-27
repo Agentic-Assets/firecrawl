@@ -193,6 +193,18 @@ provenance. Native IDs and output keys must each be unique within an emitted
 source pass; changed paths never authorize aliases or rekeys. These recipes do
 not establish current availability, change strict detail/lifecycle checks or
 admit absent-baseline writes. Foundry's missing explicit status remains held.
+
+Foundry emits one JSON stderr `foundry_held_observation` event (schema
+`foundry-held-observation-v1`) per completed held parse, before later source
+assertions. Its source-owned observation retains validated native ID/literal
+key/requested URL, all parsed property notes in order (including an empty array),
+unchanged nullable status/reason, requested transaction context and supplied
+observation clocks only. It adds no accepted-row facts or freshness authority.
+Existing checkpoint attempt logs retain stderr even when an all-held full run
+fails without a listing artifact; standalone callers must capture stderr.
+This is parsed diagnostic context, not raw-response archival, current-inventory
+proof or source admission. A process/host crash before log flush is not covered.
+
 DAUM transport preserves serial three-second physical-start spacing, two
 attempts, a 30-second per-attempt timeout and the five-megabyte response cap.
 Only recognized transient failures and 429/500/502/503/504 without
