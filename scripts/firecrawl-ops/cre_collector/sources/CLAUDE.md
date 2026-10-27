@@ -168,8 +168,11 @@ and an expired queued request never dispatches. This enforces the retained robot
 rule, not a claim that it resolves HTTP 429 or complete source coverage.
 The Lyon fetcher retries only recognized transport/timeouts and selected 429/5xx
 responses without a `Retry-After` header, within its existing attempt bound.
-It cancels discarded response bodies; definitive HTTP, URL, content-type and
-size-limit refusals remain fail-fast. Do not use retries to bypass a 403 or
+It requires successful cancellation acknowledgement before retrying a discarded
+HTTP body or following a redirect. Throwing, rejected or stalled cancellation
+refuses another request; the former throw/rejection-as-success behavior was
+corrected under AGENTIC-4999. Definitive HTTP, URL, content-type and size-limit
+refusals remain fail-fast. Do not use retries to bypass a 403 or
 managed challenge, or to imply inventory completeness.
 The October 17 robots diagnostic stopped on an HTTP 403 managed challenge;
 a separately bounded October 18 observation returned HTTP 200. Read the owning
@@ -218,6 +221,18 @@ unexpected exceptions fail fast. A discarded response body must settle before
 retrying or following a redirect; failed or stalled cancellation stops the
 request chain. These retries do not change Foundry identity/status checks or
 prove inventory completeness.
+
+Foundry, Lyon and Matthews share the reader-only `lib/response-body.ts` byte
+accumulator and absolute monotonic body deadline. Foundry and Lyon retain their
+original total attempt budget across pacing, headers and redirects, declared
+Content-Length preflight, and source-specific retry policy. Read-failure cleanup
+requires either the exact caught read error on `reader.closed` or successful
+cancellation acknowledgement within one bounded wait; ordinary closure alone
+is insufficient. Matthews retains its separate 30-second body budget,
+actual-stream-byte-only cap and best-effort cleanup. The byte bound is not a
+process heap ceiling. This body mechanism does not independently settle a
+Foundry/Lyon header implementation that ignores abort, or establish live source
+acceptance.
 
 DAUM's explicit absent-baseline additive admission requires an uncapped strict
 sale+lease generation: serial selection remains singleton; the flat pipeline

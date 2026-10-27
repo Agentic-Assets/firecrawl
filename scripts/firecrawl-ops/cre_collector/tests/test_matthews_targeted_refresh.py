@@ -2,17 +2,18 @@
 
 import copy
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+
+import pytest
 
 import cre_enrich as worker
 import cre_ingest as ingest
 import cre_stop_guarded_tier as stop
-import pytest
 
 
 def fixture_batch():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     def stamp(seconds):
         return (now + timedelta(seconds=seconds)).isoformat()
     context = {
@@ -214,7 +215,7 @@ def test_real_worker_readback_failure_retains_claims(monkeypatch, tmp_path):
                     "generationStartedAt": ctx["generationStartedAt"],
                 }
             )
-            observed = datetime.now(timezone.utc).isoformat()
+            observed = datetime.now(UTC).isoformat()
             for row in artifact["listings"]:
                 row.update(inventoryObservedAt=observed, detailObservedAt=observed)
                 row["freshnessProvenance"]["generationId"] = ctx["generationId"]
@@ -572,7 +573,7 @@ def test_real_producer_worker_cli_sql_and_witnessed_omissions(
         """
 import { MATTHEWS_FETCH_TIMEOUT_MS } from "SOURCE_MODULE";
 const original = globalThis.setTimeout;
-globalThis.setTimeout = (callback, delay, ...args) => original(callback, delay===MATTHEWS_FETCH_TIMEOUT_MS?2:0, ...args);
+globalThis.setTimeout = (callback, delay, ...args) => original(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS)?2:0, ...args);
 globalThis.fetch = async input => {
  const url=String(input);
  if(url==='https://www.matthews.com/sitemap.xml')return new Response(XML);

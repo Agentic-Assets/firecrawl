@@ -1,3 +1,10 @@
+import {
+  cancelResponseBody,
+  readBoundedUtf8,
+  ResponseBodyDeadlineError,
+  ResponseBodyLimitError,
+  settleResponseBodyRead,
+} from "../lib/response-body.js";
 import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { CONCURRENCY } from "../lib/config.js";
@@ -356,7 +363,6 @@ const FOUNDRY_RETRYABLE_NATIVE_CODES = new Set([
   "UND_ERR_BODY_TIMEOUT",
 ]);
 const FOUNDRY_RETRYABLE_HTTP_STATUSES = new Set([429, 500, 502, 503, 504]);
-const FOUNDRY_BODY_CANCEL_TIMEOUT_MS = 1_000;
 
 class FoundryRetryableFetchError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -375,78 +381,52 @@ function foundryIsTransientTransportFailure(error: unknown, timedOut: boolean): 
   return typeof code === "string" && FOUNDRY_RETRYABLE_NATIVE_CODES.has(code);
 }
 
-/** A failed or stalled cancel must never be followed by another request. */
+/** A failed or stalled cancel must never authorize another request. */
 async function foundryCancelBody(
   body: { cancel(): Promise<unknown> } | null,
-  timeoutMs = FOUNDRY_BODY_CANCEL_TIMEOUT_MS
+  timeoutMs = 1_000
 ): Promise<boolean> {
-  if (!body) return true;
-  let cancellation: Promise<unknown>;
-  try {
-    cancellation = Promise.resolve(body.cancel());
-  } catch {
-    return false;
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const settled = await Promise.race([
-    cancellation.then(() => true, () => false),
-    new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), Math.min(timeoutMs, FOUNDRY_BODY_CANCEL_TIMEOUT_MS));
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
-  return settled;
+  return cancelResponseBody(body, Math.min(timeoutMs, 1_000));
 }
 
 async function foundryBoundedResponseText(
   response: Response,
   maxBytes: number,
   timeoutMs: number,
-  signal: AbortSignal
+  controller: AbortController,
+  deadlineAt: number
 ): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    await foundryCancelBody(response.body);
+    await foundryCancelBody(response.body, timeoutMs);
     throw new Error(`Foundry response exceeds ${maxBytes} bytes`);
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
   try {
-    while (true) {
-      let chunk: ReadableStreamReadResult<Uint8Array>;
-      try {
-        chunk = await reader.read();
-      } catch (error) {
-        let readerClosedWithSameError = false;
-        try {
-          await reader.closed;
-        } catch (closedError) {
-          readerClosedWithSameError = closedError === error;
-        }
-        if (!readerClosedWithSameError && !await foundryCancelBody(reader, timeoutMs)) {
-          throw new Error("Foundry response body read failed and did not cancel", { cause: error });
-        }
-        if (!foundryIsTransientTransportFailure(error, signal.aborted)) throw error;
-        const message = error instanceof Error ? error.message : String(error);
-        throw new FoundryRetryableFetchError(`Foundry response body read failed: ${message}`, { cause: error });
+    return await readBoundedUtf8(reader, { maxBytes, signal: controller.signal, deadlineAt });
+  } catch (error) {
+    // A deterministic size refusal remains terminal even if cleanup aborts.
+    if (error instanceof ResponseBodyLimitError) {
+      if (!await foundryCancelBody(reader, timeoutMs)) {
+        throw new Error("Foundry response body did not settle after exceeding its size limit", { cause: error });
       }
-      const { done, value } = chunk;
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        const settled = await foundryCancelBody({ cancel: () => reader.cancel() });
-        if (!settled) throw new Error("Foundry response body did not settle after exceeding its size limit");
-        throw new Error(`Foundry response exceeds ${maxBytes} bytes`);
-      }
-      text += decoder.decode(value, { stream: true });
+      throw new Error(`Foundry response exceeds ${maxBytes} bytes`, { cause: error });
     }
-    text += decoder.decode();
-    return text;
+    const timedOut = error instanceof ResponseBodyDeadlineError || controller.signal.aborted;
+    const cause = timedOut
+      ? new Error(`Foundry response body timed out after ${timeoutMs}ms`, { cause: error }) : error;
+    if (error instanceof ResponseBodyDeadlineError) controller.abort(cause);
+    if (!await settleResponseBodyRead(reader, error, Math.min(timeoutMs, 1_000))) {
+      throw new Error(timedOut
+        ? `Foundry response body timed out after ${timeoutMs}ms and did not cancel`
+        : "Foundry response body read failed and did not cancel", { cause });
+    }
+    if (!foundryIsTransientTransportFailure(error, timedOut)) throw cause;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new FoundryRetryableFetchError(`Foundry response body read failed: ${message}`, { cause });
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch { /* preserve the primary outcome */ }
   }
 }
 
@@ -460,6 +440,7 @@ export async function foundryFetchText(
 ): Promise<string> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    const deadlineAt = performance.now() + timeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -530,7 +511,7 @@ export async function foundryFetchText(
           await foundryCancelBody(response.body, timeoutMs);
           throw new Error(`Foundry detail returned ${contentType}`);
         }
-        const body = await foundryBoundedResponseText(response, maxBytes, timeoutMs, controller.signal);
+        const body = await foundryBoundedResponseText(response, maxBytes, timeoutMs, controller, deadlineAt);
         if (!body.trim()) throw new Error(`Foundry returned empty ${kind}`);
         return body;
       }

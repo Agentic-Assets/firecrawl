@@ -30,7 +30,7 @@ async function route(t: TestContext, items: EnrichItem[], response: (url: string
   // Preserve bounded header/body races, accelerate only synthetic timers and
   // provider pacing/backoff. No real sockets, provider calls or real delays.
   globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
-    oldTimeout(callback, delay === MATTHEWS_FETCH_TIMEOUT_MS ? 2 : 0, ...args)) as typeof setTimeout;
+    oldTimeout(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS) ? 2 : 0, ...args)) as typeof setTimeout;
   t.after(() => { globalThis.fetch = oldFetch; globalThis.setTimeout = oldTimeout; (firecrawl as any).scrape = oldScrape; });
   const result = await runEnrichGroups(groupEnrichItems(items), resolveEnricher, () => "Matthews");
   assert.equal(fallback, 0);

@@ -1,3 +1,4 @@
+import { readBoundedUtf8, ResponseBodyDeadlineError, ResponseBodyLimitError } from "../lib/response-body.js";
 import { Agent, fetch as undiciFetch } from "undici";
 import { requireFreshDetails } from "../lib/freshness.js";
 
@@ -91,53 +92,27 @@ export async function matthewsResponseText(
   }
   if (response.body === null) return "";
   const reader = response.body.getReader();
-  const started = performance.now();
-  const timeoutError = new Error(`Matthews response body timed out after ${timeoutMs}ms`);
-  let stopped = false;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => {
-      stopped = true;
-      reject(timeoutError);
-    }, timeoutMs);
-  });
-  const consume = async (): Promise<string> => {
-    let buffer = new Uint8Array(0);
-    let total = 0;
-    while (true) {
-      // Monotonic checks also bound a stream that continually resolves reads
-      // in microtasks and would otherwise starve the deadline timer.
-      if (stopped || performance.now() - started >= timeoutMs) throw timeoutError;
-      const { done, value } = await reader.read();
-      if (stopped || performance.now() - started >= timeoutMs) throw timeoutError;
-      if (done) return new TextDecoder().decode(buffer.subarray(0, total));
-      if (value.byteLength > maxBytes - total) throw new MatthewsResponseLimitError(maxBytes);
-      const required = total + value.byteLength;
-      if (required > buffer.byteLength) {
-        const capacity = Math.min(maxBytes, Math.max(required, buffer.byteLength * 2, 64 * 1024));
-        const grown = new Uint8Array(capacity);
-        grown.set(buffer.subarray(0, total));
-        buffer = grown;
-      }
-      buffer.set(value, total);
-      total = required;
-    }
-  };
   try {
-    return await Promise.race([consume(), deadline]);
+    return await readBoundedUtf8(reader, {
+      maxBytes,
+      signal: controller.signal,
+      deadlineAt: performance.now() + timeoutMs,
+    });
   } catch (error) {
-    stopped = true;
-    controller.abort(error);
-    // Cancellation may throw, reject or never settle. Observe its rejection
-    // without allowing provider cleanup to replace or delay the primary cause.
-    try { void Promise.resolve(reader.cancel(error)).catch(() => {}); } catch { /* best effort */ }
-    throw error;
+    const cause = error instanceof ResponseBodyLimitError
+      ? new MatthewsResponseLimitError(maxBytes)
+      : error instanceof ResponseBodyDeadlineError
+        ? new Error(`Matthews response body timed out after ${timeoutMs}ms`) : error;
+    controller.abort(cause);
+    // Matthews retains best-effort cleanup; sibling retry acknowledgement
+    // policy does not apply to this separately owned transport.
+    try { void Promise.resolve(reader.cancel(cause)).catch(() => {}); } catch { /* best effort */ }
+    throw cause;
   } finally {
-    stopped = true;
-    if (timeout) clearTimeout(timeout);
     try { reader.releaseLock(); } catch { /* preserve the request outcome */ }
   }
 }
+
 type MatthewsFetchResult = {
   html: string | null;
   status: number;

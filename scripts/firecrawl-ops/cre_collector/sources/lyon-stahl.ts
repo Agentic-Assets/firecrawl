@@ -1,3 +1,10 @@
+import {
+  cancelResponseBody,
+  readBoundedUtf8,
+  ResponseBodyDeadlineError,
+  ResponseBodyLimitError,
+  settleResponseBodyRead,
+} from "../lib/response-body.js";
 import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -634,27 +641,12 @@ function lyonStahlIsTransientTransportFailure(error: unknown, timedOut: boolean)
   return typeof code === "string" && LYON_STAHL_RETRYABLE_NATIVE_CODES.has(code);
 }
 
-/** Bound body cancellation so a broken stream cannot mask the primary refusal. */
+/** A failed or stalled cancel must never authorize another request. */
 async function lyonStahlCancelBody(
   body: { cancel(): Promise<unknown> } | null,
-  timeoutMs: number
+  timeoutMs = 1_000
 ): Promise<boolean> {
-  if (!body) return true;
-  let cancellation: Promise<void>;
-  try {
-    cancellation = Promise.resolve(body.cancel()).then(() => undefined);
-  } catch {
-    return true;
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const settled = await Promise.race([
-    cancellation.then(() => true, () => true),
-    new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), Math.min(timeoutMs, 1_000));
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
-  return settled;
+  return cancelResponseBody(body, Math.min(timeoutMs, 1_000));
 }
 
 /** One invocation's physical request starts, including redirects and retries. */
@@ -694,7 +686,8 @@ async function lyonStahlBoundedResponseText(
   response: Response,
   maxBytes: number,
   timeoutMs: number,
-  signal: AbortSignal
+  controller: AbortController,
+  deadlineAt: number
 ): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -703,36 +696,31 @@ async function lyonStahlBoundedResponseText(
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
   try {
-    while (true) {
-      let chunk: ReadableStreamReadResult<Uint8Array>;
-      try {
-        chunk = await reader.read();
-      } catch (error) {
-        if (!await lyonStahlCancelBody(reader, timeoutMs)) {
-          throw new Error("Lyon Stahl response body read failed and did not cancel", { cause: error });
-        }
-        if (!lyonStahlIsTransientTransportFailure(error, signal.aborted)) {
-          throw error;
-        }
-        throw new LyonStahlRetryableFetchError("Lyon Stahl response body read failed", { cause: error });
+    return await readBoundedUtf8(reader, { maxBytes, signal: controller.signal, deadlineAt });
+  } catch (error) {
+    // A deterministic size refusal remains terminal even if cleanup aborts.
+    if (error instanceof ResponseBodyLimitError) {
+      if (!await lyonStahlCancelBody(reader, timeoutMs)) {
+        throw new Error("Lyon Stahl response body did not settle after exceeding its size limit", { cause: error });
       }
-      const { done, value } = chunk;
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await lyonStahlCancelBody(reader, timeoutMs);
-        throw new Error(`Lyon Stahl response exceeds ${maxBytes} bytes`);
-      }
-      text += decoder.decode(value, { stream: true });
+      throw new Error(`Lyon Stahl response exceeds ${maxBytes} bytes`, { cause: error });
     }
-    text += decoder.decode();
-    return text;
+    const timedOut = error instanceof ResponseBodyDeadlineError || controller.signal.aborted;
+    const cause = timedOut
+      ? new Error(`Lyon Stahl response body timed out after ${timeoutMs}ms`, { cause: error }) : error;
+    if (error instanceof ResponseBodyDeadlineError) controller.abort(cause);
+    if (!await settleResponseBodyRead(reader, error, Math.min(timeoutMs, 1_000))) {
+      throw new Error(timedOut
+        ? `Lyon Stahl response body timed out after ${timeoutMs}ms and did not cancel`
+        : "Lyon Stahl response body read failed and did not cancel", { cause });
+    }
+    if (!lyonStahlIsTransientTransportFailure(error, timedOut)) throw cause;
+    throw new LyonStahlRetryableFetchError(timedOut
+      ? `Lyon Stahl response body timed out after ${timeoutMs}ms`
+      : "Lyon Stahl response body read failed", { cause });
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch { /* preserve the primary outcome */ }
   }
 }
 
@@ -746,6 +734,7 @@ export async function lyonStahlFetchText(
 ): Promise<string> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    const deadlineAt = performance.now() + timeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let retry = false;
@@ -820,7 +809,7 @@ export async function lyonStahlFetchText(
           await lyonStahlCancelBody(response.body, timeoutMs);
           throw new Error(`Lyon Stahl detail returned ${contentType}`);
         }
-        const body = await lyonStahlBoundedResponseText(response, maxBytes, timeoutMs, controller.signal);
+        const body = await lyonStahlBoundedResponseText(response, maxBytes, timeoutMs, controller, deadlineAt);
         if (!body.trim()) throw new Error(`Lyon Stahl returned empty ${kind}`);
         return body;
       }
