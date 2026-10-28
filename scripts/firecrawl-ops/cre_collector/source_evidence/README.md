@@ -627,8 +627,10 @@ python3 cre_guarded_tier.py enrich --source SOURCE --expected-sha SHA \
 Reconciliation revalidates the private receipt, claims, artifact, plan, source,
 code, policy, target and transport, and replays the identical transaction. A
 validated pending receipt can publish a missing pre-dispatch recovery marker
-under the owner lock; a missing marker for a dispatched or uncertain transaction
-requires manual diagnosis. Reconciliation does not rerun enrichment. Unknown
+under the owner lock. A validated receipt durably recording an appended and
+settled job can be reconciled again without a marker or another database call;
+missing markers for other dispatched or uncertain transactions require manual
+diagnosis. Reconciliation does not rerun enrichment. Unknown
 local process cleanup still requires the existing
 manual owner-recovery procedure; this command does not adopt an armed lease.
 A database outcome can remain unknown even after the local process has settled.
