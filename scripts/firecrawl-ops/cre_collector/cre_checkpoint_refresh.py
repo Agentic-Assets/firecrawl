@@ -3763,6 +3763,8 @@ def _cohort_attempt(
     if evidence_enabled:
         from source_evidence import automatic
         automatic.mark_attempt(manifest, source, attempt, _relative_to_run(tmp_artifact, run_dir))
+        from source_evidence import native_pages
+        native_pages.mark(run_dir, manifest, source, attempt)
     checkpoint["attempts"].append(attempt)
     checkpoint["state"] = "collecting"
     checkpoint.pop("pipeline_stage", None)
@@ -3808,10 +3810,19 @@ def _start_cohort_collection(
     log_handle.write(f"[{utc_now()}] coordinator worker: {' '.join(argv)}\n")
     log_handle.flush()
     try:
+        worker_env = safe_process_env()
+        for key in ("CRE_NAI_NATIVE_CAPTURE_DIR", "CRE_NAI_NATIVE_CAPTURE_MAX_PAGES",
+                    "CRE_NAI_NATIVE_CAPTURE_MAX_BYTES", "CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"):
+            worker_env.pop(key, None)
+        if attempt.get("native_source_evidence"):
+            worker_env["CRE_NAI_NATIVE_CAPTURE_DIR"] = str(run_dir / attempt["native_source_evidence"]["directory"])
+            worker_env["CRE_NAI_NATIVE_CAPTURE_MAX_PAGES"] = str(manifest["config"]["automatic_source_evidence"]["max_native_pages"])
+            worker_env["CRE_NAI_NATIVE_CAPTURE_MAX_BYTES"] = str(128 * 1024 * 1024)
+            worker_env["CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"] = "1"
         process = subprocess.Popen(
             argv,
             cwd=COLLECTOR_DIR,
-            env=safe_process_env(),
+            env=worker_env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             text=True,
@@ -3904,6 +3915,9 @@ def _finalize_cohort_collection(
     item.log_handle.close()
     item.attempt["rc"] = rc
     item.attempt["finished_at"] = utc_now()
+    if item.attempt.get("native_source_evidence"):
+        from source_evidence import native_pages
+        native_pages.settle(run_dir, manifest, item.source, item.attempt, save_manifest)
     if rc != 0:
         item.attempt["error"] = f"collector exited {rc}"
         (
@@ -4448,7 +4462,12 @@ def seal_source_evidence(run_dir: Path, manifest: dict, source: str, attempt: di
         attempt["source_evidence"] = {"state": "refused", "reason": "collector_identity_changed"}
         manifest["automatic_source_evidence_paused"] = True
     else:
+        was_paused = manifest.get("automatic_source_evidence_paused", False)
         automatic.seal(run_dir, manifest, source, attempt, artifact)
+        native = attempt.get("native_source_evidence") or {}
+        if (not was_paused and (attempt.get("source_evidence") or {}).get("state") == "refused"
+                and any(page.get("state") == "pending" for page in native.get("pages", []))):
+            manifest["automatic_source_evidence_paused"] = False
     save_manifest(run_dir, manifest)
 
 
@@ -4458,7 +4477,8 @@ def refuse_unsafe_source_evidence(run_dir: Path, manifest: dict, source: str, at
     if not config or source not in config["source_keys"] or state.get("state") not in (None, "awaiting_artifact"):
         return
     attempt["source_evidence"] = {"state": "refused", "reason": "unsafe_artifact"}
-    manifest["automatic_source_evidence_paused"] = True
+    if not any(page.get("state") == "pending" for page in (attempt.get("native_source_evidence") or {}).get("pages", [])):
+        manifest["automatic_source_evidence_paused"] = True
     manifest["automatic_source_evidence_status"] = "incomplete"
     save_manifest(run_dir, manifest)
 
@@ -4774,6 +4794,16 @@ def collect_source(
             from source_evidence import automatic
             attempt["temporary_artifact"] = _relative_to_run(tmp_artifact, run_dir)
             automatic.mark_attempt(manifest, source, attempt, attempt["temporary_artifact"])
+            from source_evidence import native_pages
+            native_pages.mark(run_dir, manifest, source, attempt)
+        for key in ("CRE_NAI_NATIVE_CAPTURE_DIR", "CRE_NAI_NATIVE_CAPTURE_MAX_PAGES",
+                    "CRE_NAI_NATIVE_CAPTURE_MAX_BYTES", "CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"):
+            env.pop(key, None)
+        if attempt.get("native_source_evidence"):
+            env["CRE_NAI_NATIVE_CAPTURE_DIR"] = str(run_dir / attempt["native_source_evidence"]["directory"])
+            env["CRE_NAI_NATIVE_CAPTURE_MAX_PAGES"] = str(evidence_config["max_native_pages"])
+            env["CRE_NAI_NATIVE_CAPTURE_MAX_BYTES"] = str(128 * 1024 * 1024)
+            env["CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"] = "1"
         checkpoint["attempts"].append(attempt)
         checkpoint["state"] = "collecting"
         save_manifest(run_dir, manifest)
@@ -4816,6 +4846,9 @@ def collect_source(
             )
         attempt["rc"] = rc
         attempt["finished_at"] = utc_now()
+        if attempt.get("native_source_evidence"):
+            from source_evidence import native_pages
+            native_pages.settle(run_dir, manifest, source, attempt, save_manifest)
         if rc != 0:
             attempt["error"] = collection_error or f"collector exited {rc}"
             (
@@ -7743,7 +7776,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest["error"] = None
             evidence_incomplete = bool(manifest.get("automatic_source_evidence_paused")) or bool(
                 automatic_source_evidence and any(
-                    (attempt.get("source_evidence") or {}).get("state") != "appended"
+                    ((attempt.get("source_evidence") or {}).get("state") != "appended"
+                     or (source in automatic_source_evidence.get("native_source_formats", {}) and
+                         ((attempt.get("native_source_evidence") or {}).get("state") != "settled"
+                          or any(page.get("state") != "appended" for page in
+                                 (attempt.get("native_source_evidence") or {}).get("pages", [])))))
                     for source, checkpoint in manifest["sources"].items()
                     if source in automatic_source_evidence["source_keys"]
                     for attempt in checkpoint.get("attempts", [])

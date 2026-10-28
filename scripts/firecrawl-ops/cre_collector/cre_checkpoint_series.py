@@ -861,7 +861,11 @@ def evidence_reconciliation_required(child_manifest: Mapping[str, Any]) -> bool:
     allowed = config.get("source_keys") or []
     return any(
         ((attempt.get("source_evidence") or {}).get("state") in {"awaiting_artifact", "pending", "appending", "outcome_unknown", "refused"}
-         or (source in allowed and (attempt.get("source_evidence") or {}).get("state") not in ("appended", "no_artifact")))
+         or (source in allowed and (attempt.get("source_evidence") or {}).get("state") not in ("appended", "no_artifact"))
+         or (source in (config.get("native_source_formats") or {}) and
+             ((attempt.get("native_source_evidence") or {}).get("state") not in ("settled", "no_data")
+              or any(page.get("state") not in ("appended", "no_data")
+                     for page in (attempt.get("native_source_evidence") or {}).get("pages", [])))))
         for source, checkpoint in sources.items() if isinstance(checkpoint, Mapping)
         for attempt in (checkpoint.get("attempts") or []) if isinstance(attempt, Mapping)
     )

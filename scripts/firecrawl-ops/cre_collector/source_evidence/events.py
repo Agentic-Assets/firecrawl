@@ -82,7 +82,7 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         capture_clock = timestamp(artifact.get("provenance", {}).get("observedAt"))
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
-    elif artifact.get("schema") == "cre-json-response-observation/v1":
+    elif artifact.get("schema") in ("cre-json-response-observation/v1", "cre-json-response-context-observation/v1"):
         capture_clock = timestamp(artifact.get("receipt", {}).get("finishedAt"))
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
@@ -136,7 +136,8 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         policy_binding = artifact.get("provenance", {}).get("automaticPolicy")
         numeric_literals = artifact.get("provenance", {}).get("numericLiterals")
         if collector.convert({**context, "listings": rows}, source_key=source_key,
-                             policy_binding=policy_binding, numeric_literals=numeric_literals) != artifact:
+                             policy_binding=policy_binding, numeric_literals=numeric_literals,
+                             projection=artifact.get("provenance", {}).get("projection")) != artifact:
             raise ValueError("retained observations disagree with collector artifact")
         provenance = {**provenance, "capture_kind": "collector_emitted_listings", "coverage": "unverified",
                       "observed_at_origin": "collector_run_finished_at"}
@@ -145,7 +146,7 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
                          [{"kind": "retained_capture_context", "value": header}], None)]
         events.extend(_event(capture, n, source_key, capture_clock, None, provenance,
                              [{"kind": "source_record", "value": row}], None) for n, row in enumerate(rows, 1))
-    elif artifact.get("schema") == "cre-json-response-observation/v1":
+    elif artifact.get("schema") in ("cre-json-response-observation/v1", "cre-json-response-context-observation/v1"):
         from source_evidence import acquisition
         if external_id is not None:
             raise ValueError("capture-wide response cannot claim a listing identity")

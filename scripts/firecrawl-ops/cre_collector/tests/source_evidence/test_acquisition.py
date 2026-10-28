@@ -179,3 +179,50 @@ def test_capture_context_preserves_query_scope_and_is_scanned_and_bounded():
         events.validate_content_policy(value)
     with pytest.raises(ValueError, match='context exceeds'):
         acquisition.convert(raw, receipt=receipt(raw), array_pointer='/rows', capture_context='x' * 65537)
+
+
+@pytest.mark.parametrize('status', [200, 400, 503])
+def test_whole_json_response_context_preserves_failure_and_unselected_facts(status):
+    raw = (b'{"data":null,"errors":[{"message":"partial response","extensions":'
+           b'{"amount":1.0000000000000001,"unknown":[false,null]}}],"extra":"retained"}')
+    observed = {**receipt(raw), 'status': status}
+    out = acquisition.convert(raw, receipt=observed, array_pointer=None,
+                              capture_context={'scope': 'no inventory asserted'})
+    assert out['schema'] == acquisition.SCHEMA_CONTEXT
+    assert out['records'] == [] and out['arrayPointer'] is None
+    assert out['provenance']['recordSelection'] == 'whole_response_no_listing_array_assertion'
+    acquisition.validate(out)
+    assert json.loads(acquisition.reconstruct_json(out), parse_float=Decimal) == json.loads(raw, parse_float=Decimal)
+    plan = events.plan(out, source_key='nai-global')
+    events.validate_content_policy(plan)
+    assert len(plan['events']) == 1
+    assert plan['events'][0]['facts'][0]['value']['receipt']['status'] == status
+    out['records'] = [{'invented': 'not selected from response'}]
+    with pytest.raises(ValueError):
+        events.plan(out, source_key='nai-global')
+
+
+def test_whole_context_does_not_change_legacy_array_format_or_status_contract():
+    raw = b'{"data":[null,false]}'
+    out = acquisition.convert(raw, receipt=receipt(raw), array_pointer='/data')
+    assert out['schema'] == acquisition.SCHEMA and 'recordSelection' not in out['provenance']
+    with pytest.raises(ValueError):
+        acquisition.convert(raw, receipt={**receipt(raw), 'status': 503}, array_pointer='/data')
+    for status in (True, 99, 600, '200'):
+        with pytest.raises(ValueError):
+            acquisition.convert(raw, receipt={**receipt(raw), 'status': status}, array_pointer=None)
+
+
+def test_context_cli_retains_error_response_without_selecting_fake_records(tmp_path, monkeypatch):
+    from source_evidence import cli
+    raw = b'{"data":null,"errors":[{"message":"public feed unavailable"}]}'
+    source = tmp_path / 'response'; source.write_bytes(raw)
+    observed = tmp_path / 'receipt'; observed.write_bytes(events.encoded({**receipt(raw), 'status': 503}))
+    output = tmp_path / 'retained'
+    monkeypatch.setattr(cli, 'run_psql', lambda *_a, **_k: pytest.fail('unexpected DB'))
+    cli.main(['convert-response', '--body', str(source), '--receipt', str(observed),
+              '--whole-response', '--out', str(output)])
+    out = json.loads(output.read_bytes())
+    assert acquisition.reconstruct(out) == json.loads(raw)
+    assert out['schema'] == acquisition.SCHEMA_CONTEXT and out['records'] == []
+    assert out['receipt']['status'] == 503

@@ -106,3 +106,105 @@ This is an acquisition adapter, not an automatic source-feed tap. Checkpoint
 automation currently retains emitted collector artifacts; adapters that discard
 a response before emission still need source acquisition integration. Receipt
 metadata cannot prove complete inventory or authorize canonical record matching.
+
+## Version 2: native acquisition and explicit map projection
+
+The optional `cre-automatic-source-evidence-policy/v2` keeps the version-1 fields
+and additionally requires `collector_projections`, `native_source_formats`, and
+`max_native_pages` (1–128). The dictionaries must name sources already listed
+in `source_keys`; the supported entries are:
+
+```json
+{
+  "collector_projections": {"faris-lee": "faris-google-map-tile-query/v1"},
+  "native_source_formats": {"nai-global": "nai_public_posts_v1"},
+  "max_native_pages": 128
+}
+```
+
+Empty dictionaries disable those features. Version-1 policy behavior remains
+unchanged. The existing policy SHA, exact clean collector commit, database target
+and transport bindings still apply. This configuration authorizes a source
+format; it does not certify publisher identity or complete inventory.
+
+For NAI, the coordinator creates one private directory per owned attempt and
+supplies its path and limits to the source worker. Each actual publicPosts
+response is captured before filtering, deduplication or mapping, with its exact
+request, Fetch-delivered bytes, worker's response observation clock and hash. An immutable
+entry's identity includes its entire serialized payload, so later conflicting
+responses survive and exact replay is idempotent. Cache hits reuse the original
+observation. The source uses the existing query, pagination, concurrency and
+retry policy. Fields not requested by that GraphQL query are outside this
+capture's coverage.
+
+The producer enforces a maximum of 128 entries and 128 MiB of serialized entry
+bytes, with the policy's potentially tighter page limit. Publication is serialized
+within the single Node worker owned by that attempt. The internal single-writer
+assertion is supplied automatically by the coordinator, not a human approval or
+an OS lock; sharing a directory across independent processes is unsupported.
+The POSIX ownership and filesystem requirements apply on macOS and Linux/WSL;
+this does not establish Windows-native parity.
+
+After process settlement, the coordinator validates each entry and seals its
+plan before source gates. Native jobs use the same foreground writer lane as
+collector jobs. Native and collector uncertain transactions are reconciled before
+ordinary pending writes, with native exact replays first on ties. Explicit
+replay-only mode can reconcile an uncertain native write while preserving an
+unrelated collector refusal; it does not unlock new writes under that refusal.
+Serial recovery operates only after the owned-worker settlement barrier.
+Pipeline resumes remain unsupported. No background worker or second work queue
+is installed.
+
+Valid JSON without a publicPosts array, including GraphQL errors or a failed
+HTTP response, is retained as `cre-json-response-context-observation/v1`: its
+complete JSON context and exceptional numeric literals are preserved, with an
+explicit assertion that no listing array was selected. Such a capture has zero
+record events and one context event; it is not evidence of zero listings or a
+successful source fetch. Invalid JSON stays in the private page file with an
+explicit diagnostic. Other bounds and content-policy failures remain visible.
+The source IDs in a request are assertions, including dynamically discovered
+IDs; the captured query alone does not independently verify office membership.
+
+For manual whole-response conversion, use `--whole-response` instead of
+`--array-pointer`. Selected-array version-1 conversion still requires HTTP 200;
+the context-only format preserves the observed HTTP status without claiming
+listing access or enumeration.
+
+Faris projection removes only the observed `key` and `token` query parameters
+from the exact supported HTTPS Google map-tile URL form. It preserves surrounding
+text, labels, remaining parameters and unrelated facts. The receipt records
+bounded JSON pointers, occurrence ordinals, removed parameter names and projected
+URL hashes. It creates no original-content hashes that could act as guessing
+oracles for removed low-entropy values. This is an irreversible representation;
+a projected URL may not be fetchable and is not the original requested resource.
+Preexisting independent source metadata and hashes are not universally scrubbed,
+and this is not a general secrecy or publisher-authentication guarantee.
+
+The map projection must be explicitly enabled. For a manual conversion:
+
+```sh
+python3 -m source_evidence.cli convert-collector --artifact /private/faris.json --source-key faris-lee --project-map-credentials --out /private/projected.json
+```
+
+Automatic projected sealing stores only the projected observation as its new
+sealed input. Its representation, hashes and reconstruction contract are marked
+as projected; it cannot reproduce removed source bytes. Ordinary collector
+artifact custody remains separate. Existing credential and source checks run
+after projection, and JLL/Avison restrictions are not relaxed.
+
+## Effective database privileges
+
+Automatic append now also checks specified effective capabilities, including
+PUBLIC grants, on the session login and writer role before assuming the writer.
+It rejects accessible unrelated security-definer routines, persistent table or
+column writes, sequence changes and schema creation. Standard temporary-object
+rights are outside this bounded check. System objects, invoker routine side
+effects, concurrent grant changes and independent use of a credential are not
+made safe by a client-side preflight. Passing it does not prove a universally
+append-only credential.
+
+Production automatic intake remains disabled pending the separate shared-database
+privilege review tracked by [AGENTIC-5040](https://linear.app/agenticassets/issue/AGENTIC-5040).
+This phase changes no shared production ACL, creates no login, provisions no
+credential and enables no scheduler. Private source acquisition and canonical
+source acceptance retain their separate boundaries.

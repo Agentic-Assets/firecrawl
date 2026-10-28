@@ -157,9 +157,12 @@ def main(argv=None):
     c = sub.add_parser('convert-collector')
     c.add_argument('--artifact', required=True); c.add_argument('--source-key', required=True)
     c.add_argument('--out', required=True)
+    c.add_argument('--project-map-credentials', action='store_true')
     r = sub.add_parser('convert-response')
     r.add_argument('--body', required=True); r.add_argument('--receipt', required=True)
-    r.add_argument('--array-pointer', required=True); r.add_argument('--out', required=True)
+    selection = r.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--array-pointer'); selection.add_argument('--whole-response', action='store_true')
+    r.add_argument('--out', required=True)
     r.add_argument('--capture-context')
     a = sub.add_parser('append')
     a.add_argument('--plan', required=True); a.add_argument('--admission', required=True)
@@ -180,13 +183,20 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == 'convert-collector':
         raw = read_consistent(args.artifact, events.MAX_ARTIFACT_BYTES)
-        artifact, literals = acquisition.decode_json(raw)
-        result = collector.convert(artifact, source_key=args.source_key, numeric_literals=literals or None)
+        projection = None
+        if args.project_map_credentials:
+            from source_evidence import map_projection
+            artifact, literals, projection = map_projection.prepare(raw, source_key=args.source_key)
+        else:
+            artifact, literals = acquisition.decode_json(raw)
+        result = collector.convert(artifact, source_key=args.source_key, numeric_literals=literals or None,
+                                   projection=projection)
         write_private(args.out, result)
         print(f"Converted collector artifact: {len(result['records'])} records")
     elif args.command == 'convert-response':
         raw = read_consistent(args.body, events.MAX_ARTIFACT_BYTES)
-        result = acquisition.convert(raw, receipt=read_json(args.receipt, 16384), array_pointer=args.array_pointer,
+        result = acquisition.convert(raw, receipt=read_json(args.receipt, 16384),
+                                     array_pointer=None if args.whole_response else args.array_pointer,
                                      capture_context=read_json(args.capture_context, 65536) if args.capture_context else None)
         write_private(args.out, result)
         print(f"Converted response: {len(result['records'])} records")

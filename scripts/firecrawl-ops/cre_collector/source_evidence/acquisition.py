@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from source_evidence import events
 
 SCHEMA = "cre-json-response-observation/v1"
+SCHEMA_CONTEXT = "cre-json-response-context-observation/v1"
 PLACEHOLDER = {"$cre_json_response_array": "records"}
 RECEIPT_KEYS = {"sourceKey", "requestUrl", "finalUrl", "method", "status",
                 "startedAt", "finishedAt", "bodySha256", "bodyBytes"}
@@ -137,29 +138,35 @@ def convert(raw, *, receipt, array_pointer, capture_context=None):
     start, finish = events.timestamp(receipt["startedAt"]), events.timestamp(receipt["finishedAt"])
     if datetime.fromisoformat(start.replace("Z", "+00:00")) > datetime.fromisoformat(finish.replace("Z", "+00:00")):
         raise ValueError("HTTP receipt clock reversed")
-    if (receipt["method"] not in ("GET", "POST") or type(receipt["status"]) is not int
-            or receipt["status"] != 200 or type(receipt["bodyBytes"]) is not int
+    valid_status = (type(receipt["status"]) is int and
+                    (100 <= receipt["status"] <= 599 if array_pointer is None else receipt["status"] == 200))
+    if (receipt["method"] not in ("GET", "POST") or not valid_status or type(receipt["bodyBytes"]) is not int
             or receipt["bodyBytes"] != len(raw) or receipt["bodySha256"] != events.sha256(raw)):
         raise ValueError("HTTP receipt does not bind the response body")
-    parts = _pointer_parts(array_pointer)
+    parts = None if array_pointer is None else _pointer_parts(array_pointer)
     document, literals = decode_json(raw)
-    node = document
-    for part in parts:
-        node = node[_child(node, part)]
-    if not isinstance(node, list) or len(node) > 10000:
-        raise ValueError("selected response array is invalid or exceeds limit")
-    records = copy.deepcopy(node)
-    context = _replace(document, parts, copy.deepcopy(PLACEHOLDER))
+    if parts is None:
+        records, context = [], copy.deepcopy(document)
+    else:
+        node = document
+        for part in parts:
+            node = node[_child(node, part)]
+        if not isinstance(node, list) or len(node) > 10000:
+            raise ValueError("selected response array is invalid or exceeds limit")
+        records = copy.deepcopy(node)
+        context = _replace(document, parts, copy.deepcopy(PLACEHOLDER))
     if capture_context is not None and len(events.encoded(capture_context)) > 65536:
         raise ValueError("capture context exceeds limit")
-    return {"schema": SCHEMA, "receipt": copy.deepcopy(receipt), "arrayPointer": array_pointer,
+    return {"schema": SCHEMA_CONTEXT if parts is None else SCHEMA,
+            "receipt": copy.deepcopy(receipt), "arrayPointer": array_pointer,
             "context": context, "records": records, "numericLiterals": literals,
             **({"captureContext": copy.deepcopy(capture_context)} if capture_context is not None else {}),
             "provenance": {"bodyHashKind": "caller_supplied_response_body_bytes_not_wire",
                            "receipt": "caller_asserted_not_tls_or_publisher_authentication",
                            "identity": "unverified", "visibility": "unverified",
                            "completeness": "unverified", "contextEncoding": "canonical_json_utf8",
-                           "numericEncoding": "json_pointer_to_literal_null_placeholder_v1"}}
+                           "numericEncoding": "json_pointer_to_literal_null_placeholder_v1",
+                           **({"recordSelection": "whole_response_no_listing_array_assertion"} if parts is None else {})}}
 
 
 def reconstruct(observation):
@@ -170,8 +177,12 @@ def reconstruct(observation):
 
 
 def _reconstruct_values(observation):
-    if not isinstance(observation, dict) or observation.get("schema") != SCHEMA:
+    if not isinstance(observation, dict) or observation.get("schema") not in (SCHEMA, SCHEMA_CONTEXT):
         raise ValueError("invalid response observation")
+    if observation["schema"] == SCHEMA_CONTEXT:
+        if observation.get("arrayPointer") is not None or observation.get("records") != [] or "context" not in observation:
+            raise ValueError("whole-response observation cannot claim a selected array")
+        return copy.deepcopy(observation["context"])
     parts = _pointer_parts(observation.get("arrayPointer"))
     context = copy.deepcopy(observation.get("context"))
     node = context
