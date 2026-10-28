@@ -21,6 +21,30 @@ python3 -m source_evidence.cli plan --artifact /private/retained.json --source-k
 
 The wrapper retains every emitted listing, including duplicate or incomplete records and supplied `raw_data`, plus all artifact metadata and errors. It refuses mixed or mismatched sources, and uses the artifact's run-finished clock, not a per-record observation time. Its digest binds canonical JSON, not the original file bytes. Collector records have already passed through source mapping and pruning; this does not recover discarded HTTP responses, prove completeness or establish source acceptance. Empty artifacts with explicit source entries are retained. Conversion and planning are local; private retention admission and database authorization remain separate.
 
+An in-progress Foundry change intends to carry already parsed, unqualified held
+observations in `sources[].retainedObservations`, so the existing private
+evidence bridge can settle the artifact before canonical gates. An all-held
+full run is intended to write a normal-shaped artifact with
+`runMeta.evidenceOnly=true` and exit nonzero; a mixed run can retain held
+context without changing accepted counts. Canonical ingest and monitor
+entrypoints are intended to refuse evidence-only artifacts. This workflow is
+unverified under the current test hold and is not deployed. Typed access to
+partial observations does not resolve uncertain identity or status, establish
+source acceptance, or claim complete raw-response coverage. On a strict
+identity failure, the intended `RetainedSourceError` preserves that failure and
+carries held context and otherwise accepted conflicting parsed rows as
+unqualified `sources[].retainedObservations`; it does not rekey, merge or
+activate them. Evidence-only output is intended to be written exclusively as a
+private mode-0600 file, without replacing an existing destination, and to exit
+nonzero. The existing generic private evidence context bridge may retain it
+under its admission rules.
+
+The shared Python `cre_artifact_scope.require_canonical_artifact` guard is
+intended for ingest main and its freshness guard, the monitor loader and no-op
+reader, and gate counting before canonical database operations. The marker is
+not authentication; unmarked artifacts still require the usual canonical
+gates. These changes remain unverified and not deployed.
+
 Admission scans HTTP(S) URL tokens in text and object keys for known JLL hosts and credential-bearing query keys, including the reconstructed bounded document text across chunk boundaries; it is not a general secret detector. Conflicting nested declarations of protected source keys are refused. Avison collector evidence is checked against its source-owned asking-price visibility control and projection, including control witnesses in capture context. Withheld records or capture context that the projection would change are refused, including malformed or contradictory controls; use a source-owned projected artifact before requesting admission. Independent rent, cap rate and NOI remain eligible. Other Avison evidence shapes need an adapter before admission. Local planning alone does not establish that any historical Avison plan is safe to retain.
 
 The foreground checkpoint and series runners optionally retain settled collector artifacts using a separate operator-asserted recurring policy. This is disabled unless all four options are present: `--source-evidence-policy`, `--source-evidence-policy-sha256`, `--source-evidence-env-file`, and `--source-evidence-target-sha256`. The policy is a private JSON object with exact fields `schema_version` (`cre-automatic-source-evidence-policy/v1`), `purpose` (`private_unverified_evidence`), `data_scope` (`public_listing_source`), `format` (`collector_artifact_v1`), `collector_git_sha` (exact clean 40-character commit), `target_sha256` (the selected database URL fingerprint), `source_keys` (explicit allowed registered source keys), `max_artifact_bytes` (at most 16 MiB), and `max_records` (at most 10,000). Pin the policy file's byte SHA-256 in the command. The policy expresses operator authorization for the specified recurring source class; it is not a per-plan human review or publisher authentication. JLL remains excluded, and existing content and Avison controls apply. Credential-labelled fields refuse the entire capture; unknown fields are retained unchanged. The scanners do not prove content has no secrets or withholding restrictions.

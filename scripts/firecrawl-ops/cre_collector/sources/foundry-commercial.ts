@@ -6,6 +6,7 @@ import {
   settleResponseBodyRead,
 } from "../lib/response-body.js";
 import { observationNow } from "../lib/observation-clock.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
 import * as cheerio from "cheerio";
 import { CONCURRENCY } from "../lib/config.js";
 import { refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
@@ -578,7 +579,29 @@ export async function srcFoundryCommercial(
   const listings = outcomes
     .filter((outcome): outcome is Extract<FoundryParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
     .map((outcome) => outcome.listing);
-  assertFoundryUniqueProviderIds(listings);
+  const retainedObservations = outcomes
+    .filter((outcome): outcome is Extract<FoundryParseOutcome, { kind: "held" }> => outcome.kind === "held")
+    .map((outcome) => ({
+      event: "foundry_held_observation",
+      schema: "foundry-held-observation-v1",
+      observation: outcome.observation,
+    }));
+  try {
+    assertFoundryUniqueProviderIds(listings);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    throw new RetainedSourceError(error, [
+      ...retainedObservations,
+      ...outcomes.filter((outcome): outcome is Extract<FoundryParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
+        .map((outcome) => ({
+        event: "foundry_identity_conflict_observation",
+        schema: "foundry-identity-conflict-observation-v1",
+        reason: "source_identity_validation_failed",
+        status: outcome.status,
+        observation: outcome.listing,
+      })),
+    ]);
+  }
   const held = outcomes.filter((outcome) => outcome.kind === "held").length;
   const rejected = outcomes.filter((outcome) => outcome.kind === "rejected").length;
   const terminal = outcomes.filter((outcome) => outcome.kind === "terminal").length;
@@ -600,6 +623,7 @@ export async function srcFoundryCommercial(
       "WordPress property sitemap enumeration to same-host HTML details; stable shortlink identity plus JSON-LD/DOM parsing; explicit status admission",
     totalAvailable: urls.length,
     listings,
+    retainedObservations,
     truncated,
     note: notes.length ? notes.join("; ") : undefined,
   };

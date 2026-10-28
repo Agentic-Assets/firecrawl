@@ -203,10 +203,33 @@ assertions. Its source-owned observation retains validated native ID/literal
 key/requested URL, all parsed property notes in order (including an empty array),
 unchanged nullable status/reason, requested transaction context and supplied
 observation clocks only. It adds no accepted-row facts or freshness authority.
-Existing checkpoint attempt logs retain stderr even when an all-held full run
-fails without a listing artifact; standalone callers must capture stderr.
-This is parsed diagnostic context, not raw-response archival, current-inventory
-proof or source admission. A process/host crash before log flush is not covered.
+Existing checkpoint attempt logs retain stderr; standalone callers must capture
+stderr. The in-progress collector change also carries these already parsed,
+unqualified observations in `sources[].retainedObservations`. An all-held full
+run is intended to write a normal-shaped artifact marked
+`runMeta.evidenceOnly=true` and exit nonzero; mixed runs retain held context
+alongside their original accepted counts. Evidence-only artifacts must be
+refused by canonical ingest and monitor entrypoints. The private evidence bridge
+is intended to settle the artifact before canonical gates. This behavior is
+unverified under the current test hold and is not deployed.
+
+On a strict identity failure, the intended `RetainedSourceError` preserves the
+original failure while carrying held context and otherwise accepted conflicting
+parsed rows as unqualified observations in `sources[].retainedObservations`.
+It does not rekey, merge or activate those rows. Evidence-only output is intended
+to use an exclusive private mode-0600 file, refuse an existing destination, and
+exit nonzero. The generic private source-evidence context bridge may retain the
+observations under its existing admission rules.
+
+The shared Python `cre_artifact_scope.require_canonical_artifact` guard is
+intended to run in ingest main and its freshness guard, the monitor loader and
+no-op reader, and gate counting before canonical database operations. This
+marker guard is not authentication: an unmarked artifact still needs the usual
+canonical gates. These changes remain unverified and not deployed. Typed access
+to partial observations does not resolve identity or market status uncertainty.
+They are parsed context, not raw-response archival, complete source coverage,
+current-inventory proof or source admission. A process/host crash before log
+flush is not covered by stderr retention.
 
 DAUM transport preserves serial three-second physical-start spacing, two
 attempts, a 30-second per-attempt timeout and the five-megabyte response cap.

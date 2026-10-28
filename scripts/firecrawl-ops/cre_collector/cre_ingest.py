@@ -56,6 +56,7 @@ from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunspli
 import cre_parse
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
+from cre_artifact_scope import require_canonical_artifact
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -1719,6 +1720,7 @@ def validate_strict_artifact_freshness(
     was observed. Buildout is the one explicit exception because its paginated
     inventory feed is the authoritative listing payload.
     """
+    require_canonical_artifact(data)
     run_meta = data.get("runMeta")
     freshness = run_meta.get("freshness") if isinstance(run_meta, dict) else None
     matthews_enrichment = (
@@ -6774,6 +6776,10 @@ def main():
         else:
             with open(path) as f:
                 data = json.load(f)
+        try:
+            require_canonical_artifact(data)
+        except ValueError as exc:
+            sys.exit(str(exc))
         if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
             sys.exit(
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "

@@ -43,6 +43,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from cre_artifact_scope import require_canonical_artifact
 
 from cre_ingest import (
     SOURCE_KEYS_BY_SLUG,
@@ -353,6 +354,7 @@ def count_artifacts(inputs, quiet, *, coverage_evidence=None):
     for path in inputs:
         with open(path, encoding="utf-8" if coverage_evidence is not None else None) as f:
             data = json.load(f)
+        require_canonical_artifact(data)
         run_meta = data.get("runMeta") or {}
         scraped_at = scraped_at or run_meta.get("finishedAt") or run_meta.get("startedAt")
         sa = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()

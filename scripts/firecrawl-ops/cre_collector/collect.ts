@@ -43,6 +43,7 @@ import { srcSrs } from "./sources/srs.js";
 import { srcTranswestern } from "./sources/transwestern.js";
 import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
+import { RetainedSourceError } from "./lib/source-observations.js";
 import { readFileSync } from "node:fs";
 import { EnrichItem, groupEnrichItems, resolveEnricher, runEnrichGroups } from "./lib/enrich.js";
 import {
@@ -216,6 +217,7 @@ async function main() {
           truncated: res.truncated === true,
           note: res.note ?? null,
           ...(res.currentInventoryProof ? { currentInventoryProof: res.currentInventoryProof } : {}),
+          ...(res.retainedObservations !== undefined ? { retainedObservations: res.retainedObservations } : {}),
           freshness,
         });
         for (const l of res.listings) {
@@ -257,6 +259,7 @@ async function main() {
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
+          ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
       }
     }
@@ -265,6 +268,8 @@ async function main() {
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
+  const evidenceOnly = !MONITOR && listings.length === 0 &&
+    sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
   if (listings.length === 0) {
     if (
       !MONITOR
@@ -302,16 +307,20 @@ async function main() {
     // still recorded in `sources[].error` (enforced by the downstream coverage gate),
     // and a source emitting 0 rows is never evaluated for disappearance because its
     // key is absent from run_source_keys.
-    if (!MONITOR) {
+    if (!MONITOR && !evidenceOnly) {
       throw new Error("no listings collected from any source");
     }
+    if (MONITOR) {
+      console.error(
+        "monitor: 0 listings enumerated (all targeted sources are monitor-excluded or empty); writing empty artifact"
+      );
+    }
+  }
+  if (!evidenceOnly) {
     console.error(
-      "monitor: 0 listings enumerated (all targeted sources are monitor-excluded or empty); writing empty artifact"
+      `done: ${listings.length} listings from ${succeeded} sources, ${brokers.length} unique brokers`
     );
   }
-  console.error(
-    `done: ${listings.length} listings from ${succeeded} sources, ${brokers.length} unique brokers`
-  );
 
   const out = {
     description:
@@ -322,6 +331,7 @@ async function main() {
       maxItemsPerSource: Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : null,
       pageCap: PAGE_CAP,
       mode: MONITOR ? "monitor" : "full",
+      ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
       startedAt,
       finishedAt: observationNow(),
       freshness: {
@@ -339,10 +349,15 @@ async function main() {
   const json = JSON.stringify(out);
   if (OUT_PATH) {
     mkdirSync(dirname(OUT_PATH), { recursive: true });
-    writeFileSync(OUT_PATH, json);
+    if (evidenceOnly) writeFileSync(OUT_PATH, json, { flag: "wx", mode: 0o600 });
+    else writeFileSync(OUT_PATH, json);
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
   } else {
     process.stdout.write(json);
+  }
+  if (evidenceOnly) {
+    console.error("no listings collected from any source");
+    process.exitCode = 1;
   }
 }
 
