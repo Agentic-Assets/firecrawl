@@ -939,6 +939,9 @@ def run_bounded_pipeline(
         with command_poll_hook(tick) as poll:
             while pending or active or ready:
                 poll()
+                # Sealing may occur inside tick's poll callback. Database writes
+                # run only here, on the foreground coordinator's serial lane.
+                refresh.pump_source_evidence(run_dir, manifest)
                 if ready:
                     oversized_index = next(
                         (
@@ -996,11 +999,12 @@ def run_bounded_pipeline(
                                 checkpoint["attempts"][-1][
                                     "rejected_artifact_sha256"
                                 ],
-                            ) = refresh._archive_rejected(
+                            ) = refresh.archive_rejected_with_evidence(
                                 run_dir / candidate["path"],
                                 run_dir,
+                                manifest,
                                 source,
-                                checkpoint["attempts"][-1]["number"],
+                                checkpoint["attempts"][-1],
                             )
                             retry_or_fail(source, "artifact validation failed")
                             continue

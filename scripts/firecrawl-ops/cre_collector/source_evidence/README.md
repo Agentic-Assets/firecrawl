@@ -23,6 +23,12 @@ The wrapper retains every emitted listing, including duplicate or incomplete rec
 
 Admission scans HTTP(S) URL tokens in text and object keys for known JLL hosts and credential-bearing query keys, including the reconstructed bounded document text across chunk boundaries; it is not a general secret detector. Conflicting nested declarations of protected source keys are refused. Avison collector evidence is checked against its source-owned asking-price visibility control and projection, including control witnesses in capture context. Withheld records or capture context that the projection would change are refused, including malformed or contradictory controls; use a source-owned projected artifact before requesting admission. Independent rent, cap rate and NOI remain eligible. Other Avison evidence shapes need an adapter before admission. Local planning alone does not establish that any historical Avison plan is safe to retain.
 
+The foreground checkpoint and series runners optionally retain settled collector artifacts using a separate operator-asserted recurring policy. This is disabled unless all four options are present: `--source-evidence-policy`, `--source-evidence-policy-sha256`, `--source-evidence-env-file`, and `--source-evidence-target-sha256`. The policy is a private JSON object with exact fields `schema_version` (`cre-automatic-source-evidence-policy/v1`), `purpose` (`private_unverified_evidence`), `data_scope` (`public_listing_source`), `format` (`collector_artifact_v1`), `collector_git_sha` (exact clean 40-character commit), `target_sha256` (the selected database URL fingerprint), `source_keys` (explicit allowed registered source keys), `max_artifact_bytes` (at most 16 MiB), and `max_records` (at most 10,000). Pin the policy file's byte SHA-256 in the command. The policy expresses operator authorization for the specified recurring source class; it is not a per-plan human review or publisher authentication. JLL remains excluded, and existing content and Avison controls apply. Credential-labelled fields refuse the entire capture; unknown fields are retained unchanged. The scanners do not prove content has no secrets or withholding restrictions.
+
+The coordinator seals exact private artifact bytes and the reconstructed plan under its existing run directory before source validation and gates. Exceptional numeric literals are retained in a JSON Pointer map; the numeric-aware canonical digest retains those literals while normalizing ordinary JSON representation. It records capture, policy, target, transport, generation, attempt and hash bindings in the existing attempt. A pending plan is appended only from the foreground serial lane, never a pipeline polling callback. Remote database URLs require `sslmode=verify-full`, an absolute explicit `sslrootcert`, and `gssencmode=disable`; the CA bytes and transport settings are hashed and rechecked. Local Unix-socket fixtures are exempt from TLS. This binds the client connection configuration; it does not prove encryption beyond a pooler.
+
+The dedicated database login and writer role must pass the enforced role-attribute, membership, and direct ACL/ownership dependency checks before each append. This code creates no role, grant or schema. Configure and verify the target and writer separately. Evidence failures and uncertain commits pause subsequent evidence writes and remain distinct from canonical source outcomes. Resume with identical bindings; `--source-evidence-replay-unknown` on an opted-in serial checkpoint resume explicitly replays only the sealed exact uncertain plan. Existing pipeline resume restrictions remain in force, so reconcile uncertain pipeline outcomes separately. A source process that produces no artifact is recorded as such; this path cannot recover data discarded inside an adapter or prove capture completeness.
+
 Once the separate database migration, roles, permissions and a specific write are authorized, bind an explicit environment file and target fingerprint:
 
 ```sh
@@ -55,3 +61,48 @@ Each text chunk records its ordinal, total count and original full-text digest;
 verify all ordinals and the reconstructed UTF-8 hash before claiming complete
 reconstruction. Chunk windows are not page citations. Original document bytes
 and publisher identity are not independently verified by stored text hashes.
+
+## Native JSON response retention
+
+Opted-in checkpoint attempts record an `awaiting_artifact` marker before worker
+dispatch and use an attempt-specific temporary path. A settled serial resume
+reconciles that path or its rejected-artifact destination before another worker
+can replace it. Missing, unsafe or conflicting artifacts remain explicit
+incomplete outcomes. This uses the existing manifest and ownership barrier;
+it does not add a background worker or make pipeline resumes supported.
+
+A source feed may contain useful fields that the listing mapper never emits. The
+local response converter retains a selected JSON array and its surrounding
+response context without requiring addresses, listing objects or unique IDs:
+
+```sh
+python3 -m source_evidence.cli convert-response --body /private/response.json --receipt /private/response-receipt.json --array-pointer /data/publicPosts --out /private/observation.json
+python3 -m source_evidence.cli plan --artifact /private/observation.json --source-key nai-global --out /private/response-plan.json
+```
+
+The receipt has exactly `sourceKey`, `requestUrl`, `finalUrl`, `method` (`GET` or
+`POST`), `status` (`200`), `startedAt`, `finishedAt` (UTC RFC3339), `bodySha256` and
+`bodyBytes`. Conversion checks the actual supplied bytes against that receipt;
+HTTP identity, response clock and public visibility remain caller assertions.
+It makes no network or database call. Append uses the same separately bound
+private-retention admission, target and restricted store as other evidence.
+JLL and raw Avison responses remain subject to their source-owned controls.
+An optional private `--capture-context` JSON file (at most 64 KiB) retains the
+request query, variables, scope and other useful caller-supplied capture context;
+it is included in the stored header and content-policy scan.
+
+The observation records every selected array value in order, including duplicates,
+primitives and nulls. An explicit placeholder and RFC6901 pointer preserve its
+location in the complete response context. Numbers that would lose precision,
+overflow or underflow in Python, signed zero, and exceptionally large integers
+use an explicit pointer-to-numeric-literal map with null placeholders. The map
+is retained with the capture header. Reconstruct the full observation before
+interpreting a placeholder; it is not a missing source value. `reconstruct_json`
+restores those numeric JSON values and their types, but does not restore original
+whitespace or byte formatting. The original body hash cannot be reverified from
+only the reconstructed representation. The format records this limitation.
+
+This is an acquisition adapter, not an automatic source-feed tap. Checkpoint
+automation currently retains emitted collector artifacts; adapters that discard
+a response before emission still need source acquisition integration. Receipt
+metadata cannot prove complete inventory or authorize canonical record matching.

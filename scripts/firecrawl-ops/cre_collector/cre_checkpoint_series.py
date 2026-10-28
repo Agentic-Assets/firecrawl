@@ -179,6 +179,7 @@ def series_config(
     pipeline: bool = False,
     source_workers: int | None = None,
     admit_baseline_hold_additively: bool = False,
+    automatic_source_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import cre_current_inventory_admission as current_inventory
 
@@ -222,6 +223,8 @@ def series_config(
     }
     if admit_baseline_hold_additively:
         config["admit_baseline_hold_additively"] = True
+    if automatic_source_evidence is not None:
+        config["automatic_source_evidence"] = dict(automatic_source_evidence)
     if pipeline:
         config["pipeline"] = True
         config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources, daum_verified_subset=admit_daum_verified_subset, daum_subset_policy=daum_subset_policy)
@@ -599,6 +602,12 @@ def build_checkpoint_argv(
         argv.extend(["--run-id", fresh_run_id])
     if env_file:
         argv.extend(["--env-file", env_file])
+    evidence = config.get("automatic_source_evidence")
+    if evidence:
+        argv.extend(["--source-evidence-policy", evidence["policy_path"],
+                     "--source-evidence-policy-sha256", evidence["policy_sha256"],
+                     "--source-evidence-env-file", evidence["env_file"],
+                     "--source-evidence-target-sha256", evidence["target_sha256"]])
     if current_subset(config) and not config.get("pipeline"):
         argv.append("--admit-daum-verified-subset")
     elif "current_inventory_admission" in config:
@@ -641,6 +650,8 @@ def _expected_child_config(
     if config.get("pipeline"):
         expected["pipeline"] = True
         expected["current_inventory_admissions"] = config.get("current_inventory_admissions", {})
+    if config.get("automatic_source_evidence") is not None:
+        expected["automatic_source_evidence"] = config["automatic_source_evidence"]
     if "current_inventory_admission" in config:
         expected["current_inventory_admission"] = config["current_inventory_admission"]
     # Reconciliation also inspects completed historical parent/child pairs.
@@ -842,7 +853,23 @@ def _preserved_detail_count(child_run: Path, source: str) -> int | None:
     return None
 
 
+def evidence_reconciliation_required(child_manifest: Mapping[str, Any]) -> bool:
+    if child_manifest.get("automatic_source_evidence_paused"):
+        return True
+    sources = child_manifest.get("sources") or {}
+    config = (child_manifest.get("config") or {}).get("automatic_source_evidence") or {}
+    allowed = config.get("source_keys") or []
+    return any(
+        ((attempt.get("source_evidence") or {}).get("state") in {"awaiting_artifact", "pending", "appending", "outcome_unknown", "refused"}
+         or (source in allowed and (attempt.get("source_evidence") or {}).get("state") not in ("appended", "no_artifact")))
+        for source, checkpoint in sources.items() if isinstance(checkpoint, Mapping)
+        for attempt in (checkpoint.get("attempts") or []) if isinstance(attempt, Mapping)
+    )
+
+
 def source_local_failure(child_manifest: Mapping[str, Any]) -> bool:
+    if evidence_reconciliation_required(child_manifest):
+        return False
     if child_manifest.get("status") != "failed":
         return False
     error = child_manifest.get("error")
@@ -905,6 +932,10 @@ def _child_succeeded(
     child_manifest: Mapping[str, Any], config: Mapping[str, Any]
 ) -> bool:
     """Bind the additive terminal result to its explicit parent admission."""
+    if (evidence_reconciliation_required(child_manifest)
+            or (config.get("automatic_source_evidence") is not None
+                and child_manifest.get("automatic_source_evidence_status") != "settled")):
+        return False
     if config.get("admit_baseline_hold_additively") is True:
         from cre_checkpoint_refresh import subset_gate_can_admit
 
@@ -984,6 +1015,8 @@ def _child_succeeded(
 def _reconciled_state(
     child_manifest: Mapping[str, Any], config: Mapping[str, Any] | None = None
 ) -> str:
+    if evidence_reconciliation_required(child_manifest):
+        return "failed_global"
     status = child_manifest.get("status")
     if _child_succeeded(child_manifest, config or {}):
         return "qualified_partial_subset" if current_subset(config or {}) else "complete"
@@ -2031,12 +2064,15 @@ def run_pipeline_series(
             git_sha=manifest["collector_git_sha"], expected_path=series_dir/relative/"manifest.json",
             expected_config=_expected_child_config(",".join(sources), config))
         cache = {}
-        if child.get("status") != "qualified_partial_subset" or any(
+        if (child.get("status") != "qualified_partial_subset"
+            or evidence_reconciliation_required(child)
+            or (config.get("automatic_source_evidence") is not None
+                and child.get("automatic_source_evidence_status") != "settled") or any(
             not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
                 parent_started_at=manifest["started_at"],parent_finished_at=manifest["finished_at"],
                 unit_cache=cache,parent_attempts=manifest["sources"][key]["attempts"])
             for key in sources
-        ):
+        )):
             raise SeriesError("handled subset evidence no longer qualifies")
         return 0
     prior_runs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
@@ -2050,7 +2086,7 @@ def run_pipeline_series(
         if not isinstance(prior, str):
             raise SeriesError("pipeline owner binding is malformed")
         resume = series_dir / prior
-        _load_child_manifest(
+        _, prior_child = _load_child_manifest(
             root,
             before=set(),
             source=",".join(sources),
@@ -2058,6 +2094,8 @@ def run_pipeline_series(
             expected_path=resume / "manifest.json",
             expected_config=_expected_child_config(",".join(sources), config),
         )
+        if evidence_reconciliation_required(prior_child):
+            raise SeriesError("automatic source evidence requires exact prior-run reconciliation")
     if expected_sha is not None:
         verify_reviewed_checkout(
             expected_sha, **({"control": control} if control else {})
@@ -2227,6 +2265,21 @@ def run_series(
     for index, source in enumerate(config["sources"], start=1):
         checkpoint = manifest["sources"][source]
         prior_state = checkpoint["state"]
+        if config.get("automatic_source_evidence") and prior_state not in {"complete", "qualified_partial_subset"} and checkpoint.get("checkpoint_run"):
+            try:
+                _, prior_child = _load_child_manifest(
+                    child_out_root, before=set(), source=source, git_sha=git_sha,
+                    expected_path=series_dir / checkpoint["checkpoint_run"] / "manifest.json",
+                    expected_config=_expected_child_config(source, config),
+                )
+            except (OSError, json.JSONDecodeError, SeriesError):
+                raise SeriesError("cannot verify prior automatic evidence outcome") from None
+            if evidence_reconciliation_required(prior_child):
+                manifest["status"] = "failed"
+                manifest["error"] = "automatic source evidence requires exact prior-run reconciliation"
+                manifest["finished_at"] = utc_now()
+                save_manifest(series_dir, manifest)
+                return 1
         if prior_state in {"complete", "qualified_partial_subset"}:
             continue
         if prior_state == "failed_source" and not retry_failed:
@@ -2486,6 +2539,13 @@ def run_series(
             checkpoint["checkpoint_status"] = child_manifest.get("status")
             checkpoint["error"] = child_manifest.get("error")
 
+            if evidence_reconciliation_required(child_manifest):
+                checkpoint["state"] = "failed_global"
+                manifest["status"] = "failed"
+                manifest["error"] = "automatic source evidence requires reconciliation"
+                manifest["finished_at"] = utc_now()
+                save_manifest(series_dir, manifest)
+                return 1
             if rc == 0 and _child_succeeded(child_manifest, config):
                 checkpoint["state"] = "qualified_partial_subset" if current_subset(config) else "complete"
                 save_manifest(series_dir, manifest)
@@ -2668,6 +2728,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
+    parser.add_argument("--source-evidence-policy", default=None)
+    parser.add_argument("--source-evidence-policy-sha256", default=None)
+    parser.add_argument("--source-evidence-env-file", default=None)
+    parser.add_argument("--source-evidence-target-sha256", default=None)
     parser.add_argument("--sources", default="all")
     parser.add_argument("--admit-current-inventory-source", action="append", default=None)
     parser.add_argument("--admit-baseline-hold-additively", action="store_true",
@@ -2833,6 +2897,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if git_dirty:
         raise SeriesError("refusing checkpoint series from a dirty checkout")
+    evidence_options = (args.source_evidence_policy, args.source_evidence_policy_sha256,
+                        args.source_evidence_env_file, args.source_evidence_target_sha256)
+    automatic_source_evidence = None
+    if any(evidence_options):
+        from source_evidence.automatic import configuration
+        automatic_source_evidence = configuration(*evidence_options, git_sha, sources)
     config = series_config(
         sources=sources,
         page_cap=args.page_cap,
@@ -2852,6 +2922,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         admit_baseline_hold_additively=args.admit_baseline_hold_additively,
         pipeline=args.pipeline,
         source_workers=args.source_workers,
+        automatic_source_evidence=automatic_source_evidence,
     )
     database_target = database_target_fingerprint(args.env_file)
 

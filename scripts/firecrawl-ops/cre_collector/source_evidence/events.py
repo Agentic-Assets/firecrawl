@@ -82,6 +82,10 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         capture_clock = timestamp(artifact.get("provenance", {}).get("observedAt"))
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
+    elif artifact.get("schema") == "cre-json-response-observation/v1":
+        capture_clock = timestamp(artifact.get("receipt", {}).get("finishedAt"))
+        if observed_at is not None and timestamp(observed_at) != capture_clock:
+            raise ValueError("observation clock mismatch")
     else:
         capture_clock = timestamp(observed_at)
     capture = "evidence-" + sha256(encoded([source_key, external_id, artifact_hash, capture_clock]))
@@ -129,7 +133,10 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         context, rows = artifact.get("context"), artifact.get("records")
         if not isinstance(context, dict) or not isinstance(rows, list) or "listings" in context:
             raise ValueError("invalid retained observations")
-        if collector.convert({**context, "listings": rows}, source_key=source_key) != artifact:
+        policy_binding = artifact.get("provenance", {}).get("automaticPolicy")
+        numeric_literals = artifact.get("provenance", {}).get("numericLiterals")
+        if collector.convert({**context, "listings": rows}, source_key=source_key,
+                             policy_binding=policy_binding, numeric_literals=numeric_literals) != artifact:
             raise ValueError("retained observations disagree with collector artifact")
         provenance = {**provenance, "capture_kind": "collector_emitted_listings", "coverage": "unverified",
                       "observed_at_origin": "collector_run_finished_at"}
@@ -138,6 +145,23 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
                          [{"kind": "retained_capture_context", "value": header}], None)]
         events.extend(_event(capture, n, source_key, capture_clock, None, provenance,
                              [{"kind": "source_record", "value": row}], None) for n, row in enumerate(rows, 1))
+    elif artifact.get("schema") == "cre-json-response-observation/v1":
+        from source_evidence import acquisition
+        if external_id is not None:
+            raise ValueError("capture-wide response cannot claim a listing identity")
+        acquisition.validate(artifact)
+        if artifact["receipt"]["sourceKey"] != source_key:
+            raise ValueError("source assertion disagrees with response")
+        provenance = {**provenance, "capture_kind": "json_response", "coverage": "unverified",
+                      "observed_at_origin": "caller_asserted_response_finished_at",
+                      "numeric_encoding": "json_pointer_to_literal_null_placeholder_v1"}
+        header = {k: v for k, v in artifact.items() if k != "records"}
+        url = http_url(artifact["receipt"]["finalUrl"])
+        events = [_event(capture, 0, source_key, capture_clock, url, provenance,
+                         [{"kind": "json_response_context", "value": header}], None)]
+        events.extend(_event(capture, n, source_key, capture_clock, url, provenance,
+                             [{"kind": "source_record", "value": row}], None)
+                      for n, row in enumerate(artifact["records"], 1))
     elif artifact.get("schema") == "buildout-private-observation-artifact-v1":
         if external_id is not None:
             raise ValueError("capture-wide Buildout evidence cannot claim a listing identity")
@@ -185,7 +209,7 @@ def validate_plan(value):
         elif kind == "capture_context":
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
             expected = plan(artifact, source_key=value["source_key"], observed_at=first["observed_at"])
-        elif kind == "retained_capture_context":
+        elif kind in ("retained_capture_context", "json_response_context"):
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
             expected = plan(artifact, source_key=value["source_key"])
         else:
@@ -206,6 +230,12 @@ def validate_admission(plan_value, admission):
             or admission.get("content_policy") != "reviewed_for_private_retention"
             or admission.get("source_keys") != [plan_value.get("source_key")]):
         raise ValueError("missing or mismatched private-retention admission")
+    validate_content_policy(plan_value)
+
+
+def validate_content_policy(plan_value):
+    """Apply source and content restrictions independent of authorization form."""
+    validate_plan(plan_value)
     # Existing JLL controls prohibit re-exposing withheld price-linked content.
     # A general artifact receipt cannot replace that source-specific policy.
     if plan_value["source_key"] in ("jll", "jll-main", "jll-investor"):
