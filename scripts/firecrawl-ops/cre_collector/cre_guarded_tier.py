@@ -440,8 +440,13 @@ def run_guarded_tier(
                     from source_evidence.document_process import cleanup_unknown_in_chain
                     if cleanup_unknown_in_chain(exc):
                         raise
-                    receipt["source_evidence"]["status"] = "incomplete"
-                    receipt["source_evidence"]["reason"] = type(exc).__name__
+                    if isinstance(exc, guarded_evidence.FenceCleanupUnknown):
+                        receipt["source_evidence"]["recovery_cleanup"] = {
+                            "state": "unknown", "reason": type(exc.__cause__).__name__
+                        }
+                    else:
+                        receipt["source_evidence"]["status"] = "incomplete"
+                        receipt["source_evidence"]["reason"] = type(exc).__name__
                     persist()
             if command_rc != 0:
                 if phase.startswith("git_"):

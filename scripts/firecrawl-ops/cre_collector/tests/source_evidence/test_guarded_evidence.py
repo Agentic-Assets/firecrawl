@@ -435,3 +435,85 @@ def test_abrupt_publication_never_leaves_partial_final_marker(tmp_path, stage):
     assert os.waitstatus_to_exitcode(status) == 71
     observed = guarded_fence.read(lock.path)
     assert observed == (marker if stage == "install" else None)
+
+
+@pytest.mark.parametrize("fault", ["before_unlink", "after_unlink", "settled_save"])
+def test_guarded_tier_reports_durable_append_across_fence_cleanup_faults(tmp_path, monkeypatch, fault):
+    import argparse
+    import cre_guarded_tier as tier
+    config, _, _ = setup_policy(tmp_path)
+    args = argparse.Namespace(tier="enrich", source="faris-lee", batch=10, deadline_seconds=30,
+                              expected_sha=SHA, apply=True, env_file="canonical.env",
+                              source_evidence_policy=config["policy_path"],
+                              source_evidence_policy_sha256=config["policy_sha256"],
+                              source_evidence_env_file=config["env_file"],
+                              source_evidence_target_sha256=config["target_sha256"])
+    monkeypatch.setattr(checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64})
+    def worker(argv, log, env):
+        path = Path(argv[argv.index("--artifact-out") + 1])
+        path.write_text(json.dumps(artifact(count=1)))
+        path.chmod(0o600)
+        return 0
+    writes = []
+    monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: writes.append(1))
+    original_clear = guarded_fence.clear
+    original_save = checkpoint.atomic_write_text
+    if fault != "settled_save":
+        def fail_clear(*values):
+            if fault == "after_unlink":
+                original_clear(*values)
+            raise OSError("injected fence cleanup failure")
+        monkeypatch.setattr(guarded_fence, "clear", fail_clear)
+    else:
+        def fail_settled_save(path, text):
+            if Path(path).name == "receipt.json" and json.loads(text).get("source_evidence", {}).get("status") == "settled":
+                raise OSError("injected settled receipt save failure")
+            original_save(path, text)
+        monkeypatch.setattr(checkpoint, "atomic_write_text", fail_settled_save)
+    lock_path = tmp_path / "tier.lock"
+    rc = tier.run_guarded_tier(args, _lock_path=lock_path, _out_root=tmp_path / "runs",
+                               _cpu_sampler=lambda: 10.0, _memory_sampler=lambda: 1,
+                               _verify_checkout=lambda *_: None, _runner=worker)
+    receipt_path = next((tmp_path / "runs").glob("*/receipt.json"))
+    receipt = json.loads(receipt_path.read_text())
+    assert rc == 0 and receipt["status"] == "complete" and writes == [1]
+    assert receipt["canonical_enrichment"] == {"state": "completed", "returncode": 0}
+    assert receipt["source_evidence"]["job"]["state"] == "appended"
+    if fault == "settled_save":
+        assert receipt["source_evidence"]["status"] == "incomplete"
+        assert "recovery_cleanup" not in receipt["source_evidence"]
+    else:
+        assert receipt["source_evidence"]["status"] == "settled"
+        assert receipt["source_evidence"]["recovery_cleanup"]["state"] == "unknown"
+    assert (guarded_fence.read(lock_path) is None) == (fault == "after_unlink")
+    if fault == "after_unlink":
+        monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: pytest.fail("duplicate DB append"))
+        guarded_evidence.reconcile(receipt_path, lock_path)
+        guarded_evidence.reconcile(receipt_path, lock_path)
+        saved = json.loads(receipt_path.read_text())
+        assert saved["source_evidence"]["status"] == "settled"
+        assert saved["source_evidence"]["recovery_cleanup"]["state"] == "settled"
+    if fault != "after_unlink":
+        monkeypatch.setattr(checkpoint, "atomic_write_text", original_save)
+        monkeypatch.setattr(guarded_fence, "clear", original_clear)
+        monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: pytest.fail("duplicate DB append"))
+        guarded_evidence.reconcile(receipt_path, lock_path)
+        assert guarded_fence.read(lock_path) is None
+
+
+@pytest.mark.parametrize("tamper", ["claims", "policy", "plan"])
+def test_markerless_settled_reconciliation_still_revalidates(tmp_path, monkeypatch, tamper):
+    run, receipt, lock, save = setup(tmp_path)
+    monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: None)
+    guarded_evidence.seal_and_append(run, receipt, lock, save)
+    assert guarded_fence.read(lock.path) is None
+    if tamper == "claims":
+        (run / "claims.json").write_text('{"claims": ["changed"]}')
+    elif tamper == "policy":
+        Path(receipt["source_evidence"]["config"]["policy_path"]).write_text("{}")
+    else:
+        path = run / receipt["source_evidence"]["job"]["path"]
+        path.write_bytes(path.read_bytes() + b" ")
+    monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: pytest.fail("unexpected DB replay"))
+    with pytest.raises(ValueError):
+        guarded_evidence.reconcile(run / "receipt.json", lock.path)

@@ -7,6 +7,10 @@ import cre_checkpoint_refresh as checkpoint
 from source_evidence import automatic, enrichment_custody, guarded_fence
 
 
+class FenceCleanupUnknown(OSError):
+    """The settled receipt was saved, but marker removal was not acknowledged."""
+
+
 def binding(run_dir, receipt):
     evidence = receipt["source_evidence"]
     state, config = evidence["job"], evidence["config"]
@@ -89,7 +93,13 @@ def append(run_dir, receipt, lock, save, marker):
         lock._require_authority()
         evidence["status"] = "settled"
         save()
-        guarded_fence.clear(lock.path, marker)
+        try:
+            guarded_fence.clear(lock.path, marker)
+        except Exception as exc:
+            from source_evidence.document_process import cleanup_unknown_in_chain
+            if cleanup_unknown_in_chain(exc):
+                raise
+            raise FenceCleanupUnknown("settled evidence fence cleanup was not acknowledged") from exc
 
 
 def reconcile(receipt_path, lock_path=None, *, source=None, expected_sha=None):
@@ -123,7 +133,9 @@ def reconcile(receipt_path, lock_path=None, *, source=None, expected_sha=None):
             state = receipt["source_evidence"]["job"]
             if state.get("state") not in {"pending", "appending", "outcome_unknown", "appended"}:
                 raise ValueError("guarded receipt is not replayable")
-            if marker is None and state["state"] != "pending":
+            already_settled = (marker is None and state["state"] == "appended"
+                               and receipt["source_evidence"].get("status") == "settled")
+            if marker is None and state["state"] != "pending" and not already_settled:
                 raise ValueError("missing recovery fence for a dispatched evidence job")
             def save():
                 checkpoint.atomic_write_text(receipt_path, json.dumps(receipt, sort_keys=True) + "\n")
@@ -136,6 +148,11 @@ def reconcile(receipt_path, lock_path=None, *, source=None, expected_sha=None):
             if (artifact.get("state") != "retained" or len(original) != artifact.get("bytes")
                     or hashlib.sha256(original).hexdigest() != artifact.get("sha256")):
                 raise ValueError("settled artifact changed")
+            if already_settled:
+                receipt["source_evidence"]["recovery_cleanup"] = {"state": "settled"}
+                save()
+                lock.clear_recovery_requirement()
+                return
             if marker is None:
                 marker = binding(run_dir, receipt)
                 guarded_fence._sync(run_dir / "source-evidence")
