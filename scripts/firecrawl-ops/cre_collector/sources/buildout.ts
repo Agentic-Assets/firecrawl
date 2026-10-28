@@ -524,8 +524,10 @@ export async function buildoutInventory(
   if (cachedFailure) throw cachedFailure;
   const first = await fetchBuildoutInventoryPage(company, pluginKey, 0, opts);
   const firstPage = assertBuildoutInventoryPage(first, 0, null, requireComplete);
-  const total: number | null = requireComplete ? firstPage.total : first.meta?.total ?? null;
-  const limit: number = requireComplete ? firstPage.limit : first.meta?.limit ?? 30;
+  const total: number | null = requireComplete ? firstPage.total :
+    Number.isInteger(first?.meta?.total) && first.meta.total >= 0 ? first.meta.total : null;
+  const limit: number = requireComplete ? firstPage.limit :
+    Number.isInteger(first?.meta?.limit) && first.meta.limit > 0 ? first.meta.limit : 30;
   const declaredPages = total && total > limit ? Math.ceil(total / limit) : 1;
   if (requireComplete && declaredPages > 1200) {
     throw new Error(
@@ -699,6 +701,20 @@ export async function buildoutInventory(
   const items: any[] = [];
   for (let p = 0; p < pages; p++) items.push(...(inventoryByPage.get(p) ?? []));
   assertBuildoutInventoryReconciled(items, total, requireComplete);
+  // In non-strict mode retain readable rows, but do not imply complete
+  // coverage when the same page and identity checks used by strict mode fail.
+  let incompleteShape = false;
+  if (!requireComplete) {
+    try {
+      const expected = assertBuildoutInventoryPage(first, 0, null, true);
+      for (const [page, data] of observedPages) {
+        assertBuildoutInventoryPage(data, page, expected, true);
+      }
+      assertBuildoutInventoryReconciled(items, total, true);
+    } catch {
+      incompleteShape = true;
+    }
+  }
   const proofPages = Array.from({ length: pages }, (_, index) =>
     observedPages.has(index) ? buildoutProofPage(observedPages.get(index), index) : null
   );
@@ -707,7 +723,7 @@ export async function buildoutInventory(
       ? { proofPages: proofPages as BuildoutInventoryProofPage[] } : {}),
     items,
     total,
-    incomplete: failedPages.size > 0 || unattemptedPages.size > 0 || declaredPages > pages,
+    incomplete: incompleteShape || failedPages.size > 0 || unattemptedPages.size > 0 || declaredPages > pages,
     strictValidated: requireComplete,
     generationId: refreshGenerationId(),
   };

@@ -14,6 +14,7 @@ import { canonicalTranswesternUrl, TRANSWESTERN_HOST, transwesternDetailUrl } fr
 import { requireUniqueTranswesternPlaceholderIdentity, transwesternIdentityTuple, transwesternPrimaryIdentityMatches } from "./pure/transwestern-published-identity.js";
 import { proveTranswesternPublishedIdentity, requireCurrentTranswesternPublishedProof, TranswesternPublishedIdentityProof } from "./transwestern-published-identity.js";
 import { filterTranswesternImages } from "./pure/transwestern-images.js";
+import { transwesternFieldObservations } from "./pure/transwestern-field-observations.js";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
@@ -705,6 +706,7 @@ export async function enrichTranswesternListing(
       canonicalUrl: scalars.canonicalUrl,
       extraFacts: scalars.extraFacts,
       transwesternFacts: facts,
+      transwesternFieldObservations: transwesternFieldObservations($),
       availability,
       detailScrape: {
         url: detailUrl,
