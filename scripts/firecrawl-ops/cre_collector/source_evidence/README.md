@@ -205,6 +205,29 @@ unchanged. The existing policy SHA, exact clean collector commit, database targe
 and transport bindings still apply. This configuration authorizes a source
 format; it does not certify publisher identity or complete inventory.
 
+### Draft Buildout parsed inventory capture
+
+The draft `buildout_inventory_parsed_v1` format requires explicit version-2
+policy opt-in for one of the 25 registered source/provider tuples. SVN, Lee and
+Franklin coordinate families are outside this draft's scope. It uses the same
+settled native foreground lane and existing policy review, credential admission,
+JLL and Avison controls. Faris collector map projection does not apply to this
+format; credential-bearing native bodies refuse automatic admission.
+
+Capture retains the collector's parsed JavaScript JSON representation, not raw
+HTTP bytes or original numeric precision. Capture time is separate from the
+nullable source observation clock, which can be older for a generation-cache
+page. HTTP status and final URL are not asserted. A memory-cache hit creates no
+fresh capture. The draft adds no source fetch and does not change listing parser,
+reconciliation, status or source-acceptance gates.
+
+The attempt limits are 128 pages and 128 MiB; a parsed body is limited to
+16 MiB, each fact to 3.5 MiB, an observation to 16 MiB and a page to 10,000
+records. Capture failures stop the capture-enabled path rather than authorize
+fallback or recovery. These draft changes are unverified under the current hold
+and not deployed; they establish no complete inventory, freshness, identity or
+publisher-authentication claim.
+
 ### Avison native website feed
 
 The existing website GET can capture its decoded text before JSON parsing,

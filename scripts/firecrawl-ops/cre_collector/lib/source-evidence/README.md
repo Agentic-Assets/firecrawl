@@ -32,6 +32,24 @@ checks and publication are synchronous. `CRE_NAI_NATIVE_CAPTURE_MAX_PAGES` and
 or temporary entries refuse publication rather than being ignored. Quota
 refusal leaves previously published pages intact; exact replay adds no bytes.
 
+## Draft Buildout parsed inventory
+
+An explicit v2 policy may enable `buildout_inventory_parsed_v1` for the 25
+registered source/provider tuples. SVN, Lee and Franklin coordinate families
+are excluded. The existing source request is captured after JavaScript parsing;
+no new fetch is introduced. The representation is not original HTTP bytes or
+original numeric precision. Capture time and the nullable, possibly older
+source observation time are distinct; status and final URL are not fabricated.
+An in-memory cache hit creates no fresh page capture.
+
+The private attempt is limited to 128 pages and 128 MiB, with 16 MiB per parsed
+body. A capture failure stops the enabled path. Database admission remains
+separate: existing source and credential policies apply, and Faris collector
+projection does not sanitize native pages. The evidence lane also limits each
+fact to 3.5 MiB, each observation to 16 MiB and each page to 10,000 rows.
+This draft is unverified under the hold and not deployed; it proves no source
+acceptance, complete inventory, identity or freshness.
+
 ## Avison Young website feed
 
 When the foreground coordinator supplies a private attempt directory through

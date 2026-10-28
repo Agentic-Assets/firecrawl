@@ -116,12 +116,12 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
             or type(policy["max_records"]) is not int or not 0 <= policy["max_records"] <= 10000):
         raise ValueError("invalid automatic evidence policy")
     if version2:
+        from source_evidence import native_pages
         projections = policy["collector_projections"]
         native_formats = policy["native_source_formats"]
         if (not isinstance(projections, dict) or not isinstance(native_formats, dict)
                 or any(k not in allowed or k != "faris-lee" or v != map_projection.VERSION for k, v in projections.items())
-                or any(k not in allowed or (k, v) not in (("nai-global", "nai_public_posts_v1"),
-                                                         ("avison-young", "avison_sharplaunch_website_v1"))
+                or any(k not in allowed or not native_pages.format_supported(k, v)
                        for k, v in native_formats.items())
                 or type(policy["max_native_pages"]) is not int or not 1 <= policy["max_native_pages"] <= 128):
             raise ValueError("invalid native capture or projection policy")

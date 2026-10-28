@@ -26,16 +26,25 @@ PROVENANCE = {"bodyHashKind": "fetch_delivered_body_bytes_not_wire", "identity":
               "visibility": "unverified", "completeness": "unverified"}
 NATIVE_FORMATS = {"nai-global": "nai_public_posts_v1", "avison-young": "avison_sharplaunch_website_v1"}
 ENV_PREFIXES = {"nai-global": "CRE_NAI_NATIVE_CAPTURE", "avison-young": "CRE_AVISON_NATIVE_CAPTURE"}
+BUILDOUT_ENV_PREFIX = "CRE_BUILDOUT_NATIVE_CAPTURE"
+
+
+def format_supported(source, native_format):
+    """Recognize explicitly scoped formats, not generic website authorization."""
+    if native_format == "buildout_inventory_parsed_v1":
+        from source_evidence import buildout_pages
+        return source in buildout_pages.supported_sources()
+    return source in NATIVE_FORMATS and native_format == NATIVE_FORMATS[source]
 
 
 def supported(source, config):
-    return source in NATIVE_FORMATS and config.get("native_source_formats", {}).get(source) == NATIVE_FORMATS[source]
+    return format_supported(source, config.get("native_source_formats", {}).get(source))
 
 
 def configure_worker_env(env, run_dir, source, attempt, config):
     """Remove inherited capture opt-ins; enable only the owned admitted attempt."""
-    for prefix in ENV_PREFIXES.values():
-        for suffix in ("DIR", "MAX_PAGES", "MAX_BYTES", "SINGLE_WRITER"):
+    for prefix in (*ENV_PREFIXES.values(), BUILDOUT_ENV_PREFIX):
+        for suffix in ("DIR", "MAX_PAGES", "MAX_BYTES", "SINGLE_WRITER", "SOURCE_KEY"):
             env.pop(prefix + "_" + suffix, None)
     if attempt.get("native_source_evidence"):
         number = attempt.get("number")
@@ -43,17 +52,22 @@ def configure_worker_env(env, run_dir, source, attempt, config):
         if (not supported(source, config) or type(number) is not int or not 1 <= number <= 1000000
                 or attempt["native_source_evidence"].get("directory") != expected):
             raise ValueError("native source format is unsupported")
-        prefix = ENV_PREFIXES[source]
+        prefix = ENV_PREFIXES.get(source, BUILDOUT_ENV_PREFIX)
         env[prefix + "_DIR"] = str(run_dir / expected)
         env[prefix + "_MAX_PAGES"] = str(config["max_native_pages"])
         env[prefix + "_MAX_BYTES"] = str(128 * 1024 * 1024)
         env[prefix + "_SINGLE_WRITER"] = "1"
+        if prefix == BUILDOUT_ENV_PREFIX:
+            env[prefix + "_SOURCE_KEY"] = source
 
 
 def _decode(source, raw, filename, binding):
     if source == "avison-young":
         from source_evidence.avison_pages import decode_entry as decode_avison
         return decode_avison(raw, filename, binding)
+    if source not in NATIVE_FORMATS:
+        from source_evidence.buildout_pages import decode_entry as decode_buildout
+        return decode_buildout(raw, filename, binding, source_key=source)
     return decode_entry(raw, filename, binding)
 
 

@@ -39,6 +39,16 @@ JSON contexts do not assert a selected listing array. Effective-privilege checks
 are bounded preflights, not server-side credential isolation. Production writer
 activation remains subject to the shared-database review on AGENTIC-5040.
 
+Draft Buildout parsed inventory capture is an explicit v2 format opt-in for the
+25 registered tuples, excluding the SVN, Lee and Franklin coordinate families.
+It retains parsed JavaScript JSON, not HTTP bytes or original numeric precision;
+capture time is distinct from a nullable source clock, and memory-cache hits
+create no fresh capture. Apply existing policy and credential checks: Faris
+collector projection does not sanitize this format. The 128-page/128-MiB
+attempt, 16-MiB parsed-body and observation, 3.5-MiB fact and 10,000-row page
+limits apply. Capture failure stops the enabled path. This draft is unverified
+under the hold and not deployed; no source admission or completeness follows.
+
 Avison's raw producer files stay private and local. `avison_pages.py` applies
 the source-owned `avison_native.py` projection before `avison_response.py`
 creates database-bound observations. Original response/file hashes, integration
