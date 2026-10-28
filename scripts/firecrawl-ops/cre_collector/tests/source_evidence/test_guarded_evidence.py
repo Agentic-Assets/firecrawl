@@ -489,6 +489,7 @@ def test_guarded_tier_reports_durable_append_across_fence_cleanup_faults(tmp_pat
     if fault == "after_unlink":
         monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: pytest.fail("duplicate DB append"))
         guarded_evidence.reconcile(receipt_path, lock_path)
+        assert json.loads(receipt_path.read_bytes())["source_evidence"]["recovery_cleanup"]["state"] == "settled"
         guarded_evidence.reconcile(receipt_path, lock_path)
         saved = json.loads(receipt_path.read_text())
         assert saved["source_evidence"]["status"] == "settled"
@@ -499,6 +500,7 @@ def test_guarded_tier_reports_durable_append_across_fence_cleanup_faults(tmp_pat
         monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: pytest.fail("duplicate DB append"))
         guarded_evidence.reconcile(receipt_path, lock_path)
         assert guarded_fence.read(lock_path) is None
+        assert json.loads(receipt_path.read_bytes())["source_evidence"]["recovery_cleanup"]["state"] == "settled"
 
 
 @pytest.mark.parametrize("tamper", ["claims", "policy", "plan"])

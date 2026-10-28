@@ -169,6 +169,8 @@ def reconcile(receipt_path, lock_path=None, *, source=None, expected_sha=None):
                 append(run_dir, receipt, lock, save, marker)
             if state.get("state") != "appended":
                 raise ValueError("evidence reconciliation remains incomplete")
+            receipt["source_evidence"]["recovery_cleanup"] = {"state": "settled"}
+            save()
             lock.clear_recovery_requirement()
         except BaseException as exc:
             from source_evidence.document_process import cleanup_unknown_in_chain
