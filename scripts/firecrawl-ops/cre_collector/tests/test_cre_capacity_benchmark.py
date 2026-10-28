@@ -3951,28 +3951,37 @@ def test_admission_consumption_rejects_unsafe_opened_marker(
             argv, 0, json.dumps(grant).encode(), b""
         ),
     )
-    monkeypatch.setattr(
-        benchmark.os,
-        "fstat",
-        lambda _descriptor: SimpleNamespace(
-            st_mode=stat.S_IFREG | 0o644,
-            st_nlink=1,
-            st_uid=os.geteuid(),
-        ),
-    )
     lock_path = tmp_path / "out" / "daily" / ".cre.lock"
-
-    with pytest.raises(benchmark.BenchmarkError, match="marker is unsafe"):
-        benchmark._consume_admission(
-            admission_path, admission, canonical_lock_path=lock_path
-        )
-
     marker = (
         tmp_path
         / "out"
         / ".capacity-admission-consumption"
         / f"{admission['review_approval_nonce_sha256']}.json"
     )
+    real_fstat = os.fstat
+
+    def unsafe_marker_fstat(descriptor: int):
+        observed = real_fstat(descriptor)
+        try:
+            marker_stat = marker.stat()
+        except FileNotFoundError:
+            return observed
+        if (observed.st_dev, observed.st_ino) == (
+            marker_stat.st_dev,
+            marker_stat.st_ino,
+        ):
+            return SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o644, st_nlink=1, st_uid=os.geteuid()
+            )
+        return observed
+
+    monkeypatch.setattr(benchmark.os, "fstat", unsafe_marker_fstat)
+
+    with pytest.raises(benchmark.BenchmarkError, match="marker is unsafe"):
+        benchmark._consume_admission(
+            admission_path, admission, canonical_lock_path=lock_path
+        )
+
     assert not marker.exists()
 
 

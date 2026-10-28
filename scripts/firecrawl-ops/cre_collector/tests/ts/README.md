@@ -8,7 +8,7 @@ Use a standalone no-hardlinks clone following the
 [isolated verification recipe](../../SETUP.md#isolated-verification). See the
 [test module contract](../CLAUDE.md) for transport isolation and fixture rules.
 
-Run from `cre_collector/`:
+Run from `cre_collector/` in that clone:
 
 ```bash
 npm run test:unit
@@ -24,5 +24,7 @@ Uses Node's built-in `node:test` runner with the existing `tsx` devDependency.
 Add files as `tests/ts/*.test.ts` (top-level) or `tests/ts/**/*.test.ts` (nested).
 The npm script passes both globs so top-level smoke tests are included.
 
+The test runner reports the number of tests it executes; that count is not a
+source-coverage or acceptance claim.
 Source adapter tests must isolate argv before import (`process.argv = [process.argv[0]!, process.argv[1]!];`)
 because `lib/config.ts` runs strict `parseArgs()` at load time.

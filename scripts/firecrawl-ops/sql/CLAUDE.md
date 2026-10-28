@@ -5,12 +5,23 @@
 **Idempotent `credeals` DDL only on Supabase `fhqycqubkkrdgzswccwd`.**
 Apply via `000_run_all.sql` in dependency order:
 `001`→`002`→`003`→`004`→`007`→`008`→`009`→`010`→`011`→`012`→`013`→`014`→`006`→`005`.
-Migrations `015` and `016` are excluded from the generic runner. `015` is a legacy-only
+Migrations `015`, `016` and `017` are excluded from the generic runner. `015` is a legacy-only
 index rebuild and requires both schema-owner approval and the explicit psql
 variable `CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1`.
 `016` is the listing-lifecycle contract and requires its configured operator,
 AGENTIC approval reference, exact confirmation, readback, and rollback posture
 from `docs/firecrawl-ops/references/cre-listing-lifecycle-runbook.md`.
+`017_cre_available_space_count.sql` is a review candidate only, not a live
+schema or backfill authorization. It is psql-only and requires separate
+schema-owner approval, an operator, AGENTIC approval reference, and its exact
+confirmation. Before any apply, record whether the column and constraint
+already exist and save the prior column comment; inspect effective table and
+column grants, role membership, RLS, dependent views and consumers. Table-level
+SELECT privileges include added columns. Follow the ownership contract's fresh
+catalog, ledger, timeout, rollback and post-apply readback gates. Never blindly
+drop a pre-existing column or infer that merged historical `extra_facts` is
+fresh. Run `../cre_collector/tests/run_available_space_count_postgres_contract.sh`
+only in a standalone no-hardlinks clone against its disposable isolated database.
 **`001_cre_brokerages.sql` seed slugs must match
 `../cre_collector/cre_ingest.py` `SOURCE_TO_BROKERAGE`.** Never commit or
 print `DATABASE_URL`.
@@ -58,9 +69,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 ```
 
 Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. For migrations
-other than `016`, alternatives are the Supabase SQL editor (paste in order) or
+other than `016` and `017`, alternatives are the Supabase SQL editor (paste in order) or
 MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`). Migration
-`016` is psql-only because its approval variables must fail closed.
+`016` and `017` are psql-only because their approval variables must fail closed.
 
 ## Naming Patterns
 
