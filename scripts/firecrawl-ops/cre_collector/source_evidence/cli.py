@@ -6,7 +6,6 @@ import re
 import subprocess
 import sys
 
-from buildout_observation_artifact import invalid_number, unique_object
 from buildout_observation_io import read_consistent
 from cre_ingest import (
     assert_expected_database_target,
@@ -15,7 +14,8 @@ from cre_ingest import (
     psql_connection_args,
     psql_connection_env,
 )
-from source_evidence import collector, events
+
+from source_evidence import acquisition, collector, events
 
 MAX_PLAN_BYTES = 32 * 1024 * 1024
 MAX_RESULTS_BYTES = 8 * 1024 * 1024
@@ -27,7 +27,10 @@ def read_json(path, limit):
     raw = read_consistent(path, limit)
     if len(raw) > limit:
         raise ValueError('input exceeds limit')
-    return json.loads(raw.decode('utf-8'), object_pairs_hook=unique_object, parse_constant=invalid_number)
+    value, literals = acquisition.decode_json(raw, max_bytes=limit)
+    if literals:
+        raise ValueError('exceptional numeric values require a lossless source conversion')
+    return value
 
 
 def write_private(path, value):
@@ -125,11 +128,13 @@ def checked_plan(value, admission):
     events.validate_admission(value, admission)
 
 
-def run_psql(sql, env_file, target):
+def run_psql(sql, env_file, target, *, validate_transport=None):
     if not env_file or not re.fullmatch(r'[0-9a-f]{64}', target or ''):
         raise ValueError('explicit env file and target fingerprint required')
     db_url, _ = load_db_url(env_file)
     assert_expected_database_target(db_url, target)
+    if validate_transport is not None:
+        validate_transport(db_url)
     cmd = [find_psql(), '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', *psql_connection_args(db_url)]
     try:
         result = subprocess.run(cmd, input=sql.encode(), capture_output=True,
@@ -152,6 +157,10 @@ def main(argv=None):
     c = sub.add_parser('convert-collector')
     c.add_argument('--artifact', required=True); c.add_argument('--source-key', required=True)
     c.add_argument('--out', required=True)
+    r = sub.add_parser('convert-response')
+    r.add_argument('--body', required=True); r.add_argument('--receipt', required=True)
+    r.add_argument('--array-pointer', required=True); r.add_argument('--out', required=True)
+    r.add_argument('--capture-context')
     a = sub.add_parser('append')
     a.add_argument('--plan', required=True); a.add_argument('--admission', required=True)
     a.add_argument('--env-file', required=True); a.add_argument('--expected-db-target-sha256', required=True)
@@ -170,9 +179,17 @@ def main(argv=None):
     g.add_argument('--expected-db-target-sha256', required=True)
     args = parser.parse_args(argv)
     if args.command == 'convert-collector':
-        result = collector.convert(read_json(args.artifact, events.MAX_ARTIFACT_BYTES), source_key=args.source_key)
+        raw = read_consistent(args.artifact, events.MAX_ARTIFACT_BYTES)
+        artifact, literals = acquisition.decode_json(raw)
+        result = collector.convert(artifact, source_key=args.source_key, numeric_literals=literals or None)
         write_private(args.out, result)
         print(f"Converted collector artifact: {len(result['records'])} records")
+    elif args.command == 'convert-response':
+        raw = read_consistent(args.body, events.MAX_ARTIFACT_BYTES)
+        result = acquisition.convert(raw, receipt=read_json(args.receipt, 16384), array_pointer=args.array_pointer,
+                                     capture_context=read_json(args.capture_context, 65536) if args.capture_context else None)
+        write_private(args.out, result)
+        print(f"Converted response: {len(result['records'])} records")
     elif args.command == 'plan':
         result = events.plan(read_json(args.artifact, events.MAX_ARTIFACT_BYTES), source_key=args.source_key,
                              observed_at=args.observed_at, external_id=args.external_id)

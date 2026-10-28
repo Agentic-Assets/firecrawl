@@ -10,7 +10,11 @@ authentication. Private deal documents require EQUIRE's org/deal path and must
 not use this public-listing acquisition store. JLL content needs its dedicated
 withholding adapter; the generic admission rejects known JLL source keys/URLs.
 
-Default planning is local. Append requires explicit target binding and admission;
+Default planning and response conversion are local. Native JSON responses retain
+their selected array, surrounding context and exceptional numeric literal map;
+reconstruct that full representation before interpreting null placeholders.
+Append requires explicit target binding and either per-plan admission or the
+scoped, hash-bound recurring checkpoint policy documented in `README.md`;
 an uncertain database outcome must be reconciled by exact replay/readback.
 Never print text, raw facts, source credentials, or private results. Search is
 chunk-local and does not establish document completeness. Tests belong under

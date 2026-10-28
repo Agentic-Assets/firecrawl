@@ -3725,7 +3725,13 @@ def _cohort_attempt(
     attempt_log = run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
     tmp_artifact = run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
     tmp_artifact.parent.mkdir(parents=True, exist_ok=True)
-    tmp_artifact.unlink(missing_ok=True)
+    evidence_config = manifest["config"].get("automatic_source_evidence")
+    evidence_enabled = bool(evidence_config and source in evidence_config["source_keys"])
+    if evidence_enabled:
+        if os.path.lexists(tmp_artifact):
+            raise RefreshError("automatic evidence attempt path already exists")
+    else:
+        tmp_artifact.unlink(missing_ok=True)
     attempt = {
         "number": attempt_number,
         "started_at": attempt_started,
@@ -3754,6 +3760,9 @@ def _cohort_attempt(
     if source == "colliers-main":
         # The worker does not write the manifest, including incremental chunks.
         attempt["chunks"] = []
+    if evidence_enabled:
+        from source_evidence import automatic
+        automatic.mark_attempt(manifest, source, attempt, _relative_to_run(tmp_artifact, run_dir))
     checkpoint["attempts"].append(attempt)
     checkpoint["state"] = "collecting"
     checkpoint.pop("pipeline_stage", None)
@@ -3900,9 +3909,11 @@ def _finalize_cohort_collection(
         (
             item.attempt["rejected_artifact"],
             item.attempt["rejected_artifact_sha256"],
-        ) = _archive_rejected(
-            item.tmp_artifact, run_dir, item.source, item.attempt["number"]
+        ) = archive_rejected_with_evidence(
+            item.tmp_artifact, run_dir, manifest, item.source, item.attempt
         )
+        seal_source_evidence(run_dir, manifest, item.source, item.attempt,
+                             run_dir / item.attempt["rejected_artifact"] if item.attempt["rejected_artifact"] else item.tmp_artifact)
         checkpoint["state"] = "collect_failed"
         terminal = None
         if item.source == "avison-young" and rc == COHORT_SETTLED_AVISON_TERMINAL_404_EXIT:
@@ -3921,12 +3932,16 @@ def _finalize_cohort_collection(
         save_manifest(run_dir, manifest)
         return False
     try:
+        if not item.tmp_artifact.exists() and not item.tmp_artifact.is_symlink():
+            seal_source_evidence(run_dir, manifest, item.source, item.attempt, item.tmp_artifact)
         make_private_artifact(item.tmp_artifact)
     except ArtifactValidationError as exc:
+        refuse_unsafe_source_evidence(run_dir, manifest, item.source, item.attempt)
         checkpoint["state"] = "artifact_rejected"
         item.attempt["error"] = str(exc)
         save_manifest(run_dir, manifest)
         return False
+    seal_source_evidence(run_dir, manifest, item.source, item.attempt, item.tmp_artifact)
     if candidate_only:
         if item.tmp_artifact.is_symlink() or not item.tmp_artifact.is_file():
             checkpoint["state"] = "artifact_rejected"
@@ -3972,8 +3987,8 @@ def _finalize_cohort_collection(
         (
             item.attempt["rejected_artifact"],
             item.attempt["rejected_artifact_sha256"],
-        ) = _archive_rejected(
-            item.tmp_artifact, run_dir, item.source, item.attempt["number"]
+        ) = archive_rejected_with_evidence(
+            item.tmp_artifact, run_dir, manifest, item.source, item.attempt
         )
         checkpoint["state"] = "artifact_rejected"
         save_manifest(run_dir, manifest)
@@ -4074,6 +4089,7 @@ def new_manifest(
     pipeline: bool = False,
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
+    automatic_source_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_workers = resolve_source_workers(pipeline, source_workers)
     now = utc_now()
@@ -4188,6 +4204,8 @@ def new_manifest(
         manifest["scope"].update(
             kind="collector_registry_verified_subset", whole_source_coverage=False
         )
+    if automatic_source_evidence is not None:
+        manifest["config"]["automatic_source_evidence"] = dict(automatic_source_evidence)
     return manifest
 
 
@@ -4212,6 +4230,7 @@ def load_resume_manifest(
     pipeline: bool = False,
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
+    automatic_source_evidence: Mapping[str, Any] | None = None,
     max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -4251,6 +4270,8 @@ def load_resume_manifest(
         "mark_missing": False,
         "admit_baseline_hold_additively": admit_baseline_hold_additively,
     }
+    if automatic_source_evidence is not None:
+        expected["automatic_source_evidence"] = dict(automatic_source_evidence)
     if pipeline:
         expected["pipeline"] = True
         current_inventory.validate_options(
@@ -4419,9 +4440,54 @@ def _relative_to_run(path: Path, run_dir: Path) -> str:
     return str(path.relative_to(run_dir))
 
 
+def seal_source_evidence(run_dir: Path, manifest: dict, source: str, attempt: dict, artifact: Path) -> None:
+    if "automatic_source_evidence" not in manifest["config"]:
+        return
+    from source_evidence import automatic
+    if git_identity() != (manifest["collector_git_sha"], False):
+        attempt["source_evidence"] = {"state": "refused", "reason": "collector_identity_changed"}
+        manifest["automatic_source_evidence_paused"] = True
+    else:
+        automatic.seal(run_dir, manifest, source, attempt, artifact)
+    save_manifest(run_dir, manifest)
+
+
+def refuse_unsafe_source_evidence(run_dir: Path, manifest: dict, source: str, attempt: dict) -> None:
+    config = manifest["config"].get("automatic_source_evidence")
+    state = attempt.get("source_evidence") or {}
+    if not config or source not in config["source_keys"] or state.get("state") not in (None, "awaiting_artifact"):
+        return
+    attempt["source_evidence"] = {"state": "refused", "reason": "unsafe_artifact"}
+    manifest["automatic_source_evidence_paused"] = True
+    manifest["automatic_source_evidence_status"] = "incomplete"
+    save_manifest(run_dir, manifest)
+
+
+def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: dict,
+                                   source: str, attempt: dict) -> tuple[str | None, str | None]:
+    try:
+        return _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
+    except ArtifactValidationError:
+        refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
+        raise
+
+
+def pump_source_evidence(run_dir: Path, manifest: dict) -> None:
+    if "automatic_source_evidence" not in manifest["config"]:
+        return
+    from source_evidence import automatic
+    if git_identity() != (manifest["collector_git_sha"], False):
+        manifest["automatic_source_evidence_paused"] = True
+        save_manifest(run_dir, manifest)
+        return
+    automatic.pump(run_dir, manifest, save_manifest)
+
+
 def _archive_rejected(
     tmp_artifact: Path, run_dir: Path, source: str, attempt_number: int
 ) -> tuple[str | None, str | None]:
+    if tmp_artifact.is_symlink():
+        raise ArtifactValidationError("artifact private publication refused")
     if not tmp_artifact.exists():
         return None, None
     make_private_artifact(tmp_artifact)
@@ -4659,14 +4725,21 @@ def collect_source(
 
     canonical = run_dir / "sources" / f"{source}.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)
-    tmp_artifact = canonical.with_suffix(".json.tmp")
     for _ in range(attempts_this_run):
         attempt_number = len(checkpoint["attempts"]) + 1
+        evidence_config = manifest["config"].get("automatic_source_evidence")
+        evidence_enabled = bool(evidence_config and source in evidence_config["source_keys"])
+        tmp_artifact = (run_dir / "sources" / f"{source}.attempt-{attempt_number}.json.tmp"
+                        if evidence_enabled else canonical.with_suffix(".json.tmp"))
         attempt_started = utc_now()
         attempt_log = (
             run_dir / "logs" / f"{source}-collect-attempt-{attempt_number}.log"
         )
-        tmp_artifact.unlink(missing_ok=True)
+        if evidence_enabled:
+            if os.path.lexists(tmp_artifact):
+                raise RefreshError("automatic evidence attempt path already exists")
+        else:
+            tmp_artifact.unlink(missing_ok=True)
         env, overrides = fresh_source_env(
             source,
             run_dir,
@@ -4697,6 +4770,10 @@ def collect_source(
             # process. The run-local detail cache makes an interrupted attempt
             # resumable even before a complete artifact exists.
             attempt["chunks"] = []
+        if evidence_enabled:
+            from source_evidence import automatic
+            attempt["temporary_artifact"] = _relative_to_run(tmp_artifact, run_dir)
+            automatic.mark_attempt(manifest, source, attempt, attempt["temporary_artifact"])
         checkpoint["attempts"].append(attempt)
         checkpoint["state"] = "collecting"
         save_manifest(run_dir, manifest)
@@ -4744,9 +4821,12 @@ def collect_source(
             (
                 attempt["rejected_artifact"],
                 attempt["rejected_artifact_sha256"],
-            ) = _archive_rejected(
-                tmp_artifact, run_dir, source, attempt_number
+            ) = archive_rejected_with_evidence(
+                tmp_artifact, run_dir, manifest, source, attempt
             )
+            seal_source_evidence(run_dir, manifest, source, attempt,
+                                 run_dir / attempt["rejected_artifact"] if attempt["rejected_artifact"] else tmp_artifact)
+            pump_source_evidence(run_dir, manifest)
             checkpoint["state"] = "collect_failed"
             terminal = None
             if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
@@ -4767,7 +4847,11 @@ def collect_source(
             save_manifest(run_dir, manifest)
             continue
         try:
+            if not tmp_artifact.exists() and not tmp_artifact.is_symlink():
+                seal_source_evidence(run_dir, manifest, source, attempt, tmp_artifact)
             make_private_artifact(tmp_artifact)
+            seal_source_evidence(run_dir, manifest, source, attempt, tmp_artifact)
+            pump_source_evidence(run_dir, manifest)
             generation_bound = (
                 source in STRICT_FRESHNESS_SOURCE_KEYS
                 or source in PROPERTY_DETAIL_FRESHNESS_SOURCE_KEYS
@@ -4787,12 +4871,13 @@ def collect_source(
                 ),
             )
         except ArtifactValidationError as exc:
+            refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
             attempt["error"] = str(exc)
             (
                 attempt["rejected_artifact"],
                 attempt["rejected_artifact_sha256"],
-            ) = _archive_rejected(
-                tmp_artifact, run_dir, source, attempt_number
+            ) = archive_rejected_with_evidence(
+                tmp_artifact, run_dir, manifest, source, attempt
             )
             checkpoint["state"] = "artifact_rejected"
             save_manifest(run_dir, manifest)
@@ -5359,6 +5444,7 @@ def prepare_sources_cohort(
             for item in completed:
                 _finalize_cohort_collection(run_dir, manifest, item)
                 active.remove(item)
+            pump_source_evidence(run_dir, manifest)
 
             active_sources = {item.source for item in active}
             pending = [
@@ -6917,6 +7003,11 @@ def render_report(manifest: Mapping[str, Any]) -> str:
         "| Source | State | Flat | Staged | Inventory-only | Detail unavailable | Provisional IDs | Gate | Readback |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
+    if (manifest.get("config") or {}).get("automatic_source_evidence"):
+        lines.insert(7, "- Private source evidence: " + (
+            "paused or incomplete; inspect per-attempt receipts." if manifest.get("automatic_source_evidence_paused") or manifest.get("automatic_source_evidence_status") == "incomplete"
+            else "enabled; inspect per-attempt receipts for append and no-artifact outcomes."
+        ))
     sources = manifest.get("sources") or {}
     for source in (manifest.get("config") or {}).get("sources") or []:
         checkpoint = sources.get(source) or {}
@@ -7034,6 +7125,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--env-file", default=None)
+    parser.add_argument("--source-evidence-policy", default=None)
+    parser.add_argument("--source-evidence-policy-sha256", default=None)
+    parser.add_argument("--source-evidence-env-file", default=None)
+    parser.add_argument("--source-evidence-target-sha256", default=None)
+    parser.add_argument("--source-evidence-replay-unknown", action="store_true")
     parser.add_argument("--sources", default="all")
     parser.add_argument(
         "--transactions",
@@ -7288,6 +7384,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     git_sha, git_dirty = git_identity()
     if git_dirty and not args.allow_dirty:
         raise RefreshError("refusing operational refresh from a dirty checkout")
+    evidence_options = (args.source_evidence_policy, args.source_evidence_policy_sha256,
+                        args.source_evidence_env_file, args.source_evidence_target_sha256)
+    automatic_source_evidence = None
+    if any(evidence_options):
+        if git_dirty:
+            raise RefreshError("automatic evidence requires a clean collector checkout")
+        from source_evidence.automatic import configuration
+        automatic_source_evidence = configuration(*evidence_options, git_sha, sources)
+    if args.source_evidence_replay_unknown and (not args.resume or automatic_source_evidence is None):
+        raise RefreshError("evidence replay requires an opted-in checkpoint resume")
     if args.resume:
         supplied = Path(args.resume).expanduser().resolve()
         manifest_path = (
@@ -7316,6 +7422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.pipeline
             else (),
             database_target=database_target,
+            automatic_source_evidence=automatic_source_evidence,
             max_age_hours=args.max_resume_age_hours,
         )
         manifest["status"] = "running"
@@ -7347,6 +7454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.pipeline
             else (),
             database_target=database_target,
+            automatic_source_evidence=automatic_source_evidence,
         )
     # Publish the existing durable recovery barrier before any native child can
     # escape an uncatchable coordinator exit. Only this exact held owner may
@@ -7396,6 +7504,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, checkpoint_sigterm_handler)
     try:
         ownership.enter_context(lock)
+        if args.resume and automatic_source_evidence is not None:
+            from source_evidence import automatic
+            automatic.prepare_resume(manifest, replay_unknown=args.source_evidence_replay_unknown)
         save_manifest(run_dir, manifest)
         with (
             artifact_compute_scope(run_dir),
@@ -7548,6 +7659,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source=sources[0] if len(sources) == 1 else None,
                 active_operation="source_collection_preflight",
             )
+            if args.resume and automatic_source_evidence is not None and not args.pipeline:
+                from source_evidence import automatic
+                lock._require_authority()
+                if git_identity() != (manifest["collector_git_sha"], False):
+                    manifest["automatic_source_evidence_paused"] = True
+                    manifest["automatic_source_evidence_status"] = "incomplete"
+                    save_manifest(run_dir, manifest)
+                else:
+                    automatic.recover_unsealed(run_dir, manifest, save_manifest,
+                                               make_private=make_private_artifact)
+                lock._require_authority()
+            pump_source_evidence(run_dir, manifest)
             if args.pipeline:
                 set_cpu_guard_context(cpu_guard, phase="pipeline", active_operation="bounded_pipeline_manual_reconciliation")
                 source_failures = run_bounded_pipeline(
@@ -7618,9 +7741,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest["finished_at"] = utc_now()
             manifest["resource_stop"] = None
             manifest["error"] = None
+            evidence_incomplete = bool(manifest.get("automatic_source_evidence_paused")) or bool(
+                automatic_source_evidence and any(
+                    (attempt.get("source_evidence") or {}).get("state") != "appended"
+                    for source, checkpoint in manifest["sources"].items()
+                    if source in automatic_source_evidence["source_keys"]
+                    for attempt in checkpoint.get("attempts", [])
+                )
+            )
+            if automatic_source_evidence is not None:
+                manifest["automatic_source_evidence_status"] = "incomplete" if evidence_incomplete else "settled"
             persist_terminal()
             print(run_dir)
-            return 0
+            return 1 if evidence_incomplete else 0
     except CpuGuardTrip as exc:
         if not lock.held:
             raise
