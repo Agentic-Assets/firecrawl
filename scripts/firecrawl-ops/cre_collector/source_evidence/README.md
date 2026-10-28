@@ -12,6 +12,17 @@ python3 -m source_evidence.cli plan --artifact /private/artifact.json --source-k
 
 For a Buildout observation artifact also provide `--observed-at 2026-10-28T12:00:00Z`; `--external-id` is an optional caller assertion for document evidence. Review the entire plan and source-retention policy. For approved private retention, prepare a private admission JSON with `schema_version` `cre-source-evidence-admission/v1`, `plan_sha256` matching the plan, `purpose` `private_unverified_evidence`, `data_scope` `public_listing_source`, `content_policy` `reviewed_for_private_retention`, and `source_keys` containing exactly the plan source key. JLL remains refused without its source-specific withheld-content adapter.
 
+Existing single-source collector artifacts can be wrapped offline before planning:
+
+```sh
+python3 -m source_evidence.cli convert-collector --artifact /private/rejected.json --source-key svn --out /private/retained.json
+python3 -m source_evidence.cli plan --artifact /private/retained.json --source-key svn --out /private/plan.json
+```
+
+The wrapper retains every emitted listing, including duplicate or incomplete records and supplied `raw_data`, plus all artifact metadata and errors. It refuses mixed or mismatched sources, and uses the artifact's run-finished clock, not a per-record observation time. Its digest binds canonical JSON, not the original file bytes. Collector records have already passed through source mapping and pruning; this does not recover discarded HTTP responses, prove completeness or establish source acceptance. Empty artifacts with explicit source entries are retained. Conversion and planning are local; private retention admission and database authorization remain separate.
+
+Admission scans HTTP(S) URL tokens in text and object keys for known JLL hosts and credential-bearing query keys, including the reconstructed bounded document text across chunk boundaries; it is not a general secret detector. Conflicting nested declarations of protected source keys are refused. Avison collector evidence is checked against its source-owned asking-price visibility control and projection, including control witnesses in capture context. Withheld records or capture context that the projection would change are refused, including malformed or contradictory controls; use a source-owned projected artifact before requesting admission. Independent rent, cap rate and NOI remain eligible. Other Avison evidence shapes need an adapter before admission. Local planning alone does not establish that any historical Avison plan is safe to retain.
+
 Once the separate database migration, roles, permissions and a specific write are authorized, bind an explicit environment file and target fingerprint:
 
 ```sh
