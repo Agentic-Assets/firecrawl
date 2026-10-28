@@ -79,6 +79,52 @@ test("synthetic unresolved tenure remains held for both request contexts without
   }
 });
 
+test("held native context keeps ordered duplicate facts, scripts and page resources", () => {
+  const html = page("context", "70004", ["Paused", "Office"])
+    .replace("</body>", `<div class="property-description">Literal description</div>
+      <table><tr><th>Rate</th><td>one</td></tr><tr><th>Rate</th><td>two</td></tr><tr><th>Empty</th><td></td></tr></table>
+      <script type="application/ld+json">{"@type":"Offer","price":null}</script>
+      <a href="/brochure.pdf">Brochure</a><img src="/photo.jpg" alt="Photo"></body>`);
+  const outcome = parseFoundryCommercialDetail(html, detailUrl("context"), "sale", {
+    strict: true, detailObservedAt: "2026-10-16T01:02:00Z",
+  });
+  assert.equal(outcome.kind, "held");
+  if (outcome.kind !== "held") throw new Error("expected held outcome");
+  assert.ok(outcome.pageContext);
+  assert.equal(outcome.pageContext.scripts.length, 2);
+  assert.equal(outcome.pageContext.scripts[1]!.text, '{"@type":"Offer","price":null}');
+  assert.deepEqual(outcome.pageContext.descriptions, ["Literal description"]);
+  assert.equal(outcome.pageContext.tables.status, "observed");
+  const rows = outcome.pageContext.tables.tables[1]!.rows;
+  assert.deepEqual(rows.map((row) => row.cells.map((cell) => cell.rawText)), [["Rate", "one"], ["Rate", "two"], ["Empty", ""]]);
+  assert.equal(outcome.pageContext.links[0]!.href, "/brochure.pdf");
+  assert.equal(outcome.pageContext.images[0]!.src, "/photo.jpg");
+});
+
+test("identity conflicts retain source context while challenge shells do not", () => {
+  const html = page("conflict", "70005", ["Paused"]).replace(`href="${detailUrl("conflict")}"`, `href="${detailUrl("other")}"`);
+  const conflict = parseFoundryCommercialDetail(html, detailUrl("conflict"), "sale", { strict: true });
+  assert.equal(conflict.kind, "rejected");
+  if (conflict.kind !== "rejected") throw new Error("expected rejection");
+  assert.equal(conflict.pageContext?.schema, "foundry-native-page-context/v1");
+  assert.equal(conflict.pageContext?.scripts.length, 1);
+  assert.equal(conflict.pageContext?.detailObservedAt, null);
+  const shell = parseFoundryCommercialDetail(html.replace("Synthetic conflict</h1>", "Access Denied</h1>"), detailUrl("conflict"), "sale", { strict: true });
+  assert.equal(shell.kind, "rejected");
+  if (shell.kind !== "rejected") throw new Error("expected rejection");
+  assert.equal(shell.pageContext, undefined);
+});
+
+test("held outcome on a recognized body challenge omits page context", () => {
+  const html = page("held-challenge", "70006", ["Paused"])
+    .replace("</body>", "<p>Checking your browser</p></body>");
+  const outcome = parseFoundryCommercialDetail(html, detailUrl("held-challenge"), "sale", { strict: true });
+  assert.equal(outcome.kind, "held");
+  if (outcome.kind !== "held") throw new Error("expected held outcome");
+  assert.equal(outcome.pageContext, undefined);
+  assert.deepEqual(outcome.observation.propertyNotes, ["Paused"]);
+});
+
 function responsesFor(rows: Array<{ slug: string; id: string; notes: string[]; html?: string }>) {
   return new Map([
     [`${host}/sitemap.xml`, `<sitemapindex><sitemap><loc>${host}/property-sitemap.xml</loc></sitemap></sitemapindex>`],
@@ -132,13 +178,17 @@ test("synthetic mixed producer preserves accepted rows, fetches, order and all n
   const retained = events(lines);
   assert.equal(retained.length, 2);
   const sourceObservations = result.retainedObservations as Array<{
-    event: string; schema: string; observation: Observation;
+    event: string; schema: string; observation?: Observation; pageContext?: { schema: string };
   }>;
+  const sourceHeld = sourceObservations.filter((event) => event.event === "foundry_held_observation")
+    .map(({ event, schema, observation }) => ({ event, schema, observation: observation! }));
   assert.deepEqual(
-    [...sourceObservations].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
+    [...sourceHeld].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
     [...retained].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
   );
-  assert.deepEqual(sourceObservations.map((event) => event.observation.id), ["property/unknown", "property/ambiguous"]);
+  assert.deepEqual(sourceHeld.map((event) => event.observation.id), ["property/unknown", "property/ambiguous"]);
+  assert.equal(sourceObservations.filter((event) => event.event === "foundry_rejected_observation").length, 1);
+  assert.ok(sourceObservations.every((event) => event.pageContext?.schema === "foundry-native-page-context/v1"));
   assert.deepEqual(retained.map((event) => event.observation.id).sort(), ["property/ambiguous", "property/unknown"]);
   for (const event of retained) {
     assert.equal(event.schema, "foundry-held-observation-v1");
@@ -179,7 +229,8 @@ test("synthetic source carrier preserves a held empty-notes observation with nul
   console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
   const result = await srcFoundryCommercial("sale", Infinity, false);
   const retained = events(lines);
-  assert.deepEqual(result.retainedObservations, retained);
+  const carrier = result.retainedObservations as Array<{ event: string; schema: string; observation: Observation }>;
+  assert.deepEqual(carrier.map(({ event, schema, observation }) => ({ event, schema, observation })), retained);
   assert.equal(retained.length, 1);
   assert.equal(retained[0].observation.status, null);
   assert.deepEqual(retained[0].observation.propertyNotes, []);
@@ -273,7 +324,8 @@ test("synthetic real all-held CLI fails after writing an evidence-only artifact"
   const retained = events(child.stderr.split(/\r?\n/));
   assert.equal(retained.length, 2, "all-held zero-row failure must retain both completed observations");
   assert.deepEqual(
-    [...artifact.sources[0].retainedObservations].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
+    [...artifact.sources[0].retainedObservations].map(({ event, schema, observation }: { event: string; schema: string; observation: Observation }) => ({ event, schema, observation }))
+      .sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
     [...retained].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
   );
   const empty = retained.find((event) => event.observation.id === "property/empty")!;

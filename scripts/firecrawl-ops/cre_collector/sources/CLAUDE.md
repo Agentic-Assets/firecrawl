@@ -213,6 +213,14 @@ refused by canonical ingest and monitor entrypoints. The private evidence bridge
 is intended to settle the artifact before canonical gates. This behavior is
 unverified under the current test hold and is not deployed.
 
+The draft bounded native page context is omitted for recognized challenge
+shells. Its shared table observer reports a failure with unknown omissions when
+the detail clock is missing or the supplied HTML exceeds two million UTF-8
+bytes; it does not retain the raw table cells in those cases. Other context has
+explicit item and character limits. Existing `propertyNotes` remains outside
+that budget and is not independently bounded; the legacy stderr event remains
+unchanged. These are retention limits, not evidence of complete page coverage.
+
 On a strict identity failure, the intended `RetainedSourceError` preserves the
 original failure while carrying held context and otherwise accepted conflicting
 parsed rows as unqualified observations in `sources[].retainedObservations`.
