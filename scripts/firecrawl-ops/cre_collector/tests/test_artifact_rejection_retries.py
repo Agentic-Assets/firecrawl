@@ -32,6 +32,7 @@ def setup_collection(
     unsafe_rejected_output=False,
     unsafe_output_paths=None,
     rejected_bytes=None,
+    wait_for_collectors=False,
 ):
     """Real local owned collectors and artifact compute; only provider/DB IO replaced."""
     sources = ("transwestern", "savills")
@@ -138,7 +139,7 @@ def setup_collection(
             OwnedProcessGroup.from_spawn(process),
         )
         alive[source] = item
-        if unsafe_rejected_output and len(alive) == len(sources):
+        if (unsafe_rejected_output or wait_for_collectors) and len(alive) == len(sources):
             for started_source, started_item in alive.items():
                 expected_rc = (
                     refresh.COHORT_SETTLED_FAILURE_EXIT
@@ -632,7 +633,11 @@ def test_new_collection_attempt_clears_stale_validation_stage(tmp_path):
     "fault", [refresh.GlobalStageError, refresh.ProcessCleanupUnknown]
 )
 def test_global_compute_fault_does_not_retry_collection(tmp_path, monkeypatch, fault):
-    root, manifest, sources, starts, database = setup_collection(tmp_path, monkeypatch)
+    # Exercise propagation after positively settled collectors; unrelated OS
+    # teardown races must not replace the synthetic compute fault under test.
+    root, manifest, sources, starts, database = setup_collection(
+        tmp_path, monkeypatch, wait_for_collectors=True
+    )
 
     def fail(*args):
         raise fault("synthetic global compute failure")
