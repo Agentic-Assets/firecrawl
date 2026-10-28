@@ -66,7 +66,20 @@ for (const [name, attributes] of [
 test("space-fact lift leaves all unrelated mapped output unchanged", async () => {
   const withFact = await mapped();
   const withoutFact = await mapped(fixture.index_attributes.filter(([label]: string[]) => label !== "# of Spaces"));
-  const { extraFacts, ...rest } = withFact;
+  const { extraFacts, buildoutFieldObservations, ...rest } = withFact;
   assert.deepEqual(rest, withoutFact);
   assert.deepEqual(extraFacts, { number_of_spaces: "4 Spaces" });
+  assert.deepEqual(buildoutFieldObservations, {
+    schema: "buildout-field-observations-v1",
+    sourceIdentity: "unverified",
+    freshness: "unverified",
+    promotion: "not_authorized",
+    malformedAttributeCount: 0,
+    availableSpaceCount: {
+      state: "observed",
+      literals: [{ sourceOrdinal: 2, literal: "4 Spaces" }],
+      omittedCount: 0,
+      value: 4,
+    },
+  });
 });
