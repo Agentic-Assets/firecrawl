@@ -35,6 +35,7 @@ import glob
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -2698,6 +2699,21 @@ def _jll_pricing_has_foreign_lease_currency(listing):
         return False
     currency = lease.get("currency")
     return isinstance(currency, str) and currency.upper() != "USD"
+
+
+def generic_enrichment_substantive(listing):
+    """Require a mapped generic detail value, not just a URL or identity."""
+    for key in ("name", "description", "salePriceText"):
+        value = listing.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    for key in ("salePriceUsd", "latitude", "longitude"):
+        value = listing.get(key)
+        if type(value) is int:
+            return True
+        if type(value) is float and math.isfinite(value):
+            return True
+    return False
 
 
 def to_row(listing, brokers_by_idx, scraped_at):
@@ -6891,6 +6907,9 @@ def main():
                 )
             inventory_only_scopes_merged[scope["source_key"]] = scope
         for listing in data.get("listings") or []:
+            if (mode == "enrich" and isinstance(listing, dict) and "genericEnrich" in listing
+                    and not generic_enrichment_substantive(listing)):
+                continue
             inventory_row = to_inventory_only_row(listing, scraped_at)
             if inventory_row is not None:
                 inventory_key = (

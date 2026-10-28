@@ -80,6 +80,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cre_ingest import (  # noqa: E402
     assert_expected_database_target,
     find_psql,
+    generic_enrichment_substantive,
     lifecycle_transaction_lock_sql,
     load_db_url,
     matthews_targeted_sql_context,
@@ -488,6 +489,8 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
         if url in seen_urls:
             raise ValueError(f"enriched artifact contains duplicate URL: {url!r}")
         seen_urls.add(url)
+        if "genericEnrich" in listing and not generic_enrichment_substantive(listing):
+            continue
         safe.append(listing)
     if targeted_claims is not None:
         validate_matthews_targeted_artifact(artifact, targeted_claims)
@@ -748,6 +751,9 @@ def run(args):
     # claimed detail was rejected by admission; skip ingest but continue into
     # retry/dead-letter accounting so that batch cannot loop forever.
     if enriched_listings:
+        # Canonical ingest applies the same generic qualification to the
+        # original artifact. Retaining that private file is not evidence-store
+        # database admission or proof of a successful write.
         require_owner()
         ingest = subprocess.run(
             [sys.executable, os.path.join(HERE, "cre_ingest.py"),

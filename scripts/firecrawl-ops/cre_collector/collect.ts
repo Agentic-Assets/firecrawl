@@ -1,7 +1,6 @@
 import { observationNow } from "./lib/observation-clock.js";
+import { writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
   isAvisonYoungTerminalSourceError,
@@ -342,13 +341,10 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
+  const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+  writeCollectorArtifact(OUT_PATH, json, privateEvidence);
   if (OUT_PATH) {
-    mkdirSync(dirname(OUT_PATH), { recursive: true });
-    if (evidenceOnly) writeFileSync(OUT_PATH, json, { flag: "wx", mode: 0o600 });
-    else writeFileSync(OUT_PATH, json);
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
-  } else {
-    process.stdout.write(json);
   }
   if (evidenceOnly) {
     console.error("no listings collected from any source");
@@ -415,6 +411,8 @@ async function enrichMain(claimPath: string): Promise<void> {
     key;
   const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor, context);
   if (context) validateMatthewsTargetedRefresh(context);
+  const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+  const evidenceOnly = listings.length === 0 && privateEvidence;
 
   console.error(
     `enrich done: ${listings.length} listing(s) from ${groups.size} source group(s), ${brokers.length} unique brokers`
@@ -427,6 +425,7 @@ async function enrichMain(claimPath: string): Promise<void> {
       apiUrl: API_URL,
       mode: "enrich",
       enrichInput: claimPath,
+      ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
       ...(context ? {
         matthewsTargetedRefresh: context,
         freshness: {
@@ -445,12 +444,9 @@ async function enrichMain(claimPath: string): Promise<void> {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
+  writeCollectorArtifact(OUT_PATH, json, privateEvidence);
   if (OUT_PATH) {
-    mkdirSync(dirname(OUT_PATH), { recursive: true });
-    writeFileSync(OUT_PATH, json);
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
-  } else {
-    process.stdout.write(json);
   }
 }
 

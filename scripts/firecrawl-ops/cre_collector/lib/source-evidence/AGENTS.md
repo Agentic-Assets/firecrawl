@@ -1,6 +1,6 @@
 READ ~/AGENTS.md FIRST (skip if missing).
 
-# NAI native page capture
+# Private source evidence output
 
 Read parent collector, source and lib guidance and this folder's README. This
 opt-in helper records source-native response evidence, never database writes,
@@ -19,3 +19,9 @@ clocks are distinct, memory-cache hits do not create fresh capture, and a captur
 failure stops the enabled path. Existing source/credential policy remains
 separate; Faris collector projection does not apply. Read README for bounds.
 This draft is unverified under the hold and not deployed.
+
+`artifact-output.ts` is the shared full/enrich artifact publisher. Artifacts
+with retained observations require an explicit file destination, exclusive
+creation and mode 0600; never send those observations to stdout or overwrite a
+prior capture. Ordinary listing output keeps its existing publication behavior.
+This is private local custody, not database admission or canonical completion.
