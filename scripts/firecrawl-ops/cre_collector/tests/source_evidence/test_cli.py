@@ -110,3 +110,29 @@ def test_fact_and_get_queries_bind_values_and_enforce_limits():
     for capture, ordinal in [("x';DROP", 1), ('valid', -1), ('valid', 1000001)]:
         with pytest.raises(ValueError):
             cli.get_sql(capture, ordinal)
+
+
+def test_document_query_is_read_only_bounded_and_literal_bound():
+    sql = cli.document_sql('evidence-document')
+    assert 'BEGIN READ ONLY;' in sql
+    assert 'SET LOCAL ROLE cre_source_evidence_reader;' in sql
+    assert 'ORDER BY item_no LIMIT 72' in sql
+    assert 'evidence-document' not in sql
+    with pytest.raises(ValueError):
+        cli.document_sql("bad'; DROP SCHEMA credeals; --")
+
+
+def test_export_document_text_uses_private_exporter_without_printing_text(monkeypatch, capsys):
+    from source_evidence import document_export
+    value = events.plan(document('Retained document content'), source_key='cbre')
+    capture = value['events'][0]['capture_id']
+    calls = []
+    def read(sql, env, target, **kwargs):
+        assert 'ORDER BY item_no LIMIT 72' in sql and kwargs['max_results_bytes'] == cli.MAX_PLAN_BYTES
+        return b'\n'.join(events.encoded(row) for row in value['events'])
+    monkeypatch.setattr(cli, 'run_psql', read)
+    monkeypatch.setattr(document_export, 'export', lambda rows, outdir: calls.append((rows, outdir)))
+    cli.main(['export-document-text', '--capture-id', capture, '--out-dir', '/private/new-document',
+              '--env-file', '/private/env', '--expected-db-target-sha256', 'a' * 64])
+    assert calls == [(value['events'], '/private/new-document')]
+    assert 'Retained document content' not in capsys.readouterr().out

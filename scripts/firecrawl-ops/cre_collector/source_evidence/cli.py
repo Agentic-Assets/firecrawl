@@ -19,8 +19,7 @@ from source_evidence import acquisition, collector, events
 
 MAX_PLAN_BYTES = 32 * 1024 * 1024
 MAX_RESULTS_BYTES = 8 * 1024 * 1024
-FIELDS = ("capture_id", "item_no", "source_key", "external_id", "observed_at", "source_url",
-          "provenance", "facts", "document_url", "extractor_version", "extracted_text", "text_sha256")
+FIELDS = events.EVENT_FIELDS
 
 
 def read_json(path, limit):
@@ -151,6 +150,17 @@ def get_sql(capture_id, item_no):
             " AND item_no=" + str(item_no) + ") r;\nCOMMIT;\n")
 
 
+def document_sql(capture_id):
+    """Retrieve one bounded document capture, including its reconstruction header."""
+    if not isinstance(capture_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', capture_id):
+        raise ValueError('invalid capture identity')
+    # Read one extra row so oversized captures cannot look like complete ones.
+    return ("BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog;\nSET LOCAL ROLE cre_source_evidence_reader;\n"
+            "SET LOCAL statement_timeout = 30000;\nSELECT row_to_json(r) FROM (SELECT " + ','.join(FIELDS) +
+            " FROM cre_source_evidence.events WHERE capture_id=" + sql_text(capture_id) +
+            " ORDER BY item_no LIMIT 72) r;\nCOMMIT;\n")
+
+
 def checked_plan(value, admission):
     if not isinstance(value, dict) or value.get('schema_version') != 'cre-source-evidence-plan/v1':
         raise ValueError('invalid plan')
@@ -160,9 +170,11 @@ def checked_plan(value, admission):
     events.validate_admission(value, admission)
 
 
-def run_psql(sql, env_file, target, *, validate_transport=None):
+def run_psql(sql, env_file, target, *, validate_transport=None, max_results_bytes=MAX_RESULTS_BYTES):
     if not env_file or not re.fullmatch(r'[0-9a-f]{64}', target or ''):
         raise ValueError('explicit env file and target fingerprint required')
+    if type(max_results_bytes) is not int or not 1 <= max_results_bytes <= MAX_PLAN_BYTES:
+        raise ValueError('invalid database result bound')
     db_url, _ = load_db_url(env_file)
     assert_expected_database_target(db_url, target)
     if validate_transport is not None:
@@ -175,7 +187,7 @@ def run_psql(sql, env_file, target, *, validate_transport=None):
         raise RuntimeError('database outcome unknown after timeout') from exc
     if result.returncode != 0:
         raise RuntimeError('database operation failed; outcome may be unknown')
-    if len(result.stdout) > MAX_RESULTS_BYTES:
+    if len(result.stdout) > max_results_bytes:
         raise ValueError('database output exceeds limit')
     return result.stdout
 
@@ -216,6 +228,9 @@ def main(argv=None):
     g.add_argument('--capture-id', required=True); g.add_argument('--item-no', type=int, required=True)
     g.add_argument('--out', required=True); g.add_argument('--env-file', required=True)
     g.add_argument('--expected-db-target-sha256', required=True)
+    export = sub.add_parser('export-document-text')
+    export.add_argument('--capture-id', required=True); export.add_argument('--out-dir', required=True)
+    export.add_argument('--env-file', required=True); export.add_argument('--expected-db-target-sha256', required=True)
     args = parser.parse_args(argv)
     if args.command == 'convert-collector':
         raw = read_consistent(args.artifact, events.MAX_ARTIFACT_BYTES)
@@ -246,6 +261,15 @@ def main(argv=None):
         checked_plan(value, read_json(args.admission, 16384))
         run_psql(append_sql(value), args.env_file, args.expected_db_target_sha256)
         print(f"Append completed: {len(value['events'])} events")
+    elif args.command == 'export-document-text':
+        from source_evidence import document_export
+        raw = run_psql(document_sql(args.capture_id), args.env_file, args.expected_db_target_sha256,
+                       max_results_bytes=MAX_PLAN_BYTES)
+        rows = [json.loads(line) for line in raw.decode('utf8').splitlines() if line.strip()]
+        if any(not isinstance(row, dict) or row.get('capture_id') != args.capture_id for row in rows):
+            raise ValueError('document readback contains another capture')
+        document_export.export(rows, args.out_dir)
+        print('Document text exported to a new private directory; coverage remains unknown.')
     else:
         if args.command == 'search':
             sql = search_sql(args.query, args.mode, args.limit)

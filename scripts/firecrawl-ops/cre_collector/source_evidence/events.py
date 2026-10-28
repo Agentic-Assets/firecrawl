@@ -8,6 +8,8 @@ from urllib.parse import parse_qsl, urlsplit
 CHUNK_BYTES = 60_000
 MAX_TEXT_BYTES = 4 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+EVENT_FIELDS = ("capture_id", "item_no", "source_key", "external_id", "observed_at", "source_url",
+                "provenance", "facts", "document_url", "extractor_version", "extracted_text", "text_sha256")
 CREDENTIAL_QUERY_KEYS = {"token", "access_token", "api_key", "apikey", "authorization", "auth",
                          "signature", "sig", "x-amz-signature", "x-amz-credential",
                          "x-goog-signature", "x-goog-credential", "client_secret"}

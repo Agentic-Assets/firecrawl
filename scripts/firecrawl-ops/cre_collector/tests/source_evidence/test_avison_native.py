@@ -78,6 +78,31 @@ def test_rent_label_does_not_authorize_later_ambiguous_money():
     assert receipt["unresolvedProse"] == 1
 
 
+@pytest.mark.parametrize("amount", ["123456", "123,456.78", "2.5 million", "35 thousand", "4M"])
+def test_unformatted_labeled_asking_masks_only_amount_without_structured_price(amount):
+    text = f"Café suite 123. Asking price: {amount}. Rent: $123/SF/year; NOI: $123."
+    data = {"items": [{"hide_price": 1, "description": text}]}
+    out, literals, receipt = avison_native.project(data)
+    assert out["items"][0]["description"] == (
+        "Café suite 123. Asking price: [withheld]. Rent: $123/SF/year; NOI: $123."
+    )
+    assert any(c["reason"] == "withheld_asking_span" for c in receipt["changes"])
+    avison_native.validate_projected(out, literals)
+
+
+def test_labeled_bare_asking_preserves_urls_and_unrelated_numbers():
+    text = "https://example.test/asking-price=123; Suite 123\nSale price = 123; Rent: 123/SF/year"
+    out, _, _ = avison_native.project({"items": [{"hide_price": 1, "description": text}]})
+    assert out["items"][0]["description"] == (
+        "https://example.test/asking-price=123; Suite 123\nSale price = [withheld]; Rent: 123/SF/year"
+    )
+
+
+def test_malformed_labeled_bare_asking_remains_refused():
+    with pytest.raises(ValueError):
+        avison_native.project({"items": [{"hide_price": 1, "description": "Asking price: 123,45"}]})
+
+
 @pytest.mark.parametrize("value", [True, "1", 2, None])
 def test_malformed_visibility_refuses(value):
     with pytest.raises(ValueError):

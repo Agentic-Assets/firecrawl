@@ -37,6 +37,11 @@ _MONEY = re.compile(
 )
 _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _LABEL = re.compile(f"(?:{ASK_LABEL})|(?:{OTHER_LABEL})", re.IGNORECASE)
+_BARE_ASKING = re.compile(
+    rf"(?:{ASK_LABEL})\s*[:=]\s*(?P<amount>(?:\d{{1,3}}(?:,\d{{3}})+|\d+)(?:\.\d+)?"
+    r"(?:\s*(?:million|thousand|[kKmM])\b)?)(?![\w,]|\.\d)",
+    re.IGNORECASE,
+)
 
 
 def _preceding_label(text, position):
@@ -68,6 +73,13 @@ def _prose(text, amounts):
                 pass
         reason = "withheld_asking_span" if exact or re.match(ASK_LABEL, label, re.IGNORECASE) else "unresolved_monetary_span"
         changes.append((match.start(), match.end(), reason))
+    for match in _BARE_ASKING.finditer(text):
+        start, end = match.span("amount")
+        if any(a <= start < b for a, b in urls):
+            continue
+        if any(start < b and end > a for a, b, _ in changes):
+            continue
+        changes.append((start, end, "withheld_asking_span"))
     if amounts:
         protected = urls + [(m.start(), m.end()) for m in re.finditer(PROTECTED_TEXT, text, re.IGNORECASE)]
         protected += [(m.start(), m.end()) for m in re.finditer(r"\b(?:suite|ste|unit)\s+[\w-]+\b", text, re.IGNORECASE)]
@@ -84,8 +96,7 @@ def _prose(text, amounts):
     for start, end, reason in sorted(changes, reverse=True):
         marker = "[withheld]" if reason == "withheld_asking_span" else "[unresolved monetary value]"
         result = result[:start] + marker + result[end:]
-    # Unformatted asking values have no proven safe span grammar. Stop rather
-    # than discard surrounding prose or emit an unmasked asking amount.
+    # Refuse unrecognized asking syntax rather than emit an unmasked amount.
     check = _URL.sub("", result)
     for match in reversed(list(_MONEY.finditer(check))):
         label = _preceding_label(check, match.start())
@@ -97,7 +108,7 @@ def _prose(text, amounts):
     check = re.sub(r"\b(?:suite|ste|unit)\s+[\w-]+\b", "", check, flags=re.IGNORECASE)
     if amounts and re.search(_amount_pattern(amounts), check):
         raise ValueError("Avison prose contains unresolved unformatted amount")
-    if re.search(r"(?:asking(?:\s+price)?|sale\s+price|purchase\s+price)\s*[:=]\s*\d", result, re.IGNORECASE):
+    if re.search(r"(?:asking(?:\s+price)?|sale\s+price|purchase\s+price)(?:\s*[:=]\s*|\s+)\d", _URL.sub("", result), re.IGNORECASE):
         raise ValueError("Avison prose contains unformatted asking amount")
     return result, {reason for _, _, reason in changes}
 

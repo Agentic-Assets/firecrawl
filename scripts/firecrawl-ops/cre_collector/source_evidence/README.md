@@ -62,6 +62,20 @@ verify all ordinals and the reconstructed UTF-8 hash before claiming complete
 reconstruction. Chunk windows are not page citations. Original document bytes
 and publisher identity are not independently verified by stored text hashes.
 
+Document Markdown is retained source text, separate from normalized listing
+facts. Preserve useful structured source facts alongside it, including values
+without a recognized listing-field mapping. The document artifact records the
+caller-asserted source URL and observation time, detected format, parser
+provenance, and source and text SHA-256 values. Evidence chunks retain their
+order and full-text digest; extraction coverage remains unknown. Extracting all
+available text alone would not prove financial-table layout or value fidelity.
+
+The planned `export-document-text` reader will accept `--capture-id`,
+`--out-dir`, `--env-file`, and `--expected-db-target-sha256` for whole-document
+recovery. It is under development and has not yet been verified. Until then,
+use the existing event readback and verify chunk ordinals and the full-text
+digest before claiming reconstruction.
+
 ## Native JSON response retention
 
 Opted-in checkpoint attempts record an `awaiting_artifact` marker before worker

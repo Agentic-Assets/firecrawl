@@ -40,3 +40,8 @@ Fact-text search is a literal case-insensitive search over PostgreSQL's JSONB
 text representation, not semantic matching, original bytes or document text.
 Its private output contains match metadata only; use `get` for full facts.
 Migration and index availability require separate operator authorization.
+
+Document export reconstructs the complete bounded capture, verifies ordered
+chunks and text hashes, and writes exact Markdown plus provenance into a new
+private directory. Keep unknown extraction coverage visible; a valid text
+digest proves reconstruction integrity, not faithful extraction of every page.

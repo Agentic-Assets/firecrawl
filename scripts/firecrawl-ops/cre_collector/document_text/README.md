@@ -12,6 +12,20 @@ The owner-only provenance file contains `{"url":"https://example.org/input.pdf",
 
 The output is created exclusively with owner-only file permissions; use a private directory as well. URLs and extracted content may be sensitive. The original SHA-256, acquisition observation time supplied by the caller, detected type, parser version/config, status, text and separate UTF-8 text SHA-256 are recorded. Local input must be a regular file, not a symlink, and is limited to 100 MiB. Conversion runs in a separate process with a 60-second timeout. Extracted text is capped at 4 MiB; oversized output is retained as a failure, never silently truncated. The JavaScript heap limit does not cap native converter memory. Exit codes are 0 for extracted, 2 for OCR-needed or failed read/conversion, and 1 for invalid invocation or artifact-write errors. The caller owns the accuracy of the URL and observation time, and must retain the original if required. A successful conversion has `coverage: unknown`: AnyDoc can skip content and its Markdown is not a fidelity or financial-truth guarantee.
 
+Extracted Markdown is source text, not normalized listing facts. Keep useful
+structured source facts alongside the text, including values that do not map to
+a known listing field. The existing adapter records source URL and observation
+time, detected format, parser provenance, and hashes; retained evidence stores
+text in ordered chunks with a full-text digest. Even extraction of all available
+text would not establish that financial tables, their layout, or their values
+were faithfully represented. Coverage remains unknown.
+
+A planned reader command, `source_evidence.cli export-document-text`, will use
+`--capture-id`, `--out-dir`, `--env-file`, and
+`--expected-db-target-sha256` to recover retained text. This command is under
+development and has not yet been verified; use the existing event readback and
+chunk/hash checks until it is available and verified.
+
 For `ocr_needed`, the artifact retains any page numbers reported by AnyDoc and has no extracted text. An explicit offline retry is available after reviewing the document and local resource budget:
 
 ```sh
