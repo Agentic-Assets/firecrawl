@@ -1,3 +1,4 @@
+import { buildoutCanonicalAttributeMap, buildoutFieldObservations, MAX_BUILDOUT_FIELD_ATTRIBUTES, safeBuildoutSpaceLiteral } from "./buildout-field-observations.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/buildout.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -982,11 +983,11 @@ export function buildoutScalarFields(raw: {
 
 // Availability-space text is a literal long-tail fact, not units or parking.
 function buildoutSpaceFacts(attributes: unknown): Record<string, string> | undefined {
-  if (!Array.isArray(attributes)) return undefined;
+  if (!Array.isArray(attributes) || attributes.length > MAX_BUILDOUT_FIELD_ATTRIBUTES) return undefined;
   const values = new Set<string>();
   for (const pair of attributes) {
     if (!Array.isArray(pair) || pair[0] !== "# of Spaces") continue;
-    if (pair.length !== 2 || typeof pair[1] !== "string") return undefined;
+    if (pair.length !== 2 || !safeBuildoutSpaceLiteral(pair[1])) return undefined;
     const value = clean(pair[1]);
     if (!value) return undefined;
     values.add(value);
@@ -1017,12 +1018,13 @@ export async function srcBuildout(
     const isSale = x.sale === true;
     const isLease = x.sale !== true; // inventory rows are active availabilities: not-for-sale = for-lease
     {
-      const attrs = new Map<string, string>(
-        (x.index_attributes ?? []).map((p: any) => [String(p[0]), String(p[1])])
-      );
+      const mappedAttributes = buildoutCanonicalAttributeMap(x.index_attributes);
+      const attrs = mappedAttributes.values;
       const priceText = attrs.get("Price") ?? null;
-      const leaseRateText = attrs.get("Lease Rate") ?? attrs.get("Rate") ?? null;
-      const sizeText =
+      const leaseRateText = mappedAttributes.omittedAttributeCount || mappedAttributes.blockedLabels.has("Lease Rate") ||
+        mappedAttributes.blockedLabels.has("Rate") ? null : attrs.get("Lease Rate") ?? attrs.get("Rate") ?? null;
+      const sizeText = mappedAttributes.omittedAttributeCount || mappedAttributes.blockedLabels.has("Building Size") ||
+        mappedAttributes.blockedLabels.has("Lot Size") ? null :
         attrs.get("Building Size") ?? attrs.get("Lot Size") ?? clean(x.size_summary);
       // Stranded structured-field lift: the inventory "Available" attribute is a
       // dropped available / divisible square-foot signal. Only non-null parsed
@@ -1072,6 +1074,7 @@ export async function srcBuildout(
       // the contract-specified helper) on the top-level salePriceText field.
       const rawSalePriceText = tx === "sale" ? priceText : null;
       const isSalePsf = isPerSfText(rawSalePriceText);
+      const fieldObservations = buildoutFieldObservations(x.index_attributes);
 
       listings.push({
         id: x.id != null ? String(x.id) : null,
@@ -1100,6 +1103,11 @@ export async function srcBuildout(
         canonicalUrl,
         statusBadge,
         ...availSf,
+        ...(fieldObservations ? { buildoutFieldObservations: fieldObservations } : {}),
+        ...(mappedAttributes.duplicateAttributeCount || mappedAttributes.malformedAttributeCount || mappedAttributes.omittedAttributeCount
+          ? { buildoutAttributeMapping: { duplicateAttributeCount: mappedAttributes.duplicateAttributeCount,
+              malformedAttributeCount: mappedAttributes.malformedAttributeCount,
+              omittedAttributeCount: mappedAttributes.omittedAttributeCount } } : {}),
         ...(spaceFacts ? { extraFacts: spaceFacts } : {}),
         brokerIds,
         brochures: x.pdf_url ? [{ name: "Listing brochure (PDF)", url: x.pdf_url }] : [],

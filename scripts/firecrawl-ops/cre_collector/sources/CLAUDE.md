@@ -932,6 +932,14 @@ owns the preventive guard and separately approved historical decision.
   blank, malformed or conflicting values supply no fact. This availability text
   is not a building-unit or parking count. Other mappings and the native page
   cache remain unchanged.
+- `buildoutFieldObservations` retains bounded source availability literals with
+  ordinals and explicit omission/ambiguity markers. Numeric values are unverified
+  candidates, never a canonical column update. Cap-rate values are omitted until
+  source-specific visibility is established. This is current collector metadata;
+  later raw-data updates can replace it, so it is not an observation history. The
+  bounded text filter is not a confidentiality guarantee. A synthetic
+  `priceWithheld` flag has no established Buildout provider contract in the
+  available evidence; the existing sale-price mapping does not evaluate it.
 - **No server-side sale/lease filter**; one inventory fetch per `pluginKey`, `buildoutCache` shared across sale+lease passes.
 - Current-inventory receipts preserve literal owned HTTP(S) listing URLs, including
   one nonempty `propertyId` alongside empty template parameters and meaningful
