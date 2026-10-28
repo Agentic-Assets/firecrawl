@@ -2,7 +2,7 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 # Private source evidence
 
-This is a separate unverified evidence store. It does not promote listing fields, establish publisher authenticity, determine listing status, store original binaries, or write OM facts. Artifacts and results may contain confidential material; keep their parent directories private. The CLI creates new output files exclusively with mode 0600 and prints only counts and the plan digest.
+This is a separate unverified evidence store. It does not promote listing fields, establish publisher authenticity, determine listing status, store original binaries in the evidence database, or write OM facts. Draft document acquisition may retain local private binary copies as described below. Artifacts and results may contain confidential material; keep their parent directories private. The CLI creates new output files exclusively with mode 0600 and prints only counts and the plan digest.
 
 From the collector directory, build a plan without contacting a database:
 
@@ -44,7 +44,7 @@ retention choice. Source-scoped absolute HTTP(S) candidates on standard ports
 are selectable without rewriting the observed URL.
 This is an operator assertion, not publisher permission or proof of public
 access. No DNS, network, download, extraction or database request occurs. A
-future transport must validate public IP addresses on every request and
+transport must validate public IP addresses on every request and
 redirect hop and enforce source-specific access and visibility rules. Source
 observation clocks must not be relabeled as download times; preserve precise
 actual acquisition timestamps in a separate receipt. The local AnyDoc
@@ -69,9 +69,35 @@ source occurrences separately; publisher identity and visibility remain
 unverified. Receipt metadata alone does not prove redirect locations, aggregate
 budget enforcement, original-file retention, or that extraction actually ran.
 Extraction binding is explicitly caller-asserted and does not rerun a parser.
-No cumulative run budget is enforced by the one-shot supervisor. These drafts
-are not wired into the collector or AnyDoc execution, remain unverified under
-the test hold, and are not deployed.
+No cumulative run budget is enforced by the one-shot supervisor itself. The
+draft foreground library below connects it to local AnyDoc; neither is wired
+into regular collection or deployed.
+
+Draft `document_pipeline.run` explicitly connects a rederived selection and
+sealed source plan to the supervised fetch and local AnyDoc adapter. Its caller
+must hold the existing foreground owner lock and provide the existing attempt
+manifest and durable save callback. It allows one selection per source attempt;
+combining candidates from multiple native pages is still needed. The existing
+attempt records intent, reservations and outcomes. Reservations conservatively
+charge the full allowed entity-body bytes plus one oversize probe byte, including
+failed and unknown attempts; HTTP headers and transfer framing are not counted.
+The fetch worker and converter process group have phase timeouts and cleanup
+grace periods. These are not a whole-host deadline or a native-memory limit.
+
+The bridge rechecks the private job, receipt, actual acquisition clock, body
+hash and size before conversion. It privately seals acquisition context, AnyDoc
+artifact, binding and evidence plan before policy-aware cleanup of the two
+rechecked local original-body copies. The enriched artifact and plan header carry
+all original candidate occurrences and listing relationships; the unchanged
+converter output is saved separately as `converter-artifact.json`. Each body
+cleanup has its own saved intent and removal state. A sealed 401, 403, 429 or 451
+response stops the selection without another fetch. `keep_unresolved_until_review` retains
+copies for validated failed or OCR-needed extractions; ambiguous or interrupted
+work preserves files and requires reconciliation, with no automatic resume.
+The library does not activate a regular collector hook, CLI, database append,
+writer pump, scheduler or canonical change. It remains unverified under the
+test hold. Its metadata and text do not establish publication permission,
+listing identity, complete coverage or extraction accuracy.
 
 Existing single-source collector artifacts can be wrapped offline before planning:
 

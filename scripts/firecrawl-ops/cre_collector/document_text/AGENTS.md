@@ -17,9 +17,18 @@ The draft acquisition-policy preflight is also offline and does not invoke the
 adapter. Preserve precise actual download times in a separate receipt; do not
 relabel original source clocks as download times. The provenance input accepts
 UTC timestamps with optional one to six fractional digits and preserves them.
-The draft one-shot document fetch worker is not connected to this adapter;
-binding metadata does not prove converter execution. Worker and adapter changes
-remain unverified under the test hold.
+The draft `source_evidence.document_pipeline.run` library explicitly connects
+the supervised fetch worker to this adapter under an existing foreground owner
+lock, attempt manifest and save callback. It binds the source URL, exact
+download clock, body hash and size, then seals private context, artifact,
+binding and evidence plan before policy-aware cleanup of source copies.
+Conservative failed and unknown byte reservations include a probe byte; phase
+deadlines and grace do not bound all host activity or native memory. Ambiguous
+or interrupted work requires reconciliation without automatic resume. One
+selection is supported per source attempt; multi-page candidate combination
+remains future work. There is no regular collector hook, CLI, database append,
+writer pump or scheduler activation. These changes remain unverified under the
+test hold and establish no publication permission, coverage or accuracy.
 
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private

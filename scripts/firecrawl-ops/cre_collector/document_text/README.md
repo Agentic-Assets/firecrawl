@@ -8,23 +8,30 @@ Full-source collection does not currently download or automatically extract
 linked documents. The draft `source_evidence.cli discover-documents` command
 identifies candidate links in a saved, validated evidence plan; it performs no
 download or extraction. It is unverified under the current test hold and is not
-deployment or source-access evidence. Acquisition and AnyDoc execution still
-require a separately authorized workflow and an already acquired local file.
+deployment or source-access evidence. Manual AnyDoc execution starts with an
+already acquired local file.
 The draft offline `plan-document-acquisition` preflight can select candidates
 under an explicit bounded policy, but it does not acquire those files or run
 AnyDoc. It performs no DNS or access verification and does not establish
-publisher permission. A future acquisition receipt must preserve precise actual
+publisher permission. An acquisition receipt preserves precise actual
 download times separately from the source observation time; the local
 provenance interface accepts UTC timestamps with optional one to six fractional
 digits and preserves the supplied timestamp verbatim. The preflight remains
 unverified under the test hold and is not deployed.
 
-Draft private document-fetch primitives have a one-shot externally timed worker,
-but are not connected to this adapter or full-source collection. Their receipts
-keep actual download clocks separate from source observations. An extraction
-binding uses the receipt's precise finished time verbatim and remains a caller
-assertion; it does not establish that the converter ran. These primitives have
-not been verified under the test hold.
+The draft `source_evidence.document_pipeline.run` library connects supervised
+private document fetches to this local adapter under an existing foreground
+attempt, save callback and owner lock. It rechecks source bytes, hash, size,
+final URL and precise download time, and seals private acquisition context,
+artifact, binding and evidence plan before policy-aware original-copy cleanup.
+Failed and unknown fetch reservations conservatively consume their full byte
+cap plus one probe byte; phase deadlines and cleanup grace do not bound all
+host activity or native converter memory. Ambiguous or interrupted work keeps
+its private files for reconciliation and never automatically resumes. One
+selection is supported per source attempt; combining native-page candidates
+remains future work. This library is not connected to regular collection, a
+CLI, database append, writer pump or scheduler. It is unverified under the
+test hold and does not prove publisher permission, coverage or text accuracy.
 
 ```sh
 node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifact.json

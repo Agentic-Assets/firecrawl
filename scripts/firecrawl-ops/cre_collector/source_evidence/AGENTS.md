@@ -74,22 +74,26 @@ Draft `plan-document-acquisition` is a pure policy preflight over a validated
 plan and rederived candidates. It produces a bounded source-scoped selection,
 not a download, extraction, permission decision, or completed evidence write.
 Operator-asserted exact host/source allowlists and limits do not authenticate
-publishers. No DNS is checked by preflight; a future acquisition transport must
+publishers. No DNS is checked by preflight; acquisition transport must
 validate public IPs at each request and redirect hop and preserve actual
 acquisition clocks separately from source-observation clocks. This draft is
 unverified under the test hold and is not deployed.
 
-Draft document transport and acquisition validation are not integrated into
-full-source runs. Validate allowed hosts and public destinations on every hop,
-enforce the absolute deadline externally, and rederive selections before binding
-receipts and body bytes. The draft one-shot supervisor uses a private hash-bound
-job, a document timeout plus five seconds startup grace, and validates body
-readback. Timeout or worker failure leaves the request outcome ambiguous; do not
-retry automatically. It does not enforce a cumulative run budget or invoke
-AnyDoc. Preserve precise download clocks separately from
-source observations. Extraction execution is caller-asserted, not reexecuted;
-do not claim publisher identity, visibility, aggregate budget compliance, or
-original retention from receipt metadata alone. These drafts are unverified.
+Draft `document_pipeline.run` connects the supervised document transport to
+local AnyDoc under the existing attempt manifest, save callback and foreground
+owner lock. It rederives policy and the sealed source plan, checks public
+destinations at each hop, and binds the actual download clock, URL and body
+hash before extraction. Cumulative entity-byte reservations include one probe
+byte and remain charged after failed or unknown attempts. Fetch and converter
+process timeouts and grace periods are not a whole-host deadline or native
+memory limit. The pipeline seals private context, artifact, binding and plan
+before policy-aware cleanup of rechecked original copies. Ambiguous or
+interrupted work requires reconciliation and never resumes automatically.
+One selection is allowed per source attempt; combined multi-page native
+candidates remain unimplemented. This explicit library is not wired to regular
+collector runs, a CLI, DB append, a writer pump or a scheduler. It is unverified
+under the hold; do not claim publisher identity, visibility, complete coverage
+or extraction accuracy.
 
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new
