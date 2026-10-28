@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   colliersMainIsChallenge,
   colliersMainAbs,
@@ -47,10 +48,7 @@ import { firecrawl } from "../../../lib/scrape.js";
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-const FIXTURE_PATH = join(
-  new URL(".", import.meta.url).pathname,
-  "../../fixtures/raw_data/colliers.json"
-);
+const FIXTURE_PATH = fileURLToPath(new URL("../../fixtures/raw_data/colliers.json", import.meta.url));
 
 function loadFixture(): any[] {
   return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));

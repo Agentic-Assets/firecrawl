@@ -4,7 +4,7 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as cheerio from "cheerio";
 import {
   colliersUrl,
@@ -40,10 +40,7 @@ import { parseLeaseRate } from "../../../lib/parse.js";
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-const FIXTURE_PATH = join(
-  new URL(".", import.meta.url).pathname,
-  "../../fixtures/raw_data/colliers.json"
-);
+const FIXTURE_PATH = fileURLToPath(new URL("../../fixtures/raw_data/colliers.json", import.meta.url));
 
 function loadFixture(): any[] {
   return JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));

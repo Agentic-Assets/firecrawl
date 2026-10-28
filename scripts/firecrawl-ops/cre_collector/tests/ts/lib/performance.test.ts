@@ -546,7 +546,9 @@ test("snapshot output has an explicit byte cap", () => {
   assert.deepEqual(warnings, [PERFORMANCE_WARNING]);
 });
 
-test("exclusive random temp creation refuses pre-existing symlinks and FIFOs", () => {
+test("exclusive random temp creation refuses pre-existing symlinks and FIFOs", {
+  skip: process.platform === "win32" ? "POSIX symlink/FIFO semantics" : false,
+}, () => {
   for (const kind of ["symlink", "fifo"] as const) {
     const dir = mkdtempSync(join(tmpdir(), `cre-performance-temp-${kind}-`));
     const snapshotPath = join(dir, "snapshot.json");
@@ -586,7 +588,9 @@ test("exclusive random temp creation refuses pre-existing symlinks and FIFOs", (
   }
 });
 
-test("existing snapshot symlinks and FIFOs are refused without replacement", () => {
+test("existing snapshot symlinks and FIFOs are refused without replacement", {
+  skip: process.platform === "win32" ? "POSIX symlink/FIFO semantics" : false,
+}, () => {
   for (const kind of ["symlink", "fifo"] as const) {
     const dir = mkdtempSync(join(tmpdir(), `cre-performance-target-${kind}-`));
     const snapshotPath = join(dir, "snapshot.json");
