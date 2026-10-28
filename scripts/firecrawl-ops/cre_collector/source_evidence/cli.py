@@ -108,6 +108,37 @@ def facts_sql(contains, limit):
             "::jsonb ORDER BY observed_at DESC,capture_id,item_no LIMIT " + str(limit) + ") r;\nCOMMIT;\n")
 
 
+
+def fact_text_sql(query, limit, *, source_key=None, capture_id=None):
+    """Search literal text in JSONB's serialized facts under the reader role."""
+    if not isinstance(query, str) or not query or "\x00" in query:
+        raise ValueError("invalid fact text query")
+    try:
+        if len(query.encode("utf-8")) > 512:
+            raise ValueError("fact text query exceeds limit")
+    except UnicodeEncodeError as exc:
+        raise ValueError("invalid fact text query") from exc
+    if type(limit) is not int or not 1 <= limit <= 25:
+        raise ValueError("invalid fact text search limit")
+    if source_key is not None and (not isinstance(source_key, str) or
+                                   not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_key)):
+        raise ValueError("invalid source key")
+    if capture_id is not None and (not isinstance(capture_id, str) or
+                                   not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", capture_id)):
+        raise ValueError("invalid capture identity")
+    needle = json.dumps(query, ensure_ascii=False)[1:-1]
+    needle = needle.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    predicates = ["(facts::text) ILIKE " + sql_text("%" + needle + "%") + " ESCAPE '!' "]
+    if source_key is not None:
+        predicates.append("source_key=" + sql_text(source_key))
+    if capture_id is not None:
+        predicates.append("capture_id=" + sql_text(capture_id))
+    return ("BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog;\nSET LOCAL ROLE cre_source_evidence_reader;\n"
+            "SET LOCAL statement_timeout = 30000;\nSELECT row_to_json(r) FROM (SELECT capture_id,item_no,source_key,"
+            "external_id,observed_at,source_url,provenance,pg_column_size(facts) AS facts_bytes "
+            "FROM cre_source_evidence.events WHERE " + " AND ".join(predicates) +
+            " ORDER BY observed_at DESC,capture_id,item_no LIMIT " + str(limit) + ") r;\nCOMMIT;\n")
+
 def get_sql(capture_id, item_no):
     if not isinstance(capture_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', capture_id):
         raise ValueError('invalid capture identity')
@@ -176,6 +207,10 @@ def main(argv=None):
     f.add_argument('--contains-file', required=True); f.add_argument('--limit', type=int, default=10)
     f.add_argument('--out', required=True); f.add_argument('--env-file', required=True)
     f.add_argument('--expected-db-target-sha256', required=True)
+    ft = sub.add_parser('search-fact-text')
+    ft.add_argument('--query', required=True); ft.add_argument('--limit', type=int, default=10)
+    ft.add_argument('--source-key'); ft.add_argument('--capture-id'); ft.add_argument('--out', required=True)
+    ft.add_argument('--env-file', required=True); ft.add_argument('--expected-db-target-sha256', required=True)
     g = sub.add_parser('get')
     g.add_argument('--capture-id', required=True); g.add_argument('--item-no', type=int, required=True)
     g.add_argument('--out', required=True); g.add_argument('--env-file', required=True)
@@ -215,6 +250,8 @@ def main(argv=None):
             sql = search_sql(args.query, args.mode, args.limit)
         elif args.command == 'search-facts':
             sql = facts_sql(read_json(args.contains_file, 16384), args.limit)
+        elif args.command == 'search-fact-text':
+            sql = fact_text_sql(args.query, args.limit, source_key=args.source_key, capture_id=args.capture_id)
         else:
             sql = get_sql(args.capture_id, args.item_no)
         raw = run_psql(sql, args.env_file, args.expected_db_target_sha256)

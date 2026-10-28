@@ -28,3 +28,8 @@ Projected observations cannot reconstruct removed source bytes; whole-response
 JSON contexts do not assert a selected listing array. Effective-privilege checks
 are bounded preflights, not server-side credential isolation. Production writer
 activation remains subject to the shared-database review on AGENTIC-5040.
+
+Fact-text search is a literal case-insensitive search over PostgreSQL's JSONB
+text representation, not semantic matching, original bytes or document text.
+Its private output contains match metadata only; use `get` for full facts.
+Migration and index availability require separate operator authorization.
