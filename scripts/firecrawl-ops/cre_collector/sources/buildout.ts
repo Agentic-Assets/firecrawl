@@ -9,6 +9,7 @@ import { CONCURRENCY } from "../lib/config.js";
 import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { BuildoutCurrentInventoryProof, BuildoutInventoryProofPage, SourceResult, Tx } from "../types.js";
 import { harvestDetail } from "../lib/harvest.js";
+import { captureDetailTables } from "../lib/detail-tables/index.js";
 import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
 import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
 import {
@@ -750,6 +751,8 @@ export async function buildoutInventory(
 export type BuildoutDetailConfig = {
   pluginKey: string;
   host: string;
+  /** Keep the source's sale/lease suffix in the detail URL, not the canonical ID. */
+  preserveTransactionSuffix?: boolean;
   /**
    * Public listing hosts allowed to supply `propertyId` values for this
    * plugin, with central bare/www equivalence. A queue row must prove ownership
@@ -868,7 +871,10 @@ export function buildoutDetailIframeUrl(
   const parsed = buildoutOwnedListingUrl(listingUrl, cfg.listingHosts);
   if (!parsed) return null;
   const propertyId = parsed.searchParams.get("propertyId");
-  const slug = propertyId?.replace(/-(?:sale|lease)$/i, "") || null;
+  if (!propertyId?.replace(/-(?:sale|lease)$/i, "")) return null;
+  const slug = (cfg.preserveTransactionSuffix
+    ? propertyId
+    : propertyId?.replace(/-(?:sale|lease)$/i, "")) || null;
   if (!slug) return null;
   return (
     `https://buildout.com/plugins/${cfg.pluginKey}/${cfg.host}/inventory/` +
@@ -927,6 +933,16 @@ export async function enrichBuildoutDetail(
     return null;
   }
   const harvested = harvestDetail(doc, { baseUrl: iframeUrl });
+  const detailTables = captureDetailTables(doc.rawHtml || undefined, {
+    sourceUrl: iframeUrl,
+    observedAt: doc.detailObservation?.observedAt ?? observationNow(),
+  });
+  // An incomplete attempt remains useful evidence, but must not replace the
+  // prior complete table snapshot during extra_facts' top-level JSON merge.
+  const tableKey = detailTables.status === "observed" &&
+    !detailTables.omissions.unknown &&
+    Object.values(detailTables.omissions).every(value => value === 0 || value === false)
+    ? "detail_tables" : "detail_tables_attempt";
   // Echo the ORIGINAL listing url (not the iframe url) so cre_ingest.to_row
   // recomputes the same Buildout external_id (?propertyId=...) and the worker
   // marks the claim done by url. The artifact is additive: only the harvested
@@ -943,6 +959,11 @@ export async function enrichBuildoutDetail(
     photos: harvested.images,
     markdown: typeof doc.markdown === "string" && doc.markdown ? doc.markdown : undefined,
     buildoutDetailIframeUrl: iframeUrl,
+    extraFacts: {
+      [tableKey]: detailTables,
+      [`${tableKey}_observation_origin`]: doc.detailObservation
+        ? "recorded_detail_observation" : "collector_result_read_time",
+    },
   };
 }
 

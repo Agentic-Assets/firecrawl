@@ -197,8 +197,10 @@ test("Buildout listing ownership shares bare/www equivalence and URL guards", ()
     setPages(pages([row(968697, { show_link: vector.url, sale: false })]));
     const listingPage = `https://${vector.host}/`;
     const result = await srcBuildout(firm.company, firm.pluginKey, listingPage, "lease", Infinity, false, opts);
+    // These ownership vectors exercise the legacy URL policy independently of
+    // the first registry firm's source-specific native-suffix opt-in.
     const iframe = buildoutDetailIframeUrl(firm.sourceKey, vector.url,
-      { ...firm.detailConfig!, host: vector.host, listingHosts: [vector.host] });
+      { ...firm.detailConfig!, host: vector.host, listingHosts: [vector.host], preserveTransactionSuffix: false });
     if (vector.inventoryOwned ?? vector.owned) {
       assert.equal(proof(result).pages[0].rows[0].showLink, vector.url);
       assert.equal(result.listings[0].url, vector.url);

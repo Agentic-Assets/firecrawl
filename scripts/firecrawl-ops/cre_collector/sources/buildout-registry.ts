@@ -120,6 +120,10 @@ export function assertRegisteredBuildoutFirm(
         `${definition.sourceKey}: Buildout detail host must exactly match the listings-page host`
       );
     }
+    if (definition.detailConfig.preserveTransactionSuffix !== undefined &&
+        typeof definition.detailConfig.preserveTransactionSuffix !== "boolean") {
+      throw new Error(`${definition.sourceKey}: Buildout detail suffix policy must be boolean`);
+    }
     const listingHosts = definition.detailConfig.listingHosts;
     if (
       listingHosts.length === 0 ||
@@ -149,6 +153,14 @@ export function assertRegisteredBuildoutFirm(
   }
 }
 
+// Route differences verified against the public brokerage page. This affects
+// detail URLs only, not inventory referers or canonical listing identities.
+const DETAIL_ROUTE_OVERRIDES: Partial<Record<RegisteredBuildoutSourceKey, {
+  preserveTransactionSuffix: boolean;
+}>> = {
+  "faris-lee": { preserveTransactionSuffix: true },
+};
+
 function firm(
   sourceKey: RegisteredBuildoutSourceKey,
   company: string,
@@ -169,6 +181,8 @@ function firm(
             host: detailHost,
             listingHosts: [detailHost],
             company,
+            ...(DETAIL_ROUTE_OVERRIDES[sourceKey]?.preserveTransactionSuffix
+              ? { preserveTransactionSuffix: true } : {}),
           },
         }
       : {}),
