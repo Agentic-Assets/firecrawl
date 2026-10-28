@@ -14,6 +14,7 @@ import json
 import re
 from pathlib import Path
 
+import available_space_count
 import buildout_observation_manifest as manifest_tools
 from available_space_count import parse_buildout_available_space_count
 from buildout_observation_artifact import (
@@ -60,7 +61,7 @@ def _field(pairs: list[list[object]], label: str, *, spaces: bool) -> dict:
 
 
 def _attributes(record: dict, kind: str) -> tuple[list[list[object]] | None, str | None]:
-    if kind == "buildout-page":
+    if kind in {"buildout-page", "buildout-cache-audit"}:
         state = record.get("indexAttributesState")
         if state != "present":
             return None, "attributes_" + (state if state in {"missing", "null", "quarantined"} else "invalid")
@@ -98,14 +99,17 @@ def project(
     verified = manifest_tools.verify(manifest, original, raw, expected_scope=expected_scope)
     if len(raw) > MAX_OUTPUT_BYTES:
         raise ValueError("artifact exceeds byte limit")
-    data = json.loads(raw, object_pairs_hook=unique_object, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid number")))
+    data = json.loads(raw, object_pairs_hook=unique_object,
+                      parse_int=lambda value: manifest_tools.artifact_builder.bounded_number(value, floating=False),
+                      parse_float=lambda value: manifest_tools.artifact_builder.bounded_number(value, floating=True),
+                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid number")))
     if not isinstance(data, dict) or data.get("schema") != "buildout-private-observation-artifact-v1":
         raise ValueError("unsupported artifact schema")
     provenance, records, quarantine, summary = (data.get("provenance"), data.get("records"),
                                                  data.get("quarantine"), data.get("summary"))
     if (not isinstance(provenance, dict) or provenance.get("sourceKey") not in BUILDOUT_SOURCE_KEYS
         or provenance.get("sourceKeyOrigin") != "operator_supplied"
-        or provenance.get("inputKind") not in {"buildout-page", "retained-observations"}
+        or provenance.get("inputKind") not in {"buildout-page", "retained-observations", "buildout-cache-audit"}
         or not isinstance(records, list) or len(records) > _MAX_RECORDS
         or not isinstance(quarantine, list) or not isinstance(summary, dict)):
         raise ValueError("invalid artifact structure")
@@ -128,8 +132,9 @@ def project(
         if not isinstance(record, dict) or record.get("identityResolution") != "unresolved":
             raise ValueError("invalid record identity")
         pointer = record.get("sourcePointer")
-        pointer_pattern = (r"/inventory/(?:0|[1-9][0-9]*)" if kind == "buildout-page"
-                           else r"/(?:0|[1-9][0-9]*)")
+        pointer_pattern = (r"/inventory/(?:0|[1-9][0-9]*)" if kind == "buildout-page" else
+                           r"/data/inventory/(?:0|[1-9][0-9]*)" if kind == "buildout-cache-audit" else
+                           r"/(?:0|[1-9][0-9]*)")
         if not isinstance(pointer, str) or not re.fullmatch(pointer_pattern, pointer, re.ASCII):
             raise ValueError("invalid source pointer")
         ordinal = int(pointer.rsplit("/", 1)[-1])
@@ -146,16 +151,29 @@ def project(
         output.append({"sourcePointer": pointer, "identityResolution": "unresolved",
                        "rowTransaction": "unverified",
                        "availableSpaceCount": space, "capRate": cap})
+    audit = data.get("auditContext") if kind == "buildout-cache-audit" else None
+    if kind == "buildout-cache-audit" and (
+        not isinstance(audit, dict) or type(audit.get("reportedProvenanceIncomplete")) is not bool
+        or data.get("reportedProvenanceIncomplete") is not audit["reportedProvenanceIncomplete"]
+    ):
+        raise ValueError("invalid cache audit context")
     result = {"schema": "buildout-offline-projection-v1", "artifactSha256": hashlib.sha256(raw).hexdigest(),
               "integrity": "verified_byte_consistency_only", "scope": verified["scope"],
+              "projectionCode": {"projectorSha256": manifest_tools.fingerprint_file(Path(__file__)),
+                                 "availableSpaceParserSha256": manifest_tools.fingerprint_file(Path(available_space_count.__file__)),
+                                 "fingerprintOrigin": "local_files_at_projection_time_not_authentication"},
               "sourceKey": provenance["sourceKey"], "sourceKeyOrigin": "operator_supplied",
               "sourceCompleteness": "unverified", "sourceAvailability": "unverified",
               "visibility": "unverified", "freshness": "unverified", "promotion": "not_authorized",
+              "auditProvenance": audit if audit is not None else "not_evaluated",
+              "reportedProvenanceIncomplete": audit["reportedProvenanceIncomplete"] if audit is not None else None,
               "records": output}
     encoded = (json.dumps(result, ensure_ascii=True, allow_nan=False, separators=(",", ":")) + "\n").encode("ascii")
     if len(encoded) > MAX_OUTPUT_BYTES:
         raise ValueError("projection exceeds byte limit")
     counts = {"records": len(output), "upstreamIncomplete": incomplete}
+    if audit is not None:
+        counts["reportedProvenanceIncomplete"] = audit["reportedProvenanceIncomplete"]
     return encoded, counts
 
 
@@ -165,15 +183,16 @@ def main() -> None:
     parser.add_argument("--original", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--source-key", required=True)
-    parser.add_argument("--generation-id", required=True)
+    parser.add_argument("--generation-id")
     parser.add_argument("--capture-id", required=True)
-    parser.add_argument("--page", required=True, type=int)
+    parser.add_argument("--page", type=int)
     parser.add_argument("--transaction", required=True, choices=("sale", "lease", "unknown"))
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     raw = manifest_tools.read_bounded(args.input, MAX_OUTPUT_BYTES)
-    original = manifest_tools.read_bounded(args.original, manifest_tools.artifact_builder.MAX_INPUT_BYTES)
     manifest = manifest_tools.read_bounded(args.manifest, manifest_tools.MAX_MANIFEST_BYTES)
+    hint = manifest_tools.parse_object(manifest, manifest_tools.MAX_MANIFEST_BYTES)
+    original = manifest_tools.read_bounded(args.original, manifest_tools.artifact_builder.input_limit(hint.get("inputKind")))
     scope = {"sourceKey": args.source_key, "generationId": args.generation_id,
              "captureId": args.capture_id, "page": args.page, "transaction": args.transaction}
     encoded, counts = project(raw, original=original, manifest=manifest, expected_scope=scope)

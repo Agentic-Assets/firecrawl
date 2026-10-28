@@ -448,24 +448,39 @@ test("production JLL captures one fresh real enrichment and shares its rendered 
   });
 });
 
-test("production capture forwards cell cancellation to native HTTP and restores fetch after failure", async () => {
-  await withWorkerEnvironment("marcus-millichap", async () => {
-    const original = globalThis.fetch;
-    let sawAbort = false;
-    const fakeFetch: typeof fetch = async (_, init) => new Promise((_, reject) => {
-      init!.signal!.addEventListener("abort", () => { sawAbort = true; reject(new Error("private request aborted")); }, { once: true });
-    });
-    globalThis.fetch = fakeFetch;
-    const controller = new AbortController();
-    try {
-      const result = withProductionMatchedCapture({ source: "marcus-millichap", generationId: "production-marcus-millichap" },
-        (capture) => runMatchedCapacityCell({ ...cellOptions("production-marcus-millichap"), signal: controller.signal, capture }));
-      setTimeout(() => controller.abort(), 10);
-      await assert.rejects(result, /cancelled/);
-      assert.equal(sawAbort, true);
-      assert.equal(globalThis.fetch, fakeFetch);
-    } finally { globalThis.fetch = original; }
-  });
+function matchedCancellationChildEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR"]) {
+    if (source[key] !== undefined) env[key] = source[key];
+  }
+  return env;
+}
+
+test("cancellation child environment excludes unrelated credentials and runtime options", () => {
+  assert.deepEqual(matchedCancellationChildEnv({ PATH: "/synthetic", HOME: "/synthetic-home",
+    NODE_OPTIONS: "--require=/synthetic", CRE_TEST_SECRET: "synthetic-secret" }),
+  { PATH: "/synthetic", HOME: "/synthetic-home" });
+});
+
+test("production capture forwards cell cancellation to native HTTP and restores fetch after failure", () => {
+  const child = spawnSync(process.execPath, ["--import", "tsx", "tests/ts/fixtures/matched-cancellation-child.ts", "capture"],
+    { encoding: "utf8", timeout: 10000, env: matchedCancellationChildEnv() });
+  assert.equal(child.status, 0, `owned capture child failed: ${child.error?.message ?? child.stderr}`);
+  assert.match(child.stdout, /PASS native cancellation and restoration/);
+});
+
+test("no-start timeout terminates the owned wrapper before a delayed finally can affect the next test", async () => {
+  const original = globalThis.fetch;
+  const nextTestFetch: typeof fetch = async () => { throw new Error("next test sentinel"); };
+  globalThis.fetch = nextTestFetch;
+  try {
+    const child = spawnSync(process.execPath, ["--import", "tsx", "tests/ts/fixtures/matched-cancellation-child.ts", "no-start"],
+      { encoding: "utf8", timeout: 10000, env: matchedCancellationChildEnv() });
+    assert.equal(child.status, 0, `owned no-start child failed: ${child.error?.message ?? child.stderr}`);
+    assert.match(child.stdout, /PASS bounded no-start timeout with pending wrapper/);
+    await new Promise((resolve) => setTimeout(resolve, 850));
+    assert.equal(globalThis.fetch, nextTestFetch);
+  } finally { globalThis.fetch = original; }
 });
 
 test("a deliberate JLL cache miss reaches the actual scrape method and its blocked fetch transport", async () => {

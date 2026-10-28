@@ -44,10 +44,12 @@ def validate_scope(scope):
         raise ValueError("unregistered asserted source")
     for name in ("generationId", "captureId"):
         value = scope[name]
+        if name == "generationId" and value is None:
+            continue
         if (not isinstance(value, str) or not SCOPE_ID.fullmatch(value)
             or artifact_builder.credential_label(value)):
             raise ValueError("invalid asserted scope identifier")
-    if type(scope["page"]) is not int or not 0 <= scope["page"] <= 1_000_000:
+    if scope["page"] is not None and (type(scope["page"]) is not int or not 0 <= scope["page"] <= 1_000_000):
         raise ValueError("invalid asserted page")
     if scope["transaction"] not in ("sale", "lease", "unknown"):
         raise ValueError("invalid asserted transaction")
@@ -82,19 +84,21 @@ def builder_fingerprint():
 
 def seal(input_bytes, artifact_bytes, *, scope, input_kind):
     scope = validate_scope(scope)
-    if input_kind not in ("buildout-page", "retained-observations"):
-        raise ValueError("invalid input kind")
-    if len(input_bytes) > artifact_builder.MAX_INPUT_BYTES or len(artifact_bytes) > artifact_builder.MAX_OUTPUT_BYTES:
+    limit = artifact_builder.input_limit(input_kind)
+    if len(input_bytes) > limit or len(artifact_bytes) > artifact_builder.MAX_OUTPUT_BYTES:
         raise ValueError("input exceeds byte limit")
     # Independently reconstruct the artifact from exact input bytes and compare
     # bytes, rather than trusting the digest or counters embedded in the file.
     expected, summary = artifact_builder.build_artifact(input_bytes, source_key=scope["sourceKey"], input_kind=input_kind)
     if expected != artifact_bytes:
         raise ValueError("artifact does not match rebuilt input")
+    unresolved = (scope["generationId"] is None or scope["page"] is None
+                  or input_kind == "buildout-cache-audit")
     result = {
         "schema": SCHEMA,
         "scope": scope,
         "scopeOrigin": "operator_asserted_unverified",
+        "scopeResolution": "capture_scoped_unresolved" if unresolved else "operator_asserted_page_scope",
         "inputKind": input_kind,
         "input": {"sha256": digest(input_bytes), "bytes": len(input_bytes)},
         "artifact": {"sha256": digest(artifact_bytes), "bytes": len(artifact_bytes)},
@@ -127,12 +131,13 @@ class FixtureReplayModel:
     def __init__(self):
         self._slots = {}
         self._page_bindings = {}
+        self._capture_bindings = {}
         self._lock = threading.Lock()
 
     def apply(self, manifest_bytes, input_bytes, artifact_bytes, *, expected_scope):
         # This model intentionally accepts only an explicitly labelled local
         # test page; the label is an assertion, not a security boundary.
-        source = parse_object(input_bytes, artifact_builder.MAX_INPUT_BYTES)
+        source = parse_object(input_bytes, artifact_builder.MAX_AUDIT_BYTES)
         if source.get("syntheticFixture") is not True:
             raise ValueError("fixture model requires synthetic input")
         manifest = verify(manifest_bytes, input_bytes, artifact_bytes, expected_scope=expected_scope)
@@ -151,11 +156,20 @@ class FixtureReplayModel:
             evidence.append((pointer, artifact_builder.render(record)))
         slot = tuple(manifest["scope"][key] for key in SLOT_KEYS)
         page = tuple(manifest["scope"][key] for key in PAGE_KEYS)
+        if manifest["scopeResolution"] == "capture_scoped_unresolved":
+            # Unknown page/run is not evidence that separate captures are one page.
+            slot += (manifest["scope"]["captureId"],)
+            page += (manifest["scope"]["captureId"],)
         page_binding = (manifest["scope"]["captureId"], manifest["inputKind"],
                         canonical(manifest["input"]), canonical(manifest["artifact"]),
                         canonical(manifest["builder"]), canonical(manifest["summary"]))
         binding = (manifest["manifestSha256"], tuple(evidence))
         with self._lock:
+            if manifest["inputKind"] == "buildout-cache-audit":
+                capture_key = (manifest["scope"]["sourceKey"], manifest["scope"]["captureId"])
+                prior_capture = self._capture_bindings.get(capture_key)
+                if prior_capture is not None and prior_capture != binding:
+                    raise ValueError("divergent fixture capture binding")
             previous_page = self._page_bindings.get(page)
             if previous_page is not None and previous_page != page_binding:
                 raise ValueError("divergent fixture page binding")
@@ -164,6 +178,8 @@ class FixtureReplayModel:
                 if previous != binding:
                     raise ValueError("divergent fixture replay")
                 return "unchanged"
+            if manifest["inputKind"] == "buildout-cache-audit":
+                self._capture_bindings[capture_key] = binding
             self._page_bindings[page] = page_binding
             self._slots[slot] = binding
             return "inserted"
@@ -180,15 +196,15 @@ def main():
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--source-key", required=True)
-    parser.add_argument("--generation-id", required=True)
+    parser.add_argument("--generation-id")
     parser.add_argument("--capture-id", required=True)
-    parser.add_argument("--page", type=int, required=True)
+    parser.add_argument("--page", type=int)
     parser.add_argument("--transaction", choices=("sale", "lease", "unknown"), required=True)
-    parser.add_argument("--input-kind", choices=("buildout-page", "retained-observations"), required=True)
+    parser.add_argument("--input-kind", choices=("buildout-page", "retained-observations", "buildout-cache-audit"), required=True)
     args = parser.parse_args()
     scope = {"sourceKey": args.source_key, "generationId": args.generation_id,
              "captureId": args.capture_id, "page": args.page, "transaction": args.transaction}
-    original = read_bounded(args.input, artifact_builder.MAX_INPUT_BYTES)
+    original = read_bounded(args.input, artifact_builder.input_limit(args.input_kind))
     artifact = read_bounded(args.artifact, artifact_builder.MAX_OUTPUT_BYTES)
     if args.action == "seal":
         manifest = seal(original, artifact, scope=scope, input_kind=args.input_kind)
