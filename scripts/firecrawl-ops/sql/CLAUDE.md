@@ -79,9 +79,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 ```
 
 Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. For migrations
-other than `016` and `017`, alternatives are the Supabase SQL editor (paste in order) or
-MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`). Migration
-`016` and `017` are psql-only because their approval variables must fail closed.
+in the generic runner, alternatives are the Supabase SQL editor (paste in order) or
+MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`). Migrations
+`015` through `020` are psql-only because their approval variables must fail closed.
 
 ## Naming Patterns
 
