@@ -152,7 +152,11 @@ def setup(tmp_path, produced):
                 "baseline_median": None,
                 "effective_floor": 100,
                 "verdict": "first_seen",
-                "reason": "no baseline row; cannot gate (first sight)",
+                "reason": "no baseline row; cannot gate (first sight)" + (
+                    "; a source pass also errored this run"
+                    if any(entry.get("truncated") for entry in artifact["sources"])
+                    else ""
+                ),
                 "mark_missing_safe": False,
             }
         },

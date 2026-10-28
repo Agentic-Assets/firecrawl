@@ -51,6 +51,7 @@ def subset(tmp_path, complete, monkeypatch):
         "daum_verified_subset_v1"
     )
     report["per_source"][daum.SOURCE]["current_active"] = len(artifact["listings"])
+    report["per_source"][daum.SOURCE]["reason"] += "; a source pass also errored this run"
     helpers.refresh(path, artifact, manifest)
     return run, path, artifact, manifest, report
 
@@ -102,6 +103,23 @@ def admit(prepared, phase="source"):
         current_git_dirty=False,
         phase=phase,
     )
+
+
+def test_subset_truncation_remains_unsafe_and_actual_gate_reason_is_bound(subset):
+    from cre_gate import count_artifacts, verdict_for
+
+    counts, errors, _, _, _ = count_artifacts([str(subset[1])], True)
+    verdict, reason, safe, _ = verdict_for(
+        counts[daum.SOURCE], bool(errors[daum.SOURCE]), errors[daum.SOURCE], None, 100, 0.2
+    )
+    assert verdict == "first_seen" and safe is False
+    assert reason == subset[4]["per_source"][daum.SOURCE]["reason"]
+    admit(subset)
+    assert subset[4]["per_source"][daum.SOURCE]["raw_reason"] == reason
+    assert subset[4]["per_source"][daum.SOURCE]["mark_missing_safe"] is False
+    assert subset[4]["scope"]["whole_source_coverage"] is False
+    subset[3]["sources"][daum.SOURCE]["gate"] = copy.deepcopy(subset[4]["per_source"][daum.SOURCE])
+    admit(subset, phase="aggregate")
 
 
 def test_emitted_union_and_unknown_lease_coverage_through_both_gates(subset):

@@ -70,6 +70,32 @@ def _row(listing):
     return to_row(listing, _BROKERS, _SCRAPED_AT)
 
 
+def test_truncated_pass_blocks_brokerage_and_first_seen_baseline(tmp_path):
+    path = tmp_path / "artifact.json"
+    path.write_text(json.dumps({
+        "sources": [
+            {"sourceKey": "svn", "transaction": "sale", "truncated": True},
+            {"sourceKey": "svn", "transaction": "lease", "truncated": False},
+            {"sourceKey": "lee-associates", "truncated": False},
+        ],
+        "listings": [
+            _minimal_listing("svn", "https://svn.com/property/1"),
+            _minimal_listing("lee-associates", "https://lee-associates.com/property/1"),
+        ],
+    }))
+    counts, errors, observed, _, _ = g.count_artifacts([path], quiet=True)
+    assert observed == {"svn", "lee-associates"}
+    assert counts == {"svn": 1, "lee-associates": 1}
+    assert errors == {"svn": "source pass truncated", "lee-associates": None}
+    verdict, _, safe, _ = g.verdict_for(counts["svn"], True, errors["svn"], {"median": 1}, 0, DROP)
+    assert verdict == "hold" and not safe
+    assert not g.rollup_brokerages({"svn": {"mark_missing_safe": safe}})["svn"]["mark_missing_safe"]
+    first_verdict, _, first_safe, _ = g.verdict_for(counts["svn"], True, errors["svn"], None, 0, DROP)
+    assert first_verdict == "first_seen" and not first_safe
+    assert g.select_baseline_updates({"svn": {"verdict": first_verdict, "current_active": 1}}, errors, {}) == []
+    assert g.verdict_for(counts["lee-associates"], False, None, {"median": 1}, 0, DROP)[0] == "ok"
+
+
 # ---------------------------------------------------------------------------
 # Monitor: norm_status terminal-wins across dual sale+lease passes
 # ---------------------------------------------------------------------------

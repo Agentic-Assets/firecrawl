@@ -560,9 +560,13 @@ def _admit(
         for key in sorted(staged)
     ]
     current, errors, sources, _, rejects = count_artifacts([str(artifact_path)], True)
+    # Held members deliberately make this proved subset incomplete. The raw
+    # gate must still see truncation; only this exact, independently validated
+    # subset may proceed to its separate additive admission.
+    expected_error = "source pass truncated" if subset and held else None
     require(
         sources == {SOURCE}
-        and not any(errors.values())
+        and errors.get(SOURCE) == expected_error
         and rejects == 0
         and current.get(SOURCE) == len(listings)
     )
@@ -576,10 +580,13 @@ def _admit(
         and summary.get("baseline_update_sources") == []
     )
     rechecking = (phase == "aggregate" or subset) and gate.get("verdict") == verdict
+    expected_raw_reason = "no baseline row; cannot gate (first sight)"
+    if expected_error:
+        expected_raw_reason += "; a source pass also errored this run"
     require(
         (gate.get("raw_verdict") if rechecking else gate.get("verdict")) == "first_seen"
         and (gate.get("raw_reason") if rechecking else gate.get("reason"))
-        == "no baseline row; cannot gate (first sight)"
+        == expected_raw_reason
         and gate.get("baseline_median") is None
         and gate.get("mark_missing_safe") is False
     )
@@ -633,7 +640,7 @@ def _admit(
         )
     gate.update(
         raw_verdict="first_seen",
-        raw_reason="no baseline row; cannot gate (first sight)",
+        raw_reason=expected_raw_reason,
         verdict=verdict,
         reason=reason,
         mark_missing_safe=False,
