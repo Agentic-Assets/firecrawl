@@ -3,8 +3,10 @@ import argparse
 import base64
 import hashlib
 import json
+import select
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -90,6 +92,31 @@ def main():
             assert sql(approvals + migration_020, user='evidence_executor', check=False).returncode != 0
             assert invariants() == baseline
             sql('GRANT USAGE ON SCHEMA public TO PUBLIC;')
+            sql('DROP INDEX cre_source_evidence.cre_source_evidence_facts_text_trgm_idx;')
+            lock_process = subprocess.Popen(
+                [psql, '-X', '-qAt', '-h', str(cluster.root), '-p', str(cluster.port),
+                 '-d', database, '-v', 'ON_ERROR_STOP=1'], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=cluster.env)
+            try:
+                lock_process.stdin.write("BEGIN; LOCK TABLE cre_source_evidence.events IN ACCESS EXCLUSIVE MODE; SELECT 'lock_ready';\n")
+                lock_process.stdin.flush()
+                ready, _, _ = select.select([lock_process.stdout], [], [], 10)
+                assert ready and lock_process.stdout.readline().strip() == 'lock_ready'
+                started = time.monotonic()
+                refused = sql(approvals + migration_020, user='evidence_executor', check=False)
+                elapsed = time.monotonic() - started
+                assert refused.returncode != 0 and 'lock timeout' in refused.stderr
+                assert elapsed < 10
+                assert sql("SELECT to_regclass('cre_source_evidence.cre_source_evidence_facts_text_trgm_idx') IS NULL;").strip() == 't'
+                assert invariants() == baseline
+            finally:
+                lock_process.stdin.write('ROLLBACK;\n\\q\n')
+                lock_process.stdin.flush()
+                lock_process.wait(timeout=10)
+            assert lock_process.returncode == 0
+            sql(approvals + migration_020, user='evidence_executor')
+            assert invariants() == baseline
+            print(f'Disposable PG17 lock timeout: {elapsed:.2f}s, rollback and post-release apply passed')
             sql('DROP INDEX cre_source_evidence.cre_source_evidence_facts_text_trgm_idx; '
                 'CREATE INDEX cre_source_evidence_facts_text_trgm_idx ON cre_source_evidence.events (source_key);')
             assert sql(approvals + migration_020, user='evidence_executor', check=False).returncode != 0
