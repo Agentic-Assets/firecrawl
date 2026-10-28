@@ -1,0 +1,209 @@
+"""Convert retained artifacts into immutable, explicitly unverified events."""
+import hashlib
+import json
+import re
+from datetime import datetime
+from urllib.parse import parse_qsl, urlsplit
+
+CHUNK_BYTES = 60_000
+MAX_TEXT_BYTES = 4 * 1024 * 1024
+MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+CREDENTIAL_QUERY_KEYS = {"token", "access_token", "api_key", "apikey", "authorization", "auth",
+                         "signature", "sig", "x-amz-signature", "x-amz-credential",
+                         "x-goog-signature", "x-goog-credential", "client_secret"}
+
+
+def encoded(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def sha256(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def timestamp(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", value):
+        raise ValueError("observation time must be UTC RFC3339")
+    datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
+
+
+def http_url(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 4096 or any(ord(c) < 32 for c in value):
+        raise ValueError("invalid source URL")
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("source URL must be HTTP(S), without credentials")
+    if any(key.lower() in CREDENTIAL_QUERY_KEYS for key, _ in parse_qsl(parsed.query, keep_blank_values=True)):
+        raise ValueError("credential-bearing source URL requires reviewed redaction")
+    return value
+
+
+def split_text(text):
+    """Split without dropping bytes; chunks are not claims of physical pages."""
+    raw = text.encode("utf-8")
+    if len(raw) > MAX_TEXT_BYTES:
+        raise ValueError("document text exceeds limit")
+    chunks = []
+    while raw:
+        end = min(CHUNK_BYTES, len(raw))
+        while True:
+            try:
+                chunks.append(raw[:end].decode("utf-8"))
+                break
+            except UnicodeDecodeError:
+                end -= 1
+        raw = raw[end:]
+    return chunks
+
+
+def _event(capture, ordinal, source_key, observed_at, url, provenance, facts, external_id):
+    return {"capture_id": capture, "item_no": ordinal, "source_key": source_key,
+            "external_id": external_id, "observed_at": observed_at, "source_url": url,
+            "provenance": provenance, "facts": facts, "document_url": None,
+            "extractor_version": None, "extracted_text": None, "text_sha256": None}
+
+
+def plan(artifact, *, source_key, observed_at=None, external_id=None):
+    if not isinstance(artifact, dict) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_key):
+        raise ValueError("invalid artifact or asserted source key")
+    if external_id is not None and (not isinstance(external_id, str) or not 0 < len(external_id.encode()) <= 1024):
+        raise ValueError("invalid asserted external identity")
+    raw = encoded(artifact)
+    if len(raw) > MAX_ARTIFACT_BYTES:
+        raise ValueError("artifact exceeds limit")
+    artifact_hash = sha256(raw)
+    capture_clock = (timestamp(artifact.get("source", {}).get("observed_at"))
+                     if artifact.get("schema_version") == "cre-document-text/v1" else timestamp(observed_at))
+    capture = "evidence-" + sha256(encoded([source_key, external_id, artifact_hash, capture_clock]))
+    provenance = {"source_identity": "unverified", "visibility": "unverified", "promotion": "not_authorized",
+                  "artifact_sha256": artifact_hash, "artifact_hash_kind": "canonical_json_utf8",
+                  "original_retention": "not_in_this_store", "source_key_origin": "caller_asserted",
+                  "observed_at_origin": "caller_asserted", "freshness": "unverified",
+                  "original_sha256_verification": "artifact_claim_not_database_reverified"}
+    if artifact.get("schema_version") == "cre-document-text/v1":
+        source, extraction, parser = artifact.get("source"), artifact.get("extraction"), artifact.get("parser")
+        if not all(isinstance(v, dict) for v in (source, extraction, parser)):
+            raise ValueError("invalid document artifact")
+        clock = timestamp(source.get("observed_at"))
+        url = http_url(source.get("url"))
+        if url is None:
+            raise ValueError("document source URL required")
+        state = extraction.get("status")
+        if state not in ("extracted", "ocr_needed", "failed") or extraction.get("coverage") != "unknown":
+            raise ValueError("unsupported extraction state or coverage claim")
+        text = extraction.get("text")
+        if state == "extracted":
+            if not isinstance(text, str) or not text.strip() or extraction.get("text_sha256") != sha256(text.encode("utf-8")):
+                raise ValueError("extracted text digest mismatch")
+            chunks = split_text(text)
+        else:
+            if text is not None or extraction.get("text_sha256") is not None:
+                raise ValueError("failed extraction cannot claim text")
+            chunks = []
+        metadata = {**artifact, "extraction": {k: v for k, v in extraction.items() if k != "text"}}
+        provenance = {**provenance, "capture_kind": "document_text", "coverage": "unknown",
+                      "text_sha256": extraction.get("text_sha256"), "text_chunks": len(chunks),
+                      "chunking": "utf8_byte_windows_not_physical_pages"}
+        events = [_event(capture, 0, source_key, clock, url, provenance,
+                         [{"kind": "document_outcome", "value": metadata}], external_id)]
+        for number, chunk in enumerate(chunks, 1):
+            event = _event(capture, number, source_key, clock, url,
+                           {**provenance, "chunk_ordinal": number}, [], external_id)
+            event.update(document_url=url, extractor_version=str(parser.get("name")) + "@" + str(parser.get("version")),
+                         extracted_text=chunk, text_sha256=sha256(chunk.encode("utf-8")))
+            events.append(event)
+    elif artifact.get("schema") == "buildout-private-observation-artifact-v1":
+        if external_id is not None:
+            raise ValueError("capture-wide Buildout evidence cannot claim a listing identity")
+        clock = timestamp(observed_at)
+        original_provenance = artifact.get("provenance", {})
+        if original_provenance.get("sourceKey") != source_key:
+            raise ValueError("source assertion disagrees with retained artifact")
+        rows = artifact.get("records")
+        if not isinstance(rows, list) or len(rows) > 10000:
+            raise ValueError("invalid observation records")
+        provenance = {**provenance, "capture_kind": "buildout_inventory", "coverage": "unverified"}
+        header = {k: v for k, v in artifact.items() if k != "records"}
+        events = [_event(capture, 0, source_key, clock, None, provenance,
+                         [{"kind": "capture_context", "value": header}], None)]
+        events.extend(_event(capture, n, source_key, clock, None, provenance,
+                             [{"kind": "source_record", "value": row}], None) for n, row in enumerate(rows, 1))
+    else:
+        raise ValueError("unsupported retained artifact")
+    for event in events:
+        if len(encoded(event["provenance"])) > 12000 or len(encoded(event["facts"])) > 3_500_000:
+            raise ValueError("event metadata exceeds storage contract")
+    result = {"schema_version": "cre-source-evidence-plan/v1", "events": events,
+              "source_key": source_key, "artifact_sha256": artifact_hash}
+    result["plan_sha256"] = sha256(encoded(result))
+    return result
+
+
+def validate_plan(value):
+    """Reconstruct the artifact and derive every row again, rather than trusting its hash."""
+    if (not isinstance(value, dict) or value.get("schema_version") != "cre-source-evidence-plan/v1"
+            or value.get("plan_sha256") != sha256(encoded({k: v for k, v in value.items() if k != "plan_sha256"}))):
+        raise ValueError("evidence plan digest mismatch")
+    rows = value.get("events")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 10001:
+        raise ValueError("invalid evidence rows")
+    first = rows[0]
+    try:
+        kind = first["facts"][0]["kind"]
+        metadata = first["facts"][0]["value"]
+        if kind == "document_outcome":
+            artifact = {**metadata, "extraction": {**metadata["extraction"]}}
+            artifact["extraction"]["text"] = ("".join(row["extracted_text"] for row in rows[1:])
+                                                if metadata["extraction"]["status"] == "extracted" else None)
+            expected = plan(artifact, source_key=value["source_key"], external_id=first["external_id"])
+        elif kind == "capture_context":
+            artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
+            expected = plan(artifact, source_key=value["source_key"], observed_at=first["observed_at"])
+        else:
+            raise ValueError("unsupported evidence kind")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("malformed evidence plan") from exc
+    if value != expected:
+        raise ValueError("evidence rows disagree with reconstructed artifact")
+
+
+def validate_admission(plan_value, admission):
+    """An operator receipt permits private storage; it does not authenticate a publisher."""
+    validate_plan(plan_value)
+    if (not isinstance(admission, dict) or admission.get("schema_version") != "cre-source-evidence-admission/v1"
+            or admission.get("plan_sha256") != plan_value.get("plan_sha256")
+            or admission.get("purpose") != "private_unverified_evidence"
+            or admission.get("data_scope") != "public_listing_source"
+            or admission.get("content_policy") != "reviewed_for_private_retention"
+            or admission.get("source_keys") != [plan_value.get("source_key")]):
+        raise ValueError("missing or mismatched private-retention admission")
+    # Existing JLL controls prohibit re-exposing withheld price-linked content.
+    # A general artifact receipt cannot replace that source-specific policy.
+    if plan_value["source_key"] in ("jll", "jll-main", "jll-investor"):
+        raise ValueError("JLL requires its source-specific withheld-content adapter")
+    for row in plan_value["events"]:
+        pending = [row]
+        inspected = 0
+        while pending:
+            inspected += 1
+            if inspected > 100000:
+                raise ValueError("source policy inspection exceeds limit")
+            item = pending.pop()
+            if isinstance(item, dict):
+                if len(item) + len(pending) + inspected > 100000:
+                    raise ValueError("source policy inspection exceeds limit")
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                if len(item) + len(pending) + inspected > 100000:
+                    raise ValueError("source policy inspection exceeds limit")
+                pending.extend(item)
+            elif isinstance(item, str) and item.lower().startswith(("http://", "https://")):
+                if any(char.isspace() for char in item):
+                    continue  # Document prose is not an independently classified URL.
+                http_url(item)
+                host = (urlsplit(item).hostname or "").lower().rstrip(".")
+                if host in ("jll.com", "jllproperty.com") or host.endswith((".jll.com", ".jllproperty.com")):
+                    raise ValueError("JLL URL requires its source-specific withheld-content adapter")

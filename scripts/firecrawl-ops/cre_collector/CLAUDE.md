@@ -111,6 +111,7 @@ procedure and gates, `sources/CLAUDE.md` for adapter contracts,
    | Collector architecture or EQUIRE consumption | [CRE system design](../../../docs/firecrawl-ops/references/cre-intelligence-system-design.md); [EQUIRE consumer API](../../../docs/firecrawl-ops/references/cre-equire-consumer-api.md) |
    | Monitor or gate work | [Monitor subsystem](../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md); [historical first-apply handoff](HANDOFF_MONITOR_FIRST_APPLY_2026-06-13.md) only for that legacy history |
    | DAUM partial acceptance | [DAUM verified subset](../../../docs/firecrawl-ops/references/daum-verified-subset.md); a subset never proves complete brokerage coverage |
+   | Private acquisition evidence and extracted listing-document text | [`source_evidence/AGENTS.md`](source_evidence/AGENTS.md), [`source_evidence/README.md`](source_evidence/README.md); local conversion: [`document_text/AGENTS.md`](document_text/AGENTS.md) |
    | Throughput or matched measurements | [CRE performance telemetry](../../../docs/firecrawl-ops/references/cre-performance-telemetry.md); distinguish staged from verified counts and use AGENTIC-2895, not an issue per run |
    | Enrichment worker or legacy Mac tiers | [Historical enrichment worker design](ENRICHMENT_WORKER_DESIGN_2026-06-15.md); [`launchd/CLAUDE.md`](launchd/CLAUDE.md) for that host path |
    | Windows scheduled operation | [Guarded tier guide](../../../docs/firecrawl-ops/references/guarded-incremental-tiers.md#windows-task-scheduler-installation-and-acceptance) and current AGENTIC-3752 evidence |
@@ -147,6 +148,8 @@ and resolve confirmed findings before shipping.
 | `types.ts` | Shared listing vocabulary + `SourceResult` (`truncated?`, etc.) |
 | `sources/` | Per-broker adapters - see `sources/CLAUDE.md` |
 | `lib/` | Shared scrape/config/util - see `lib/CLAUDE.md` |
+| `source_evidence/` | Private append-only capture planning, admitted append and text search; no canonical listing, lifecycle, normalized fact or OM-fact writes |
+| `document_text/` | Pinned local AnyDoc adapter with explicit extraction/OCR-needed/failure artifacts; no automatic download or hosted upload |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
 | `cre_image_transition_log.py` | Shared stable-file/hash mechanics for post-commit image receipts; no source qualification policy |
 | `cre_colliers_image_transition.py` | Existing Colliers-main seven-field-bound image receipt and source-specific qualification |
