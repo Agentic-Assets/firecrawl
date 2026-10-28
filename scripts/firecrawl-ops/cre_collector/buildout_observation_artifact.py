@@ -5,6 +5,8 @@ not prove a source is complete, current, public, or safe to share. The original
 input remains the recovery source for quarantined and byte-exact evidence.
 """
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -17,6 +19,8 @@ from buildout_observation_io import read_consistent
 from cre_ingest import BUILDOUT_SOURCE_KEYS
 
 MAX_INPUT_BYTES = 8_000_000
+MAX_AUDIT_BYTES = 40 * 1024 * 1024
+MAX_CACHE_BYTES = 16 * 1024 * 1024
 MAX_OUTPUT_BYTES = 20_000_000
 MAX_RECORDS = 1000
 MAX_ATTRIBUTES = 1000
@@ -30,11 +34,15 @@ SECRET_QUERY = re.compile(r"^(?:token|access[_-]?token|api[_-]?key|signature|sig
 URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
+class DuplicateJsonKey(ValueError):
+    """Input cannot be represented without losing a duplicate key."""
+
+
 def unique_object(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("duplicate JSON object key")
+            raise DuplicateJsonKey("duplicate JSON object key")
         result[key] = value
     return result
 
@@ -110,19 +118,91 @@ def bounded_number(value, *, floating):
     return Decimal(value) if floating else int(value)
 
 
+def input_limit(input_kind):
+    if input_kind == "buildout-cache-audit":
+        return MAX_AUDIT_BYTES
+    if input_kind in ("buildout-page", "retained-observations"):
+        return MAX_INPUT_BYTES
+    raise ValueError("unsupported input kind")
+
+
+def parse_json(raw):
+    return json.loads(raw, object_pairs_hook=unique_object,
+                      parse_int=lambda value: bounded_number(value, floating=False),
+                      parse_float=lambda value: bounded_number(value, floating=True),
+                      parse_constant=invalid_number)
+
+
+AUDIT_REASON_CODES = frozenset({
+    "plugin_mismatch", "invalid_page", "query_mismatch", "generation_missing_or_mismatch",
+    "observation_timestamp_mismatch", "observation_outside_window", "source_observation_not_live",
+    "transport_invalid", "endpoint_mismatch", "parsed_data_hash_mismatch", "unsafe_numeric_values",
+    "page_shape_invalid",
+})
+
+
+def decode_audit(raw, source_key):
+    audit = parse_json(raw)
+    if (not isinstance(audit, dict) or audit.get("schema") != "buildout-page-audit-v1"
+        or audit.get("sourceKey") != source_key or audit.get("scope") != "selected_page_only"
+        or audit.get("authority") != "none" or audit.get("publisher_authenticated") is not False
+        or audit.get("private_unreviewed") is not True or audit.get("coverage") != "unknown"
+        or audit.get("input_byte_authority") != "originalCacheBytesBase64"):
+        raise ValueError("invalid cache audit envelope")
+    status, reasons = audit.get("status"), audit.get("provenance_reasons")
+    if (status not in ("provenance_incomplete", "parsed_json_consistent_fidelity_unverified")
+        or not isinstance(reasons, list) or len(reasons) > 64
+        or any(not isinstance(reason, str) or reason not in AUDIT_REASON_CODES for reason in reasons)
+        or (status == "provenance_incomplete") != bool(reasons)):
+        raise ValueError("invalid audit provenance status")
+    encoded, claimed_hash = audit.get("originalCacheBytesBase64"), audit.get("cacheFileSha256")
+    if (not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_CACHE_BYTES + 2) // 3)
+        or not isinstance(claimed_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", claimed_hash)):
+        raise ValueError("invalid embedded cache bytes")
+    try:
+        cache_raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("invalid embedded cache encoding") from exc
+    if len(cache_raw) > MAX_CACHE_BYTES or hashlib.sha256(cache_raw).hexdigest() != claimed_hash:
+        raise ValueError("embedded cache digest or size mismatch")
+    try:
+        cache = parse_json(cache_raw)
+    except DuplicateJsonKey as exc:
+        raise DuplicateJsonKey(
+            "duplicate JSON object key: projection unsupported; retain the private original audit and cache; source availability is unverified"
+        ) from exc
+    data = cache.get("data") if isinstance(cache, dict) else None
+    if not isinstance(data, dict) or not isinstance(data.get("inventory"), list):
+        raise TypeError("embedded cache has no inventory array")
+    if type(audit.get("observedRows")) is not int or audit["observedRows"] != len(data["inventory"]):
+        raise ValueError("audit row count does not match embedded cache")
+    fidelity = audit.get("data_fidelity")
+    unsafe = fidelity.get("unsafeNumericValues") if isinstance(fidelity, dict) else None
+    if type(unsafe) is not int or unsafe < 0:
+        raise ValueError("invalid audit numeric context")
+    return data, {"status": status, "reportedProvenanceIncomplete": status == "provenance_incomplete", "reasons": reasons,
+                  "auditClaimsOrigin": "caller_reported", "auditClaimsVerification": "not_evaluated", "cacheBytesSha256": claimed_hash,
+                  "cacheBytes": len(cache_raw), "auditReportedUnsafeNumericValues": unsafe,
+                  "sourceBytesAuthority": "embedded_cache_bytes_not_provider_http",
+                  "publisherAuthenticated": False, "sourceCompleteness": "unverified",
+                  "cacheWrapperFields": "retained_in_original_audit_only"}
+
+
 def build_artifact(raw, *, source_key, input_kind):
     if not isinstance(source_key, str) or source_key not in BUILDOUT_SOURCE_KEYS:
         raise ValueError("source key is not a registered Buildout source")
-    if len(raw) > MAX_INPUT_BYTES:
+    if len(raw) > input_limit(input_kind):
         raise ValueError("input exceeds byte limit")
-    source = json.loads(raw, object_pairs_hook=unique_object,
-                        parse_int=lambda value: bounded_number(value, floating=False),
-                        parse_float=lambda value: bounded_number(value, floating=True),
-                        parse_constant=invalid_number)
-    if input_kind == "buildout-page":
+    audit_context = None
+    if input_kind == "buildout-cache-audit":
+        source, audit_context = decode_audit(raw, source_key)
+    else:
+        source = parse_json(raw)
+    if input_kind in ("buildout-page", "buildout-cache-audit"):
         if not isinstance(source, dict) or not isinstance(source.get("inventory"), list):
             raise ValueError("Buildout page must contain an inventory array")
-        rows, prefix = source["inventory"], "/inventory"
+        rows = source["inventory"]
+        prefix = "/data/inventory" if input_kind == "buildout-cache-audit" else "/inventory"
         page_fields = source
     elif input_kind == "retained-observations":
         if not isinstance(source, list):
@@ -198,7 +278,7 @@ def build_artifact(raw, *, source_key, input_kind):
                                if key == "index_attributes" else sanitize(value, child_pointer))
 
     safe_page = {}
-    capture_fields(page_fields, "", safe_page, excluded=("inventory",))
+    capture_fields(page_fields, "/data" if input_kind == "buildout-cache-audit" else "", safe_page, excluded=("inventory",))
     upstream_omissions = 0
     upstream_omissions_unknown = 0
     for index, row in enumerate(rows):
@@ -244,9 +324,11 @@ def build_artifact(raw, *, source_key, input_kind):
                        "inputSha256": hashlib.sha256(raw).hexdigest(), "inputBytes": len(raw),
                        "sourceCompleteness": "unverified", "sourceAvailability": "unverified",
                        "confidentiality": "unreviewed_private_data", "inputIsByteExactAuthority": True},
+        **({"auditContext": audit_context, "reportedProvenanceIncomplete": audit_context["reportedProvenanceIncomplete"]} if audit_context is not None else {}),
         "pageFields": safe_page, "records": output_rows, "quarantine": quarantine,
         "summary": {"inputRecords": len(rows), "retainedRecords": len(output_rows), "quarantinedItems": len(quarantine), "upstreamReportedOmissions": upstream_omissions,
                     "upstreamOmissionsUnknownRecords": upstream_omissions_unknown,
+                    **({"reportedProvenanceIncomplete": audit_context["reportedProvenanceIncomplete"]} if audit_context is not None else {}),
                     "status": "partial" if quarantine or len(output_rows) != len(rows) or upstream_omissions or upstream_omissions_unknown or not rows else "observed_only"},
     }
     encoded = (render(document) + "\n").encode("ascii")
@@ -255,8 +337,8 @@ def build_artifact(raw, *, source_key, input_kind):
     return encoded, document["summary"]
 
 
-def read_bounded(path):
-    return read_consistent(path, MAX_INPUT_BYTES)
+def read_bounded(path, limit=MAX_INPUT_BYTES):
+    return read_consistent(path, limit)
 
 
 def write_private(path, payload):
@@ -269,11 +351,11 @@ def write_private(path, payload):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--input-kind", choices=("buildout-page", "retained-observations"), required=True)
+    parser.add_argument("--input-kind", choices=("buildout-page", "retained-observations", "buildout-cache-audit"), required=True)
     parser.add_argument("--source-key", required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    payload, summary = build_artifact(read_bounded(args.input), source_key=args.source_key, input_kind=args.input_kind)
+    payload, summary = build_artifact(read_bounded(args.input, input_limit(args.input_kind)), source_key=args.source_key, input_kind=args.input_kind)
     write_private(args.out, payload)
     print(json.dumps(summary, sort_keys=True))
 
