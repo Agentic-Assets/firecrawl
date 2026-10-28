@@ -8,7 +8,8 @@ from source_evidence import cli
 def test_fact_text_query_safe_literal_and_controls():
     query = 'A%_!\\"\nDROP SCHEMA credeals;'
     sql = cli.fact_text_sql(query, 25, source_key='faris-lee', capture_id='evidence-123')
-    assert query not in sql and 'DROP SCHEMA' not in sql
+    assert "E'%" in sql and "''" in cli.fact_text_sql("a'b", 1)
+    assert r'!%!_' in sql
     assert 'SET LOCAL ROLE cre_source_evidence_reader' in sql
     assert "(facts::text) ILIKE" in sql and "ESCAPE '!'" in sql
     assert 'ORDER BY observed_at DESC,capture_id,item_no LIMIT 25' in sql

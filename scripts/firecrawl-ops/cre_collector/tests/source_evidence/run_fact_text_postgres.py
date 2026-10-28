@@ -173,6 +173,22 @@ def main():
         assert len(faris_results) == 25 and all(row['source_key'] == 'faris-lee' for row in faris_results)
         assert [row['item_no'] for row in faris_results] == list(range(25))
         assert matches('TailNeedleZebra')[0]['capture_id'] == 'near-limit'
+        tail_sql = cli.fact_text_sql('TailNeedleZebra', 25)
+        forced = [json.loads(line) for line in sql('SET enable_seqscan=off;\n' + tail_sql).splitlines()]
+        assert forced[0]['capture_id'] == 'near-limit'
+        select_sql = tail_sql[tail_sql.index('SELECT row_to_json'):tail_sql.index('\nCOMMIT;')]
+        explained = sql('BEGIN READ ONLY; SET LOCAL ROLE cre_source_evidence_reader; '
+                        'SET LOCAL enable_seqscan=off; EXPLAIN (FORMAT JSON) ' + select_sql + '\nCOMMIT;')
+        tree = json.loads(explained)
+        expected_index = ('cre_source_evidence_facts_text_trgm_idx' if args.migration
+                          else 'fixture_facts_text_idx')
+        def plan_uses_index(value):
+            if isinstance(value, dict):
+                return value.get('Index Name') == expected_index or any(plan_uses_index(v) for v in value.values())
+            if isinstance(value, list):
+                return any(plan_uses_index(v) for v in value)
+            return False
+        assert plan_uses_index(tree)
         assert len(matches('q"uote\\back\nline 100%_!', source_key='nai-global')) == 25
         assert len(matches('\x01control', source_key='nai-global')) == 25
         assert len(matches('100X', source_key='nai-global', capture_id=native_plan['events'][0]['capture_id'])) == 0
@@ -181,6 +197,8 @@ def main():
         assert len(matches('Mixed Case', source_key='nai-global')) == 25
         assert len(matches('mixed case', source_key='nai-global')) == 25
         assert matches("'); DROP SCHEMA credeals; --") == []
+        assert matches("\\' OR true; --") == []
+        assert matches("\\\\'); DROP TABLE cre_source_evidence.events; --") == []
         assert int(sql("SELECT count(*) FROM cre_source_evidence.events;").strip()) == 156 + (actual_native_count + 1 if actual_native_count else 0)
         if actual_native_count:
             capture = actual_native_plan['events'][0]['capture_id']

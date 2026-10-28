@@ -128,12 +128,13 @@ def fact_text_sql(query, limit, *, source_key=None, capture_id=None):
         raise ValueError("invalid capture identity")
     needle = json.dumps(query, ensure_ascii=False)[1:-1]
     needle = needle.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-    predicates = ["(facts::text) ILIKE " + sql_text("%" + needle + "%") + " ESCAPE '!' "]
+    pattern = ("%" + needle + "%").replace("\\", "\\\\").replace("'", "''")
+    predicates = ["(facts::text) ILIKE E'" + pattern + "' ESCAPE '!' "]
     if source_key is not None:
         predicates.append("source_key=" + sql_text(source_key))
     if capture_id is not None:
         predicates.append("capture_id=" + sql_text(capture_id))
-    return ("BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog;\nSET LOCAL ROLE cre_source_evidence_reader;\n"
+    return ("BEGIN READ ONLY;\nSET LOCAL client_encoding = 'UTF8';\nSET LOCAL search_path = pg_catalog;\nSET LOCAL ROLE cre_source_evidence_reader;\n"
             "SET LOCAL statement_timeout = 30000;\nSELECT row_to_json(r) FROM (SELECT capture_id,item_no,source_key,"
             "external_id,observed_at,source_url,provenance,pg_column_size(facts) AS facts_bytes "
             "FROM cre_source_evidence.events WHERE " + " AND ".join(predicates) +
