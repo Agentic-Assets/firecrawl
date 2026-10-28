@@ -55,6 +55,10 @@ comparison predicate does not prove the complete validator accepts the page.
 
 ## Folder-Specific Commands
 
+Synthetic observation-store fixtures and their disposable PostgreSQL runners
+are documented in [observation_store/README.md](observation_store/README.md).
+They do not authorize real source data, production DDL, or database writes.
+
 **Python (ingest, monitor, gate):**
 
 ```bash
