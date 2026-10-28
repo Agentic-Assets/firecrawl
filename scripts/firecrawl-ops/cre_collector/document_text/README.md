@@ -14,9 +14,17 @@ The draft offline `plan-document-acquisition` preflight can select candidates
 under an explicit bounded policy, but it does not acquire those files or run
 AnyDoc. It performs no DNS or access verification and does not establish
 publisher permission. A future acquisition receipt must preserve precise actual
-download times separately from the source observation time; the existing local
-provenance interface below accepts whole UTC seconds only. The preflight remains
+download times separately from the source observation time; the local
+provenance interface accepts UTC timestamps with optional one to six fractional
+digits and preserves the supplied timestamp verbatim. The preflight remains
 unverified under the test hold and is not deployed.
+
+Draft private document-fetch primitives have a one-shot externally timed worker,
+but are not connected to this adapter or full-source collection. Their receipts
+keep actual download clocks separate from source observations. An extraction
+binding uses the receipt's precise finished time verbatim and remains a caller
+assertion; it does not establish that the converter ran. These primitives have
+not been verified under the test hold.
 
 ```sh
 node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifact.json

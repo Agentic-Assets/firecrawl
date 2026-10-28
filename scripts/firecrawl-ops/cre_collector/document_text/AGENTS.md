@@ -14,9 +14,12 @@ download documents or invoke AnyDoc. Full-source runs do not automatically
 extract linked documents. Discovery is unverified under the test hold; neither
 it nor a candidate URL proves public access, publication, or permission.
 The draft acquisition-policy preflight is also offline and does not invoke the
-adapter. Preserve precise actual download times in a separate future receipt;
-do not relabel original source clocks as download times or overstate the
-whole-second precision of the current provenance input.
+adapter. Preserve precise actual download times in a separate receipt; do not
+relabel original source clocks as download times. The provenance input accepts
+UTC timestamps with optional one to six fractional digits and preserves them.
+The draft one-shot document fetch worker is not connected to this adapter;
+binding metadata does not prove converter execution. Worker and adapter changes
+remain unverified under the test hold.
 
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private

@@ -118,3 +118,21 @@ test('oversized extracted text fails without emitting truncated text', async () 
     assert.equal(result.extraction.text_sha256, null);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('actual acquisition timestamps retain their supplied UTC fractional precision', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cre-text-time-'));
+  try {
+    // A missing file exercises only provenance parsing, without starting AnyDoc.
+    const input = join(dir, 'missing.pdf');
+    for (const observedAt of ['2026-10-28T12:00:00Z', '2026-10-28T12:00:00.1Z',
+      '2026-10-28T12:00:00.123Z', '2026-10-28T12:00:00.123456Z']) {
+      const result = await extractFile({ input, sourceUrl: 'https://example.test/doc', observedAt });
+      assert.equal(result.source.observed_at, observedAt);
+      assert.equal(result.extraction.error_code, 'ENOENT');
+    }
+    for (const observedAt of ['0000-01-01T12:00:00Z', '2026-02-30T12:00:00.123Z',
+      '2026-10-28T12:00:00.1234567Z', '2026-10-28T12:00:60Z', '2026-10-28T08:00:00-04:00']) {
+      await assert.rejects(extractFile({ input, sourceUrl: 'https://example.test/doc', observedAt }));
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

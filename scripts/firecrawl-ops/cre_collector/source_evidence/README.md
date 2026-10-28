@@ -47,10 +47,31 @@ access. No DNS, network, download, extraction or database request occurs. A
 future transport must validate public IP addresses on every request and
 redirect hop and enforce source-specific access and visibility rules. Source
 observation clocks must not be relabeled as download times; preserve precise
-actual acquisition timestamps in a separate receipt because the current
-AnyDoc provenance interface accepts whole UTC seconds. A selection is not a
+actual acquisition timestamps in a separate receipt. The local AnyDoc
+provenance interface accepts UTC timestamps with optional one to six fractional
+digits and preserves them verbatim. A selection is not a
 completed download or extraction. This draft remains unverified under the test
 hold and is not deployed.
+
+Draft `document_fetch` and `document_acquisition` provide a bounded direct
+transport and a separate receipt validator, but are not wired into full-source
+collection. The transport checks the allowed host and public destination for
+each request and redirect, and requires an external worker to enforce the
+absolute deadline. The draft one-shot supervisor binds a private job by hash,
+limits the child to the document deadline plus five seconds of startup grace,
+and validates the private receipt and body digest on readback. A timeout or
+worker failure is ambiguous: the remote request may already have occurred.
+There are no automatic retries. The transport accepts standard-port HTTP(S)
+and identity content encoding, and refuses unsupported or ambiguous transfer
+framing. The validator rederives selection and binds complete response
+bytes to their digest, size, URL and actual acquisition clock. It preserves
+source occurrences separately; publisher identity and visibility remain
+unverified. Receipt metadata alone does not prove redirect locations, aggregate
+budget enforcement, original-file retention, or that extraction actually ran.
+Extraction binding is explicitly caller-asserted and does not rerun a parser.
+No cumulative run budget is enforced by the one-shot supervisor. These drafts
+are not wired into the collector or AnyDoc execution, remain unverified under
+the test hold, and are not deployed.
 
 Existing single-source collector artifacts can be wrapped offline before planning:
 

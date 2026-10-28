@@ -29,7 +29,8 @@ def _part(value):
 
 
 def _safe_url(value):
-    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 4096 or any(c.isspace() for c in value):
+    if (not isinstance(value, str) or not value or len(value.encode("utf-8")) > 4096
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)):
         raise ValueError("invalid_url")
     parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or "\\" in value:

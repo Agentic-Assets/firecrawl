@@ -79,6 +79,18 @@ validate public IPs at each request and redirect hop and preserve actual
 acquisition clocks separately from source-observation clocks. This draft is
 unverified under the test hold and is not deployed.
 
+Draft document transport and acquisition validation are not integrated into
+full-source runs. Validate allowed hosts and public destinations on every hop,
+enforce the absolute deadline externally, and rederive selections before binding
+receipts and body bytes. The draft one-shot supervisor uses a private hash-bound
+job, a document timeout plus five seconds startup grace, and validates body
+readback. Timeout or worker failure leaves the request outcome ambiguous; do not
+retry automatically. It does not enforce a cumulative run budget or invoke
+AnyDoc. Preserve precise download clocks separately from
+source observations. Extraction execution is caller-asserted, not reexecuted;
+do not claim publisher identity, visibility, aggregate budget compliance, or
+original retention from receipt metadata alone. These drafts are unverified.
+
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new
 private directory. Keep unknown extraction coverage visible; a valid text
