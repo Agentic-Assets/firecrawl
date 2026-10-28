@@ -30,8 +30,8 @@ host activity or native converter memory. The byte cap covers body bytes
 delivered to the application, not network bytes, buffered prefetch, HTTP headers
 or transfer framing. Ambiguous or interrupted work keeps
 its private files for reconciliation and never automatically resumes. One
-selection is supported per source attempt; combining native-page candidates
-remains future work. This library is not connected to regular collection, a
+selection is supported per source attempt; draft version-2 selection combines
+native-page candidates. This library is not connected to regular collection, a
 CLI, database append, writer pump or scheduler. It is unverified under the
 test hold and does not prove publisher permission, coverage or text accuracy.
 
@@ -47,6 +47,12 @@ results under the existing foreground owner lock and trusted saved attempt,
 without fetching or converting. It preserves the acquisition budget and may
 reconcile original-copy cleanup; a missing persisted marker remains unresolved.
 An absent copy does not identify who removed it. This API is unverified.
+
+Draft batch selection can associate one exact document URL with occurrences
+from several source pages while preserving each page's plan, capture and clock.
+One serial acquisition budget covers the selection; shared URLs do not prove
+the occurrences identify the same property. Batch behavior is unverified under
+the hold.
 
 ```sh
 node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifact.json

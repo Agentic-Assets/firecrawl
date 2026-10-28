@@ -91,8 +91,8 @@ process timeouts and grace periods are not a whole-host deadline or native
 memory limit. The pipeline seals private context, artifact, binding and plan
 before policy-aware cleanup of rechecked original copies. Ambiguous or
 interrupted work requires reconciliation and never resumes automatically.
-One selection is allowed per source attempt; combined multi-page native
-candidates remain unimplemented. This explicit library is not wired to regular
+One selection is allowed per source attempt; draft version-2 selection combines
+multi-page native candidates. This explicit library is not wired to regular
 collector runs, a CLI, DB append, a writer pump or a scheduler. It is unverified
 under the hold; do not claim publisher identity, visibility, complete coverage
 or extraction accuracy.
@@ -107,6 +107,12 @@ Draft `document_recovery.sealed` runs under the existing owner lock with a
 trusted saved attempt. It performs no fetch or conversion, preserves budget,
 and may reconcile cleanup without inferring who removed an absent copy. Missing
 persisted seal markers remain unresolved; recovery never rearms acquisition.
+
+Draft version-2 document selections bind ordered source-page plans to one
+attempt and one serial budget. Group exact URLs but retain every occurrence's
+plan, capture, clock, labels and unverified identity witnesses; do not infer a
+property merge. All page plans remain subject to seal validation. This is
+unverified under the hold.
 
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new

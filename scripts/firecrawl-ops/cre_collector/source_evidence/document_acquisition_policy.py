@@ -44,6 +44,21 @@ def _hex(value, length):
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{%d}" % length, value) is not None
 
 
+def candidate_refusal(candidate, allowed_hosts):
+    """Evaluate the shared source URL eligibility without a document-count cap."""
+    parsed = urlsplit(candidate["url"])
+    if parsed.scheme not in ("http", "https"):
+        return "unsupported_scheme"
+    if parsed.port not in (None, 443 if parsed.scheme == "https" else 80):
+        return "nondefault_port"
+    if parsed.hostname not in allowed_hosts:
+        return "host_not_allowed"
+    if not any(occurrence["resolution"]["kind"] == "absolute_source_reference"
+               for occurrence in candidate["occurrences"]):
+        return "relative_only"
+    return None
+
+
 def prepare(plan, candidates, policy_raw, *, expected_policy_sha256, target_sha256, collector_git_sha):
     """Return a bounded selection; this function performs no acquisition."""
     if not _hex(expected_policy_sha256, 64) or not _hex(target_sha256, 64) or not _hex(collector_git_sha, 40):
@@ -95,20 +110,9 @@ def prepare(plan, candidates, policy_raw, *, expected_policy_sha256, target_sha2
               "cumulative_byte_budget": "not_verified_before_acquisition"}
     size = len(events.encoded(output))
     for index, candidate in enumerate(candidates["candidates"]):
-        parsed = urlsplit(candidate["url"])
-        if parsed.scheme not in ("http", "https"):
-            reason = "unsupported_scheme"
-        elif parsed.port not in (None, 443 if parsed.scheme == "https" else 80):
-            reason = "nondefault_port"
-        elif parsed.hostname not in hosts[source]:
-            reason = "host_not_allowed"
-        elif not any(occurrence["resolution"]["kind"] == "absolute_source_reference"
-                     for occurrence in candidate["occurrences"]):
-            reason = "relative_only"
-        elif len(output["documents"]) >= limits["max_documents"]:
+        reason = candidate_refusal(candidate, hosts[source])
+        if reason is None and len(output["documents"]) >= limits["max_documents"]:
             reason = "document_count_limit"
-        else:
-            reason = None
         if reason:
             entry = {"candidate_index": index, "reason": reason}
             output["exclusions"].append(entry)

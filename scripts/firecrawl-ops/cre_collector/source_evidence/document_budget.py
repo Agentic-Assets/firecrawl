@@ -26,7 +26,8 @@ def _seconds(value):
 
 def initial(selection):
     """Initialize from a previously rederived selection; no authority is inferred."""
-    if not isinstance(selection, dict) or selection.get("schema_version") != "cre-document-acquisition-plan/v1":
+    if (not isinstance(selection, dict) or selection.get("schema_version") not in (
+            "cre-document-acquisition-plan/v1", "cre-document-acquisition-plan/v2")):
         raise ValueError("invalid document selection")
     limits = selection.get("limits")
     if not isinstance(limits, dict) or set(limits) != set(document_acquisition_policy.LIMITS):

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from source_evidence import document_acquisition_policy, document_candidates, events
 
 SCHEMA = "cre-document-acquisition-context/v1"
+SCHEMA_V2 = "cre-document-acquisition-context/v2"
 RECEIPT_KEYS = {"started_at", "finished_at", "request_url", "final_url", "http_status", "hops",
                 "outcome", "failure_code", "body_sha256", "body_bytes", "body_representation",
                 "completion", "deadline_enforcement"}
@@ -24,7 +25,11 @@ REPRESENTATION = "http_entity_bytes_after_transfer_framing_identity_content_enco
 
 def validate_selection(plan, candidates, policy_raw, selection, *, expected_policy_sha256,
                        target_sha256, collector_git_sha):
-    expected = document_acquisition_policy.prepare(
+    prepare = document_acquisition_policy.prepare
+    if isinstance(plan, list):
+        from source_evidence import document_batch
+        prepare = document_batch.prepare
+    expected = prepare(
         plan, candidates, policy_raw, expected_policy_sha256=expected_policy_sha256,
         target_sha256=target_sha256, collector_git_sha=collector_git_sha)
     if events.encoded(selection) != events.encoded(expected):
@@ -103,8 +108,12 @@ def build_context(plan, candidates, policy_raw, selection, candidate_index, rece
 
 def _context(selected, item, receipt):
     """One context representation for acquisition and authenticated local readback."""
-    return {"schema_version": SCHEMA, "source_key": selected["source_key"],
-            "source_evidence_plan_sha256": selected["source_evidence_plan_sha256"],
+    batch = selected["schema_version"] == "cre-document-acquisition-plan/v2"
+    source_binding = ({"source_evidence_plans": copy.deepcopy(selected["source_evidence_plans"]),
+                       "source_evidence_set_sha256": selected["source_evidence_set_sha256"]}
+                      if batch else {"source_evidence_plan_sha256": selected["source_evidence_plan_sha256"]})
+    return {"schema_version": SCHEMA_V2 if batch else SCHEMA, "source_key": selected["source_key"],
+            **source_binding,
             "candidate_manifest_sha256": selected["candidate_manifest_sha256"],
             "policy_sha256": selected["policy_sha256"], "target_sha256": selected["target_sha256"],
             "collector_git_sha": selected["collector_git_sha"], "candidate_index": item["candidate_index"],
@@ -140,7 +149,7 @@ def validate_archived_context(plan, candidates, policy_raw, selection, context, 
 
 def bind_extraction(context, artifact):
     """Bind AnyDoc output to a completed acquisition; no source identity is inferred."""
-    if (not isinstance(context, dict) or context.get("schema_version") != SCHEMA
+    if (not isinstance(context, dict) or context.get("schema_version") not in (SCHEMA, SCHEMA_V2)
             or not isinstance(context.get("receipt"), dict) or context["receipt"].get("outcome") != "acquired"
             or not isinstance(artifact, dict) or artifact.get("schema_version") != "cre-document-text/v1"):
         raise ValueError("document extraction lacks an acquired context")

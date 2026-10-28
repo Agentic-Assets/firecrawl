@@ -15,7 +15,8 @@ MAX_FILE = cli.MAX_PLAN_BYTES
 
 
 def _context_shape(context, artifact):
-    if (not isinstance(context, dict) or context.get("schema_version") != document_acquisition.SCHEMA
+    if (not isinstance(context, dict) or context.get("schema_version") not in
+            (document_acquisition.SCHEMA, "cre-document-acquisition-context/v2")
             or not isinstance(context.get("receipt"), dict)):
         raise ValueError("invalid document context")
     receipt = context["receipt"]

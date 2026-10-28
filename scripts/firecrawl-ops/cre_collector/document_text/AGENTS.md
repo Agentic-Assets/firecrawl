@@ -27,8 +27,8 @@ bytes including a probe byte, not network bytes, buffered prefetch, headers or
 transfer framing. Phase deadlines and grace do not bound all host activity or
 native memory. Ambiguous
 or interrupted work requires reconciliation without automatic resume. One
-selection is supported per source attempt; multi-page candidate combination
-remains future work. There is no regular collector hook, CLI, database append,
+selection is supported per source attempt; draft version-2 selection combines
+multi-page candidates. There is no regular collector hook, CLI, database append,
 writer pump or scheduler activation. These changes remain unverified under the
 test hold and establish no publication permission, coverage or accuracy.
 
@@ -40,6 +40,10 @@ original deletion, seal readback cannot freshly rehash it. Recovery is unverifie
 without fetching or converting. It preserves budget, does not restart acquisition,
 and leaves a missing persisted marker unresolved. Reconciled absence does not
 identify who removed a copy.
+
+Draft batch selection uses one serial budget for ordered source-page plans and
+retains each occurrence's source association. A shared document URL does not
+prove property identity. This behavior remains unverified under the hold.
 
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private

@@ -77,7 +77,7 @@ Draft `document_pipeline.run` explicitly connects a rederived selection and
 sealed source plan to the supervised fetch and local AnyDoc adapter. Its caller
 must hold the existing foreground owner lock and provide the existing attempt
 manifest and durable save callback. It allows one selection per source attempt;
-combining candidates from multiple native pages is still needed. The existing
+draft version-2 selection combines multiple native pages. The existing
 attempt records intent, reservations and outcomes. Reservations conservatively
 charge the maximum body bytes delivered to the application plus one oversize
 probe byte, including failed and unknown attempts. They do not bound network
@@ -109,6 +109,14 @@ No-spawn conversion replay requires the original fetch and conversion input
 copies still present and rechecked. Once originals are deleted, seal readback
 cannot freshly hash them. These recovery primitives remain unverified under the
 hold.
+
+Draft version-2 document selection combines ordered source-page plans from one
+attempt into one bounded selection. Exact matching URLs share a fetch while
+each occurrence retains its originating plan, capture, source clock, labels
+and identity witnesses. These associations do not merge properties or establish
+identity. The selection uses one serial budget across the batch; its source
+plans must all remain sealed and bound to the attempt. This draft is unverified
+under the hold and does not activate regular collection.
 
 Draft `document_recovery.sealed` uses the existing foreground owner lock and a
 trusted saved attempt to revalidate sealed results without network requests or

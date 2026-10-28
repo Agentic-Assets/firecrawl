@@ -40,6 +40,14 @@ def _json(path, limit):
 
 def _source_plan(run_dir, source, attempt, plan):
     """Require the exact plan bytes already sealed in this source attempt."""
+    if isinstance(plan, list):
+        if not 1 <= len(plan) <= 129:
+            raise ValueError("document source-plan set exceeds bound")
+        for item in plan:
+            if not isinstance(item, dict) or item.get("source_key") != source:
+                raise ValueError("document source-plan set mixes sources")
+            _source_plan(run_dir, source, attempt, item)
+        return
     candidates = []
     collected = attempt.get("source_evidence") or {}
     if collected.get("plan_sha256") == plan["plan_sha256"]:
@@ -99,9 +107,9 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
 
     ``save(run_dir, manifest)`` must durably persist the existing checkpoint or
     raise. The caller must hold its foreground lock throughout this invocation.
-    One selection is allowed per source attempt; another native page or a
-    restart cannot reset its budget. A future coordinator must combine page
-    candidates before supporting multi-page automatic document acquisition.
+    One selection is allowed per source attempt; use an ordered plan list and
+    document_batch discovery/selection to combine native pages and collector
+    evidence under one budget. Another selection or restart cannot reset it.
     """
     run_dir = Path(os.path.abspath(run_dir))
     bindings = {"expected_policy_sha256": expected_policy_sha256,
