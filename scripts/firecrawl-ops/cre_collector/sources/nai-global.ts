@@ -15,6 +15,8 @@ import { boundedInt, clean, num, pmap } from "../lib/util.js";
 import { naiDocumentUrls, naiImageUrls } from "./pure/nai-assets.js";
 import { naiPublicPostId } from "./pure/nai-identity.js";
 import { cancelResponseBody, settleResponseBodyRead, type ResponseBodyReader } from "../lib/response-body.js";
+import { NAI_CAPTURE_MAX_BODY_BYTES, publishNaiNativePage } from "../lib/source-evidence/nai-page.js";
+import { observationNow } from "../lib/observation-clock.js";
 
 
 // --- NAI Global: Infabode public GraphQL feed ---
@@ -422,6 +424,14 @@ export async function naiGraphqlPost(
 ): Promise<any> {
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const requestBody = JSON.stringify(body);
+  const captureDir = process.env.CRE_NAI_NATIVE_CAPTURE_DIR;
+  const capture = !!captureDir && url === NAI_PUBLIC_POST_URL && body?.operationName === "GET_LISTINGS_PUBLIC_POSTS";
+  if (capture && (body?.query !== NAI_FEED_QUERY || process.env.CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER !== "1"))
+    throw new Error("NAI native capture failed");
+  const startedAt = capture ? observationNow() : "";
+  let reader: ResponseBodyReader | undefined;
+  let captureStopped = false;
   const request = fetch(url, {
     method: "POST",
     headers: {
@@ -430,7 +440,7 @@ export async function naiGraphqlPost(
       referer,
       "user-agent": "Mozilla/5.0 CRE collector",
     },
-    body: JSON.stringify(body),
+    body: requestBody,
     signal: controller.signal,
   });
   // Keep the deadline live through both fetch and response-body consumption.
@@ -445,12 +455,51 @@ export async function naiGraphqlPost(
   let res: Response;
   let text: string;
   try {
-    ({ res, text } = await Promise.race([
-      request.then(async (response) => ({ res: response, text: await response.text() })),
-      deadline,
-    ]));
+    if (capture) {
+      const received = await Promise.race([
+        request.then(async (response) => {
+          if (captureStopped) {
+            await cancelResponseBody(response.body, 1_000);
+            throw new Error("capture deadline expired");
+          }
+          const chunks: Uint8Array[] = [];
+          let bytes = 0;
+          if (response.body) {
+            reader = response.body.getReader();
+            while (true) {
+              const next = await reader.read();
+              if (next.done) break;
+              bytes += next.value.byteLength;
+              if (bytes > NAI_CAPTURE_MAX_BODY_BYTES) throw new Error("response limit");
+              chunks.push(next.value);
+            }
+          }
+          return { res: response, bytes: Buffer.concat(chunks, bytes) };
+        }),
+        deadline,
+      ]);
+      res = received.res;
+      await publishNaiNativePage(captureDir, { requestUrl: url, finalUrl: res.url, status: res.status,
+        startedAt, finishedAt: observationNow(), requestBody, responseBody: received.bytes });
+      text = new TextDecoder("utf-8", { fatal: true }).decode(received.bytes);
+    } else {
+      ({ res, text } = await Promise.race([
+        request.then(async (response) => ({ res: response, text: await response.text() })),
+        deadline,
+      ]));
+    }
+  } catch (error) {
+    if (!capture) throw error;
+    captureStopped = true;
+    controller.abort();
+    if (!reader || !(await settleResponseBodyRead(reader, error, 1_000))) {
+      throw new Error("NAI native capture failed: response settlement unconfirmed");
+    }
+    throw new Error("NAI native capture failed");
   } finally {
+    captureStopped = true;
     if (timeout) clearTimeout(timeout);
+    reader?.releaseLock();
   }
   let parsed: any = null;
   try {

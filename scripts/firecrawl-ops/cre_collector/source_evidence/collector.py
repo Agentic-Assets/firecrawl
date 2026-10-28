@@ -8,7 +8,7 @@ from source_evidence import events
 SCHEMA = "cre-retained-observations/v1"
 
 
-def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None):
+def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None, projection=None):
     if (not isinstance(artifact, dict) or not isinstance(source_key, str)
             or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_key)):
         raise ValueError("invalid collector artifact")
@@ -30,19 +30,29 @@ def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None)
             raise ValueError("numeric literals disagree with reconstructed collector artifact")
         digest_bytes = acquisition.encode_json(json.loads(digest_bytes), numeric_literals).encode("utf8")
         digest_kind = "canonical_json_exact_numeric_literals_utf8"
-    if policy_binding is not None and (not isinstance(policy_binding, dict) or set(policy_binding) !=
-                {"policySha256", "collectorGitSha", "targetSha256", "transportSha256", "artifactFileSha256", "generation", "attempt"}
+    if projection is not None:
+        from source_evidence import map_projection
+        map_projection.validate(artifact, projection, source_key=source_key, numeric_literals=numeric_literals)
+        digest_kind = "projected_" + digest_kind
+    binding_fields = {"policySha256", "collectorGitSha", "targetSha256", "transportSha256", "artifactFileSha256", "generation", "attempt"}
+    if projection is not None:
+        binding_fields.add("artifactFileHashKind")
+    if policy_binding is not None and (not isinstance(policy_binding, dict) or set(policy_binding) != binding_fields
                 or any(not isinstance(policy_binding[k], str) or not re.fullmatch(r"[a-f0-9]{64}", policy_binding[k])
                        for k in ("policySha256", "targetSha256", "transportSha256", "artifactFileSha256"))
                 or not isinstance(policy_binding["collectorGitSha"], str)
                 or not re.fullmatch(r"[a-f0-9]{40}", policy_binding["collectorGitSha"])
                 or not isinstance(policy_binding["generation"], str) or not policy_binding["generation"]
-                or type(policy_binding["attempt"]) is not int or policy_binding["attempt"] < 1):
+                or type(policy_binding["attempt"]) is not int or policy_binding["attempt"] < 1
+                or (projection is not None and (policy_binding["artifactFileHashKind"] != digest_kind
+                    or policy_binding["artifactFileSha256"] != events.sha256(digest_bytes)))):
         raise ValueError("invalid automatic policy binding")
     return {"schema": SCHEMA, "provenance": {"sourceKey": source_key, "observedAt": clock,
             "observedAtOrigin": "collector_run_finished_at", "recordKind": "collector_emitted_listing",
             "originalArtifactSha256": events.sha256(digest_bytes),
             "originalArtifactHashKind": digest_kind,
+            **({"projection": projection, "originalArtifactRepresentation": "projected_collector_artifact",
+                "originalSourceHashesVerification": "omitted_due_to_projection"} if projection is not None else {}),
             **({"automaticPolicy": policy_binding} if policy_binding is not None else {}),
             **({"numericLiterals": numeric_literals,
                 "numericEncoding": "json_pointer_to_literal_null_placeholder_v1"}

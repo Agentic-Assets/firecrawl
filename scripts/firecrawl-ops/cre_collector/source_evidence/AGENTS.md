@@ -20,3 +20,11 @@ Never print text, raw facts, source credentials, or private results. Search is
 chunk-local and does not establish document completeness. Tests belong under
 `tests/source_evidence/` and run only in a standalone no-hardlinks clone. Use the
 disposable migration/CLI runners for database behavior, never production fixtures.
+
+Version-2 recurring policies separately allow NAI public native-page capture and
+Faris map-credential projection. Read the corresponding README sections before
+changing their format, pointer receipts, quotas, worker custody or replay order.
+Projected observations cannot reconstruct removed source bytes; whole-response
+JSON contexts do not assert a selected listing array. Effective-privilege checks
+are bounded preflights, not server-side credential isolation. Production writer
+activation remains subject to the shared-database review on AGENTIC-5040.
