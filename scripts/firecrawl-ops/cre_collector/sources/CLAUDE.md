@@ -221,6 +221,18 @@ explicit item and character limits. Existing `propertyNotes` remains outside
 that budget and is not independently bounded; the legacy stderr event remains
 unchanged. These are retention limits, not evidence of complete page coverage.
 
+The draft shared `lib/source-page-context` helper owns that bounded extraction;
+Foundry retains its source schema through a thin wrapper. Lyon-Stahl captures
+held/rejected non-shell page context at its existing detail-fetch boundary.
+Matthews captures accessible non-shell pages that fail parsing or identity
+validation. If strict Matthews collection fails, its typed error also carries
+the already completed parses after the shared mapper settles active workers.
+Their accepted mapper, source counts, redirect/404 exclusions, status, tenure
+and lifecycle gates remain authoritative for canonical output. Private captures
+require no native ID or address and do not turn those failures into acceptance.
+These integrations and their regression cases are unverified under the current
+test/service hold and are not deployed. Targeted enrichment paths are unchanged.
+
 On a strict identity failure, the intended `RetainedSourceError` preserves the
 original failure while carrying held context and otherwise accepted conflicting
 parsed rows as unqualified observations in `sources[].retainedObservations`.
