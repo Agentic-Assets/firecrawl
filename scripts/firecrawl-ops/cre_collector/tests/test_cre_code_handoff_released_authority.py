@@ -1,7 +1,6 @@
 """Real temporary SharedLock release contract; never resolve a runtime lock."""
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -31,7 +30,7 @@ def cleared(tmp_path):
         assert path.is_dir()
         assert lease.authority_locked
     assert not path.exists()
-    assert Path("/proc", str(os.getpid())).exists()
+    os.kill(os.getpid(), 0)
     assert lease.authority_fd == -1
     return path, receipt
 
@@ -74,6 +73,17 @@ def test_real_release_preserves_normal_record_and_accepts_only_exact_own_receipt
     assert not path.exists()
 
 
+def test_inaccessible_live_owner_remains_held(cleared, monkeypatch):
+    path, _receipt = cleared
+
+    def inaccessible(_pid, _signal):
+        raise PermissionError("synthetic permission denial")
+
+    monkeypatch.setattr(checkpoint.os, "kill", inaccessible)
+    with pytest.raises(handoff.HandoffError, match="not clear"):
+        handoff.lock_clear(checkpoint, path)
+
+
 @pytest.mark.parametrize("mutation", ["pid", "token", "generation", "inode"])
 def test_released_receipt_must_match_every_owned_identity_field(cleared, mutation):
     path, (fields, identity) = cleared
@@ -104,7 +114,8 @@ def test_released_authority_rejects_changed_or_incomplete_release(cleared, mutat
     elif mutation == "recovery":
         authority.write_text(f"v1 {fields[0]} {fields[1]} {fields[2]} recovery-required\n")
     else:
-        assert os.getppid() != os.getpid() and Path("/proc", str(os.getppid())).exists()
+        assert os.getppid() != os.getpid()
+        os.kill(os.getppid(), 0)
         authority.write_text(f"v1 {os.getppid()} {fields[1]} {fields[2]} normal\n")
         with pytest.raises(handoff.HandoffError, match="not clear"):
             handoff.lock_clear(checkpoint, path)

@@ -5530,10 +5530,12 @@ def prepare_sources_cohort(
     dispatch_pending = False
     try:
         while True:
-            completed = [item for item in active if item.process.poll() is not None]
-            for item in completed:
-                _finalize_cohort_collection(run_dir, manifest, item)
-                active.remove(item)
+            # Finalize each reaped leader before polling a sibling. If
+            # finalization fails, cleanup still owns unreaped sibling leaders.
+            for item in tuple(active):
+                if item.process.poll() is not None:
+                    _finalize_cohort_collection(run_dir, manifest, item)
+                    active.remove(item)
             pump_source_evidence(run_dir, manifest)
 
             active_sources = {item.source for item in active}
@@ -7821,7 +7823,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if source_document_acquisition is not None:
                     set_cpu_guard_context(cpu_guard, phase="source_documents", active_operation="private_document_acquisition")
-                pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
+                    pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
                 if source_failures:
                     raise RefreshError("pipeline source checkpoints remain incomplete: " + ", ".join(source_failures))
             else:
@@ -7837,7 +7839,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if source_document_acquisition is not None:
                     set_cpu_guard_context(cpu_guard, phase="source_documents", active_operation="private_document_acquisition")
-                pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
+                    pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
                 if source_failures:
                     raise RefreshError(
                         "source checkpoints remain incomplete: "

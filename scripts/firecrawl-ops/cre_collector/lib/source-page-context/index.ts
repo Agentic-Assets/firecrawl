@@ -33,39 +33,69 @@ export function captureSourcePageContext(html: string, options: {
     }
     return attributes;
   };
-  const scripts = capture('script[type="application/ld+json"], script[type="application/json"]', (node) => ({
-    type: node.attr("type") === undefined ? null : bounded(node.attr("type")!), text: bounded(node.text()),
-  }));
+  const reference = (node: cheerio.Cheerio<any>, name: "href" | "src") => {
+    const original = node.attr(name);
+    if (original === undefined) return { value: null, truncated: false, prefix: undefined };
+    const value = bounded(original);
+    return value.length === original.length
+      ? { value, truncated: false, prefix: undefined }
+      : { value: null, truncated: true, prefix: value };
+  };
+  const scripts = capture('script[type="application/ld+json"], script[type="application/json"]', (node) => {
+    const type = node.attr("type") === undefined ? null : bounded(node.attr("type")!);
+    const original = node.text();
+    const text = bounded(original);
+    return { type, text,
+      ...(text.length === original.length ? {} : { textComplete: false }) };
+  });
   const descriptions = capture(descriptionSelector, (node) => bounded(node.text()));
   const headings = capture("h1,h2,h3", (node) => bounded(node.text()));
-  const documentLinks = capture("link[rel]", (node) => ({
-    rel: node.attr("rel") === undefined ? null : bounded(node.attr("rel")!),
-    href: node.attr("href") === undefined ? null : bounded(node.attr("href")!),
-    ...nativeAttributes(node, ["type", "title"]),
-  }));
+  const documentLinks = capture("link[rel]", (node) => {
+    const rel = node.attr("rel") === undefined ? null : bounded(node.attr("rel")!);
+    const href = reference(node, "href");
+    return { rel, href: href.value,
+      ...(href.truncated ? { referenceIntegrity: { href: "truncated" as const }, referencePrefix: href.prefix } : {}),
+      ...nativeAttributes(node, ["type", "title"]) };
+  });
   const metadata = capture("meta", (node) => ({
     name: node.attr("name") === undefined ? null : bounded(node.attr("name")!),
     property: node.attr("property") === undefined ? null : bounded(node.attr("property")!),
     content: node.attr("content") === undefined ? null : bounded(node.attr("content")!),
   }));
-  const links = capture("a", (node) => ({
-    href: node.attr("href") === undefined ? null : bounded(node.attr("href")!), text: bounded(node.text()),
-    ...nativeAttributes(node, ["title", "aria-label", "download", "type"]),
-  }));
-  const images = capture("img", (node) => ({ src: node.attr("src") === undefined ? null : bounded(node.attr("src")!), alt: node.attr("alt") === undefined ? null : bounded(node.attr("alt")!) }));
+  const links = capture("a", (node) => {
+    const href = reference(node, "href");
+    return { href: href.value, text: bounded(node.text()),
+      ...(href.truncated ? { referenceIntegrity: { href: "truncated" as const }, referencePrefix: href.prefix } : {}),
+      ...nativeAttributes(node, ["title", "aria-label", "download", "type"]) };
+  });
+  const images = capture("img", (node) => {
+    const src = reference(node, "src");
+    return { src: src.value, alt: node.attr("alt") === undefined ? null : bounded(node.attr("alt")!),
+      ...(src.truncated ? { referenceIntegrity: { src: "truncated" as const }, referencePrefix: src.prefix } : {}) };
+  });
+  // When any text was omitted, explicitly distinguish intact references and
+  // scripts from legacy shapes where aggregate omissions cannot identify them.
+  const scriptsOut = scripts.values.map((item) => omittedCharacters && item.textComplete === undefined
+    ? { ...item, textComplete: true } : item);
+  const linksOut = links.values.map((item) => omittedCharacters && item.href !== null && item.referenceIntegrity === undefined
+    ? { ...item, referenceIntegrity: { href: "complete" as const } } : item);
+  const documentLinksOut = documentLinks.values.map((item) => omittedCharacters && item.href !== null && item.referenceIntegrity === undefined
+    ? { ...item, referenceIntegrity: { href: "complete" as const } } : item);
+  const imagesOut = images.values.map((item) => omittedCharacters && item.src !== null && item.referenceIntegrity === undefined
+    ? { ...item, referenceIntegrity: { src: "complete" as const } } : item);
   return {
     schema: "cre-source-page-context/v1" as const,
     sourceUrl,
     detailObservedAt: detailObservedAt ?? null,
     identity: "unverified" as const,
     visibility: "unverified" as const,
-    scripts: scripts.values,
+    scripts: scriptsOut,
     descriptions: descriptions.values,
     headings: headings.values,
-    documentLinks: documentLinks.values,
+    documentLinks: documentLinksOut,
     metadata: metadata.values,
-    links: links.values,
-    images: images.values,
+    links: linksOut,
+    images: imagesOut,
     tables: captureDetailTables(html, { sourceUrl, observedAt: detailObservedAt ?? "" }),
     omissions: { scripts: scripts.omitted, descriptions: descriptions.omitted, headings: headings.omitted, documentLinks: documentLinks.omitted,
       metadata: metadata.omitted, links: links.omitted,

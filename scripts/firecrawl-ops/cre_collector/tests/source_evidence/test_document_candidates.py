@@ -10,7 +10,7 @@ def artifact():
                 for i in range(78)]
     listings[1]["documents"] = [{"url": "https://docs.example.test/file-0", "title": "Conflicting label", "docType": "om"}]
     held = {"event": "foundry_held_observation", "observation": {"id": "held-no-address", "status": None},
-            "pageContext": {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/property/held/",
+            "pageContext": {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/property/held/", "omissions": {"characters": 0},
                             "links": [{"href": "../download", "text": "Offering memorandum"},
                                       {"href": "/contact", "text": "Contact"}],
                             "documentLinks": [{"rel": "canonical", "href": "https://example.test/canonical"}]}}
@@ -134,7 +134,7 @@ def test_source_labelled_plural_document_roles_are_candidates(label):
 def test_generic_page_and_scraped_fields_retain_72_mixed_document_witnesses():
     value = artifact()
     value["listings"] = []
-    page = {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/page/",
+    page = {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/page/", "omissions": {"characters": 0},
             "links": [], "documentLinks": []}
     scraped = {"links": [], "attributes": [{"selector": "a.download", "attribute": "href", "values": []}]}
     for index in range(18):
@@ -198,7 +198,7 @@ def test_buildout_requested_page_and_claim_remain_distinct_witnesses():
         "claim": {"sourceKey": "svn", "externalId": "synthetic", "url": "https://example.test/claim",
                   "transaction": "sale"},
         "requestedPageUrl": "https://example.test/iframe/page/",
-        "pageContext": {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/iframe/page/",
+        "pageContext": {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/iframe/page/", "omissions": {"characters": 0},
                         "detailObservedAt": "2026-10-28T11:00:00Z",
                         "links": [{"href": "relative.pdf", "text": ""}]},
         "scrapedDoc": {"links": ["../scraped.pdf"], "attributes": [
@@ -245,3 +245,93 @@ def test_unrelated_native_attributes_never_become_scraped_attribute_candidates()
     value["listings"] = [{"sourceKey": "svn", "attributes": [
         {"selector": "a", "attribute": "href", "values": ["https://docs.example.test/unrelated.pdf"]}]}]
     assert document_candidates.discover(plan_for(value))["candidates"] == []
+
+
+def test_complete_json_script_preserves_real_source_pointer_and_inner_pointer():
+    value = artifact()
+    value["listings"] = []
+    page = value["sources"][0]["retainedObservations"][0]["pageContext"]
+    page["links"] = []
+    page["scripts"] = [{"type": "application/ld+json", "text": __import__("json").dumps({"id": "script-witness",
+        "documents": [{"url": f"https://docs.example.test/{i}.pdf", "title": f"Source {i}"} for i in range(60)]})}]
+    result = document_candidates.discover(plan_for(value))
+    assert len(result["candidates"]) == 60
+    first = result["candidates"][0]["occurrences"][0]
+    assert first["json_pointer"].endswith("/pageContext/scripts/0/text")
+    assert first["script_json_pointer"] == "/documents/0/url"
+    assert first["labels"]["title"] == "Source 0"
+    assert first["identity"] == "unverified"
+    assert any(witness.get("script_json_pointer") == "" and witness["json_pointer"] == first["json_pointer"]
+               and witness["fields"].get("id") == "script-witness" for witness in first["identity_witnesses"])
+
+
+def test_truncated_and_unverified_links_and_scripts_are_diagnostic_not_targets():
+    value = artifact()
+    value["listings"] = []
+    page = value["sources"][0]["retainedObservations"][0]["pageContext"]
+    page["omissions"] = {"characters": 12}
+    page["documentLinks"] = []
+    page["links"] = [
+        {"href": None, "text": "Brochure", "referenceIntegrity": {"href": "truncated"},
+         "referencePrefix": "https://docs.example.test/wrong.pdf"},
+        {"href": "https://docs.example.test/legacy.pdf", "text": "Brochure"},
+        {"href": "https://docs.example.test/complete.pdf", "text": "Brochure",
+         "referenceIntegrity": {"href": "complete"}},
+    ]
+    page["scripts"] = [
+        {"type": "application/json", "text": '{"urlDocument":"https://docs.example.test/truncated.pdf"}', "textComplete": False},
+        {"type": "application/json", "text": '{"urlDocument":"https://docs.example.test/legacy.pdf"}'},
+        {"type": "application/json", "text": '{"urlDocument":"https://docs.example.test/script.pdf"}', "textComplete": True},
+        {"type": "application/json", "text": '{"duplicate":1,"duplicate":2}', "textComplete": True},
+    ]
+    result = document_candidates.discover(plan_for(value))
+    assert {item["url"] for item in result["candidates"]} == {
+        "https://docs.example.test/complete.pdf", "https://docs.example.test/script.pdf"}
+    assert [entry["reason"] for entry in result["excluded"]].count("reference_incomplete_or_unverified") == 2
+    assert [entry["reason"] for entry in result["excluded"]].count("script_text_incomplete_or_unverified") == 2
+    assert [entry["reason"] for entry in result["excluded"]].count("script_json_invalid_or_unsupported") == 1
+
+
+def test_decoded_json_script_cannot_bypass_protected_source_policy():
+    value = artifact()
+    value["listings"] = []
+    page = value["sources"][0]["retainedObservations"][0]["pageContext"]
+    page["scripts"] = [{"type": "application/json",
+                        "text": '{"urlDocument":"https:\\/\\/jll.com\\/document.pdf"}'}]
+    with pytest.raises(ValueError, match="JLL URL"):
+        document_candidates.discover(plan_for(value))
+
+
+def test_script_exceptional_numeric_literals_do_not_hide_document_url():
+    value = artifact()
+    value["listings"] = []
+    page = value["sources"][0]["retainedObservations"][0]["pageContext"]
+    page["links"] = []
+    page["documentLinks"] = []
+    page["scripts"] = [{"type": "application/json",
+                        "text": '{"id":1.234567890123456789,"price":1e400,"urlDocument":"https://docs.example.test/a.pdf"}'}]
+    result = document_candidates.discover(plan_for(value))
+    occurrence = result["candidates"][0]["occurrences"][0]
+    assert occurrence["script_json_pointer"] == "/urlDocument"
+    assert occurrence["script_numeric_literals"] == {"/id": "1.234567890123456789", "/price": "1e400"}
+    assert occurrence["script_numeric_encoding"] == "json_pointer_to_literal_null_placeholder_v1"
+    witness = next(item for item in occurrence["identity_witnesses"] if item.get("script_json_pointer") == "")
+    assert witness["fields"]["id"] is None and witness["script_numeric_literals"] == occurrence["script_numeric_literals"]
+
+
+@pytest.mark.parametrize("url", ["https://broker.example/?access_token=secret#organization",
+                                  "https://broker.example/#access_token=secret"])
+def test_decoded_metadata_fragments_do_not_bypass_credential_checks(url):
+    with pytest.raises(ValueError):
+        document_candidates._safe_metadata({"@id": url}, decoded_source_key="svn")
+
+
+def test_relative_empty_fragment_is_excluded_without_urljoin_rewrite():
+    value = artifact()
+    value["listings"] = []
+    page = value["sources"][0]["retainedObservations"][0]["pageContext"]
+    page["links"] = [{"href": "file.pdf#", "text": "Brochure"}]
+    page["documentLinks"] = []
+    result = document_candidates.discover(plan_for(value))
+    assert result["candidates"] == []
+    assert result["excluded"][0]["reason"] == "unsafe_or_unresolved_reference"

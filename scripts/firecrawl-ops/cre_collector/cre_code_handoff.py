@@ -148,25 +148,25 @@ def _clear_authority(checkpoint, lock, *, released=None, independent=False):
             fields = checkpoint.SharedLock._authority_fields(fd)
             require(fields is not None and not fields[3], "canonical owner/recovery not clear")
             if released is None:
-                require(fields[0] == 0 or not Path("/proc", str(fields[0])).exists(),
+                require(fields[0] == 0 or not checkpoint._pid_alive(fields[0]),
                         "canonical owner/recovery not clear")
             else:
                 require((fields, identity) == released,
                         "released authority identity differs")
                 if independent:
-                    require(not Path("/proc", str(fields[0])).exists(), "original predecessor is still live")
+                    require(not checkpoint._pid_alive(fields[0]), "original predecessor is still live")
                 else:
                     require(fields[0] == os.getpid(), "released authority owner differs")
             require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
             if independent:
-                require(not Path("/proc", str(fields[0])).exists(), "original predecessor birth became ambiguous")
+                require(not checkpoint._pid_alive(fields[0]), "original predecessor birth became ambiguous")
             named = authority.lstat()
             require(identity == (named.st_dev, named.st_ino)
                     and checkpoint.SharedLock._authority_fields(fd) == fields,
                     "canonical authority changed during clearance")
             require(not lock.exists() and not lock.is_symlink(), "canonical owner/recovery directory present")
             if independent:
-                require(not Path("/proc", str(fields[0])).exists(), "original predecessor birth became ambiguous")
+                require(not checkpoint._pid_alive(fields[0]), "original predecessor birth became ambiguous")
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:

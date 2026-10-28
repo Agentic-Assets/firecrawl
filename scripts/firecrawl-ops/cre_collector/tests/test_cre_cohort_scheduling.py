@@ -6,6 +6,7 @@ import io
 import signal
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import cre_checkpoint_refresh as refresh
@@ -78,6 +79,46 @@ class CleanupProcess:
 class WriteFailingLog(io.StringIO):
     def write(self, _text: str) -> int:
         raise OSError("synthetic evidence write failure")
+
+
+def test_finalize_failure_does_not_poll_sibling_before_cleanup(tmp_path, monkeypatch):
+    sources = ("transwestern", "savills")
+    manifest = _new_manifest(tmp_path / "cohort", sources=sources)
+    polls = []
+    cleaned = []
+
+    class CompletedProcess:
+        def __init__(self, source):
+            self.source = source
+
+        def poll(self):
+            polls.append(self.source)
+            return 0
+
+    def start(_run_dir, _manifest, source, **_kwargs):
+        return SimpleNamespace(source=source, process=CompletedProcess(source))
+
+    def fail_finalize(_run_dir, _manifest, item):
+        assert item.source == sources[0]
+        raise RuntimeError("synthetic finalization failure")
+
+    def cleanup(active):
+        cleaned.extend(item.source for item in active)
+        assert polls == [sources[0]]
+
+    monkeypatch.setattr(refresh, "_cohort_needs_collection", lambda *_a, **_k: True)
+    monkeypatch.setattr(refresh, "select_cohort_sources", lambda pending, *_a, **_k: pending)
+    monkeypatch.setattr(refresh, "_start_cohort_collection", start)
+    monkeypatch.setattr(refresh, "_finalize_cohort_collection", fail_finalize)
+    monkeypatch.setattr(refresh, "_terminate_cohort_processes", cleanup)
+    monkeypatch.setattr(refresh, "pump_source_evidence", lambda *_a: None)
+    monkeypatch.setattr(refresh.time, "sleep", lambda _seconds: None)
+    with pytest.raises(RuntimeError, match="synthetic finalization failure"):
+        refresh.prepare_sources_cohort(
+            tmp_path / "cohort", manifest, sources, page_cap=1, concurrency=1,
+            attempts_this_run=1, env_file=None, source_workers=2,
+        )
+    assert cleaned == list(sources)
 
 
 def _new_manifest(
@@ -253,13 +294,19 @@ def _run_virtual_schedule(
 
     def sleep(_seconds: float) -> None:
         future_completions = [
-            process.ready_at for process in processes if process.poll() is None
+            process.ready_at for process in processes
+            if process.returncode is None and process.ready_at > clock["now"]
         ]
         assert future_completions, "scheduler slept without a live worker"
         clock["now"] = min(future_completions)
 
     with monkeypatch.context() as patcher:
         patcher.setattr(refresh, "_start_cohort_collection", start)
+        # Synthetic PIDs are not operating-system process groups.
+        patcher.setattr(refresh, "_group_alive", lambda _pgid: False)
+        def unexpected_cleanup(_items):
+            raise AssertionError("virtual schedule unexpectedly required cleanup")
+        patcher.setattr(refresh, "_terminate_cohort_processes", unexpected_cleanup)
         patcher.setattr(refresh, "collector_runtime_dependency_error", lambda: None)
         patcher.setattr(refresh, "_finalize_cohort_collection", finalize)
         patcher.setattr(

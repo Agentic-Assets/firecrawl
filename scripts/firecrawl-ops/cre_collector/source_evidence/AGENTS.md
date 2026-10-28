@@ -77,6 +77,15 @@ relative page bases are not access authority and previews are not originals.
 Suffixes and MIME do not guarantee conversion support. The additions are
 unverified under the hold.
 
+Draft bounded JSON/JSON-LD discovery never executes script text. Preserve the
+original script text pointer separately from the decoded JSON pointer. Skip
+incomplete or unverified scripts and references with explicit diagnostics;
+legacy page contexts need an explicit zero omitted-character count before
+unmarked fields are treated as complete. Apply existing source and credential
+policies to decoded values. This remains unverified.
+Preserve exceptional numeric literals with the explicit pointer-to-literal
+null-placeholder map on derived occurrences and witnesses.
+
 Draft `plan-document-acquisition` is a pure policy preflight over a validated
 plan and rederived candidates. It produces a bounded source-scoped selection,
 not a download, extraction, permission decision, or completed evidence write.

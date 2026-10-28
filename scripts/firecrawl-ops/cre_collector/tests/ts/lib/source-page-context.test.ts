@@ -71,5 +71,34 @@ test("document hint attributes share existing bounds and preserve absent values"
   const result = captureSourcePageContext(`<a href="/x" title="${"a".repeat(64_001)}"></a><a href="/y"></a>`, { sourceUrl: url });
   assert.equal(result.links[0]!.title!.length, 64_000);
   assert.equal(result.omissions.characters, 1);
-  assert.deepEqual(result.links[1], { href: "/y", text: "" });
+  assert.deepEqual(result.links[1], { href: "/y", text: "", referenceIntegrity: { href: "complete" } });
+});
+
+test("truncated URL attributes cannot masquerade as complete valid references", () => {
+  const prefix = "https://example.test/file.pdf";
+  const original = `${prefix}/different-resource`;
+  const scripts = Array.from({ length: 4 }, () => `<script type="application/json">${"x".repeat(60000)}</script>`).join("");
+  const heading = "x".repeat(250000 - 4 * (60000 + "application/json".length) - prefix.length);
+  const capture = (node: string) => captureSourcePageContext(`${scripts}<h1>${heading}</h1>${node}`, { sourceUrl: url });
+  const anchor = capture(`<a href="${original}" download="">Brochure</a>`).links[0]!;
+  assert.equal(anchor.href, null);
+  assert.equal(anchor.referencePrefix, prefix);
+  assert.deepEqual(anchor.referenceIntegrity, { href: "truncated" });
+  const documentLink = capture(`<link rel="" href="${original}">`).documentLinks[0]!;
+  assert.equal(documentLink.href, null);
+  assert.equal(documentLink.referencePrefix, prefix);
+  assert.deepEqual(documentLink.referenceIntegrity, { href: "truncated" });
+  const image = capture(`<img src="${original}">`).images[0]!;
+  assert.equal(image.src, null);
+  assert.equal(image.referencePrefix, prefix);
+  assert.deepEqual(image.referenceIntegrity, { src: "truncated" });
+});
+
+test("page-wide omissions identify intact references and script text separately", () => {
+  const page = captureSourcePageContext(`<script type="application/json">${"x".repeat(64001)}</script>
+    <script type="application/ld+json">{"urlDocument":"https://example.test/actual.pdf"}</script>
+    <a href="https://example.test/actual.pdf">Brochure</a>`, { sourceUrl: url });
+  assert.equal(page.scripts[0]!.textComplete, false);
+  assert.equal(page.scripts[1]!.textComplete, true);
+  assert.deepEqual(page.links[0]!.referenceIntegrity, { href: "complete" });
 });

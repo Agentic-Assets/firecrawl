@@ -6,7 +6,12 @@ import copy
 import re
 from urllib.parse import parse_qsl, unquote, urljoin, urlsplit
 
-from buildout_observation_artifact import SECRET_QUERY, credential_label, sensitive_string
+from buildout_observation_artifact import (
+    SECRET_QUERY,
+    credential_label,
+    sensitive_string,
+)
+
 from source_evidence import events
 
 MAX_NODES = 500000
@@ -20,7 +25,7 @@ PAGE_SCHEMAS = {"cre-source-page-context/v1", "foundry-native-page-context/v1"}
 ENRICHMENT_SCHEMAS = {"cre-generic-enrichment-observation/v1", "cre-buildout-enrichment-observation/v1"}
 SCRAPE_URL_ATTRIBUTES = {"href", "src", "url", "data-video-url"}
 DOCUMENT_LABEL = re.compile(r"\b(?:brochures?|offering\s+memorand(?:um|a)|om|flyers?|floor\s*plans?|rent\s*rolls?|"
-                            r"risk\s*questionnaires?|financials?|financial\s+statements?|property\s+packages?|documents?)\b", re.I)
+                            r"risk\s*questionnaires?|financials?|financial\s+statements?|property\s+packages?|documents?)\b", re.IGNORECASE)
 IDENTITY_FIELDS = ("id", "externalId", "external_id", "foundryPostId", "propertyId", "sourceKey",
                    "url", "sourceUrl", "requestedUrl", "requestedURL", "inventoryObservedAt", "detailObservedAt", "observedAt",
                    "transaction", "capturedAt", "captureClock", "qualification")
@@ -64,14 +69,15 @@ def _part(value):
     return str(value).replace("~", "~0").replace("/", "~1")
 
 
-def _safe_url(value):
+def _safe_url(value, *, allow_fragment=False):
     if (not isinstance(value, str) or not value or len(value.encode("utf-8")) > 4096
             or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)):
         raise ValueError("invalid_url")
     parsed = urlsplit(value)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or "\\" in value:
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password
+            or ("#" in value and not allow_fragment) or "\\" in value):
         raise ValueError("invalid_url")
-    parsed.port  # Reject malformed ports, without changing the original reference.
+    _ = parsed.port  # Reject malformed ports, without changing the original reference.
     events.http_url(value)
     if sensitive_string(value):
         raise ValueError("credential_url")
@@ -89,7 +95,7 @@ def _safe_url(value):
     return value
 
 
-def _safe_metadata(value):
+def _safe_metadata(value, *, decoded_source_key=None):
     """Refuse unsafe URLs in copied metadata rather than exposing them in a manifest."""
     pending = [(value, 0)]
     visited = 0
@@ -100,12 +106,34 @@ def _safe_metadata(value):
             raise ValueError("document discovery metadata exceeds bound")
         if isinstance(current, str):
             for match in events.URL_TOKEN.finditer(current):
-                _safe_url(match.group().rstrip(")]},."))
+                url = _safe_url(match.group().rstrip(")]},."), allow_fragment=True)
+                if decoded_source_key is not None:
+                    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+                    if host in ("jll.com", "jllproperty.com") or host.endswith((".jll.com", ".jllproperty.com")):
+                        raise ValueError("JLL URL requires its source-specific withheld-content adapter")
         elif isinstance(current, dict):
-            pending.extend((entry, depth + 1) for entry in current.keys())
+            if decoded_source_key is not None:
+                for key, item in current.items():
+                    if (isinstance(key, str) and re.sub(r"[^a-z0-9]", "", key.lower()) == "sourcekey"
+                            and isinstance(item, str)):
+                        declared = item.strip().lower().replace("_", "-")
+                        if declared in ("jll", "jll-main", "jll-investor", "avison-young") and declared != decoded_source_key:
+                            raise ValueError("conflicting protected source declaration")
+            pending.extend((entry, depth + 1) for entry in current)
             pending.extend((entry, depth + 1) for entry in current.values())
         elif isinstance(current, list):
             pending.extend((entry, depth + 1) for entry in current)
+
+
+def _witness_at(path, fields, script_source):
+    witness = {"json_pointer": script_source["pointer"] if script_source else path,
+               "fields": fields, "verification": "unverified"}
+    if script_source is not None:
+        witness["script_json_pointer"] = path
+        if script_source["numeric_literals"]:
+            witness["script_numeric_literals"] = copy.deepcopy(script_source["numeric_literals"])
+            witness["script_numeric_encoding"] = "json_pointer_to_literal_null_placeholder_v1"
+    return witness
 
 
 def discover(plan):
@@ -131,15 +159,28 @@ def discover(plan):
             raise ValueError("document discovery output exceeds bound")
         budget += size + 1
 
-    def emit(reference, item_no, pointer, role, labels, witnesses, base):
+    def diagnostic(item_no, pointer, reason, script_source=None):
         nonlocal occurrence_count
         occurrence_count += 1
-        if occurrence_count > MAX_OCCURRENCES or len(pointer.encode("utf-8")) > MAX_POINTER_BYTES:
+        if (occurrence_count > MAX_OCCURRENCES or len(pointer.encode("utf-8")) > MAX_POINTER_BYTES
+                or (script_source is not None and len(script_source["pointer"].encode("utf-8")) > MAX_POINTER_BYTES)):
+            raise ValueError("document discovery occurrence exceeds bound")
+        entry = {"item_no": item_no, "json_pointer": script_source["pointer"] if script_source else pointer, "reason": reason}
+        if script_source is not None:
+            entry["script_json_pointer"] = pointer
+        charge(entry)
+        result["excluded"].append(entry)
+
+    def emit(reference, item_no, pointer, role, labels, witnesses, base, script_source=None):
+        nonlocal occurrence_count
+        occurrence_count += 1
+        if (occurrence_count > MAX_OCCURRENCES or len(pointer.encode("utf-8")) > MAX_POINTER_BYTES
+                or (script_source is not None and len(script_source["pointer"].encode("utf-8")) > MAX_POINTER_BYTES)):
             raise ValueError("document discovery occurrence exceeds bound")
         resolved = reference
         resolution = {"kind": "absolute_source_reference", "verification": "unverified"}
         try:
-            if not isinstance(reference, str) or not reference:
+            if not isinstance(reference, str) or not reference or "#" in reference:
                 raise ValueError("invalid_reference")
             parsed = urlsplit(reference)
             if not parsed.scheme:
@@ -151,14 +192,22 @@ def discover(plan):
                               "verification": "unverified"}
             _safe_url(resolved)
         except (ValueError, UnicodeError):
-            excluded = {"item_no": item_no, "json_pointer": pointer, "reason": "unsafe_or_unresolved_reference"}
+            excluded = {"item_no": item_no, "json_pointer": script_source["pointer"] if script_source else pointer,
+                        "reason": "unsafe_or_unresolved_reference"}
+            if script_source is not None:
+                excluded["script_json_pointer"] = pointer
             charge(excluded)
             result["excluded"].append(excluded)
             return
-        occurrence = {"item_no": item_no, "json_pointer": pointer, "raw_reference": reference,
+        occurrence = {"item_no": item_no, "json_pointer": script_source["pointer"] if script_source else pointer, "raw_reference": reference,
                       "role": role, "labels": copy.deepcopy(labels), "identity_witnesses": copy.deepcopy(witnesses),
                       "observed_at": rows[item_no]["observed_at"], "resolution": resolution,
                       "identity": "unverified", "fact_kind": fact_kind}
+        if script_source is not None:
+            occurrence["script_json_pointer"] = pointer
+            if script_source["numeric_literals"]:
+                occurrence["script_numeric_literals"] = copy.deepcopy(script_source["numeric_literals"])
+                occurrence["script_numeric_encoding"] = "json_pointer_to_literal_null_placeholder_v1"
         _safe_metadata(labels)
         _safe_metadata(witnesses)
         charge(occurrence)
@@ -176,9 +225,9 @@ def discover(plan):
     for row in rows:
         item_no = row["item_no"]
         fact_kind = row["facts"][0]["kind"] if row["facts"] else None
-        stack = [(row["facts"], "/facts", 0, [], None, False, False)]
+        stack = [(row["facts"], "/facts", 0, [], None, False, False, None, False)]
         while stack:
-            value, pointer, depth, witnesses, base, in_page, is_scraped_doc = stack.pop()
+            value, pointer, depth, witnesses, base, in_page, is_scraped_doc, script_source, page_complete = stack.pop()
             visited += 1
             if visited > MAX_NODES or depth > MAX_DEPTH or len(pointer.encode("utf-8")) > MAX_POINTER_BYTES:
                 raise ValueError("document discovery traversal exceeds bound")
@@ -186,30 +235,52 @@ def discover(plan):
                 fields = {key: value[key] for key in IDENTITY_FIELDS if key in value and
                           (value[key] is None or isinstance(value[key], (str, int, float, bool)))}
                 if fields:
-                    witnesses = [*witnesses, {"json_pointer": pointer, "fields": fields, "verification": "unverified"}]
+                    witnesses = [*witnesses, _witness_at(pointer, fields, script_source)]
                 sibling = value.get("observation")
                 if "event" in value and isinstance(sibling, dict):
                     sibling_fields = {key: sibling[key] for key in IDENTITY_FIELDS if key in sibling and
                                       (sibling[key] is None or isinstance(sibling[key], (str, int, float, bool)))}
                     if sibling_fields:
-                        witnesses = [*witnesses, {"json_pointer": pointer + "/observation", "fields": sibling_fields,
-                                                   "verification": "unverified"}]
+                        witnesses = [*witnesses, _witness_at(pointer + "/observation", sibling_fields, script_source)]
                 is_enrichment = isinstance(value.get("schema"), str) and value["schema"] in ENRICHMENT_SCHEMAS
                 if (is_enrichment
                         and isinstance(value.get("claim"), dict)):
                     claim_fields = {key: value["claim"][key] for key in IDENTITY_FIELDS if key in value["claim"] and
                                     (value["claim"][key] is None or isinstance(value["claim"][key], (str, int, float, bool)))}
                     if claim_fields:
-                        witnesses = [*witnesses, {"json_pointer": pointer + "/claim", "fields": claim_fields,
-                                                   "verification": "unverified"}]
+                        witnesses = [*witnesses, _witness_at(pointer + "/claim", claim_fields, script_source)]
                     requested = value.get("requestedPageUrl")
                     if isinstance(requested, str):
-                        witnesses = [*witnesses, {"json_pointer": pointer,
-                                                   "fields": {"requestedPageUrl": requested},
-                                                   "verification": "unverified"}]
+                        witnesses = [*witnesses, _witness_at(pointer, {"requestedPageUrl": requested}, script_source)]
                 if isinstance(value.get("schema"), str) and value["schema"] in PAGE_SCHEMAS:
                     in_page = True
                     base = _page_base(value)
+                    omissions = value.get("omissions")
+                    page_complete = (isinstance(omissions, dict) and type(omissions.get("characters")) is int
+                                     and omissions["characters"] == 0)
+                    scripts = value.get("scripts")
+                    if script_source is None and isinstance(scripts, list):
+                        from source_evidence import acquisition
+                        for index, script in enumerate(scripts):
+                            script_path = f"{pointer}/scripts/{index}/text"
+                            if not isinstance(script, dict) or not isinstance(script.get("type"), str):
+                                continue
+                            if script["type"].split(";", 1)[0].strip().lower() not in ("application/json", "application/ld+json"):
+                                continue
+                            complete = script.get("textComplete") is True or ("textComplete" not in script and page_complete)
+                            if not complete or not isinstance(script.get("text"), str):
+                                diagnostic(item_no, script_path, "script_text_incomplete_or_unverified")
+                                continue
+                            try:
+                                raw = script["text"].encode("utf8")
+                                decoded, literals = acquisition.decode_json(raw, max_bytes=256 * 1024)
+                            except (ValueError, UnicodeError):
+                                diagnostic(item_no, script_path, "script_json_invalid_or_unsupported")
+                                continue
+                            _refuse_credential_fields(decoded)
+                            _safe_metadata(decoded, decoded_source_key=plan["source_key"])
+                            stack.append((decoded, "", depth + 1, witnesses, base, False, False,
+                                          {"pointer": script_path, "numeric_literals": literals}, False))
                 for key in ("brochures", "documents", "links", "documentLinks"):
                     channel = value.get(key)
                     if not isinstance(channel, list) or (key == "documentLinks" and not in_page):
@@ -217,11 +288,20 @@ def discover(plan):
                     for index, entry in enumerate(channel):
                         entry_path = f"{pointer}/{_part(key)}/{index}"
                         if isinstance(entry, str) and key in ("brochures", "documents"):
-                            emit(entry, item_no, entry_path, key, {}, witnesses, base)
+                            emit(entry, item_no, entry_path, key, {}, witnesses, base, script_source)
                         elif isinstance(entry, str) and key == "links" and _document_suffix(entry):
-                            emit(entry, item_no, entry_path, key, {}, witnesses, base)
+                            if in_page and not page_complete:
+                                diagnostic(item_no, entry_path, "reference_incomplete_or_unverified", script_source)
+                            else:
+                                emit(entry, item_no, entry_path, key, {}, witnesses, base, script_source)
                         elif isinstance(entry, dict):
                             labels = {label: entry[label] for label in LABEL_FIELDS if label in entry}
+                            integrity = entry.get("referenceIntegrity")
+                            if in_page and key in ("links", "documentLinks"):
+                                status = integrity.get("href") if isinstance(integrity, dict) else None
+                                if status == "truncated" or (entry.get("href") is not None and status != "complete" and not page_complete):
+                                    diagnostic(item_no, f"{entry_path}/href", "reference_incomplete_or_unverified", script_source)
+                                    continue
                             explicit = key in ("brochures", "documents") or entry.get("linkType") == "document"
                             if key in ("links", "documentLinks") and not explicit:
                                 explicit = any(isinstance(labels.get(label), str) and DOCUMENT_LABEL.search(labels[label])
@@ -232,7 +312,12 @@ def discover(plan):
                             if explicit:
                                 for url_key in ("url", "href"):
                                     if url_key in entry:
-                                        emit(entry[url_key], item_no, f"{entry_path}/{url_key}", key, labels, witnesses, base)
+                                        if in_page and key in ("links", "documentLinks") and url_key == "url":
+                                            status = integrity.get("url") if isinstance(integrity, dict) else None
+                                            if status == "truncated" or (entry[url_key] is not None and status != "complete" and not page_complete):
+                                                diagnostic(item_no, f"{entry_path}/url", "reference_incomplete_or_unverified", script_source)
+                                                continue
+                                        emit(entry[url_key], item_no, f"{entry_path}/{url_key}", key, labels, witnesses, base, script_source)
                 attributes = value.get("attributes")
                 if is_scraped_doc and isinstance(attributes, list):
                     for index, block in enumerate(attributes):
@@ -245,17 +330,17 @@ def discover(plan):
                         for offset, reference in enumerate(block["values"]):
                             if _document_suffix(reference):
                                 emit(reference, item_no, f"{pointer}/attributes/{index}/values/{offset}",
-                                     "attributes", labels, witnesses, base)
+                                     "attributes", labels, witnesses, base, script_source)
                 for key in ("pdf_url", "urlDocument"):
                     if key not in value:
                         continue
                     candidate = value[key]
                     if isinstance(candidate, str):
-                        emit(candidate, item_no, f"{pointer}/{_part(key)}", key, {}, witnesses, base)
+                        emit(candidate, item_no, f"{pointer}/{_part(key)}", key, {}, witnesses, base, script_source)
                     elif isinstance(candidate, list):
                         for index, part in enumerate(candidate):
                             if isinstance(part, str):
-                                emit(part, item_no, f"{pointer}/{_part(key)}/{index}", key, {}, witnesses, base)
+                                emit(part, item_no, f"{pointer}/{_part(key)}/{index}", key, {}, witnesses, base, script_source)
                 for key in sorted(value, reverse=True):
                     scraped_child = is_enrichment and key == "scrapedDoc" and isinstance(value[key], dict)
                     child_base = _page_base(value.get("pageContext")) if scraped_child else base
@@ -266,13 +351,13 @@ def discover(plan):
                             page_fields = {name: page[name] for name in IDENTITY_FIELDS if name in page and
                                            (page[name] is None or isinstance(page[name], (str, int, float, bool)))}
                             if page_fields:
-                                child_witnesses = [*witnesses, {"json_pointer": pointer + "/pageContext",
-                                                               "fields": page_fields, "verification": "unverified"}]
+                                child_witnesses = [*witnesses, _witness_at(pointer + "/pageContext", page_fields, script_source)]
                     stack.append((value[key], f"{pointer}/{_part(key)}", depth + 1, child_witnesses,
-                                  child_base, in_page, scraped_child))
+                                  child_base, in_page, scraped_child, script_source, page_complete))
             elif isinstance(value, list):
                 for index in range(len(value) - 1, -1, -1):
-                    stack.append((value[index], f"{pointer}/{index}", depth + 1, witnesses, base, in_page, False))
+                    stack.append((value[index], f"{pointer}/{index}", depth + 1, witnesses, base, in_page, False,
+                                  script_source, page_complete))
     if len(events.encoded(result)) > MAX_MANIFEST_BYTES:
         raise ValueError("document discovery manifest exceeds bound")
     return result

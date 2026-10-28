@@ -63,6 +63,18 @@ acquisition policy; previews are not assumed to be original documents. These
 discovery additions are unverified under the current hold; suffixes and MIME
 types do not guarantee that AnyDoc can convert a file.
 
+Draft discovery parses complete captured JSON and JSON-LD script text as bounded
+JSON, never as executable code. An occurrence retains both the original script
+text pointer and a separate pointer within its decoded JSON. Incomplete or
+unverified script text and truncated or unverified page references produce
+explicit exclusion diagnostics; they are not acquisition targets. For older
+page contexts without per-field integrity, completeness is inferred only when
+the page explicitly reports zero omitted characters. Source and credential
+policies still apply to decoded data. Exceptional JSON numeric literals are
+retained in a bounded pointer map with explicit null-placeholder encoding rather
+than silently rounded or used to discard unrelated document URLs. This behavior
+remains unverified.
+
 Draft acquisition-policy preflight adds a separately bounded, operator-asserted
 selection from an existing plan and candidate manifest:
 

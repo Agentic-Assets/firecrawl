@@ -63,6 +63,7 @@ def test_relative_occurrence_requires_absolute_witness_anywhere_in_batch():
         value["runMeta"]["page"] = page
         value["listings"] = [{"sourceKey": "svn", "id": str(page)}]
         page_context = {"schema": "cre-source-page-context/v1", "sourceUrl": "https://docs.example.test/property/",
+                        "omissions": {"characters": 0},
                         "links": [{"href": "../shared", "text": "Brochure"}]}
         value["sources"][0]["retainedObservations"] = [{"pageContext": page_context}]
         if page == 1:

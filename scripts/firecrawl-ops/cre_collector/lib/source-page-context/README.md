@@ -11,6 +11,15 @@ helper provides its own bounds. Raw links remain source assertions; identity and
 visibility are unverified. This context is not a listing qualification or an
 admission decision.
 
+An anchor or document-link `href`, or image `src`, that exceeds its remaining
+text budget is null in the primary field. Its `referenceIntegrity` marks the
+field `truncated` and `referencePrefix` retains the partial text for inspection,
+not as a fetchable source URL. When page-wide character omissions occur, intact
+references carry a `complete` integrity flag and script text carries an explicit
+`textComplete` boolean. With no character omissions, ordinary complete entries
+keep their legacy shapes. A legacy context with omitted characters and no
+per-field proof cannot establish that its URL or script text is complete.
+
 Anchor context also retains supplied `title`, `aria-label`, `download`, and
 `type` attributes under their original HTML names, including empty strings.
 `documentLinks` retains supplied `type` and `title`. Absent optional attributes
