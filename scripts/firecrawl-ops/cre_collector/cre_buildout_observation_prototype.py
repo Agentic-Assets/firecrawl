@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
+from buildout_observation_io import read_consistent
 from cre_ingest import BUILDOUT_SOURCE_KEYS
 
 MAX_ARTIFACT_BYTES = 8_000_000
@@ -118,8 +119,7 @@ def unique_object(pairs):
 
 def read_fixture(path):
     # Limit actual I/O, not just the byte string after loading it.
-    with path.open("rb") as stream:
-        return stream.read(MAX_ARTIFACT_BYTES + 1)
+    return read_consistent(path, MAX_ARTIFACT_BYTES)
 
 
 def build_plan(raw):

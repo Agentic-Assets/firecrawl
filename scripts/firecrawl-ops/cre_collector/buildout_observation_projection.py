@@ -171,8 +171,7 @@ def main() -> None:
     parser.add_argument("--transaction", required=True, choices=("sale", "lease", "unknown"))
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
-    with args.input.open("rb") as stream:
-        raw = stream.read(MAX_OUTPUT_BYTES + 1)
+    raw = manifest_tools.read_bounded(args.input, MAX_OUTPUT_BYTES)
     original = manifest_tools.read_bounded(args.original, manifest_tools.artifact_builder.MAX_INPUT_BYTES)
     manifest = manifest_tools.read_bounded(args.manifest, manifest_tools.MAX_MANIFEST_BYTES)
     scope = {"sourceKey": args.source_key, "generationId": args.generation_id,

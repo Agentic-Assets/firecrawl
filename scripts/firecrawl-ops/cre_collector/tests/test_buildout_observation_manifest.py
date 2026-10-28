@@ -218,3 +218,15 @@ def test_changed_builder_or_source_registry_refuses_verification(tmp_path, monke
     monkeypatch.setattr(manifest, "BUILDOUT_SOURCE_KEYS", manifest.BUILDOUT_SOURCE_KEYS | {"future-source"})
     with pytest.raises(ValueError, match="manifest"):
         manifest.verify(sealed, raw, artifact, expected_scope=scope())
+
+
+def test_legacy_manifest_is_stale_and_requires_preserving_inputs():
+    raw, artifact_bytes, _, doc = bundle()
+    legacy = json.loads(json.dumps(doc))
+    legacy["builder"].pop("readerModuleSha256")
+    legacy.pop("manifestSha256")
+    legacy["manifestSha256"] = manifest.digest(manifest.canonical(legacy))
+    with pytest.raises(ValueError, match="preserve the original input and artifact, then regenerate"):
+        manifest.verify(manifest.canonical(legacy), raw, artifact_bytes, expected_scope=scope())
+    fresh = manifest.canonical(manifest.seal(raw, artifact_bytes, scope=scope(), input_kind="buildout-page"))
+    assert manifest.verify(fresh, raw, artifact_bytes, expected_scope=scope())["sourceAuthorization"] == "not_evaluated"

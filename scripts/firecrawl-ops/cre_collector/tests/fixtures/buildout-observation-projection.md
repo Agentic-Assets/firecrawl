@@ -46,3 +46,5 @@ Run the synthetic contracts from a separate `git clone --no-hardlinks`:
 ```sh
 python3 -m pytest -q tests/test_buildout_observation_projection.py
 ```
+
+Original input, artifact and manifest are read separately through bounded single descriptors that reject final symlinks and abort on detected in-read mutation or path replacement. This is not an atomic snapshot of all three files, source authentication, or protection against untrusted parent directories or privileged metadata concealment. Native Windows lacks the required no-follow behavior and fails closed; use WSL. Current verification rejects old manifests lacking the reader fingerprint. Keep the old input, artifact and seal. If the current builder reproduces the old artifact byte-for-byte, create a new seal at a new private path. Otherwise verify the old seal with matching prior code, or build a new artifact and seal at new private paths; a changed builder cannot be assumed to reproduce old bytes.
