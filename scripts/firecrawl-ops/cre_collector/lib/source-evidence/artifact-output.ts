@@ -2,7 +2,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export function writeCollectorArtifact(path: string | undefined, json: string, privateEvidence: boolean): void {
+export function writeCollectorArtifact(path: string | null | undefined, json: string, privateEvidence: boolean): void {
   if (!path) {
     if (privateEvidence) throw new Error("Private collector artifacts require a private --out file");
     process.stdout.write(json);

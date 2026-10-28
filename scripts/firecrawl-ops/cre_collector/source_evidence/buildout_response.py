@@ -77,10 +77,13 @@ def convert(document, literals, *, receipt, capture_context):
     else:
         context = copy.deepcopy(document)
         records = []
-    return {"schema": SCHEMA, "receipt": copy.deepcopy(receipt),
+    result = {"schema": SCHEMA, "receipt": copy.deepcopy(receipt),
             "arrayPointer": "/inventory" if selected else None, "context": context,
             "records": records, "numericLiterals": copy.deepcopy(literals),
             "captureContext": copy.deepcopy(capture_context), "provenance": copy.deepcopy(PROVENANCE)}
+    if not selected:
+        result["recordSelection"] = "whole_response_no_listing_array_assertion"
+    return result
 
 
 def reconstruct(observation):
@@ -89,6 +92,8 @@ def reconstruct(observation):
     pointer = observation.get("arrayPointer")
     if pointer not in (None, "/inventory"):
         raise ValueError("invalid Buildout array selection")
+    if pointer is None and observation.get("recordSelection") != "whole_response_no_listing_array_assertion":
+        raise ValueError("invalid Buildout whole-response selection")
     proxy = {**observation, "schema": acquisition.SCHEMA if pointer else acquisition.SCHEMA_CONTEXT}
     return acquisition._reconstruct_values(proxy)
 

@@ -53,7 +53,8 @@ def test_native_array_roundtrips_unknown_rows_and_literal_values():
     assert buildout_response.validate(json.loads(json.dumps(observation, sort_keys=True))) is None
 
 
-@pytest.mark.parametrize("body", [b'{"meta":{},"inventory":null}', b'null', b'[1,null,false]', b'"unmapped"'])
+@pytest.mark.parametrize("body", [b'{"meta":{},"inventory":null}', b'null', b'[1,null,false]', b'"unmapped"',
+                                   json.dumps({"inventory": acquisition.PLACEHOLDER}).encode()])
 def test_whole_unmapped_json_does_not_claim_records(body):
     raw, name = entry(body)
     observation, reason = buildout_pages.decode_entry(raw, name, {}, source_key="faris-lee")

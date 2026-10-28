@@ -52,7 +52,7 @@ def mark(root, source):
 def settle(root, marker):
     """Return metadata for private files after the owner confirms settlement."""
     if not isinstance(marker, dict):
-        raise ValueError("invalid enrichment custody marker")
+        raise ValueError("invalid enrichment custody marker")  # noqa: TRY004
     expected = {"schema_version": SCHEMA, "source_key": marker.get("source_key"),
                 "state": "awaiting_worker", "artifact_path": "enriched.json",
                 "claims_path": "claims.json", "database_retention": "not_performed"}

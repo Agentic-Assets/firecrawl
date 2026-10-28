@@ -2,10 +2,8 @@
 import hashlib
 import json
 
-import pytest
-
 import cre_checkpoint_refresh as checkpoint
-import cre_guarded_tier as tier
+import pytest
 from test_cre_guarded_tier import assert_fenced, execute, options, receipt
 
 

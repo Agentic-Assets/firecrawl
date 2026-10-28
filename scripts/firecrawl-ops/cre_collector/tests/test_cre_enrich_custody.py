@@ -4,9 +4,8 @@ import hashlib
 import os
 from pathlib import Path
 
-import pytest
-
 import cre_enrich
+import pytest
 from source_evidence import enrichment_custody
 
 
