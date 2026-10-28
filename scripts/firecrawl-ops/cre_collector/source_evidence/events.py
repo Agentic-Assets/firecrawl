@@ -137,10 +137,12 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         rows = artifact["records"]
         policy_binding = artifact.get("provenance", {}).get("automaticPolicy")
         numeric_literals = artifact.get("provenance", {}).get("numericLiterals")
-        if collector.convert(original, source_key=source_key,
-                             policy_binding=policy_binding, numeric_literals=numeric_literals,
-                             projection=artifact.get("provenance", {}).get("projection"),
-                             schema=artifact["schema"]) != artifact:
+        rebuilt = collector.convert(original, source_key=source_key,
+                                    policy_binding=policy_binding, numeric_literals=numeric_literals,
+                                    projection=artifact.get("provenance", {}).get("projection"),
+                                    schema=artifact["schema"],
+                                    integral_floats=artifact.get("provenance", {}).get("integralFloats"))
+        if encoded(rebuilt) != raw:
             raise ValueError("retained observations disagree with collector artifact")
         provenance = {**provenance, "capture_kind": "collector_emitted_listings", "coverage": "unverified",
                       "observed_at_origin": "collector_run_finished_at"}
@@ -246,7 +248,7 @@ def validate_plan(value):
             raise ValueError("unsupported evidence kind")
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError("malformed evidence plan") from exc
-    if value != expected:
+    if encoded(value) != encoded(expected):
         raise ValueError("evidence rows disagree with reconstructed artifact")
 
 

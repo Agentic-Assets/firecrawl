@@ -9,9 +9,11 @@ from source_evidence import events
 SCHEMA = "cre-retained-observations/v1"
 SCHEMA_V2 = "cre-retained-observations/v2"
 SCHEMAS = (SCHEMA, SCHEMA_V2)
+AUTO_INTEGRAL_FLOATS = object()
 
 
-def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None, projection=None, schema=None):
+def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None, projection=None, schema=None,
+            integral_floats=AUTO_INTEGRAL_FLOATS):
     if (not isinstance(artifact, dict) or not isinstance(source_key, str)
             or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_key)):
         raise ValueError("invalid collector artifact")
@@ -23,6 +25,13 @@ def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None,
         raise ValueError("mixed or mismatched collector source")
     if schema is not None and schema not in SCHEMAS:
         raise ValueError("unsupported collector observation schema")
+    from source_evidence import number_witness
+    if integral_floats is AUTO_INTEGRAL_FLOATS:
+        integral_floats = number_witness.collect(artifact, numeric_literals) or None
+    elif integral_floats is not None:
+        restored = number_witness.restore(artifact, integral_floats, numeric_literals)
+        if events.encoded(restored) != events.encoded(artifact):
+            raise ValueError("collector input requires numeric witness restoration")
     clock = events.timestamp(meta.get("finishedAt"))
     if len(records) > 10000 or len(events.encoded(artifact)) > events.MAX_ARTIFACT_BYTES:
         raise ValueError("collector artifact exceeds limit")
@@ -69,6 +78,8 @@ def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None,
             **({"projection": projection, "originalArtifactRepresentation": "projected_collector_artifact",
                 "originalSourceHashesVerification": "omitted_due_to_projection"} if projection is not None else {}),
             **({"automaticPolicy": policy_binding} if policy_binding is not None else {}),
+            **({"integralFloats": integral_floats, "integralFloatEncoding": number_witness.ENCODING}
+               if integral_floats is not None else {}),
             **({"numericLiterals": numeric_literals,
                 "numericEncoding": "json_pointer_to_literal_null_placeholder_v1"}
                if numeric_literals is not None else {})},
@@ -87,9 +98,23 @@ def reconstruct(wrapped):
         raise ValueError("invalid collector observation context")
     if wrapped["schema"] == SCHEMA_V2:
         from source_evidence import collector_observations
-        return collector_observations.restore(context, records, wrapped.get("observationGroups"),
-                                              wrapped.get("observations"))
-    return {**copy.deepcopy(context), "listings": copy.deepcopy(records)}
+        original = collector_observations.restore(context, records, wrapped.get("observationGroups"),
+                                                   wrapped.get("observations"))
+    else:
+        original = {**copy.deepcopy(context), "listings": copy.deepcopy(records)}
+    provenance = wrapped.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ValueError("invalid collector observation provenance")
+    from source_evidence import number_witness
+    has_map = "integralFloats" in provenance
+    has_encoding = "integralFloatEncoding" in provenance
+    if has_map != has_encoding:
+        raise ValueError("numeric witness encoding mismatch")
+    if has_map:
+        if provenance["integralFloatEncoding"] != number_witness.ENCODING:
+            raise ValueError("numeric witness encoding mismatch")
+        original = number_witness.restore(original, provenance["integralFloats"], provenance.get("numericLiterals"))
+    return original
 
 
 def record_count(wrapped):
@@ -146,3 +171,54 @@ def from_events(rows):
     # Validate positions and completeness before returning the envelope.
     reconstruct(wrapped)
     return wrapped
+
+
+def restore_event_numbers(rows):
+    """Restore witnessed source numbers only at their exact event fact locations."""
+    from source_evidence import acquisition, number_witness
+
+    wrapped = from_events(rows)
+    provenance = wrapped["provenance"]
+    if "integralFloats" not in provenance:
+        return wrapped, copy.deepcopy(rows)
+    witnesses = provenance["integralFloats"]
+    normalized = copy.deepcopy(rows)
+    observation_positions = {}
+    observation_sources = set()
+    if wrapped["schema"] == SCHEMA_V2:
+        observation_positions = {(item["sourceIndex"], item["observationIndex"]): index
+                                 for index, item in enumerate(wrapped["observations"])}
+        observation_sources = {group["sourceIndex"] for group in wrapped["observationGroups"]}
+    for pointer, literal in witnesses.items():
+        parts = acquisition._pointer_parts(pointer)
+        if not parts:
+            raise ValueError("collector witness cannot target root")
+        if parts[0] == "listings":
+            if len(parts) < 2:
+                raise ValueError("invalid listing numeric witness")
+            index = acquisition._child(wrapped["records"], parts[1])
+            row_index = 1 + index
+            target = ["facts", 0, "value", *parts[2:]]
+        elif (wrapped["schema"] == SCHEMA_V2 and len(parts) >= 4
+              and parts[0] == "sources" and parts[2] == "retainedObservations"
+              and int(parts[1]) in observation_sources):
+            sources = wrapped["context"]["sources"]
+            source_index = acquisition._child(sources, parts[1])
+            if not re.fullmatch(r"0|[1-9][0-9]*", parts[3]):
+                raise ValueError("invalid held observation numeric witness")
+            identity = (source_index, int(parts[3]))
+            if identity not in observation_positions:
+                raise ValueError("held observation numeric witness is outside its group")
+            row_index = 1 + len(wrapped["records"]) + observation_positions[identity]
+            target = ["facts", 0, "value", "value", *parts[4:]]
+        else:
+            row_index = 0
+            target = ["facts", 0, "value", "context", *parts]
+        node = normalized[row_index]
+        for part in target[:-1]:
+            node = node[part] if type(part) is int else node[acquisition._child(node, part)]
+        key = target[-1]
+        key = key if type(key) is int else acquisition._child(node, key)
+        node[key] = number_witness.restore_value(node[key], literal)
+    corrected = from_events(normalized)
+    return corrected, normalized

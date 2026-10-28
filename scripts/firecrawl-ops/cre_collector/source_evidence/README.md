@@ -129,12 +129,15 @@ projected representation, not removed source bytes. This readback does not
 prove original wire bytes, source completeness, freshness or canonical
 promotion. Document-text export uses the same private publisher.
 
-This command is unverified under the current test hold and is not deployed.
-PostgreSQL JSONB can render an ordinary integral float, such as `1e20`, as an
-integer such as `100000000000000000000`. Existing captures have no prior
-numeric-type witness for that distinction, so reconstruction may change Python
-canonical serialization or type. An exact-digest mismatch must refuse export;
-support for every capture is not established.
+This command and the draft numeric witness are unverified under the current test
+hold and are not deployed. New collector captures can record bounded original
+JSON-pointer witnesses for finite integral floats whose Python representation
+uses scientific notation, such as `1e+20`. The reader uses those witnesses to
+restore the representation if PostgreSQL JSONB renders the value as an integer,
+then checks the complete reconstructed digest. The witness makes no inference
+about a number's meaning or units. Legacy captures lack this witness and can
+still fail exact reconstruction after JSONB numeric normalization; a digest
+mismatch must refuse export. Support for every capture is not established.
 
 Opted-in checkpoint attempts record an `awaiting_artifact` marker before worker
 dispatch and use an attempt-specific temporary path. A settled serial resume

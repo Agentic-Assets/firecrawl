@@ -61,8 +61,10 @@ one ordered capture with a 10,002-row query limit, accepts at most 10,001 rows
 and a 32 MiB response, then verifies rows, replanning, numeric maps and source
 policy before using the shared private-export publisher. That publisher creates
 an exclusive mode-0700 directory and mode-0600 files. Projected captures export
-only projected data. JSONB can turn an ordinary integral float into an integer
-without a prior numeric-type witness; an exact-digest mismatch must refuse,
-not assert reconstruction. This draft is unverified under the test hold and is
-not deployed; it proves no original wire bytes, completeness, freshness or
-canonical promotion.
+only projected data. Draft witnesses bind original pointers for finite integral
+floats represented in scientific notation; they permit exact restoration after
+JSONB normalization without inferring meaning or units. Legacy captures lack
+that witness and may still refuse reconstruction. Any exact-digest mismatch must
+refuse, not assert reconstruction. This draft is unverified under the test hold
+and is not deployed; it proves no original wire bytes, completeness, freshness
+or canonical promotion.

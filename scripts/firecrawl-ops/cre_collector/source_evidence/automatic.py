@@ -484,9 +484,11 @@ def pump(run_dir, manifest, save):
                         raise ValueError("unexpected projected evidence input")
                     obj, numeric_literals = acquisition.decode_json(original)
                     _refuse_credential_fields(obj)
+                    sealed_header = plan["events"][0]["facts"][0]["value"]
                     wrapped = collector.convert(obj, source_key=source, numeric_literals=numeric_literals or None,
                                                 policy_binding=binding,
-                                                schema=plan["events"][0]["facts"][0]["value"]["schema"])
+                                                schema=sealed_header["schema"],
+                                                integral_floats=sealed_header["provenance"].get("integralFloats"))
                 expected = events.plan(wrapped, source_key=source)
                 if (source not in config["source_keys"] or collector.record_count(wrapped) > config["max_records"]
                         or plan != expected or plan["plan_sha256"] != state["plan_sha256"]

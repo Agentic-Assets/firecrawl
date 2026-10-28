@@ -82,10 +82,38 @@ def test_preexisting_v1_sealed_partial_carriers_replay_as_v1(tmp_path, monkeypat
     convert = collector.convert
     with monkeypatch.context() as historical:
         historical.setattr(collector, "convert", lambda *args, **kwargs: convert(
-            *args, **{**kwargs, "schema": collector.SCHEMA}))
+            *args, **{**kwargs, "schema": collector.SCHEMA, "integral_floats": None}))
         automatic.seal(run, manifest, "faris-lee", attempt, path)
     saved = attempt["source_evidence"]
     assert saved["state"] == "pending" and saved["events"] == 2
+    calls = []
+    monkeypatch.setattr(automatic.cli, "run_psql", lambda *args, **kwargs: calls.append(args))
+    automatic.pump(run, manifest, lambda *args: None)
+    assert saved["state"] == "appended" and len(calls) == 1
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_scientific_float_sealed_replay_preserves_witness_presence(tmp_path, monkeypatch, legacy):
+    config, _, _ = setup_policy(tmp_path, count=78)
+    obj = artifact(count=78)
+    for row in obj["listings"]:
+        row["unknown"]["scientific"] = 1e20
+    run, path, manifest, attempt = state(tmp_path, config, obj)
+    if legacy:
+        convert = collector.convert
+        with monkeypatch.context() as historical:
+            historical.setattr(collector, "convert", lambda *args, **kwargs: convert(
+                *args, **{**kwargs, "integral_floats": None}))
+            automatic.seal(run, manifest, "faris-lee", attempt, path)
+    else:
+        automatic.seal(run, manifest, "faris-lee", attempt, path)
+    saved = attempt["source_evidence"]
+    assert saved["state"] == "pending"
+    plan = json.loads((run / saved["path"]).read_bytes())
+    provenance = plan["events"][0]["facts"][0]["value"]["provenance"]
+    assert ("integralFloats" not in provenance) is legacy
+    if not legacy:
+        assert len(provenance["integralFloats"]) == 78
     calls = []
     monkeypatch.setattr(automatic.cli, "run_psql", lambda *args, **kwargs: calls.append(args))
     automatic.pump(run, manifest, lambda *args: None)

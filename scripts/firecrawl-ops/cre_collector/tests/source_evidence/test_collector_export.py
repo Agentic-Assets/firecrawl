@@ -70,11 +70,58 @@ def test_empty_v1_capture_and_historical_v1_nonempty_context():
 def test_unwitnessed_jsonb_numeric_representation_change_is_refused():
     original = artifact()
     original["listings"][0]["ordinaryFloat"] = 1e20
-    rows = rows_for(original)
+    rows = rows_for(original, integral_floats=None)
     # Model JSONB's decimal rendering; this does not execute a database query.
     rows[1]["facts"][0]["value"]["ordinaryFloat"] = 100000000000000000000
     with pytest.raises(ValueError):
         collector_export.reconstruct(rows)
+
+
+@pytest.mark.parametrize("schema", [collector.SCHEMA, collector.SCHEMA_V2])
+def test_witnessed_scientific_integral_floats_survive_modeled_jsonb_rendering(schema):
+    original = artifact()
+    original["runMeta"]["unknownNumber"] = -1e20
+    original["listings"][0]["ordinaryFloat"] = 1e20
+    for observation in original["sources"][0]["retainedObservations"]:
+        observation["ordinaryFloat"] = 1e20
+    rows = rows_for(original, schema=schema)
+    def jsonb_shape(value):
+        if isinstance(value, dict):
+            return {key: jsonb_shape(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [jsonb_shape(child) for child in value]
+        if type(value) is float and value.is_integer() and "e" in repr(value):
+            # Decimal JSON rendering, not int(float), which can change the
+            # decimal value for some floating-point exponent forms.
+            from decimal import Decimal
+            return int(Decimal(repr(value)))
+        return value
+    readback = jsonb_shape(rows)
+    for row in readback:
+        row["observed_at"] = "2026-10-28T08:00:00-04:00"
+    payload, metadata = collector_export.reconstruct(readback)
+    assert payload == events.encoded(original)
+    assert metadata["export_sha256"] == events.sha256(payload)
+    assert len(metadata["collector_provenance"]["integralFloats"]) == 80
+
+
+def test_witnessed_capture_refuses_a_changed_numeric_value():
+    original = artifact()
+    original["listings"][0]["ordinaryFloat"] = 1e20
+    rows = rows_for(original)
+    rows[1]["facts"][0]["value"]["ordinaryFloat"] = 100000000000000000001
+    with pytest.raises(ValueError):
+        collector_export.reconstruct(rows)
+
+
+def test_numeric_witness_in_unsplit_unknown_context_stays_in_header():
+    original = artifact()
+    original["sources"].append({"sourceKey": "foundry-commercial",
+                                "retainedObservations": {"unknown": 1e20}})
+    rows = rows_for(original)
+    header = rows[0]["facts"][0]["value"]
+    header["context"]["sources"][1]["retainedObservations"]["unknown"] = 100000000000000000000
+    assert collector_export.reconstruct(rows)[0] == events.encoded(original)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "reorder", "duplicate", "foreign", "fact", "time", "field"])

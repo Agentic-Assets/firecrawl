@@ -20,20 +20,19 @@ def _instant(value):
 
 def reconstruct(rows):
     """Verify complete event readback and return canonical artifact bytes and metadata."""
-    wrapped = collector.from_events(rows)
+    wrapped, normalized = collector.restore_event_numbers(rows)
     provenance = wrapped.get("provenance")
     if not isinstance(provenance, dict):
         raise ValueError("collector capture provenance is invalid")
     source_clock = events.timestamp(provenance.get("observedAt"))
     instant = _instant(source_clock)
-    normalized = copy.deepcopy(rows)
     for row in normalized:
         if _instant(row["observed_at"]) != instant:
             raise ValueError("collector event observation times disagree")
         row["observed_at"] = source_clock
     expected = events.plan(wrapped, source_key=normalized[0]["source_key"])
     events.validate_content_policy(expected)
-    if normalized != expected["events"]:
+    if events.encoded(normalized) != events.encoded(expected["events"]):
         raise ValueError("collector events disagree with reconstructed artifact")
     original = collector.reconstruct(wrapped)
     canonical = events.encoded(original)

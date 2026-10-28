@@ -62,7 +62,7 @@ def reconstruct(rows):
         if _instant(row["observed_at"]) != source_instant:
             raise ValueError("document event observation times disagree")
         row["observed_at"] = source_clock
-    if normalized != expected["events"]:
+    if events.encoded(normalized) != events.encoded(expected["events"]):
         raise ValueError("document events disagree with reconstructed artifact")
     metadata = {"schema_version": "cre-source-evidence-document-export/v1",
                 "capture_id": first["capture_id"], "source_key": first["source_key"],
