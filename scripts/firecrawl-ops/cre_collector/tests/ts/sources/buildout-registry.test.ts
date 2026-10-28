@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   BUILDOUT_STABLE_INVENTORY_SORT,
   buildoutDetailIframeUrl,
+  buildoutSlugFromUrl,
 } from "../../../sources/buildout.js";
 import {
   REGISTERED_BUILDOUT_FIRMS,
@@ -107,7 +108,7 @@ test("optional detail configs are validated and available for registry-generated
     assert.equal(
       iframeUrl,
       `https://buildout.com/plugins/${definition.pluginKey}/` +
-        `${definition.detailConfig?.host}/inventory/listing-123` +
+        `${definition.detailConfig?.host}/inventory/${definition.sourceKey === "faris-lee" ? "listing-123-sale" : "listing-123"}` +
         "?pluginId=0&iframe=true&embedded=true"
     );
   }
@@ -166,6 +167,33 @@ test("optional detail configs are validated and available for registry-generated
       }),
     /detail company must equal/
   );
+  assert.throws(
+    () => assertRegisteredBuildoutFirm({
+      ...base,
+      detailConfig: { ...base.detailConfig!, preserveTransactionSuffix: "yes" as unknown as boolean },
+    }),
+    /suffix policy must be boolean/
+  );
+});
+
+test("Faris detail retains native transaction suffix while canonical identity remains unsuffixed", () => {
+  const faris = registeredBuildoutFirmFor("faris-lee")!;
+  for (const tx of ["sale", "lease"]) {
+    const listing = `https://farislee.com/listings/?propertyId=1135400-${tx}`;
+    assert.equal(buildoutSlugFromUrl(listing), "1135400");
+    assert.equal(buildoutDetailIframeUrl("faris-lee", listing, faris.detailConfig),
+      `https://buildout.com/plugins/${faris.pluginKey}/www.farislee.com/inventory/1135400-${tx}?pluginId=0&iframe=true&embedded=true`);
+  }
+  assert.equal(buildoutDetailIframeUrl("faris-lee", "https://farislee.com/listings/?propertyId=-sale", faris.detailConfig), null);
+  assert.equal(buildoutDetailIframeUrl("faris-lee", "https://attacker.example/listings/?propertyId=1135400-sale", faris.detailConfig), null);
+});
+
+test("Fortis and Kiser retain their preexisting route format", () => {
+  for (const key of ["fortis-net-lease", "kiser-group"] as const) {
+    const firm = registeredBuildoutFirmFor(key)!;
+    assert.equal(buildoutDetailIframeUrl(key, `${firm.listingsPage}?propertyId=fixture-sale`, firm.detailConfig),
+      `https://buildout.com/plugins/${firm.pluginKey}/${firm.detailConfig!.host}/inventory/fixture?pluginId=0&iframe=true&embedded=true`);
+  }
 });
 
 test("registeredBuildoutFirmFor resolves every exact key and rejects other sources", () => {

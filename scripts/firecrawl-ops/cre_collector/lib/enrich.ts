@@ -17,6 +17,7 @@
 //      its output listing.url so the worker can mark a claimed row done iff its
 //      url appears in the emitted artifact.
 import { clean, pmap, prune } from "./util.js";
+import { preserveDetailTables } from "./detail-tables/index.js";
 import { scrapeDoc } from "./scrape.js";
 import { firstJsonLd, jsonLdObjects } from "./html.js";
 import { CONCURRENCY } from "./config.js";
@@ -371,7 +372,15 @@ export async function runEnrichGroups(
       for (const l of rows) {
         if (!l || !l.url) continue;
         const tx = urlToTx.get(l.url) ?? "sale";
-        listings.push(prune({ sourceKey: key, sourceCompany: company, transactionMode: tx, ...l }));
+        const listing = prune({ sourceKey: key, sourceCompany: company, transactionMode: tx, ...l });
+        // Preserve caller-owned table evidence exactly: generic pruning removes
+        // false flags, null attributes and empty cells with positional meaning.
+        for (const field of ["detail_tables", "detail_tables_attempt"]) {
+          const tables = preserveDetailTables(l.extraFacts?.[field]);
+          if (tables) listing.extraFacts = { ...listing.extraFacts, [field]: tables };
+          else if (listing.extraFacts) delete listing.extraFacts[field];
+        }
+        listings.push(listing);
         emitted++;
       }
       sources.push({

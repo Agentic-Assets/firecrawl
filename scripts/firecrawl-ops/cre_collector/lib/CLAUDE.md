@@ -14,6 +14,7 @@
 | `scrape_transport.ts` | Fork-owned v2 scrape HTTP transport. An AbortSignal stays outside JSON and aborts HTTP/body/backoff waits; bounded 502 retry and SDK error/data shapes are retained. The pinned SDK exposes no public scrape signal. |
 | `performance.ts` | Optional bounded run/request aggregates, separate Firecrawl and direct-provider counts, source context and atomic event-driven snapshots. Measurement failures cannot change acquisition. Coverage and interpretation live in the [performance guide](../../../../docs/firecrawl-ops/references/cre-performance-telemetry.md). |
 | `harvest.ts` | Pure `harvestDetail(doc, ctx)` -> `{media, links, documents, images}`. Classifies video/tour providers, documents, links, gallery images from a detail scrape; identity-dedups media (provider+id, vimeo hash preserved); feeds `cre_listing_media`/`cre_listing_links`. No argv/network import |
+| `detail-tables/` | Bounded ordered native HTML table observations for shared Buildout detail enrichment, plus shape validation before preserving caller-owned snapshots across pruning. Read its scoped `AGENTS.md` and README; no normalized economics, publication or computed-visibility claim. |
 | `parse.ts` | Shared CRE text parsers (price/sqft/cap-rate/address); Python-mirrored by `cre_parse.py`, verified identical via golden vectors (`tests/ts/lib/parse.test.ts`) |
 | `geo.ts` | Pure ZIP/geo normalizers (`zip5`, `geoKey`); the full ZIP->county+CBSA crosswalk lookup lives in Python `cre_geo.py` (backfill + ingest run there) |
 | `enrich.ts` | Tier-B enrichment helpers: batch-claim SQL, URL echoing for completion matching, dead-letter filtering for `cre_enrich.py` |
@@ -58,7 +59,9 @@
   listing completeness. Use the existing recorder rather than a second logger.
 - Importing `config.ts` parses argv; tests needing scrape/util alone should avoid it.
 - `num()` drops zero; `parseJsonBody` handles Chrome JSON viewer and bad quotes.
-- Flat folder only; no submodules.
+- Use a scoped module folder when a shared primitive needs its own contract,
+  preservation rules and focused tests. Keep source routing in `sources/` and
+  read only the module guidance relevant to the change.
 
 ## References
 
