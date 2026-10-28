@@ -55,3 +55,14 @@ Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new
 private directory. Keep unknown extraction coverage visible; a valid text
 digest proves reconstruction integrity, not faithful extraction of every page.
+
+Draft collector-capture export is limited to retained collector v1/v2. It reads
+one ordered capture with a 10,002-row query limit, accepts at most 10,001 rows
+and a 32 MiB response, then verifies rows, replanning, numeric maps and source
+policy before using the shared private-export publisher. That publisher creates
+an exclusive mode-0700 directory and mode-0600 files. Projected captures export
+only projected data. JSONB can turn an ordinary integral float into an integer
+without a prior numeric-type witness; an exact-digest mismatch must refuse,
+not assert reconstruction. This draft is unverified under the test hold and is
+not deployed; it proves no original wire bytes, completeness, freshness or
+canonical promotion.

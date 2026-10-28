@@ -1,11 +1,8 @@
 """Reconstruct and privately export a complete retained document capture."""
 import copy
-import os
-import stat
 from datetime import datetime, timezone
-from pathlib import Path
 
-from source_evidence import events
+from source_evidence import events, private_export
 
 FIELDS = frozenset(events.EVENT_FIELDS)
 MAX_ROWS = 71
@@ -81,62 +78,6 @@ def reconstruct(rows):
 def export(rows, outdir):
     """Create a new private directory containing exact UTF-8 text and metadata."""
     text, metadata = reconstruct(rows)
-    if not all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW", "getuid")):
-        raise RuntimeError("private document export requires POSIX filesystem support")
-    path = Path(outdir)
-    if not path.name or path.name in (".", ".."):
-        raise ValueError("invalid export directory")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    parent = os.open(path.parent, flags)
-    directory = None
-    created = False
-    files = []
-    def same_directory():
-        if directory is None:
-            return False
-        try:
-            named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
-            opened = os.fstat(directory)
-            return (stat.S_ISDIR(named.st_mode) and
-                    (named.st_dev, named.st_ino, named.st_uid, named.st_mode) ==
-                    (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode))
-        except OSError:
-            return False
-    try:
-        os.mkdir(path.name, 0o700, dir_fd=parent)
-        created = True
-        directory = os.open(path.name, flags, dir_fd=parent)
-        info = os.fstat(directory)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError("export directory is not private")
-        for name, payload in (("document.md", text.encode("utf-8")),
-                              ("metadata.json", events.encoded(metadata) + b"\n")):
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                         0o600, dir_fd=directory)
-            files.append(name)
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-        os.fsync(directory)
-        if not same_directory():
-            raise ValueError("export directory changed during publication")
-        os.fsync(parent)
-        return metadata
-    except BaseException:
-        if directory is not None:
-            for name in files:
-                try:
-                    os.unlink(name, dir_fd=directory)
-                except OSError:
-                    pass
-        if created and same_directory():
-            try:
-                os.rmdir(path.name, dir_fd=parent)
-            except OSError:
-                pass
-        raise
-    finally:
-        if directory is not None:
-            os.close(directory)
-        os.close(parent)
+    private_export.write(outdir, [("document.md", text.encode("utf-8")),
+                                  ("metadata.json", events.encoded(metadata) + b"\n")])
+    return metadata

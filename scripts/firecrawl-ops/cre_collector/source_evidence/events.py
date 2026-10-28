@@ -236,21 +236,12 @@ def validate_plan(value):
         elif kind == "capture_context":
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
             expected = plan(artifact, source_key=value["source_key"], observed_at=first["observed_at"])
-        elif kind in ("retained_capture_context", "json_response_context", "avison_native_context"):
+        elif kind in ("json_response_context", "avison_native_context"):
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
             expected = plan(artifact, source_key=value["source_key"])
-        elif kind == "retained_capture_context_v2":
-            records, observations = [], []
-            for row in rows[1:]:
-                fact = row["facts"][0]
-                if fact["kind"] == "source_record" and not observations:
-                    records.append(fact["value"])
-                elif fact["kind"] == "source_observation":
-                    observations.append(fact["value"])
-                else:
-                    raise ValueError("invalid retained observation event order")
-            artifact = {**metadata, "records": records, "observations": observations}
-            expected = plan(artifact, source_key=value["source_key"])
+        elif kind in ("retained_capture_context", "retained_capture_context_v2"):
+            from source_evidence import collector
+            expected = plan(collector.from_events(rows), source_key=value["source_key"])
         else:
             raise ValueError("unsupported evidence kind")
     except (KeyError, IndexError, TypeError) as exc:

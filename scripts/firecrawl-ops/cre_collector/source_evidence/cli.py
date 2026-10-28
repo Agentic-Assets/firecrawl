@@ -152,13 +152,24 @@ def get_sql(capture_id, item_no):
 
 def document_sql(capture_id):
     """Retrieve one bounded document capture, including its reconstruction header."""
+    return capture_sql(capture_id, 72)
+
+
+def collector_sql(capture_id):
+    """Read a whole collector capture plus one row to detect an oversized set."""
+    return capture_sql(capture_id, 10002)
+
+
+def capture_sql(capture_id, limit):
     if not isinstance(capture_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', capture_id):
         raise ValueError('invalid capture identity')
+    if type(limit) is not int or not 1 <= limit <= 10002:
+        raise ValueError('invalid capture row limit')
     # Read one extra row so oversized captures cannot look like complete ones.
     return ("BEGIN READ ONLY;\nSET LOCAL search_path = pg_catalog;\nSET LOCAL ROLE cre_source_evidence_reader;\n"
             "SET LOCAL statement_timeout = 30000;\nSELECT row_to_json(r) FROM (SELECT " + ','.join(FIELDS) +
             " FROM cre_source_evidence.events WHERE capture_id=" + sql_text(capture_id) +
-            " ORDER BY item_no LIMIT 72) r;\nCOMMIT;\n")
+            " ORDER BY item_no LIMIT " + str(limit) + ") r;\nCOMMIT;\n")
 
 
 def checked_plan(value, admission):
@@ -231,6 +242,10 @@ def main(argv=None):
     export = sub.add_parser('export-document-text')
     export.add_argument('--capture-id', required=True); export.add_argument('--out-dir', required=True)
     export.add_argument('--env-file', required=True); export.add_argument('--expected-db-target-sha256', required=True)
+    export_collector = sub.add_parser('export-collector-capture')
+    export_collector.add_argument('--capture-id', required=True); export_collector.add_argument('--out-dir', required=True)
+    export_collector.add_argument('--env-file', required=True)
+    export_collector.add_argument('--expected-db-target-sha256', required=True)
     args = parser.parse_args(argv)
     if args.command == 'convert-collector':
         raw = read_consistent(args.artifact, events.MAX_ARTIFACT_BYTES)
@@ -243,7 +258,7 @@ def main(argv=None):
         result = collector.convert(artifact, source_key=args.source_key, numeric_literals=literals or None,
                                    projection=projection)
         write_private(args.out, result)
-        print(f"Converted collector artifact: {len(result['records'])} records")
+        print(f"Converted collector artifact: {collector.record_count(result)} records and observations")
     elif args.command == 'convert-response':
         raw = read_consistent(args.body, events.MAX_ARTIFACT_BYTES)
         result = acquisition.convert(raw, receipt=read_json(args.receipt, 16384),
@@ -270,6 +285,15 @@ def main(argv=None):
             raise ValueError('document readback contains another capture')
         document_export.export(rows, args.out_dir)
         print('Document text exported to a new private directory; coverage remains unknown.')
+    elif args.command == 'export-collector-capture':
+        from source_evidence import collector_export
+        raw = run_psql(collector_sql(args.capture_id), args.env_file, args.expected_db_target_sha256,
+                       max_results_bytes=MAX_PLAN_BYTES)
+        rows = [json.loads(line) for line in raw.decode('utf8').splitlines() if line.strip()]
+        if any(not isinstance(row, dict) or row.get('capture_id') != args.capture_id for row in rows):
+            raise ValueError('collector readback contains another capture')
+        collector_export.export(rows, args.out_dir)
+        print('Collector capture exported to a new private directory; coverage remains unverified.')
     else:
         if args.command == 'search':
             sql = search_sql(args.query, args.mode, args.limit)

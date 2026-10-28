@@ -3,7 +3,7 @@ import json
 import os
 
 import pytest
-from source_evidence import document_export, events
+from source_evidence import document_export, events, private_export
 
 
 def capture(text="A retained document\nSecond line"):
@@ -70,7 +70,7 @@ def test_limits_and_non_document_refuse():
 def test_failure_cleans_owned_directory_without_touching_existing(tmp_path, monkeypatch):
     rows = capture()
     out = tmp_path / "new"
-    monkeypatch.setattr(document_export.os, "fsync", lambda *_: (_ for _ in ()).throw(OSError("fixture")))
+    monkeypatch.setattr(private_export.os, "fsync", lambda *_: (_ for _ in ()).throw(OSError("fixture")))
     with pytest.raises(OSError):
         document_export.export(rows, out)
     assert not out.exists()
@@ -109,7 +109,7 @@ def test_directory_replacement_is_never_removed_during_failure(tmp_path, monkeyp
         out.mkdir()
         raise OSError("fixture interrupted publication")
 
-    monkeypatch.setattr(document_export.os, "fsync", replace_during_publish)
+    monkeypatch.setattr(private_export.os, "fsync", replace_during_publish)
     with pytest.raises(OSError):
         document_export.export(capture(), out)
     assert out.is_dir() and not list(out.iterdir())

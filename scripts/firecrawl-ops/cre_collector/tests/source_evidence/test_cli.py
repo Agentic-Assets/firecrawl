@@ -136,3 +136,44 @@ def test_export_document_text_uses_private_exporter_without_printing_text(monkey
               '--env-file', '/private/env', '--expected-db-target-sha256', 'a' * 64])
     assert calls == [(value['events'], '/private/new-document')]
     assert 'Retained document content' not in capsys.readouterr().out
+
+
+def test_collector_query_is_read_only_and_detects_oversized_capture():
+    sql = cli.collector_sql('evidence-collector')
+    assert 'BEGIN READ ONLY;' in sql
+    assert 'SET LOCAL ROLE cre_source_evidence_reader;' in sql
+    assert 'ORDER BY item_no LIMIT 10002' in sql
+    assert 'evidence-collector' not in sql
+    for identity in ("bad'; DROP SCHEMA credeals; --", '', None):
+        with pytest.raises(ValueError):
+            cli.collector_sql(identity)
+    for limit in (True, 0, 10003):
+        with pytest.raises(ValueError):
+            cli.capture_sql('evidence-collector', limit)
+
+
+def test_export_collector_uses_bound_reader_and_does_not_print_facts(monkeypatch, capsys):
+    from source_evidence import collector, collector_export
+    original = {'runMeta': {'finishedAt': '2026-10-28T12:00:00Z'},
+                'sources': [{'sourceKey': 'svn', 'retainedObservations': [
+                    {'unknown': 'Private retained source content'} for _ in range(78)]}],
+                'listings': []}
+    value = events.plan(collector.convert(original, source_key='svn'), source_key='svn')
+    capture = value['events'][0]['capture_id']
+    calls = []
+    def read(sql, env, target, **kwargs):
+        assert sql == cli.collector_sql(capture)
+        assert env == '/private/env' and target == 'b' * 64
+        assert kwargs['max_results_bytes'] == cli.MAX_PLAN_BYTES
+        return b'\n'.join(events.encoded(row) for row in value['events'])
+    monkeypatch.setattr(cli, 'run_psql', read)
+    monkeypatch.setattr(collector_export, 'export', lambda rows, outdir: calls.append((rows, outdir)))
+    args = ['export-collector-capture', '--capture-id', capture, '--out-dir', '/private/new-collector',
+            '--env-file', '/private/env', '--expected-db-target-sha256', 'b' * 64]
+    cli.main(args)
+    assert calls == [(value['events'], '/private/new-collector')]
+    assert 'Private retained source content' not in capsys.readouterr().out
+    value['events'][1]['capture_id'] = 'evidence-another-capture'
+    with pytest.raises(ValueError, match='another capture'):
+        cli.main(args)
+    assert len(calls) == 1

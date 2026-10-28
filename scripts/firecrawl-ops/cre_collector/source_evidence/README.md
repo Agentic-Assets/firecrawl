@@ -117,6 +117,25 @@ digest before claiming reconstruction.
 
 ## Native JSON response retention
 
+The draft `export-collector-capture` reader is intended to recover one complete
+retained collector v1 or v2 capture. It reads in order with a limit of 10,002
+rows, accepts at most 10,001, and bounds the response to 32 MiB. Before writing,
+it verifies row ordering, replans the capture, and checks context, numeric maps
+and source policy. Its shared private-export publisher creates an exclusive new
+mode-0700 directory containing mode-0600 `collector.json` and `metadata.json`.
+The reconstructed collector JSON is a canonical semantic representation with
+exceptional numeric literals restored. A projected capture exports the
+projected representation, not removed source bytes. This readback does not
+prove original wire bytes, source completeness, freshness or canonical
+promotion. Document-text export uses the same private publisher.
+
+This command is unverified under the current test hold and is not deployed.
+PostgreSQL JSONB can render an ordinary integral float, such as `1e20`, as an
+integer such as `100000000000000000000`. Existing captures have no prior
+numeric-type witness for that distinction, so reconstruction may change Python
+canonical serialization or type. An exact-digest mismatch must refuse export;
+support for every capture is not established.
+
 Opted-in checkpoint attempts record an `awaiting_artifact` marker before worker
 dispatch and use an attempt-specific temporary path. A settled serial resume
 reconciles that path or its rejected-artifact destination before another worker

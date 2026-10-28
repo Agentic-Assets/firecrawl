@@ -105,3 +105,44 @@ def record_count(wrapped):
     if not isinstance(observations, list):
         raise ValueError("invalid collector held observations")
     return len(records) + len(observations)
+
+
+def from_events(rows):
+    """Reassemble the ordered collector envelope; callers must replan and verify."""
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 10001:
+        raise ValueError("invalid collector event count")
+    if any(not isinstance(row, dict) or set(row) != set(events.EVENT_FIELDS)
+           or type(row.get("item_no")) is not int or row["item_no"] != index
+           for index, row in enumerate(rows)):
+        raise ValueError("invalid collector event fields or ordering")
+    def fact(row):
+        facts = row.get("facts")
+        if (not isinstance(facts, list) or len(facts) != 1 or not isinstance(facts[0], dict)
+                or set(facts[0]) != {"kind", "value"}):
+            raise ValueError("invalid collector event fact")
+        return facts[0]
+    header = fact(rows[0])
+    if header["kind"] not in ("retained_capture_context", "retained_capture_context_v2"):
+        raise ValueError("collector capture header is required")
+    metadata = header["value"]
+    expected_schema = SCHEMA_V2 if header["kind"] == "retained_capture_context_v2" else SCHEMA
+    if (not isinstance(metadata, dict) or metadata.get("schema") != expected_schema
+            or "records" in metadata or "observations" in metadata):
+        raise ValueError("invalid collector capture header")
+    records, observations = [], []
+    saw_observations = False
+    for row in rows[1:]:
+        item = fact(row)
+        if item["kind"] == "source_record" and not saw_observations:
+            records.append(copy.deepcopy(item["value"]))
+        elif expected_schema == SCHEMA_V2 and item["kind"] == "source_observation":
+            saw_observations = True
+            observations.append(copy.deepcopy(item["value"]))
+        else:
+            raise ValueError("invalid collector event fact order")
+    wrapped = {**copy.deepcopy(metadata), "records": records}
+    if expected_schema == SCHEMA_V2:
+        wrapped["observations"] = observations
+    # Validate positions and completeness before returning the envelope.
+    reconstruct(wrapped)
+    return wrapped
