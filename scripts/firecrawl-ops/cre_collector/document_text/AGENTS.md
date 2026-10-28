@@ -67,6 +67,13 @@ write by explicit exact-plan refresh replay, without another fetch or conversion
 this grants no canonical listing or OM writes. It is disabled by default,
 unverified and not deployed.
 
+Draft evidence SQL uses an owned client, 45-second deadline and incrementally
+bounded output: SQL input is capped at 72 MiB, stdout at the caller-selected
+limit up to 32 MiB, and stderr at 64 KiB. Unknown local cleanup keeps the
+foreground recovery barrier; local settlement does not establish remote rollback.
+Foreground evidence saves persist before checking sticky CPU and memory trips;
+terminal and error publication uses the ordinary save path. This is unverified.
+
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private
 deal documents retain EQUIRE's separate organization/deal scope. Tests run with

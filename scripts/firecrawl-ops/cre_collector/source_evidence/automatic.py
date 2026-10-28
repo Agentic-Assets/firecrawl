@@ -538,6 +538,13 @@ def pump(run_dir, manifest, save):
             state["reason"] = type(exc).__name__
             manifest["automatic_source_evidence_paused"] = True
             manifest["automatic_source_evidence_status"] = "incomplete"
+            from source_evidence.document_process import DocumentProcessCleanupUnknown, cleanup_unknown_in_chain
+            if cleanup_unknown_in_chain(exc):
+                try:
+                    save(run_dir, manifest)
+                except BaseException as save_error:
+                    raise DocumentProcessCleanupUnknown("evidence cleanup remains unknown after save failure") from save_error
+                raise
             if not isinstance(exc, (Exception, SystemExit)):
                 save(run_dir, manifest)
                 raise

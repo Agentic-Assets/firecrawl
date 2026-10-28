@@ -137,6 +137,14 @@ a new series attempt; uncertain writes require explicit exact-plan refresh
 replay, never a new download or extraction. No canonical listing or OM writes
 follow. This is disabled by default, unverified and not deployed.
 
+Draft evidence SQL uses an owned client with a 45-second deadline and
+incrementally bounded output: SQL input is capped at 72 MiB, stdout at the
+caller-selected limit up to 32 MiB, and stderr at 64 KiB. Preserve the foreground recovery barrier when
+local cleanup is unknown; local settlement does not prove remote rollback.
+Uncertain appends require exact-plan replay. Foreground evidence saves persist
+before checking sticky CPU and memory trips; terminal and error publication uses
+the ordinary save path. This remains unverified.
+
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new
 private directory. Keep unknown extraction coverage visible; a valid text

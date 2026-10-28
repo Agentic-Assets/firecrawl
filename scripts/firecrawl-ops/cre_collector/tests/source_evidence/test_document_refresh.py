@@ -150,3 +150,13 @@ def test_explicit_append_replay_does_not_resolve_acquisition_uncertainty(tmp_pat
     job["state"] = "appended"
     with pytest.raises(ValueError):
         document_automatic.require_resume(value)
+
+
+def test_foreground_save_honors_sticky_trip_after_persisting(monkeypatch, tmp_path):
+    value = manifest(tmp_path)
+    saved = []
+    monkeypatch.setattr(refresh, "save_manifest", lambda *args: saved.append(copy.deepcopy(args[1])))
+    monkeypatch.setattr(refresh, "_peek_cpu_guard_trip", lambda: "synthetic sticky resource stop")
+    with pytest.raises(refresh.CpuGuardTrip):
+        refresh.save_foreground_evidence(tmp_path, value)
+    assert saved == [value]

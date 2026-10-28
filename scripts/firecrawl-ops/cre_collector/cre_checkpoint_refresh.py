@@ -4495,6 +4495,19 @@ def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: 
         raise
 
 
+def save_foreground_evidence(run_dir: Path, manifest: dict) -> None:
+    """Persist work, then honor a sticky watchdog trip before more foreground I/O.
+
+    Owned-process cleanup briefly defers signals. Watchdogs still record their
+    trip, so a signal deferred in that window must not permit another request.
+    Terminal/error publication continues to use save_manifest directly.
+    """
+    save_manifest(run_dir, manifest)
+    reason = _peek_cpu_guard_trip()
+    if reason is not None:
+        raise CpuGuardTrip(reason)
+
+
 def pump_source_evidence(run_dir: Path, manifest: dict) -> None:
     if "automatic_source_evidence" not in manifest["config"]:
         return
@@ -4503,7 +4516,7 @@ def pump_source_evidence(run_dir: Path, manifest: dict) -> None:
         manifest["automatic_source_evidence_paused"] = True
         save_manifest(run_dir, manifest)
         return
-    automatic.pump(run_dir, manifest, save_manifest)
+    automatic.pump(run_dir, manifest, save_foreground_evidence)
 
 
 def mark_source_document_settlement(manifest: dict, attempt: dict) -> None:
@@ -4531,7 +4544,7 @@ def pump_source_documents(run_dir: Path, manifest: dict, *, owner_check) -> None
         raise GlobalStageError("document collector identity changed")
     from source_evidence import document_automatic
     try:
-        document_automatic.pump(run_dir, manifest, save_manifest)
+        document_automatic.pump(run_dir, manifest, save_foreground_evidence)
         evidence = manifest["config"].get("automatic_source_evidence") or {}
         formats = evidence.get("document_text_formats", {})
         if formats:
@@ -4543,7 +4556,7 @@ def pump_source_documents(run_dir: Path, manifest: dict, *, owner_check) -> None
                     for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
                         if document.get("state") == "extraction_sealed":
                             owner_check()
-                            document_jobs.mark(run_dir, manifest, source, attempt, document, save_manifest)
+                            document_jobs.mark(run_dir, manifest, source, attempt, document, save_foreground_evidence)
             owner_check()
             # Reuse the existing role/transport-guarded foreground writer. Its
             # exact replays precede all ordinary collector/native/document jobs.

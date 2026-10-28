@@ -16,7 +16,7 @@ from cre_ingest import (
     psql_connection_env,
 )
 
-from source_evidence import acquisition, collector, events
+from source_evidence import acquisition, collector, events, psql_process
 
 MAX_PLAN_BYTES = 32 * 1024 * 1024
 MAX_RESULTS_BYTES = 8 * 1024 * 1024
@@ -192,16 +192,8 @@ def run_psql(sql, env_file, target, *, validate_transport=None, max_results_byte
     if validate_transport is not None:
         validate_transport(db_url)
     cmd = [find_psql(), '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', *psql_connection_args(db_url)]
-    try:
-        result = subprocess.run(cmd, input=sql.encode(), capture_output=True,
-                                env=psql_connection_env(db_url), timeout=45, check=False)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError('database outcome unknown after timeout') from exc
-    if result.returncode != 0:
-        raise RuntimeError('database operation failed; outcome may be unknown')
-    if len(result.stdout) > max_results_bytes:
-        raise ValueError('database output exceeds limit')
-    return result.stdout
+    return psql_process.run(cmd, sql.encode(), psql_connection_env(db_url),
+                            timeout_seconds=45, max_results_bytes=max_results_bytes)
 
 
 def main(argv=None):

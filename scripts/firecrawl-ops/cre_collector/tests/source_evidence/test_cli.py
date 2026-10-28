@@ -92,10 +92,26 @@ def test_database_timeout_is_reported_as_unknown_outcome(monkeypatch):
     monkeypatch.setattr(cli, 'psql_connection_args', lambda _: [])
     monkeypatch.setattr(cli, 'psql_connection_env', lambda _: {})
     def timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired('psql', 45)
-    monkeypatch.setattr(cli.subprocess, 'run', timeout)
+        raise RuntimeError('database outcome unknown after timeout')
+    monkeypatch.setattr(cli.psql_process, 'run', timeout)
     with pytest.raises(RuntimeError, match='outcome unknown'):
         cli.run_psql('BEGIN; COMMIT;', '/private/env', 'a' * 64)
+
+
+def test_database_helper_receives_bound_command_sql_and_output_limit(monkeypatch):
+    monkeypatch.setattr(cli, 'load_db_url', lambda _: ('postgresql://localhost/test', 'file'))
+    monkeypatch.setattr(cli, 'assert_expected_database_target', lambda *_: None)
+    monkeypatch.setattr(cli, 'find_psql', lambda: 'psql')
+    monkeypatch.setattr(cli, 'psql_connection_args', lambda _: ['--host=localhost'])
+    monkeypatch.setattr(cli, 'psql_connection_env', lambda _: {'PGUSER': 'fixture'})
+    calls = []
+    def run(command, payload, env, **kwargs):
+        calls.append((command, payload, env, kwargs))
+        return b'synthetic'
+    monkeypatch.setattr(cli.psql_process, 'run', run)
+    assert cli.run_psql('SELECT 1;', '/private/env', 'a' * 64, max_results_bytes=1024) == b'synthetic'
+    assert calls[0][1:] == (b'SELECT 1;', {'PGUSER': 'fixture'},
+                             {'timeout_seconds': 45, 'max_results_bytes': 1024})
 
 
 def test_fact_and_get_queries_bind_values_and_enforce_limits():
@@ -192,7 +208,7 @@ def test_document_discovery_is_offline_private_and_does_not_print_urls(tmp_path,
     plan_path.write_bytes(events.encoded(value))
     output = tmp_path / 'candidates.json'
     monkeypatch.setattr(cli, 'run_psql', lambda *args, **kwargs: pytest.fail('database contacted'))
-    monkeypatch.setattr(cli.subprocess, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
+    monkeypatch.setattr(cli.psql_process, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
     cli.main(['discover-documents', '--plan', str(plan_path), '--out', str(output)])
     manifest = json.loads(output.read_bytes())
     assert len(manifest['candidates']) == 78
@@ -217,7 +233,7 @@ def test_document_acquisition_planning_is_offline_and_requires_private_policy(tm
     policy_path.chmod(0o600)
     output = tmp_path / 'selection.json'
     monkeypatch.setattr(cli, 'run_psql', lambda *args, **kwargs: pytest.fail('database contacted'))
-    monkeypatch.setattr(cli.subprocess, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
+    monkeypatch.setattr(cli.psql_process, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
     args = ['plan-document-acquisition', '--plan', str(plan_path), '--candidates', str(candidates_path),
             '--policy', str(policy_path), '--policy-sha256', events.sha256(raw_policy),
             '--expected-db-target-sha256', TARGET, '--collector-git-sha', CODE, '--out', str(output)]

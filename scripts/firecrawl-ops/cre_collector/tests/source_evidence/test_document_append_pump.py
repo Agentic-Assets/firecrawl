@@ -7,6 +7,7 @@ import json
 import pytest
 
 from source_evidence import automatic, document_jobs
+from source_evidence.document_process import DocumentProcessCleanupUnknown, cleanup_unknown_in_chain
 from test_automatic import SHA, setup_policy
 
 
@@ -122,3 +123,31 @@ def test_interruption_during_possible_write_is_saved_unknown_and_propagated(tmp_
         automatic.pump(tmp_path, manifest, lambda _, current: saved.append(copy.deepcopy(current)))
     assert documents[0]["append"]["state"] == "outcome_unknown"
     assert saved[-1]["sources"]["faris-lee"]["attempts"][0]["document_source_evidence"]["documents"][0]["append"]["state"] == "outcome_unknown"
+
+
+@pytest.mark.parametrize("save_fails", [False, True])
+def test_sql_cleanup_unknown_keeps_foreground_barrier_even_if_save_fails(tmp_path, monkeypatch, save_fails):
+    config, _, _ = v3_config(tmp_path)
+    manifest, _, documents = manifest_for(config)
+    monkeypatch.setattr(automatic, "_verify_config", lambda *a: None)
+    monkeypatch.setattr(document_jobs, "prepare_job", lambda *args: {"plan": "sealed"})
+    monkeypatch.setattr(automatic, "append_sql", lambda plan: plan)
+    def failure(*args, **kwargs):
+        try:
+            raise DocumentProcessCleanupUnknown("synthetic unknown local settlement")
+        except DocumentProcessCleanupUnknown as error:
+            raise RuntimeError("wrapped") from error
+    monkeypatch.setattr(automatic.cli, "run_psql", failure)
+    saved = []
+    def save(_, current):
+        saved.append(copy.deepcopy(current))
+        if save_fails and documents[0]["append"]["state"] == "outcome_unknown":
+            raise OSError("synthetic checkpoint failure")
+    with pytest.raises(BaseException) as caught:
+        automatic.pump(tmp_path, manifest, save)
+    assert cleanup_unknown_in_chain(caught.value)
+    assert documents[0]["append"]["state"] == "outcome_unknown"
+    assert manifest["automatic_source_evidence_paused"] is True
+    assert saved[0]["sources"]["faris-lee"]["attempts"][0]["document_source_evidence"]["documents"][0]["append"]["state"] == "appending"
+    if save_fails:
+        assert isinstance(caught.value, DocumentProcessCleanupUnknown)

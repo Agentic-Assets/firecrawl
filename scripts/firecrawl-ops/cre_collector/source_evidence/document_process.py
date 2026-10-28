@@ -1,4 +1,4 @@
-"""Shared signal that a document subprocess group was not proven settled."""
+"""Shared signal that a document or evidence-client process group was not proven settled."""
 
 
 class DocumentProcessCleanupUnknown(RuntimeError):

@@ -130,6 +130,19 @@ or extracting again. Version 1 and 2 policies do not admit document-text append 
 This adds no canonical listing or OM fact writes and remains disabled by default,
 unverified and not deployed.
 
+Draft evidence SQL execution uses an owned client process with a 45-second
+deadline, a 72 MiB SQL input cap, caller-selected stdout up to 32 MiB, and a
+64 KiB stderr cap. Output is bounded incrementally. The input cap accommodates
+hex encoding of a 32 MiB plan plus bounded statement and guard overhead. This
+subprocess path requires POSIX/WSL and refuses unsupported platforms before
+dispatch. Local process settlement and remote
+transaction outcome are separate: a timeout, interruption or client failure
+does not establish rollback. Uncertain local cleanup preserves the foreground
+recovery barrier; an uncertain append keeps its exact-plan replay requirement.
+Foreground evidence saves persist the checkpoint and then check sticky CPU and
+memory guard trips; terminal and error publication uses the ordinary save path.
+These changes are unverified under the hold and not deployed.
+
 Draft `document_seal.read` verifies an exact private file set, canonical bytes
 and an optional expected marker without rerunning extraction. The caller must
 rederive the acquisition context or authenticate it against a trusted prior

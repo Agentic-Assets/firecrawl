@@ -74,6 +74,14 @@ uncertain write requires explicit exact sealed-plan replay in refresh, without
 redownload or re-extraction. This does not write canonical listings or OM facts;
 the draft remains disabled by default, unverified and not deployed.
 
+Draft evidence SQL runs through an owned client with a 45-second deadline and
+incrementally bounded output. SQL input is capped at 72 MiB, stdout at a
+caller-selected limit up to 32 MiB, and stderr at 64 KiB. Unknown local cleanup keeps the foreground
+recovery barrier; even settled local cleanup does not establish remote rollback.
+Foreground evidence saves persist the checkpoint before checking sticky CPU and
+memory guard trips; terminal and error publication uses the ordinary save path.
+These changes are unverified under the hold and not deployed.
+
 Owned-process settlement is checked before publishing conversion completion;
 unknown cleanup keeps the parent recovery barrier. New-session escapees are
 outside that guarantee. Reserved phase time includes fetch startup and reap and
