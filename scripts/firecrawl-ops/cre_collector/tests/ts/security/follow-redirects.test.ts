@@ -28,7 +28,7 @@ async function redirectedHeaders(options: RedirectOptions, sameOrigin = false) {
     const address = sameOrigin ? source.address() : target.address();
     assert.ok(address && typeof address !== "string");
     response.writeHead(302, {
-      Location: `http://${sameOrigin ? "127.0.0.1" : "127.0.0.2"}:${address.port}/destination`,
+      Location: `http://${sameOrigin ? "127.0.0.1" : "localhost"}:${address.port}/destination`,
     });
     response.end();
   });
@@ -45,7 +45,7 @@ async function redirectedHeaders(options: RedirectOptions, sameOrigin = false) {
     });
 
   try {
-    await listen(target, "127.0.0.2");
+    await listen(target, "127.0.0.1");
     await listen(source, "127.0.0.1");
     const address = source.address();
     assert.ok(address && typeof address !== "string");
@@ -59,6 +59,10 @@ async function redirectedHeaders(options: RedirectOptions, sameOrigin = false) {
             ? ["Host", `127.0.0.1:${address.port}`, ...options.headers]
             : options.headers,
           hostname: "127.0.0.1",
+          lookup: ((_host: string, opts: any, callback: any) => {
+            if (opts?.all) callback(null, [{ address: "127.0.0.1", family: 4 }]);
+            else callback(null, "127.0.0.1", 4);
+          }) as RequestOptions["lookup"],
           port: address.port,
           path: "/start",
           method: "GET",

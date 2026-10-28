@@ -39,6 +39,10 @@ test("challenge detection uses only the existing bounded title heading and body 
   assert.equal(isSourceChallengeShell("<title>Access Denied</title>"), true);
   assert.equal(isSourceChallengeShell("<body><h1>Just a moment</h1></body>"), true);
   assert.equal(isSourceChallengeShell("<body>verify you are human</body>"), true);
+  assert.equal(isSourceChallengeShell("<body><p>123</p><p>Checking your browser</p></body>"), true);
+  assert.equal(isSourceChallengeShell("<body>check<span>ing</span> your browser</body>"), true);
+  assert.equal(isSourceChallengeShell("<body><p>prechecking your browser</p></body>"), false);
+  assert.equal(isSourceChallengeShell(`<body>${"<div>".repeat(1000)}<p>123</p><p>Checking your browser</p>${"</div>".repeat(1000)}</body>`), true);
   assert.equal(isSourceChallengeShell(`<body>${"x".repeat(3001)} verify you are human</body>`), false);
   assert.equal(isSourceChallengeShell("<body><h1>Property details</h1></body>"), false);
 });

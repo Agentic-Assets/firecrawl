@@ -49,9 +49,8 @@ function run(notes: string[][], stdout: boolean, options: { duplicateAcceptedIds
   }
 }
 
-for (const stdout of [false, true]) {
-  test(`all-held source writes evidence-only artifact and fails (${stdout ? "stdout" : "file"})`, () => {
-    const result = run([[], ["Paused", "Office"]], stdout);
+test("all-held source writes private evidence-only artifact and fails", () => {
+    const result = run([[], ["Paused", "Office"]], false);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /no listings collected from any source/);
     assert.doesNotMatch(result.stderr, /done: 0 listings/);
@@ -59,14 +58,20 @@ for (const stdout of [false, true]) {
     assert.equal(result.artifact.runMeta.evidencePurpose, "private_unqualified_source_observations");
     assert.deepEqual(result.artifact.listings, []);
     assert.equal(result.artifact.totalListings, 0);
-    if (!stdout) assert.equal(result.outputMode, 0o600);
+    assert.equal(result.outputMode, 0o600);
     const retained = result.artifact.sources[0].retainedObservations;
     assert.equal(retained.length, 2);
     assert.equal(retained[0].observation.status, null);
     assert.deepEqual(retained[0].observation.propertyNotes, []);
     assert.deepEqual(retained[1].observation.propertyNotes, ["Paused", "Office"]);
-  });
-}
+});
+
+test("all-held source refuses to print private observations to stdout", () => {
+  const result = run([[], ["Paused", "Office"]], true);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Private collector artifacts require a private --out file/);
+  assert.equal(result.artifact, null);
+});
 
 test("mixed accepted and held rows retain source observations without evidence-only mode", () => {
   const result = run([["For Sale"], ["Paused", "Office"]], false);

@@ -26,6 +26,7 @@ import {
 } from "./pure/foundry-identity.js";
 import { classifyFoundryStatus, explicitFoundryTenures, type FoundryStatusDecision } from "./pure/foundry-status.js";
 import { captureFoundryPageContext } from "./pure/foundry-observation.js";
+import { isSourceChallengeShell } from "../lib/source-page-context/index.js";
 
 export const FOUNDRY_SOURCE_URL = `${FOUNDRY_HOST}/properties/`;
 export const FOUNDRY_FETCH_TIMEOUT_MS = 60_000;
@@ -208,8 +209,7 @@ export function parseFoundryCommercialDetail(
     /\b(?:404|not found|access denied|forbidden|captcha|just a moment|service unavailable)\b/i.test(
       visibleHeading
     );
-  const observationShell = shell || /\b(?:verify you are human|checking your browser|challenge-platform|cf-chl-)\b/i
-    .test($("body").text().slice(0, 3000));
+  const observationShell = isSourceChallengeShell(html);
   if (!identity) return { kind: "rejected", reason: "canonical or WordPress shortlink identity mismatch",
     ...(!observationShell && foundryUrl(requestedUrl, "detail")
       ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}) };

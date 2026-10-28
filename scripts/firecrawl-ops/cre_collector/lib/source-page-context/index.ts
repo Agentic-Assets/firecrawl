@@ -77,6 +77,23 @@ export function captureSourcePageContext(html: string, options: {
 export function isSourceChallengeShell(html: string): boolean {
   const $ = cheerio.load(html);
   const heading = [clean($("title").first().text()), clean($("h1").first().text())].filter(Boolean).join(" ");
+  // Adjacent DOM text nodes otherwise concatenate (e.g. "123Checking"),
+  // hiding a word boundary that was present between separate elements.
+  let bodyText = "";
+  let joinedText = "";
+  const stack: any[] = [...(($('body').get(0) as any)?.children ?? [])].reverse();
+  while (stack.length && (bodyText.length < 3000 || joinedText.length < 3000)) {
+    const node = stack.pop();
+    if (node.type === "text") {
+      const text = typeof node.data === "string" ? node.data : "";
+      joinedText += text.slice(0, 3000 - joinedText.length);
+      bodyText += text.slice(0, 3000 - bodyText.length);
+      if (bodyText.length < 3000) bodyText += " ";
+    } else if (Array.isArray(node.children)) {
+      for (let index = node.children.length - 1; index >= 0; index--) stack.push(node.children[index]);
+    }
+  }
+  const bodyChallenge = /\b(?:verify you are human|checking your browser|challenge-platform|cf-chl-)\b/i;
   return /\b(?:404|not found|access denied|forbidden|captcha|just a moment|service unavailable)\b/i.test(heading) ||
-    /\b(?:verify you are human|checking your browser|challenge-platform|cf-chl-)\b/i.test($("body").text().slice(0, 3000));
+    bodyChallenge.test(bodyText) || bodyChallenge.test(joinedText);
 }

@@ -49,6 +49,22 @@ def test_v1_context_witness_uses_original_source_pointer():
     assert events.encoded(restored) == events.encoded(wrapped)
 
 
+def test_plan_and_caller_artifact_have_independent_mutable_snapshots():
+    wrapped = collector.convert(fixture(), source_key="foundry-commercial", schema=collector.SCHEMA)
+    original = copy.deepcopy(wrapped)
+    plan = events.plan(wrapped, source_key="foundry-commercial")
+    original_plan = events.encoded(plan)
+    wrapped["context"]["sources"][0]["retainedObservations"][0]["area"] = 42
+    wrapped["records"][0]["value"] = 17
+    assert events.encoded(plan) == original_plan
+
+    other = events.plan(original, source_key="foundry-commercial")
+    other["events"][0]["facts"][0]["value"]["context"]["sources"][0]["retainedObservations"][0]["area"] = 10**18
+    other["events"][1]["facts"][0]["value"]["value"] = 0
+    assert events.encoded(original) == events.encoded(collector.convert(
+        fixture(), source_key="foundry-commercial", schema=collector.SCHEMA))
+
+
 @pytest.mark.parametrize("value,literal", [(True, "1e+20"), (1, "1e+20"), (10**20, "1E+20"),
                                               (10**20, "1e20"), (10**20, "inf"),
                                               (10**20, "1.0000000000000001e+20")])

@@ -1,4 +1,5 @@
 """Convert retained artifacts into immutable, explicitly unverified events."""
+import copy
 import hashlib
 import json
 import re
@@ -77,6 +78,11 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
     raw = encoded(artifact)
     if len(raw) > MAX_ARTIFACT_BYTES:
         raise ValueError("artifact exceeds limit")
+    # A plan owns its input snapshot: later mutations of either the caller's
+    # artifact or the returned event facts must not alter the other.
+    artifact = copy.deepcopy(artifact)
+    if encoded(artifact) != raw:
+        raise ValueError("artifact changed while planning")
     artifact_hash = sha256(raw)
     if artifact.get("schema_version") == "cre-document-text/v1":
         capture_clock = timestamp(artifact.get("source", {}).get("observed_at"))
