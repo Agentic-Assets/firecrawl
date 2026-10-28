@@ -208,7 +208,7 @@ For CRE unattended scheduling goals and current acceptance limits, see
 For Python changes under `scripts/firecrawl-ops/`, use the relevant local
 Ruff skill, verify changed Python with `py_compile`, and read the
 `python-testing-patterns` skill before adding or changing tests. For listing
-intelligence work, read `scripts/firecrawl-ops/CLAUDE.md` and then the scoped
+intelligence work, read `scripts/firecrawl-ops/AGENTS.md` and then the scoped
 `cre_collector/` guidance before acting; that current module contract owns
 runtime, scheduler, data-write, status-activation, and soft-delete gates.
 

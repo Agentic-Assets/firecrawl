@@ -8,6 +8,7 @@ it against a previously sealed marker before relying on this helper.
 import json
 import os
 import stat
+from urllib.parse import urljoin, urlsplit
 
 from source_evidence import cli, document_acquisition, events, private_export
 
@@ -37,16 +38,52 @@ def _context_shape(context, artifact):
         raise ValueError("invalid document receipt outcome")
 
 
-def prepare(context, artifact=None):
+def prepare(context, artifact=None, *, landing=None):
     """Return ordered canonical file bytes and their deterministic marker."""
     _context_shape(context, artifact)
     files = [("acquisition.json", events.encoded(context))]
+    if landing is not None:
+        from source_evidence import acquisition, automatic, document_candidates
+        receipt = context["receipt"]
+        extraction = artifact.get("extraction", {}) if isinstance(artifact, dict) else {}
+        if (extraction.get("status") != "failed" or extraction.get("error_code") != "unsupported"
+                or not isinstance(landing, dict) or landing.get("schema") != "cre-source-page-context/v1"
+                or landing.get("sourceUrl") != receipt.get("final_url")
+                or landing.get("bodySha256") != receipt.get("body_sha256")
+                or landing.get("bodyBytes") != receipt.get("body_bytes")):
+            raise ValueError("landing page disagrees with acquired unsupported HTML")
+        automatic._refuse_credential_fields(landing)
+        document_candidates._safe_metadata(landing, decoded_source_key=context["source_key"])
+        for script in landing.get("scripts", []):
+            if not isinstance(script, dict):
+                raise ValueError("invalid landing script")
+            if script.get("textComplete") is True:
+                text = script.get("text")
+                if not isinstance(text, str):
+                    raise ValueError("invalid landing script text")
+                decoded, _ = acquisition.decode_json(text.encode("utf-8"), max_bytes=256 * 1024)
+                automatic._refuse_credential_fields(decoded)
+                document_candidates._safe_metadata(decoded, decoded_source_key=context["source_key"])
+            elif script.get("textComplete") is not False or script.get("text") is not None:
+                raise ValueError("incomplete landing script must not retain unscanned text")
+        for link in landing.get("links", []):
+            if not isinstance(link, dict):
+                raise ValueError("invalid landing link")
+            reference = link.get("href")
+            if isinstance(reference, str):
+                resolved = urljoin(receipt["final_url"], reference)
+                if urlsplit(resolved).scheme in ("http", "https"):
+                    if not (any(c.isspace() for c in resolved) and "?" not in resolved and "#" not in resolved):
+                        document_candidates._safe_url(resolved, allow_fragment=True)
+                    document_candidates._safe_metadata(resolved, decoded_source_key=context["source_key"])
+        files.append(("landing-page.json", events.encoded(landing)))
     binding = plan = None
     if artifact is not None:
         if not isinstance(artifact, dict):
             raise ValueError("invalid converter artifact")
         enriched = {**artifact, "acquisition_context": context,
-                    "acquisition_context_origin": "foreground_coordinator_not_converter"}
+                    "acquisition_context_origin": "foreground_coordinator_not_converter",
+                    **({"pageContext": landing} if landing is not None else {})}
         binding, plan = document_acquisition.bind_extraction(context, enriched)
         files += [("converter-artifact.json", events.encoded(artifact)), ("artifact.json", events.encoded(enriched)),
                   ("binding.json", events.encoded(binding)), ("plan.json", events.encoded(plan))]
@@ -58,8 +95,8 @@ def prepare(context, artifact=None):
     return files, marker
 
 
-def write(outdir, context, artifact=None):
-    files, marker = prepare(context, artifact)
+def write(outdir, context, artifact=None, *, landing=None):
+    files, marker = prepare(context, artifact, landing=landing)
     private_export.write(outdir, files)
     return marker
 
@@ -77,6 +114,11 @@ def read(outdir, *, expected_context, expected_marker=None):
         has_artifact = expected_context.get("receipt", {}).get("outcome") == "acquired"
         required = ({"acquisition.json", "converter-artifact.json", "artifact.json", "binding.json", "plan.json"}
                     if has_artifact else {"acquisition.json"})
+        has_landing = "landing-page.json" in names
+        if has_landing:
+            if not has_artifact or not isinstance(expected_marker, dict) or "landing-page.json" not in expected_marker.get("files", {}):
+                raise ValueError("landing page requires an authenticated seal marker")
+            required.add("landing-page.json")
         if names != required:
             raise ValueError("document seal file set mismatch")
         values = {}
@@ -99,7 +141,8 @@ def read(outdir, *, expected_context, expected_marker=None):
             finally:
                 os.close(fd)
         artifact = json.loads(values["converter-artifact.json"]) if has_artifact else None
-        files, marker = prepare(expected_context, artifact)
+        landing = json.loads(values["landing-page.json"]) if has_landing else None
+        files, marker = prepare(expected_context, artifact, landing=landing)
         if any(values[name] != payload for name, payload in files):
             raise ValueError("document seal bytes mismatch")
         if expected_marker is not None and events.encoded(expected_marker) != events.encoded(marker):
@@ -112,6 +155,9 @@ def read(outdir, *, expected_context, expected_marker=None):
                 named_dir.st_dev, named_dir.st_ino, named_dir.st_uid, named_dir.st_mode) != (
                 final_dir.st_dev, final_dir.st_ino, final_dir.st_uid, final_dir.st_mode):
             raise ValueError("document seal directory changed during readback")
-        return {"artifact": artifact, "marker": marker, "original_bytes_reverified": False}
+        result = {"artifact": artifact, "marker": marker, "original_bytes_reverified": False}
+        if landing is not None:
+            result["landing"] = landing
+        return result
     finally:
         os.close(directory)

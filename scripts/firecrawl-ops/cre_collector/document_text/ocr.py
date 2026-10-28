@@ -1,4 +1,4 @@
-"""Explicit offline Docling retry of a retained AnyDoc OCR-needed artifact."""
+"""Explicit local PDF retry of a retained AnyDoc artifact."""
 import argparse
 import hashlib
 import json
@@ -49,9 +49,15 @@ def docker_arguments(input_path, output_path, name, nonce):
             '--artifacts-path', '/opt/app-root/src/.cache/docling/models', '--output', '/output', '/input.pdf']
 
 
-def make_attempt(first, first_raw, raw):
-    if first.get('schema_version') != 'cre-document-text/v1' or first.get('extraction', {}).get('status') != 'ocr_needed':
-        raise ValueError('an AnyDoc OCR-needed artifact is required')
+def make_attempt(first, first_raw, raw, engine='docling', poppler_version=None):
+    extraction = first.get('extraction', {})
+    eligible = extraction.get('status') == 'ocr_needed' or (
+        extraction.get('status') == 'failed' and extraction.get('error_code') == 'unsupported'
+    )
+    if first.get('schema_version') != 'cre-document-text/v1' or not eligible:
+        raise ValueError('an OCR-needed or unsupported AnyDoc PDF artifact is required')
+    if engine not in ('docling', 'poppler') or (engine == 'poppler' and not poppler_version):
+        raise ValueError('a supported engine and version are required')
     if first.get('parser', {}).get('name') != '@firecrawl/anydoc':
         raise ValueError('expected AnyDoc attempt')
     source = first.get('source', {})
@@ -60,13 +66,19 @@ def make_attempt(first, first_raw, raw):
     timestamp(source.get('observed_at'))
     if source.get('format') != 'pdf' or source.get('sha256') != digest(raw) or source.get('byte_length') != len(raw):
         raise ValueError('original file does not match the retained PDF')
+    parser = {'name': 'docling', 'version': '2.95.0',
+              'config': {'image': IMAGE, 'ocr_engine': 'tesseract', 'network': 'none',
+                         'cpu': 1, 'memory_bytes': 3 * 1024 ** 3, 'timeout_seconds': TIMEOUT,
+                         'max_output_file_bytes': 8 * 1024 ** 2, 'max_text_bytes': MAX_TEXT}}
+    if engine == 'poppler':
+        parser = {'name': 'poppler-pdftotext', 'version': poppler_version,
+                  'config': {'ocr': False, 'timeout_seconds': TIMEOUT,
+                             'max_output_file_bytes': MAX_TEXT, 'max_text_bytes': MAX_TEXT}}
     return {'schema_version': 'cre-document-text/v1', 'source': dict(source),
-            'parser': {'name': 'docling', 'version': '2.95.0',
-                       'config': {'image': IMAGE, 'ocr_engine': 'tesseract', 'network': 'none',
-                                  'cpu': 1, 'memory_bytes': 3 * 1024 ** 3, 'timeout_seconds': TIMEOUT,
-                                  'max_output_file_bytes': 8 * 1024 ** 2, 'max_text_bytes': MAX_TEXT}},
+            'parser': parser,
             'extraction': {'status': 'failed', 'coverage': 'unknown', 'page_count': first['extraction'].get('page_count'),
-                           'ocr_needed_pages': first['extraction'].get('ocr_needed_pages', []), 'text_format': 'markdown',
+                           'ocr_needed_pages': first['extraction'].get('ocr_needed_pages', []),
+                           'text_format': 'plain' if engine == 'poppler' else 'markdown',
                            'text': None, 'text_sha256': None, 'error_code': None, 'warnings': [],
                            'previous_attempt_sha256': digest(first_raw)}}
 
@@ -130,12 +142,12 @@ def convert(raw, attempt):
                 attempt['extraction']['warnings'].append('tesseract_osd_failed')
             if b'ERROR' in log_data:
                 attempt['extraction']['warnings'].append('docling_logged_error')
+            attempt['extraction']['converter_exit_code'] = run.returncode
             if run.returncode:
-                attempt['extraction']['error_code'] = 'converter_failed'
-                return attempt
+                attempt['extraction']['warnings'].append('converter_failed_partial_output')
             output = output_dir / 'input.md'
             if sorted(p.name for p in output_dir.iterdir()) != ['input.md']:
-                attempt['extraction']['error_code'] = 'output_unavailable'
+                attempt['extraction']['error_code'] = 'converter_failed' if run.returncode else 'output_unavailable'
                 return attempt
             try:
                 data = read_limited(output, MAX_TEXT)
@@ -164,6 +176,47 @@ def convert(raw, attempt):
                     attempt['extraction']['warnings'].append('container_cleanup_unconfirmed')
 
 
+def poppler_version():
+    result = subprocess.run(['pdftotext', '-v'], capture_output=True, timeout=10, check=False)
+    match = re.search(rb'pdftotext version ([0-9]+(?:\.[0-9]+)+)', result.stderr[:4096])
+    if result.returncode or not match:
+        raise ValueError('cannot identify local pdftotext version')
+    return match.group(1).decode('ascii')
+
+
+def convert_poppler(raw, attempt):
+    # Local extraction only: Poppler cannot OCR image-only pages. Never retain
+    # its unbounded diagnostic text, which may contain document information.
+    with tempfile.TemporaryDirectory(prefix='cre-poppler-') as folder:
+        path = Path(folder); path.chmod(0o700)
+        source = path / 'input.pdf'; source.write_bytes(raw); source.chmod(0o600)
+        output = path / 'output.txt'
+        try:
+            with tempfile.TemporaryFile() as log:
+                run = subprocess.run(['pdftotext', '-enc', 'UTF-8', str(source), str(output)],
+                                     stdout=log, stderr=log, timeout=TIMEOUT, check=False,
+                                     preexec_fn=_limit_log)
+                if log.tell():
+                    attempt['extraction']['warnings'].append('poppler_logged_diagnostic')
+            attempt['extraction']['converter_exit_code'] = run.returncode
+            if run.returncode:
+                attempt['extraction']['warnings'].append('converter_failed_partial_output')
+            if not output.exists():
+                attempt['extraction']['error_code'] = 'converter_failed' if run.returncode else 'output_unavailable'
+                return attempt
+            data = read_limited(output, MAX_TEXT)
+            text = data.decode('utf-8')
+            if not text.strip():
+                attempt['extraction']['error_code'] = 'empty_output'
+                return attempt
+            attempt['extraction'].update(status='extracted', text=text, text_sha256=digest(data))
+        except subprocess.TimeoutExpired:
+            attempt['extraction']['error_code'] = 'timeout'
+        except (OSError, ValueError, UnicodeError):
+            attempt['extraction']['error_code'] = 'invalid_or_oversized_output'
+        return attempt
+
+
 def write_private(path, artifact):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w', encoding='utf-8') as out:
@@ -175,12 +228,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', required=True); parser.add_argument('--anydoc-attempt', required=True)
     parser.add_argument('--out', required=True)
+    parser.add_argument('--engine', choices=('docling', 'poppler'), default='docling',
+                        help='docling OCR (default) or local Poppler text extraction without OCR')
     args = parser.parse_args()
     raw = read_limited(args.input, MAX_INPUT)
     first_raw = read_limited(args.anydoc_attempt, MAX_ARTIFACT)
     first = json.loads(first_raw, object_pairs_hook=unique_object, parse_constant=invalid_number)
-    attempt = make_attempt(first, first_raw, raw)
-    result = convert(raw, attempt)
+    version = poppler_version() if args.engine == 'poppler' else None
+    attempt = make_attempt(first, first_raw, raw, args.engine, version)
+    result = convert_poppler(raw, attempt) if args.engine == 'poppler' else convert(raw, attempt)
     write_private(args.out, result)
     print('OCR attempt recorded:', result['extraction']['status'])
     return 0 if result['extraction']['status'] == 'extracted' else 2
@@ -189,6 +245,6 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (ValueError, OSError, TypeError, KeyError):
+    except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError):
         print('OCR attempt refused or failed; no document content printed.', file=sys.stderr)
         sys.exit(1)

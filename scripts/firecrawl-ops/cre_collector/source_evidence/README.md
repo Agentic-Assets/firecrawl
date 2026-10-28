@@ -568,3 +568,79 @@ metadata only and are written to an exclusive private file; facts are never
 printed. A short or punctuation-only query may require a full index scan, and
 queries have a 30-second database statement timeout. The existing document text
 search and its phrase and chunk boundaries are unchanged.
+
+## Draft offline HTML landing observations
+
+`document_landing.parse_document_landing` accepts bounded acquired HTML bytes and
+an asserted final URL and returns a private observation containing a body digest,
+visible text, metadata and raw anchor, iframe, embed and object references with
+element, attribute and source position. It does not validate the HTTP receipt,
+classify access, resolve references, run JavaScript or discover candidates through
+`document_candidates`. Complete JSON and JSON-LD script text is recorded
+without execution;
+other script, style, template and noscript contents are excluded. Incomplete JSON
+scripts retain a completeness marker but no partial text, and are not discoverable
+candidates. Complete scripts must parse as JSON and pass credential and source
+policy checks before sealing. Scripts failing these checks are withheld and
+marked, while other policy-safe page content can still be retained.
+UTF-8 decoding uses replacement; this is not an exact text reconstruction.
+
+The draft foreground pipeline recognizes a narrow HTML byte signature after an
+unsupported AnyDoc outcome and attaches a separately sealed source-page context.
+The existing receipt and candidate occurrences bind the original body and source
+relationships. Readback and recovery check its seal marker, and source and
+credential policies scan the retained observation before sealing. Oversized input
+is refused; count and text limits and reference completeness are explicit. The
+helper itself has no network or database behavior. This integration remains
+disabled unless the existing document acquisition path is explicitly enabled.
+The output is not proof of access, publication, listing identity or extraction
+completeness. Any nested reference requires its own policy and acquisition checks.
+The converter outcome remains unchanged; HTML page text is not represented as a
+successful document extraction.
+
+## Targeted enrichment evidence and recovery
+
+Applied guarded enrichment can opt into the same automatic source-evidence
+policy with `--source-evidence-policy`, `--source-evidence-policy-sha256`,
+`--source-evidence-env-file`, and `--source-evidence-target-sha256`. All four
+are required together; the evidence environment is separate from the canonical
+queue environment. The worker must be locally settled before its private
+artifact can be sealed. This retains the emitted artifact and makes no claim
+about source completeness, canonical promotion, or lifecycle status.
+
+The canonical shared owner lock serializes an owner-bound recovery marker for
+one outstanding targeted evidence receipt. The marker is a recovery fence, not
+a queue or scheduler. It is published before an automatic database append and
+survives an uncertain database outcome. Checkpoint automatic evidence writes
+pause while it exists; canonical ingest and monitoring are independent. The
+separately authorized manual evidence CLI is outside this automatic fence.
+
+After local owner settlement and any required existing manual owner recovery,
+reconcile the exact receipt on the same clean code and policy binding:
+
+```sh
+python3 cre_guarded_tier.py enrich --source SOURCE --expected-sha SHA \
+  --source-evidence-reconcile-receipt /absolute/private/run/receipt.json
+```
+
+Reconciliation revalidates the private receipt, claims, artifact, plan, source,
+code, policy, target and transport, and replays the identical transaction. A
+validated pending receipt can publish a missing pre-dispatch recovery marker
+under the owner lock; a missing marker for a dispatched or uncertain transaction
+requires manual diagnosis. Reconciliation does not rerun enrichment. Unknown
+local process cleanup still requires the existing
+manual owner-recovery procedure; this command does not adopt an armed lease.
+A database outcome can remain unknown even after the local process has settled.
+The restricted writer and AGENTIC-5040 production credential-isolation gate
+remain separate; this feature does not provision or activate production access.
+
+### Shared map-widget projection
+
+Explicit recurring policies can admit the observed `maps.googleapis.com/maps/vt`
+projection for Cushman & Wakefield and SVN as `google-map-tile-query/v1`.
+Faris keeps its existing `faris-google-map-tile-query/v1` contract. Only literal
+`key` and numeric `token` parameters on that exact HTTPS endpoint are removed;
+other URLs and source content still pass the existing admission checks. Pointer
+receipts identify the projection, not original source bytes, and a projected map
+reference is not an approved download target. No source or policy is enabled by
+this support.

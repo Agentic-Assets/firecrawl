@@ -6,7 +6,7 @@
 
 **Production path:** `../../../../cre_collector/sources/buildout.ts` (source key
 `lee-associates` in `collect.ts`). Shared Buildout adapter; Lee-specific paging
-controls documented in `../../../../cre_collector/sources/CLAUDE.md`.
+controls documented in `../../../../cre_collector/sources/AGENTS.md`.
 
 ## Public endpoint
 

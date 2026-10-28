@@ -35,6 +35,33 @@ def test_export_exact_text_and_private_metadata(tmp_path):
         document_export.export(rows, destination)
 
 
+def test_plain_text_export_is_not_named_markdown_and_preserves_partial_warning(tmp_path):
+    text = "Suite 4\nRent: 12 / SF / year"
+    artifact = {"schema_version": "cre-document-text/v1",
+                "source": {"url": "https://example.test/a.pdf", "observed_at": "2026-10-28T12:00:00Z"},
+                "parser": {"name": "poppler-pdftotext", "version": "26.10.0"},
+                "extraction": {"status": "extracted", "coverage": "unknown", "text": text,
+                               "text_sha256": events.sha256(text.encode()), "text_format": "plain",
+                               "converter_exit_code": 1, "warnings": ["converter_failed_partial_output"]}}
+    rows = events.plan(artifact, source_key="svn")["events"]
+    metadata = document_export.export(rows, tmp_path / "plain")
+    assert metadata["text_file"] == "document.txt"
+    assert (tmp_path / "plain/document.txt").read_bytes() == text.encode()
+    assert not (tmp_path / "plain/document.md").exists()
+    assert metadata["document"]["extraction"]["converter_exit_code"] == 1
+    assert metadata["coverage"] == "unknown"
+
+
+def test_unknown_text_format_refuses_before_publishing(tmp_path):
+    rows = capture()
+    artifact = rows[0]["facts"][0]["value"]
+    artifact["extraction"].update(text="hello", text_sha256=events.sha256(b"hello"), text_format="../../unsafe")
+    rows = events.plan(artifact, source_key="svn")["events"]
+    with pytest.raises(ValueError, match="format"):
+        document_export.export(rows, tmp_path / "refused")
+    assert not (tmp_path / "refused").exists()
+
+
 @pytest.mark.parametrize("mutation", ["missing", "reorder", "duplicate", "tamper", "digest", "time", "extra"])
 def test_incomplete_or_inconsistent_rows_refuse(mutation):
     rows = capture("a" * 60005)

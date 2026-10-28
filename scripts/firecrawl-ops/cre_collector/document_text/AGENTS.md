@@ -91,3 +91,10 @@ deal documents retain EQUIRE's separate organization/deal scope. Tests run with
 `npm ci --ignore-scripts` then `npm test` in a standalone no-hardlinks clone.
 Never publish private source text or benchmark inputs. Parent path symlinks and
 native converter memory are outside the module's current isolation guarantees.
+
+The explicit `ocr.py` retry accepts only AnyDoc `ocr_needed` or failed
+`unsupported` PDF artifacts bound to the original bytes. The default offline
+Docling OCR and optional local Poppler text-only engine record separate parser
+provenance and the original artifact hash. Poppler does not perform OCR; retained
+partial output and converter diagnostics carry warnings and unknown coverage.
+Never treat a retry as source, canonical or production acceptance.

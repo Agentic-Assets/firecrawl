@@ -110,3 +110,29 @@ test("non-JSON native fields are omitted explicitly instead of altered", () => {
   assert.deepEqual((observed.scrapedDoc as Record<string, any>).metadata, { nested: [null, false, 0, []] });
   assert.equal(observed.pageContextClockOrigin, "collector_after_scrape_return_not_provider_freshness");
 });
+
+test("generic qualification retains unsupported JSON-LD as evidence without completing claims", async () => {
+  const blocks = [
+    { "@type": "Organization", name: "Global company", price: 900 },
+    { "@type": "WebPage", name: "Property search", description: "Site scaffold" },
+    { name: "Untyped listing", price: 12 },
+    { "@type": { name: "RealEstateListing" }, name: "Malformed type" },
+    { "@type": ["Thing", "RealEstateListing"], name: "Property", offers: { price: "4250000" } },
+    { "@type": "Offer", price: "12345" },
+    { "@type": "Product" },
+  ];
+  const items: EnrichItem[] = blocks.map((_, index) => ({ sourceKey: "transwestern",
+    externalId: `id-${index}`, url: `https://example.test/${index}` }));
+  const enricher = createGenericEnricher(async (url) => doc(`<script type="application/ld+json">${JSON.stringify(blocks[Number(url.split('/').pop())])}</script>`), clock);
+  const result = await runEnrichGroups(groupEnrichItems(items), () => ({ enricher, label: "generic" }), () => "Company");
+  assert.equal(result.sources[0].requested, 7);
+  assert.equal(result.sources[0].listingsCollected, 2);
+  assert.deepEqual(result.listings.map((row) => row.url), [items[4]!.url, items[5]!.url]);
+  assert.equal(result.listings[0].salePriceUsd, 4250000);
+  assert.equal(result.listings[0].genericEnrich.jsonLdType, "RealEstateListing");
+  assert.equal(result.sources[0].retainedObservations.length, 7);
+  for (let i = 0; i < blocks.length; i++) {
+    assert.match(result.sources[0].retainedObservations[i].scrapedDoc.rawHtml, /application\/ld\+json/);
+    assert.equal(result.sources[0].retainedObservations[i].claim.url, items[i]!.url);
+  }
+});

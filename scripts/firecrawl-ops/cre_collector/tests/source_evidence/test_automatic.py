@@ -19,6 +19,11 @@ pytest_plugins = ("test_cre_pipeline_preseal_gate",)
 SHA = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def isolated_automatic_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(refresh, "canonical_shared_lock_dir", lambda: tmp_path / "shared.lock")
+
+
 def setup_policy(tmp_path, sources=("faris-lee",), count=78):
     url = "postgresql://evidence:fake@%2Ftmp%2Fevidence-fixture:5432/fixture"
     env = tmp_path / "writer.env"

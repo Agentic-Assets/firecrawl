@@ -44,6 +44,6 @@ Production probe instead: `cd cre_collector && npx tsx collect.ts --source=jll -
 
 ## References
 
-- **Active:** `../../cre_collector/CLAUDE.md`, `../../cre_collector/sources/CLAUDE.md`, `../../cre_collector/START_HERE.md`
+- **Active:** `../../cre_collector/AGENTS.md`, `../../cre_collector/sources/AGENTS.md`, `../../cre_collector/START_HERE.md`
 - **Legacy parent:** `../CLAUDE.md`
 - Per-broker: `README.md` in each subfolder

@@ -4511,7 +4511,14 @@ def save_foreground_evidence(run_dir: Path, manifest: dict) -> None:
 def pump_source_evidence(run_dir: Path, manifest: dict) -> None:
     if "automatic_source_evidence" not in manifest["config"]:
         return
-    from source_evidence import automatic
+    from source_evidence import automatic, guarded_fence
+    try:
+        guarded_fence.require_clear(canonical_shared_lock_dir())
+    except (OSError, ValueError):
+        manifest["automatic_source_evidence_paused"] = True
+        manifest["automatic_source_evidence_status"] = "incomplete"
+        save_manifest(run_dir, manifest)
+        return
     if git_identity() != (manifest["collector_git_sha"], False):
         manifest["automatic_source_evidence_paused"] = True
         save_manifest(run_dir, manifest)

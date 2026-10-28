@@ -174,8 +174,13 @@ and sync those files only after positive owned-worker settlement, including on
 nonzero exit; unknown settlement keeps the awaiting marker and recovery fence.
 Hashes and byte counts describe local custody, not valid JSON, successful
 collection, complete source coverage, canonical ingest or database retention.
-This draft adds no append/replay admission or independent ledger and remains
-subject to separate production acceptance.
+The opt-in `guarded_evidence.py` lane separately revalidates and appends a sealed
+receipt through the existing writer; `guarded_fence.py` blocks automated evidence
+writes while its exact receipt requires reconciliation. Preserve the distinction
+between canonical worker outcome, local settlement and remote database outcome.
+Unknown local cleanup still needs existing owner recovery. Read README.md
+"Targeted enrichment evidence and recovery" before changing these boundaries;
+AGENTIC-5040 still gates production writer activation.
 
 Draft collector-capture export is limited to retained collector v1/v2. It reads
 one ordered capture with a 10,002-row query limit, accepts at most 10,001 rows

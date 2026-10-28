@@ -456,11 +456,11 @@ export function parseMatthewsDetail(
  * never inventory or generation proof. A refusal stays omitted for retry;
  * permanent aliases must not be rekeyed or falsely marked complete by URL.
  */
-async function enrichMatthewsObservedListing(item: {
+export async function enrichMatthewsObservedListing(item: {
   externalId: string;
   url: string;
   transaction?: Tx;
-}, inventoryObservedAt?: string): Promise<any | null> {
+}, inventoryObservedAt?: string, observe?: (value: { reason: string; html?: string; observedAt?: string; redirectTarget?: string; status?: number }) => void): Promise<any | null> {
   try {
     const requested = new URL(item.url);
     if (
@@ -479,14 +479,34 @@ async function enrichMatthewsObservedListing(item: {
 
     // Explicit freshness on the existing bounded transport does not depend on
     // the full-generation CLI flag. Never follow redirects for queue completion.
-    const response = await matthewsFetch(normalized, true, true);
+    const response = await matthewsFetch(normalized, true, true, !!observe);
+    if (response.status === 307 && observe && response.location) {
+      try {
+        const target = new URL(response.location, normalized);
+        const targetUrl = target.href;
+        if (target.protocol === "https:" && !target.username && !target.password && !target.port && !target.search && !target.hash
+          && normalizedMatthewsPropertyUrl(targetUrl, MATTHEWS_HOST)
+          && matthewsTenureFromUrl(targetUrl) === tx) {
+          observe({ reason: "temporary_redirect", redirectTarget: targetUrl, status: response.status });
+        }
+      } catch { /* Invalid location is never retried. */ }
+      return null;
+    }
     if (!response.html || matthewsProviderNotFound(response.html, normalized, tx)) return null;
-    const listing = parseMatthewsDetail(response.html, normalized, tx, {
-      strict: true,
-      inventoryObservedAt,
-      detailObservedAt: observationNow(),
-    });
-    if (!listing || listing.id !== item.externalId) return null;
+    let listing: any = null;
+    try {
+      listing = parseMatthewsDetail(response.html, normalized, tx, {
+        strict: true,
+        inventoryObservedAt,
+        detailObservedAt: observationNow(),
+      });
+    } catch { /* The unqualified body may still be retained privately. */ }
+    if (!listing || listing.id !== item.externalId) {
+      if (observe && !isSourceChallengeShell(response.html)) {
+        observe({ reason: "native_detail_unqualified", html: response.html, observedAt: observationNow(), status: response.status });
+      }
+      return null;
+    }
     return prune({ ...listing, url: item.url });
   } catch {
     return null;

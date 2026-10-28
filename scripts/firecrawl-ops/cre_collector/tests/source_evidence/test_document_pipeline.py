@@ -171,3 +171,50 @@ def test_checkpoint_interruption_leaves_intent_and_refuses_restart(monkeypatch, 
     with pytest.raises(ValueError):
         execute(tmp_path, manifest, attempt, kwargs)
     assert not calls["fetch"]
+
+
+def test_unsupported_html_landing_is_sealed_before_cleanup(monkeypatch, tmp_path):
+    manifest, attempt, kwargs = setup_run(tmp_path)
+    policy = json.loads(kwargs['policy_raw'])
+    policy['limits'].update(max_documents=1, max_document_bytes=1024, max_total_bytes=1024)
+    raw = events.encoded(policy)
+    kwargs.update(policy_raw=raw, selection=preflight(kwargs['plan'], kwargs['candidates'], raw=raw),
+                  expected_policy_sha256=events.sha256(raw))
+    body = b'<html><h1>Property</h1><a href="/flyer.pdf">Flyer</a></html>'
+
+    def fetch(job, job_path, outdir):
+        receipt = {**fetch_receipt(), 'request_url': job['url'], 'final_url': job['url'],
+                   'hops': [{'url': job['url'], 'status': 200}], 'body_bytes': len(body),
+                   'body_sha256': events.sha256(body)}
+        private_export.write(outdir, [('document.bin', body)])
+        return {'state': 'completed', 'directory': str(outdir), 'job_sha256': 'a' * 64,
+                'receipt': receipt, 'body_path': str(outdir / 'document.bin')}
+
+    def extract(fetched, job_path, outdir, **_kwargs):
+        private_export.write(outdir, [('document.bin', body)])
+        value = text_artifact('failed')
+        value['source'].update(url=fetched['receipt']['final_url'], observed_at=fetched['receipt']['finished_at'],
+                               sha256=events.sha256(body), byte_length=len(body))
+        value['extraction']['error_code'] = 'unsupported'
+        return {'state': 'failed', 'directory': str(outdir), 'artifact': value,
+                'input_path': str(outdir / 'document.bin')}
+
+    monkeypatch.setattr(document_pipeline.doc_fetch_process, 'run', fetch)
+    monkeypatch.setattr(document_pipeline.doc_extract_process, 'run', extract)
+    monkeypatch.setattr(document_pipeline.time, 'monotonic', lambda: 1.0)
+    result = execute(tmp_path, manifest, attempt, kwargs)
+    assert result['state'] == 'selection_settled'
+    document = result['documents'][0]
+    assert document['original_retention'] == 'both_owned_body_copies_removed'
+    sealed = tmp_path / document['directory'] / 'sealed'
+    assert 'landing-page.json' in document['sealed']['files']
+    plan = json.loads((sealed / 'plan.json').read_bytes())
+    assert plan['events'][0]['facts'][0]['value']['pageContext']['links'][0]['href'] == '/flyer.pdf'
+    assert 'pageContext' not in json.loads((sealed / 'converter-artifact.json').read_bytes())
+    from test_document_recovery import recover
+    verified = recover(tmp_path, manifest, attempt, kwargs)
+    assert verified['state'] == 'sealed_outputs_reconciled'
+    (sealed / 'landing-page.json').write_bytes(b'{}')
+    refused = recover(tmp_path, manifest, attempt, kwargs)
+    assert refused['state'] == 'incomplete'
+    assert refused['documents'][0]['state'] == 'unresolved'

@@ -127,10 +127,23 @@ A planned reader command, `source_evidence.cli export-document-text`, will use
 development and has not yet been verified; use the existing event readback and
 chunk/hash checks until it is available and verified.
 
-For `ocr_needed`, the artifact retains any page numbers reported by AnyDoc and has no extracted text. An explicit offline retry is available after reviewing the document and local resource budget:
+For `ocr_needed`, the artifact retains any page numbers reported by AnyDoc and has no extracted text. An explicit local retry is also available for a PDF with the specific failed code `unsupported`, after reviewing the document and local resource budget. Other failed codes remain refused:
 
 ```sh
 python3 ocr.py --input /private/input.pdf --anydoc-attempt /private/anydoc.json --out /private/docling-attempt.json
 ```
 
 This keeps the original attempt, verifies the PDF hash against it, and records a distinct attempt bound to the original artifact hash. It requires the pinned Docling image to already exist locally; it never pulls an image or uses network access. It creates and removes one labeled container, uses a read-only input and private temporary output directory, a read-only container filesystem, one CPU, 3 GiB memory, a 90-second document timeout and a 120-second client timeout. The fixed Markdown output is limited to 8 MiB per file by the container and 4 MiB when read; the host directory has no total quota. Container cleanup failures are recorded. OCR warnings are coarse codes; status `extracted` with unknown coverage is not proof every page succeeded. The existing local `firecrawl_request.py parse` and Docling service are a separate opt-in path. This adapter does not create OM facts or authorize database writes.
+
+For a born-digital PDF, `--engine poppler` uses the locally installed
+`pdftotext` instead of Docling. It extracts existing text only and cannot OCR
+images; the recorded parser version comes from the executable. It uses a private
+temporary directory, a 120-second process timeout, and a 4 MiB output file limit.
+The file-size limit also bounds each regular log file; native process memory is not capped. Diagnostics are retained as coarse warnings without document text. The artifact marks Poppler output as `plain`; it is not Markdown. Either engine
+retains nonempty partial output from a failed converter with an explicit warning and converter exit code;
+this is not proof of complete or accurate extraction. The retry remains opt-in,
+creates no database writes, and leaves the original AnyDoc artifact untouched.
+
+The existing evidence planner preserves the format metadata, but its export currently
+names all text `document.md`. Do not treat that filename as evidence of Markdown;
+format-aware export needs separate implementation before relying on this path.

@@ -35,11 +35,46 @@ def test_ambiguous_maps_are_refused(url):
 
 def test_other_sources_and_hosts_get_no_bypass():
     with pytest.raises(ValueError):
-        project({}, source_key="svn")
+        project({}, source_key="transwestern")
     value = "https://other.example/path?token=secret"
     output, receipt = project({"x": value}, source_key="faris-lee")
     assert output == {"x": value}
     assert not receipt["replacements"]
+
+
+@pytest.mark.parametrize("source", ["cushman-wakefield", "svn"])
+def test_observed_shared_map_sources_preserve_facts_and_bind_projection(source):
+    from source_evidence.map_projection import prepare, validate
+    from source_evidence import events
+
+    original = {"labels": [["Lease rate", "$12 / SF / year"]],
+                "links": ["https://maps.googleapis.com/maps/vt?pb=position&key=MAPKEY&token=123"]}
+    output, literals, receipt = prepare(events.encoded(original), source_key=source)
+    validate(output, receipt, source_key=source, numeric_literals=literals or None)
+    assert output["labels"] == original["labels"]
+    assert output["links"] == ["https://maps.googleapis.com/maps/vt?pb=position"]
+    assert receipt["version"] == "google-map-tile-query/v1"
+    assert receipt["sourceKey"] == source
+    assert "MAPKEY" not in repr((output, receipt))
+    other = "svn" if source == "cushman-wakefield" else "cushman-wakefield"
+    with pytest.raises(ValueError):
+        validate(output, receipt, source_key=other)
+
+
+def test_new_map_projection_keeps_non_tile_urls_for_ordinary_policy_checks():
+    from source_evidence.map_projection import prepare, validate
+    from source_evidence import events
+
+    unchanged = "https://maps.googleapis.com/maps-api-v3/api/js/66/map.js"
+    original = {"text": unchanged + " https://maps.googleapis.com/maps/vt?pb=x&key=MAPKEY&token=123"}
+    output, literals, receipt = prepare(events.encoded(original), source_key="cushman-wakefield")
+    validate(output, receipt, source_key="cushman-wakefield", numeric_literals=literals or None)
+    assert unchanged in output["text"]
+    bad = "https://maps.googleapis.com/maps/api/js?token=secret"
+    output, _ = project({"text": bad}, source_key="cushman-wakefield")
+    assert output["text"] == bad
+    with pytest.raises(ValueError):
+        events.http_url(output["text"])
 
 
 def test_pointer_escaping_repeated_occurrences_and_idempotence():

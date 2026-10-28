@@ -19,6 +19,25 @@ def projected_policy(tmp_path):
     return config
 
 
+@pytest.mark.parametrize("source", ["cushman-wakefield", "svn"])
+def test_shared_map_sources_require_exact_explicit_policy_version(tmp_path, source):
+    config, policy, path = setup_policy(tmp_path, sources=(source,))
+    policy.update(schema_version=automatic.SCHEMA_V2,
+                  collector_projections={source: map_projection.version_for(source)},
+                  native_source_formats={}, max_native_pages=128)
+    raw = events.encoded(policy)
+    path.write_bytes(raw)
+    accepted = automatic.configuration(str(path), hashlib.sha256(raw).hexdigest(), config['env_file'],
+                                       config['target_sha256'], SHA, [source])
+    assert accepted['collector_projections'] == {source: 'google-map-tile-query/v1'}
+    policy['collector_projections'][source] = map_projection.VERSION
+    raw = events.encoded(policy)
+    path.write_bytes(raw)
+    with pytest.raises(ValueError):
+        automatic.configuration(str(path), hashlib.sha256(raw).hexdigest(), config['env_file'],
+                                config['target_sha256'], SHA, [source])
+
+
 def test_projection_policy_and_exact_replay_preserve_seventy_eight_records(tmp_path, monkeypatch):
     config = projected_policy(tmp_path)
     obj = artifact()

@@ -88,7 +88,8 @@ def _derive(run_dir, manifest, source, attempt, document):
     doc_extract_process.validate_artifact(artifact, context["receipt"], source_key=source,
                                           exit_code=0 if status == "extracted" else 2)
     enriched = {**artifact, "acquisition_context": context,
-                "acquisition_context_origin": "foreground_coordinator_not_converter"}
+                "acquisition_context_origin": "foreground_coordinator_not_converter",
+                **({"pageContext": checked["landing"]} if "landing" in checked else {})}
     _, plan = document_acquisition.bind_extraction(context, enriched)
     saved_plan_raw, saved_plan = document_pipeline._json(seal_dir / "plan.json", document_seal.MAX_FILE)
     if (events.encoded(saved_plan) != events.encoded(plan) or events.sha256(saved_plan_raw) != marker["files"].get("plan.json")

@@ -20,7 +20,7 @@ import cre_checkpoint_refresh as refresh
 from buildout_observation_artifact import URL, pointer_component
 from cre_ingest import database_target_fingerprint_from_url
 from owned_observation_fixture_cluster import OwnedCluster, tool
-from source_evidence import acquisition, automatic, map_projection
+from source_evidence import acquisition, automatic, enrichment_custody, guarded_evidence, guarded_fence, map_projection
 
 
 def main():
@@ -192,6 +192,40 @@ def main():
         refresh.pump_source_evidence(run, manifest)
         assert attempt["source_evidence"]["state"] == "appended"
         assert sql("SELECT count(*) FROM cre_source_evidence.events;").stdout.strip() == str(expected_count + 1)
+        # Real restricted append, simulated lost response, then exact receipt replay.
+        targeted = cluster.root / "targeted"
+        targeted.mkdir(mode=0o700)
+        custody = enrichment_custody.mark(targeted, "faris-lee")
+        (targeted / "enriched.json").write_bytes(artifact_bytes)
+        (targeted / "enriched.json").chmod(0o600)
+        receipt = {"tier": "enrich", "source": "faris-lee", "apply": True, "expected_sha": git,
+                   "local_settlement": {"state": "confirmed"},
+                   "enrichment_artifact": enrichment_custody.settle(targeted, custody),
+                   "source_evidence": {"config": config, "status": "awaiting_worker"}}
+        receipt_path = targeted / "receipt.json"
+        def save_targeted():
+            refresh.atomic_write_text(receipt_path, json.dumps(receipt) + "\n")
+        save_targeted()
+        lock_path = cluster.root / "targeted.lock"
+        real_psql = automatic.cli.run_psql
+        def lost_response(*values, **options):
+            real_psql(*values, **options)
+            raise RuntimeError("simulated lost response after commit")
+        automatic.cli.run_psql = lost_response
+        with refresh.SharedLock(lock_path, recovery_required=True) as owner:
+            guarded_evidence.seal_and_append(targeted, receipt, owner, save_targeted)
+            assert receipt["source_evidence"]["job"]["state"] == "outcome_unknown"
+            owner.clear_recovery_requirement()
+        targeted_count = int(sql("SELECT count(*) FROM cre_source_evidence.events;").stdout.strip())
+        assert targeted_count == 2 * (expected_count + 1)
+        assert guarded_fence.read(lock_path) is not None
+        automatic.cli.run_psql = real_psql
+        guarded_evidence.reconcile(receipt_path, lock_path, source="faris-lee", expected_sha=git)
+        assert guarded_fence.read(lock_path) is None
+        assert int(sql("SELECT count(*) FROM cre_source_evidence.events;").stdout.strip()) == targeted_count
+        assert json.loads(receipt_path.read_text())["source_evidence"]["job"]["state"] == "appended"
+        assert sql("SELECT status FROM credeals.sentinel WHERE id=1;").stdout.strip() == "active"
+        print(f"Targeted receipt: {expected_count} records, lost response and exact idempotent replay passed")
         if args.project_map_credentials:
             sql("CREATE SCHEMA danger; GRANT USAGE ON SCHEMA danger TO PUBLIC; CREATE TABLE danger.items(id integer); GRANT INSERT ON danger.items TO PUBLIC;")
             refused = sql(automatic.append_sql(plan), user="evidence_auto", check=False)

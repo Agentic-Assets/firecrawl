@@ -104,3 +104,29 @@ def test_refuses_changed_custody_or_policy(monkeypatch, tmp_path, mutation):
         manifest["config"]["automatic_source_evidence"]["document_text_formats"] = {}
     with pytest.raises((ValueError, OSError, KeyError)):
         document_jobs.prepare_job(tmp_path, manifest, "svn", attempt, document, job)
+
+
+def test_landing_seal_rederives_append_plan_and_rejects_tamper(monkeypatch, tmp_path):
+    import json
+    import shutil
+
+    from source_evidence import document_landing, document_seal
+
+    manifest, attempt, state = prepared_run(monkeypatch, tmp_path, extraction_state='failed')
+    document = state['documents'][0]
+    seal = tmp_path / document['directory'] / 'sealed'
+    context = json.loads((seal / 'acquisition.json').read_bytes())
+    artifact = json.loads((seal / 'converter-artifact.json').read_bytes())
+    body = b'<html><a href="/flyer.pdf">Flyer</a></html>'
+    context['receipt'].update(body_sha256=events.sha256(body), body_bytes=len(body))
+    artifact['source'].update(sha256=events.sha256(body), byte_length=len(body))
+    artifact['extraction']['error_code'] = 'unsupported'
+    landing = document_landing.page_context(body, final_url=context['receipt']['final_url'])
+    shutil.rmtree(seal)
+    document['sealed'] = document_seal.write(seal, context, artifact, landing=landing)
+    job = document_jobs.mark(tmp_path, manifest, 'svn', attempt, document, lambda *_: None)
+    plan = document_jobs.prepare_job(tmp_path, manifest, 'svn', attempt, document, job)
+    assert plan['events'][0]['facts'][0]['value']['pageContext']['links'][0]['href'] == '/flyer.pdf'
+    (seal / 'landing-page.json').write_bytes(b'{}')
+    with pytest.raises(ValueError):
+        document_jobs.prepare_job(tmp_path, manifest, 'svn', attempt, document, job)

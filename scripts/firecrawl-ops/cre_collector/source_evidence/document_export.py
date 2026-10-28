@@ -78,6 +78,11 @@ def reconstruct(rows):
 def export(rows, outdir):
     """Create a new private directory containing exact UTF-8 text and metadata."""
     text, metadata = reconstruct(rows)
-    private_export.write(outdir, [("document.md", text.encode("utf-8")),
+    text_format = metadata["document"]["extraction"].get("text_format", "markdown")
+    filename = {"markdown": "document.md", "plain": "document.txt"}.get(text_format)
+    if filename is None:
+        raise ValueError("document export text format is unsupported")
+    metadata["text_file"] = filename
+    private_export.write(outdir, [(filename, text.encode("utf-8")),
                                   ("metadata.json", events.encoded(metadata) + b"\n")])
     return metadata

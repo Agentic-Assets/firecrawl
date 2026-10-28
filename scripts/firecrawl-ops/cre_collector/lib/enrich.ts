@@ -22,7 +22,7 @@ import { scrapeDoc } from "./scrape.js";
 import { observationNow } from "./observation-clock.js";
 import { limitEnrichmentObservations, captureEnrichmentEvidence, failedEnrichmentEvidence } from "./enrichment-evidence/index.js";
 import { RetainedSourceError } from "./source-observations.js";
-import { firstJsonLd, jsonLdObjects } from "./html.js";
+import { firstJsonLd } from "./html.js";
 import { CONCURRENCY } from "./config.js";
 import {
   ColliersMainEntry,
@@ -38,7 +38,7 @@ import {
 import { REGISTERED_BUILDOUT_FIRMS } from "../sources/buildout-registry.js";
 import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-young.js";
 import { enrichMarcusListing } from "../sources/marcus-millichap.js";
-import { enrichMatthewsListing, enrichMatthewsTargetedBatch, validateMatthewsTargetedRefresh, type MatthewsTargetedRefresh } from "../sources/matthews.js";
+import { enrichMatthewsListing, enrichMatthewsObservedListing, enrichMatthewsTargetedBatch, validateMatthewsTargetedRefresh, type MatthewsTargetedRefresh } from "../sources/matthews.js";
 import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
 import { enrichHanleyListings } from "../sources/hanley.js";
 import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidder-mathews.js";
@@ -254,17 +254,18 @@ export const kidderMathewsEnricher: SourceEnricher = {
 };
 
 // Best-effort generic fallback for any source without a bespoke enricher: scrape
-// the URL and lift price/status/description/geo from a RealEstateListing (or any)
+// the URL and lift price/status/description/geo from a supported listing
 // JSON-LD block where the page exposes one. A page with no useful JSON-LD yields
 // no row: emitting a thin url-only row would falsely complete the queue item and
 // overwrite raw source payload with an unverified fallback.
 export function createGenericEnricher(fetchDoc: (url: string) => Promise<ScrapedDoc> = scrapeDoc,
-  clock: () => string = observationNow): SourceEnricher {
+  clock: () => string = observationNow, pageUrlFor: (item: EnrichItem) => string = (item) => item.url): SourceEnricher {
   async function batch(items: EnrichItem[]) {
     const outcomes = await pmap(items, CONCURRENCY, async (item) => {
       let doc: ScrapedDoc;
+      const pageUrl = pageUrlFor(item);
       try {
-        doc = await fetchDoc(item.url);
+        doc = await fetchDoc(pageUrl);
       } catch {
         console.error("  enrich/generic: scrape failed; retained bounded failure metadata");
         return { listing: null, observation: failedEnrichmentEvidence(item) };
@@ -272,7 +273,7 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
       let capturedAt: string | null = null;
       try { capturedAt = clock(); } catch { /* Preserve an unavailable capture clock explicitly. */ }
       let observation: unknown;
-      try { observation = captureEnrichmentEvidence(item, doc, capturedAt); }
+      try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl }); }
       catch { observation = failedEnrichmentEvidence(item, "evidence_capture_failed"); }
       try {
         const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
@@ -307,12 +308,10 @@ function genericHasSubstantiveFields(row: any): boolean {
 // Pure transform: lift best-effort listing fields out of a page's JSON-LD. No
 // network. Echoes item.url. Exported for the unit test (fixture HTML in, row out).
 export function parseGenericJsonLd(item: EnrichItem, rawHtml: string): any {
-  const ld =
-    firstJsonLd(rawHtml, "RealEstateListing") ??
-    firstJsonLd(rawHtml, "Product") ??
-    firstJsonLd(rawHtml, "Offer") ??
-    jsonLdObjects(rawHtml).find((o) => o && (o.offers || o.price || o.name)) ??
-    null;
+  const supportedTypes = ["RealEstateListing", "Product", "Offer"] as const;
+  const matched = supportedTypes.map((type) => ({ type, value: firstJsonLd(rawHtml, type) }))
+    .find(({ value }) => value != null);
+  const ld = matched?.value ?? null;
   const offer = ld?.offers ?? ld;
   // JSON-LD offers.price is a bare numeric (string or number) per schema.org, not
   // a "$"-prefixed display string, so coerce with coerceNum() (num() only accepts
@@ -331,7 +330,7 @@ export function parseGenericJsonLd(item: EnrichItem, rawHtml: string): any {
     latitude: lat,
     longitude: lng,
     url: item.url,
-    genericEnrich: { jsonLdType: clean(ld?.["@type"]) ?? null, hadJsonLd: ld != null },
+    genericEnrich: { jsonLdType: matched?.type ?? null, hadJsonLd: ld != null },
   });
 }
 
@@ -350,15 +349,49 @@ function nativeIdFor(item: EnrichItem): string {
   return item.externalId.replace(/^(main:|investor:|dealflow:)/, "");
 }
 
-// Matthews owns canonical/native identity validation and the shared direct
-// transport. A source failure never falls back to generic JSON-LD enrichment.
-export const matthewsEnricher: SourceEnricher = {
-  async enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]> {
+// Matthews keeps native queue admission; any recovered context is private evidence only.
+export function createMatthewsEnricher(
+  primary: typeof enrichMatthewsObservedListing = enrichMatthewsObservedListing,
+  fetchDoc: (url: string) => Promise<ScrapedDoc> = scrapeDoc,
+): SourceEnricher {
+  async function enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]> {
     if (context) return enrichMatthewsTargetedBatch(items, context);
     const rows = await pmap(items, Math.min(CONCURRENCY, 2), enrichMatthewsListing);
     return rows.filter(Boolean);
-  },
-};
+  }
+  return {
+    enrich,
+    async enrichWithEvidence(items, context) {
+      if (context) return { listings: await enrich(items, context), retainedObservations: [] };
+      const outcomes = await pmap(items, Math.min(CONCURRENCY, 2), async (item) => {
+        let witness: { reason: string; html?: string; observedAt?: string; redirectTarget?: string; status?: number } | undefined;
+        const listing = await primary(item, undefined, (value) => { witness = value; });
+        if (listing || !witness) return { listing, observations: [] as unknown[] };
+        const evidence = witness;
+        if (evidence.reason === "native_detail_unqualified" && evidence.html !== undefined) {
+          try {
+            const captured = captureEnrichmentEvidence(item, { rawHtml: evidence.html, markdown: "", links: [] }, evidence.observedAt ?? null);
+            return { listing: null, observations: [{ ...captured, primaryOutcome: { reason: evidence.reason, status: evidence.status } }] };
+          } catch {
+            return { listing: null, observations: [{ ...failedEnrichmentEvidence(item, "evidence_capture_failed"), primaryOutcome: { reason: evidence.reason, status: evidence.status } }] };
+          }
+        }
+        if (evidence.reason === "temporary_redirect" && evidence.redirectTarget) {
+          const generic = createGenericEnricher(fetchDoc, observationNow, () => evidence.redirectTarget!);
+          const result = await generic.enrichWithEvidence!([item]);
+          return { listing: null, observations: result.retainedObservations.map((observation) => ({
+            ...(observation as object), primaryOutcome: { reason: evidence.reason, status: evidence.status, redirectTarget: evidence.redirectTarget },
+          })) };
+        }
+        return { listing: null, observations: [] as unknown[] };
+      });
+      return { listings: outcomes.map((outcome) => outcome.listing).filter(Boolean),
+        ...limitEnrichmentObservations(outcomes.flatMap((outcome) => outcome.observations)) };
+    },
+  };
+}
+
+export const matthewsEnricher: SourceEnricher = createMatthewsEnricher();
 
 // cbre is intentionally ABSENT: cbre is enumeration-only (the listings-api JSON
 // already returns fully mapped rows; monitor output equals full output), so there

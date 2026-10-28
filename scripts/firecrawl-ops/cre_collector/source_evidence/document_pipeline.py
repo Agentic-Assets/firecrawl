@@ -19,6 +19,7 @@ from source_evidence import (
     document_acquisition,
     document_budget,
     document_fetch_worker,
+    document_landing,
     document_seal,
     events,
     private_export,
@@ -96,8 +97,8 @@ def _remove_owned_body(path, digest, byte_length):
         os.close(directory)
 
 
-def _seal(outdir, context, *, artifact=None):
-    return document_seal.write(outdir, context, artifact)
+def _seal(outdir, context, *, artifact=None, landing=None):
+    return document_seal.write(outdir, context, artifact, landing=landing)
 
 
 def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_raw,
@@ -215,7 +216,14 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
                 # Rebuild the context from original policy/receipt/bytes, never an editable sidecar alone.
                 context = document_acquisition.build_context(plan, candidates, policy_raw, selected,
                                                            index, receipt, body, **bindings)
-                document["sealed"] = _seal(directory / "sealed", context, artifact=extracted["artifact"])
+                landing = None
+                extraction = extracted["artifact"].get("extraction", {})
+                if (extraction.get("status") == "failed" and extraction.get("error_code") == "unsupported"
+                        and document_landing.is_html(body)):
+                    landing = document_landing.protect_scripts(
+                        document_landing.page_context(body, final_url=receipt["final_url"]), source_key=source)
+                document["sealed"] = _seal(directory / "sealed", context, artifact=extracted["artifact"],
+                                           landing=landing)
                 document["state"] = "extraction_sealed"
                 save(run_dir, manifest)
                 retain = (selected["original_retention"] == "keep_unresolved_until_review"
