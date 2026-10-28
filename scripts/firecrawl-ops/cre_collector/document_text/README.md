@@ -93,6 +93,21 @@ node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifa
 
 The owner-only provenance file contains `{"url":"https://example.org/input.pdf","observed_at":"2026-10-28T12:00:00Z"}`. It must be a regular non-symlink file owned by the current user, with no group or other permissions, and at most 16 KiB. This keeps URLs out of command arguments. Known credential-bearing query keys and URL fragments are rejected rather than retained; this is not a general secret detector. Review the URL before use, and never strip a signed query and claim the resulting URL is the same source.
 
+The current worker detects format from content first and falls back to the
+local input filename's extension. The acquisition bridge names an
+extensionless final URL `document.bin`. CSV has no detectable content signature
+in the pinned AnyDoc API, so an extensionless CSV currently has no usable
+format and may fail extraction even when a source label or MIME hint identifies
+it. Those candidate hints are not passed to the converter today.
+
+A future hint must be selected deterministically from the bound candidate,
+retain its source and any ambiguity, and be used only when content detection
+does not identify a format. Conflicting or unsupported hints must remain
+unresolved. The selection, conversion result, seal and recovery must bind the
+same hint; a label or MIME value remains a source assertion, not verified file
+type or permission. This is a future acceptance requirement, not implemented or
+verified behavior.
+
 The output is created exclusively with owner-only file permissions; use a private directory as well. URLs and extracted content may be sensitive. The original SHA-256, acquisition observation time supplied by the caller, detected type, parser version/config, status, text and separate UTF-8 text SHA-256 are recorded. Local input must be a regular file, not a symlink, and is limited to 100 MiB. Conversion runs in a separate process with a 60-second timeout. Extracted text is capped at 4 MiB; oversized output is retained as a failure, never silently truncated. The JavaScript heap limit does not cap native converter memory. Exit codes are 0 for extracted, 2 for OCR-needed or failed read/conversion, and 1 for invalid invocation or artifact-write errors. The caller owns the accuracy of the URL and observation time, and must retain the original if required. A successful conversion has `coverage: unknown`: AnyDoc can skip content and its Markdown is not a fidelity or financial-truth guarantee.
 
 Extracted Markdown is source text, not normalized listing facts. Keep useful

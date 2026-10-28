@@ -21,7 +21,9 @@ separate; Faris collector projection does not apply. Read README for bounds.
 This draft is unverified under the hold and not deployed.
 
 `artifact-output.ts` is the shared full/enrich artifact publisher. Artifacts
-with retained observations require an explicit file destination, exclusive
-creation and mode 0600; never send those observations to stdout or overwrite a
-prior capture. Ordinary listing output keeps its existing publication behavior.
+with retained observations, and all targeted enrichment artifacts, require an
+explicit file destination, exclusive creation and mode 0600. Fsync the file
+before close; guarded custody separately syncs its private parent directory.
+Never send private artifacts to stdout or overwrite a prior capture. Ordinary
+full listing output keeps its existing publication behavior.
 This is private local custody, not database admission or canonical completion.

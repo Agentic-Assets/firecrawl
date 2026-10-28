@@ -170,7 +170,8 @@ def build_commands(args: argparse.Namespace, run_dir: Path, target: str | None):
     if args.apply:
         if target is None or not re.fullmatch(r"[0-9a-f]{64}", target):
             raise GuardedTierError("database target binding is unavailable")
-        argv.extend(["--expected-db-target-sha256", target])
+        argv.extend(["--expected-db-target-sha256", target,
+                     "--artifact-out", str(run_dir / "enriched.json")])
         if args.source == "matthews":
             if sys.platform != "linux" or args.deadline_seconds > 600:
                 raise GuardedTierError("targeted Matthews requires Linux and a deadline at most 600 seconds")
@@ -374,6 +375,21 @@ def run_guarded_tier(
                 run_dir / "receipt.json", json.dumps(receipt, sort_keys=True) + "\n"
             )
 
+        def settle_enrichment_artifact(phase: str) -> None:
+            if phase != "enrich_apply":
+                return
+            from source_evidence import enrichment_custody
+            marker = receipt.get("enrichment_artifact")
+            if not isinstance(marker, dict) or marker.get("state") != "awaiting_worker":
+                raise GuardedTierError("enrichment custody intent is unavailable")
+            try:
+                receipt["enrichment_artifact"] = enrichment_custody.settle(run_dir, marker)
+            except (OSError, ValueError, RuntimeError) as exc:
+                receipt["enrichment_artifact"] = {**marker, "state": "refused", "reason": type(exc).__name__}
+                persist()
+                raise GuardedTierError("enrichment artifact custody was refused") from exc
+            persist()
+
         def execute(phase: str, argv: Sequence[str]) -> None:
             nonlocal native_work_started, native_command_active, tier_worker_started
             receipt["phase"] = phase
@@ -397,11 +413,13 @@ def run_guarded_tier(
                 settled = checkpoint.command_local_settlement(exc)
                 if settled is not None:
                     receipt["local_settlement"] = {**settled, "phase": phase}
+                    settle_enrichment_artifact(phase)
                 raise
             # The production runner returns only after its owned group is
             # settled. Exceptions deliberately leave this active witness set.
             native_command_active = False
             receipt["local_settlement"] = {"state": "confirmed", "phase": phase}
+            settle_enrichment_artifact(phase)
             if command_rc != 0:
                 if phase.startswith("git_"):
                     raise PreflightRefused("checkout identity could not be verified")
@@ -457,6 +475,9 @@ def run_guarded_tier(
                     if target is not None:
                         receipt["database_target_sha256"] = target
                     for phase, argv in build_commands(args, run_dir, target):
+                        if phase == "enrich_apply":
+                            from source_evidence import enrichment_custody
+                            receipt["enrichment_artifact"] = enrichment_custody.mark(run_dir, args.source)
                         execute(phase, argv)
                         if phase == "collect":
                             validate_monitor_artifact(

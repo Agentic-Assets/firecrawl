@@ -3,10 +3,12 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 # Private source evidence output
 
 The shared `artifact-output.ts` publisher serves full and targeted enrichment
-artifacts. Retained observations require an explicit file destination and use
-exclusive mode-0600 output; ordinary listing output retains its existing
-behavior. This prevents a private observation from falling through to stdout or
-replacing a prior capture. A local artifact is not proof of database retention,
+artifacts. All targeted enrichment artifacts, and full artifacts containing
+retained observations, require an explicit file destination and use exclusive
+mode-0600 output with file fsync before close. Ordinary full listing output
+retains its existing behavior. The guarded enrichment parent separately syncs
+the private directory before recording custody. This prevents private output
+from falling through to stdout or replacing a prior capture. A local artifact is not proof of database retention,
 canonical qualification, or queue completion. This draft remains unverified
 under the active hold.
 

@@ -70,6 +70,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone
 
@@ -651,6 +652,25 @@ def run(args):
         print(claim_sql)
         return 0
 
+    # Check explicit output custody before claiming any queue rows. The
+    # guarded parent owns this directory and records the matching marker.
+    artifact_out = getattr(args, "artifact_out", None)
+    claim_path = enriched_path = None
+    if artifact_out is not None:
+        from pathlib import Path
+        from source_evidence.enrichment_custody import preflight
+        output = Path(artifact_out)
+        if not output.is_absolute() or output.name != "enriched.json":
+            raise ValueError("artifact output must be an absolute private enriched.json path")
+        claim_file, output_file = preflight(output.parent)
+        claim_path, enriched_path = str(claim_file), str(output_file)
+    elif not targeted:
+        from source_evidence.enrichment_custody import preflight
+        os.makedirs(OUT_ENRICH_DIR, exist_ok=True)
+        private_root = tempfile.mkdtemp(prefix="enrich-", dir=OUT_ENRICH_DIR)
+        claim_file, output_file = preflight(private_root)
+        claim_path, enriched_path = str(claim_file), str(output_file)
+
     def require_owner():
         if targeted:
             from cre_stop_guarded_tier import require_guarded_matthews_parent
@@ -672,12 +692,7 @@ def run(args):
     print(f"claimed {len(claimed_rows)} row(s)", file=sys.stderr)
 
     # (2) Write the claim artifact for collect.ts --enrich-input.
-    if not targeted:
-        os.makedirs(OUT_ENRICH_DIR, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    claim_path = os.path.join(OUT_ENRICH_DIR, f"claim_{stamp}.json")
-    enriched_path = os.path.join(OUT_ENRICH_DIR, f"enriched_{stamp}.json")
-    if targeted:
+    if targeted and artifact_out is None:
         from cre_stop_guarded_tier import OUT_ROOT
         unique = uuid.uuid4().hex
         private_root = OUT_ROOT / args.guarded_run_id
@@ -693,12 +708,16 @@ def run(args):
         claims["matthewsGuardedWorker"] = {
             "runId": args.guarded_run_id, "workerIdentity": _process_identity(os.getpid()),
         }
-    descriptor = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600) if targeted else None
-    with (os.fdopen(descriptor, "w") if targeted else open(claim_path, "w")) as f:
+    descriptor = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as f:
         json.dump(claims, f, indent=2)
-        if targeted:
-            f.flush()
-            os.fsync(f.fileno())
+        f.flush()
+        os.fsync(f.fileno())
+    claim_dir_fd = os.open(os.path.dirname(claim_path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(claim_dir_fd)
+    finally:
+        os.close(claim_dir_fd)
     if targeted:
         validate_matthews_targeted_claims(claims)
 
@@ -823,6 +842,7 @@ def main():
     ap.add_argument("--matthews-targeted-refresh", action="store_true")
     ap.add_argument("--work-seconds", type=int, default=600)
     ap.add_argument("--guarded-run-id", help=argparse.SUPPRESS)
+    ap.add_argument("--artifact-out", help=argparse.SUPPRESS)
     ap.add_argument(
         "--source", default=None, metavar="SOURCE_KEY",
         help=("exact queue source_key to drain; isolates claims and retries to "

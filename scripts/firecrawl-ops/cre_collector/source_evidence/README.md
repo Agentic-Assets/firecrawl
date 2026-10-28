@@ -2,6 +2,30 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 # Private source evidence
 
+## Draft guarded enrichment custody
+
+The applied guarded enrichment tier supplies its worker an exact private
+`enriched.json` path and records `claims.json`/`enriched.json` custody intent in
+its existing receipt before dispatch. The worker refuses occupied or unsafe
+destinations before database claims and writes claims exclusively with mode
+0600. Ordinary direct enrichment runs use unique private directories instead
+of second-resolution shared names. All targeted collector output is private
+and exclusive, including empty and bespoke-only artifacts.
+
+After positive owned-worker settlement, the parent records bounded file hashes
+and byte counts, including when the worker returned nonzero. File and directory
+fsync precede the custody receipt. Missing output is recorded as absence;
+unknown settlement does not permit a file read. Existing recovery fencing and
+canonical queue behavior remain in force. A post-claim filesystem failure can
+still leave claims for the existing reclaim mechanism.
+
+This is local custody only, not JSON validation, an append admission or a
+database write. The next integration must reuse the existing foreground writer
+and exact-plan replay on this receipt; do not route targeted output through
+full-source refresh gates or introduce another queue, manifest or scheduler.
+The production credential gate is separate. These changes have not been run,
+verified or deployed under the operator's current hold.
+
 This is a separate unverified evidence store. It does not promote listing fields, establish publisher authenticity, determine listing status, store original binaries in the evidence database, or write OM facts. Draft document acquisition may retain local private binary copies as described below. Artifacts and results may contain confidential material; keep their parent directories private. The CLI creates new output files exclusively with mode 0600 and prints only counts and the plan digest.
 
 From the collector directory, build a plan without contacting a database:

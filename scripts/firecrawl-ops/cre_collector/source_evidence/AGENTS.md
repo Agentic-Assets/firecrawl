@@ -157,6 +157,15 @@ chunks and text hashes, and writes exact Markdown plus provenance into a new
 private directory. Keep unknown extraction coverage visible; a valid text
 digest proves reconstruction integrity, not faithful extraction of every page.
 
+Draft `enrichment_custody.py` binds one guarded worker's fixed private claims
+and output paths into the existing guarded-tier receipt before dispatch. Read
+and sync those files only after positive owned-worker settlement, including on
+nonzero exit; unknown settlement keeps the awaiting marker and recovery fence.
+Hashes and byte counts describe local custody, not valid JSON, successful
+collection, complete source coverage, canonical ingest or database retention.
+This draft adds no append/replay admission or independent ledger and remains
+unverified under the test/service hold.
+
 Draft collector-capture export is limited to retained collector v1/v2. It reads
 one ordered capture with a 10,002-row query limit, accepts at most 10,001 rows
 and a 32 MiB response, then verifies rows, replanning, numeric maps and source

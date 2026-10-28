@@ -444,7 +444,9 @@ async function enrichMain(claimPath: string): Promise<void> {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
-  writeCollectorArtifact(OUT_PATH, json, privateEvidence);
+  // All targeted artifacts belong to the worker's private custody, including
+  // empty and bespoke-only results without retained observation arrays.
+  writeCollectorArtifact(OUT_PATH, json, true);
   if (OUT_PATH) {
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
   }
