@@ -17,9 +17,16 @@ from source_evidence import (acquisition, automatic, doc_fetch_process, document
 MAX_ARTIFACT_BYTES = 6 * 4 * 1024 * 1024 + 65536
 MAX_TIMEOUT_SECONDS = 120
 REAP_GRACE_SECONDS = 5
+COMPLETION_SCHEMA = "cre-document-conversion-complete/v1"
 _FORMATS = {".pdf", ".doc", ".docx", ".docm", ".ppt", ".pps", ".pot", ".pptx", ".pptm",
             ".ppsx", ".ppsm", ".xls", ".xlsx", ".xlsm", ".xlsb", ".odt", ".ods", ".odp",
             ".rtf", ".epub", ".csv"}
+
+
+def input_filename(receipt):
+    """Derive the existing bounded local format hint from the observed URL."""
+    suffix = Path(urlsplit(receipt["final_url"]).path).suffix.lower()
+    return "document" + (suffix if suffix in _FORMATS else ".bin")
 
 
 def _read_json(path, limit):
@@ -45,12 +52,9 @@ def _directory_identity(path):
         os.close(fd)
 
 
-def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_seconds=75):
-    """Extract once from a rebound fetch; outcomes are not publisher assertions."""
+def _fetch_binding(fetch_result, job_path, outdir, source_key):
     if (not isinstance(fetch_result, dict) or fetch_result.get("state") != "completed"
-            or not isinstance(node_executable, str) or not os.path.isabs(node_executable)
-            or not isinstance(source_key, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_key)
-            or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS):
+            or not isinstance(source_key, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_key)):
         raise ValueError("invalid extraction request")
     job_path, outdir = Path(os.path.abspath(job_path)), Path(os.path.abspath(outdir))
     fetch_dir = Path(fetch_result.get("directory", ""))
@@ -87,16 +91,71 @@ def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_
         identity = lambda info: (info.st_dev, info.st_ino, info.st_uid, info.st_mode)
         if identity(before) != identity(after) or identity(after) != identity(named):
             raise ValueError("fetch directory changed during readback")
-        suffix = Path(urlsplit(receipt["final_url"]).path).suffix.lower()
-        suffix = suffix if suffix in _FORMATS else ".bin"
-        input_name = "document" + suffix
+        input_name = input_filename(receipt)
         provenance = events.encoded({"url": receipt["final_url"], "observed_at": receipt["finished_at"]})
-        private_export.write(outdir, [(input_name, body), ("provenance.json", provenance)])
+        return outdir, receipt, body, digest, input_name, provenance
     finally:
         if fetch_fd is not None:
             os.close(fetch_fd)
         os.close(parent)
 
+
+def validate_artifact(artifact, receipt, *, source_key, exit_code):
+    """Validate source and converter outcome without running a converter."""
+    if type(exit_code) is not int or exit_code not in (0, 2):
+        raise ValueError("invalid converter exit code")
+    try:
+        source = artifact["source"]
+        parser = artifact.get("parser", {})
+        source_binding = {key: source.get(key) for key in ("url", "observed_at", "sha256", "byte_length")}
+        expected_binding = {"url": receipt["final_url"], "observed_at": receipt["finished_at"],
+                            "sha256": receipt["body_sha256"], "byte_length": receipt["body_bytes"]}
+        if (events.encoded(source_binding) != events.encoded(expected_binding)
+                or parser.get("name") != "@firecrawl/anydoc" or parser.get("version") != "0.2.4"
+                or parser.get("config", {}).get("ocr") != "disabled"):
+            raise ValueError("extraction disagrees with acquired source")
+        planned = events.plan(artifact, source_key=source_key)
+        events.validate_content_policy(planned)
+        status = artifact["extraction"]["status"]
+        if (status == "extracted") != (exit_code == 0) or status not in ("extracted", "ocr_needed", "failed"):
+            raise ValueError("converter outcome does not match exit")
+        return "success" if status == "extracted" else status
+    except (KeyError, TypeError, AttributeError, RecursionError) as exc:
+        raise ValueError("invalid document extraction artifact") from exc
+
+
+def _input_checked(outdir, input_name, body):
+    observed = automatic._read_private(outdir / input_name, len(body))
+    if len(observed) != len(body) or events.sha256(observed) != events.sha256(body):
+        raise ValueError("private conversion input changed")
+
+
+def _publish_marker(outdir, marker, expected_identity):
+    directory = doc_fetch_process._private_directory(outdir)
+    try:
+        info = os.fstat(directory)
+        if (info.st_dev, info.st_ino, info.st_uid, info.st_mode) != expected_identity:
+            raise ValueError("private extraction directory changed")
+        fd = os.open("conversion-complete.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(events.encoded(marker))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(directory)
+        if _directory_identity(outdir) != expected_identity:
+            raise ValueError("private extraction directory changed")
+    finally:
+        os.close(directory)
+
+
+def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_seconds=75):
+    """Extract once from a rebound fetch; outcomes are not publisher assertions."""
+    if (not isinstance(node_executable, str) or not os.path.isabs(node_executable)
+            or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS):
+        raise ValueError("invalid extraction request")
+    outdir, receipt, body, digest, input_name, provenance = _fetch_binding(fetch_result, job_path, outdir, source_key)
+    private_export.write(outdir, [(input_name, body), ("provenance.json", provenance)])
     workdir_identity = _directory_identity(outdir)
     artifact_path = outdir / "artifact.json"
     adapter = Path(__file__).resolve().parent.parent / "document_text" / "extract.mjs"
@@ -142,24 +201,37 @@ def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_
     try:
         if _directory_identity(outdir) != workdir_identity:
             raise ValueError("private extraction directory changed")
-        _, artifact = _read_json(artifact_path, MAX_ARTIFACT_BYTES)
+        raw, artifact = _read_json(artifact_path, MAX_ARTIFACT_BYTES)
         if _directory_identity(outdir) != workdir_identity:
             raise ValueError("private extraction directory changed")
-        source = artifact["source"]
-        parser = artifact.get("parser", {})
-        source_binding = {key: source.get(key) for key in ("url", "observed_at", "sha256", "byte_length")}
-        expected_binding = {"url": receipt["final_url"], "observed_at": receipt["finished_at"],
-                            "sha256": receipt["body_sha256"], "byte_length": receipt["body_bytes"]}
-        if (events.encoded(source_binding) != events.encoded(expected_binding)
-                or parser.get("name") != "@firecrawl/anydoc" or parser.get("version") != "0.2.4"
-                or parser.get("config", {}).get("ocr") != "disabled"):
-            raise ValueError("extraction disagrees with acquired source")
-        planned = events.plan(artifact, source_key=source_key)
-        events.validate_content_policy(planned)
-        status = artifact["extraction"]["status"]
-        if (status == "extracted") != (code == 0) or status not in ("extracted", "ocr_needed", "failed"):
-            raise ValueError("converter outcome does not match exit")
+        state = validate_artifact(artifact, receipt, source_key=source_key, exit_code=code)
+        _input_checked(outdir, input_name, body)
+        marker = {"schema_version": COMPLETION_SCHEMA, "job_sha256": digest, "source_key": source_key,
+                  "artifact_sha256": events.sha256(raw), "exit_code": code, "input_filename": input_name}
+        _publish_marker(outdir, marker, workdir_identity)
     except (ValueError, OSError, KeyError, TypeError, AttributeError, RecursionError):
         return {"state": "ambiguous", "directory": str(outdir)}
-    return {"state": "success" if status == "extracted" else status, "directory": str(outdir),
+    return {"state": state, "directory": str(outdir),
             "artifact_path": str(artifact_path), "artifact": artifact, "input_path": str(outdir / input_name)}
+
+
+def replay(fetch_result, job_path, outdir, *, source_key):
+    """Revalidate a settled conversion marker without executing a converter."""
+    outdir, receipt, body, digest, input_name, _ = _fetch_binding(fetch_result, job_path, outdir, source_key)
+    initial = _directory_identity(outdir)
+    _, marker = _read_json(outdir / "conversion-complete.json", 16384)
+    keys = {"schema_version", "job_sha256", "source_key", "artifact_sha256", "exit_code", "input_filename"}
+    if (not isinstance(marker, dict) or set(marker) != keys or marker["schema_version"] != COMPLETION_SCHEMA
+            or marker["job_sha256"] != digest or marker["source_key"] != source_key
+            or marker["input_filename"] != input_name or not re.fullmatch(r"document\.[a-z0-9]{1,5}", input_name)):
+        raise ValueError("invalid conversion completion marker")
+    artifact_path = outdir / "artifact.json"
+    raw, artifact = _read_json(artifact_path, MAX_ARTIFACT_BYTES)
+    if events.sha256(raw) != marker["artifact_sha256"]:
+        raise ValueError("conversion artifact digest mismatch")
+    _input_checked(outdir, input_name, body)
+    state = validate_artifact(artifact, receipt, source_key=source_key, exit_code=marker["exit_code"])
+    if _directory_identity(outdir) != initial:
+        raise ValueError("private extraction directory changed")
+    return {"state": state, "directory": str(outdir), "artifact_path": str(artifact_path),
+            "artifact": artifact, "input_path": str(outdir / input_name)}

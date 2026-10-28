@@ -98,16 +98,44 @@ def build_context(plan, candidates, policy_raw, selection, candidate_index, rece
         raise ValueError("document candidate is not selected")
     candidate = matches[0]["candidate"]
     _receipt_checked(receipt, body, candidate, selected)
+    return _context(selected, matches[0], receipt)
+
+
+def _context(selected, item, receipt):
+    """One context representation for acquisition and authenticated local readback."""
     return {"schema_version": SCHEMA, "source_key": selected["source_key"],
             "source_evidence_plan_sha256": selected["source_evidence_plan_sha256"],
             "candidate_manifest_sha256": selected["candidate_manifest_sha256"],
             "policy_sha256": selected["policy_sha256"], "target_sha256": selected["target_sha256"],
-            "collector_git_sha": selected["collector_git_sha"], "candidate_index": candidate_index,
-            "candidate_sha256": matches[0]["candidate_sha256"], "candidate": copy.deepcopy(candidate),
+            "collector_git_sha": selected["collector_git_sha"], "candidate_index": item["candidate_index"],
+            "candidate_sha256": item["candidate_sha256"], "candidate": copy.deepcopy(item["candidate"]),
             "receipt": copy.deepcopy(receipt), "publisher": "unverified", "visibility": "unverified",
             "destination_verification": "caller_asserted_not_independently_verified",
             "redirect_location_binding": "not_observed_in_receipt", "cumulative_byte_budget": "not_verified",
             "requested_original_retention": selected["original_retention"], "original_retention": "not_asserted"}
+
+
+def validate_archived_context(plan, candidates, policy_raw, selection, context, *,
+                              expected_context_sha256, expected_policy_sha256,
+                              target_sha256, collector_git_sha):
+    """Rebind a prior seal marker; original body verification is NOT repeated.
+
+    The caller must obtain expected_context_sha256 from its trusted persisted
+    seal marker, never derive both the expected hash and context from the same
+    untrusted sidecar. This does not grant acquisition or append authority.
+    """
+    selected = validate_selection(plan, candidates, policy_raw, selection,
+                                  expected_policy_sha256=expected_policy_sha256,
+                                  target_sha256=target_sha256, collector_git_sha=collector_git_sha)
+    if (not isinstance(context, dict) or not isinstance(expected_context_sha256, str)
+            or events.sha256(events.encoded(context)) != expected_context_sha256
+            or type(context.get("candidate_index")) is not int
+            or not isinstance(context.get("receipt"), dict)):
+        raise ValueError("archived acquisition context binding mismatch")
+    matches = [item for item in selected["documents"] if item["candidate_index"] == context["candidate_index"]]
+    if (len(matches) != 1 or events.encoded(context) != events.encoded(_context(selected, matches[0], context["receipt"]))):
+        raise ValueError("archived acquisition context disagrees with source selection")
+    return copy.deepcopy(context)
 
 
 def bind_extraction(context, artifact):

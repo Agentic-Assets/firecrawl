@@ -22,13 +22,24 @@ the supervised fetch worker to this adapter under an existing foreground owner
 lock, attempt manifest and save callback. It binds the source URL, exact
 download clock, body hash and size, then seals private context, artifact,
 binding and evidence plan before policy-aware cleanup of source copies.
-Conservative failed and unknown byte reservations include a probe byte; phase
-deadlines and grace do not bound all host activity or native memory. Ambiguous
+Conservative failed and unknown reservations cover application-delivered body
+bytes including a probe byte, not network bytes, buffered prefetch, headers or
+transfer framing. Phase deadlines and grace do not bound all host activity or
+native memory. Ambiguous
 or interrupted work requires reconciliation without automatic resume. One
 selection is supported per source attempt; multi-page candidate combination
 remains future work. There is no regular collector hook, CLI, database append,
 writer pump or scheduler activation. These changes remain unverified under the
 test hold and establish no publication permission, coverage or accuracy.
+
+Draft recovery verifies the private seal and optional expected marker. No-spawn
+conversion replay requires the parent-validated completion marker and retained
+fetch and conversion input copies. An artifact alone is insufficient; after
+original deletion, seal readback cannot freshly rehash it. Recovery is unverified.
+`document_recovery.sealed` uses the existing owner lock and trusted saved attempt
+without fetching or converting. It preserves budget, does not restart acquisition,
+and leaves a missing persisted marker unresolved. Reconciled absence does not
+identify who removed a copy.
 
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private

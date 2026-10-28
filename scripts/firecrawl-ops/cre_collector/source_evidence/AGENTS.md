@@ -83,8 +83,10 @@ Draft `document_pipeline.run` connects the supervised document transport to
 local AnyDoc under the existing attempt manifest, save callback and foreground
 owner lock. It rederives policy and the sealed source plan, checks public
 destinations at each hop, and binds the actual download clock, URL and body
-hash before extraction. Cumulative entity-byte reservations include one probe
-byte and remain charged after failed or unknown attempts. Fetch and converter
+hash before extraction. Cumulative reservations cover application-delivered body
+bytes including one probe byte and remain charged after failed or unknown
+attempts; buffered prefetch, headers, framing and network bytes are outside that
+bound. Fetch and converter
 process timeouts and grace periods are not a whole-host deadline or native
 memory limit. The pipeline seals private context, artifact, binding and plan
 before policy-aware cleanup of rechecked original copies. Ambiguous or
@@ -94,6 +96,17 @@ candidates remain unimplemented. This explicit library is not wired to regular
 collector runs, a CLI, DB append, a writer pump or a scheduler. It is unverified
 under the hold; do not claim publisher identity, visibility, complete coverage
 or extraction accuracy.
+
+Draft seal readback checks an exact private file set and optional expected marker;
+authenticate the context independently. Conversion replay requires a completion
+marker published after parent validation and rechecks retained fetch and converter
+inputs without spawning. An artifact alone is insufficient, and deleted originals
+cannot be freshly rehashed by seal readback. Recovery is unverified under the hold.
+
+Draft `document_recovery.sealed` runs under the existing owner lock with a
+trusted saved attempt. It performs no fetch or conversion, preserves budget,
+and may reconcile cleanup without inferring who removed an absent copy. Missing
+persisted seal markers remain unresolved; recovery never rearms acquisition.
 
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new

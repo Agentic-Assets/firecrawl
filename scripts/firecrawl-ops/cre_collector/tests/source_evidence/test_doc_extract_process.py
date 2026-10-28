@@ -115,3 +115,45 @@ def test_boolean_artifact_length_does_not_equal_numeric_receipt(monkeypatch, tmp
     monkeypatch.setattr(doc_extract_process.os, "killpg", lambda *args: None)
     result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
     assert result["state"] == "ambiguous" and "artifact" not in result
+
+
+def settled_conversion(monkeypatch, tmp_path):
+    fetched, job_path = setup_fetch(tmp_path)
+    def popen(*args, **kwargs):
+        path = tmp_path / "extracted" / "artifact.json"
+        path.write_text(json.dumps(artifact()))
+        path.chmod(0o600)
+        return type("Child", (), {"pid": 1234, "wait": lambda self, timeout: 0})()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(doc_extract_process.os, "killpg", lambda *args: None)
+    result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
+    assert result["state"] == "success"
+    return fetched, job_path, result
+
+
+def test_replay_revalidates_without_spawning(monkeypatch, tmp_path):
+    fetched, job_path, result = settled_conversion(monkeypatch, tmp_path)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("replay must not spawn"))
+    replayed = doc_extract_process.replay(fetched, job_path, tmp_path / "extracted", source_key="svn")
+    assert replayed == result
+
+
+@pytest.mark.parametrize("mutation", ["missing", "artifact", "job", "source", "input", "exit"])
+def test_replay_refuses_missing_or_tampered_custody(monkeypatch, tmp_path, mutation):
+    fetched, job_path, _ = settled_conversion(monkeypatch, tmp_path)
+    directory = tmp_path / "extracted"
+    marker_path = directory / "conversion-complete.json"
+    if mutation == "missing":
+        marker_path.unlink()
+    elif mutation == "artifact":
+        (directory / "artifact.json").write_text("{}")
+    elif mutation == "input":
+        (directory / "document.bin").write_bytes(b"bad")
+    else:
+        marker = json.loads(marker_path.read_text())
+        marker[{"job": "job_sha256", "source": "source_key", "exit": "exit_code"}[mutation]] = {
+            "job": "0" * 64, "source": "other", "exit": True}[mutation]
+        marker_path.write_text(json.dumps(marker))
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("replay must not spawn"))
+    with pytest.raises((ValueError, OSError)):
+        doc_extract_process.replay(fetched, job_path, directory, source_key="svn")

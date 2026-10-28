@@ -26,12 +26,27 @@ final URL and precise download time, and seals private acquisition context,
 artifact, binding and evidence plan before policy-aware original-copy cleanup.
 Failed and unknown fetch reservations conservatively consume their full byte
 cap plus one probe byte; phase deadlines and cleanup grace do not bound all
-host activity or native converter memory. Ambiguous or interrupted work keeps
+host activity or native converter memory. The byte cap covers body bytes
+delivered to the application, not network bytes, buffered prefetch, HTTP headers
+or transfer framing. Ambiguous or interrupted work keeps
 its private files for reconciliation and never automatically resumes. One
 selection is supported per source attempt; combining native-page candidates
 remains future work. This library is not connected to regular collection, a
 CLI, database append, writer pump or scheduler. It is unverified under the
 test hold and does not prove publisher permission, coverage or text accuracy.
+
+Draft recovery verifies an exact private seal and optional expected marker.
+Conversion replay requires a completion marker published after the parent
+validates converter completion, plus retained fetch and conversion input copies;
+it does not spawn a converter. An artifact alone does not establish completion,
+and a deleted original cannot be freshly rehashed from the seal. This recovery
+path remains unverified under the hold.
+
+Draft `source_evidence.document_recovery.sealed` revalidates previously sealed
+results under the existing foreground owner lock and trusted saved attempt,
+without fetching or converting. It preserves the acquisition budget and may
+reconcile original-copy cleanup; a missing persisted marker remains unresolved.
+An absent copy does not identify who removed it. This API is unverified.
 
 ```sh
 node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifact.json

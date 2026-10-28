@@ -2,8 +2,10 @@
 
 The caller must rederive the selection before initialization, persist every
 transition before starting work, enforce phase deadlines, and reconcile unknown
-outcomes without repeating attempts. Entity-byte reservations include the fetch
-reader's one-byte oversize probe; HTTP headers and wire framing are not counted.
+outcomes without repeating attempts. Reservations cover body bytes delivered to
+the application by the fetch reader, including its one-byte oversize probe.
+They do not bound socket/header prefetch, headers, transfer framing or total
+network bytes.
 """
 
 import copy

@@ -79,8 +79,9 @@ must hold the existing foreground owner lock and provide the existing attempt
 manifest and durable save callback. It allows one selection per source attempt;
 combining candidates from multiple native pages is still needed. The existing
 attempt records intent, reservations and outcomes. Reservations conservatively
-charge the full allowed entity-body bytes plus one oversize probe byte, including
-failed and unknown attempts; HTTP headers and transfer framing are not counted.
+charge the maximum body bytes delivered to the application plus one oversize
+probe byte, including failed and unknown attempts. They do not bound network
+bytes, buffered prefetch, HTTP headers or transfer framing.
 The fetch worker and converter process group have phase timeouts and cleanup
 grace periods. These are not a whole-host deadline or a native-memory limit.
 
@@ -98,6 +99,23 @@ The library does not activate a regular collector hook, CLI, database append,
 writer pump, scheduler or canonical change. It remains unverified under the
 test hold. Its metadata and text do not establish publication permission,
 listing identity, complete coverage or extraction accuracy.
+
+Draft `document_seal.read` verifies an exact private file set, canonical bytes
+and an optional expected marker without rerunning extraction. The caller must
+rederive the acquisition context or authenticate it against a trusted prior
+seal. The conversion completion marker is published after the parent observes
+and validates converter completion; an artifact alone is not that marker.
+No-spawn conversion replay requires the original fetch and conversion input
+copies still present and rechecked. Once originals are deleted, seal readback
+cannot freshly hash them. These recovery primitives remain unverified under the
+hold.
+
+Draft `document_recovery.sealed` uses the existing foreground owner lock and a
+trusted saved attempt to revalidate sealed results without network requests or
+conversion. It preserves reservations, refuses to restart acquisition, and can
+reconcile selected original-copy cleanup. A missing persisted seal marker stays
+unresolved even when files exist; an absent pending copy does not establish who
+removed it. This API is unverified under the hold.
 
 Existing single-source collector artifacts can be wrapped offline before planning:
 

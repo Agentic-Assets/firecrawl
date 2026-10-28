@@ -19,6 +19,7 @@ from source_evidence import (
     document_acquisition,
     document_budget,
     document_fetch_worker,
+    document_seal,
     events,
     private_export,
 )
@@ -88,24 +89,7 @@ def _remove_owned_body(path, digest, byte_length):
 
 
 def _seal(outdir, context, *, artifact=None):
-    files = [("acquisition.json", events.encoded(context))]
-    binding = plan = None
-    if artifact is not None:
-        # The archived plan must carry all original listing relationships, not
-        # merely a document URL whose local acquisition sidecar may disappear.
-        enriched = {**artifact, "acquisition_context": context,
-                    "acquisition_context_origin": "foreground_coordinator_not_converter"}
-        binding, plan = document_acquisition.bind_extraction(context, enriched)
-        plan_raw = events.encoded(plan)
-        if len(plan_raw) > cli.MAX_PLAN_BYTES:
-            raise ValueError("document evidence plan exceeds bound")
-        files += [("converter-artifact.json", events.encoded(artifact)),
-                  ("artifact.json", events.encoded(enriched)),
-                  ("binding.json", events.encoded(binding)), ("plan.json", plan_raw)]
-    private_export.write(outdir, files)
-    return {"files": {name: events.sha256(payload) for name, payload in files},
-            "plan_sha256": plan["plan_sha256"] if plan else None,
-            "capture_id": binding["document_capture_id"] if binding else None}
+    return document_seal.write(outdir, context, artifact)
 
 
 def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_raw,
