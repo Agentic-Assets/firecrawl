@@ -177,3 +177,26 @@ def test_export_collector_uses_bound_reader_and_does_not_print_facts(monkeypatch
     with pytest.raises(ValueError, match='another capture'):
         cli.main(args)
     assert len(calls) == 1
+
+
+def test_document_discovery_is_offline_private_and_does_not_print_urls(tmp_path, monkeypatch, capsys):
+    from source_evidence import collector
+    original = {'runMeta': {'finishedAt': '2026-10-28T12:00:00Z'},
+                'sources': [{'sourceKey': 'svn'}],
+                'listings': [{'sourceKey': 'svn', 'id': str(index),
+                              'brochures': [{'name': 'Offering memorandum',
+                                             'url': f'https://example.test/private-doc-{index}.pdf'}]}
+                             for index in range(78)]}
+    value = events.plan(collector.convert(original, source_key='svn'), source_key='svn')
+    plan_path = tmp_path / 'plan.json'
+    plan_path.write_bytes(events.encoded(value))
+    output = tmp_path / 'candidates.json'
+    monkeypatch.setattr(cli, 'run_psql', lambda *args, **kwargs: pytest.fail('database contacted'))
+    monkeypatch.setattr(cli.subprocess, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
+    cli.main(['discover-documents', '--plan', str(plan_path), '--out', str(output)])
+    manifest = json.loads(output.read_bytes())
+    assert len(manifest['candidates']) == 78
+    assert os.stat(output).st_mode & 0o777 == 0o600
+    assert 'example.test' not in capsys.readouterr().out
+    with pytest.raises(FileExistsError):
+        cli.main(['discover-documents', '--plan', str(plan_path), '--out', str(output)])

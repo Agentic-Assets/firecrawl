@@ -9,6 +9,11 @@ package lock; conversion runs locally with hosted OCR disabled. Preserve
 coverage and is not a claim of page completeness, table accuracy, visibility,
 listing identity, or source permission. Original bytes are not retained here.
 
+The draft offline document-candidate discovery in `../source_evidence/` does not
+download documents or invoke AnyDoc. Full-source runs do not automatically
+extract linked documents. Discovery is unverified under the test hold; neither
+it nor a candidate URL proves public access, publication, or permission.
+
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private
 deal documents retain EQUIRE's separate organization/deal scope. Tests run with

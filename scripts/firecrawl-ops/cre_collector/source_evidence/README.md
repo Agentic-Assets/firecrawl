@@ -12,6 +12,23 @@ python3 -m source_evidence.cli plan --artifact /private/artifact.json --source-k
 
 For a Buildout observation artifact also provide `--observed-at 2026-10-28T12:00:00Z`; `--external-id` is an optional caller assertion for document evidence. Review the entire plan and source-retention policy. For approved private retention, prepare a private admission JSON with `schema_version` `cre-source-evidence-admission/v1`, `plan_sha256` matching the plan, `purpose` `private_unverified_evidence`, `data_scope` `public_listing_source`, `content_policy` `reviewed_for_private_retention`, and `source_keys` containing exactly the plan source key. JLL remains refused without its source-specific withheld-content adapter.
 
+Draft offline candidate discovery accepts an existing evidence plan:
+
+```sh
+python3 -m source_evidence.cli discover-documents --plan /private/plan.json --out /private/candidates.json
+```
+
+It is intended to validate the plan and its existing source policy, group exact
+document URLs while retaining their source occurrences, and identify known
+document channels and source-labeled links. Relative links use only a nearest
+explicit page-context URL as an unverified base. Candidate discovery does not
+prove accessibility, publication, permission, document completeness, or a
+physical-property association. It makes no network or database call and does
+not download or extract documents. The command is a draft, unverified under the
+current test hold and not deployed. Current full-source runs do not automatically
+download linked documents or invoke AnyDoc; manual extraction starts with an
+already acquired local file as described in `../document_text/README.md`.
+
 Existing single-source collector artifacts can be wrapped offline before planning:
 
 ```sh

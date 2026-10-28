@@ -63,6 +63,13 @@ text representation, not semantic matching, original bytes or document text.
 Its private output contains match metadata only; use `get` for full facts.
 Migration and index availability require separate operator authorization.
 
+Draft `discover-documents` reads an existing validated plan and identifies
+candidate URLs and their source occurrences offline. A relative link's nearest
+explicit page URL is an unverified resolution base, not access authority or
+proof of a listing relationship. Discovery makes no network or database calls
+and does not download documents or run AnyDoc. It is unverified under the
+current test hold and does not change source admission or canonical data.
+
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new
 private directory. Keep unknown extraction coverage visible; a valid text

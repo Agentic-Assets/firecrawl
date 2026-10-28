@@ -4,6 +4,13 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 This independent adapter accepts a file already acquired by an authorized process. It never fetches the source URL and does not write to Supabase or the listing collector. Install its pinned dependency with `npm ci --ignore-scripts` in this directory, then run:
 
+Full-source collection does not currently download or automatically extract
+linked documents. The draft `source_evidence.cli discover-documents` command
+identifies candidate links in a saved, validated evidence plan; it performs no
+download or extraction. It is unverified under the current test hold and is not
+deployment or source-access evidence. Acquisition and AnyDoc execution still
+require a separately authorized workflow and an already acquired local file.
+
 ```sh
 node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifact.json
 ```

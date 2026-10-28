@@ -209,6 +209,8 @@ def main(argv=None):
     p = sub.add_parser('plan')
     p.add_argument('--artifact', required=True); p.add_argument('--source-key', required=True)
     p.add_argument('--observed-at'); p.add_argument('--external-id'); p.add_argument('--out', required=True)
+    documents = sub.add_parser('discover-documents')
+    documents.add_argument('--plan', required=True); documents.add_argument('--out', required=True)
     c = sub.add_parser('convert-collector')
     c.add_argument('--artifact', required=True); c.add_argument('--source-key', required=True)
     c.add_argument('--out', required=True)
@@ -271,6 +273,11 @@ def main(argv=None):
                              observed_at=args.observed_at, external_id=args.external_id)
         write_private(args.out, result)
         print(f"Plan created: {len(result['events'])} events; SHA-256 {result['plan_sha256']}")
+    elif args.command == 'discover-documents':
+        from source_evidence import document_candidates
+        result = document_candidates.discover(read_json(args.plan, MAX_PLAN_BYTES))
+        write_private(args.out, result)
+        print(f"Document candidates saved: {len(result['candidates'])}; acquisition is not enabled.")
     elif args.command == 'append':
         value = read_json(args.plan, MAX_PLAN_BYTES)
         checked_plan(value, read_json(args.admission, 16384))
