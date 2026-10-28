@@ -42,7 +42,7 @@ def test_other_sources_and_hosts_get_no_bypass():
     assert not receipt["replacements"]
 
 
-@pytest.mark.parametrize("source", ["cushman-wakefield", "svn"])
+@pytest.mark.parametrize("source", ["cushman-wakefield", "nai-global", "svn"])
 def test_observed_shared_map_sources_preserve_facts_and_bind_projection(source):
     from source_evidence.map_projection import prepare, validate
     from source_evidence import events

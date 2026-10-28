@@ -116,3 +116,21 @@ def test_malformed_deeply_nested_anchors_are_bounded_and_tables_are_marked():
     assert all(link['text'] is None and not link['textComplete'] for link in page['links'])
     assert page['table_structure_unpreserved'] is True
     assert 'Value' in page['text']
+
+
+def test_unterminated_json_script_is_not_a_discovery_candidate():
+    from source_evidence import document_candidates, document_landing, events
+    from test_document_seal import context_and_artifact
+
+    body = b'<html><script>ordinary JS</script><script type="application/ld+json">{"url":"https://example.com/a.pdf"}'
+    context, artifact = context_and_artifact()
+    page = document_landing.page_context(body, final_url=context['receipt']['final_url'])
+    script = page['scripts'][0]
+    assert script['text'] is None and script['textComplete'] is False
+    assert script['withheldReason'] == 'unterminated_script_at_eof'
+    assert page['omissions']['excludedNonJsonScripts'] == 1
+    artifact['pageContext'] = page
+    plan = events.plan(artifact, source_key=context['source_key'])
+    result = document_candidates.discover(plan)
+    assert not any(c.get('url') == 'https://example.com/a.pdf' for c in result['candidates'])
+    assert any(d['reason'] == 'script_text_incomplete_or_unverified' for d in result['excluded'])

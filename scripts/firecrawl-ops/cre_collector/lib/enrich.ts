@@ -376,6 +376,11 @@ export function createMatthewsEnricher(
             return { listing: null, observations: [{ ...failedEnrichmentEvidence(item, "evidence_capture_failed"), primaryOutcome: { reason: evidence.reason, status: evidence.status } }] };
           }
         }
+        if (evidence.reason === "native_redirect_not_listing") {
+          return { listing: null, observations: [{ ...failedEnrichmentEvidence(item, "native_redirect_not_listing"),
+            primaryOutcome: { reason: evidence.reason, status: evidence.status, redirectTarget: evidence.redirectTarget,
+              observedAt: evidence.observedAt ?? null } }] };
+        }
         if (evidence.reason === "temporary_redirect" && evidence.redirectTarget) {
           const generic = createGenericEnricher(fetchDoc, observationNow, () => evidence.redirectTarget!);
           const result = await generic.enrichWithEvidence!([item]);

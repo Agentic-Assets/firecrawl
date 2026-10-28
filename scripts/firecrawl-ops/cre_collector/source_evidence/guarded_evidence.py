@@ -87,9 +87,9 @@ def append(run_dir, receipt, lock, save, marker):
     automatic.append_job(config, [receipt["source"]], state, prepare, save, incomplete)
     if state["state"] == "appended":
         lock._require_authority()
-        guarded_fence.clear(lock.path, marker)
         evidence["status"] = "settled"
         save()
+        guarded_fence.clear(lock.path, marker)
 
 
 def reconcile(receipt_path, lock_path=None, *, source=None, expected_sha=None):
@@ -142,9 +142,9 @@ def reconcile(receipt_path, lock_path=None, *, source=None, expected_sha=None):
                 guarded_fence._sync(run_dir)
                 guarded_fence.publish(lock.path, marker)
             if state["state"] == "appended":
-                guarded_fence.clear(lock.path, marker)
                 receipt["source_evidence"]["status"] = "settled"
                 save()
+                guarded_fence.clear(lock.path, marker)
             else:
                 state["state"] = "pending"
                 state["exact_replay_required"] = True

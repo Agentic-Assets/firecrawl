@@ -363,3 +363,75 @@ def test_missing_fence_recovery_revalidates_before_publication(tmp_path, monkeyp
     with pytest.raises(ValueError):
         guarded_evidence.reconcile(run / "receipt.json", lock.path)
     assert guarded_fence.read(lock.path) is None
+
+
+def test_settled_receipt_save_failure_retains_marker_for_recovery(tmp_path, monkeypatch):
+    run, receipt, lock, save = setup(tmp_path)
+    monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: None)
+    def fail_final_save():
+        if receipt["source_evidence"].get("status") == "settled":
+            raise OSError("settled receipt publication failed")
+        save()
+    with pytest.raises(OSError):
+        guarded_evidence.seal_and_append(run, receipt, lock, fail_final_save)
+    persisted = json.loads((run / "receipt.json").read_text())
+    assert persisted["source_evidence"]["job"]["state"] == "appended"
+    assert persisted["source_evidence"]["status"] != "settled"
+    assert guarded_fence.read(lock.path) is not None
+    monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: pytest.fail("unneeded DB replay"))
+    guarded_evidence.reconcile(run / "receipt.json", lock.path)
+    assert json.loads((run / "receipt.json").read_text())["source_evidence"]["status"] == "settled"
+    assert guarded_fence.read(lock.path) is None
+
+
+def test_lost_clear_acknowledgement_keeps_durable_settled_receipt(tmp_path, monkeypatch):
+    run, receipt, lock, save = setup(tmp_path)
+    monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: None)
+    clear = guarded_fence.clear
+    def clear_then_fail(*args):
+        clear(*args)
+        raise OSError("clear acknowledgement lost")
+    monkeypatch.setattr(guarded_fence, "clear", clear_then_fail)
+    with pytest.raises(OSError):
+        guarded_evidence.seal_and_append(run, receipt, lock, save)
+    persisted = json.loads((run / "receipt.json").read_text())
+    assert persisted["source_evidence"]["job"]["state"] == "appended"
+    assert persisted["source_evidence"]["status"] == "settled"
+    assert guarded_fence.read(lock.path) is None
+
+
+@pytest.mark.parametrize("stage", ["create", "partial_write", "file_fsync", "install"])
+def test_abrupt_publication_never_leaves_partial_final_marker(tmp_path, stage):
+    import os
+    lock = Lock(tmp_path)
+    marker = {"schema": "cre-targeted-evidence-fence/v1", "receipt": str(tmp_path / "receipt.json"),
+              "plan_sha256": "a" * 64, "source": "faris-lee", "policy_sha256": "b" * 64,
+              "target_sha256": "c" * 64}
+    child = os.fork()
+    if child == 0:
+        if stage == "create":
+            guarded_fence.tempfile.mkstemp = lambda **kwargs: os._exit(71)
+        elif stage == "partial_write":
+            original_write = os.write
+            def die_during_write(fd, data):
+                original_write(fd, data[:5])
+                os._exit(71)
+            guarded_fence.os.write = die_during_write
+        elif stage == "file_fsync":
+            original_fsync = os.fsync
+            def die_after_fsync(fd):
+                original_fsync(fd)
+                os._exit(71)
+            guarded_fence.os.fsync = die_after_fsync
+        else:
+            original_rename = os.rename
+            def die_after_rename(source, target):
+                original_rename(source, target)
+                os._exit(71)
+            guarded_fence.os.rename = die_after_rename
+        guarded_fence.publish(lock.path, marker)
+        os._exit(72)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 71
+    observed = guarded_fence.read(lock.path)
+    assert observed == (marker if stage == "install" else None)

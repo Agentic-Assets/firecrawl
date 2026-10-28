@@ -22,11 +22,12 @@ unknown settlement does not permit a file read. Existing recovery fencing and
 canonical queue behavior remain in force. A post-claim filesystem failure can
 still leave claims for the existing reclaim mechanism.
 
-This is local custody only, not JSON validation, an append admission or a
-database write. The next integration must reuse the existing foreground writer
-and exact-plan replay on this receipt; do not route targeted output through
-full-source refresh gates or introduce another queue, manifest or scheduler.
-The production credential gate is separate. Local checks and deployment are separate; production acceptance remains required.
+The custody marker alone describes local files, not JSON validation, append
+admission or a database write. The opt-in guarded evidence lane below reuses
+the existing foreground writer and exact-plan replay on the same receipt;
+targeted output does not pass through full-source refresh gates or introduce
+another queue, manifest or scheduler. AGENTIC-5040 separately gates production
+credentials and activation; local verification does not establish deployment.
 
 This is a separate unverified evidence store. It does not promote listing fields, establish publisher authenticity, determine listing status, store original binaries in the evidence database, or write OM facts. Draft document acquisition may retain local private binary copies as described below. Artifacts and results may contain confidential material; keep their parent directories private. The CLI creates new output files exclusively with mode 0600 and prints only counts and the plan digest.
 
@@ -637,7 +638,8 @@ remain separate; this feature does not provision or activate production access.
 ### Shared map-widget projection
 
 Explicit recurring policies can admit the observed `maps.googleapis.com/maps/vt`
-projection for Cushman & Wakefield and SVN as `google-map-tile-query/v1`.
+projection for Cushman & Wakefield, NAI Global and SVN as
+`google-map-tile-query/v1`.
 Faris keeps its existing `faris-google-map-tile-query/v1` contract. Only literal
 `key` and numeric `token` parameters on that exact HTTPS endpoint are removed;
 other URLs and source content still pass the existing admission checks. Pointer

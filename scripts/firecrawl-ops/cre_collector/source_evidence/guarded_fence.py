@@ -5,6 +5,7 @@ This is a recovery fence, not a queue. Callers must already hold SharedLock.
 import json
 import os
 import stat
+import tempfile
 from pathlib import Path
 
 from source_evidence import automatic, events
@@ -48,26 +49,52 @@ def require_clear(lock_path):
 
 
 def publish(lock_path, binding):
-    if path(lock_path).exists():
-        raise ValueError("targeted evidence recovery fence exists")
+    """Atomically publish complete bytes while the caller owns the CRE lock.
+
+    Cooperating publishers are serialized by SharedLock. The private temporary
+    file is fsynced before rename, and the final name must be absent immediately
+    before installation. A crash before rename leaves only an inert temp file.
+    """
+    marker = path(lock_path)
     raw = events.encoded(binding) + b"\n"
     if len(raw) > LIMIT:
         raise ValueError("targeted evidence recovery fence is oversized")
-    fd = os.open(path(lock_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ValueError("targeted evidence recovery fence exists")
+    fd, temp_name = tempfile.mkstemp(prefix=NAME + ".", suffix=".tmp", dir=marker.parent)
+    temp = Path(temp_name)
     try:
         os.fchmod(fd, 0o600)
         view = memoryview(raw)
         while view:
-            n = os.write(fd, view)
-            if n <= 0:
+            count = os.write(fd, view)
+            if count <= 0:
                 raise OSError("short fence write")
-            view = view[n:]
+            view = view[count:]
         os.fsync(fd)
-    finally:
         os.close(fd)
-    _sync(path(lock_path).parent)
-    if read(lock_path) != binding:
-        raise ValueError("targeted evidence fence publication changed")
+        fd = -1
+        try:
+            marker.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("targeted evidence recovery fence exists")
+        os.rename(temp, marker)
+        _sync(marker.parent)
+        if read(lock_path) != binding:
+            raise ValueError("targeted evidence fence publication changed")
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def clear(lock_path, binding):

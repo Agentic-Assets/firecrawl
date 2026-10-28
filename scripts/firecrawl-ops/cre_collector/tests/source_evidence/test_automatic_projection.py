@@ -19,7 +19,7 @@ def projected_policy(tmp_path):
     return config
 
 
-@pytest.mark.parametrize("source", ["cushman-wakefield", "svn"])
+@pytest.mark.parametrize("source", ["cushman-wakefield", "nai-global", "svn"])
 def test_shared_map_sources_require_exact_explicit_policy_version(tmp_path, source):
     config, policy, path = setup_policy(tmp_path, sources=(source,))
     policy.update(schema_version=automatic.SCHEMA_V2,

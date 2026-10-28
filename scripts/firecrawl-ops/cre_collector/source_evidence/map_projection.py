@@ -15,6 +15,7 @@ from buildout_observation_artifact import URL, pointer_component
 VERSION = "faris-google-map-tile-query/v1"
 SOURCE_VERSIONS = {"faris-lee": VERSION,
                    "cushman-wakefield": "google-map-tile-query/v1",
+                   "nai-global": "google-map-tile-query/v1",
                    "svn": "google-map-tile-query/v1"}
 MAX_NODES = 500_000
 MAX_RECEIPTS = 20_000

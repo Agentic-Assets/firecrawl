@@ -38,8 +38,8 @@ mapping and URL completion behavior remain separate. This is collector-supplied
 content, not raw HTTP bytes or proof of complete extraction or publisher access.
 Existing content and credential admission remains mandatory.
 
-This draft is unverified under the active test and service hold; it is not
-deployment or database-write evidence.
+Local verification and private artifacts do not establish deployment or
+production database retention; see PR #363 for the current verification scope.
 
 Targeted enrichment artifacts remain private local custody. The enrichment
 worker does not automatically append this observation channel to the evidence
@@ -56,14 +56,16 @@ python3 -m source_evidence.cli convert-collector --artifact /private/enriched-sv
 python3 -m source_evidence.cli plan --artifact /private/svn-observation.json --source-key svn --out /private/svn-plan.json
 ```
 
-Run from the collector directory only when the operator's check hold is lifted.
+Run from the collector directory.
 These commands are offline planning, not a database append. Source, credential,
 withholding and size refusals still apply; a successful conversion is not an
 admission receipt. Mixed-source artifacts intentionally refuse this path. A
 source-filtered queue run can produce a single-source artifact; never relabel or
 drop other source groups to make a mixed artifact pass.
 
-Automatic retention still needs the existing foreground attempt, settlement,
-policy binding and durable append/replay state around that artifact. Do not add
-an untracked database append to `cre_enrich.py`, a second queue, or a background
-writer. The production credential review in AGENTIC-5040 is a separate gate.
+The opt-in parent lane in `source_evidence/guarded_evidence.py` supplies
+foreground settlement, policy binding and durable exact-receipt append/replay.
+The worker itself does not append. Read the source-evidence guide before
+changing those boundaries; do not add an untracked append to `cre_enrich.py`,
+a second queue or a background writer. AGENTIC-5040 still gates production
+credentials and activation.

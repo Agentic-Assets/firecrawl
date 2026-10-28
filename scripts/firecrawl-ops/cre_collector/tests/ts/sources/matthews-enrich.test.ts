@@ -241,3 +241,32 @@ for (const status of [401, 403, 429, 451]) {
     assert.deepEqual(result.sources[0].retainedObservations, []);
   });
 }
+
+test("Matthews inventory redirects retain each claim without a second request or completion", async (t) => {
+  const oldFetch = globalThis.fetch;
+  const oldTimeout = globalThis.setTimeout;
+  let nativeRequests = 0;
+  let fallbackRequests = 0;
+  globalThis.fetch = async () => { nativeRequests++; return new Response(null, { status: 307, headers: { location: "/listings" } }); };
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
+    oldTimeout(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS) ? 2 : 0, ...args)) as typeof setTimeout;
+  t.after(() => { globalThis.fetch = oldFetch; globalThis.setTimeout = oldTimeout; });
+  const claims = ["first-sale", "second-sale", "third-sale"].map((id) => item(`https://www.matthews.com/properties/${id}`, id));
+  const enricher = createMatthewsEnricher(undefined, async () => { fallbackRequests++; throw new Error("unexpected fallback"); });
+  const result = await runEnrichGroups(groupEnrichItems(claims), () => ({ enricher, label: "bespoke" }), () => "Matthews");
+  assert.equal(nativeRequests, 3);
+  assert.equal(fallbackRequests, 0);
+  assert.deepEqual(result.listings, []);
+  assert.equal(result.sources[0].requested, 3);
+  assert.equal(result.sources[0].listingsCollected, 0);
+  assert.equal(result.sources[0].retainedObservations.length, 3);
+  for (const [index, evidence] of result.sources[0].retainedObservations.entries()) {
+    assert.equal(evidence.claim.url, claims[index]!.url);
+    assert.equal(evidence.claim.externalId, claims[index]!.externalId);
+    assert.equal(evidence.failure, "native_redirect_not_listing");
+    assert.equal(evidence.primaryOutcome.reason, "native_redirect_not_listing");
+    assert.equal(evidence.primaryOutcome.status, 307);
+    assert.equal(evidence.primaryOutcome.redirectTarget, "https://www.matthews.com/listings");
+    assert.ok(Date.parse(evidence.primaryOutcome.observedAt));
+  }
+});

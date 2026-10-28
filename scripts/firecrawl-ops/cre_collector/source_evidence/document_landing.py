@@ -30,6 +30,7 @@ class _LandingParser(HTMLParser):
         self.scripts = []
         self.active_script = None
         self.omitted_scripts = 0
+        self.excluded_non_json_scripts = 0
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -42,6 +43,8 @@ class _LandingParser(HTMLParser):
                     self.scripts.append(self.active_script)
                 else:
                     self.omitted_scripts += 1
+            else:
+                self.excluded_non_json_scripts += 1
         if tag in ('script', 'style', 'template', 'noscript'):
             self.hidden.append(tag)
         if self.hidden:
@@ -145,6 +148,10 @@ def parse_document_landing(html_bytes, *, final_url):
     parser = _LandingParser()
     parser.feed(text)
     parser.close()
+    if parser.active_script is not None:
+        parser.active_script['text'] = None
+        parser.active_script['textComplete'] = False
+        parser.active_script['withheldReason'] = 'unterminated_script_at_eof'
     return {'schema': 'cre-document-landing-observation/v1', 'finalUrl': final_url,
             'bodySha256': sha256(html_bytes).hexdigest(), 'bodyBytes': len(html_bytes),
             'decoding': 'utf-8-replacement', 'text': ''.join(parser.text),
@@ -153,6 +160,7 @@ def parse_document_landing(html_bytes, *, final_url):
             'omittedReferences': parser.omitted_references,
             'omittedMetadata': parser.omitted_metadata, 'omittedScripts': parser.omitted_scripts,
             'nestedAnchors': parser.nested_anchors,
+            'excludedNonJsonScripts': parser.excluded_non_json_scripts,
             'table_structure_unpreserved': parser.table_structure_unpreserved}
 
 
@@ -178,6 +186,7 @@ def page_context(html_bytes, *, final_url):
                           'references': observation['omittedReferences'],
                           'metadata': observation['omittedMetadata'],
                           'scripts': observation['omittedScripts'],
+                          'excludedNonJsonScripts': observation['excludedNonJsonScripts'],
                           'nested_anchors': observation['nestedAnchors']}}
 
 

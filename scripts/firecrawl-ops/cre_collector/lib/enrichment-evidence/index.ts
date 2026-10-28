@@ -100,7 +100,7 @@ export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc
       observation: "observation_byte_limit" } };
 }
 
-export function failedEnrichmentEvidence(item: EnrichmentClaim, failure: "scrape_failed" | "evidence_capture_failed" = "scrape_failed",
+export function failedEnrichmentEvidence(item: EnrichmentClaim, failure: "scrape_failed" | "evidence_capture_failed" | "native_redirect_not_listing" = "scrape_failed",
   kind: "generic" | "buildout" = "generic") {
   return { event: `${kind}_enrichment_failure`, schema: `cre-${kind}-enrichment-observation/v1`,
     claim: witness(item), failure, sourceFreshness: "unverified", cacheDisposition: "unverified" };

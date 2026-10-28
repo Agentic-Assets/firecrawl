@@ -488,6 +488,12 @@ export async function enrichMatthewsObservedListing(item: {
           && normalizedMatthewsPropertyUrl(targetUrl, MATTHEWS_HOST)
           && matthewsTenureFromUrl(targetUrl) === tx) {
           observe({ reason: "temporary_redirect", redirectTarget: targetUrl, status: response.status });
+        } else if (target.protocol === "https:" && !target.username && !target.password && !target.port
+          && !target.search && !target.hash && ["matthews.com", "www.matthews.com"].includes(target.hostname.toLowerCase())
+          && /^\/listings\/?$/.test(target.pathname)) {
+          let observedAt: string | undefined;
+          try { observedAt = observationNow(); } catch { /* No clock is invented. */ }
+          observe({ reason: "native_redirect_not_listing", redirectTarget: targetUrl, status: response.status, observedAt });
         }
       } catch { /* Invalid location is never retried. */ }
       return null;
