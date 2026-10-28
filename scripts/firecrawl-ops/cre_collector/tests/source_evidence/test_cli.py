@@ -200,3 +200,36 @@ def test_document_discovery_is_offline_private_and_does_not_print_urls(tmp_path,
     assert 'example.test' not in capsys.readouterr().out
     with pytest.raises(FileExistsError):
         cli.main(['discover-documents', '--plan', str(plan_path), '--out', str(output)])
+
+
+def test_document_acquisition_planning_is_offline_and_requires_private_policy(tmp_path, monkeypatch, capsys):
+    from source_evidence import document_candidates
+    from test_document_acquisition_policy import CODE, TARGET, policy_value
+    from test_document_candidates import artifact, plan_for
+    plan = plan_for(artifact())
+    candidates = document_candidates.discover(plan)
+    plan_path, candidates_path, policy_path = [tmp_path / name for name in
+                                               ('source-plan.json', 'candidates.json', 'policy.json')]
+    raw_policy = events.encoded(policy_value())
+    plan_path.write_bytes(events.encoded(plan))
+    candidates_path.write_bytes(events.encoded(candidates))
+    policy_path.write_bytes(raw_policy)
+    policy_path.chmod(0o600)
+    output = tmp_path / 'selection.json'
+    monkeypatch.setattr(cli, 'run_psql', lambda *args, **kwargs: pytest.fail('database contacted'))
+    monkeypatch.setattr(cli.subprocess, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
+    args = ['plan-document-acquisition', '--plan', str(plan_path), '--candidates', str(candidates_path),
+            '--policy', str(policy_path), '--policy-sha256', events.sha256(raw_policy),
+            '--expected-db-target-sha256', TARGET, '--collector-git-sha', CODE, '--out', str(output)]
+    cli.main(args)
+    selection = json.loads(output.read_bytes())
+    assert len(selection['documents']) == 78
+    assert selection['network_execution'] == 'not_performed'
+    assert selection['destination_verification'] == 'pending_each_request'
+    assert os.stat(output).st_mode & 0o777 == 0o600
+    assert 'example.test' not in capsys.readouterr().out
+    with pytest.raises(FileExistsError):
+        cli.main(args)
+    policy_path.chmod(0o644)
+    with pytest.raises(ValueError, match='not private'):
+        cli.main(args)

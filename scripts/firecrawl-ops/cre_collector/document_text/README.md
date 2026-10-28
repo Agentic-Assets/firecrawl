@@ -10,6 +10,13 @@ identifies candidate links in a saved, validated evidence plan; it performs no
 download or extraction. It is unverified under the current test hold and is not
 deployment or source-access evidence. Acquisition and AnyDoc execution still
 require a separately authorized workflow and an already acquired local file.
+The draft offline `plan-document-acquisition` preflight can select candidates
+under an explicit bounded policy, but it does not acquire those files or run
+AnyDoc. It performs no DNS or access verification and does not establish
+publisher permission. A future acquisition receipt must preserve precise actual
+download times separately from the source observation time; the existing local
+provenance interface below accepts whole UTC seconds only. The preflight remains
+unverified under the test hold and is not deployed.
 
 ```sh
 node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifact.json

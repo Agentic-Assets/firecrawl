@@ -70,6 +70,15 @@ proof of a listing relationship. Discovery makes no network or database calls
 and does not download documents or run AnyDoc. It is unverified under the
 current test hold and does not change source admission or canonical data.
 
+Draft `plan-document-acquisition` is a pure policy preflight over a validated
+plan and rederived candidates. It produces a bounded source-scoped selection,
+not a download, extraction, permission decision, or completed evidence write.
+Operator-asserted exact host/source allowlists and limits do not authenticate
+publishers. No DNS is checked by preflight; a future acquisition transport must
+validate public IPs at each request and redirect hop and preserve actual
+acquisition clocks separately from source-observation clocks. This draft is
+unverified under the test hold and is not deployed.
+
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new
 private directory. Keep unknown extraction coverage visible; a valid text

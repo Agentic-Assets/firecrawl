@@ -29,6 +29,29 @@ current test hold and not deployed. Current full-source runs do not automaticall
 download linked documents or invoke AnyDoc; manual extraction starts with an
 already acquired local file as described in `../document_text/README.md`.
 
+Draft acquisition-policy preflight adds a separately bounded, operator-asserted
+selection from an existing plan and candidate manifest:
+
+```sh
+python3 -m source_evidence.cli plan-document-acquisition --plan /private/plan.json --candidates /private/candidates.json --policy /private/policy.json --policy-sha256 POLICY_HASH --expected-db-target-sha256 TARGET_HASH --collector-git-sha COMMIT --out /private/selection.json
+```
+
+The intended preflight rederives the candidates from the source plan and binds
+the selection to the plan, manifest, policy, source, target and collector
+commit. The explicit policy specifies registered sources, exact allowed hosts,
+document and byte limits, deadlines, redirect limits and original-file
+retention choice. Source-scoped absolute HTTP(S) candidates on standard ports
+are selectable without rewriting the observed URL.
+This is an operator assertion, not publisher permission or proof of public
+access. No DNS, network, download, extraction or database request occurs. A
+future transport must validate public IP addresses on every request and
+redirect hop and enforce source-specific access and visibility rules. Source
+observation clocks must not be relabeled as download times; preserve precise
+actual acquisition timestamps in a separate receipt because the current
+AnyDoc provenance interface accepts whole UTC seconds. A selection is not a
+completed download or extraction. This draft remains unverified under the test
+hold and is not deployed.
+
 Existing single-source collector artifacts can be wrapped offline before planning:
 
 ```sh

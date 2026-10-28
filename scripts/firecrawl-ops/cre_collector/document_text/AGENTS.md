@@ -13,6 +13,10 @@ The draft offline document-candidate discovery in `../source_evidence/` does not
 download documents or invoke AnyDoc. Full-source runs do not automatically
 extract linked documents. Discovery is unverified under the test hold; neither
 it nor a candidate URL proves public access, publication, or permission.
+The draft acquisition-policy preflight is also offline and does not invoke the
+adapter. Preserve precise actual download times in a separate future receipt;
+do not relabel original source clocks as download times or overstate the
+whole-second precision of the current provenance input.
 
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private

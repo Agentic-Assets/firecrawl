@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 from buildout_observation_io import read_consistent
 from cre_ingest import (
@@ -211,6 +212,11 @@ def main(argv=None):
     p.add_argument('--observed-at'); p.add_argument('--external-id'); p.add_argument('--out', required=True)
     documents = sub.add_parser('discover-documents')
     documents.add_argument('--plan', required=True); documents.add_argument('--out', required=True)
+    acquisition_plan = sub.add_parser('plan-document-acquisition')
+    acquisition_plan.add_argument('--plan', required=True); acquisition_plan.add_argument('--candidates', required=True)
+    acquisition_plan.add_argument('--policy', required=True); acquisition_plan.add_argument('--policy-sha256', required=True)
+    acquisition_plan.add_argument('--expected-db-target-sha256', required=True)
+    acquisition_plan.add_argument('--collector-git-sha', required=True); acquisition_plan.add_argument('--out', required=True)
     c = sub.add_parser('convert-collector')
     c.add_argument('--artifact', required=True); c.add_argument('--source-key', required=True)
     c.add_argument('--out', required=True)
@@ -278,6 +284,15 @@ def main(argv=None):
         result = document_candidates.discover(read_json(args.plan, MAX_PLAN_BYTES))
         write_private(args.out, result)
         print(f"Document candidates saved: {len(result['candidates'])}; acquisition is not enabled.")
+    elif args.command == 'plan-document-acquisition':
+        from source_evidence import automatic, document_acquisition_policy, document_candidates
+        raw_policy = automatic._read_private(Path(args.policy).expanduser(), 16384)
+        result = document_acquisition_policy.prepare(
+            read_json(args.plan, MAX_PLAN_BYTES), read_json(args.candidates, document_candidates.MAX_MANIFEST_BYTES),
+            raw_policy, expected_policy_sha256=args.policy_sha256,
+            target_sha256=args.expected_db_target_sha256, collector_git_sha=args.collector_git_sha)
+        write_private(args.out, result)
+        print(f"Document acquisition selection saved: {len(result['documents'])}; no requests performed.")
     elif args.command == 'append':
         value = read_json(args.plan, MAX_PLAN_BYTES)
         checked_plan(value, read_json(args.admission, 16384))
