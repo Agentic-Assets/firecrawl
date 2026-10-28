@@ -208,3 +208,25 @@ privilege review tracked by [AGENTIC-5040](https://linear.app/agenticassets/issu
 This phase changes no shared production ACL, creates no login, provisions no
 credential and enables no scheduler. Private source acquisition and canonical
 source acceptance retain their separate boundaries.
+
+## Literal text search in facts
+
+After the separately governed fact-search index migration is applied, the reader
+can search the PostgreSQL JSONB text representation of retained facts:
+
+```sh
+python3 -m source_evidence.cli search-fact-text --query 'industrial warehouse' --limit 10 --source-key nai-global --out /private/matches.json --env-file /private/db.env --expected-db-target-sha256 FINGERPRINT
+```
+
+The query is a literal, case-insensitive substring, with a maximum of 512 UTF-8
+bytes. Quotes, backslashes, control characters, `%`, `_`, and `!` are matched as
+literal input in JSON serialization. This searches labels and values together;
+it is not semantic search, relevance ranking, JSON path matching, or a promise
+about original source formatting. PostgreSQL JSONB normalizes its representation.
+Use `search-facts` for JSON containment and `get` for a complete event. Optional
+`--source-key` and `--capture-id` restrict results. The limit is 1–25, ordered
+by observation time descending, capture ID and item number. Results contain
+metadata only and are written to an exclusive private file; facts are never
+printed. A short or punctuation-only query may require a full index scan, and
+queries have a 30-second database statement timeout. The existing document text
+search and its phrase and chunk boundaries are unchanged.
