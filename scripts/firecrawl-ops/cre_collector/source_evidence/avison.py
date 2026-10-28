@@ -53,6 +53,12 @@ def _context_controls(context):
 
 def validate_records(plan):
     rows = plan["events"]
+    if rows[0]["facts"][0]["kind"] == "avison_native_context":
+        from source_evidence import avison_response
+        header = rows[0]["facts"][0]["value"]
+        observation = {**header, "records": [row["facts"][0]["value"] for row in rows[1:]]}
+        avison_response.validate(observation)
+        return
     if rows[0]["facts"][0]["kind"] != "retained_capture_context":
         raise ValueError("Avison evidence needs the collector visibility adapter")
     records = [event["facts"][0]["value"] for event in rows[1:]]

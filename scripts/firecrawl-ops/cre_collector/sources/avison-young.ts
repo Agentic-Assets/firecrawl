@@ -6,6 +6,8 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import TurndownService from "turndown";
 import { brokerRef } from "../lib/broker.js";
+import { observationNow } from "../lib/observation-clock.js";
+import { publishAvisonNativePage } from "../lib/source-evidence/avison-page.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, dedupeStrings, firstJsonLd, jsonLdObjects, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { normBuildingClass } from "../lib/parse.js";
@@ -202,8 +204,11 @@ export async function fetchAvisonYoungEntity(entity: string, apiKey: string, tim
   const url = new URL(AVISON_YOUNG_API_BASE);
   url.searchParams.set("entity", entity);
   if (entity === "website") url.searchParams.set("status", "active");
+  const captureDir = entity === "website" ? process.env.CRE_AVISON_NATIVE_CAPTURE_DIR : undefined;
+  const startedAt = captureDir ? observationNow() : "";
   const text = await fetchAvisonYoungText(url, { headers: { "X-Api-Key": apiKey } }, timeoutMs,
     (status) => new Error(`Avison Young SharpLaunch ${entity} API HTTP ${status}`));
+  if (captureDir) publishAvisonNativePage(captureDir, text, apiKey, startedAt, observationNow());
   const data = JSON.parse(text);
   return avisonYoungEntityItems(data, entity);
 }

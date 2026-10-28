@@ -3811,14 +3811,9 @@ def _start_cohort_collection(
     log_handle.flush()
     try:
         worker_env = safe_process_env()
-        for key in ("CRE_NAI_NATIVE_CAPTURE_DIR", "CRE_NAI_NATIVE_CAPTURE_MAX_PAGES",
-                    "CRE_NAI_NATIVE_CAPTURE_MAX_BYTES", "CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"):
-            worker_env.pop(key, None)
-        if attempt.get("native_source_evidence"):
-            worker_env["CRE_NAI_NATIVE_CAPTURE_DIR"] = str(run_dir / attempt["native_source_evidence"]["directory"])
-            worker_env["CRE_NAI_NATIVE_CAPTURE_MAX_PAGES"] = str(manifest["config"]["automatic_source_evidence"]["max_native_pages"])
-            worker_env["CRE_NAI_NATIVE_CAPTURE_MAX_BYTES"] = str(128 * 1024 * 1024)
-            worker_env["CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"] = "1"
+        from source_evidence import native_pages
+        native_pages.configure_worker_env(worker_env, run_dir, source, attempt,
+                                          manifest["config"].get("automatic_source_evidence") or {})
         process = subprocess.Popen(
             argv,
             cwd=COLLECTOR_DIR,
@@ -4796,14 +4791,8 @@ def collect_source(
             automatic.mark_attempt(manifest, source, attempt, attempt["temporary_artifact"])
             from source_evidence import native_pages
             native_pages.mark(run_dir, manifest, source, attempt)
-        for key in ("CRE_NAI_NATIVE_CAPTURE_DIR", "CRE_NAI_NATIVE_CAPTURE_MAX_PAGES",
-                    "CRE_NAI_NATIVE_CAPTURE_MAX_BYTES", "CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"):
-            env.pop(key, None)
-        if attempt.get("native_source_evidence"):
-            env["CRE_NAI_NATIVE_CAPTURE_DIR"] = str(run_dir / attempt["native_source_evidence"]["directory"])
-            env["CRE_NAI_NATIVE_CAPTURE_MAX_PAGES"] = str(evidence_config["max_native_pages"])
-            env["CRE_NAI_NATIVE_CAPTURE_MAX_BYTES"] = str(128 * 1024 * 1024)
-            env["CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER"] = "1"
+        from source_evidence import native_pages
+        native_pages.configure_worker_env(env, run_dir, source, attempt, evidence_config or {})
         checkpoint["attempts"].append(attempt)
         checkpoint["state"] = "collecting"
         save_manifest(run_dir, manifest)

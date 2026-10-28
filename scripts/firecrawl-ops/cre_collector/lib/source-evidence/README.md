@@ -31,3 +31,25 @@ checks and publication are synchronous. `CRE_NAI_NATIVE_CAPTURE_MAX_PAGES` and
 128 MiB of exact serialized entry bytes. Unknown, symlinked, multiply linked,
 or temporary entries refuse publication rather than being ignored. Quota
 refusal leaves previously published pages intact; exact replay adds no bytes.
+
+## Avison Young website feed
+
+When the foreground coordinator supplies a private attempt directory through
+`CRE_AVISON_NATIVE_CAPTURE_DIR` and asserts
+`CRE_AVISON_NATIVE_CAPTURE_SINGLE_WRITER=1`, the website feed publishes before
+JSON parsing or listing mapping. The optional `CRE_AVISON_NATIVE_CAPTURE_MAX_PAGES`
+and `CRE_AVISON_NATIVE_CAPTURE_MAX_BYTES` lower the shared 128-page and 128 MiB
+limits. The publisher shares the bounded atomic private-file custody mechanism
+with NAI. The feed body is collector-decoded text re-encoded as UTF-8; it is not
+claimed to be the original Fetch or wire bytes. The existing transport reports a
+successful response without exposing its exact HTTP status or final URL, so the
+receipt records the attempted request and that limitation. The integration key
+and request headers are never added to the page or its receipt; a body containing
+the key, including JSON Unicode escapes, is refused with a redacted error.
+
+These pages are private local raw custody, not database admission. Avison's
+source-owned asking-price visibility projection and existing source and
+credential policies must be applied before retained evidence is written. The
+private filename hash is a local custody digest and must not be carried into a
+projected database observation when source content is withheld. No identity,
+visibility, completeness, or publisher-authentication claim follows from capture.

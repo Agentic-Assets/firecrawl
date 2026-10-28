@@ -117,7 +117,10 @@ in `source_keys`; the supported entries are:
 ```json
 {
   "collector_projections": {"faris-lee": "faris-google-map-tile-query/v1"},
-  "native_source_formats": {"nai-global": "nai_public_posts_v1"},
+  "native_source_formats": {
+    "nai-global": "nai_public_posts_v1",
+    "avison-young": "avison_sharplaunch_website_v1"
+  },
   "max_native_pages": 128
 }
 ```
@@ -126,6 +129,43 @@ Empty dictionaries disable those features. Version-1 policy behavior remains
 unchanged. The existing policy SHA, exact clean collector commit, database target
 and transport bindings still apply. This configuration authorizes a source
 format; it does not certify publisher identity or complete inventory.
+
+### Avison native website feed
+
+The existing website GET can capture its decoded text before JSON parsing,
+listing mapping, deduplication or detail-page checks. The shared publisher
+keeps raw pages in the private owned attempt directory with the same finite
+quotas and single-worker custody as NAI. Team-member requests are excluded.
+The integration key, request headers and key-derived commitments are excluded;
+publication fails with a redacted error if the body contains that key.
+
+The coordinator projects source-withheld asking fields and monetary aliases
+through `avison_native.py`, preserving unaffected original values and context,
+including unknown fields, empty/null values, duplicate IDs and addressless
+records. Independently labeled financial values are retained. Monetary spans
+that remain ambiguous carry an explicit unresolved marker. A bounded receipt
+contains changed JSON pointers, actions and reasons, never removed values.
+These source-specific rules do not relax the existing collector-format guard.
+
+`cre-avison-native-observation/v1` retains projected records, the projected
+envelope, exceptional numeric literal map and projection receipt. Hashes and
+capture identity bind only this projected representation. Original bytes cannot
+be reconstructed or their hashes reverified from the database observation.
+The raw page hash remains solely in local custody and checkpoint integrity
+state. The transport exposes decoded text, not original HTTP bytes; exact
+HTTP status and final URL are unavailable. Its receipt therefore states
+`success_status_unobserved` and preserves the attempted registered URL and
+collector observation clocks, with no fabricated status or final URL.
+
+Accessible JSON without the expected `items` array is projected under
+`unmappedResponse`, with `responseEncoding: wrapped_unmapped_json` and zero
+asserted listing records. The observation still preserves that useful context.
+Invalid JSON stays in private local custody with an explicit diagnostic.
+Native settlement and replay use the existing foreground evidence lane even
+when canonical collection fails or emits no artifact; they never certify full
+inventory, matching, normalization, source acceptance, lifecycle or scheduling.
+
+### NAI public feed
 
 For NAI, the coordinator creates one private directory per owned attempt and
 supplies its path and limits to the source worker. Each actual publicPosts

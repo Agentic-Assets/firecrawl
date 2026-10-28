@@ -21,13 +21,20 @@ chunk-local and does not establish document completeness. Tests belong under
 `tests/source_evidence/` and run only in a standalone no-hardlinks clone. Use the
 disposable migration/CLI runners for database behavior, never production fixtures.
 
-Version-2 recurring policies separately allow NAI public native-page capture and
-Faris map-credential projection. Read the corresponding README sections before
+Version-2 recurring policies separately allow NAI and Avison native-page capture
+and Faris map-credential projection. Read the corresponding README sections before
 changing their format, pointer receipts, quotas, worker custody or replay order.
 Projected observations cannot reconstruct removed source bytes; whole-response
 JSON contexts do not assert a selected listing array. Effective-privilege checks
 are bounded preflights, not server-side credential isolation. Production writer
 activation remains subject to the shared-database review on AGENTIC-5040.
+
+Avison's raw producer files stay private and local. `avison_pages.py` applies
+the source-owned `avison_native.py` projection before `avison_response.py`
+creates database-bound observations. Original response/file hashes, integration
+keys and withheld values must not enter those observations or capture IDs.
+Unknown JSON shapes retain projected context without claiming listing rows.
+HTTP status and final URL are unobserved by this transport; never invent them.
 
 Fact-text search is a literal case-insensitive search over PostgreSQL's JSONB
 text representation, not semantic matching, original bytes or document text.

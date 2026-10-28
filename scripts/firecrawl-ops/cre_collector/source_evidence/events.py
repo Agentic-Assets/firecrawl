@@ -82,7 +82,8 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         capture_clock = timestamp(artifact.get("provenance", {}).get("observedAt"))
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
-    elif artifact.get("schema") in ("cre-json-response-observation/v1", "cre-json-response-context-observation/v1"):
+    elif artifact.get("schema") in ("cre-json-response-observation/v1", "cre-json-response-context-observation/v1",
+                                   "cre-avison-native-observation/v1"):
         capture_clock = timestamp(artifact.get("receipt", {}).get("finishedAt"))
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
@@ -163,6 +164,21 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         events.extend(_event(capture, n, source_key, capture_clock, url, provenance,
                              [{"kind": "source_record", "value": row}], None)
                       for n, row in enumerate(artifact["records"], 1))
+    elif artifact.get("schema") == "cre-avison-native-observation/v1":
+        from source_evidence import avison_response
+        if source_key != "avison-young" or external_id is not None:
+            raise ValueError("Avison native observation requires its source identity")
+        avison_response.validate(artifact)
+        provenance = {**provenance, "capture_kind": "source_projected_json_response", "coverage": "unverified",
+                      "observed_at_origin": "collector_asserted_response_finished_at",
+                      "original_sha256_verification": "original_not_reconstructable_after_projection"}
+        header = {k: v for k, v in artifact.items() if k != "records"}
+        url = http_url(artifact["receipt"]["requestUrl"])
+        events = [_event(capture, 0, source_key, capture_clock, url, provenance,
+                         [{"kind": "avison_native_context", "value": header}], None)]
+        events.extend(_event(capture, n, source_key, capture_clock, url, provenance,
+                             [{"kind": "source_record", "value": row}], None)
+                      for n, row in enumerate(artifact["records"], 1))
     elif artifact.get("schema") == "buildout-private-observation-artifact-v1":
         if external_id is not None:
             raise ValueError("capture-wide Buildout evidence cannot claim a listing identity")
@@ -210,7 +226,7 @@ def validate_plan(value):
         elif kind == "capture_context":
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
             expected = plan(artifact, source_key=value["source_key"], observed_at=first["observed_at"])
-        elif kind in ("retained_capture_context", "json_response_context"):
+        elif kind in ("retained_capture_context", "json_response_context", "avison_native_context"):
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
             expected = plan(artifact, source_key=value["source_key"])
         else:

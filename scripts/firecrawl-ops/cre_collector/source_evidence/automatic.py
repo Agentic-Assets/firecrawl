@@ -120,7 +120,9 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
         native_formats = policy["native_source_formats"]
         if (not isinstance(projections, dict) or not isinstance(native_formats, dict)
                 or any(k not in allowed or k != "faris-lee" or v != map_projection.VERSION for k, v in projections.items())
-                or any(k not in allowed or k != "nai-global" or v != "nai_public_posts_v1" for k, v in native_formats.items())
+                or any(k not in allowed or (k, v) not in (("nai-global", "nai_public_posts_v1"),
+                                                         ("avison-young", "avison_sharplaunch_website_v1"))
+                       for k, v in native_formats.items())
                 or type(policy["max_native_pages"]) is not int or not 1 <= policy["max_native_pages"] <= 128):
             raise ValueError("invalid native capture or projection policy")
     try:
