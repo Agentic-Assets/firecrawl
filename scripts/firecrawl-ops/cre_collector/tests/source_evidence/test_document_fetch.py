@@ -1,5 +1,7 @@
 import hashlib
+import http.server
 import socket
+import threading
 
 import pytest
 from source_evidence import document_fetch
@@ -130,6 +132,83 @@ def test_response_owned_socket_is_timed_and_response_closed(monkeypatch):
     assert result["receipt"]["outcome"] == "acquired"
     assert response.closed and connections[0].closed
     assert connections[0].original_socket.timeout > 0
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_real_http_close_response_exhausts_without_reusing_closed_socket(monkeypatch, chunked):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.send_header("Transfer-Encoding" if chunked else "Content-Length", "chunked" if chunked else "3")
+            self.end_headers()
+            self.wfile.write(b"3\r\npdf\r\n0\r\n\r\n" if chunked else b"pdf")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connect = socket.create_connection
+    monkeypatch.setattr(socket, "create_connection", lambda address, timeout, source_address=None:
+                        connect(("127.0.0.1", server.server_port), timeout, source_address))
+    try:
+        result = document_fetch.fetch(
+            "http://docs.example.test/file", allowed_hosts=["docs.example.test"],
+            max_bytes=100, timeout_seconds=5, max_redirects=0,
+            resolver=lambda host, port, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))],
+        )
+        assert result["body"] == b"pdf"
+        assert result["receipt"]["outcome"] == "acquired"
+        assert result["receipt"]["body_sha256"] == hashlib.sha256(b"pdf").hexdigest()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("framing,expected", [
+    ("truncated", "incomplete_body"), ("eof", None), ("empty", None),
+])
+def test_real_http_close_response_framing_integrity(monkeypatch, framing, expected):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            if framing != "eof":
+                self.send_header("Content-Length", "4" if framing == "truncated" else "0")
+            self.end_headers()
+            if framing != "empty":
+                self.wfile.write(b"pdf")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connect = socket.create_connection
+    monkeypatch.setattr(socket, "create_connection", lambda address, timeout, source_address=None:
+                        connect(("127.0.0.1", server.server_port), timeout, source_address))
+    try:
+        result = document_fetch.fetch(
+            "http://docs.example.test/file", allowed_hosts=["docs.example.test"],
+            max_bytes=100, timeout_seconds=5, max_redirects=0,
+            resolver=lambda host, port, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))],
+        )
+        assert result["receipt"]["failure_code"] == expected
+        if expected:
+            assert result["body"] is None
+            assert result["receipt"]["completion"] == "incomplete"
+            assert result["receipt"]["body_sha256"] is None
+        else:
+            assert result["body"] == (b"" if framing == "empty" else b"pdf")
+            assert result["receipt"]["completion"] == "complete"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 def test_close_failure_never_claims_completed_body(monkeypatch):

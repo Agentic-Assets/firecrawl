@@ -2,6 +2,9 @@ READ ~/AGENTS.md FIRST (skip if missing).
 
 # Local document conversion
 
+Local verification is separate from deployment and production acceptance; see
+[PR #363](https://github.com/Agentic-Assets/firecrawl/pull/363).
+
 Read `README.md` and parent collector guidance. Input is a caller-supplied local
 file. Source URL is provenance and is never fetched. AnyDoc is pinned in the
 package lock; conversion runs locally with hosted OCR disabled. Preserve
@@ -21,7 +24,7 @@ implemented or verified.
 The draft offline document-candidate discovery in `../source_evidence/` does not
 download documents or invoke AnyDoc. Draft refresh and series hooks explicitly
 opt in to linked-document extraction and are disabled by default, unverified
-and not deployed. Discovery is unverified under the test hold; neither
+and not deployed. Discovery is subject to separate production acceptance; neither
 it nor a candidate URL proves public access, publication, or permission.
 The draft acquisition-policy preflight is also offline and does not invoke the
 adapter. Preserve precise actual download times in a separate receipt; do not
@@ -39,13 +42,12 @@ native memory. Ambiguous
 or interrupted work requires reconciliation without automatic resume. One
 selection is supported per source attempt; draft version-2 selection combines
 multi-page candidates. Draft refresh and series hooks add no new writer pump,
-queue or scheduler. These changes remain unverified under the
-test hold and establish no publication permission, coverage or accuracy.
+queue or scheduler. These changes remain subject to separate production acceptance and establish no publication permission, coverage or accuracy.
 
 Draft recovery verifies the private seal and optional expected marker. No-spawn
 conversion replay requires the parent-validated completion marker and retained
 fetch and conversion input copies. An artifact alone is insufficient; after
-original deletion, seal readback cannot freshly rehash it. Recovery is unverified.
+original deletion, seal readback cannot freshly rehash it. Recovery requires separate production acceptance.
 `document_recovery.sealed` uses the existing owner lock and trusted saved attempt
 without fetching or converting. It preserves budget, does not restart acquisition,
 and leaves a missing persisted marker unresolved. Reconciled absence does not
@@ -53,12 +55,12 @@ identify who removed a copy.
 
 Draft batch selection uses one serial budget for ordered source-page plans and
 retains each occurrence's source association. A shared document URL does not
-prove property identity. This behavior remains unverified under the hold.
+prove property identity. This behavior remains subject to separate production acceptance.
 
 Draft refresh and series opt-in binds a document policy, hash and Node executable to
 automatic source evidence and its checkpoint. Preserve the bindings on resume;
-do not start another attempt with uncertain document work. This is unverified,
-not deployed, and does not bypass credential admission. Both serial and pipeline
+do not start another attempt with uncertain document work. This is not deployed
+and requires separate production acceptance without bypassing credential admission. Both serial and pipeline
 paths defer document work until collection returns and workers settle under the
 owner lock and before canonical source-failure checks. Resume binds source,
 code, target and the source-settlement marker; seal revalidation and durable

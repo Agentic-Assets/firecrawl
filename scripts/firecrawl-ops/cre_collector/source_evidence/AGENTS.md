@@ -2,6 +2,9 @@ READ ~/AGENTS.md FIRST (skip if missing).
 
 # Private source evidence
 
+Local verification is separate from deployment and production acceptance; see
+[PR #363](https://github.com/Agentic-Assets/firecrawl/pull/363).
+
 Read `README.md` and parent collector guidance. This package stores acquisition
 observations, never canonical listings, source acceptance, normalized economics,
 OM facts, lifecycle, status, or freshness. Identity and visibility assertions are
@@ -28,8 +31,8 @@ exact artifact reconstruction and exceptional numeric literals at their
 original pointers. Listings and observations share the 10,000-record and
 source-policy limits; the 16 MiB envelope, 3.5 MiB per fact/header, and 32 MiB
 plan limits still apply. Oversized individual observations or unrelated metadata
-remain refused. This draft is unverified under the test hold, not deployed, and
-not written live; it changes no canonical gates or source-coverage claims.
+remain refused. This draft is not deployed or written live and requires separate
+production acceptance; it changes no canonical gates or source-coverage claims.
 
 Version-2 recurring policies separately allow NAI and Avison native-page capture
 and Faris map-credential projection. Read the corresponding README sections before
@@ -48,8 +51,8 @@ capture time is distinct from a nullable source clock, and memory-cache hits
 create no fresh capture. Apply existing policy and credential checks: Faris
 collector projection does not sanitize this format. The 128-page/128-MiB
 attempt, 16-MiB parsed-body and observation, 3.5-MiB fact and 10,000-row page
-limits apply. Capture failure stops the enabled path. This draft is unverified
-under the hold and not deployed; no source admission or completeness follows.
+limits apply. Capture failure stops the enabled path. This draft is not deployed
+and requires separate production acceptance; no source admission or completeness follows.
 
 Avison's raw producer files stay private and local. `avison_pages.py` applies
 the source-owned `avison_native.py` projection before `avison_response.py`
@@ -67,22 +70,21 @@ Draft `discover-documents` reads an existing validated plan and identifies
 candidate URLs and their source occurrences offline. A relative link's nearest
 explicit page URL is an unverified resolution base, not access authority or
 proof of a listing relationship. Discovery makes no network or database calls
-and does not download documents or run AnyDoc. It is unverified under the
-current test hold and does not change source admission or canonical data.
+and does not download documents or run AnyDoc. It is subject to separate production acceptance and does not change source admission or canonical data.
 
 Draft discovery can recognize document suffix hints in link strings and
 captured URL-bearing scrape attribute values, and explicit document labels, MIME or download
 attributes. Preserve native references, labels and unverified claim witnesses;
 relative page bases are not access authority and previews are not originals.
 Suffixes and MIME do not guarantee conversion support. The additions are
-unverified under the hold.
+subject to separate production acceptance.
 
 Draft bounded JSON/JSON-LD discovery never executes script text. Preserve the
 original script text pointer separately from the decoded JSON pointer. Skip
 incomplete or unverified scripts and references with explicit diagnostics;
 legacy page contexts need an explicit zero omitted-character count before
 unmarked fields are treated as complete. Apply existing source and credential
-policies to decoded values. This remains unverified.
+policies to decoded values. This requires separate production acceptance.
 Preserve exceptional numeric literals with the explicit pointer-to-literal
 null-placeholder map on derived occurrences and witnesses.
 
@@ -93,7 +95,7 @@ Operator-asserted exact host/source allowlists and limits do not authenticate
 publishers. No DNS is checked by preflight; acquisition transport must
 validate public IPs at each request and redirect hop and preserve actual
 acquisition clocks separately from source-observation clocks. This draft is
-unverified under the test hold and is not deployed.
+not deployed; separate production acceptance is required.
 
 Draft `document_pipeline.run` connects the supervised document transport to
 local AnyDoc under the existing attempt manifest, save callback and foreground
@@ -110,15 +112,15 @@ interrupted work requires reconciliation and never resumes automatically.
 One selection is allowed per source attempt; draft version-2 selection combines
 multi-page native candidates. Draft refresh and series hooks are explicitly
 opted in and disabled by default; no new writer pump, queue or scheduler is
-activated. They are unverified and not deployed
-under the hold; do not claim publisher identity, visibility, complete coverage
+activated. They are not deployed and require separate production acceptance;
+do not claim publisher identity, visibility, complete coverage
 or extraction accuracy.
 
 Draft seal readback checks an exact private file set and optional expected marker;
 authenticate the context independently. Conversion replay requires a completion
 marker published after parent validation and rechecks retained fetch and converter
 inputs without spawning. An artifact alone is insufficient, and deleted originals
-cannot be freshly rehashed by seal readback. Recovery is unverified under the hold.
+cannot be freshly rehashed by seal readback. Recovery is subject to separate production acceptance.
 
 Draft `document_recovery.sealed` runs under the existing owner lock with a
 trusted saved attempt. It performs no fetch or conversion, preserves budget,
@@ -129,7 +131,7 @@ Draft version-2 document selections bind ordered source-page plans to one
 attempt and one serial budget. Group exact URLs but retain every occurrence's
 plan, capture, clock, labels and unverified identity witnesses; do not infer a
 property merge. All page plans remain subject to seal validation. This is
-unverified under the hold.
+subject to separate production acceptance.
 
 Draft refresh and series document acquisition opts in with policy path, digest and
 Node executable alongside automatic source evidence. Preserve these bindings on
@@ -151,7 +153,7 @@ text to the existing guarded private event-store append lane. Version 1 and 2 do
 not admit document writes. Pending, refused or uncertain document appends block
 a new series attempt; uncertain writes require explicit exact-plan refresh
 replay, never a new download or extraction. No canonical listing or OM writes
-follow. This is disabled by default, unverified and not deployed.
+follow. This is disabled by default and requires separate production acceptance.
 
 Draft evidence SQL uses an owned client with a 45-second deadline and
 incrementally bounded output: SQL input is capped at 72 MiB, stdout at the
@@ -159,7 +161,7 @@ caller-selected limit up to 32 MiB, and stderr at 64 KiB. Preserve the foregroun
 local cleanup is unknown; local settlement does not prove remote rollback.
 Uncertain appends require exact-plan replay. Foreground evidence saves persist
 before checking sticky CPU and memory trips; terminal and error publication uses
-the ordinary save path. This remains unverified.
+the ordinary save path. This requires separate production acceptance.
 
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new
@@ -173,7 +175,7 @@ nonzero exit; unknown settlement keeps the awaiting marker and recovery fence.
 Hashes and byte counts describe local custody, not valid JSON, successful
 collection, complete source coverage, canonical ingest or database retention.
 This draft adds no append/replay admission or independent ledger and remains
-unverified under the test/service hold.
+subject to separate production acceptance.
 
 Draft collector-capture export is limited to retained collector v1/v2. It reads
 one ordered capture with a 10,002-row query limit, accepts at most 10,001 rows
@@ -184,6 +186,5 @@ only projected data. Draft witnesses bind original pointers for finite integral
 floats represented in scientific notation; they permit exact restoration after
 JSONB normalization without inferring meaning or units. Legacy captures lack
 that witness and may still refuse reconstruction. Any exact-digest mismatch must
-refuse, not assert reconstruction. This draft is unverified under the test hold
-and is not deployed; it proves no original wire bytes, completeness, freshness
+refuse, not assert reconstruction. This draft is not deployed; separate production acceptance is required; it proves no original wire bytes, completeness, freshness
 or canonical promotion.

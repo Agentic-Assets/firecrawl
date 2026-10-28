@@ -169,6 +169,11 @@ def fetch(url, *, allowed_hosts, max_bytes, timeout_seconds, max_redirects,
                 chunks = []
                 size = 0
                 while True:
+                    # HTTPResponse closes its file as soon as framed content is
+                    # exhausted. With Connection: close that also closes the
+                    # saved socket, so do not set its timeout after completion.
+                    if callable(getattr(response, "isclosed", None)) and response.isclosed():
+                        break
                     if response_socket is not None:
                         response_socket.settimeout(remaining())
                     remaining()

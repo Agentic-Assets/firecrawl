@@ -2,14 +2,17 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 # Local document text extraction
 
+Local verification is separate from deployment and production acceptance; see
+[PR #363](https://github.com/Agentic-Assets/firecrawl/pull/363).
+
 This independent adapter accepts a file already acquired by an authorized process. It never fetches the source URL and does not write to Supabase or the listing collector. Install its pinned dependency with `npm ci --ignore-scripts` in this directory, then run:
 
 Draft refresh and series hooks can opt into linked-document acquisition; they
-are disabled by default, unverified under the hold and not deployed. The draft
+are disabled by default and not deployed; separate production acceptance is required. The draft
 `source_evidence.cli discover-documents` command
 identifies candidate links in a saved, validated evidence plan; it performs no
-download or extraction. It is unverified under the current test hold and is not
-deployment or source-access evidence. Manual AnyDoc execution starts with an
+download or extraction. Local checks are not deployment or source-access
+evidence. Manual AnyDoc execution starts with an
 already acquired local file.
 The draft offline `plan-document-acquisition` preflight can select candidates
 under an explicit bounded policy, but it does not acquire those files or run
@@ -17,8 +20,8 @@ AnyDoc. It performs no DNS or access verification and does not establish
 publisher permission. An acquisition receipt preserves precise actual
 download times separately from the source observation time; the local
 provenance interface accepts UTC timestamps with optional one to six fractional
-digits and preserves the supplied timestamp verbatim. The preflight remains
-unverified under the test hold and is not deployed.
+digits and preserves the supplied timestamp verbatim. The preflight is
+not deployed; separate production acceptance is required.
 
 The draft `source_evidence.document_pipeline.run` library connects supervised
 private document fetches to this local adapter under an existing foreground
@@ -33,27 +36,27 @@ or transfer framing. Ambiguous or interrupted work keeps
 its private files for reconciliation and never automatically resumes. One
 selection is supported per source attempt; draft version-2 selection combines
 native-page candidates. The draft refresh and series opt-ins do not add a new
-writer pump, queue or scheduler. They are unverified under the
-test hold and does not prove publisher permission, coverage or text accuracy.
+writer pump, queue or scheduler. They require separate production acceptance
+and do not prove publisher permission, coverage or text accuracy.
 
 Draft recovery verifies an exact private seal and optional expected marker.
 Conversion replay requires a completion marker published after the parent
 validates converter completion, plus retained fetch and conversion input copies;
 it does not spawn a converter. An artifact alone does not establish completion,
 and a deleted original cannot be freshly rehashed from the seal. This recovery
-path remains unverified under the hold.
+path remains subject to separate production acceptance.
 
 Draft `source_evidence.document_recovery.sealed` revalidates previously sealed
 results under the existing foreground owner lock and trusted saved attempt,
 without fetching or converting. It preserves the acquisition budget and may
 reconcile original-copy cleanup; a missing persisted marker remains unresolved.
-An absent copy does not identify who removed it. This API is unverified.
+An absent copy does not identify who removed it. This API requires separate production acceptance.
 
 Draft batch selection can associate one exact document URL with occurrences
 from several source pages while preserving each page's plan, capture and clock.
 One serial acquisition budget covers the selection; shared URLs do not prove
-the occurrences identify the same property. Batch behavior is unverified under
-the hold.
+the occurrences identify the same property. Batch behavior requires separate
+production acceptance.
 
 Draft checkpoint-refresh and series flags opt into the bounded document path with an
 explicit policy, its hash and a Node executable alongside source evidence.
@@ -62,7 +65,7 @@ reconciliation before another attempt. Serial and pipeline paths defer document
 work until collection returns and workers settle under the owner lock, before
 canonical source-failure checks, so accessible partial evidence can be processed.
 Resume binds source, code, target and the source-settlement marker; seal
-revalidation and durable saves govern recovery. This is unverified and not deployed;
+revalidation and durable saves govern recovery. This is not deployed and requires separate production acceptance;
 credential admission remains a separate gate.
 An exact known no-data outcome remains incomplete but can permit an otherwise
 authorized new source attempt without replaying the old document attempt.
@@ -72,7 +75,7 @@ the existing private event-store append pump. Earlier policies do not admit
 document writes. Pending or uncertain appends block new series work; an
 uncertain write requires explicit exact sealed-plan replay in refresh, without
 redownload or re-extraction. This does not write canonical listings or OM facts;
-the draft remains disabled by default, unverified and not deployed.
+the draft remains disabled by default and requires separate production acceptance.
 
 Draft evidence SQL runs through an owned client with a 45-second deadline and
 incrementally bounded output. SQL input is capped at 72 MiB, stdout at a
@@ -80,7 +83,7 @@ caller-selected limit up to 32 MiB, and stderr at 64 KiB. Unknown local cleanup 
 recovery barrier; even settled local cleanup does not establish remote rollback.
 Foreground evidence saves persist the checkpoint before checking sticky CPU and
 memory guard trips; terminal and error publication uses the ordinary save path.
-These changes are unverified under the hold and not deployed.
+These changes are not deployed; separate production acceptance is required.
 
 Owned-process settlement is checked before publishing conversion completion;
 unknown cleanup keeps the parent recovery barrier. New-session escapees are
