@@ -70,6 +70,13 @@ proof of a listing relationship. Discovery makes no network or database calls
 and does not download documents or run AnyDoc. It is unverified under the
 current test hold and does not change source admission or canonical data.
 
+Draft discovery can recognize document suffix hints in link strings and
+captured URL-bearing scrape attribute values, and explicit document labels, MIME or download
+attributes. Preserve native references, labels and unverified claim witnesses;
+relative page bases are not access authority and previews are not originals.
+Suffixes and MIME do not guarantee conversion support. The additions are
+unverified under the hold.
+
 Draft `plan-document-acquisition` is a pure policy preflight over a validated
 plan and rederived candidates. It produces a bounded source-scoped selection,
 not a download, extraction, permission decision, or completed evidence write.

@@ -32,6 +32,7 @@ import {
 import { enrichJllInvestorListing } from "../sources/jll-investor.js";
 import {
   enrichBuildoutDetail,
+  enrichBuildoutDetailObserved,
   type BuildoutDetailConfig,
 } from "../sources/buildout.js";
 import { REGISTERED_BUILDOUT_FIRMS } from "../sources/buildout-registry.js";
@@ -131,6 +132,25 @@ export const jllInvestorEnricher: SourceEnricher = {
 export function buildoutEnricherFor(
   detailConfig?: BuildoutDetailConfig
 ): SourceEnricher {
+  async function batch(items: EnrichItem[]) {
+    const outcomes = await pmap(items, CONCURRENCY, async (item) => {
+      let observation: unknown;
+      try {
+        const listing = await enrichBuildoutDetailObserved(item.sourceKey, item.url, detailConfig, (doc, pageUrl, qualification) => {
+          let capturedAt: string | null = null;
+          try { capturedAt = observationNow(); } catch { /* No source clock is invented. */ }
+          try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl, kind: "buildout", qualification }); }
+          catch { observation = { ...failedEnrichmentEvidence(item, "evidence_capture_failed", "buildout"), qualification }; }
+        });
+        return { listing, observation };
+      } catch (err) {
+        console.error(`  enrich/buildout: detail failed for ${item.url}: ${err}`);
+        return { listing: null, observation };
+      }
+    });
+    return { listings: outcomes.map((outcome) => outcome.listing).filter(Boolean),
+      retainedObservations: outcomes.flatMap((outcome) => outcome.observation === undefined ? [] : [outcome.observation]) };
+  }
   return {
     async enrich(items: EnrichItem[]): Promise<any[]> {
       const rows = await pmap(items, CONCURRENCY, async (item) => {
@@ -146,6 +166,10 @@ export function buildoutEnricherFor(
         }
       });
       return rows.filter(Boolean);
+    },
+    async enrichWithEvidence(items) {
+      const result = await batch(items);
+      return { listings: result.listings, ...limitEnrichmentObservations(result.retainedObservations) };
     },
   };
 }

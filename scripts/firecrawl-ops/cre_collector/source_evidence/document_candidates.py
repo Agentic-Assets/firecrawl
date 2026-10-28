@@ -17,11 +17,47 @@ MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_POINTER_BYTES = 4096
 MAX_OCCURRENCE_BYTES = 65536
 PAGE_SCHEMAS = {"cre-source-page-context/v1", "foundry-native-page-context/v1"}
+ENRICHMENT_SCHEMAS = {"cre-generic-enrichment-observation/v1", "cre-buildout-enrichment-observation/v1"}
+SCRAPE_URL_ATTRIBUTES = {"href", "src", "url", "data-video-url"}
 DOCUMENT_LABEL = re.compile(r"\b(?:brochures?|offering\s+memorand(?:um|a)|om|flyers?|floor\s*plans?|rent\s*rolls?|"
                             r"risk\s*questionnaires?|financials?|financial\s+statements?|property\s+packages?|documents?)\b", re.I)
 IDENTITY_FIELDS = ("id", "externalId", "external_id", "foundryPostId", "propertyId", "sourceKey",
-                   "url", "sourceUrl", "requestedUrl", "requestedURL", "inventoryObservedAt", "detailObservedAt", "observedAt")
-LABEL_FIELDS = ("name", "title", "text", "docType", "linkType", "role")
+                   "url", "sourceUrl", "requestedUrl", "requestedURL", "inventoryObservedAt", "detailObservedAt", "observedAt",
+                   "transaction", "capturedAt", "captureClock", "qualification")
+LABEL_FIELDS = ("name", "title", "text", "docType", "linkType", "role", "aria-label", "download", "type", "rel")
+DOCUMENT_SUFFIXES = frozenset({".pdf", ".doc", ".docx", ".docm", ".ppt", ".pps", ".pot", ".pptx",
+                               ".pptm", ".ppsx", ".ppsm", ".xls", ".xlsx", ".xlsm", ".xlsb",
+                               ".odt", ".ods", ".odp", ".rtf", ".epub", ".csv"})
+DOCUMENT_MIME = frozenset({
+    "application/pdf", "application/msword", "application/rtf", "text/rtf", "text/csv",
+    "application/epub+zip", "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.oasis.opendocument.text", "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+})
+
+
+def _document_suffix(reference):
+    if not isinstance(reference, str):
+        return False
+    try:
+        path = urlsplit(reference).path.lower()
+    except ValueError:
+        return False
+    return any(path.endswith(suffix) for suffix in DOCUMENT_SUFFIXES)
+
+
+def _document_mime(value):
+    return isinstance(value, str) and value.split(";", 1)[0].strip().lower() in DOCUMENT_MIME
+
+
+def _page_base(page):
+    if not isinstance(page, dict) or not isinstance(page.get("schema"), str) or page["schema"] not in PAGE_SCHEMAS:
+        return None
+    bases = [page[key] for key in ("sourceUrl", "requestedUrl", "requestedURL") if isinstance(page.get(key), str)]
+    return bases[0] if bases and all(item == bases[0] for item in bases) else None
 
 
 def _part(value):
@@ -140,9 +176,9 @@ def discover(plan):
     for row in rows:
         item_no = row["item_no"]
         fact_kind = row["facts"][0]["kind"] if row["facts"] else None
-        stack = [(row["facts"], "/facts", 0, [], None, False)]
+        stack = [(row["facts"], "/facts", 0, [], None, False, False)]
         while stack:
-            value, pointer, depth, witnesses, base, in_page = stack.pop()
+            value, pointer, depth, witnesses, base, in_page, is_scraped_doc = stack.pop()
             visited += 1
             if visited > MAX_NODES or depth > MAX_DEPTH or len(pointer.encode("utf-8")) > MAX_POINTER_BYTES:
                 raise ValueError("document discovery traversal exceeds bound")
@@ -158,28 +194,58 @@ def discover(plan):
                     if sibling_fields:
                         witnesses = [*witnesses, {"json_pointer": pointer + "/observation", "fields": sibling_fields,
                                                    "verification": "unverified"}]
+                is_enrichment = isinstance(value.get("schema"), str) and value["schema"] in ENRICHMENT_SCHEMAS
+                if (is_enrichment
+                        and isinstance(value.get("claim"), dict)):
+                    claim_fields = {key: value["claim"][key] for key in IDENTITY_FIELDS if key in value["claim"] and
+                                    (value["claim"][key] is None or isinstance(value["claim"][key], (str, int, float, bool)))}
+                    if claim_fields:
+                        witnesses = [*witnesses, {"json_pointer": pointer + "/claim", "fields": claim_fields,
+                                                   "verification": "unverified"}]
+                    requested = value.get("requestedPageUrl")
+                    if isinstance(requested, str):
+                        witnesses = [*witnesses, {"json_pointer": pointer,
+                                                   "fields": {"requestedPageUrl": requested},
+                                                   "verification": "unverified"}]
                 if isinstance(value.get("schema"), str) and value["schema"] in PAGE_SCHEMAS:
                     in_page = True
-                    bases = [value[key] for key in ("sourceUrl", "requestedUrl", "requestedURL") if isinstance(value.get(key), str)]
-                    base = bases[0] if bases and all(item == bases[0] for item in bases) else None
-                for key in ("brochures", "documents", "links"):
+                    base = _page_base(value)
+                for key in ("brochures", "documents", "links", "documentLinks"):
                     channel = value.get(key)
-                    if not isinstance(channel, list):
+                    if not isinstance(channel, list) or (key == "documentLinks" and not in_page):
                         continue
                     for index, entry in enumerate(channel):
                         entry_path = f"{pointer}/{_part(key)}/{index}"
                         if isinstance(entry, str) and key in ("brochures", "documents"):
                             emit(entry, item_no, entry_path, key, {}, witnesses, base)
+                        elif isinstance(entry, str) and key == "links" and _document_suffix(entry):
+                            emit(entry, item_no, entry_path, key, {}, witnesses, base)
                         elif isinstance(entry, dict):
                             labels = {label: entry[label] for label in LABEL_FIELDS if label in entry}
-                            explicit = key != "links" or entry.get("linkType") == "document"
-                            if key == "links" and in_page and not explicit:
+                            explicit = key in ("brochures", "documents") or entry.get("linkType") == "document"
+                            if key in ("links", "documentLinks") and not explicit:
                                 explicit = any(isinstance(labels.get(label), str) and DOCUMENT_LABEL.search(labels[label])
-                                               for label in ("name", "title", "text", "role"))
+                                               for label in ("name", "title", "text", "role", "aria-label"))
+                                explicit = (explicit or _document_mime(entry.get("type"))
+                                            or (key == "links" and isinstance(entry.get("download"), str))
+                                            or any(_document_suffix(entry.get(name)) for name in ("url", "href")))
                             if explicit:
                                 for url_key in ("url", "href"):
                                     if url_key in entry:
                                         emit(entry[url_key], item_no, f"{entry_path}/{url_key}", key, labels, witnesses, base)
+                attributes = value.get("attributes")
+                if is_scraped_doc and isinstance(attributes, list):
+                    for index, block in enumerate(attributes):
+                        if (not isinstance(block, dict) or not isinstance(block.get("selector"), str)
+                                or not isinstance(block.get("attribute"), str)
+                                or block["attribute"].lower() not in SCRAPE_URL_ATTRIBUTES
+                                or not isinstance(block.get("values"), list)):
+                            continue
+                        labels = {key: block[key] for key in ("selector", "attribute") if key in block}
+                        for offset, reference in enumerate(block["values"]):
+                            if _document_suffix(reference):
+                                emit(reference, item_no, f"{pointer}/attributes/{index}/values/{offset}",
+                                     "attributes", labels, witnesses, base)
                 for key in ("pdf_url", "urlDocument"):
                     if key not in value:
                         continue
@@ -191,10 +257,22 @@ def discover(plan):
                             if isinstance(part, str):
                                 emit(part, item_no, f"{pointer}/{_part(key)}/{index}", key, {}, witnesses, base)
                 for key in sorted(value, reverse=True):
-                    stack.append((value[key], f"{pointer}/{_part(key)}", depth + 1, witnesses, base, in_page))
+                    scraped_child = is_enrichment and key == "scrapedDoc" and isinstance(value[key], dict)
+                    child_base = _page_base(value.get("pageContext")) if scraped_child else base
+                    child_witnesses = witnesses
+                    if scraped_child and isinstance(value.get("pageContext"), dict):
+                        page = value["pageContext"]
+                        if isinstance(page.get("schema"), str) and page["schema"] in PAGE_SCHEMAS:
+                            page_fields = {name: page[name] for name in IDENTITY_FIELDS if name in page and
+                                           (page[name] is None or isinstance(page[name], (str, int, float, bool)))}
+                            if page_fields:
+                                child_witnesses = [*witnesses, {"json_pointer": pointer + "/pageContext",
+                                                               "fields": page_fields, "verification": "unverified"}]
+                    stack.append((value[key], f"{pointer}/{_part(key)}", depth + 1, child_witnesses,
+                                  child_base, in_page, scraped_child))
             elif isinstance(value, list):
                 for index in range(len(value) - 1, -1, -1):
-                    stack.append((value[index], f"{pointer}/{index}", depth + 1, witnesses, base, in_page))
+                    stack.append((value[index], f"{pointer}/{index}", depth + 1, witnesses, base, in_page, False))
     if len(events.encoded(result)) > MAX_MANIFEST_BYTES:
         raise ValueError("document discovery manifest exceeds bound")
     return result

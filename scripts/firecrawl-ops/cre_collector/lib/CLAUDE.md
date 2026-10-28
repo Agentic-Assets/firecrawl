@@ -19,7 +19,7 @@
 | `parse.ts` | Shared CRE text parsers (price/sqft/cap-rate/address); Python-mirrored by `cre_parse.py`, verified identical via golden vectors (`tests/ts/lib/parse.test.ts`) |
 | `geo.ts` | Pure ZIP/geo normalizers (`zip5`, `geoKey`); the full ZIP->county+CBSA crosswalk lookup lives in Python `cre_geo.py` (backfill + ingest run there) |
 | `enrich.ts` | Tier-B enrichment helpers: batch-claim SQL, URL echoing for completion matching, dead-letter filtering for `cre_enrich.py` |
-| `enrichment-evidence/` | Bounded private generic-enrichment observations, separate from canonical rows and queue completion. Source results mark incomplete evidence without discarding qualified rows; read scoped `AGENTS.md` and README. Targeted artifacts are not automatically saved to the evidence database. |
+| `enrichment-evidence/` | Bounded private generic and Buildout enrichment observations, separate from canonical rows and queue completion. Source results mark incomplete evidence without discarding qualified rows; read scoped `AGENTS.md` and README. Targeted artifacts are not automatically saved to the evidence database. |
 | `broker.ts` | Run-wide `brokers[]` + `brokerRef()` dedupe (`email\|name\|company`); merged by `collect.ts` |
 | `html.ts` | JSON-LD, sitemap XML, entity decode, `stripHtmlText`, `dedupeStrings` |
 | `util.ts` | `clean`, `num`, `prune`, `pmap`, `moneyToNumber`, `isPerSfPriceText`, `boundedInt` |

@@ -68,6 +68,25 @@ test("oversized aggregate refuses with a retained prefix", () => {
     error instanceof RetainedSourceError && error.retainedObservations.length > 0 && error.retainedObservations.length < values.length);
 });
 
+test("evidence overflow preserves mapped listing rows with an explicit incomplete marker", async () => {
+  const items: EnrichItem[] = Array.from({ length: 24 }, (_, index) => ({
+    sourceKey: "generic-source", externalId: String(index), url: `https://example.test/${index}`,
+  }));
+  const large = "x".repeat(250_000);
+  const enricher = createGenericEnricher(async () => ({
+    rawHtml: '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Mapped listing"}</script>',
+    markdown: large, links: [], metadata: { native: large },
+  }), clock);
+  const result = await runEnrichGroups(groupEnrichItems(items),
+    () => ({ enricher, label: "generic" }), () => "Example");
+  assert.equal(result.listings.length, 24);
+  assert.equal(result.sources[0].listingsCollected, 24);
+  assert.equal(result.sources[0].evidenceIncomplete, true);
+  assert.match(result.sources[0].evidenceError, /bytes exceed bound/);
+  assert(result.sources[0].retainedObservations.length > 0);
+  assert(result.sources[0].retainedObservations.length < 24);
+});
+
 test("empty JSON-LD remains evidence only; zero-valued display price is substantive", async () => {
   const item: EnrichItem = { sourceKey: "generic-source", externalId: "x", url: "https://example.test/x" };
   const empty = createGenericEnricher(async () => doc('<script type="application/ld+json">{"@type":"Product"}</script>'), clock);

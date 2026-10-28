@@ -42,3 +42,30 @@ test("challenge detection uses only the existing bounded title heading and body 
   assert.equal(isSourceChallengeShell(`<body>${"x".repeat(3001)} verify you are human</body>`), false);
   assert.equal(isSourceChallengeShell("<body><h1>Property details</h1></body>"), false);
 });
+
+test("document hints preserve native labels, empty download and extensionless references", () => {
+  const anchors = Array.from({ length: 64 }, (_, index) =>
+    `<a href="/download/${index}" title="Risk questionnaire ${index}" aria-label="Original label ${index}" download="" type="application/pdf"></a>`).join("");
+  const result = captureSourcePageContext(
+    `<link rel="alternate" href="/package" type="application/pdf" title="Source package">${anchors}`,
+    { sourceUrl: url });
+  assert.equal(result.links.length, 64);
+  for (let index = 0; index < 64; index++) {
+    assert.deepEqual(result.links[index], {
+      href: `/download/${index}`, text: "", title: `Risk questionnaire ${index}`,
+      "aria-label": `Original label ${index}`, download: "", type: "application/pdf",
+    });
+  }
+  assert.deepEqual(result.documentLinks, [{
+    rel: "alternate", href: "/package", type: "application/pdf", title: "Source package",
+  }]);
+  assert.equal(result.detailObservedAt, null);
+  assert.equal(result.identity, "unverified");
+});
+
+test("document hint attributes share existing bounds and preserve absent values", () => {
+  const result = captureSourcePageContext(`<a href="/x" title="${"a".repeat(64_001)}"></a><a href="/y"></a>`, { sourceUrl: url });
+  assert.equal(result.links[0]!.title!.length, 64_000);
+  assert.equal(result.omissions.characters, 1);
+  assert.deepEqual(result.links[1], { href: "/y", text: "" });
+});

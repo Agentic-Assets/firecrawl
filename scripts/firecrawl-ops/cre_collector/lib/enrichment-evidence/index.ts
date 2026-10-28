@@ -58,7 +58,10 @@ function witness(item: EnrichmentClaim) {
     transaction: item.transaction ?? null, identity: "unverified" as const };
 }
 
-export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc, capturedAt: string | null) {
+export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc, capturedAt: string | null,
+  options: { pageUrl?: string; kind?: "generic" | "buildout";
+    qualification?: "usable_detail" | "rejected_missing_detail_shell" } = {}) {
+  const { pageUrl = item.url, kind = "generic", qualification } = options;
   const fields: Record<string, unknown> = {};
   const omissions: Record<string, string> = {};
   for (const key of ["rawHtml", "markdown", "links", "images", "attributes", "metadata", "detailObservation"] as const) {
@@ -79,14 +82,15 @@ export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc
     if (Buffer.byteLength(doc.rawHtml, "utf8") > HTML_CONTEXT_BYTES) omissions.pageContext = "html_byte_limit";
     else {
       try {
-        pageContext = captureSourcePageContext(doc.rawHtml, { sourceUrl: item.url, detailObservedAt: capturedAt ?? undefined });
+        pageContext = captureSourcePageContext(doc.rawHtml, { sourceUrl: pageUrl, detailObservedAt: capturedAt ?? undefined });
       } catch {
         omissions.pageContext = "context_capture_failed";
       }
     }
   } else omissions.pageContext = "raw_html_unavailable";
-  const result = { event: "generic_enrichment_observation", schema: "cre-generic-enrichment-observation/v1",
-    claim: witness(item), capturedAt, captureClock: capturedAt === null ? "unavailable" : "collector_after_scrape_return",
+  const result = { event: `${kind}_enrichment_observation`, schema: `cre-${kind}-enrichment-observation/v1`,
+    claim: witness(item), requestedPageUrl: pageUrl, capturedAt, captureClock: capturedAt === null ? "unavailable" : "collector_after_scrape_return",
+    ...(qualification === undefined ? {} : { qualification }),
     pageContextClockOrigin: capturedAt === null ? "unavailable" : "collector_after_scrape_return_not_provider_freshness",
     sourceFreshness: "unverified", cacheDisposition: "unverified", pageContext, scrapedDoc: fields, omissions };
   if (jsonBytes(result) <= OBSERVATION_BYTES) return result;
@@ -96,8 +100,9 @@ export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc
       observation: "observation_byte_limit" } };
 }
 
-export function failedEnrichmentEvidence(item: EnrichmentClaim, failure: "scrape_failed" | "evidence_capture_failed" = "scrape_failed") {
-  return { event: "generic_enrichment_failure", schema: "cre-generic-enrichment-observation/v1",
+export function failedEnrichmentEvidence(item: EnrichmentClaim, failure: "scrape_failed" | "evidence_capture_failed" = "scrape_failed",
+  kind: "generic" | "buildout" = "generic") {
+  return { event: `${kind}_enrichment_failure`, schema: `cre-${kind}-enrichment-observation/v1`,
     claim: witness(item), failure, sourceFreshness: "unverified", cacheDisposition: "unverified" };
 }
 

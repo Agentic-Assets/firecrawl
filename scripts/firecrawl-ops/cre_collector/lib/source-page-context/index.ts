@@ -25,6 +25,14 @@ export function captureSourcePageContext(html: string, options: {
     const nodes = $(selector).toArray();
     return { values: nodes.slice(0, MAX_ITEMS).map((node) => map($(node))), omitted: Math.max(0, nodes.length - MAX_ITEMS) };
   };
+  const nativeAttributes = <Name extends string>(node: cheerio.Cheerio<any>, names: readonly Name[]) => {
+    const attributes: Partial<Record<Name, string>> = {};
+    for (const name of names) {
+      const value = node.attr(name);
+      if (value !== undefined) attributes[name] = bounded(value);
+    }
+    return attributes;
+  };
   const scripts = capture('script[type="application/ld+json"], script[type="application/json"]', (node) => ({
     type: node.attr("type") === undefined ? null : bounded(node.attr("type")!), text: bounded(node.text()),
   }));
@@ -33,13 +41,17 @@ export function captureSourcePageContext(html: string, options: {
   const documentLinks = capture("link[rel]", (node) => ({
     rel: node.attr("rel") === undefined ? null : bounded(node.attr("rel")!),
     href: node.attr("href") === undefined ? null : bounded(node.attr("href")!),
+    ...nativeAttributes(node, ["type", "title"]),
   }));
   const metadata = capture("meta", (node) => ({
     name: node.attr("name") === undefined ? null : bounded(node.attr("name")!),
     property: node.attr("property") === undefined ? null : bounded(node.attr("property")!),
     content: node.attr("content") === undefined ? null : bounded(node.attr("content")!),
   }));
-  const links = capture("a", (node) => ({ href: node.attr("href") === undefined ? null : bounded(node.attr("href")!), text: bounded(node.text()) }));
+  const links = capture("a", (node) => ({
+    href: node.attr("href") === undefined ? null : bounded(node.attr("href")!), text: bounded(node.text()),
+    ...nativeAttributes(node, ["title", "aria-label", "download", "type"]),
+  }));
   const images = capture("img", (node) => ({ src: node.attr("src") === undefined ? null : bounded(node.attr("src")!), alt: node.attr("alt") === undefined ? null : bounded(node.attr("alt")!) }));
   return {
     schema: "cre-source-page-context/v1" as const,

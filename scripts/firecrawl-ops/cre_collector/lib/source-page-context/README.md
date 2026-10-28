@@ -11,6 +11,14 @@ helper provides its own bounds. Raw links remain source assertions; identity and
 visibility are unverified. This context is not a listing qualification or an
 admission decision.
 
+Anchor context also retains supplied `title`, `aria-label`, `download`, and
+`type` attributes under their original HTML names, including empty strings.
+`documentLinks` retains supplied `type` and `title`. Absent optional attributes
+stay absent. These values share the existing text budget and omission counters;
+they are source hints for offline document discovery, not verified MIME types,
+download results, original file names or authority to fetch a link. No URL is
+resolved or fetched by this helper.
+
 `isSourceChallengeShell` applies only the existing Foundry title, first-heading
 and first 3,000 body-text character challenge/error signals. A false result does
 not prove accessibility or absence of other challenges. Foundry's wrapper keeps

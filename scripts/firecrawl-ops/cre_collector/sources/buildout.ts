@@ -930,10 +930,12 @@ export function buildoutDetailDocIsUsable(
 // the input url (URL-keyed completion) plus the harvested media/links/documents/
 // images and full-page markdown. Returns null on a derivation or scrape failure
 // so the worker leaves the claim queued. NOT used by the bulk collect path.
-export async function enrichBuildoutDetail(
+export async function enrichBuildoutDetailObserved(
   sourceKey: string,
   listingUrl: string,
-  detailConfig?: BuildoutDetailConfig
+  detailConfig?: BuildoutDetailConfig,
+  onDocument?: (doc: Awaited<ReturnType<typeof scrapeDoc>>, pageUrl: string,
+    qualification: "usable_detail" | "rejected_missing_detail_shell") => void
 ): Promise<any | null> {
   const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl, detailConfig);
   if (!iframeUrl) {
@@ -951,7 +953,13 @@ export async function enrichBuildoutDetail(
     console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
     return null;
   }
-  if (!buildoutDetailDocIsUsable(doc)) {
+  const usable = buildoutDetailDocIsUsable(doc);
+  // Retain the returned response separately from canonical qualification.
+  if (onDocument) {
+    try { onDocument(doc, iframeUrl, usable ? "usable_detail" : "rejected_missing_detail_shell"); }
+    catch { /* Canonical mapping remains independent. */ }
+  }
+  if (!usable) {
     console.error(
       `  enrich/buildout(${sourceKey}): rejected missing-detail shell for ${listingUrl}`
     );
@@ -990,6 +998,14 @@ export async function enrichBuildoutDetail(
         ? "recorded_detail_observation" : "collector_result_read_time",
     },
   };
+}
+
+export async function enrichBuildoutDetail(
+  sourceKey: string,
+  listingUrl: string,
+  detailConfig?: BuildoutDetailConfig
+): Promise<any | null> {
+  return enrichBuildoutDetailObserved(sourceKey, listingUrl, detailConfig);
 }
 
 // --- Pure listing builder (exported for unit testing) ---

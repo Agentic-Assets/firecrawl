@@ -129,3 +129,119 @@ def test_source_labelled_plural_document_roles_are_candidates(label):
     assert len(result['candidates']) == 1
     assert result['candidates'][0]['occurrences'][0]['labels']['text'] == label
     assert result['candidates'][0]['fetch_authority'] is False
+
+
+def test_generic_page_and_scraped_fields_retain_72_mixed_document_witnesses():
+    value = artifact()
+    value["listings"] = []
+    page = {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/page/",
+            "links": [], "documentLinks": []}
+    scraped = {"links": [], "attributes": [{"selector": "a.download", "attribute": "href", "values": []}]}
+    for index in range(18):
+        page["links"].append({"href": f"https://docs.example.test/anchor-{index}",
+                              "text": "", "aria-label": "Offering memorandum", "download": None, "type": None})
+        page["documentLinks"].append({"href": f"https://docs.example.test/meta-{index}",
+                                      "rel": "alternate", "type": "application/pdf", "title": None})
+        scraped["links"].append(f"https://docs.example.test/link-{index}.PDF?view=1")
+        scraped["attributes"][0]["values"].append(f"https://docs.example.test/attribute-{index}.xlsx")
+    page["links"].append({"href": "https://docs.example.test/anchor-0", "text": "Brochure", "download": ""})
+    page["links"].append({"href": "relative.pdf", "text": "", "download": "", "type": None})
+    page["links"].append({"href": "https://docs.example.test/contact", "text": "Contact", "download": None})
+    value["sources"][0]["retainedObservations"] = [{
+        "event": "generic_enrichment_observation", "schema": "cre-generic-enrichment-observation/v1",
+        "claim": {"sourceKey": "svn", "externalId": "synthetic", "url": "https://example.test/claim",
+                  "transaction": "sale", "identity": "unverified"},
+        "pageContext": page, "scrapedDoc": scraped}]
+    result = document_candidates.discover(plan_for(value))
+    assert len(result["candidates"]) == 73
+    duplicate = next(candidate for candidate in result["candidates"] if candidate["url"].endswith("/anchor-0"))
+    assert len(duplicate["occurrences"]) == 2
+    assert duplicate["occurrences"][0]["labels"]["aria-label"] == "Offering memorandum"
+    assert any(witness["fields"].get("externalId") == "synthetic" and witness["fields"].get("transaction") == "sale"
+               and witness["json_pointer"].endswith("/claim")
+               for witness in duplicate["occurrences"][0]["identity_witnesses"])
+    attribute = next(candidate for candidate in result["candidates"] if candidate["url"].endswith("attribute-0.xlsx"))
+    assert attribute["occurrences"][0]["labels"] == {"selector": "a.download", "attribute": "href"}
+    relative = next(candidate for candidate in result["candidates"] if candidate["url"].endswith("/page/relative.pdf"))
+    assert relative["occurrences"][0]["resolution"]["base"] == "https://example.test/page/"
+    assert relative["occurrences"][0]["resolution"]["verification"] == "unverified"
+    assert not any(candidate["url"].endswith("/contact") for candidate in result["candidates"])
+    assert all(candidate["fetch_authority"] is False for candidate in result["candidates"])
+    from test_document_acquisition_policy import preflight
+    selection = preflight(plan_for(value), result)
+    relative_index = result["candidates"].index(relative)
+    assert {"candidate_index": relative_index, "reason": "relative_only"} in selection["exclusions"]
+
+
+def test_document_signals_preserve_labels_and_do_not_promote_preview():
+    value = artifact()
+    value["listings"] = [{"sourceKey": "svn", "documentPreview": "https://docs.example.test/preview.jpg",
+                           "links": [{"href": "https://docs.example.test/download", "download": ""},
+                                     {"url": "https://docs.example.test/mime", "type": "application/pdf; charset=binary"},
+                                     {"url": "https://docs.example.test/photo.png", "type": "image/png"}],
+                           "attributes": [{"selector": "a.download", "attribute": "href",
+                                           "values": ["https://docs.example.test/not-evidenced"]}]}]
+    value["sources"][0]["retainedObservations"] = []
+    result = document_candidates.discover(plan_for(value))
+    assert {candidate["url"] for candidate in result["candidates"]} == {
+        "https://docs.example.test/download", "https://docs.example.test/mime"}
+    assert result["candidates"][0]["occurrences"][0]["labels"]["download"] == ""
+
+
+def test_buildout_requested_page_and_claim_remain_distinct_witnesses():
+    value = artifact()
+    value["listings"] = []
+    value["sources"][0]["retainedObservations"] = [{
+        "schema": "cre-buildout-enrichment-observation/v1",
+        "capturedAt": "2026-10-28T11:00:00Z", "captureClock": "collector_after_scrape_return",
+        "qualification": "rejected_missing_detail_shell",
+        "claim": {"sourceKey": "svn", "externalId": "synthetic", "url": "https://example.test/claim",
+                  "transaction": "sale"},
+        "requestedPageUrl": "https://example.test/iframe/page/",
+        "pageContext": {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/iframe/page/",
+                        "detailObservedAt": "2026-10-28T11:00:00Z",
+                        "links": [{"href": "relative.pdf", "text": ""}]},
+        "scrapedDoc": {"links": ["../scraped.pdf"], "attributes": [
+            {"selector": "a", "attribute": "href", "values": ["file.xlsx"]},
+            {"selector": "a", "attribute": "price", "values": ["wrong.pdf"]}]},
+        "unknown": {"attributes": [{"selector": "a", "attribute": "href", "values": ["other.pdf"]}]}}]
+    result = document_candidates.discover(plan_for(value))
+    candidate = next(item for item in result["candidates"] if item["url"].endswith("/page/relative.pdf"))
+    assert candidate["url"] == "https://example.test/iframe/page/relative.pdf"
+    occurrence = candidate["occurrences"][0]
+    assert occurrence["resolution"]["base"] == "https://example.test/iframe/page/"
+    assert any(item["fields"].get("externalId") == "synthetic" for item in occurrence["identity_witnesses"])
+    assert any(item["fields"].get("requestedPageUrl") == "https://example.test/iframe/page/"
+               for item in occurrence["identity_witnesses"])
+    assert {item["url"] for item in result["candidates"]} == {
+        "https://example.test/iframe/page/relative.pdf", "https://example.test/iframe/scraped.pdf",
+        "https://example.test/iframe/page/file.xlsx"}
+    scraped = next(item for item in result["candidates"] if item["url"].endswith("/scraped.pdf"))
+    witnesses = scraped["occurrences"][0]["identity_witnesses"]
+    assert any(item["fields"].get("detailObservedAt") == "2026-10-28T11:00:00Z"
+               and item["json_pointer"].endswith("/pageContext") for item in witnesses)
+    assert any(item["fields"].get("qualification") == "rejected_missing_detail_shell"
+               and item["fields"].get("captureClock") == "collector_after_scrape_return" for item in witnesses)
+
+
+def test_conflicting_sibling_page_base_does_not_fall_back_to_claim_url():
+    value = artifact()
+    value["listings"] = []
+    value["sources"][0]["retainedObservations"] = [{
+        "schema": "cre-buildout-enrichment-observation/v1",
+        "claim": {"sourceKey": "svn", "url": "https://example.test/claim/"},
+        "requestedPageUrl": "https://example.test/iframe/",
+        "pageContext": {"schema": "cre-source-page-context/v1", "sourceUrl": "https://example.test/iframe/",
+                        "requestedUrl": "https://example.test/different/"},
+        "scrapedDoc": {"links": ["relative.pdf"], "attributes": [
+            {"selector": "a", "attribute": "href", "values": ["relative.xlsx"]}]}}]
+    result = document_candidates.discover(plan_for(value))
+    assert result["candidates"] == [] and len(result["excluded"]) == 2
+
+
+def test_unrelated_native_attributes_never_become_scraped_attribute_candidates():
+    value = artifact()
+    value["sources"][0]["retainedObservations"] = []
+    value["listings"] = [{"sourceKey": "svn", "attributes": [
+        {"selector": "a", "attribute": "href", "values": ["https://docs.example.test/unrelated.pdf"]}]}]
+    assert document_candidates.discover(plan_for(value))["candidates"] == []

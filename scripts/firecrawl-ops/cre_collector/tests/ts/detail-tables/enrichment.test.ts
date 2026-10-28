@@ -4,9 +4,58 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { captureDetailTables } from "../../../lib/detail-tables/index.js";
 import { firecrawl } from "../../../lib/scrape.js";
-import { groupEnrichItems, runEnrichGroups } from "../../../lib/enrich.js";
+import { buildoutEnricherFor, groupEnrichItems, runEnrichGroups } from "../../../lib/enrich.js";
 import { enrichBuildoutDetail } from "../../../sources/buildout.js";
 import { REGISTERED_BUILDOUT_FIRMS } from "../../../sources/buildout-registry.js";
+
+test("Buildout retains its usable iframe scrape as unqualified claim evidence", async () => {
+  const original = firecrawl.scrape;
+  const config = REGISTERED_BUILDOUT_FIRMS.find(firm => firm.sourceKey === "faris-lee")!.detailConfig!;
+  const url = "https://farislee.com/listings/?propertyId=1135400-sale";
+  let calls = 0;
+  let requested = "";
+  (firecrawl as any).scrape = async (target: string) => {
+    calls++; requested = target;
+    return { rawHtml: '<h1>Detail</h1><table><tr><td>Native value</td></tr></table>',
+      markdown: "Native markdown", links: [], metadata: { enabled: false, optional: null } };
+  };
+  try {
+    const claim = { sourceKey: "faris-lee", externalId: "1135400", url, transaction: "sale" as const };
+    const result = await runEnrichGroups(groupEnrichItems([claim]),
+      () => ({ enricher: buildoutEnricherFor(config), label: "bespoke" }), () => "Faris Lee");
+    assert.equal(calls, 1);
+    assert.equal(result.listings[0].url, url);
+    const evidence = result.sources[0].retainedObservations[0];
+    assert.equal(evidence.claim.url, url);
+    assert.equal(evidence.claim.externalId, "1135400");
+    assert.equal(evidence.claim.transaction, "sale");
+    assert.equal(evidence.requestedPageUrl, requested);
+    assert.equal(evidence.pageContext.sourceUrl, requested);
+    assert.equal(evidence.qualification, "usable_detail");
+    assert.deepEqual(evidence.scrapedDoc.metadata, { enabled: false, optional: null });
+    assert.equal(evidence.sourceFreshness, "unverified");
+  } finally { (firecrawl as any).scrape = original; }
+});
+
+test("Buildout rejected missing-detail page remains evidence without a listing", async () => {
+  const original = firecrawl.scrape;
+  const config = REGISTERED_BUILDOUT_FIRMS.find(firm => firm.sourceKey === "faris-lee")!.detailConfig!;
+  const url = "https://farislee.com/listings/?propertyId=1135400-sale";
+  let calls = 0;
+  (firecrawl as any).scrape = async () => {
+    calls++;
+    return { rawHtml: "<h1>Sorry, we can't find the listing</h1><p>Partial source content</p>", markdown: "Partial source content", links: [] };
+  };
+  try {
+    const result = await buildoutEnricherFor(config).enrichWithEvidence!([{ sourceKey: "faris-lee", externalId: "1135400", url }]);
+    assert.deepEqual(result.listings, []);
+    assert.equal(calls, 1);
+    assert.equal(result.retainedObservations.length, 1);
+    assert.equal((result.retainedObservations[0] as any).qualification, "rejected_missing_detail_shell");
+    assert.equal((result.retainedObservations[0] as any).scrapedDoc.markdown, "Partial source content");
+    assert.equal((result.retainedObservations[0] as any).claim.identity, "unverified");
+  } finally { (firecrawl as any).scrape = original; }
+});
 
 test("Buildout enrichment captures native tables without promoting financial fields", async () => {
   const original = firecrawl.scrape;

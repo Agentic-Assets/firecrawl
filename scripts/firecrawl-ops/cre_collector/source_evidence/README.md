@@ -29,6 +29,16 @@ current test hold and not deployed. The draft refresh and series hooks described
 below are explicit opt-ins, disabled by default; manual extraction starts with
 an already acquired local file as described in `../document_text/README.md`.
 
+Draft discovery also recognizes document suffix hints in scraped links and
+captured URL-bearing attribute values, and explicit document labels, MIME types or download
+attributes in retained links. It retains original references, source labels and
+unverified claim witnesses. Scraped links keep sibling page-context clocks and
+the collector's qualification result as unverified observations; neither is a
+fresh document download clock. Relative-only references remain excluded by the
+acquisition policy; previews are not assumed to be original documents. These
+discovery additions are unverified under the current hold; suffixes and MIME
+types do not guarantee that AnyDoc can convert a file.
+
 Draft acquisition-policy preflight adds a separately bounded, operator-asserted
 selection from an existing plan and candidate manifest:
 

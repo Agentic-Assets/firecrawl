@@ -11,6 +11,18 @@ The page-context `detailObservedAt` and table timestamps, when present, carry
 that same collector receive clock, never a provider modification timestamp or
 evidence of a fresh fetch. `pageContextClockOrigin` records this explicitly.
 
+Buildout detail enrichment uses the same returned iframe scrape for its existing
+listing mapping and a separate bounded observation. The claim URL remains a
+claim witness; `requestedPageUrl` and page-context source URL identify the
+derived iframe request and do not assert canonical identity. The observation
+labels whether the existing detail guard accepted the response or rejected a
+missing-detail shell; a rejected response never produces a canonical row or
+proves listing absence. Existing shell and detail URL guards remain in force.
+Any returned provider detail observation is
+separate from the collector receive clock. Credential-bearing material and
+source-specific withholding remain subject to existing private admission
+checks; this local channel does not itself authorize database retention.
+
 The shared page-context helper retains bounded source-native scripts, metadata,
 links, images and table observations. HTML above 2,000,000 UTF-8 bytes is not
 parsed for context. Each supplied JSON-serializable `ScrapedDoc` field is kept
@@ -33,3 +45,25 @@ Targeted enrichment artifacts remain private local custody. The enrichment
 worker does not automatically append this observation channel to the evidence
 database. Observations alone never complete a canonical queue claim; absent
 canonical output keeps the worker's existing retry and dead-letter accounting.
+
+## Existing storage planning path
+
+For an existing single-source enrichment artifact, the ordinary private evidence
+CLI can already convert and plan its listing rows and retained observations:
+
+```sh
+python3 -m source_evidence.cli convert-collector --artifact /private/enriched-svn.json --source-key svn --out /private/svn-observation.json
+python3 -m source_evidence.cli plan --artifact /private/svn-observation.json --source-key svn --out /private/svn-plan.json
+```
+
+Run from the collector directory only when the operator's check hold is lifted.
+These commands are offline planning, not a database append. Source, credential,
+withholding and size refusals still apply; a successful conversion is not an
+admission receipt. Mixed-source artifacts intentionally refuse this path. A
+source-filtered queue run can produce a single-source artifact; never relabel or
+drop other source groups to make a mixed artifact pass.
+
+Automatic retention still needs the existing foreground attempt, settlement,
+policy binding and durable append/replay state around that artifact. Do not add
+an untracked database append to `cre_enrich.py`, a second queue, or a background
+writer. The production credential review in AGENTIC-5040 is a separate gate.
