@@ -15,6 +15,7 @@ CREDENTIAL_QUERY_KEYS = {"token", "access_token", "api_key", "apikey", "authoriz
                          "signature", "sig", "x-amz-signature", "x-amz-credential",
                          "x-goog-signature", "x-goog-credential", "client_secret"}
 URL_TOKEN = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+MARKDOWN_URL_LABEL = re.compile(r"(\[https?://[^\s<>\"'`\[\]]+)\]\((?=https?://)", re.IGNORECASE)
 
 
 def encoded(value):
@@ -324,13 +325,19 @@ def validate_content_policy(plan_value):
                                 and declared != plan_value["source_key"]):
                             raise ValueError("conflicting protected source declaration")
                 pending.extend(item.keys())
-                pending.extend(item.values())
+                # The validated complete document is scanned separately. A
+                # chunk can split a URL or Markdown delimiter at any byte.
+                pending.extend(value for key, value in item.items()
+                               if not (document_text is not None and item is row and key == "extracted_text"))
             elif isinstance(item, list):
                 if len(item) + len(pending) + inspected > 100000:
                     raise ValueError("source policy inspection exceeds limit")
                 pending.extend(item)
             elif isinstance(item, str):
-                for match in URL_TOKEN.finditer(item):
+                # A URL used as a Markdown link label and its target are two
+                # references; keep both subject to the same source policy.
+                scan_text = MARKDOWN_URL_LABEL.sub(r"\1] (", item)
+                for match in URL_TOKEN.finditer(scan_text):
                     url = match.group().rstrip(".,;:!?)]}")
                     url = re.sub(r"^https?://", lambda m: m.group().lower(), url, flags=re.IGNORECASE)
                     http_url(url)
