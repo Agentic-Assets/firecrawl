@@ -11,16 +11,9 @@ never the real repo-root lock path.
 
 from __future__ import annotations
 
-import importlib.util
 import os
-from pathlib import Path
 
-# Pytest also loads scoped conftest modules. Import the guard's actual source,
-# rather than whichever scoped module most recently occupied "conftest".
-_spec = importlib.util.spec_from_file_location("cre_root_lock_guard", Path(__file__).with_name("conftest.py"))
-assert _spec is not None and _spec.loader is not None
-_conftest = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_conftest)
+import cre_collector_root_conftest as _conftest
 
 
 def _write_authority(path, pid: int, state: str = "normal") -> None:
