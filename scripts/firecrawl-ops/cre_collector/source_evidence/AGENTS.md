@@ -92,8 +92,9 @@ memory limit. The pipeline seals private context, artifact, binding and plan
 before policy-aware cleanup of rechecked original copies. Ambiguous or
 interrupted work requires reconciliation and never resumes automatically.
 One selection is allowed per source attempt; draft version-2 selection combines
-multi-page native candidates. This explicit library is not wired to regular
-collector runs, a CLI, DB append, a writer pump or a scheduler. It is unverified
+multi-page native candidates. Draft refresh and series hooks are explicitly
+opted in and disabled by default; no document DB append, writer pump, queue or
+scheduler is activated. They are unverified and not deployed
 under the hold; do not claim publisher identity, visibility, complete coverage
 or extraction accuracy.
 
@@ -113,6 +114,21 @@ attempt and one serial budget. Group exact URLs but retain every occurrence's
 plan, capture, clock, labels and unverified identity witnesses; do not infer a
 property merge. All page plans remain subject to seal validation. This is
 unverified under the hold.
+
+Draft refresh and series document acquisition opts in with policy path, digest and
+Node executable alongside automatic source evidence. Preserve these bindings on
+child invocation and resume; reconcile uncertain or paused prior document work
+before another attempt. Serial and pipeline collection invoke document work only
+after collection returns and workers settle, under the foreground lock and before
+canonical source-failure checks. Bind source, code, target and source-settlement
+marker on resume. Revalidated seals and durable saves are recovery barriers.
+Owned-process settlement precedes conversion completion; unknown cleanup keeps
+the parent barrier. New-session escapees are outside that guarantee. Reserved
+phase time includes fetch startup/reap and converter/reap; it is not a native-I/O
+deadline. The integration is disabled by default, not deployed, and
+unverified and does not bypass credential admission.
+Exact known no-data remains incomplete but does not alone block an otherwise
+authorized new source attempt; never restart its old document attempt.
 
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new

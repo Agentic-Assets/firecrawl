@@ -10,8 +10,9 @@ coverage and is not a claim of page completeness, table accuracy, visibility,
 listing identity, or source permission. Original bytes are not retained here.
 
 The draft offline document-candidate discovery in `../source_evidence/` does not
-download documents or invoke AnyDoc. Full-source runs do not automatically
-extract linked documents. Discovery is unverified under the test hold; neither
+download documents or invoke AnyDoc. Draft refresh and series hooks explicitly
+opt in to linked-document extraction and are disabled by default, unverified
+and not deployed. Discovery is unverified under the test hold; neither
 it nor a candidate URL proves public access, publication, or permission.
 The draft acquisition-policy preflight is also offline and does not invoke the
 adapter. Preserve precise actual download times in a separate receipt; do not
@@ -28,8 +29,8 @@ transfer framing. Phase deadlines and grace do not bound all host activity or
 native memory. Ambiguous
 or interrupted work requires reconciliation without automatic resume. One
 selection is supported per source attempt; draft version-2 selection combines
-multi-page candidates. There is no regular collector hook, CLI, database append,
-writer pump or scheduler activation. These changes remain unverified under the
+multi-page candidates. Draft refresh and series hooks do not activate document
+database append, a writer pump, queue or scheduler. These changes remain unverified under the
 test hold and establish no publication permission, coverage or accuracy.
 
 Draft recovery verifies the private seal and optional expected marker. No-spawn
@@ -44,6 +45,20 @@ identify who removed a copy.
 Draft batch selection uses one serial budget for ordered source-page plans and
 retains each occurrence's source association. A shared document URL does not
 prove property identity. This behavior remains unverified under the hold.
+
+Draft refresh and series opt-in binds a document policy, hash and Node executable to
+automatic source evidence and its checkpoint. Preserve the bindings on resume;
+do not start another attempt with uncertain document work. This is unverified,
+not deployed, and does not bypass credential admission. Both serial and pipeline
+paths defer document work until collection returns and workers settle under the
+owner lock and before canonical source-failure checks. Resume binds source,
+code, target and the source-settlement marker; seal revalidation and durable
+saves are recovery barriers. Owned-process settlement precedes completion marker
+publication; unknown cleanup keeps the parent barrier. Descendants escaping to
+a new session are outside that guarantee. Reserved phase time includes fetch
+startup/reap and converter/reap, not a native-I/O deadline.
+Exact known no-data remains incomplete but need not block an otherwise authorized
+new source attempt; the old document attempt is not restarted.
 
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private

@@ -1,14 +1,18 @@
 """Supervise one private fetch job; no policy or acquisition authority is inferred."""
 
 import os
+import signal
 import stat
 import subprocess
 import sys
 from pathlib import Path
 
+from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
 from source_evidence import acquisition, automatic, document_acquisition, document_fetch_worker, events
+from source_evidence.document_process import DocumentProcessCleanupUnknown
 
 STARTUP_GRACE_SECONDS = 5
+REAP_GRACE_SECONDS = 5
 
 
 def _private_directory(path):
@@ -58,15 +62,41 @@ def run(job, job_path, outdir):
         result = {"job_sha256": digest, "directory": str(output)}
         command = [sys.executable, "-m", "source_evidence.document_fetch_worker", "--job", str(path),
                    "--job-sha256", digest, "--out-dir", str(output)]
+        process = None
         try:
-            process = subprocess.run(command, cwd=str(Path(__file__).resolve().parent.parent),
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     timeout=job["timeout_seconds"] + STARTUP_GRACE_SECONDS, check=False)
+            process = subprocess.Popen(command, cwd=str(Path(__file__).resolve().parent.parent),
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+                                       start_new_session=True)
+            owned = OwnedProcessGroup.from_spawn(process)
+        except OSError as error:
+            if process is None:
+                return {**result, "state": "worker_failed_ambiguous"}
+            raise DocumentProcessCleanupUnknown("document fetch ownership unavailable") from error
+        except BaseException as error:
+            raise DocumentProcessCleanupUnknown("document fetch spawn or ownership interrupted") from error
+        timed_out = False
+        interrupted = None
+        try:
+            code = process.wait(timeout=job["timeout_seconds"] + STARTUP_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
+            timed_out = True
+            code = None
+        except BaseException as error:
+            interrupted = error
+            code = None
+        try:
+            settlement = settle_owned_groups([owned], grace_seconds=0, initial_signal=signal.SIGKILL,
+                                             kill_seconds=REAP_GRACE_SECONDS)
+        except BaseException as error:
+            raise DocumentProcessCleanupUnknown("document fetch settlement unavailable") from (interrupted or error)
+        if not settlement.settled:
+            raise DocumentProcessCleanupUnknown("document fetch settlement unknown") from interrupted
+        if interrupted is not None:
+            raise interrupted
+        if timed_out:
             return {**result, "state": "fetch_outcome_unknown"}
-        except OSError:
-            return {**result, "state": "worker_failed_ambiguous"}
-        if process.returncode != 0:
+        if code != 0:
             return {**result, "state": "worker_failed_ambiguous"}
         directory = _private_directory(output)
         try:

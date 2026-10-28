@@ -139,6 +139,7 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
     save(run_dir, manifest)
     started = time.monotonic()
     phase_seconds = (selected["limits"]["document_timeout_seconds"] + doc_fetch_process.STARTUP_GRACE_SECONDS
+                     + doc_fetch_process.REAP_GRACE_SECONDS
                      + EXTRACTION_SECONDS + doc_extract_process.REAP_GRACE_SECONDS)
     try:
         for item in selected["documents"]:

@@ -59,8 +59,8 @@ def candidate_refusal(candidate, allowed_hosts):
     return None
 
 
-def prepare(plan, candidates, policy_raw, *, expected_policy_sha256, target_sha256, collector_git_sha):
-    """Return a bounded selection; this function performs no acquisition."""
+def validate_policy(policy_raw, *, expected_policy_sha256, target_sha256, collector_git_sha):
+    """Validate a bounded operator assertion without acquisition or I/O."""
     if not _hex(expected_policy_sha256, 64) or not _hex(target_sha256, 64) or not _hex(collector_git_sha, 40):
         raise ValueError("invalid asserted policy, target or collector binding")
     if not isinstance(policy_raw, bytes) or len(policy_raw) > 16384 or events.sha256(policy_raw) != expected_policy_sha256:
@@ -91,6 +91,14 @@ def prepare(plan, candidates, policy_raw, *, expected_policy_sha256, target_sha2
     for key, (minimum, maximum) in LIMITS.items():
         if type(limits[key]) is not int or not minimum <= limits[key] <= maximum:
             raise ValueError("invalid acquisition limit")
+    return policy
+
+
+def prepare(plan, candidates, policy_raw, *, expected_policy_sha256, target_sha256, collector_git_sha):
+    """Return a bounded selection; this function performs no acquisition."""
+    policy = validate_policy(policy_raw, expected_policy_sha256=expected_policy_sha256,
+                             target_sha256=target_sha256, collector_git_sha=collector_git_sha)
+    sources, hosts, limits = policy["source_keys"], policy["allowed_hosts"], policy["limits"]
 
     events.validate_content_policy(plan)
     actual = document_candidates.discover(plan)

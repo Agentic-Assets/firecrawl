@@ -4,8 +4,9 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 This independent adapter accepts a file already acquired by an authorized process. It never fetches the source URL and does not write to Supabase or the listing collector. Install its pinned dependency with `npm ci --ignore-scripts` in this directory, then run:
 
-Full-source collection does not currently download or automatically extract
-linked documents. The draft `source_evidence.cli discover-documents` command
+Draft refresh and series hooks can opt into linked-document acquisition; they
+are disabled by default, unverified under the hold and not deployed. The draft
+`source_evidence.cli discover-documents` command
 identifies candidate links in a saved, validated evidence plan; it performs no
 download or extraction. It is unverified under the current test hold and is not
 deployment or source-access evidence. Manual AnyDoc execution starts with an
@@ -31,8 +32,8 @@ delivered to the application, not network bytes, buffered prefetch, HTTP headers
 or transfer framing. Ambiguous or interrupted work keeps
 its private files for reconciliation and never automatically resumes. One
 selection is supported per source attempt; draft version-2 selection combines
-native-page candidates. This library is not connected to regular collection, a
-CLI, database append, writer pump or scheduler. It is unverified under the
+native-page candidates. The draft refresh and series opt-ins do not activate a
+document database append, writer pump, queue or scheduler. They are unverified under the
 test hold and does not prove publisher permission, coverage or text accuracy.
 
 Draft recovery verifies an exact private seal and optional expected marker.
@@ -53,6 +54,23 @@ from several source pages while preserving each page's plan, capture and clock.
 One serial acquisition budget covers the selection; shared URLs do not prove
 the occurrences identify the same property. Batch behavior is unverified under
 the hold.
+
+Draft checkpoint-refresh and series flags opt into the bounded document path with an
+explicit policy, its hash and a Node executable alongside source evidence.
+Resume preserves those bindings and uncertain child document work requires
+reconciliation before another attempt. Serial and pipeline paths defer document
+work until collection returns and workers settle under the owner lock, before
+canonical source-failure checks, so accessible partial evidence can be processed.
+Resume binds source, code, target and the source-settlement marker; seal
+revalidation and durable saves govern recovery. This is unverified and not deployed;
+credential admission remains a separate gate.
+An exact known no-data outcome remains incomplete but can permit an otherwise
+authorized new source attempt without replaying the old document attempt.
+
+Owned-process settlement is checked before publishing conversion completion;
+unknown cleanup keeps the parent recovery barrier. New-session escapees are
+outside that guarantee. Reserved phase time includes fetch startup and reap and
+converter timeout and reap; it is not a native-I/O or whole-host deadline.
 
 ```sh
 node extract.mjs /private/input.pdf /private/provenance.json /private/new-artifact.json

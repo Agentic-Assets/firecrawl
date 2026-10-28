@@ -25,9 +25,9 @@ explicit page-context URL as an unverified base. Candidate discovery does not
 prove accessibility, publication, permission, document completeness, or a
 physical-property association. It makes no network or database call and does
 not download or extract documents. The command is a draft, unverified under the
-current test hold and not deployed. Current full-source runs do not automatically
-download linked documents or invoke AnyDoc; manual extraction starts with an
-already acquired local file as described in `../document_text/README.md`.
+current test hold and not deployed. The draft refresh and series hooks described
+below are explicit opt-ins, disabled by default; manual extraction starts with
+an already acquired local file as described in `../document_text/README.md`.
 
 Draft acquisition-policy preflight adds a separately bounded, operator-asserted
 selection from an existing plan and candidate manifest:
@@ -54,8 +54,8 @@ completed download or extraction. This draft remains unverified under the test
 hold and is not deployed.
 
 Draft `document_fetch` and `document_acquisition` provide a bounded direct
-transport and a separate receipt validator, but are not wired into full-source
-collection. The transport checks the allowed host and public destination for
+transport and a separate receipt validator, used by the draft opt-in refresh and
+series hooks. The transport checks the allowed host and public destination for
 each request and redirect, and requires an external worker to enforce the
 absolute deadline. The draft one-shot supervisor binds a private job by hash,
 limits the child to the document deadline plus five seconds of startup grace,
@@ -70,8 +70,8 @@ unverified. Receipt metadata alone does not prove redirect locations, aggregate
 budget enforcement, original-file retention, or that extraction actually ran.
 Extraction binding is explicitly caller-asserted and does not rerun a parser.
 No cumulative run budget is enforced by the one-shot supervisor itself. The
-draft foreground library below connects it to local AnyDoc; neither is wired
-into regular collection or deployed.
+draft foreground library below connects it to local AnyDoc. The hooks are
+disabled by default, unverified under the hold and not deployed.
 
 Draft `document_pipeline.run` explicitly connects a rederived selection and
 sealed source plan to the supervised fetch and local AnyDoc adapter. Its caller
@@ -82,8 +82,12 @@ attempt records intent, reservations and outcomes. Reservations conservatively
 charge the maximum body bytes delivered to the application plus one oversize
 probe byte, including failed and unknown attempts. They do not bound network
 bytes, buffered prefetch, HTTP headers or transfer framing.
-The fetch worker and converter process group have phase timeouts and cleanup
-grace periods. These are not a whole-host deadline or a native-memory limit.
+The reserved phase includes fetch startup and reap grace and converter timeout
+and reap grace. These are not a whole-host or native-I/O deadline or a
+native-memory limit. Owned-process settlement is checked before publishing a
+conversion completion marker; an unknown cleanup outcome retains the parent
+recovery barrier. Descendants that escape into a new session are outside that
+guarantee.
 
 The bridge rechecks the private job, receipt, actual acquisition clock, body
 hash and size before conversion. It privately seals acquisition context, AnyDoc
@@ -95,10 +99,27 @@ cleanup has its own saved intent and removal state. A sealed 401, 403, 429 or 45
 response stops the selection without another fetch. `keep_unresolved_until_review` retains
 copies for validated failed or OCR-needed extractions; ambiguous or interrupted
 work preserves files and requires reconciliation, with no automatic resume.
-The library does not activate a regular collector hook, CLI, database append,
-writer pump, scheduler or canonical change. It remains unverified under the
+The draft opt-in hooks do not add a document database append, writer pump,
+queue, scheduler or canonical change. They remain unverified under the
 test hold. Its metadata and text do not establish publication permission,
 listing identity, complete coverage or extraction accuracy.
+
+Draft checkpoint-refresh and series integration accepts explicit
+`--source-document-policy`, `--source-document-policy-sha256`, and
+`--source-document-node` alongside automatic source evidence. It binds policy,
+source scope, target, revision and Node path into the series and child; paused
+or uncertain document work requires reconciliation before another attempt.
+Serial and pipeline collection both defer document work until collection
+returns and its workers settle, before canonical source-failure checks so
+accessible partial evidence can be processed; the foreground owner lock remains
+authoritative. Resume binds source scope, code, target and the persisted source
+settlement marker. Revalidated seals and durable checkpoint saves govern recovery;
+unknown process settlement or save outcomes stop progress.
+An exact known no-data outcome remains incomplete, but does not by itself
+require document reconciliation; an otherwise authorized source retry may make a
+new source attempt. The old document attempt is not restarted.
+This integration is unverified, not deployed, and does not resolve the separate
+credential admission gate.
 
 Draft `document_seal.read` verifies an exact private file set, canonical bytes
 and an optional expected marker without rerunning extraction. The caller must

@@ -161,6 +161,7 @@ COHORT_SETTLED_EXIT_CODES = frozenset(
 
 def _cleanup_unknown_in_chain(error: BaseException | None) -> bool:
     """A later guard or evidence failure must not erase uncertain settlement."""
+    from source_evidence.document_process import DocumentProcessCleanupUnknown
     pending = [error]
     seen: set[int] = set()
     while pending:
@@ -168,7 +169,7 @@ def _cleanup_unknown_in_chain(error: BaseException | None) -> bool:
         if current is None or id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, ProcessCleanupUnknown):
+        if isinstance(current, (ProcessCleanupUnknown, DocumentProcessCleanupUnknown)):
             return True
         pending.extend((current.__context__, current.__cause__))
     return False
@@ -3910,6 +3911,7 @@ def _finalize_cohort_collection(
     item.log_handle.close()
     item.attempt["rc"] = rc
     item.attempt["finished_at"] = utc_now()
+    mark_source_document_settlement(manifest, item.attempt)
     if item.attempt.get("native_source_evidence"):
         from source_evidence import native_pages
         native_pages.settle(run_dir, manifest, item.source, item.attempt, save_manifest)
@@ -4099,6 +4101,7 @@ def new_manifest(
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
     automatic_source_evidence: Mapping[str, Any] | None = None,
+    source_document_acquisition: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_workers = resolve_source_workers(pipeline, source_workers)
     now = utc_now()
@@ -4215,6 +4218,8 @@ def new_manifest(
         )
     if automatic_source_evidence is not None:
         manifest["config"]["automatic_source_evidence"] = dict(automatic_source_evidence)
+    if source_document_acquisition is not None:
+        manifest["config"]["source_document_acquisition"] = dict(source_document_acquisition)
     return manifest
 
 
@@ -4240,6 +4245,7 @@ def load_resume_manifest(
     admit_current_inventory_sources: Sequence[str] = (),
     database_target: Mapping[str, str] | None = None,
     automatic_source_evidence: Mapping[str, Any] | None = None,
+    source_document_acquisition: Mapping[str, Any] | None = None,
     max_age_hours: float = DEFAULT_MAX_RESUME_AGE_HOURS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -4281,6 +4287,8 @@ def load_resume_manifest(
     }
     if automatic_source_evidence is not None:
         expected["automatic_source_evidence"] = dict(automatic_source_evidence)
+    if source_document_acquisition is not None:
+        expected["source_document_acquisition"] = dict(source_document_acquisition)
     if pipeline:
         expected["pipeline"] = True
         current_inventory.validate_options(
@@ -4496,6 +4504,36 @@ def pump_source_evidence(run_dir: Path, manifest: dict) -> None:
         save_manifest(run_dir, manifest)
         return
     automatic.pump(run_dir, manifest, save_manifest)
+
+
+def mark_source_document_settlement(manifest: dict, attempt: dict) -> None:
+    """Record only after the owned collection command/group has actually settled."""
+    if not manifest["config"].get("source_document_acquisition"):
+        return
+    if type(attempt.get("rc")) is not int or not attempt.get("finished_at"):
+        raise GlobalStageError("document collection settlement is unavailable")
+    attempt["document_collection_settlement"] = {
+        "schema_version": "cre-document-collection-settlement/v1",
+        "attempt_number": attempt["number"], "collector_git_sha": manifest["collector_git_sha"],
+        "rc": attempt["rc"], "finished_at": attempt["finished_at"],
+    }
+
+
+def pump_source_documents(run_dir: Path, manifest: dict, *, owner_check) -> None:
+    """Drain only on the outer foreground lane after collection/DB workers return."""
+    if not manifest["config"].get("source_document_acquisition"):
+        return
+    owner_check()
+    if git_identity() != (manifest["collector_git_sha"], False):
+        manifest["source_document_acquisition_paused"] = True
+        manifest["source_document_acquisition_status"] = "incomplete"
+        save_manifest(run_dir, manifest)
+        raise GlobalStageError("document collector identity changed")
+    from source_evidence import document_automatic
+    try:
+        document_automatic.pump(run_dir, manifest, save_manifest)
+    finally:
+        owner_check()
 
 
 def _archive_rejected(
@@ -4835,6 +4873,7 @@ def collect_source(
             )
         attempt["rc"] = rc
         attempt["finished_at"] = utc_now()
+        mark_source_document_settlement(manifest, attempt)
         if attempt.get("native_source_evidence"):
             from source_evidence import native_pages
             native_pages.settle(run_dir, manifest, source, attempt, save_manifest)
@@ -7030,6 +7069,13 @@ def render_report(manifest: Mapping[str, Any]) -> str:
             "paused or incomplete; inspect per-attempt receipts." if manifest.get("automatic_source_evidence_paused") or manifest.get("automatic_source_evidence_status") == "incomplete"
             else "enabled; inspect per-attempt receipts for append and no-artifact outcomes."
         ))
+    if (manifest.get("config") or {}).get("source_document_acquisition"):
+        lines.insert(8, "- Private document text: " + (
+            "selected attempts settled; extraction coverage remains unknown."
+            if manifest.get("source_document_acquisition_status") == "settled"
+            and manifest.get("source_document_acquisition_paused") is False
+            else "incomplete or not started; inspect per-attempt document receipts before any resume."
+        ))
     sources = manifest.get("sources") or {}
     for source in (manifest.get("config") or {}).get("sources") or []:
         checkpoint = sources.get(source) or {}
@@ -7152,6 +7198,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-evidence-env-file", default=None)
     parser.add_argument("--source-evidence-target-sha256", default=None)
     parser.add_argument("--source-evidence-replay-unknown", action="store_true")
+    parser.add_argument("--source-document-policy", default=None)
+    parser.add_argument("--source-document-policy-sha256", default=None)
+    parser.add_argument("--source-document-node", default=None)
     parser.add_argument("--sources", default="all")
     parser.add_argument(
         "--transactions",
@@ -7416,6 +7465,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         automatic_source_evidence = configuration(*evidence_options, git_sha, sources)
     if args.source_evidence_replay_unknown and (not args.resume or automatic_source_evidence is None):
         raise RefreshError("evidence replay requires an opted-in checkpoint resume")
+    source_document_acquisition = None
+    document_options = (args.source_document_policy, args.source_document_policy_sha256,
+                        args.source_document_node)
+    if any(document_options):
+        from source_evidence import document_automatic
+        try:
+            source_document_acquisition = document_automatic.configuration(
+                *document_options, automatic_source_evidence, git_sha, sources)
+        except (OSError, ValueError) as exc:
+            raise RefreshError("source document acquisition configuration refused") from exc
     if args.resume:
         supplied = Path(args.resume).expanduser().resolve()
         manifest_path = (
@@ -7445,8 +7504,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             else (),
             database_target=database_target,
             automatic_source_evidence=automatic_source_evidence,
+            source_document_acquisition=source_document_acquisition,
             max_age_hours=args.max_resume_age_hours,
         )
+        if source_document_acquisition is not None:
+            from source_evidence import document_automatic
+            try:
+                document_automatic.require_resume(manifest)
+            except ValueError as exc:
+                raise RefreshError("source document acquisition requires prior-run reconciliation") from exc
         manifest["status"] = "running"
         manifest["resource_stop"] = None
         manifest["error"] = None
@@ -7477,6 +7543,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else (),
             database_target=database_target,
             automatic_source_evidence=automatic_source_evidence,
+            source_document_acquisition=source_document_acquisition,
         )
     # Publish the existing durable recovery barrier before any native child can
     # escape an uncatchable coordinator exit. Only this exact held owner may
@@ -7706,6 +7773,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         resumed=bool(args.resume), owner_check=lock._require_authority,
                     ),
                 )
+                if source_document_acquisition is not None:
+                    set_cpu_guard_context(cpu_guard, phase="source_documents", active_operation="private_document_acquisition")
+                pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
                 if source_failures:
                     raise RefreshError("pipeline source checkpoints remain incomplete: " + ", ".join(source_failures))
             else:
@@ -7719,6 +7789,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     env_file=args.env_file,
                     source_workers=args.source_workers,
                 )
+                if source_document_acquisition is not None:
+                    set_cpu_guard_context(cpu_guard, phase="source_documents", active_operation="private_document_acquisition")
+                pump_source_documents(run_dir, manifest, owner_check=lock._require_authority)
                 if source_failures:
                     raise RefreshError(
                         "source checkpoints remain incomplete: "
@@ -7777,9 +7850,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if automatic_source_evidence is not None:
                 manifest["automatic_source_evidence_status"] = "incomplete" if evidence_incomplete else "settled"
+            documents_incomplete = bool(source_document_acquisition and (
+                manifest.get("source_document_acquisition_paused")
+                or manifest.get("source_document_acquisition_status") != "settled"))
             persist_terminal()
             print(run_dir)
-            return 1 if evidence_incomplete else 0
+            return 1 if evidence_incomplete or documents_incomplete else 0
     except CpuGuardTrip as exc:
         if not lock.held:
             raise

@@ -180,6 +180,7 @@ def series_config(
     source_workers: int | None = None,
     admit_baseline_hold_additively: bool = False,
     automatic_source_evidence: Mapping[str, Any] | None = None,
+    source_document_acquisition: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     import cre_current_inventory_admission as current_inventory
 
@@ -225,6 +226,10 @@ def series_config(
         config["admit_baseline_hold_additively"] = True
     if automatic_source_evidence is not None:
         config["automatic_source_evidence"] = dict(automatic_source_evidence)
+    if source_document_acquisition is not None:
+        if automatic_source_evidence is None:
+            raise ValueError("document acquisition requires automatic source evidence")
+        config["source_document_acquisition"] = dict(source_document_acquisition)
     if pipeline:
         config["pipeline"] = True
         config["current_inventory_admissions"] = current_inventory.configuration_map(admissions, sources, daum_verified_subset=admit_daum_verified_subset, daum_subset_policy=daum_subset_policy)
@@ -608,6 +613,11 @@ def build_checkpoint_argv(
                      "--source-evidence-policy-sha256", evidence["policy_sha256"],
                      "--source-evidence-env-file", evidence["env_file"],
                      "--source-evidence-target-sha256", evidence["target_sha256"]])
+    document = config.get("source_document_acquisition")
+    if document:
+        argv.extend(["--source-document-policy", document["policy_path"],
+                     "--source-document-policy-sha256", document["policy_sha256"],
+                     "--source-document-node", document["node_executable"]])
     if current_subset(config) and not config.get("pipeline"):
         argv.append("--admit-daum-verified-subset")
     elif "current_inventory_admission" in config:
@@ -652,6 +662,8 @@ def _expected_child_config(
         expected["current_inventory_admissions"] = config.get("current_inventory_admissions", {})
     if config.get("automatic_source_evidence") is not None:
         expected["automatic_source_evidence"] = config["automatic_source_evidence"]
+    if config.get("source_document_acquisition") is not None:
+        expected["source_document_acquisition"] = config["source_document_acquisition"]
     if "current_inventory_admission" in config:
         expected["current_inventory_admission"] = config["current_inventory_admission"]
     # Reconciliation also inspects completed historical parent/child pairs.
@@ -871,8 +883,63 @@ def evidence_reconciliation_required(child_manifest: Mapping[str, Any]) -> bool:
     )
 
 
+def document_reconciliation_required(child_manifest: Mapping[str, Any], config: Mapping[str, Any]) -> bool:
+    document = config.get("source_document_acquisition")
+    if not document:
+        return False
+    child_sources = (child_manifest.get("config") or {}).get("sources") or []
+    if not isinstance(child_sources, list) or not child_sources:
+        return True
+    if not any(source in document.get("source_keys", []) for source in child_sources):
+        return False
+    if not _exact_json_equal((child_manifest.get("config") or {}).get("source_document_acquisition"), document):
+        return True
+    from source_evidence.document_automatic import _known_no_data, _settled, reconciliation_required
+    if child_manifest.get("source_document_acquisition_paused") is not False or reconciliation_required(child_manifest):
+        return True
+    status = child_manifest.get("source_document_acquisition_status")
+    if status == "settled":
+        return False
+    if status != "incomplete":
+        return True
+    attempts = []
+    sources = child_manifest.get("sources")
+    if not isinstance(sources, Mapping):
+        return True
+    for source in child_sources:
+        if source not in document.get("source_keys", []):
+            continue
+        checkpoint = sources.get(source)
+        if not isinstance(checkpoint, Mapping) or not isinstance(checkpoint.get("attempts"), list):
+            return True
+        attempts.extend(checkpoint["attempts"])
+    states = [attempt.get("document_source_evidence") if isinstance(attempt, Mapping) else None
+              for attempt in attempts]
+    return (not states or not any(_known_no_data(state) for state in states)
+            or not all(_known_no_data(state) or _settled(state) for state in states))
+
+
+def document_incomplete(child_manifest: Mapping[str, Any], config: Mapping[str, Any]) -> bool:
+    document = config.get("source_document_acquisition")
+    if not document:
+        return False
+    child_sources = (child_manifest.get("config") or {}).get("sources") or []
+    return (not isinstance(child_sources, list) or not child_sources or
+            (any(source in document.get("source_keys", []) for source in child_sources)
+             and (document_reconciliation_required(child_manifest, config)
+                  or child_manifest.get("source_document_acquisition_status") != "settled")))
+
+
+def _pipeline_has_unresolved(child_manifest: Mapping[str, Any], config: Mapping[str, Any]) -> bool:
+    return (evidence_reconciliation_required(child_manifest)
+            or document_reconciliation_required(child_manifest, config)
+            or (config.get("automatic_source_evidence") is not None
+                and child_manifest.get("automatic_source_evidence_status") != "settled"))
+
+
 def source_local_failure(child_manifest: Mapping[str, Any]) -> bool:
-    if evidence_reconciliation_required(child_manifest):
+    if (evidence_reconciliation_required(child_manifest) or document_reconciliation_required(
+            child_manifest, child_manifest.get("config") or {})):
         return False
     if child_manifest.get("status") != "failed":
         return False
@@ -936,7 +1003,7 @@ def _child_succeeded(
     child_manifest: Mapping[str, Any], config: Mapping[str, Any]
 ) -> bool:
     """Bind the additive terminal result to its explicit parent admission."""
-    if (evidence_reconciliation_required(child_manifest)
+    if (evidence_reconciliation_required(child_manifest) or document_incomplete(child_manifest, config)
             or (config.get("automatic_source_evidence") is not None
                 and child_manifest.get("automatic_source_evidence_status") != "settled")):
         return False
@@ -2069,9 +2136,7 @@ def run_pipeline_series(
             expected_config=_expected_child_config(",".join(sources), config))
         cache = {}
         if (child.get("status") != "qualified_partial_subset"
-            or evidence_reconciliation_required(child)
-            or (config.get("automatic_source_evidence") is not None
-                and child.get("automatic_source_evidence_status") != "settled") or any(
+            or _pipeline_has_unresolved(child, config) or document_incomplete(child, config) or any(
             not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
                 parent_started_at=manifest["started_at"],parent_finished_at=manifest["finished_at"],
                 unit_cache=cache,parent_attempts=manifest["sources"][key]["attempts"])
@@ -2098,7 +2163,7 @@ def run_pipeline_series(
             expected_path=resume / "manifest.json",
             expected_config=_expected_child_config(",".join(sources), config),
         )
-        if evidence_reconciliation_required(prior_child):
+        if _pipeline_has_unresolved(prior_child, config):
             raise SeriesError("automatic source evidence requires exact prior-run reconciliation")
     if expected_sha is not None:
         verify_reviewed_checkout(
@@ -2192,12 +2257,22 @@ def run_pipeline_series(
         "database_target"
     ):
         raise SeriesError("pipeline checkpoint database target changed")
+    if _pipeline_has_unresolved(child, config):
+        for key in sources:
+            row = manifest["sources"][key]
+            row["attempts"][-1].update(finished_at=utc_now(), rc=rc)
+            row.update(state="failed_global", checkpoint_status=child.get("status"),
+                       error="source evidence or document acquisition requires reconciliation")
+        manifest.update(status="failed", finished_at=utc_now(),
+                        error="source evidence or document acquisition requires reconciliation")
+        save_manifest(series_dir, manifest)
+        return rc or 1
     qualified = set()
     unit_cache = {}
     for key in sources:
         row = manifest["sources"][key]
         row["attempts"][-1].update(finished_at=utc_now(), rc=rc)
-        if pipeline_source_qualified(child, key, run_dir=child_run,
+        if not document_incomplete(child, config) and pipeline_source_qualified(child, key, run_dir=child_run,
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
@@ -2269,7 +2344,7 @@ def run_series(
     for index, source in enumerate(config["sources"], start=1):
         checkpoint = manifest["sources"][source]
         prior_state = checkpoint["state"]
-        if config.get("automatic_source_evidence") and prior_state not in {"complete", "qualified_partial_subset"} and checkpoint.get("checkpoint_run"):
+        if (config.get("automatic_source_evidence") or config.get("source_document_acquisition")) and prior_state not in {"complete", "qualified_partial_subset"} and checkpoint.get("checkpoint_run"):
             try:
                 _, prior_child = _load_child_manifest(
                     child_out_root, before=set(), source=source, git_sha=git_sha,
@@ -2278,7 +2353,7 @@ def run_series(
                 )
             except (OSError, json.JSONDecodeError, SeriesError):
                 raise SeriesError("cannot verify prior automatic evidence outcome") from None
-            if evidence_reconciliation_required(prior_child):
+            if evidence_reconciliation_required(prior_child) or document_reconciliation_required(prior_child, config):
                 manifest["status"] = "failed"
                 manifest["error"] = "automatic source evidence requires exact prior-run reconciliation"
                 manifest["finished_at"] = utc_now()
@@ -2543,7 +2618,7 @@ def run_series(
             checkpoint["checkpoint_status"] = child_manifest.get("status")
             checkpoint["error"] = child_manifest.get("error")
 
-            if evidence_reconciliation_required(child_manifest):
+            if evidence_reconciliation_required(child_manifest) or document_reconciliation_required(child_manifest, config):
                 checkpoint["state"] = "failed_global"
                 manifest["status"] = "failed"
                 manifest["error"] = "automatic source evidence requires reconciliation"
@@ -2736,6 +2811,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-evidence-policy-sha256", default=None)
     parser.add_argument("--source-evidence-env-file", default=None)
     parser.add_argument("--source-evidence-target-sha256", default=None)
+    parser.add_argument("--source-document-policy", default=None)
+    parser.add_argument("--source-document-policy-sha256", default=None)
+    parser.add_argument("--source-document-node", default=None)
     parser.add_argument("--sources", default="all")
     parser.add_argument("--admit-current-inventory-source", action="append", default=None)
     parser.add_argument("--admit-baseline-hold-additively", action="store_true",
@@ -2907,6 +2985,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if any(evidence_options):
         from source_evidence.automatic import configuration
         automatic_source_evidence = configuration(*evidence_options, git_sha, sources)
+    document_options = (args.source_document_policy, args.source_document_policy_sha256, args.source_document_node)
+    source_document_acquisition = None
+    if any(document_options):
+        from source_evidence.document_automatic import configuration as document_configuration
+        source_document_acquisition = document_configuration(*document_options, automatic_source_evidence, git_sha, sources)
     config = series_config(
         sources=sources,
         page_cap=args.page_cap,
@@ -2927,6 +3010,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pipeline=args.pipeline,
         source_workers=args.source_workers,
         automatic_source_evidence=automatic_source_evidence,
+        source_document_acquisition=source_document_acquisition,
     )
     database_target = database_target_fingerprint(args.env_file)
 

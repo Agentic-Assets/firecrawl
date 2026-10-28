@@ -11,8 +11,10 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
 from source_evidence import (acquisition, automatic, doc_fetch_process, document_acquisition,
                              document_fetch_worker, events, private_export)
+from source_evidence.document_process import DocumentProcessCleanupUnknown
 
 MAX_ARTIFACT_BYTES = 6 * 4 * 1024 * 1024 + 65536
 MAX_TIMEOUT_SECONDS = 120
@@ -160,15 +162,20 @@ def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_
     artifact_path = outdir / "artifact.json"
     adapter = Path(__file__).resolve().parent.parent / "document_text" / "extract.mjs"
     command = [node_executable, str(adapter), str(outdir / input_name), str(outdir / "provenance.json"), str(artifact_path)]
+    child = None
     try:
         child = subprocess.Popen(command, cwd=str(adapter.parent), env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True)
-    except OSError:
-        return {"state": "ambiguous", "directory": str(outdir)}
+        owned = OwnedProcessGroup.from_spawn(child)
+    except OSError as error:
+        if child is None:
+            return {"state": "ambiguous", "directory": str(outdir)}
+        raise DocumentProcessCleanupUnknown("document process ownership unavailable") from error
+    except BaseException as error:
+        raise DocumentProcessCleanupUnknown("document process spawn or ownership interrupted") from error
 
     timed_out = False
-    process_error = False
     interrupted = None
     try:
         code = child.wait(timeout=timeout_seconds)
@@ -176,24 +183,17 @@ def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_
         timed_out = True
         code = None
     except BaseException as error:
-        process_error = True
         interrupted = error
         code = None
     try:
-        os.killpg(child.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except OSError:
-        process_error = True
-    if code is None:
-        try:
-            child.wait(timeout=REAP_GRACE_SECONDS)
-        except (subprocess.TimeoutExpired, OSError):
-            process_error = True
+        settlement = settle_owned_groups([owned], grace_seconds=0, initial_signal=signal.SIGKILL,
+                                         kill_seconds=REAP_GRACE_SECONDS)
+    except BaseException as error:
+        raise DocumentProcessCleanupUnknown("document process settlement unavailable") from (interrupted or error)
+    if not settlement.settled:
+        raise DocumentProcessCleanupUnknown("document process settlement unknown") from interrupted
     if interrupted is not None:
         raise interrupted
-    if process_error:
-        return {"state": "ambiguous", "directory": str(outdir)}
     if timed_out:
         return {"state": "timeout", "directory": str(outdir)}
     if code not in (0, 2):

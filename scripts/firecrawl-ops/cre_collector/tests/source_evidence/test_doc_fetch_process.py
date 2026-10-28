@@ -5,6 +5,17 @@ import pytest
 from source_evidence import doc_fetch_process, document_fetch_worker, events
 
 
+@pytest.fixture(autouse=True)
+def owned_settlement(monkeypatch):
+    calls = []
+    monkeypatch.setattr(doc_fetch_process, "OwnedProcessGroup", SimpleNamespace(from_spawn=lambda child: child))
+    def settle(groups, **kwargs):
+        calls.append((groups, kwargs))
+        return SimpleNamespace(settled=True)
+    monkeypatch.setattr(doc_fetch_process, "settle_owned_groups", settle)
+    return calls
+
+
 def job():
     return {"schema_version": "cre-document-fetch-job/v1", "url": "https://docs.example.test/a",
             "allowed_hosts": ["docs.example.test"], "max_bytes": 100,
@@ -28,13 +39,14 @@ def test_worker_private_job_and_complete_readback(monkeypatch, tmp_path):
     def child(command, **kwargs):
         calls.append((command, kwargs))
         document_fetch_worker.main(command[3:])
-        return SimpleNamespace(returncode=0)
-    monkeypatch.setattr(subprocess, "run", child)
+        return SimpleNamespace(pid=1234, wait=lambda timeout: 0)
+    monkeypatch.setattr(subprocess, "Popen", child)
     result = doc_fetch_process.run(job(), tmp_path / "job.json", tmp_path / "output")
     assert result["state"] == "completed"
     assert result["receipt"] == receipt()
     assert result["body_path"] == str(tmp_path / "output" / "document.bin")
-    assert calls[0][1]["timeout"] == 15
+    assert calls[0][1]["start_new_session"] is True
+    assert calls[0][1]["env"] == {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
     assert calls[0][1]["stdout"] == subprocess.DEVNULL
     assert (tmp_path / "job.json").stat().st_mode & 0o777 == 0o600
 
@@ -44,10 +56,26 @@ def test_worker_private_job_and_complete_readback(monkeypatch, tmp_path):
 def test_timeout_and_launch_failure_do_not_claim_no_request(monkeypatch, tmp_path, exception, state):
     tmp_path.chmod(0o700)
     def child(*args, **kwargs):
-        raise exception
-    monkeypatch.setattr(subprocess, "run", child)
+        if isinstance(exception, OSError):
+            raise exception
+        def wait(timeout):
+            assert timeout == 15
+            raise exception
+        return SimpleNamespace(pid=1234, wait=wait)
+    monkeypatch.setattr(subprocess, "Popen", child)
     result = doc_fetch_process.run(job(), tmp_path / "job.json", tmp_path / "output")
     assert result["state"] == state and "receipt" not in result
+
+
+def test_interrupted_fetch_with_unknown_cleanup_propagates(monkeypatch, tmp_path):
+    tmp_path.chmod(0o700)
+    def wait(timeout):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: SimpleNamespace(pid=1234, wait=wait))
+    monkeypatch.setattr(doc_fetch_process, "settle_owned_groups", lambda *a, **k: SimpleNamespace(settled=False))
+    with pytest.raises(doc_fetch_process.DocumentProcessCleanupUnknown) as error:
+        doc_fetch_process.run(job(), tmp_path / "job.json", tmp_path / "output")
+    assert isinstance(error.value.__cause__, KeyboardInterrupt)
 
 
 def test_existing_job_or_output_never_overwritten(monkeypatch, tmp_path):

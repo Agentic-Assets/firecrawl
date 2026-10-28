@@ -1,9 +1,21 @@
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from source_evidence import doc_extract_process, events, private_export
 from test_doc_fetch_process import job, receipt
+
+
+@pytest.fixture(autouse=True)
+def owned_settlement(monkeypatch):
+    calls = []
+    monkeypatch.setattr(doc_extract_process, "OwnedProcessGroup", SimpleNamespace(from_spawn=lambda child: child))
+    def settle(groups, **kwargs):
+        calls.append((groups, kwargs))
+        return SimpleNamespace(settled=True)
+    monkeypatch.setattr(doc_extract_process, "settle_owned_groups", settle)
+    return calls
 
 
 def setup_fetch(tmp_path):
@@ -33,7 +45,7 @@ def artifact(status="extracted"):
 
 @pytest.mark.parametrize("status,code,state", [("extracted", 0, "success"), ("ocr_needed", 2, "ocr_needed"),
                                                ("failed", 2, "failed")])
-def test_supervised_validated_artifact(monkeypatch, tmp_path, status, code, state):
+def test_supervised_validated_artifact(monkeypatch, tmp_path, status, code, state, owned_settlement):
     fetched, job_path = setup_fetch(tmp_path)
     commands = []
     def popen(command, **kwargs):
@@ -43,14 +55,12 @@ def test_supervised_validated_artifact(monkeypatch, tmp_path, status, code, stat
         path.chmod(0o600)
         return type("Child", (), {"pid": 1234, "wait": lambda self, timeout: code})()
     monkeypatch.setattr(subprocess, "Popen", popen)
-    killed = []
-    monkeypatch.setattr(doc_extract_process.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
     result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node",
                                      source_key="svn")
     assert result["state"] == state and result["artifact"] == artifact(status)
     assert commands[0][1]["start_new_session"] is True
     assert commands[0][1]["env"] == {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
-    assert killed and commands[0][0][-3].endswith("document.bin")
+    assert owned_settlement and commands[0][0][-3].endswith("document.bin")
 
 
 def test_changed_body_refuses_before_spawn(monkeypatch, tmp_path):
@@ -61,7 +71,7 @@ def test_changed_body_refuses_before_spawn(monkeypatch, tmp_path):
         doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
 
 
-def test_timeout_kills_group_and_does_not_claim_artifact(monkeypatch, tmp_path):
+def test_timeout_kills_group_and_does_not_claim_artifact(monkeypatch, tmp_path, owned_settlement):
     fetched, job_path = setup_fetch(tmp_path)
     class Child:
         pid = 1234
@@ -72,11 +82,23 @@ def test_timeout_kills_group_and_does_not_claim_artifact(monkeypatch, tmp_path):
                 raise subprocess.TimeoutExpired("node", timeout)
             return -9
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Child())
-    killed = []
-    monkeypatch.setattr(doc_extract_process.os, "killpg", lambda pid, sig: killed.append(pid))
     result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
-    assert result["state"] == "timeout" and killed == [1234]
+    assert result["state"] == "timeout" and owned_settlement
     assert "artifact" not in result
+
+
+def test_interrupted_wait_with_unknown_group_propagates_cleanup_unknown(monkeypatch, tmp_path):
+    fetched, job_path = setup_fetch(tmp_path)
+    class Child:
+        pid = 1234
+        def wait(self, timeout):
+            raise KeyboardInterrupt()
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Child())
+    monkeypatch.setattr(doc_extract_process, "settle_owned_groups", lambda *args, **kwargs: SimpleNamespace(settled=False))
+    with pytest.raises(doc_extract_process.DocumentProcessCleanupUnknown) as error:
+        doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
+    assert isinstance(error.value.__cause__, KeyboardInterrupt)
+    assert not (tmp_path / "extracted" / "conversion-complete.json").exists()
 
 
 def test_mismatched_artifact_is_ambiguous(monkeypatch, tmp_path):
@@ -89,7 +111,6 @@ def test_mismatched_artifact_is_ambiguous(monkeypatch, tmp_path):
         path.chmod(0o600)
         return type("Child", (), {"pid": 1234, "wait": lambda self, timeout: 0})()
     monkeypatch.setattr(subprocess, "Popen", popen)
-    monkeypatch.setattr(doc_extract_process.os, "killpg", lambda *args: None)
     result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
     assert result["state"] == "ambiguous"
 
@@ -112,7 +133,6 @@ def test_boolean_artifact_length_does_not_equal_numeric_receipt(monkeypatch, tmp
         path.chmod(0o600)
         return type("Child", (), {"pid": 1234, "wait": lambda self, timeout: 0})()
     monkeypatch.setattr(subprocess, "Popen", popen)
-    monkeypatch.setattr(doc_extract_process.os, "killpg", lambda *args: None)
     result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
     assert result["state"] == "ambiguous" and "artifact" not in result
 
@@ -125,7 +145,6 @@ def settled_conversion(monkeypatch, tmp_path):
         path.chmod(0o600)
         return type("Child", (), {"pid": 1234, "wait": lambda self, timeout: 0})()
     monkeypatch.setattr(subprocess, "Popen", popen)
-    monkeypatch.setattr(doc_extract_process.os, "killpg", lambda *args: None)
     result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node", source_key="svn")
     assert result["state"] == "success"
     return fetched, job_path, result
