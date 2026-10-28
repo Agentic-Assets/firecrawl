@@ -26,9 +26,12 @@ def test_partial_source_observations_remain_private_context_without_listing_prom
     observation = collector.convert(artifact, source_key='foundry-commercial')
     plan = events.plan(observation, source_key='foundry-commercial')
     events.validate_content_policy(plan)
-    assert len(plan['events']) == 1
-    assert plan['events'][0]['facts'][0]['kind'] == 'retained_capture_context'
+    assert len(plan['events']) == 79
+    assert plan['events'][0]['facts'][0]['kind'] == 'retained_capture_context_v2'
     stored_context = plan['events'][0]['facts'][0]['value']['context']
-    assert stored_context['sources'][0]['retainedObservations'] == observations
+    assert stored_context['sources'][0]['retainedObservations'] == []
     assert stored_context['runMeta']['evidenceOnly'] is True
+    assert [row['facts'][0]['value']['value'] for row in plan['events'][1:]] == observations
+    assert all(row['facts'][0]['kind'] == 'source_observation' for row in plan['events'][1:])
+    assert collector.reconstruct(observation) == artifact
     assert observation['records'] == [] and artifact == original

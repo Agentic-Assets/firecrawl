@@ -21,6 +21,16 @@ chunk-local and does not establish document completeness. Tests belong under
 `tests/source_evidence/` and run only in a standalone no-hardlinks clone. Use the
 disposable migration/CLI runners for database behavior, never production fixtures.
 
+Draft collector retention v2 splits nonempty `sources[].retainedObservations`
+into indexed `source_observation` facts and records ordered `observationGroups`
+in the header; listing `source_record` facts and v1 remain unchanged. Preserve
+exact artifact reconstruction and exceptional numeric literals at their
+original pointers. Listings and observations share the 10,000-record and
+source-policy limits; the 16 MiB envelope, 3.5 MiB per fact/header, and 32 MiB
+plan limits still apply. Oversized individual observations or unrelated metadata
+remain refused. This draft is unverified under the test hold, not deployed, and
+not written live; it changes no canonical gates or source-coverage claims.
+
 Version-2 recurring policies separately allow NAI and Avison native-page capture
 and Faris map-credential projection. Read the corresponding README sections before
 changing their format, pointer receipts, quotas, worker custody or replay order.

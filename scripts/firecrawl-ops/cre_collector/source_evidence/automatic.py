@@ -299,7 +299,7 @@ def seal(run_dir, manifest, source, attempt, artifact):
             "generation": manifest["run_id"], "attempt": attempt["number"],
             **({"artifactFileHashKind": "projected_canonical_json_exact_numeric_literals_utf8" if numeric_literals
                 else "projected_canonical_json_utf8"} if projection is not None else {})})
-        if len(wrapped["records"]) > config["max_records"]:
+        if collector.record_count(wrapped) > config["max_records"]:
             raise ValueError("automatic evidence record limit exceeded")
         plan = events.plan(wrapped, source_key=source)
         events.validate_content_policy(plan)
@@ -485,9 +485,10 @@ def pump(run_dir, manifest, save):
                     obj, numeric_literals = acquisition.decode_json(original)
                     _refuse_credential_fields(obj)
                     wrapped = collector.convert(obj, source_key=source, numeric_literals=numeric_literals or None,
-                                                policy_binding=binding)
+                                                policy_binding=binding,
+                                                schema=plan["events"][0]["facts"][0]["value"]["schema"])
                 expected = events.plan(wrapped, source_key=source)
-                if (source not in config["source_keys"] or len(wrapped["records"]) > config["max_records"]
+                if (source not in config["source_keys"] or collector.record_count(wrapped) > config["max_records"]
                         or plan != expected or plan["plan_sha256"] != state["plan_sha256"]
                         or plan["events"][0]["capture_id"] != state["capture_id"]):
                     raise ValueError("sealed evidence plan binding mismatch")

@@ -80,7 +80,7 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
     artifact_hash = sha256(raw)
     if artifact.get("schema_version") == "cre-document-text/v1":
         capture_clock = timestamp(artifact.get("source", {}).get("observed_at"))
-    elif artifact.get("schema") == "cre-retained-observations/v1":
+    elif artifact.get("schema") in ("cre-retained-observations/v1", "cre-retained-observations/v2"):
         capture_clock = timestamp(artifact.get("provenance", {}).get("observedAt"))
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
@@ -129,26 +129,34 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
             event.update(document_url=url, extractor_version=str(parser.get("name")) + "@" + str(parser.get("version")),
                          extracted_text=chunk, text_sha256=sha256(chunk.encode("utf-8")))
             events.append(event)
-    elif artifact.get("schema") == "cre-retained-observations/v1":
+    elif artifact.get("schema") in ("cre-retained-observations/v1", "cre-retained-observations/v2"):
         from source_evidence import collector
         if external_id is not None:
             raise ValueError("capture-wide evidence cannot claim a listing identity")
-        context, rows = artifact.get("context"), artifact.get("records")
-        if not isinstance(context, dict) or not isinstance(rows, list) or "listings" in context:
-            raise ValueError("invalid retained observations")
+        original = collector.reconstruct(artifact)
+        rows = artifact["records"]
         policy_binding = artifact.get("provenance", {}).get("automaticPolicy")
         numeric_literals = artifact.get("provenance", {}).get("numericLiterals")
-        if collector.convert({**context, "listings": rows}, source_key=source_key,
+        if collector.convert(original, source_key=source_key,
                              policy_binding=policy_binding, numeric_literals=numeric_literals,
-                             projection=artifact.get("provenance", {}).get("projection")) != artifact:
+                             projection=artifact.get("provenance", {}).get("projection"),
+                             schema=artifact["schema"]) != artifact:
             raise ValueError("retained observations disagree with collector artifact")
         provenance = {**provenance, "capture_kind": "collector_emitted_listings", "coverage": "unverified",
                       "observed_at_origin": "collector_run_finished_at"}
-        header = {k: v for k, v in artifact.items() if k != "records"}
+        version2 = artifact["schema"] == collector.SCHEMA_V2
+        if version2:
+            provenance = {**provenance, "capture_kind": "collector_records_and_unqualified_observations"}
+        header = {k: v for k, v in artifact.items() if k not in ("records", "observations")}
         events = [_event(capture, 0, source_key, capture_clock, None, provenance,
-                         [{"kind": "retained_capture_context", "value": header}], None)]
+                         [{"kind": "retained_capture_context_v2" if version2 else "retained_capture_context",
+                           "value": header}], None)]
         events.extend(_event(capture, n, source_key, capture_clock, None, provenance,
                              [{"kind": "source_record", "value": row}], None) for n, row in enumerate(rows, 1))
+        if version2:
+            events.extend(_event(capture, len(rows) + n, source_key, capture_clock, None, provenance,
+                                 [{"kind": "source_observation", "value": row}], None)
+                          for n, row in enumerate(artifact["observations"], 1))
     elif artifact.get("schema") in ("cre-json-response-observation/v1", "cre-json-response-context-observation/v1"):
         from source_evidence import acquisition
         if external_id is not None:
@@ -230,6 +238,18 @@ def validate_plan(value):
             expected = plan(artifact, source_key=value["source_key"], observed_at=first["observed_at"])
         elif kind in ("retained_capture_context", "json_response_context", "avison_native_context"):
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
+            expected = plan(artifact, source_key=value["source_key"])
+        elif kind == "retained_capture_context_v2":
+            records, observations = [], []
+            for row in rows[1:]:
+                fact = row["facts"][0]
+                if fact["kind"] == "source_record" and not observations:
+                    records.append(fact["value"])
+                elif fact["kind"] == "source_observation":
+                    observations.append(fact["value"])
+                else:
+                    raise ValueError("invalid retained observation event order")
+            artifact = {**metadata, "records": records, "observations": observations}
             expected = plan(artifact, source_key=value["source_key"])
         else:
             raise ValueError("unsupported evidence kind")

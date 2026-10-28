@@ -21,6 +21,21 @@ python3 -m source_evidence.cli plan --artifact /private/retained.json --source-k
 
 The wrapper retains every emitted listing, including duplicate or incomplete records and supplied `raw_data`, plus all artifact metadata and errors. It refuses mixed or mismatched sources, and uses the artifact's run-finished clock, not a per-record observation time. Its digest binds canonical JSON, not the original file bytes. Collector records have already passed through source mapping and pruning; this does not recover discarded HTTP responses, prove completeness or establish source acceptance. Empty artifacts with explicit source entries are retained. Conversion and planning are local; private retention admission and database authorization remain separate.
 
+The draft version-2 collector representation separates each nonempty
+`sources[].retainedObservations` entry into a `source_observation` fact with its
+original `sourceIndex`, `observationIndex`, and value. Listing `source_record`
+facts remain unchanged. Ordered `observationGroups` in the header preserve the
+grouping needed to reconstruct the complete collector artifact, including
+exceptional numeric literals at their original JSON pointers. Exact
+reconstruction is required. Version 1 remains unchanged.
+
+Listings and retained observations share the 10,000-record ceiling and any
+tighter source-policy `max_records`. The envelope remains limited to 16 MiB,
+each fact and header to 3.5 MiB, and the plan to 32 MiB. An oversized individual
+observation or unrelated oversized metadata is still refused. This draft is
+unverified under the current test hold, not deployed, and has not been written
+live. It does not change canonical gates or establish complete source coverage.
+
 An in-progress Foundry change intends to carry already parsed, unqualified held
 observations in `sources[].retainedObservations`, so the existing private
 evidence bridge can settle the artifact before canonical gates. An all-held

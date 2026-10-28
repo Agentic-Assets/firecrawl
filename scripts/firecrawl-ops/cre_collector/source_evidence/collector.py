@@ -1,14 +1,17 @@
 """Wrap a single-source collector artifact without interpreting its records."""
 
+import copy
 import json
 import re
 
 from source_evidence import events
 
 SCHEMA = "cre-retained-observations/v1"
+SCHEMA_V2 = "cre-retained-observations/v2"
+SCHEMAS = (SCHEMA, SCHEMA_V2)
 
 
-def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None, projection=None):
+def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None, projection=None, schema=None):
     if (not isinstance(artifact, dict) or not isinstance(source_key, str)
             or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", source_key)):
         raise ValueError("invalid collector artifact")
@@ -18,6 +21,8 @@ def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None,
     if (any(not isinstance(row, dict) or row.get("sourceKey") != source_key for row in sources)
             or any(not isinstance(row, dict) or row.get("sourceKey") != source_key for row in records)):
         raise ValueError("mixed or mismatched collector source")
+    if schema is not None and schema not in SCHEMAS:
+        raise ValueError("unsupported collector observation schema")
     clock = events.timestamp(meta.get("finishedAt"))
     if len(records) > 10000 or len(events.encoded(artifact)) > events.MAX_ARTIFACT_BYTES:
         raise ValueError("collector artifact exceeds limit")
@@ -47,7 +52,17 @@ def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None,
                 or (projection is not None and (policy_binding["artifactFileHashKind"] != digest_kind
                     or policy_binding["artifactFileSha256"] != events.sha256(digest_bytes)))):
         raise ValueError("invalid automatic policy binding")
-    return {"schema": SCHEMA, "provenance": {"sourceKey": source_key, "observedAt": clock,
+    has_observations = any(isinstance(row.get("retainedObservations"), list)
+                           and row["retainedObservations"] for row in sources)
+    selected = schema if schema is not None else (SCHEMA_V2 if has_observations else SCHEMA)
+    if selected == SCHEMA_V2:
+        from source_evidence import collector_observations
+        context, groups, observations = collector_observations.split(artifact)
+        if not groups:
+            raise ValueError("v2 collector observation requires nonempty held observations")
+    else:
+        context = {k: v for k, v in artifact.items() if k != "listings"}
+    result = {"schema": selected, "provenance": {"sourceKey": source_key, "observedAt": clock,
             "observedAtOrigin": "collector_run_finished_at", "recordKind": "collector_emitted_listing",
             "originalArtifactSha256": events.sha256(digest_bytes),
             "originalArtifactHashKind": digest_kind,
@@ -57,4 +72,36 @@ def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None,
             **({"numericLiterals": numeric_literals,
                 "numericEncoding": "json_pointer_to_literal_null_placeholder_v1"}
                if numeric_literals is not None else {})},
-            "context": {k: v for k, v in artifact.items() if k != "listings"}, "records": records}
+            "context": context, "records": records}
+    if selected == SCHEMA_V2:
+        result.update(observationGroups=groups, observations=observations)
+    return copy.deepcopy(result)
+
+
+def reconstruct(wrapped):
+    """Restore the source artifact representation from either collector envelope."""
+    if not isinstance(wrapped, dict) or wrapped.get("schema") not in SCHEMAS:
+        raise ValueError("invalid collector observation envelope")
+    context, records = wrapped.get("context"), wrapped.get("records")
+    if not isinstance(context, dict) or "listings" in context or not isinstance(records, list):
+        raise ValueError("invalid collector observation context")
+    if wrapped["schema"] == SCHEMA_V2:
+        from source_evidence import collector_observations
+        return collector_observations.restore(context, records, wrapped.get("observationGroups"),
+                                              wrapped.get("observations"))
+    return {**copy.deepcopy(context), "listings": copy.deepcopy(records)}
+
+
+def record_count(wrapped):
+    """Count listing and held observation events together for admission bounds."""
+    if not isinstance(wrapped, dict) or wrapped.get("schema") not in SCHEMAS:
+        raise ValueError("invalid collector observation envelope")
+    records = wrapped.get("records")
+    if not isinstance(records, list):
+        raise ValueError("invalid collector listing records")
+    if wrapped["schema"] == SCHEMA:
+        return len(records)
+    observations = wrapped.get("observations")
+    if not isinstance(observations, list):
+        raise ValueError("invalid collector held observations")
+    return len(records) + len(observations)
