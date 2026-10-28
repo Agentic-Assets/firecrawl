@@ -72,6 +72,16 @@ from the standalone `git clone --no-hardlinks` described in its
 [isolated verification recipe](SETUP.md#isolated-verification). Documentation-only
 work needs no environment setup or provider smoke.
 
+The supervised refresh path is `collect.ts` and the relevant `sources/` adapter
+→ artifact validation → source coverage gate and ingest dry run → aggregate
+coverage gate → admitted `cre_ingest.py` write → generation-exact validation
+readback. Some admission paths require an additional sealed dry run.
+`cre_checkpoint_refresh.py` coordinates these stages; pipeline mode can overlap
+collection with serial, separately gated writes. This map describes code flow,
+not source acceptance or permission to run it. Use `START_HERE.md` for the
+procedure and gates, `sources/CLAUDE.md` for adapter contracts,
+`lib/CLAUDE.md` for shared primitives, and `tests/CLAUDE.md` for test boundaries.
+
 1. Use the applicable current procedure in [`START_HERE.md`](START_HERE.md); for
    refresh work, start with [Strict listing refresh](START_HERE.md#strict-listing-refresh).
    Read [bounded resource recovery](START_HERE.md#bounded-resource-recovery) and

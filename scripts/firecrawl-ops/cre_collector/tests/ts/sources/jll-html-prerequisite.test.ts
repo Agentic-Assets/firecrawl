@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,11 @@ test("experimental module imports without native output and conversion explicitl
   const target = join(collector, "sources/jll-html-doc.ts");
   try {
     mkdirSync(join(collector, "sources"), { recursive: true });
+    const packageMetadata = JSON.parse(
+      readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
+    );
+    assert.equal(packageMetadata.type, "module");
+    writeFileSync(join(collector, "package.json"), JSON.stringify({ type: packageMetadata.type }));
     copyFileSync(source, target);
     assert.deepEqual(readFileSync(source), readFileSync(target));
     symlinkSync(

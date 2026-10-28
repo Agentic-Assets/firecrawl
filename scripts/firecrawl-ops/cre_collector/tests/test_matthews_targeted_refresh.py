@@ -541,6 +541,7 @@ def test_real_cli_owner_worker_ingest_chain_and_outer_deadline_settle(tmp_path):
 def test_real_producer_worker_cli_sql_and_witnessed_omissions(
     monkeypatch, tmp_path, inventory
 ):
+    import shutil
     import subprocess
     import sys
     from pathlib import Path
@@ -604,13 +605,15 @@ globalThis.fetch = async input => {
     mutations, ingest_calls, child_envs = [], [], []
     monkeypatch.setattr(worker, "_psql_exec", lambda db, sql: mutations.append(sql))
     real_run = subprocess.run
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for the real producer test"
 
     def native(argv, **kwargs):
         if "collect.ts" in argv:
             child_envs.append(kwargs["env"])
             result = real_run(
                 [
-                    "/opt/node-v24.21.0-linux-x64/bin/node",
+                    node,
                     "--import",
                     "tsx",
                     "--import",
