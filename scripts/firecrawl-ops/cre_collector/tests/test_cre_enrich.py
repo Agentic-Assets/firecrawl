@@ -457,7 +457,7 @@ def test_enricher_set_includes_all_current_detail_source_paths():
     assert "cbre" not in keys
     # cbre's exclusion is intentional and documented in the same file.
     assert "cbre is intentionally ABSENT" in src
-    assert "return row?.genericEnrich?.hadJsonLd ? row : null;" in src
+    # Generic qualification is exercised by the enrichment evidence behavior tests.
 
 
 # ---------------------------------------------------------------------------

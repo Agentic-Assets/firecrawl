@@ -36,6 +36,9 @@ from pathlib import Path
 
 import pytest
 
+# Keep the root safety helpers addressable when pytest loads scoped conftests.
+sys.modules["cre_collector_root_conftest"] = sys.modules[__name__]
+
 # Insert cre_collector/ at the front of sys.path so cre_ingest is importable
 # without any package install step.
 _HERE = os.path.dirname(os.path.abspath(__file__))

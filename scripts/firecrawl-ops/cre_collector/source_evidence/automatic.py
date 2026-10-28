@@ -37,6 +37,8 @@ from source_evidence import (
 
 SCHEMA = "cre-automatic-source-evidence-policy/v1"
 SCHEMA_V2 = "cre-automatic-source-evidence-policy/v2"
+SCHEMA_V3 = "cre-automatic-source-evidence-policy/v3"
+DOCUMENT_TEXT_FORMAT = "local_anydoc_public_listing_v1"
 SENSITIVE_KEYS = {"xamzsecuritytoken", "xgoogsecuritytoken", "securitytoken"}
 
 
@@ -101,11 +103,14 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
     policy = json.loads(raw.decode(), object_pairs_hook=unique_object, parse_constant=invalid_number)
     expected_keys = {"schema_version", "purpose", "data_scope", "format", "collector_git_sha",
                      "target_sha256", "source_keys", "max_artifact_bytes", "max_records"}
-    version2 = isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V2
+    version3 = isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V3
+    version2 = isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V2, SCHEMA_V3)
     if version2:
         expected_keys |= {"collector_projections", "native_source_formats", "max_native_pages"}
+    if version3:
+        expected_keys.add("document_text_formats")
     allowed = policy.get("source_keys") if isinstance(policy, dict) else None
-    if (not isinstance(policy, dict) or set(policy) != expected_keys or policy["schema_version"] not in (SCHEMA, SCHEMA_V2)
+    if (not isinstance(policy, dict) or set(policy) != expected_keys or policy["schema_version"] not in (SCHEMA, SCHEMA_V2, SCHEMA_V3)
             or policy["purpose"] != "private_unverified_evidence" or policy["data_scope"] != "public_listing_source"
             or policy["format"] != "collector_artifact_v1" or policy["collector_git_sha"] != git_sha
             or policy["target_sha256"] != target or not isinstance(allowed, list) or not allowed
@@ -116,13 +121,21 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
             or type(policy["max_records"]) is not int or not 0 <= policy["max_records"] <= 10000):
         raise ValueError("invalid automatic evidence policy")
     if version2:
+        from source_evidence import native_pages
         projections = policy["collector_projections"]
         native_formats = policy["native_source_formats"]
         if (not isinstance(projections, dict) or not isinstance(native_formats, dict)
-                or any(k not in allowed or k != "faris-lee" or v != map_projection.VERSION for k, v in projections.items())
-                or any(k not in allowed or k != "nai-global" or v != "nai_public_posts_v1" for k, v in native_formats.items())
+                or any(k not in allowed or map_projection.version_for(k) is None or v != map_projection.version_for(k)
+                       for k, v in projections.items())
+                or any(k not in allowed or not native_pages.format_supported(k, v)
+                       for k, v in native_formats.items())
                 or type(policy["max_native_pages"]) is not int or not 1 <= policy["max_native_pages"] <= 128):
             raise ValueError("invalid native capture or projection policy")
+    if version3:
+        document_formats = policy["document_text_formats"]
+        if (not isinstance(document_formats, dict)
+                or any(k not in allowed or v != DOCUMENT_TEXT_FORMAT for k, v in document_formats.items())):
+            raise ValueError("invalid document text retention policy")
     try:
         if len(_read_private(Path(env_file), 65536)) > 65536:
             raise ValueError("automatic evidence env file exceeds limit")
@@ -136,7 +149,8 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
             "max_artifact_bytes": policy["max_artifact_bytes"], "max_records": policy["max_records"],
             "transport": transport,
             **({"collector_projections": projections, "native_source_formats": native_formats,
-                "max_native_pages": policy["max_native_pages"]} if version2 else {})}
+                "max_native_pages": policy["max_native_pages"]} if version2 else {}),
+            **({"document_text_formats": document_formats} if version3 else {})}
 
 
 def _verify_config(config, sources):
@@ -265,21 +279,20 @@ def recover_unsealed(run_dir, manifest, save, *, make_private):
             save(run_dir, manifest)
 
 
-def seal(run_dir, manifest, source, attempt, artifact):
-    """Seal a private plan before an artifact can be moved or rejected; no DB."""
-    config = manifest["config"].get("automatic_source_evidence")
+def seal_collector(run_dir, config, sources, git_sha, git_dirty, generation, source, number, artifact, *, raw_bytes=None):
+    """Seal one collector artifact with explicit owner identity; never write to a database."""
     if not config or source not in config["source_keys"]:
-        return
+        return None
     if not artifact.exists():
-        attempt["source_evidence"] = {"state": "no_artifact"}
-        manifest["automatic_source_evidence_status"] = "incomplete"
-        return
+        state = {"state": "no_artifact"}
+
+        return state
     try:
-        _verify_config(config, manifest["config"]["sources"])
-        if manifest.get("collector_git_dirty") is not False or manifest.get("collector_git_sha") != config["collector_git_sha"]:
+        _verify_config(config, sources)
+        if git_dirty is not False or git_sha != config["collector_git_sha"]:
             raise ValueError("collector identity mismatch")
-        raw = _read_private(artifact, config["max_artifact_bytes"])
-        if len(raw) > config["max_artifact_bytes"]:
+        raw = _read_private(artifact, config["max_artifact_bytes"]) if raw_bytes is None else raw_bytes
+        if not isinstance(raw, bytes) or len(raw) > config["max_artifact_bytes"]:
             raise ValueError("automatic evidence artifact exceeds limit")
         original_sha = hashlib.sha256(raw).hexdigest()
         projection = None
@@ -294,10 +307,10 @@ def seal(run_dir, manifest, source, attempt, artifact):
             "policySha256": config["policy_sha256"], "collectorGitSha": config["collector_git_sha"],
             "targetSha256": config["target_sha256"], "artifactFileSha256": original_sha,
             "transportSha256": events.sha256(events.encoded(config["transport"])),
-            "generation": manifest["run_id"], "attempt": attempt["number"],
+            "generation": generation, "attempt": number,
             **({"artifactFileHashKind": "projected_canonical_json_exact_numeric_literals_utf8" if numeric_literals
                 else "projected_canonical_json_utf8"} if projection is not None else {})})
-        if len(wrapped["records"]) > config["max_records"]:
+        if collector.record_count(wrapped) > config["max_records"]:
             raise ValueError("automatic evidence record limit exceeded")
         plan = events.plan(wrapped, source_key=source)
         events.validate_content_policy(plan)
@@ -308,14 +321,14 @@ def seal(run_dir, manifest, source, attempt, artifact):
         info = directory.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("automatic evidence directory is not private")
-        path = directory / f"{source}-attempt-{attempt['number']}.json"
-        original = directory / f"{source}-attempt-{attempt['number']}-input.json"
+        path = directory / f"{source}-attempt-{number}.json"
+        original = directory / f"{source}-attempt-{number}-input.json"
         sealed_input = events.encoded(wrapped) + b"\n" if projection is not None else raw
         if len(sealed_input) > config["max_artifact_bytes"]:
             raise ValueError("sealed input exceeds limit")
         _write_exact(original, sealed_input, config["max_artifact_bytes"])
         _write_exact(path, events.encoded(plan) + b"\n", cli.MAX_PLAN_BYTES)
-        attempt["source_evidence"] = {"state": "pending", "path": str(path.relative_to(run_dir)),
+        state = {"state": "pending", "path": str(path.relative_to(run_dir)),
                                       "input_path": str(original.relative_to(run_dir)),
                                       "plan_sha256": plan["plan_sha256"],
                                       "plan_file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -324,10 +337,23 @@ def seal(run_dir, manifest, source, attempt, artifact):
                                       **({"input_representation": "projected_collector_observation_v1",
                                           "input_sha256": events.sha256(sealed_input)} if projection is not None else {})}
     except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
-        attempt["source_evidence"] = {"state": "refused", "reason": type(exc).__name__}
-        manifest["automatic_source_evidence_paused"] = True
-        manifest["automatic_source_evidence_status"] = "incomplete"
+        state = {"state": "refused", "reason": type(exc).__name__}
 
+    return state
+
+
+def seal(run_dir, manifest, source, attempt, artifact):
+    """Seal the refresh owner's artifact into its attempt state."""
+    state = seal_collector(run_dir, manifest["config"].get("automatic_source_evidence"),
+                           manifest["config"]["sources"], manifest.get("collector_git_sha"),
+                           manifest.get("collector_git_dirty"), manifest["run_id"], source,
+                           attempt["number"], artifact)
+    if state is not None:
+        attempt["source_evidence"] = state
+        if state["state"] in {"refused", "no_artifact"}:
+            manifest["automatic_source_evidence_status"] = "incomplete"
+        if state["state"] == "refused":
+            manifest["automatic_source_evidence_paused"] = True
 
 def prepare_resume(manifest, *, replay_unknown):
     """Only explicit exact-plan replay can rearm an uncertain transaction."""
@@ -338,6 +364,10 @@ def prepare_resume(manifest, *, replay_unknown):
     states += [page for checkpoint in manifest["sources"].values()
                for attempt in checkpoint.get("attempts", [])
                for page in (attempt.get("native_source_evidence") or {}).get("pages", [])]
+    states += [document["append"] for checkpoint in manifest["sources"].values()
+               for attempt in checkpoint.get("attempts", [])
+               for document in (attempt.get("document_source_evidence") or {}).get("documents", [])
+               if isinstance(document, dict) and isinstance(document.get("append"), dict)]
     uncertain = [state for state in states if state.get("state") in {"appending", "outcome_unknown"}]
     if uncertain and replay_unknown:
         if any(state.get("state") == "refused" for state in states):
@@ -413,6 +443,96 @@ END $evidence$;
     return cli.append_sql(plan).replace("BEGIN;\n", "BEGIN;\n" + guard + privilege_guard.sql(), 1)
 
 
+def prepare_collector_job(run_dir, config, generation, source, number, state):
+    if (source not in config["source_keys"] or state.get("policy_sha256") != config["policy_sha256"]
+            or state.get("path") != f"source-evidence/{source}-attempt-{number}.json"
+            or state.get("input_path") != f"source-evidence/{source}-attempt-{number}-input.json"):
+        raise ValueError("sealed evidence path or policy mismatch")
+    raw = _read_private(run_dir / state["path"], cli.MAX_PLAN_BYTES)
+    if len(raw) > cli.MAX_PLAN_BYTES or hashlib.sha256(raw).hexdigest() != state["plan_file_sha256"]:
+        raise ValueError("sealed evidence plan changed")
+    plan = json.loads(raw.decode(), object_pairs_hook=unique_object, parse_constant=invalid_number)
+    events.validate_content_policy(plan)
+    if plan["source_key"] != source:
+        raise ValueError("sealed evidence source mismatch")
+    original = _read_private(run_dir / state["input_path"], config["max_artifact_bytes"])
+    expected_input_sha = state.get("input_sha256", state["artifact_sha256"])
+    if len(original) > config["max_artifact_bytes"] or hashlib.sha256(original).hexdigest() != expected_input_sha:
+        raise ValueError("sealed evidence input changed")
+    binding = {
+        "policySha256": config["policy_sha256"], "collectorGitSha": config["collector_git_sha"],
+        "targetSha256": config["target_sha256"], "artifactFileSha256": state["artifact_sha256"],
+        "transportSha256": events.sha256(events.encoded(config["transport"])),
+        "generation": generation, "attempt": number}
+    if source in config.get("collector_projections", {}):
+        if state.get("input_representation") != "projected_collector_observation_v1":
+            raise ValueError("projected evidence input representation mismatch")
+        wrapped, literals = acquisition.decode_json(original)
+        if literals:
+            raise ValueError("sealed observation has unmapped numeric literals")
+        header = wrapped.get("provenance", {})
+        projection = header.get("projection")
+        if not isinstance(projection, dict) or projection.get("version") != config["collector_projections"][source]:
+            raise ValueError("projection policy mismatch")
+        binding["artifactFileHashKind"] = header.get("originalArtifactHashKind")
+        if (header.get("automaticPolicy") != binding
+                or projection.get("projectedCanonicalSha256") != state["artifact_sha256"]):
+            raise ValueError("projected evidence binding mismatch")
+        # Replanning validates the reconstructable projected artifact and
+        # receipt. Removed source bytes are deliberately not reconstructable.
+        _refuse_credential_fields(wrapped)
+    else:
+        if state.get("input_representation") is not None or "input_sha256" in state:
+            raise ValueError("unexpected projected evidence input")
+        obj, numeric_literals = acquisition.decode_json(original)
+        _refuse_credential_fields(obj)
+        sealed_header = plan["events"][0]["facts"][0]["value"]
+        wrapped = collector.convert(obj, source_key=source, numeric_literals=numeric_literals or None,
+                                    policy_binding=binding,
+                                    schema=sealed_header["schema"],
+                                    integral_floats=sealed_header["provenance"].get("integralFloats"))
+    expected = events.plan(wrapped, source_key=source)
+    if (source not in config["source_keys"] or collector.record_count(wrapped) > config["max_records"]
+            or plan != expected or plan["plan_sha256"] != state["plan_sha256"]
+            or plan["events"][0]["capture_id"] != state["capture_id"]):
+        raise ValueError("sealed evidence plan binding mismatch")
+
+    return plan
+
+
+def append_job(config, sources, state, prepare, save, mark_incomplete):
+    """Append one job using its real owner's preparation and durable save callbacks."""
+    try:
+        _verify_config(config, sources)
+        plan = prepare()
+        state["state"] = "appending"
+        save()
+        def validate_transport(url):
+            if _transport_binding(url) != config["transport"]:
+                raise ValueError("automatic evidence transport changed")
+        cli.run_psql(append_sql(plan), config["env_file"], config["target_sha256"],
+                     validate_transport=validate_transport)
+        _verify_config(config, sources)
+        state["state"] = "appended"
+        state.pop("exact_replay_required", None)
+        state.pop("reason", None)
+    except BaseException as exc:
+        state["state"] = "outcome_unknown" if state.get("state") == "appending" else "refused"
+        state["reason"] = type(exc).__name__
+        mark_incomplete()
+        from source_evidence.document_process import DocumentProcessCleanupUnknown, cleanup_unknown_in_chain
+        if cleanup_unknown_in_chain(exc):
+            try:
+                save()
+            except BaseException as save_error:
+                raise DocumentProcessCleanupUnknown("evidence cleanup remains unknown after save failure") from save_error
+            raise
+        if not isinstance(exc, (Exception, SystemExit)):
+            save()
+            raise
+    save()
+
+
 def pump(run_dir, manifest, save):
     """Run pending writes on the caller's foreground lane, never a poll callback."""
     config = manifest["config"].get("automatic_source_evidence")
@@ -425,6 +545,11 @@ def pump(run_dir, manifest, save):
                    for source, checkpoint in manifest["sources"].items()
                    for attempt in checkpoint.get("attempts", [])
                    for page in (attempt.get("native_source_evidence") or {}).get("pages", [])]
+    candidates += [(source, attempt, document["append"])
+                   for source, checkpoint in manifest["sources"].items()
+                   for attempt in checkpoint.get("attempts", [])
+                   for document in (attempt.get("document_source_evidence") or {}).get("documents", [])
+                   if isinstance(document, dict) and isinstance(document.get("append"), dict)]
     candidates.sort(key=lambda item: (item[2].get("exact_replay_required") is not True,
                                       "filename" not in item[2]))
     for source, attempt, state in candidates:
@@ -432,79 +557,28 @@ def pump(run_dir, manifest, save):
             continue
         if manifest.get("automatic_source_evidence_replay_only") and not state.get("exact_replay_required"):
             continue
-        try:
-            _verify_config(config, manifest["config"]["sources"])
-            if "filename" in state:
+        def prepare():
+            if state.get("kind") == "document_text":
+                from source_evidence import document_jobs
+                if config.get("document_text_formats", {}).get(source) != DOCUMENT_TEXT_FORMAT:
+                    raise ValueError("document text is outside policy")
+                documents = (attempt.get("document_source_evidence") or {}).get("documents", [])
+                matching = [document for document in documents if document.get("append") is state]
+                if len(matching) != 1:
+                    raise ValueError("document append association mismatch")
+                return document_jobs.prepare_job(run_dir, manifest, source, attempt, matching[0], state)
+            elif "filename" in state:
                 from source_evidence import native_pages
                 if source not in config["source_keys"]:
                     raise ValueError("native source is outside policy")
-                plan = native_pages.prepare_job(run_dir, manifest, source, attempt, state)
+                return native_pages.prepare_job(run_dir, manifest, source, attempt, state)
             else:
-                if (source not in config["source_keys"] or state.get("policy_sha256") != config["policy_sha256"]
-                        or state.get("path") != f"source-evidence/{source}-attempt-{attempt['number']}.json"
-                        or state.get("input_path") != f"source-evidence/{source}-attempt-{attempt['number']}-input.json"):
-                    raise ValueError("sealed evidence path or policy mismatch")
-                raw = _read_private(run_dir / state["path"], cli.MAX_PLAN_BYTES)
-                if len(raw) > cli.MAX_PLAN_BYTES or hashlib.sha256(raw).hexdigest() != state["plan_file_sha256"]:
-                    raise ValueError("sealed evidence plan changed")
-                plan = json.loads(raw.decode(), object_pairs_hook=unique_object, parse_constant=invalid_number)
-                events.validate_content_policy(plan)
-                if plan["source_key"] != source:
-                    raise ValueError("sealed evidence source mismatch")
-                original = _read_private(run_dir / state["input_path"], config["max_artifact_bytes"])
-                expected_input_sha = state.get("input_sha256", state["artifact_sha256"])
-                if len(original) > config["max_artifact_bytes"] or hashlib.sha256(original).hexdigest() != expected_input_sha:
-                    raise ValueError("sealed evidence input changed")
-                binding = {
-                    "policySha256": config["policy_sha256"], "collectorGitSha": config["collector_git_sha"],
-                    "targetSha256": config["target_sha256"], "artifactFileSha256": state["artifact_sha256"],
-                    "transportSha256": events.sha256(events.encoded(config["transport"])),
-                    "generation": manifest["run_id"], "attempt": attempt["number"]}
-                if source in config.get("collector_projections", {}):
-                    if state.get("input_representation") != "projected_collector_observation_v1":
-                        raise ValueError("projected evidence input representation mismatch")
-                    wrapped, literals = acquisition.decode_json(original)
-                    if literals:
-                        raise ValueError("sealed observation has unmapped numeric literals")
-                    header = wrapped.get("provenance", {})
-                    projection = header.get("projection")
-                    if not isinstance(projection, dict) or projection.get("version") != config["collector_projections"][source]:
-                        raise ValueError("projection policy mismatch")
-                    binding["artifactFileHashKind"] = header.get("originalArtifactHashKind")
-                    if (header.get("automaticPolicy") != binding
-                            or projection.get("projectedCanonicalSha256") != state["artifact_sha256"]):
-                        raise ValueError("projected evidence binding mismatch")
-                    # Replanning validates the reconstructable projected artifact and
-                    # receipt. Removed source bytes are deliberately not reconstructable.
-                    _refuse_credential_fields(wrapped)
-                else:
-                    if state.get("input_representation") is not None or "input_sha256" in state:
-                        raise ValueError("unexpected projected evidence input")
-                    obj, numeric_literals = acquisition.decode_json(original)
-                    _refuse_credential_fields(obj)
-                    wrapped = collector.convert(obj, source_key=source, numeric_literals=numeric_literals or None,
-                                                policy_binding=binding)
-                expected = events.plan(wrapped, source_key=source)
-                if (source not in config["source_keys"] or len(wrapped["records"]) > config["max_records"]
-                        or plan != expected or plan["plan_sha256"] != state["plan_sha256"]
-                        or plan["events"][0]["capture_id"] != state["capture_id"]):
-                    raise ValueError("sealed evidence plan binding mismatch")
-            state["state"] = "appending"
-            save(run_dir, manifest)
-            def validate_transport(url):
-                if _transport_binding(url) != config["transport"]:
-                    raise ValueError("automatic evidence transport changed")
-            cli.run_psql(append_sql(plan), config["env_file"], config["target_sha256"],
-                         validate_transport=validate_transport)
-            _verify_config(config, manifest["config"]["sources"])
-            state["state"] = "appended"
-            state.pop("exact_replay_required", None)
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError, SystemExit) as exc:
-            state["state"] = "outcome_unknown" if state.get("state") == "appending" else "refused"
-            state["reason"] = type(exc).__name__
+                return prepare_collector_job(run_dir, config, manifest["run_id"], source, attempt["number"], state)
+        def mark_incomplete():
             manifest["automatic_source_evidence_paused"] = True
             manifest["automatic_source_evidence_status"] = "incomplete"
-        save(run_dir, manifest)
+        append_job(config, manifest["config"]["sources"], state, prepare,
+                   lambda: save(run_dir, manifest), mark_incomplete)
         if manifest.get("automatic_source_evidence_paused"):
             return
     if manifest.get("automatic_source_evidence_replay_only"):

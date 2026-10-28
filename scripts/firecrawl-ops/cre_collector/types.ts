@@ -413,6 +413,8 @@ export type SourceResult = {
   method: string;
   totalAvailable: number | null;
   listings: any[];
+  // Unqualified source observations, never canonical listing rows or coverage proof.
+  retainedObservations?: readonly unknown[];
   currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof | DaumEmptyTitleSubsetProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a

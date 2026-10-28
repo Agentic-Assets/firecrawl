@@ -35,6 +35,7 @@ import glob
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -56,6 +57,7 @@ from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunspli
 import cre_parse
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
+from cre_artifact_scope import require_canonical_artifact
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -1719,6 +1721,7 @@ def validate_strict_artifact_freshness(
     was observed. Buildout is the one explicit exception because its paginated
     inventory feed is the authoritative listing payload.
     """
+    require_canonical_artifact(data)
     run_meta = data.get("runMeta")
     freshness = run_meta.get("freshness") if isinstance(run_meta, dict) else None
     matthews_enrichment = (
@@ -2696,6 +2699,21 @@ def _jll_pricing_has_foreign_lease_currency(listing):
         return False
     currency = lease.get("currency")
     return isinstance(currency, str) and currency.upper() != "USD"
+
+
+def generic_enrichment_substantive(listing):
+    """Require a mapped generic detail value, not just a URL or identity."""
+    for key in ("name", "description", "salePriceText"):
+        value = listing.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    for key in ("salePriceUsd", "latitude", "longitude"):
+        value = listing.get(key)
+        if type(value) is int:
+            return True
+        if type(value) is float and math.isfinite(value):
+            return True
+    return False
 
 
 def to_row(listing, brokers_by_idx, scraped_at):
@@ -6774,6 +6792,10 @@ def main():
         else:
             with open(path) as f:
                 data = json.load(f)
+        try:
+            require_canonical_artifact(data)
+        except ValueError as exc:
+            sys.exit(str(exc))
         if data.get("artifactKind") == RETIRED_OM_PARSE_ARTIFACT_KIND:
             sys.exit(
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "
@@ -6885,6 +6907,9 @@ def main():
                 )
             inventory_only_scopes_merged[scope["source_key"]] = scope
         for listing in data.get("listings") or []:
+            if (mode == "enrich" and isinstance(listing, dict) and "genericEnrich" in listing
+                    and not generic_enrichment_substantive(listing)):
+                continue
             inventory_row = to_inventory_only_row(listing, scraped_at)
             if inventory_row is not None:
                 inventory_key = (

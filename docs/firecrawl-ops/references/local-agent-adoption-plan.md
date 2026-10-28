@@ -508,4 +508,4 @@ data, or client documents.
 - [agent tooling reference](../../../docs/firecrawl-ops/references/agent-tooling-firecrawl.md)
 - [local capability matrix](../../../docs/firecrawl-ops/references/local-capability-matrix.md)
 - [PDF research-agent plan](../../../docs/firecrawl-ops/references/local-pdf-ocr-research-agent-plan.md)
-- [ops routing guidance](../../../scripts/firecrawl-ops/CLAUDE.md)
+- [ops routing guidance](../../../scripts/firecrawl-ops/AGENTS.md)

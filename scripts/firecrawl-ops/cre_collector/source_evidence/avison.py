@@ -53,9 +53,24 @@ def _context_controls(context):
 
 def validate_records(plan):
     rows = plan["events"]
-    if rows[0]["facts"][0]["kind"] != "retained_capture_context":
+    if rows[0]["facts"][0]["kind"] == "avison_native_context":
+        from source_evidence import avison_response
+        header = rows[0]["facts"][0]["value"]
+        observation = {**header, "records": [row["facts"][0]["value"] for row in rows[1:]]}
+        avison_response.validate(observation)
+        return
+    kind = rows[0]["facts"][0]["kind"]
+    if kind not in ("retained_capture_context", "retained_capture_context_v2"):
         raise ValueError("Avison evidence needs the collector visibility adapter")
-    records = [event["facts"][0]["value"] for event in rows[1:]]
+    from source_evidence import collector
+    header = rows[0]["facts"][0]["value"]
+    wrapped = {**header, "records": [event["facts"][0]["value"] for event in rows[1:]
+                                    if event["facts"][0]["kind"] == "source_record"]}
+    if kind == "retained_capture_context_v2":
+        wrapped["observations"] = [event["facts"][0]["value"] for event in rows[1:]
+                                   if event["facts"][0]["kind"] == "source_observation"]
+    original = collector.reconstruct(wrapped)
+    records = original["listings"]
     controls = []
     for record in records:
         if not isinstance(record, dict) or record.get("sourceKey") != "avison-young":
@@ -75,7 +90,9 @@ def validate_records(plan):
     for record, control in zip(records, controls):
         if control == "withheld" and not _equivalent(record, project_value(record, amounts)):
             raise ValueError("Avison evidence requires source-owned price projection")
-    context = rows[0]["facts"][0]["value"]["context"]
+    # Apply the existing context policy to the fully restored carriers too;
+    # moving an observation into its own row must not remove its controls.
+    context = {key: value for key, value in original.items() if key != "listings"}
     context_controls = _context_controls(context)
     if ("withheld" in controls or "withheld" in context_controls) and not _equivalent(context, project_value(context, amounts)):
         raise ValueError("Avison capture context requires source-owned price projection")

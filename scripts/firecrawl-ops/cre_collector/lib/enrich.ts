@@ -19,7 +19,10 @@
 import { clean, pmap, prune } from "./util.js";
 import { preserveDetailTables } from "./detail-tables/index.js";
 import { scrapeDoc } from "./scrape.js";
-import { firstJsonLd, jsonLdObjects } from "./html.js";
+import { observationNow } from "./observation-clock.js";
+import { limitEnrichmentObservations, captureEnrichmentEvidence, failedEnrichmentEvidence } from "./enrichment-evidence/index.js";
+import { RetainedSourceError } from "./source-observations.js";
+import { firstJsonLd } from "./html.js";
 import { CONCURRENCY } from "./config.js";
 import {
   ColliersMainEntry,
@@ -29,16 +32,17 @@ import {
 import { enrichJllInvestorListing } from "../sources/jll-investor.js";
 import {
   enrichBuildoutDetail,
+  enrichBuildoutDetailObserved,
   type BuildoutDetailConfig,
 } from "../sources/buildout.js";
 import { REGISTERED_BUILDOUT_FIRMS } from "../sources/buildout-registry.js";
 import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-young.js";
 import { enrichMarcusListing } from "../sources/marcus-millichap.js";
-import { enrichMatthewsListing, enrichMatthewsTargetedBatch, validateMatthewsTargetedRefresh, type MatthewsTargetedRefresh } from "../sources/matthews.js";
+import { enrichMatthewsListing, enrichMatthewsObservedListing, enrichMatthewsTargetedBatch, validateMatthewsTargetedRefresh, type MatthewsTargetedRefresh } from "../sources/matthews.js";
 import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
 import { enrichHanleyListings } from "../sources/hanley.js";
 import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidder-mathews.js";
-import type { SourceKey } from "../types.js";
+import type { ScrapedDoc, SourceKey } from "../types.js";
 
 export type EnrichItem = {
   sourceKey: string;
@@ -53,6 +57,9 @@ export interface SourceEnricher {
   // Omit a row (do not push) on unrecoverable per-item failure; the worker then
   // leaves that claimed row queued and the weekly full scrape refreshes it.
   enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]>;
+  enrichWithEvidence?(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<{
+    listings: any[]; retainedObservations: readonly unknown[]; evidenceError?: string;
+  }>;
 }
 
 // colliers-main: strip the "main:" fold prefix to rebuild the native usa#####
@@ -125,6 +132,25 @@ export const jllInvestorEnricher: SourceEnricher = {
 export function buildoutEnricherFor(
   detailConfig?: BuildoutDetailConfig
 ): SourceEnricher {
+  async function batch(items: EnrichItem[]) {
+    const outcomes = await pmap(items, CONCURRENCY, async (item) => {
+      let observation: unknown;
+      try {
+        const listing = await enrichBuildoutDetailObserved(item.sourceKey, item.url, detailConfig, (doc, pageUrl, qualification) => {
+          let capturedAt: string | null = null;
+          try { capturedAt = observationNow(); } catch { /* No source clock is invented. */ }
+          try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl, kind: "buildout", qualification }); }
+          catch { observation = { ...failedEnrichmentEvidence(item, "evidence_capture_failed", "buildout"), qualification }; }
+        });
+        return { listing, observation };
+      } catch (err) {
+        console.error(`  enrich/buildout: detail failed for ${item.url}: ${err}`);
+        return { listing: null, observation };
+      }
+    });
+    return { listings: outcomes.map((outcome) => outcome.listing).filter(Boolean),
+      retainedObservations: outcomes.flatMap((outcome) => outcome.observation === undefined ? [] : [outcome.observation]) };
+  }
   return {
     async enrich(items: EnrichItem[]): Promise<any[]> {
       const rows = await pmap(items, CONCURRENCY, async (item) => {
@@ -140,6 +166,10 @@ export function buildoutEnricherFor(
         }
       });
       return rows.filter(Boolean);
+    },
+    async enrichWithEvidence(items) {
+      const result = await batch(items);
+      return { listings: result.listings, ...limitEnrichmentObservations(result.retainedObservations) };
     },
   };
 }
@@ -224,35 +254,64 @@ export const kidderMathewsEnricher: SourceEnricher = {
 };
 
 // Best-effort generic fallback for any source without a bespoke enricher: scrape
-// the URL and lift price/status/description/geo from a RealEstateListing (or any)
+// the URL and lift price/status/description/geo from a supported listing
 // JSON-LD block where the page exposes one. A page with no useful JSON-LD yields
 // no row: emitting a thin url-only row would falsely complete the queue item and
 // overwrite raw source payload with an unverified fallback.
-export const genericEnricher: SourceEnricher = {
-  async enrich(items: EnrichItem[]): Promise<any[]> {
-    const rows = await pmap(items, CONCURRENCY, async (item) => {
+export function createGenericEnricher(fetchDoc: (url: string) => Promise<ScrapedDoc> = scrapeDoc,
+  clock: () => string = observationNow, pageUrlFor: (item: EnrichItem) => string = (item) => item.url): SourceEnricher {
+  async function batch(items: EnrichItem[]) {
+    const outcomes = await pmap(items, CONCURRENCY, async (item) => {
+      let doc: ScrapedDoc;
+      const pageUrl = pageUrlFor(item);
       try {
-        const doc = await scrapeDoc(item.url);
+        doc = await fetchDoc(pageUrl);
+      } catch {
+        console.error("  enrich/generic: scrape failed; retained bounded failure metadata");
+        return { listing: null, observation: failedEnrichmentEvidence(item) };
+      }
+      let capturedAt: string | null = null;
+      try { capturedAt = clock(); } catch { /* Preserve an unavailable capture clock explicitly. */ }
+      let observation: unknown;
+      try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl }); }
+      catch { observation = failedEnrichmentEvidence(item, "evidence_capture_failed"); }
+      try {
         const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
-        return row?.genericEnrich?.hadJsonLd ? row : null;
-      } catch (err) {
-        console.error(`  enrich/generic: scrape failed for ${item.url}: ${err}`);
-        return null;
+        return { listing: genericHasSubstantiveFields(row) ? row : null, observation };
+      } catch {
+        console.error("  enrich/generic: parsing failed; retained source observation");
+        return { listing: null, observation };
       }
     });
-    return rows.filter(Boolean);
-  },
-};
+    return { listings: outcomes.map((item) => item.listing).filter(Boolean),
+      retainedObservations: outcomes.map((item) => item.observation) };
+  }
+  return {
+    async enrich(items) { return (await batch(items)).listings; },
+    async enrichWithEvidence(items) {
+      const result = await batch(items);
+      return { listings: result.listings, ...limitEnrichmentObservations(result.retainedObservations) };
+    },
+  };
+}
+
+export const genericEnricher: SourceEnricher = createGenericEnricher();
+
+function genericHasSubstantiveFields(row: any): boolean {
+  if (!row?.genericEnrich?.hadJsonLd) return false;
+  return ["name", "description", "salePriceText"].some((key) =>
+    typeof row[key] === "string" && row[key].trim().length > 0) ||
+    ["salePriceUsd", "latitude", "longitude"].some((key) =>
+      typeof row[key] === "number" && Number.isFinite(row[key]));
+}
 
 // Pure transform: lift best-effort listing fields out of a page's JSON-LD. No
 // network. Echoes item.url. Exported for the unit test (fixture HTML in, row out).
 export function parseGenericJsonLd(item: EnrichItem, rawHtml: string): any {
-  const ld =
-    firstJsonLd(rawHtml, "RealEstateListing") ??
-    firstJsonLd(rawHtml, "Product") ??
-    firstJsonLd(rawHtml, "Offer") ??
-    jsonLdObjects(rawHtml).find((o) => o && (o.offers || o.price || o.name)) ??
-    null;
+  const supportedTypes = ["RealEstateListing", "Product", "Offer"] as const;
+  const matched = supportedTypes.map((type) => ({ type, value: firstJsonLd(rawHtml, type) }))
+    .find(({ value }) => value != null);
+  const ld = matched?.value ?? null;
   const offer = ld?.offers ?? ld;
   // JSON-LD offers.price is a bare numeric (string or number) per schema.org, not
   // a "$"-prefixed display string, so coerce with coerceNum() (num() only accepts
@@ -271,7 +330,7 @@ export function parseGenericJsonLd(item: EnrichItem, rawHtml: string): any {
     latitude: lat,
     longitude: lng,
     url: item.url,
-    genericEnrich: { jsonLdType: clean(ld?.["@type"]) ?? null, hadJsonLd: ld != null },
+    genericEnrich: { jsonLdType: matched?.type ?? null, hadJsonLd: ld != null },
   });
 }
 
@@ -290,15 +349,54 @@ function nativeIdFor(item: EnrichItem): string {
   return item.externalId.replace(/^(main:|investor:|dealflow:)/, "");
 }
 
-// Matthews owns canonical/native identity validation and the shared direct
-// transport. A source failure never falls back to generic JSON-LD enrichment.
-export const matthewsEnricher: SourceEnricher = {
-  async enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]> {
+// Matthews keeps native queue admission; any recovered context is private evidence only.
+export function createMatthewsEnricher(
+  primary: typeof enrichMatthewsObservedListing = enrichMatthewsObservedListing,
+  fetchDoc: (url: string) => Promise<ScrapedDoc> = scrapeDoc,
+): SourceEnricher {
+  async function enrich(items: EnrichItem[], context?: MatthewsTargetedRefresh): Promise<any[]> {
     if (context) return enrichMatthewsTargetedBatch(items, context);
     const rows = await pmap(items, Math.min(CONCURRENCY, 2), enrichMatthewsListing);
     return rows.filter(Boolean);
-  },
-};
+  }
+  return {
+    enrich,
+    async enrichWithEvidence(items, context) {
+      if (context) return { listings: await enrich(items, context), retainedObservations: [] };
+      const outcomes = await pmap(items, Math.min(CONCURRENCY, 2), async (item) => {
+        let witness: { reason: string; html?: string; observedAt?: string; redirectTarget?: string; status?: number } | undefined;
+        const listing = await primary(item, undefined, (value) => { witness = value; });
+        if (listing || !witness) return { listing, observations: [] as unknown[] };
+        const evidence = witness;
+        if (evidence.reason === "native_detail_unqualified" && evidence.html !== undefined) {
+          try {
+            const captured = captureEnrichmentEvidence(item, { rawHtml: evidence.html, markdown: "", links: [] }, evidence.observedAt ?? null);
+            return { listing: null, observations: [{ ...captured, primaryOutcome: { reason: evidence.reason, status: evidence.status } }] };
+          } catch {
+            return { listing: null, observations: [{ ...failedEnrichmentEvidence(item, "evidence_capture_failed"), primaryOutcome: { reason: evidence.reason, status: evidence.status } }] };
+          }
+        }
+        if (evidence.reason === "native_redirect_not_listing") {
+          return { listing: null, observations: [{ ...failedEnrichmentEvidence(item, "native_redirect_not_listing"),
+            primaryOutcome: { reason: evidence.reason, status: evidence.status, redirectTarget: evidence.redirectTarget,
+              observedAt: evidence.observedAt ?? null } }] };
+        }
+        if (evidence.reason === "temporary_redirect" && evidence.redirectTarget) {
+          const generic = createGenericEnricher(fetchDoc, observationNow, () => evidence.redirectTarget!);
+          const result = await generic.enrichWithEvidence!([item]);
+          return { listing: null, observations: result.retainedObservations.map((observation) => ({
+            ...(observation as object), primaryOutcome: { reason: evidence.reason, status: evidence.status, redirectTarget: evidence.redirectTarget },
+          })) };
+        }
+        return { listing: null, observations: [] as unknown[] };
+      });
+      return { listings: outcomes.map((outcome) => outcome.listing).filter(Boolean),
+        ...limitEnrichmentObservations(outcomes.flatMap((outcome) => outcome.observations)) };
+    },
+  };
+}
+
+export const matthewsEnricher: SourceEnricher = createMatthewsEnricher();
 
 // cbre is intentionally ABSENT: cbre is enumeration-only (the listings-api JSON
 // already returns fully mapped rows; monitor output equals full output), so there
@@ -362,7 +460,13 @@ export async function runEnrichGroups(
     const company = companyFor(key);
     console.error(`enriching ${key} (${groupItems.length} item(s), enricher=${label})...`);
     try {
-      const rows = context ? await enricher.enrich(groupItems, context) : await enricher.enrich(groupItems);
+      const result: { listings: any[]; retainedObservations?: readonly unknown[]; evidenceError?: string } = enricher.enrichWithEvidence
+        ? await enricher.enrichWithEvidence(groupItems, context)
+        : { listings: context ? await enricher.enrich(groupItems, context) : await enricher.enrich(groupItems) };
+      const rows = result.listings;
+      const evidence = result.retainedObservations === undefined
+        ? undefined : limitEnrichmentObservations(result.retainedObservations);
+      const evidenceError = result.evidenceError ?? evidence?.evidenceError;
       // Echo-guard: every emitted row MUST carry its input url for URL-keyed
       // completion. Index input transaction by url so the correct
       // transactionMode tag is attached (and a url-less row is dropped).
@@ -390,6 +494,8 @@ export async function runEnrichGroups(
         enricher: label,
         requested: groupItems.length,
         listingsCollected: emitted,
+        ...(evidence !== undefined ? { retainedObservations: evidence.retainedObservations } : {}),
+        ...(evidenceError ? { evidenceIncomplete: true, evidenceError } : {}),
       });
       console.error(`  ${key}: ${emitted}/${groupItems.length} enriched (enricher=${label})`);
     } catch (err) {
@@ -400,6 +506,7 @@ export async function runEnrichGroups(
         enricher: label,
         requested: groupItems.length,
         error: String(err).slice(0, 300),
+        ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
       });
     }
   }

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { registeredBuildoutTuples } from "./buildout-feeds/index.js";
 import {
   BUILDOUT_STABLE_INVENTORY_SORT,
   type BuildoutInventoryOpts,
@@ -193,16 +193,8 @@ function firm(
 
 // Shared with the current-inventory admission validator. Public provider coordinates,
 // not credentials; the typed key tuple and firm validation remain authoritative.
-const registeredTuples: unknown = JSON.parse(
-  readFileSync(new URL("../data/cre-buildout-sources.json", import.meta.url), "utf8")
-);
-if (!Array.isArray(registeredTuples) || registeredTuples.some(
-  (row) => !Array.isArray(row) || row.length !== 5 || row.some((v) => typeof v !== "string")
-)) {
-  throw new Error("invalid registered Buildout source tuples");
-}
-export const REGISTERED_BUILDOUT_FIRMS: readonly RegisteredBuildoutFirm[] = registeredTuples.map(
-  ([sourceKey, company, pluginKey, listingsPage, detailHost]: string[]) =>
+export const REGISTERED_BUILDOUT_FIRMS: readonly RegisteredBuildoutFirm[] = registeredBuildoutTuples.map(
+  ([sourceKey, company, pluginKey, listingsPage, detailHost]) =>
     firm(sourceKey as RegisteredBuildoutSourceKey, company, pluginKey, listingsPage, detailHost)
 );
 

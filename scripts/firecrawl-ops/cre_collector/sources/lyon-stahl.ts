@@ -6,6 +6,8 @@ import {
   settleResponseBodyRead,
 } from "../lib/response-body.js";
 import { observationNow } from "../lib/observation-clock.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
+import { captureSourcePageContext, isSourceChallengeShell } from "../lib/source-page-context/index.js";
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
@@ -53,8 +55,8 @@ export type LyonStahlParseOutcome =
   | { kind: "rejected"; reason: string };
 
 type LyonStahlDetailOutcome =
-  | LyonStahlParseOutcome
-  | { kind: "fetch_failed"; reason: string };
+  | (LyonStahlParseOutcome & { retainedObservation?: unknown })
+  | { kind: "fetch_failed"; reason: string; retainedObservation?: never };
 
 type FetchLike = (
   input: string | URL | Request,
@@ -865,7 +867,7 @@ export async function srcLyonStahl(
 
   const inventoryObservedAt = observationNow();
   const take = Number.isFinite(max) ? urls.slice(0, Math.max(0, max)) : urls;
-  const outcomes = await pmap(take, LYON_STAHL_DETAIL_CONCURRENCY, async (url) => {
+  const outcomes = await pmap(take, LYON_STAHL_DETAIL_CONCURRENCY, async (url): Promise<LyonStahlDetailOutcome> => {
     let html: string;
     try {
       html = await lyonStahlFetchText(url, "html", pacedFetch);
@@ -873,20 +875,49 @@ export async function srcLyonStahl(
       console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
       return { kind: "fetch_failed", reason: String(error) } as LyonStahlDetailOutcome;
     }
+    const detailObservedAt = observationNow();
+    let outcome: LyonStahlParseOutcome;
     try {
-      return parseLyonStahlDetail(html, url, tx, {
-        inventoryObservedAt,
-        detailObservedAt: observationNow(),
-      });
+      outcome = parseLyonStahlDetail(html, url, tx, { inventoryObservedAt, detailObservedAt });
     } catch (error) {
       console.error(`  lyon-stahl/${tx}: ${url} failed: ${error}`);
-      return { kind: "rejected", reason: String(error) } as LyonStahlDetailOutcome;
+      outcome = { kind: "rejected", reason: String(error) };
     }
+    if (outcome.kind !== "held" && outcome.kind !== "rejected") return outcome;
+    let shell: boolean;
+    try { shell = isSourceChallengeShell(html); } catch { return outcome; }
+    if (shell) return outcome;
+    let pageContext: unknown;
+    let pageContextStatus: "observed" | "failed" = "observed";
+    try { pageContext = captureSourcePageContext(html, { sourceUrl: url, detailObservedAt }); }
+    catch { pageContextStatus = "failed"; }
+    return { ...outcome, retainedObservation: {
+      event: "lyon_stahl_unqualified_observation", schema: "lyon-stahl-unqualified-observation-v1",
+      sourceUrl: url, requestedTransaction: tx, inventoryObservedAt, detailObservedAt,
+      disposition: outcome.kind, reason: outcome.reason,
+      ...(outcome.kind === "held" ? { normalizedAvailability: outcome.availability } : {}),
+      pageContextStatus, ...(pageContextStatus === "observed" ? { pageContext } : {}),
+    } } as LyonStahlDetailOutcome;
   });
   const listings = outcomes
     .filter((outcome): outcome is Extract<LyonStahlParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
     .map((outcome) => outcome.listing);
-  assertLyonStahlUniqueProviderIds(listings);
+  const retainedObservations = outcomes.flatMap((outcome) =>
+    outcome.retainedObservation === undefined ? [] : [outcome.retainedObservation]
+  );
+  try {
+    assertLyonStahlUniqueProviderIds(listings);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    throw new RetainedSourceError(error, [
+      ...retainedObservations,
+      ...outcomes.filter((outcome): outcome is Extract<LyonStahlParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
+        .map((outcome) => ({
+          event: "lyon_stahl_identity_conflict_observation", schema: "lyon-stahl-identity-conflict-observation-v1",
+          reason: "source_identity_validation_failed", availability: outcome.availability, observation: outcome.listing,
+        })),
+    ]);
+  }
   const held = outcomes.filter((outcome) => outcome.kind === "held").length;
   const terminal = outcomes.filter((outcome) => outcome.kind === "terminal").length;
   const rejected = outcomes.filter((outcome) => outcome.kind === "rejected").length;
@@ -908,6 +939,7 @@ export async function srcLyonStahl(
       "WordPress properties-sitemapN.xml enumeration to same-host HTML details; stable shortlink identity plus RealEstateListing JSON-LD; explicit Offer.availability admission",
     totalAvailable: urls.length,
     listings,
+    retainedObservations,
     truncated,
     note: notes.length ? notes.join("; ") : undefined,
   };

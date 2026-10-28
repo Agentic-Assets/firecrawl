@@ -22,6 +22,31 @@ def admission(value):
             "content_policy": "reviewed_for_private_retention", "source_keys": [value["source_key"]]}
 
 
+def test_markdown_url_label_and_target_are_independently_scanned_across_chunks():
+    text = "x" * 59_990 + "[https://label.example/file](https://target.example/file)"
+    value = plan(document(text), source_key="public-documents")
+    validate_admission(value, admission(value))
+    assert "".join(row["extracted_text"] for row in value["events"][1:]) == text
+
+
+@pytest.mark.parametrize("label,target", [
+    ("https://jll.com/a", "https://target.example/a"),
+    ("https://label.example/a", "https://jll.com/a"),
+    ("https://label.example/a?token=private", "https://target.example/a"),
+    ("https://label.example/a", "https://target.example/a?token=private"),
+])
+def test_markdown_url_label_and_target_keep_source_and_credential_refusals(label, target):
+    value = plan(document(f"[{label}]({target})"), source_key="public-documents")
+    with pytest.raises(ValueError):
+        validate_admission(value, admission(value))
+
+
+def test_malformed_bracketed_prose_url_is_still_refused():
+    value = plan(document("https://[invalid-host/path"), source_key="public-documents")
+    with pytest.raises(ValueError):
+        validate_admission(value, admission(value))
+
+
 def test_unicode_text_retained_exactly_with_order_and_full_digest():
     text = ("Lease economics: €9.50, 0.5%, 200 SF.\n" * 5000) + "FINAL SOURCE LINE"
     value = plan(document(text), source_key="public-documents")

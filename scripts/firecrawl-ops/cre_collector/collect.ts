@@ -1,7 +1,6 @@
 import { observationNow } from "./lib/observation-clock.js";
+import { writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
   isAvisonYoungTerminalSourceError,
@@ -14,6 +13,7 @@ import {
   srcBuildout,
 } from "./sources/buildout.js";
 import { registeredBuildoutFirmFor } from "./sources/buildout-registry.js";
+import { buildoutFeedFor } from "./sources/buildout-feeds/index.js";
 import { srcCbre } from "./sources/cbre.js";
 import { srcCbreDealflow } from "./sources/cbre-dealflow.js";
 import { srcColliers } from "./sources/colliers.js";
@@ -43,6 +43,7 @@ import { srcSrs } from "./sources/srs.js";
 import { srcTranswestern } from "./sources/transwestern.js";
 import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
+import { RetainedSourceError } from "./lib/source-observations.js";
 import { readFileSync } from "node:fs";
 import { EnrichItem, groupEnrichItems, resolveEnricher, runEnrichGroups } from "./lib/enrich.js";
 import {
@@ -128,25 +129,19 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
     case "savills":
       return srcSavills(tx, max, monitor);
     case "svn":
+    case "lee-associates": {
+      const feed = buildoutFeedFor(key);
+      if (!feed) throw new Error(`missing Buildout coordinates for ${key}`);
       return srcBuildout(
-        "SVN",
-        "b933480474026c41d248b77156c84aef37dcac68",
-        "https://svn.com/properties/",
+        feed.company,
+        feed.pluginKey,
+        feed.listingsPage,
         tx,
         max,
         monitor,
-        BUILDOUT_SOURCE_INVENTORY_OPTS.svn
+        BUILDOUT_SOURCE_INVENTORY_OPTS[key]
       );
-    case "lee-associates":
-      return srcBuildout(
-        "Lee & Associates",
-        "9a64a93980aeae8db347e72cdfa8ca61017acc9a",
-        "https://www.lee-associates.com/properties/",
-        tx,
-        max,
-        monitor,
-        BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"]
-      );
+    }
     case "nai-global":
       return srcNaiGlobal(tx, max, monitor);
     case "transwestern":
@@ -216,6 +211,7 @@ async function main() {
           truncated: res.truncated === true,
           note: res.note ?? null,
           ...(res.currentInventoryProof ? { currentInventoryProof: res.currentInventoryProof } : {}),
+          ...(res.retainedObservations !== undefined ? { retainedObservations: res.retainedObservations } : {}),
           freshness,
         });
         for (const l of res.listings) {
@@ -257,6 +253,7 @@ async function main() {
           transaction: tx,
           supported: true,
           error: String(err).slice(0, 300),
+          ...(err instanceof RetainedSourceError ? { retainedObservations: err.retainedObservations } : {}),
         });
       }
     }
@@ -265,6 +262,8 @@ async function main() {
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
+  const evidenceOnly = !MONITOR && listings.length === 0 &&
+    sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
   if (listings.length === 0) {
     if (
       !MONITOR
@@ -302,16 +301,20 @@ async function main() {
     // still recorded in `sources[].error` (enforced by the downstream coverage gate),
     // and a source emitting 0 rows is never evaluated for disappearance because its
     // key is absent from run_source_keys.
-    if (!MONITOR) {
+    if (!MONITOR && !evidenceOnly) {
       throw new Error("no listings collected from any source");
     }
+    if (MONITOR) {
+      console.error(
+        "monitor: 0 listings enumerated (all targeted sources are monitor-excluded or empty); writing empty artifact"
+      );
+    }
+  }
+  if (!evidenceOnly) {
     console.error(
-      "monitor: 0 listings enumerated (all targeted sources are monitor-excluded or empty); writing empty artifact"
+      `done: ${listings.length} listings from ${succeeded} sources, ${brokers.length} unique brokers`
     );
   }
-  console.error(
-    `done: ${listings.length} listings from ${succeeded} sources, ${brokers.length} unique brokers`
-  );
 
   const out = {
     description:
@@ -322,6 +325,7 @@ async function main() {
       maxItemsPerSource: Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : null,
       pageCap: PAGE_CAP,
       mode: MONITOR ? "monitor" : "full",
+      ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
       startedAt,
       finishedAt: observationNow(),
       freshness: {
@@ -337,12 +341,14 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
+  const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+  writeCollectorArtifact(OUT_PATH, json, privateEvidence);
   if (OUT_PATH) {
-    mkdirSync(dirname(OUT_PATH), { recursive: true });
-    writeFileSync(OUT_PATH, json);
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
-  } else {
-    process.stdout.write(json);
+  }
+  if (evidenceOnly) {
+    console.error("no listings collected from any source");
+    process.exitCode = 1;
   }
 }
 
@@ -405,6 +411,8 @@ async function enrichMain(claimPath: string): Promise<void> {
     key;
   const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor, context);
   if (context) validateMatthewsTargetedRefresh(context);
+  const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+  const evidenceOnly = listings.length === 0 && privateEvidence;
 
   console.error(
     `enrich done: ${listings.length} listing(s) from ${groups.size} source group(s), ${brokers.length} unique brokers`
@@ -417,6 +425,7 @@ async function enrichMain(claimPath: string): Promise<void> {
       apiUrl: API_URL,
       mode: "enrich",
       enrichInput: claimPath,
+      ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
       ...(context ? {
         matthewsTargetedRefresh: context,
         freshness: {
@@ -435,12 +444,11 @@ async function enrichMain(claimPath: string): Promise<void> {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
+  // All targeted artifacts belong to the worker's private custody, including
+  // empty and bespoke-only results without retained observation arrays.
+  writeCollectorArtifact(OUT_PATH, json, true);
   if (OUT_PATH) {
-    mkdirSync(dirname(OUT_PATH), { recursive: true });
-    writeFileSync(OUT_PATH, json);
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
-  } else {
-    process.stdout.write(json);
   }
 }
 

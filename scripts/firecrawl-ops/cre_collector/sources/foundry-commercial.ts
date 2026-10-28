@@ -6,6 +6,7 @@ import {
   settleResponseBodyRead,
 } from "../lib/response-body.js";
 import { observationNow } from "../lib/observation-clock.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
 import * as cheerio from "cheerio";
 import { CONCURRENCY } from "../lib/config.js";
 import { refreshGenerationId, requireFreshDetails } from "../lib/freshness.js";
@@ -24,6 +25,8 @@ import {
   samePage,
 } from "./pure/foundry-identity.js";
 import { classifyFoundryStatus, explicitFoundryTenures, type FoundryStatusDecision } from "./pure/foundry-status.js";
+import { captureFoundryPageContext } from "./pure/foundry-observation.js";
+import { isSourceChallengeShell } from "../lib/source-page-context/index.js";
 
 export const FOUNDRY_SOURCE_URL = `${FOUNDRY_HOST}/properties/`;
 export const FOUNDRY_FETCH_TIMEOUT_MS = 60_000;
@@ -64,8 +67,8 @@ export type FoundryParseOutcome =
   | { kind: "accepted"; listing: any; status: string }
   | { kind: "terminal"; status: string; reason: string }
   | { kind: "other_tenure"; status: string; reason: string }
-  | { kind: "held"; status: string | null; reason: string; observation: FoundryHeldObservation }
-  | { kind: "rejected"; reason: string };
+  | { kind: "held"; status: string | null; reason: string; observation: FoundryHeldObservation; pageContext?: ReturnType<typeof captureFoundryPageContext> }
+  | { kind: "rejected"; reason: string; pageContext?: ReturnType<typeof captureFoundryPageContext> };
 
 type FetchLike = (
   input: string | URL | Request,
@@ -199,16 +202,18 @@ export function parseFoundryCommercialDetail(
 ): FoundryParseOutcome {
   const strict = context.strict ?? requireFreshDetails();
   const identity = foundryProviderIdentity(html, requestedUrl);
-  if (!identity) return { kind: "rejected", reason: "canonical or WordPress shortlink identity mismatch" };
-
   const $ = cheerio.load(html);
   const heading = clean($("h1").first().text());
   const visibleHeading = [clean($("title").first().text()), heading].filter(Boolean).join(" ");
-  if (
+  const shell =
     /\b(?:404|not found|access denied|forbidden|captcha|just a moment|service unavailable)\b/i.test(
       visibleHeading
-    )
-  ) {
+    );
+  const observationShell = isSourceChallengeShell(html);
+  if (!identity) return { kind: "rejected", reason: "canonical or WordPress shortlink identity mismatch",
+    ...(!observationShell && foundryUrl(requestedUrl, "detail")
+      ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}) };
+  if (shell) {
     return { kind: "rejected", reason: "challenge or error shell" };
   }
 
@@ -216,7 +221,8 @@ export function parseFoundryCommercialDetail(
   const listing = nodes.find((node) => ldTypes(node).some((type) => type === "RealEstateListing"));
   const listingUrl = clean(listing?.url);
   if (strict && (!listingUrl || !samePage(listingUrl, requestedUrl))) {
-    return { kind: "rejected", reason: "RealEstateListing identity mismatch" };
+    return { kind: "rejected", reason: "RealEstateListing identity mismatch",
+      ...(!observationShell ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}) };
   }
   const notes = foundryPropertyNotes(html);
   const status = foundryStatusFromNotes(notes);
@@ -224,6 +230,7 @@ export function parseFoundryCommercialDetail(
     kind: "held",
     status: status.status,
     reason,
+    ...(!observationShell ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}),
     observation: {
       id: foundryListingId(requestedUrl),
       foundryPostId: identity,
@@ -260,7 +267,8 @@ export function parseFoundryCommercialDetail(
 
   const entity = listing?.mainEntity ?? {};
   const name = clean(listing?.name) ?? metaContent($, "og:title") ?? heading;
-  if (!name) return { kind: "rejected", reason: "property page has no listing name" };
+  if (!name) return { kind: "rejected", reason: "property page has no listing name",
+    ...(!observationShell ? { pageContext: captureFoundryPageContext(html, requestedUrl, context.detailObservedAt) } : {}) };
   const address = foundryAddress(entity?.address);
   const facts = foundryFactMap($);
   const priceText = fact(facts, /^(?:asking |sale |list )?price$/i);
@@ -578,7 +586,33 @@ export async function srcFoundryCommercial(
   const listings = outcomes
     .filter((outcome): outcome is Extract<FoundryParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
     .map((outcome) => outcome.listing);
-  assertFoundryUniqueProviderIds(listings);
+  const retainedObservations: unknown[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.kind === "held") retainedObservations.push({
+      event: "foundry_held_observation", schema: "foundry-held-observation-v1",
+      observation: outcome.observation, ...(outcome.pageContext ? { pageContext: outcome.pageContext } : {}),
+    });
+    if (outcome.kind === "rejected" && outcome.pageContext) retainedObservations.push({
+      event: "foundry_rejected_observation", schema: "foundry-rejected-observation-v1",
+      reason: outcome.reason, pageContext: outcome.pageContext,
+    });
+  }
+  try {
+    assertFoundryUniqueProviderIds(listings);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    throw new RetainedSourceError(error, [
+      ...retainedObservations,
+      ...outcomes.filter((outcome): outcome is Extract<FoundryParseOutcome, { kind: "accepted" }> => outcome.kind === "accepted")
+        .map((outcome) => ({
+        event: "foundry_identity_conflict_observation",
+        schema: "foundry-identity-conflict-observation-v1",
+        reason: "source_identity_validation_failed",
+        status: outcome.status,
+        observation: outcome.listing,
+      })),
+    ]);
+  }
   const held = outcomes.filter((outcome) => outcome.kind === "held").length;
   const rejected = outcomes.filter((outcome) => outcome.kind === "rejected").length;
   const terminal = outcomes.filter((outcome) => outcome.kind === "terminal").length;
@@ -600,6 +634,7 @@ export async function srcFoundryCommercial(
       "WordPress property sitemap enumeration to same-host HTML details; stable shortlink identity plus JSON-LD/DOM parsing; explicit status admission",
     totalAvailable: urls.length,
     listings,
+    retainedObservations,
     truncated,
     note: notes.length ? notes.join("; ") : undefined,
   };

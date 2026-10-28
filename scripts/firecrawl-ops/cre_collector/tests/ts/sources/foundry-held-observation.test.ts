@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { RetainedSourceError } from "../../../lib/source-observations.js";
 
 process.argv = [process.argv[0]!, process.argv[1]!];
 const { parseFoundryCommercialDetail, srcFoundryCommercial } = await import("../../../sources/foundry-commercial.js");
@@ -78,6 +79,52 @@ test("synthetic unresolved tenure remains held for both request contexts without
   }
 });
 
+test("held native context keeps ordered duplicate facts, scripts and page resources", () => {
+  const html = page("context", "70004", ["Paused", "Office"])
+    .replace("</body>", `<div class="property-description">Literal description</div>
+      <table><tr><th>Rate</th><td>one</td></tr><tr><th>Rate</th><td>two</td></tr><tr><th>Empty</th><td></td></tr></table>
+      <script type="application/ld+json">{"@type":"Offer","price":null}</script>
+      <a href="/brochure.pdf">Brochure</a><img src="/photo.jpg" alt="Photo"></body>`);
+  const outcome = parseFoundryCommercialDetail(html, detailUrl("context"), "sale", {
+    strict: true, detailObservedAt: "2026-10-16T01:02:00Z",
+  });
+  assert.equal(outcome.kind, "held");
+  if (outcome.kind !== "held") throw new Error("expected held outcome");
+  assert.ok(outcome.pageContext);
+  assert.equal(outcome.pageContext.scripts.length, 2);
+  assert.equal(outcome.pageContext.scripts[1]!.text, '{"@type":"Offer","price":null}');
+  assert.deepEqual(outcome.pageContext.descriptions, ["Literal description"]);
+  assert.equal(outcome.pageContext.tables.status, "observed");
+  const rows = outcome.pageContext.tables.tables[1]!.rows;
+  assert.deepEqual(rows.map((row) => row.cells.map((cell) => cell.rawText)), [["Rate", "one"], ["Rate", "two"], ["Empty", ""]]);
+  assert.equal(outcome.pageContext.links[0]!.href, "/brochure.pdf");
+  assert.equal(outcome.pageContext.images[0]!.src, "/photo.jpg");
+});
+
+test("identity conflicts retain source context while challenge shells do not", () => {
+  const html = page("conflict", "70005", ["Paused"]).replace(`href="${detailUrl("conflict")}"`, `href="${detailUrl("other")}"`);
+  const conflict = parseFoundryCommercialDetail(html, detailUrl("conflict"), "sale", { strict: true });
+  assert.equal(conflict.kind, "rejected");
+  if (conflict.kind !== "rejected") throw new Error("expected rejection");
+  assert.equal(conflict.pageContext?.schema, "foundry-native-page-context/v1");
+  assert.equal(conflict.pageContext?.scripts.length, 1);
+  assert.equal(conflict.pageContext?.detailObservedAt, null);
+  const shell = parseFoundryCommercialDetail(html.replace("Synthetic conflict</h1>", "Access Denied</h1>"), detailUrl("conflict"), "sale", { strict: true });
+  assert.equal(shell.kind, "rejected");
+  if (shell.kind !== "rejected") throw new Error("expected rejection");
+  assert.equal(shell.pageContext, undefined);
+});
+
+test("held outcome on a recognized body challenge omits page context", () => {
+  const html = page("held-challenge", "70006", ["Paused"])
+    .replace("</body>", "<p>Checking your browser</p></body>");
+  const outcome = parseFoundryCommercialDetail(html, detailUrl("held-challenge"), "sale", { strict: true });
+  assert.equal(outcome.kind, "held");
+  if (outcome.kind !== "held") throw new Error("expected held outcome");
+  assert.equal(outcome.pageContext, undefined);
+  assert.deepEqual(outcome.observation.propertyNotes, ["Paused"]);
+});
+
 function responsesFor(rows: Array<{ slug: string; id: string; notes: string[]; html?: string }>) {
   return new Map([
     [`${host}/sitemap.xml`, `<sitemapindex><sitemap><loc>${host}/property-sitemap.xml</loc></sitemap></sitemapindex>`],
@@ -130,6 +177,18 @@ test("synthetic mixed producer preserves accepted rows, fetches, order and all n
   assert.equal(result.note, "2 detail page(s) held for unknown or ambiguous status; 1 detail page(s) belong only to the other transaction; 1 terminal detail page(s) excluded; 2 detail page(s) failed identity or structure validation");
   const retained = events(lines);
   assert.equal(retained.length, 2);
+  const sourceObservations = result.retainedObservations as Array<{
+    event: string; schema: string; observation?: Observation; pageContext?: { schema: string };
+  }>;
+  const sourceHeld = sourceObservations.filter((event) => event.event === "foundry_held_observation")
+    .map(({ event, schema, observation }) => ({ event, schema, observation: observation! }));
+  assert.deepEqual(
+    [...sourceHeld].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
+    [...retained].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
+  );
+  assert.deepEqual(sourceHeld.map((event) => event.observation.id), ["property/unknown", "property/ambiguous"]);
+  assert.equal(sourceObservations.filter((event) => event.event === "foundry_rejected_observation").length, 1);
+  assert.ok(sourceObservations.every((event) => event.pageContext?.schema === "foundry-native-page-context/v1"));
   assert.deepEqual(retained.map((event) => event.observation.id).sort(), ["property/ambiguous", "property/unknown"]);
   for (const event of retained) {
     assert.equal(event.schema, "foundry-held-observation-v1");
@@ -140,6 +199,43 @@ test("synthetic mixed producer preserves accepted rows, fetches, order and all n
     assert.ok(event.observation.inventoryObservedAt);
     assert.ok(event.observation.detailObservedAt);
   }
+});
+
+test("synthetic completed source has an explicit empty observation carrier when no pages are held", async (t) => {
+  const responses = responsesFor([{ slug: "accepted", id: "74001", notes: ["For Sale"] }]);
+  const oldFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = oldFetch; });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    assert.ok(responses.has(url), `unexpected synthetic transport URL ${url}`);
+    return new Response(responses.get(url), { headers: { "content-type": url.endsWith(".xml") ? "application/xml" : "text/html" } });
+  };
+  const result = await srcFoundryCommercial("sale", Infinity, false);
+  assert.deepEqual(result.retainedObservations, []);
+  assert.deepEqual(result.listings.map((row) => row.id), ["property/accepted"]);
+  assert.equal(result.truncated, false);
+});
+
+test("synthetic source carrier preserves a held empty-notes observation with null status", async (t) => {
+  const responses = responsesFor([{ slug: "empty", id: "74002", notes: [] }]);
+  const lines: string[] = [];
+  const oldFetch = globalThis.fetch, oldError = console.error;
+  t.after(() => { globalThis.fetch = oldFetch; console.error = oldError; });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    assert.ok(responses.has(url), `unexpected synthetic transport URL ${url}`);
+    return new Response(responses.get(url), { headers: { "content-type": url.endsWith(".xml") ? "application/xml" : "text/html" } });
+  };
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  const result = await srcFoundryCommercial("sale", Infinity, false);
+  const retained = events(lines);
+  const carrier = result.retainedObservations as Array<{ event: string; schema: string; observation: Observation }>;
+  assert.deepEqual(carrier.map(({ event, schema, observation }) => ({ event, schema, observation })), retained);
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].observation.status, null);
+  assert.deepEqual(retained[0].observation.propertyNotes, []);
+  assert.deepEqual(result.listings, []);
+  assert.equal(result.truncated, true);
 });
 
 test("synthetic completed held event survives a later fatal accepted-ID uniqueness assertion", async (t) => {
@@ -157,7 +253,27 @@ test("synthetic completed held event survives a later fatal accepted-ID uniquene
     return new Response(responses.get(url), { headers: { "content-type": url.endsWith(".xml") ? "application/xml" : "text/html" } });
   };
   console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
-  await assert.rejects(() => srcFoundryCommercial("sale", Infinity, false), /duplicate provider ID 73002/);
+  await assert.rejects(() => srcFoundryCommercial("sale", Infinity, false), (error: unknown) => {
+    assert.ok(error instanceof RetainedSourceError);
+    assert.equal(error.name, "Error");
+    assert.match(error.message, /duplicate provider ID 73002/);
+    assert.ok(error.cause instanceof Error);
+    assert.equal(error.cause.message, error.message);
+    assert.equal(error.cause.name, error.name);
+    assert.equal(JSON.stringify(error), '{"name":"Error"}');
+    const observations = error.retainedObservations as Array<{
+      event: string; schema: string; reason?: string; observation: { id: string; foundryPostId: string };
+    }>;
+    assert.deepEqual(observations.map((entry) => entry.schema), [
+      "foundry-held-observation-v1", "foundry-identity-conflict-observation-v1", "foundry-identity-conflict-observation-v1",
+    ]);
+    assert.deepEqual(observations.map((entry) => entry.observation.id), [
+      "property/held-before-failure", "property/duplicate-one", "property/duplicate-two",
+    ]);
+    assert.deepEqual(observations.slice(1).map((entry) => entry.observation.foundryPostId), ["73002", "73002"]);
+    assert.ok(observations.slice(1).every((entry) => entry.reason === "source_identity_validation_failed"));
+    return true;
+  });
   assert.equal(calls.length, 5);
   const retained = events(lines);
   assert.equal(retained.length, 1, "completed held event must precede the fatal uniqueness assertion");
@@ -167,7 +283,7 @@ test("synthetic completed held event survives a later fatal accepted-ID uniquene
   assert.deepEqual(retained[0].observation.propertyNotes, ["Paused", "Office", "Location"]);
 });
 
-test("synthetic real all-held CLI fails without artifact and retains stderr observations", (t) => {
+test("synthetic real all-held CLI fails after writing an evidence-only artifact", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "foundry-held-cli-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const preload = join(dir, "transport.mjs"), callsPath = join(dir, "calls.jsonl"), out = join(dir, "artifact.json");
@@ -198,10 +314,20 @@ test("synthetic real all-held CLI fails without artifact and retains stderr obse
   assert.match(child.stderr, /SYNTHETIC_TRANSPORT_INSTALLED/);
   assert.doesNotMatch(child.stderr, /NETWORK_DENIED|UNEXPECTED_SYNTHETIC_FETCH/);
   assert.match(child.stderr, /no listings collected from any source/);
-  assert.equal(existsSync(out), false);
+  assert.equal(existsSync(out), true);
+  const artifact = JSON.parse(readFileSync(out, "utf8"));
+  assert.equal(artifact.runMeta.evidenceOnly, true);
+  assert.equal(artifact.runMeta.evidencePurpose, "private_unqualified_source_observations");
+  assert.deepEqual(artifact.listings, []);
+  assert.equal(artifact.totalListings, 0);
   assert.deepEqual(readFileSync(callsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line)).sort(), [...responses.keys()].sort());
   const retained = events(child.stderr.split(/\r?\n/));
   assert.equal(retained.length, 2, "all-held zero-row failure must retain both completed observations");
+  assert.deepEqual(
+    [...artifact.sources[0].retainedObservations].map(({ event, schema, observation }: { event: string; schema: string; observation: Observation }) => ({ event, schema, observation }))
+      .sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
+    [...retained].sort((a, b) => a.observation.id.localeCompare(b.observation.id)),
+  );
   const empty = retained.find((event) => event.observation.id === "property/empty")!;
   assert.ok(empty);
   assert.equal(empty.observation.status, null);

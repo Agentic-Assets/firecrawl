@@ -31,7 +31,7 @@ task scope/cadence expansion or changes to another host.
 For provider, endpoint, or page-layout variations, follow the source-backed
 [brokerage completion and evidence guidance](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md)
 before changing an adapter. Current runtime and source-specific contracts
-remain in this guide and `sources/CLAUDE.md`.
+remain in this guide and `sources/AGENTS.md`.
 
 For adapter completeness and reported UI data gaps, use the
 [comprehensive listing fidelity standard](../../../docs/firecrawl-ops/references/cre-brokerage-completion-playbook.md#comprehensive-listing-fidelity):
@@ -392,7 +392,7 @@ typed inventory churn, with the same page-size-500/concurrency-two profile and
 two consecutive complete matching snapshots required. A third pass that is the
 first valid snapshot cannot qualify alone. Malformed or denied reads do not
 start another snapshot pass; the existing HTTP/JSON helper policy is unchanged.
-The [source contract](sources/CLAUDE.md) and
+The [source contract](sources/AGENTS.md) and
 [AGENTIC-4547](https://linear.app/agenticassets/issue/AGENTIC-4547) describe this
 bounded recovery. It does not establish fresh source acceptance or permit
 replaying a rejected artifact.
@@ -405,7 +405,7 @@ known body cancellation must also settle, and late response headers never
 permit a replacement.
 HTTP refusals, arbitrary transport errors, returned challenge pages and POST requests
 do not gain this retry. The existing successful-detail cache and strict
-full-source artifact gate still apply. See the [source contract](sources/CLAUDE.md)
+full-source artifact gate still apply. See the [source contract](sources/AGENTS.md)
 and [AGENTIC-4562](https://linear.app/agenticassets/issue/AGENTIC-4562).
 This recovery changes neither the guarded owner's overall deadline nor
 source acceptance, and does not authorize replay of an old failed generation.
@@ -1006,7 +1006,7 @@ in serial mode; pipeline mode may combine its exact admitted source entry with
 ordinary sources. It still requires uncapped sale+lease, two consecutive complete
 matching public POST inventories, every fresh canonical detail and at least 100
 unique staged identities. Raw `first_seen`, baseline absence, namespace guards
-and full audit/readback remain mandatory; see [the source contract](sources/CLAUDE.md).
+and full audit/readback remain mandatory; see [the source contract](sources/AGENTS.md).
 
 DAUM also has a separately authorized verified-subset scope selected by
 `--admit-daum-verified-subset` (`-AdmitDaumVerifiedSubset` on Windows).
@@ -1710,8 +1710,8 @@ canaries and should not be read as current coverage proof.
 Read these in order:
 
 1. `AGENTS.md`
-2. `scripts/firecrawl-ops/CLAUDE.md`
-3. `scripts/firecrawl-ops/cre_collector/CLAUDE.md`
+2. `scripts/firecrawl-ops/AGENTS.md`
+3. `scripts/firecrawl-ops/cre_collector/AGENTS.md`
 4. This file
 5. `BROKERAGE_STATUS_2026-06-12.md` (historical per-broker snapshot; obtain current coverage/counts from live readback)
 6. `docs/firecrawl-ops/references/cre-intelligence-system-design.md` (canonical architecture + go-forward monitoring plan, section 14)

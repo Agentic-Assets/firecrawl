@@ -92,10 +92,26 @@ def test_database_timeout_is_reported_as_unknown_outcome(monkeypatch):
     monkeypatch.setattr(cli, 'psql_connection_args', lambda _: [])
     monkeypatch.setattr(cli, 'psql_connection_env', lambda _: {})
     def timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired('psql', 45)
-    monkeypatch.setattr(cli.subprocess, 'run', timeout)
+        raise RuntimeError('database outcome unknown after timeout')
+    monkeypatch.setattr(cli.psql_process, 'run', timeout)
     with pytest.raises(RuntimeError, match='outcome unknown'):
         cli.run_psql('BEGIN; COMMIT;', '/private/env', 'a' * 64)
+
+
+def test_database_helper_receives_bound_command_sql_and_output_limit(monkeypatch):
+    monkeypatch.setattr(cli, 'load_db_url', lambda _: ('postgresql://localhost/test', 'file'))
+    monkeypatch.setattr(cli, 'assert_expected_database_target', lambda *_: None)
+    monkeypatch.setattr(cli, 'find_psql', lambda: 'psql')
+    monkeypatch.setattr(cli, 'psql_connection_args', lambda _: ['--host=localhost'])
+    monkeypatch.setattr(cli, 'psql_connection_env', lambda _: {'PGUSER': 'fixture'})
+    calls = []
+    def run(command, payload, env, **kwargs):
+        calls.append((command, payload, env, kwargs))
+        return b'synthetic'
+    monkeypatch.setattr(cli.psql_process, 'run', run)
+    assert cli.run_psql('SELECT 1;', '/private/env', 'a' * 64, max_results_bytes=1024) == b'synthetic'
+    assert calls[0][1:] == (b'SELECT 1;', {'PGUSER': 'fixture'},
+                             {'timeout_seconds': 45, 'max_results_bytes': 1024})
 
 
 def test_fact_and_get_queries_bind_values_and_enforce_limits():
@@ -110,3 +126,126 @@ def test_fact_and_get_queries_bind_values_and_enforce_limits():
     for capture, ordinal in [("x';DROP", 1), ('valid', -1), ('valid', 1000001)]:
         with pytest.raises(ValueError):
             cli.get_sql(capture, ordinal)
+
+
+def test_document_query_is_read_only_bounded_and_literal_bound():
+    sql = cli.document_sql('evidence-document')
+    assert 'BEGIN READ ONLY;' in sql
+    assert 'SET LOCAL ROLE cre_source_evidence_reader;' in sql
+    assert 'ORDER BY item_no LIMIT 72' in sql
+    assert 'evidence-document' not in sql
+    with pytest.raises(ValueError):
+        cli.document_sql("bad'; DROP SCHEMA credeals; --")
+
+
+def test_export_document_text_uses_private_exporter_without_printing_text(monkeypatch, capsys):
+    from source_evidence import document_export
+    value = events.plan(document('Retained document content'), source_key='cbre')
+    capture = value['events'][0]['capture_id']
+    calls = []
+    def read(sql, env, target, **kwargs):
+        assert 'ORDER BY item_no LIMIT 72' in sql and kwargs['max_results_bytes'] == cli.MAX_PLAN_BYTES
+        return b'\n'.join(events.encoded(row) for row in value['events'])
+    monkeypatch.setattr(cli, 'run_psql', read)
+    monkeypatch.setattr(document_export, 'export', lambda rows, outdir: calls.append((rows, outdir)))
+    cli.main(['export-document-text', '--capture-id', capture, '--out-dir', '/private/new-document',
+              '--env-file', '/private/env', '--expected-db-target-sha256', 'a' * 64])
+    assert calls == [(value['events'], '/private/new-document')]
+    assert 'Retained document content' not in capsys.readouterr().out
+
+
+def test_collector_query_is_read_only_and_detects_oversized_capture():
+    sql = cli.collector_sql('evidence-collector')
+    assert 'BEGIN READ ONLY;' in sql
+    assert 'SET LOCAL ROLE cre_source_evidence_reader;' in sql
+    assert 'ORDER BY item_no LIMIT 10002' in sql
+    assert 'evidence-collector' not in sql
+    for identity in ("bad'; DROP SCHEMA credeals; --", '', None):
+        with pytest.raises(ValueError):
+            cli.collector_sql(identity)
+    for limit in (True, 0, 10003):
+        with pytest.raises(ValueError):
+            cli.capture_sql('evidence-collector', limit)
+
+
+def test_export_collector_uses_bound_reader_and_does_not_print_facts(monkeypatch, capsys):
+    from source_evidence import collector, collector_export
+    original = {'runMeta': {'finishedAt': '2026-10-28T12:00:00Z'},
+                'sources': [{'sourceKey': 'svn', 'retainedObservations': [
+                    {'unknown': 'Private retained source content'} for _ in range(78)]}],
+                'listings': []}
+    value = events.plan(collector.convert(original, source_key='svn'), source_key='svn')
+    capture = value['events'][0]['capture_id']
+    calls = []
+    def read(sql, env, target, **kwargs):
+        assert sql == cli.collector_sql(capture)
+        assert env == '/private/env' and target == 'b' * 64
+        assert kwargs['max_results_bytes'] == cli.MAX_PLAN_BYTES
+        return b'\n'.join(events.encoded(row) for row in value['events'])
+    monkeypatch.setattr(cli, 'run_psql', read)
+    monkeypatch.setattr(collector_export, 'export', lambda rows, outdir: calls.append((rows, outdir)))
+    args = ['export-collector-capture', '--capture-id', capture, '--out-dir', '/private/new-collector',
+            '--env-file', '/private/env', '--expected-db-target-sha256', 'b' * 64]
+    cli.main(args)
+    assert calls == [(value['events'], '/private/new-collector')]
+    assert 'Private retained source content' not in capsys.readouterr().out
+    value['events'][1]['capture_id'] = 'evidence-another-capture'
+    with pytest.raises(ValueError, match='another capture'):
+        cli.main(args)
+    assert len(calls) == 1
+
+
+def test_document_discovery_is_offline_private_and_does_not_print_urls(tmp_path, monkeypatch, capsys):
+    from source_evidence import collector
+    original = {'runMeta': {'finishedAt': '2026-10-28T12:00:00Z'},
+                'sources': [{'sourceKey': 'svn'}],
+                'listings': [{'sourceKey': 'svn', 'id': str(index),
+                              'brochures': [{'name': 'Offering memorandum',
+                                             'url': f'https://example.test/private-doc-{index}.pdf'}]}
+                             for index in range(78)]}
+    value = events.plan(collector.convert(original, source_key='svn'), source_key='svn')
+    plan_path = tmp_path / 'plan.json'
+    plan_path.write_bytes(events.encoded(value))
+    output = tmp_path / 'candidates.json'
+    monkeypatch.setattr(cli, 'run_psql', lambda *args, **kwargs: pytest.fail('database contacted'))
+    monkeypatch.setattr(cli.psql_process, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
+    cli.main(['discover-documents', '--plan', str(plan_path), '--out', str(output)])
+    manifest = json.loads(output.read_bytes())
+    assert len(manifest['candidates']) == 78
+    assert os.stat(output).st_mode & 0o777 == 0o600
+    assert 'example.test' not in capsys.readouterr().out
+    with pytest.raises(FileExistsError):
+        cli.main(['discover-documents', '--plan', str(plan_path), '--out', str(output)])
+
+
+def test_document_acquisition_planning_is_offline_and_requires_private_policy(tmp_path, monkeypatch, capsys):
+    from source_evidence import document_candidates
+    from test_document_acquisition_policy import CODE, TARGET, policy_value
+    from test_document_candidates import artifact, plan_for
+    plan = plan_for(artifact())
+    candidates = document_candidates.discover(plan)
+    plan_path, candidates_path, policy_path = [tmp_path / name for name in
+                                               ('source-plan.json', 'candidates.json', 'policy.json')]
+    raw_policy = events.encoded(policy_value())
+    plan_path.write_bytes(events.encoded(plan))
+    candidates_path.write_bytes(events.encoded(candidates))
+    policy_path.write_bytes(raw_policy)
+    policy_path.chmod(0o600)
+    output = tmp_path / 'selection.json'
+    monkeypatch.setattr(cli, 'run_psql', lambda *args, **kwargs: pytest.fail('database contacted'))
+    monkeypatch.setattr(cli.psql_process, 'run', lambda *args, **kwargs: pytest.fail('subprocess started'))
+    args = ['plan-document-acquisition', '--plan', str(plan_path), '--candidates', str(candidates_path),
+            '--policy', str(policy_path), '--policy-sha256', events.sha256(raw_policy),
+            '--expected-db-target-sha256', TARGET, '--collector-git-sha', CODE, '--out', str(output)]
+    cli.main(args)
+    selection = json.loads(output.read_bytes())
+    assert len(selection['documents']) == 78
+    assert selection['network_execution'] == 'not_performed'
+    assert selection['destination_verification'] == 'pending_each_request'
+    assert os.stat(output).st_mode & 0o777 == 0o600
+    assert 'example.test' not in capsys.readouterr().out
+    with pytest.raises(FileExistsError):
+        cli.main(args)
+    policy_path.chmod(0o644)
+    with pytest.raises(ValueError, match='not private'):
+        cli.main(args)

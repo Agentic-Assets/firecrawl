@@ -10,6 +10,7 @@ import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { BuildoutCurrentInventoryProof, BuildoutInventoryProofPage, SourceResult, Tx } from "../types.js";
 import { harvestDetail } from "../lib/harvest.js";
 import { captureDetailTables } from "../lib/detail-tables/index.js";
+import { assertBuildoutCaptureScope, BuildoutNativeCaptureError, publishBuildoutParsedPage } from "../lib/source-evidence/buildout-page.js";
 import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
 import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
 import {
@@ -470,21 +471,27 @@ export async function fetchBuildoutInventoryPage(
   opts: BuildoutInventoryOpts,
   expected: BuildoutInventoryPageExpectation | null = null
 ): Promise<any> {
+  assertBuildoutCaptureScope(pluginKey, opts.cacheSlug);
   const url = buildoutInventoryUrl(pluginKey, page, opts.inventorySort);
   const requireComplete = requireCompleteBuildoutInventory(opts);
   const cachePolicy = buildoutPageCachePolicy(opts);
   if (cachePolicy.read) {
     const cached = readBuildoutPageCache(company, pluginKey, page, opts);
-    if (cached) return cached;
+    if (cached) {
+      captureBuildoutParsedPage(pluginKey, page, opts, cached, "generation_cache", null);
+      return cached;
+    }
     if (envBool("BUILDOUT_ASSEMBLE_FROM_CACHE")) {
       throw new Error(`missing Buildout cache page ${page} for ${buildoutCacheSlug(company, pluginKey, opts)}`);
     }
   }
   await sleepBuildoutJitter();
   let data: any;
+  let directSucceeded = false;
   if (opts.preferDirectJson) {
     try {
       data = await directBuildoutJson(url, opts.directReferer ?? "https://buildout.com/");
+      directSucceeded = true;
       if (page === 0) console.error(`  ${company}: direct Buildout JSON available`);
     } catch (err) {
       console.error(`  ${company}: direct Buildout JSON failed for page ${page} (${err}); falling back to Firecrawl`);
@@ -497,6 +504,7 @@ export async function fetchBuildoutInventoryPage(
     jsonBackoffMs: opts.jsonBackoffMs,
     ...(requireFreshDetails() ? { maxAge: 0 } : {}),
   });
+  captureBuildoutParsedPage(pluginKey, page, opts, data, "live", directSucceeded ? "direct_json" : "firecrawl_json");
   // Reject malformed, partial, or cross-page-incoherent strict pages before
   // they can poison the generation-scoped recovery cache.
   assertBuildoutInventoryPage(data, page, expected, requireComplete);
@@ -505,11 +513,23 @@ export async function fetchBuildoutInventoryPage(
   return data;
 }
 
+function captureBuildoutParsedPage(pluginKey: string, page: number, opts: BuildoutInventoryOpts, data: any,
+  disposition: "generation_cache" | "live", liveTransport: "direct_json" | "firecrawl_json" | null): void {
+  const observed = data?.__creFreshness as BuildoutPageObservation | undefined;
+  const sourceObservedAt = typeof observed?.observedAt === "string" ? observed.observedAt : null;
+  const transport = disposition === "generation_cache"
+    ? (observed?.transport === "direct_json" || observed?.transport === "firecrawl_json" ? observed.transport : null)
+    : liveTransport;
+  publishBuildoutParsedPage({ pluginKey, cacheSlug: opts.cacheSlug, page, inventorySort: opts.inventorySort,
+    data, sourceObservedAt, cacheDisposition: disposition, transport });
+}
+
 export async function buildoutInventory(
   company: string,
   pluginKey: string,
   opts: BuildoutInventoryOpts = {}
 ): Promise<BuildoutInventoryResult> {
+  assertBuildoutCaptureScope(pluginKey, opts.cacheSlug);
   const requireComplete = requireCompleteBuildoutInventory(opts);
   const memoryCacheKey = buildoutMemoryCacheKey(pluginKey, opts);
   const cached = buildoutCache.get(memoryCacheKey);
@@ -587,6 +607,7 @@ export async function buildoutInventory(
         done++;
         if (done % 25 === 0) console.error(`  ${company}: inventory page ${done}/${pages}`);
       } catch (err) {
+        if (err instanceof BuildoutNativeCaptureError) throw err;
         failedPages.add(p);
         console.error(`  ${company}: inventory page ${p} FAILED after retries: ${err}`);
         if (failedPages.size > failureLimit) {
@@ -607,12 +628,14 @@ export async function buildoutInventory(
       for (const p of retryPages) {
         try {
           let d: any;
+          let directRecovered = false;
           if (opts.preferDirectJson) {
             try {
               d = await directBuildoutJson(
                 buildoutInventoryUrl(pluginKey, p, opts.inventorySort),
                 opts.directReferer ?? "https://buildout.com/"
               );
+              directRecovered = true;
             } catch {
               d = await fetchBuildoutInventoryPage(
                 company,
@@ -639,6 +662,7 @@ export async function buildoutInventory(
               requireComplete ? firstPage : null
             );
           }
+          if (directRecovered) captureBuildoutParsedPage(pluginKey, p, opts, d, "live", "direct_json");
           assertBuildoutInventoryPage(d, p, firstPage, requireComplete);
           if (!d?.__creFreshness) {
             annotateBuildoutPage(d, {
@@ -655,6 +679,7 @@ export async function buildoutInventory(
           failedPages.delete(p);
           console.error(`  ${company}: recovered Buildout inventory page ${p}`);
         } catch (err) {
+          if (err instanceof BuildoutNativeCaptureError) throw err;
           console.error(`  ${company}: inventory page ${p} still failed on recovery pass ${pass}: ${err}`);
         }
       }
@@ -905,10 +930,12 @@ export function buildoutDetailDocIsUsable(
 // the input url (URL-keyed completion) plus the harvested media/links/documents/
 // images and full-page markdown. Returns null on a derivation or scrape failure
 // so the worker leaves the claim queued. NOT used by the bulk collect path.
-export async function enrichBuildoutDetail(
+export async function enrichBuildoutDetailObserved(
   sourceKey: string,
   listingUrl: string,
-  detailConfig?: BuildoutDetailConfig
+  detailConfig?: BuildoutDetailConfig,
+  onDocument?: (doc: Awaited<ReturnType<typeof scrapeDoc>>, pageUrl: string,
+    qualification: "usable_detail" | "rejected_missing_detail_shell") => void
 ): Promise<any | null> {
   const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl, detailConfig);
   if (!iframeUrl) {
@@ -926,7 +953,13 @@ export async function enrichBuildoutDetail(
     console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
     return null;
   }
-  if (!buildoutDetailDocIsUsable(doc)) {
+  const usable = buildoutDetailDocIsUsable(doc);
+  // Retain the returned response separately from canonical qualification.
+  if (onDocument) {
+    try { onDocument(doc, iframeUrl, usable ? "usable_detail" : "rejected_missing_detail_shell"); }
+    catch { /* Canonical mapping remains independent. */ }
+  }
+  if (!usable) {
     console.error(
       `  enrich/buildout(${sourceKey}): rejected missing-detail shell for ${listingUrl}`
     );
@@ -965,6 +998,14 @@ export async function enrichBuildoutDetail(
         ? "recorded_detail_observation" : "collector_result_read_time",
     },
   };
+}
+
+export async function enrichBuildoutDetail(
+  sourceKey: string,
+  listingUrl: string,
+  detailConfig?: BuildoutDetailConfig
+): Promise<any | null> {
+  return enrichBuildoutDetailObserved(sourceKey, listingUrl, detailConfig);
 }
 
 // --- Pure listing builder (exported for unit testing) ---

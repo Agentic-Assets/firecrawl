@@ -1,7 +1,9 @@
 """Partial outcomes preserve settlement and diagnostic consumer semantics."""
 
 import copy
+import sys
 from datetime import datetime, timezone
+import pytest
 import cre_checkpoint_series as series
 import cre_series_control as control
 import cre_source_health as health
@@ -14,6 +16,7 @@ import test_cre_series_control as support
 SOURCE = "daum-commercial"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="controlled series requires Linux pidfd")
 def test_actual_control_finish_preserves_partial_terminal(
     tmp_path, monkeypatch, cli_role  # noqa: F811
 ):  # noqa: F811
@@ -43,6 +46,7 @@ def test_actual_control_finish_preserves_partial_terminal(
     assert receipt["local_settlement"] == "not_started"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="series stop requires Linux pidfd")
 def test_stop_observer_recognizes_settled_partial_without_full_credit(fake_stop):  # noqa: F811
     _, terminal, _ = fake_stop
     terminal["status"] = "qualified_partial_subset"

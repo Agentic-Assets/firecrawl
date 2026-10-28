@@ -51,7 +51,7 @@ one-off experiment or a reason to reduce listing completeness.
 
 For a recurring failure, first check other brokerages using the same provider,
 adapter or helper and reuse a proven family fix where its contract applies.
-The [source-module instructions](../../../scripts/firecrawl-ops/cre_collector/sources/CLAUDE.md)
+The [source-module instructions](../../../scripts/firecrawl-ops/cre_collector/sources/AGENTS.md)
 own that implementation and regression-test guidance.
 
 ## Read it

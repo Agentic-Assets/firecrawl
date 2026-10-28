@@ -2,7 +2,34 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
 # Private source evidence
 
-This is a separate unverified evidence store. It does not promote listing fields, establish publisher authenticity, determine listing status, store original binaries, or write OM facts. Artifacts and results may contain confidential material; keep their parent directories private. The CLI creates new output files exclusively with mode 0600 and prints only counts and the plan digest.
+Local verification is separate from deployment and production acceptance; see
+[PR #363](https://github.com/Agentic-Assets/firecrawl/pull/363).
+
+## Draft guarded enrichment custody
+
+The applied guarded enrichment tier supplies its worker an exact private
+`enriched.json` path and records `claims.json`/`enriched.json` custody intent in
+its existing receipt before dispatch. The worker refuses occupied or unsafe
+destinations before database claims and writes claims exclusively with mode
+0600. Ordinary direct enrichment runs use unique private directories instead
+of second-resolution shared names. All targeted collector output is private
+and exclusive, including empty and bespoke-only artifacts.
+
+After positive owned-worker settlement, the parent records bounded file hashes
+and byte counts, including when the worker returned nonzero. File and directory
+fsync precede the custody receipt. Missing output is recorded as absence;
+unknown settlement does not permit a file read. Existing recovery fencing and
+canonical queue behavior remain in force. A post-claim filesystem failure can
+still leave claims for the existing reclaim mechanism.
+
+The custody marker alone describes local files, not JSON validation, append
+admission or a database write. The opt-in guarded evidence lane below reuses
+the existing foreground writer and exact-plan replay on the same receipt;
+targeted output does not pass through full-source refresh gates or introduce
+another queue, manifest or scheduler. AGENTIC-5040 separately gates production
+credentials and activation; local verification does not establish deployment.
+
+This is a separate unverified evidence store. It does not promote listing fields, establish publisher authenticity, determine listing status, store original binaries in the evidence database, or write OM facts. Draft document acquisition may retain local private binary copies as described below. Artifacts and results may contain confidential material; keep their parent directories private. The CLI creates new output files exclusively with mode 0600 and prints only counts and the plan digest.
 
 From the collector directory, build a plan without contacting a database:
 
@@ -12,6 +39,181 @@ python3 -m source_evidence.cli plan --artifact /private/artifact.json --source-k
 
 For a Buildout observation artifact also provide `--observed-at 2026-10-28T12:00:00Z`; `--external-id` is an optional caller assertion for document evidence. Review the entire plan and source-retention policy. For approved private retention, prepare a private admission JSON with `schema_version` `cre-source-evidence-admission/v1`, `plan_sha256` matching the plan, `purpose` `private_unverified_evidence`, `data_scope` `public_listing_source`, `content_policy` `reviewed_for_private_retention`, and `source_keys` containing exactly the plan source key. JLL remains refused without its source-specific withheld-content adapter.
 
+Draft offline candidate discovery accepts an existing evidence plan:
+
+```sh
+python3 -m source_evidence.cli discover-documents --plan /private/plan.json --out /private/candidates.json
+```
+
+It is intended to validate the plan and its existing source policy, group exact
+document URLs while retaining their source occurrences, and identify known
+document channels and source-labeled links. Relative links use only a nearest
+explicit page-context URL as an unverified base. Candidate discovery does not
+prove accessibility, publication, permission, document completeness, or a
+physical-property association. It makes no network or database call and does
+not download or extract documents. The command is a draft, not deployed; separate production acceptance is required. The draft refresh and series hooks described
+below are explicit opt-ins, disabled by default; manual extraction starts with
+an already acquired local file as described in `../document_text/README.md`.
+
+Draft discovery also recognizes document suffix hints in scraped links and
+captured URL-bearing attribute values, and explicit document labels, MIME types or download
+attributes in retained links. It retains original references, source labels and
+unverified claim witnesses. Scraped links keep sibling page-context clocks and
+the collector's qualification result as unverified observations; neither is a
+fresh document download clock. Relative-only references remain excluded by the
+acquisition policy; previews are not assumed to be original documents. These
+discovery additions are subject to separate production acceptance; suffixes and MIME
+types do not guarantee that AnyDoc can convert a file.
+
+Draft discovery parses complete captured JSON and JSON-LD script text as bounded
+JSON, never as executable code. An occurrence retains both the original script
+text pointer and a separate pointer within its decoded JSON. Incomplete or
+unverified script text and truncated or unverified page references produce
+explicit exclusion diagnostics; they are not acquisition targets. For older
+page contexts without per-field integrity, completeness is inferred only when
+the page explicitly reports zero omitted characters. Source and credential
+policies still apply to decoded data. Exceptional JSON numeric literals are
+retained in a bounded pointer map with explicit null-placeholder encoding rather
+than silently rounded or used to discard unrelated document URLs. This behavior
+remains unverified.
+
+Draft acquisition-policy preflight adds a separately bounded, operator-asserted
+selection from an existing plan and candidate manifest:
+
+```sh
+python3 -m source_evidence.cli plan-document-acquisition --plan /private/plan.json --candidates /private/candidates.json --policy /private/policy.json --policy-sha256 POLICY_HASH --expected-db-target-sha256 TARGET_HASH --collector-git-sha COMMIT --out /private/selection.json
+```
+
+The intended preflight rederives the candidates from the source plan and binds
+the selection to the plan, manifest, policy, source, target and collector
+commit. The explicit policy specifies registered sources, exact allowed hosts,
+document and byte limits, deadlines, redirect limits and original-file
+retention choice. Source-scoped absolute HTTP(S) candidates on standard ports
+are selectable without rewriting the observed URL.
+This is an operator assertion, not publisher permission or proof of public
+access. No DNS, network, download, extraction or database request occurs. A
+transport must validate public IP addresses on every request and
+redirect hop and enforce source-specific access and visibility rules. Source
+observation clocks must not be relabeled as download times; preserve precise
+actual acquisition timestamps in a separate receipt. The local AnyDoc
+provenance interface accepts UTC timestamps with optional one to six fractional
+digits and preserves them verbatim. A selection is not a
+completed download or extraction. This draft is not deployed and requires
+separate production acceptance.
+
+Draft `document_fetch` and `document_acquisition` provide a bounded direct
+transport and a separate receipt validator, used by the draft opt-in refresh and
+series hooks. The transport checks the allowed host and public destination for
+each request and redirect, and requires an external worker to enforce the
+absolute deadline. The draft one-shot supervisor binds a private job by hash,
+limits the child to the document deadline plus five seconds of startup grace,
+and validates the private receipt and body digest on readback. A timeout or
+worker failure is ambiguous: the remote request may already have occurred.
+There are no automatic retries. The transport accepts standard-port HTTP(S)
+and identity content encoding, and refuses unsupported or ambiguous transfer
+framing. The validator rederives selection and binds complete response
+bytes to their digest, size, URL and actual acquisition clock. It preserves
+source occurrences separately; publisher identity and visibility remain
+unverified. Receipt metadata alone does not prove redirect locations, aggregate
+budget enforcement, original-file retention, or that extraction actually ran.
+Extraction binding is explicitly caller-asserted and does not rerun a parser.
+No cumulative run budget is enforced by the one-shot supervisor itself. The
+draft foreground library below connects it to local AnyDoc. The hooks are
+disabled by default, not deployed; separate production acceptance is required.
+
+Draft `document_pipeline.run` explicitly connects a rederived selection and
+sealed source plan to the supervised fetch and local AnyDoc adapter. Its caller
+must hold the existing foreground owner lock and provide the existing attempt
+manifest and durable save callback. It allows one selection per source attempt;
+draft version-2 selection combines multiple native pages. The existing
+attempt records intent, reservations and outcomes. Reservations conservatively
+charge the maximum body bytes delivered to the application plus one oversize
+probe byte, including failed and unknown attempts. They do not bound network
+bytes, buffered prefetch, HTTP headers or transfer framing.
+The reserved phase includes fetch startup and reap grace and converter timeout
+and reap grace. These are not a whole-host or native-I/O deadline or a
+native-memory limit. Owned-process settlement is checked before publishing a
+conversion completion marker; an unknown cleanup outcome retains the parent
+recovery barrier. Descendants that escape into a new session are outside that
+guarantee.
+
+The bridge rechecks the private job, receipt, actual acquisition clock, body
+hash and size before conversion. It privately seals acquisition context, AnyDoc
+artifact, binding and evidence plan before policy-aware cleanup of the two
+rechecked local original-body copies. The enriched artifact and plan header carry
+all original candidate occurrences and listing relationships; the unchanged
+converter output is saved separately as `converter-artifact.json`. Each body
+cleanup has its own saved intent and removal state. A sealed 401, 403, 429 or 451
+response stops the selection without another fetch. `keep_unresolved_until_review` retains
+copies for validated failed or OCR-needed extractions; ambiguous or interrupted
+work preserves files and requires reconciliation, with no automatic resume.
+The draft opt-in hooks add no new writer pump, queue, scheduler or canonical
+change. They require separate production acceptance. Their metadata and text do not establish publication permission,
+listing identity, complete coverage or extraction accuracy.
+
+Draft checkpoint-refresh and series integration accepts explicit
+`--source-document-policy`, `--source-document-policy-sha256`, and
+`--source-document-node` alongside automatic source evidence. It binds policy,
+source scope, target, revision and Node path into the series and child; paused
+or uncertain document work requires reconciliation before another attempt.
+Serial and pipeline collection both defer document work until collection
+returns and its workers settle, before canonical source-failure checks so
+accessible partial evidence can be processed; the foreground owner lock remains
+authoritative. Resume binds source scope, code, target and the persisted source
+settlement marker. Revalidated seals and durable checkpoint saves govern recovery;
+unknown process settlement or save outcomes stop progress.
+An exact known no-data outcome remains incomplete, but does not by itself
+require document reconciliation; an otherwise authorized source retry may make a
+new source attempt. The old document attempt is not restarted.
+This integration is not deployed, requires separate production acceptance, and does not resolve the separate
+credential admission gate.
+
+Draft automatic source-evidence policy v3 separately admits document text by
+source and the `local_anydoc_public_listing_v1` format. Eligible sealed outcomes
+use the existing private event store and guarded foreground append pump. A
+pending, refused or uncertain append blocks a new series attempt; an uncertain
+write requires explicit exact sealed-plan replay in refresh, without downloading
+or extracting again. Version 1 and 2 policies do not admit document-text append jobs.
+This adds no canonical listing or OM fact writes and remains disabled by default,
+unverified and not deployed.
+
+Draft evidence SQL execution uses an owned client process with a 45-second
+deadline, a 72 MiB SQL input cap, caller-selected stdout up to 32 MiB, and a
+64 KiB stderr cap. Output is bounded incrementally. The input cap accommodates
+hex encoding of a 32 MiB plan plus bounded statement and guard overhead. This
+subprocess path requires POSIX/WSL and refuses unsupported platforms before
+dispatch. Local process settlement and remote
+transaction outcome are separate: a timeout, interruption or client failure
+does not establish rollback. Uncertain local cleanup preserves the foreground
+recovery barrier; an uncertain append keeps its exact-plan replay requirement.
+Foreground evidence saves persist the checkpoint and then check sticky CPU and
+memory guard trips; terminal and error publication uses the ordinary save path.
+These changes are not deployed; separate production acceptance is required.
+
+Draft `document_seal.read` verifies an exact private file set, canonical bytes
+and an optional expected marker without rerunning extraction. The caller must
+rederive the acquisition context or authenticate it against a trusted prior
+seal. The conversion completion marker is published after the parent observes
+and validates converter completion; an artifact alone is not that marker.
+No-spawn conversion replay requires the original fetch and conversion input
+copies still present and rechecked. Once originals are deleted, seal readback
+cannot freshly hash them. These recovery primitives remain subject to separate production acceptance.
+
+Draft version-2 document selection combines ordered source-page plans from one
+attempt into one bounded selection. Exact matching URLs share a fetch while
+each occurrence retains its originating plan, capture, source clock, labels
+and identity witnesses. These associations do not merge properties or establish
+identity. The selection uses one serial budget across the batch; its source
+plans must all remain sealed and bound to the attempt. This draft requires
+separate production acceptance and does not activate regular collection.
+
+Draft `document_recovery.sealed` uses the existing foreground owner lock and a
+trusted saved attempt to revalidate sealed results without network requests or
+conversion. It preserves reservations, refuses to restart acquisition, and can
+reconcile selected original-copy cleanup. A missing persisted seal marker stays
+unresolved even when files exist; an absent pending copy does not establish who
+removed it. This API is subject to separate production acceptance.
+
 Existing single-source collector artifacts can be wrapped offline before planning:
 
 ```sh
@@ -20,6 +222,44 @@ python3 -m source_evidence.cli plan --artifact /private/retained.json --source-k
 ```
 
 The wrapper retains every emitted listing, including duplicate or incomplete records and supplied `raw_data`, plus all artifact metadata and errors. It refuses mixed or mismatched sources, and uses the artifact's run-finished clock, not a per-record observation time. Its digest binds canonical JSON, not the original file bytes. Collector records have already passed through source mapping and pruning; this does not recover discarded HTTP responses, prove completeness or establish source acceptance. Empty artifacts with explicit source entries are retained. Conversion and planning are local; private retention admission and database authorization remain separate.
+
+The draft version-2 collector representation separates each nonempty
+`sources[].retainedObservations` entry into a `source_observation` fact with its
+original `sourceIndex`, `observationIndex`, and value. Listing `source_record`
+facts remain unchanged. Ordered `observationGroups` in the header preserve the
+grouping needed to reconstruct the complete collector artifact, including
+exceptional numeric literals at their original JSON pointers. Exact
+reconstruction is required. Version 1 remains unchanged.
+
+Listings and retained observations share the 10,000-record ceiling and any
+tighter source-policy `max_records`. The envelope remains limited to 16 MiB,
+each fact and header to 3.5 MiB, and the plan to 32 MiB. An oversized individual
+observation or unrelated oversized metadata is still refused. This draft is
+not deployed; separate production acceptance is required. It does not change canonical gates or establish complete source coverage.
+
+An in-progress Foundry change intends to carry already parsed, unqualified held
+observations in `sources[].retainedObservations`, so the existing private
+evidence bridge can settle the artifact before canonical gates. An all-held
+full run is intended to write a normal-shaped artifact with
+`runMeta.evidenceOnly=true` and exit nonzero; a mixed run can retain held
+context without changing accepted counts. Canonical ingest and monitor
+entrypoints are intended to refuse evidence-only artifacts. This workflow is
+not deployed; separate production acceptance is required. Typed access to
+partial observations does not resolve uncertain identity or status, establish
+source acceptance, or claim complete raw-response coverage. On a strict
+identity failure, the intended `RetainedSourceError` preserves that failure and
+carries held context and otherwise accepted conflicting parsed rows as
+unqualified `sources[].retainedObservations`; it does not rekey, merge or
+activate them. Evidence-only output is intended to be written exclusively as a
+private mode-0600 file, without replacing an existing destination, and to exit
+nonzero. The existing generic private evidence context bridge may retain it
+under its admission rules.
+
+The shared Python `cre_artifact_scope.require_canonical_artifact` guard is
+intended for ingest main and its freshness guard, the monitor loader and no-op
+reader, and gate counting before canonical database operations. The marker is
+not authentication; unmarked artifacts still require the usual canonical
+gates. These changes require separate production acceptance.
 
 Admission scans HTTP(S) URL tokens in text and object keys for known JLL hosts and credential-bearing query keys, including the reconstructed bounded document text across chunk boundaries; it is not a general secret detector. Conflicting nested declarations of protected source keys are refused. Avison collector evidence is checked against its source-owned asking-price visibility control and projection, including control witnesses in capture context. Withheld records or capture context that the projection would change are refused, including malformed or contradictory controls; use a source-owned projected artifact before requesting admission. Independent rent, cap rate and NOI remain eligible. Other Avison evidence shapes need an adapter before admission. Local planning alone does not establish that any historical Avison plan is safe to retain.
 
@@ -62,7 +302,42 @@ verify all ordinals and the reconstructed UTF-8 hash before claiming complete
 reconstruction. Chunk windows are not page citations. Original document bytes
 and publisher identity are not independently verified by stored text hashes.
 
+Document Markdown is retained source text, separate from normalized listing
+facts. Preserve useful structured source facts alongside it, including values
+without a recognized listing-field mapping. The document artifact records the
+caller-asserted source URL and observation time, detected format, parser
+provenance, and source and text SHA-256 values. Evidence chunks retain their
+order and full-text digest; extraction coverage remains unknown. Extracting all
+available text alone would not prove financial-table layout or value fidelity.
+
+The planned `export-document-text` reader will accept `--capture-id`,
+`--out-dir`, `--env-file`, and `--expected-db-target-sha256` for whole-document
+recovery. It is under development and has not yet been verified. Until then,
+use the existing event readback and verify chunk ordinals and the full-text
+digest before claiming reconstruction.
+
 ## Native JSON response retention
+
+The draft `export-collector-capture` reader is intended to recover one complete
+retained collector v1 or v2 capture. It reads in order with a limit of 10,002
+rows, accepts at most 10,001, and bounds the response to 32 MiB. Before writing,
+it verifies row ordering, replans the capture, and checks context, numeric maps
+and source policy. Its shared private-export publisher creates an exclusive new
+mode-0700 directory containing mode-0600 `collector.json` and `metadata.json`.
+The reconstructed collector JSON is a canonical semantic representation with
+exceptional numeric literals restored. A projected capture exports the
+projected representation, not removed source bytes. This readback does not
+prove original wire bytes, source completeness, freshness or canonical
+promotion. Document-text export uses the same private publisher.
+
+This command and the draft numeric witness are not deployed; separate production acceptance is required. New collector captures can record bounded original
+JSON-pointer witnesses for finite integral floats whose Python representation
+uses scientific notation, such as `1e+20`. The reader uses those witnesses to
+restore the representation if PostgreSQL JSONB renders the value as an integer,
+then checks the complete reconstructed digest. The witness makes no inference
+about a number's meaning or units. Legacy captures lack this witness and can
+still fail exact reconstruction after JSONB numeric normalization; a digest
+mismatch must refuse export. Support for every capture is not established.
 
 Opted-in checkpoint attempts record an `awaiting_artifact` marker before worker
 dispatch and use an attempt-specific temporary path. A settled serial resume
@@ -117,7 +392,10 @@ in `source_keys`; the supported entries are:
 ```json
 {
   "collector_projections": {"faris-lee": "faris-google-map-tile-query/v1"},
-  "native_source_formats": {"nai-global": "nai_public_posts_v1"},
+  "native_source_formats": {
+    "nai-global": "nai_public_posts_v1",
+    "avison-young": "avison_sharplaunch_website_v1"
+  },
   "max_native_pages": 128
 }
 ```
@@ -126,6 +404,67 @@ Empty dictionaries disable those features. Version-1 policy behavior remains
 unchanged. The existing policy SHA, exact clean collector commit, database target
 and transport bindings still apply. This configuration authorizes a source
 format; it does not certify publisher identity or complete inventory.
+
+### Draft Buildout parsed inventory capture
+
+The draft `buildout_inventory_parsed_v1` format requires explicit version-2
+policy opt-in for one of 28 registered sources and 29 feeds. SVN and Lee each
+have one registered feed; Franklin Street has separately identified sale and
+lease feeds. The original 25 native receipt shapes and scope hashes stay unchanged.
+It uses the same
+settled native foreground lane and existing policy review, credential admission,
+JLL and Avison controls. Faris collector map projection does not apply to this
+format; credential-bearing native bodies refuse automatic admission.
+
+Capture retains the collector's parsed JavaScript JSON representation, not raw
+HTTP bytes or original numeric precision. Capture time is separate from the
+nullable source observation clock, which can be older for a generation-cache
+page. HTTP status and final URL are not asserted. A memory-cache hit creates no
+fresh capture. The draft adds no source fetch and does not change listing parser,
+reconciliation, status or source-acceptance gates.
+
+The attempt limits are 128 pages and 128 MiB; a parsed body is limited to
+16 MiB, each fact to 3.5 MiB, an observation to 16 MiB and a page to 10,000
+records. Capture failures stop the capture-enabled path rather than authorize
+fallback or recovery. These draft changes are not deployed; separate production acceptance is required; they establish no complete inventory, freshness, identity or
+publisher-authentication claim.
+
+### Avison native website feed
+
+The existing website GET can capture its decoded text before JSON parsing,
+listing mapping, deduplication or detail-page checks. The shared publisher
+keeps raw pages in the private owned attempt directory with the same finite
+quotas and single-worker custody as NAI. Team-member requests are excluded.
+The integration key, request headers and key-derived commitments are excluded;
+publication fails with a redacted error if the body contains that key.
+
+The coordinator projects source-withheld asking fields and monetary aliases
+through `avison_native.py`, preserving unaffected original values and context,
+including unknown fields, empty/null values, duplicate IDs and addressless
+records. Independently labeled financial values are retained. Monetary spans
+that remain ambiguous carry an explicit unresolved marker. A bounded receipt
+contains changed JSON pointers, actions and reasons, never removed values.
+These source-specific rules do not relax the existing collector-format guard.
+
+`cre-avison-native-observation/v1` retains projected records, the projected
+envelope, exceptional numeric literal map and projection receipt. Hashes and
+capture identity bind only this projected representation. Original bytes cannot
+be reconstructed or their hashes reverified from the database observation.
+The raw page hash remains solely in local custody and checkpoint integrity
+state. The transport exposes decoded text, not original HTTP bytes; exact
+HTTP status and final URL are unavailable. Its receipt therefore states
+`success_status_unobserved` and preserves the attempted registered URL and
+collector observation clocks, with no fabricated status or final URL.
+
+Accessible JSON without the expected `items` array is projected under
+`unmappedResponse`, with `responseEncoding: wrapped_unmapped_json` and zero
+asserted listing records. The observation still preserves that useful context.
+Invalid JSON stays in private local custody with an explicit diagnostic.
+Native settlement and replay use the existing foreground evidence lane even
+when canonical collection fails or emits no artifact; they never certify full
+inventory, matching, normalization, source acceptance, lifecycle or scheduling.
+
+### NAI public feed
 
 For NAI, the coordinator creates one private directory per owned attempt and
 supplies its path and limits to the source worker. Each actual publicPosts
@@ -230,3 +569,82 @@ metadata only and are written to an exclusive private file; facts are never
 printed. A short or punctuation-only query may require a full index scan, and
 queries have a 30-second database statement timeout. The existing document text
 search and its phrase and chunk boundaries are unchanged.
+
+## Draft offline HTML landing observations
+
+`document_landing.parse_document_landing` accepts bounded acquired HTML bytes and
+an asserted final URL and returns a private observation containing a body digest,
+visible text, metadata and raw anchor, iframe, embed and object references with
+element, attribute and source position. It does not validate the HTTP receipt,
+classify access, resolve references, run JavaScript or discover candidates through
+`document_candidates`. Complete JSON and JSON-LD script text is recorded
+without execution;
+other script, style, template and noscript contents are excluded. Incomplete JSON
+scripts retain a completeness marker but no partial text, and are not discoverable
+candidates. Complete scripts must parse as JSON and pass credential and source
+policy checks before sealing. Scripts failing these checks are withheld and
+marked, while other policy-safe page content can still be retained.
+UTF-8 decoding uses replacement; this is not an exact text reconstruction.
+
+The draft foreground pipeline recognizes a narrow HTML byte signature after an
+unsupported AnyDoc outcome and attaches a separately sealed source-page context.
+The existing receipt and candidate occurrences bind the original body and source
+relationships. Readback and recovery check its seal marker, and source and
+credential policies scan the retained observation before sealing. Oversized input
+is refused; count and text limits and reference completeness are explicit. The
+helper itself has no network or database behavior. This integration remains
+disabled unless the existing document acquisition path is explicitly enabled.
+The output is not proof of access, publication, listing identity or extraction
+completeness. Any nested reference requires its own policy and acquisition checks.
+The converter outcome remains unchanged; HTML page text is not represented as a
+successful document extraction.
+
+## Targeted enrichment evidence and recovery
+
+Applied guarded enrichment can opt into the same automatic source-evidence
+policy with `--source-evidence-policy`, `--source-evidence-policy-sha256`,
+`--source-evidence-env-file`, and `--source-evidence-target-sha256`. All four
+are required together; the evidence environment is separate from the canonical
+queue environment. The worker must be locally settled before its private
+artifact can be sealed. This retains the emitted artifact and makes no claim
+about source completeness, canonical promotion, or lifecycle status.
+
+The canonical shared owner lock serializes an owner-bound recovery marker for
+one outstanding targeted evidence receipt. The marker is a recovery fence, not
+a queue or scheduler. It is published before an automatic database append and
+survives an uncertain database outcome. Checkpoint automatic evidence writes
+pause while it exists; canonical ingest and monitoring are independent. The
+separately authorized manual evidence CLI is outside this automatic fence.
+
+After local owner settlement and any required existing manual owner recovery,
+reconcile the exact receipt on the same clean code and policy binding:
+
+```sh
+python3 cre_guarded_tier.py enrich --source SOURCE --expected-sha SHA \
+  --source-evidence-reconcile-receipt /absolute/private/run/receipt.json
+```
+
+Reconciliation revalidates the private receipt, claims, artifact, plan, source,
+code, policy, target and transport, and replays the identical transaction. A
+validated pending receipt can publish a missing pre-dispatch recovery marker
+under the owner lock. A validated receipt durably recording an appended and
+settled job can be reconciled again without a marker or another database call;
+missing markers for other dispatched or uncertain transactions require manual
+diagnosis. Reconciliation does not rerun enrichment. Unknown
+local process cleanup still requires the existing
+manual owner-recovery procedure; this command does not adopt an armed lease.
+A database outcome can remain unknown even after the local process has settled.
+The restricted writer and AGENTIC-5040 production credential-isolation gate
+remain separate; this feature does not provision or activate production access.
+
+### Shared map-widget projection
+
+Explicit recurring policies can admit the observed `maps.googleapis.com/maps/vt`
+projection for Cushman & Wakefield, NAI Global and SVN as
+`google-map-tile-query/v1`.
+Faris keeps its existing `faris-google-map-tile-query/v1` contract. Only literal
+`key` and numeric `token` parameters on that exact HTTPS endpoint are removed;
+other URLs and source content still pass the existing admission checks. Pointer
+receipts identify the projection, not original source bytes, and a projected map
+reference is not an approved download target. No source or policy is enabled by
+this support.

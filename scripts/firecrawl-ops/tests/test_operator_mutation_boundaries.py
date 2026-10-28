@@ -23,7 +23,7 @@ AGENT_FACING_DOCS = (
     ".agents/skills/firecrawl-ops/SKILL.md",
     ".agents/skills/firecrawl-local-api/SKILL.md",
     "scripts/firecrawl-ops/README.md",
-    "scripts/firecrawl-ops/CLAUDE.md",
+    "scripts/firecrawl-ops/AGENTS.md",
     "docs/firecrawl-ops/references/local-pdf-ocr-plan.md",
     "docs/firecrawl-ops/references/local-pdf-ocr-research-agent-plan.md",
     "docs/firecrawl-ops/references/tools-capabilities.md",

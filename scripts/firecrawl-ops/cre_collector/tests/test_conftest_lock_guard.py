@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 
-import conftest as _conftest
+import cre_collector_root_conftest as _conftest
 
 
 def _write_authority(path, pid: int, state: str = "normal") -> None:

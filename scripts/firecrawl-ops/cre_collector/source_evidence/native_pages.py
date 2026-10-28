@@ -24,6 +24,51 @@ QUERY = ("query GET_LISTINGS_PUBLIC_POSTS($filter: PostFilter, $offset: Int, $li
 MAX_ENTRY_BYTES = ((16 * 1024 * 1024 * 4 + 2) // 3) + 64 * 1024 * 6 + 16384
 PROVENANCE = {"bodyHashKind": "fetch_delivered_body_bytes_not_wire", "identity": "unverified",
               "visibility": "unverified", "completeness": "unverified"}
+NATIVE_FORMATS = {"nai-global": "nai_public_posts_v1", "avison-young": "avison_sharplaunch_website_v1"}
+ENV_PREFIXES = {"nai-global": "CRE_NAI_NATIVE_CAPTURE", "avison-young": "CRE_AVISON_NATIVE_CAPTURE"}
+BUILDOUT_ENV_PREFIX = "CRE_BUILDOUT_NATIVE_CAPTURE"
+
+
+def format_supported(source, native_format):
+    """Recognize explicitly scoped formats, not generic website authorization."""
+    if native_format == "buildout_inventory_parsed_v1":
+        from source_evidence import buildout_pages
+        return source in buildout_pages.supported_feed_keys()
+    return source in NATIVE_FORMATS and native_format == NATIVE_FORMATS[source]
+
+
+def supported(source, config):
+    return format_supported(source, config.get("native_source_formats", {}).get(source))
+
+
+def configure_worker_env(env, run_dir, source, attempt, config):
+    """Remove inherited capture opt-ins; enable only the owned admitted attempt."""
+    for prefix in (*ENV_PREFIXES.values(), BUILDOUT_ENV_PREFIX):
+        for suffix in ("DIR", "MAX_PAGES", "MAX_BYTES", "SINGLE_WRITER", "SOURCE_KEY"):
+            env.pop(prefix + "_" + suffix, None)
+    if attempt.get("native_source_evidence"):
+        number = attempt.get("number")
+        expected = f"source-evidence/native-{source}-attempt-{number}"
+        if (not supported(source, config) or type(number) is not int or not 1 <= number <= 1000000
+                or attempt["native_source_evidence"].get("directory") != expected):
+            raise ValueError("native source format is unsupported")
+        prefix = ENV_PREFIXES.get(source, BUILDOUT_ENV_PREFIX)
+        env[prefix + "_DIR"] = str(run_dir / expected)
+        env[prefix + "_MAX_PAGES"] = str(config["max_native_pages"])
+        env[prefix + "_MAX_BYTES"] = str(128 * 1024 * 1024)
+        env[prefix + "_SINGLE_WRITER"] = "1"
+        if prefix == BUILDOUT_ENV_PREFIX:
+            env[prefix + "_SOURCE_KEY"] = source
+
+
+def _decode(source, raw, filename, binding):
+    if source == "avison-young":
+        from source_evidence.avison_pages import decode_entry as decode_avison
+        return decode_avison(raw, filename, binding)
+    if source not in NATIVE_FORMATS:
+        from source_evidence.buildout_pages import decode_entry as decode_buildout
+        return decode_buildout(raw, filename, binding, source_key=source)
+    return decode_entry(raw, filename, binding)
 
 
 def decode_entry(raw, filename, binding):
@@ -93,7 +138,7 @@ def decode_entry(raw, filename, binding):
 def mark(run_dir, manifest, source, attempt):
     """Create a private attempt directory and durable marker before launch."""
     config = manifest["config"].get("automatic_source_evidence") or {}
-    if config.get("native_source_formats", {}).get(source) != "nai_public_posts_v1":
+    if not supported(source, config):
         return None
     relative = Path("source-evidence") / f"native-{source}-attempt-{attempt['number']}"
     parent = run_dir / "source-evidence"
@@ -116,7 +161,7 @@ def settle(run_dir, manifest, source, attempt, save):
         return
     expected = f"source-evidence/native-{source}-attempt-{attempt['number']}"
     try:
-        if (source != "nai-global" or config.get("native_source_formats", {}).get(source) != "nai_public_posts_v1"
+        if (not supported(source, config)
                 or state.get("directory") != expected):
             raise ValueError("native attempt binding mismatch")
         automatic._verify_config(config, manifest["config"]["sources"])
@@ -143,7 +188,7 @@ def settle(run_dir, manifest, source, attempt, save):
                        "collectorGitSha": config["collector_git_sha"],
                        "transportSha256": events.sha256(events.encoded(config["transport"])),
                        "generation": manifest["run_id"], "attempt": attempt["number"]}
-            observation, diagnostic = decode_entry(raw, name, binding)
+            observation, diagnostic = _decode(source, raw, name, binding)
             if diagnostic:
                 state["pages"].append({"state": "no_data", "filename": name,
                                        "file_sha256": hashlib.sha256(raw).hexdigest(), "reason": diagnostic})
@@ -180,7 +225,7 @@ def prepare_job(run_dir, manifest, source, attempt, page):
     config = manifest["config"]["automatic_source_evidence"]
     container = attempt["native_source_evidence"]
     expected = f"source-evidence/native-{source}-attempt-{attempt['number']}"
-    if (source != "nai-global" or config.get("native_source_formats", {}).get(source) != "nai_public_posts_v1"
+    if (not supported(source, config)
             or container["directory"] != expected
             or manifest.get("collector_git_dirty") is not False
             or manifest.get("collector_git_sha") != config["collector_git_sha"]):
@@ -204,7 +249,7 @@ def prepare_job(run_dir, manifest, source, attempt, page):
                "collectorGitSha": config["collector_git_sha"],
                "transportSha256": events.sha256(events.encoded(config["transport"])),
                "generation": manifest["run_id"], "attempt": attempt["number"]}
-    observation, diagnostic = decode_entry(raw, name, binding)
+    observation, diagnostic = _decode(source, raw, name, binding)
     if diagnostic or len(observation["records"]) > config["max_records"]:
         raise ValueError("native page is no longer admissible")
     automatic._refuse_credential_fields(observation)

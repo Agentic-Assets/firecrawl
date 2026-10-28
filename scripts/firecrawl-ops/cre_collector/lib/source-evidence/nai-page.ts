@@ -1,7 +1,7 @@
-import { createHash, randomBytes } from "node:crypto";
-import { constants, lstatSync, opendirSync, openSync, closeSync, fchmodSync, fstatSync,
-  writeFileSync, readFileSync, fsyncSync, linkSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { lstatSync } from "node:fs";
+import { resolve } from "node:path";
+import { publishPrivatePage } from "./private-page.js";
 
 export const NAI_CAPTURE_MAX_BODY_BYTES = 16 * 1024 * 1024;
 export const NAI_CAPTURE_MAX_REQUEST_BYTES = 64 * 1024;
@@ -22,8 +22,6 @@ export type NaiNativePage = {
 
 /** Atomically publish one immutable private page. Inputs are source assertions. */
 export async function publishNaiNativePage(directory: string, page: NaiNativePage): Promise<string> {
-  let temp: string | undefined;
-  let tempOwned = false;
   try {
     const dir = resolve(directory);
     const stat = lstatSync(dir);
@@ -77,53 +75,9 @@ export async function publishNaiNativePage(directory: string, page: NaiNativePag
       provenance: { bodyHashKind: "fetch_delivered_body_bytes_not_wire", identity: "unverified", visibility: "unverified", completeness: "unverified" },
     }) + "\n", "utf8");
     if (payload.length > MAX_ENTRY_BYTES) throw new Error();
-    const target = join(dir, `page-${offset}-${hash(payload)}.json`);
-    // All quota checks and publication below are synchronous, so concurrent
-    // async callers in this worker cannot interleave a check and a write.
-    let usedBytes = 0;
-    let pageCount = 0;
-    let targetExists = false;
-    const entries = opendirSync(dir);
-    try {
-      for (let item = entries.readSync(); item !== null; item = entries.readSync()) {
-        const name = item.name;
-        // Unknown, temporary and unsafe entries are refused, not ignored.
-        if (!/^page-(?:0|[1-9][0-9]*)-[a-f0-9]{64}\.json$/.test(name)) throw new Error();
-        const file = lstatSync(join(dir, name));
-        if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid() ||
-            (file.mode & 0o777) !== 0o600 || file.nlink !== 1 || file.size > MAX_ENTRY_BYTES) throw new Error();
-        usedBytes += file.size;
-        pageCount++;
-        if (!Number.isSafeInteger(usedBytes) || pageCount > maxPages || usedBytes > maxBytes) throw new Error();
-        if (name === target.slice(dir.length + 1)) targetExists = true;
-      }
-    } finally { entries.closeSync(); }
-    if (targetExists) {
-      const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      try {
-        const before = fstatSync(fd);
-        if (!before.isFile() || before.uid !== process.getuid() || (before.mode & 0o777) !== 0o600 || before.nlink !== 1 || before.size !== payload.length) throw new Error();
-        const bytes = readFileSync(fd); const after = fstatSync(fd); const named = lstatSync(target);
-        const identity = (value: typeof before) => [value.dev, value.ino, value.size, value.mtimeMs, value.ctimeMs, value.mode, value.uid, value.nlink].join(":");
-        if (identity(before) !== identity(after) || identity(after) !== identity(named) || !bytes.equals(payload)) throw new Error();
-      } finally { closeSync(fd); }
-      return target;
-    }
-    if (pageCount >= maxPages || payload.length > maxBytes - usedBytes) throw new Error();
-    const current = lstatSync(dir);
-    if (!current.isDirectory() || current.dev !== stat.dev || current.ino !== stat.ino ||
-        current.uid !== stat.uid || current.mode !== stat.mode) throw new Error();
-    temp = join(dir, `.page-${randomBytes(16).toString("hex")}.tmp`);
-    const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    tempOwned = true;
-    try { fchmodSync(fd, 0o600); writeFileSync(fd, payload); fsyncSync(fd); } finally { closeSync(fd); }
-    linkSync(temp, target);
-    unlinkSync(temp); tempOwned = false; temp = undefined;
-    const parent = openSync(dir, constants.O_RDONLY);
-    try { fsyncSync(parent); } finally { closeSync(parent); }
-    return target;
+    return publishPrivatePage(dir, `page-${offset}-${hash(payload)}.json`, payload,
+      /^page-(?:0|[1-9][0-9]*)-[a-f0-9]{64}\.json$/, MAX_ENTRY_BYTES, maxPages, maxBytes);
   } catch {
-    if (temp && tempOwned) { try { unlinkSync(temp); } catch { /* retain only redacted failure */ } }
     throw new Error("NAI native capture failed");
   }
 }

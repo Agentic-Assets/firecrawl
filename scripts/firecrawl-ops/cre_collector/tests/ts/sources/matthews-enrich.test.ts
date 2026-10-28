@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
-import { groupEnrichItems, resolveEnricher, runEnrichGroups, type EnrichItem } from "../../../lib/enrich.js";
+import { createMatthewsEnricher, groupEnrichItems, resolveEnricher, runEnrichGroups, type EnrichItem } from "../../../lib/enrich.js";
 import { firecrawl } from "../../../lib/scrape.js";
 import { MATTHEWS_FETCH_TIMEOUT_MS } from "../../../sources/matthews.js";
 import { observationNow } from "../../../lib/observation-clock.js";
@@ -104,7 +104,7 @@ for (const [name, body] of [
 
 for (const status of [301, 308, 302, 307, 404]) {
   test(`Matthews targeted HTTP ${status} cannot rekey or complete an alias`, async (t) => {
-    const result = await route(t, [item()], async () => new Response(null, { status, headers: { location: sale.replace("example-sale", "other-property") } }));
+    const result = await route(t, [item()], async () => new Response(null, { status, headers: { location: status === 307 ? "" : sale.replace("example-sale", "other-property") } }));
     assert.equal(result.requests, 1);
     assert.deepEqual(result.listings, []);
   });
@@ -171,4 +171,102 @@ test("actual Python lease claim defaults sale and cannot falsely complete Matthe
   assert.equal(partition.error, undefined);
   assert.equal(partition.status, 0, partition.stderr);
   assert.deepEqual(JSON.parse(partition.stdout), { done: [], retry: ["synthetic-lease-claim"], dead: [] });
+});
+
+
+test("Matthews evidence retry only follows a validated same-source temporary redirect", async (t) => {
+  const oldFetch = globalThis.fetch;
+  const oldTimeout = globalThis.setTimeout;
+  let location = "";
+  globalThis.fetch = async () => new Response(null, { status: 307, headers: { location } });
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
+    oldTimeout(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS) ? 2 : 0, ...args)) as typeof setTimeout;
+  t.after(() => { globalThis.fetch = oldFetch; globalThis.setTimeout = oldTimeout; });
+  const called: string[] = [];
+  const enricher = createMatthewsEnricher(undefined, async (url) => {
+    called.push(url);
+    return { rawHtml: '<script type="application/ld+json">{"@type":"Product","name":"Not canonical"}</script><a href="brochure.pdf">Brochure</a>', markdown: "native", links: [] };
+  });
+  for (const bad of ["", "https://evil.test/properties/other-sale", "https://user:secret@www.matthews.com/properties/other-sale", "http://www.matthews.com/properties/other-sale", "/login", "/properties/other-sale?auth=1"]) {
+    location = bad;
+    const result = await enricher.enrichWithEvidence!([item()]);
+    assert.deepEqual(result.listings, []);
+    assert.deepEqual(result.retainedObservations, []);
+    assert.equal(called.length, 0);
+  }
+  location = "/properties/other-sale/";
+  const result = await enricher.enrichWithEvidence!([item()]);
+  assert.deepEqual(called, ["https://www.matthews.com/properties/other-sale/"]);
+  assert.deepEqual(result.listings, []);
+  const observation = result.retainedObservations[0] as any;
+  assert.equal(observation.claim.url, sale);
+  assert.equal(observation.primaryOutcome.reason, "temporary_redirect");
+  assert.equal(observation.primaryOutcome.status, 307);
+  assert.equal(observation.primaryOutcome.redirectTarget, called[0]);
+  assert.equal(observation.requestedPageUrl, called[0]);
+  assert.equal(observation.pageContext.sourceUrl, called[0]);
+  assert.equal(new URL(observation.pageContext.links[0].href, observation.pageContext.sourceUrl).href,
+    "https://www.matthews.com/properties/other-sale/brochure.pdf");
+});
+
+test("Matthews evidence keeps mixed claims separate and skips fallback for canonical rows", async () => {
+  const calls: string[] = [];
+  const primary: Parameters<typeof createMatthewsEnricher>[0] = async (claim, _time, observe) => {
+    if (claim.externalId === "one") return { id: "one", url: claim.url };
+    observe?.({ reason: "temporary_redirect", status: 307, redirectTarget: "https://www.matthews.com/properties/other-sale" });
+    return null;
+  };
+  const enricher = createMatthewsEnricher(primary, async (url) => { calls.push(url); return { rawHtml: "partial", markdown: "", links: [] }; });
+  const result = await enricher.enrichWithEvidence!([item(sale, "one"), item(sale, "two")]);
+  assert.equal(result.listings.length, 1);
+  assert.equal(calls.length, 1);
+  assert.equal((result.retainedObservations[0] as any).claim.externalId, "two");
+});
+
+test("unqualified native HTML is retained without a second request", async (t) => {
+  const result = await route(t, [item()], async () => new Response(html(sale, '<main>Property context</main>')));
+  assert.equal(result.requests, 1);
+  assert.deepEqual(result.listings, []);
+  assert.equal(result.sources[0].retainedObservations.length, 1);
+  const evidence = result.sources[0].retainedObservations[0];
+  assert.equal(evidence.primaryOutcome.reason, "native_detail_unqualified");
+  assert.match(evidence.scrapedDoc.rawHtml, /Property context/);
+  assert.ok(evidence.capturedAt);
+});
+
+for (const status of [401, 403, 429, 451]) {
+  test(`Matthews denial ${status} never triggers evidence retry`, async (t) => {
+    const result = await route(t, [item()], async () => new Response(null, { status }));
+    assert.deepEqual(result.listings, []);
+    assert.deepEqual(result.sources[0].retainedObservations, []);
+  });
+}
+
+test("Matthews inventory redirects retain each claim without a second request or completion", async (t) => {
+  const oldFetch = globalThis.fetch;
+  const oldTimeout = globalThis.setTimeout;
+  let nativeRequests = 0;
+  let fallbackRequests = 0;
+  globalThis.fetch = async () => { nativeRequests++; return new Response(null, { status: 307, headers: { location: "/listings" } }); };
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) =>
+    oldTimeout(callback, (typeof delay === "number" && delay > MATTHEWS_FETCH_TIMEOUT_MS - 100 && delay <= MATTHEWS_FETCH_TIMEOUT_MS) ? 2 : 0, ...args)) as typeof setTimeout;
+  t.after(() => { globalThis.fetch = oldFetch; globalThis.setTimeout = oldTimeout; });
+  const claims = ["first-sale", "second-sale", "third-sale"].map((id) => item(`https://www.matthews.com/properties/${id}`, id));
+  const enricher = createMatthewsEnricher(undefined, async () => { fallbackRequests++; throw new Error("unexpected fallback"); });
+  const result = await runEnrichGroups(groupEnrichItems(claims), () => ({ enricher, label: "bespoke" }), () => "Matthews");
+  assert.equal(nativeRequests, 3);
+  assert.equal(fallbackRequests, 0);
+  assert.deepEqual(result.listings, []);
+  assert.equal(result.sources[0].requested, 3);
+  assert.equal(result.sources[0].listingsCollected, 0);
+  assert.equal(result.sources[0].retainedObservations.length, 3);
+  for (const [index, evidence] of result.sources[0].retainedObservations.entries()) {
+    assert.equal(evidence.claim.url, claims[index]!.url);
+    assert.equal(evidence.claim.externalId, claims[index]!.externalId);
+    assert.equal(evidence.failure, "native_redirect_not_listing");
+    assert.equal(evidence.primaryOutcome.reason, "native_redirect_not_listing");
+    assert.equal(evidence.primaryOutcome.status, 307);
+    assert.equal(evidence.primaryOutcome.redirectTarget, "https://www.matthews.com/listings");
+    assert.ok(Date.parse(evidence.primaryOutcome.observedAt));
+  }
 });

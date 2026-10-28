@@ -1,6 +1,18 @@
 Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 
-# NAI native page capture
+# Private source evidence output
+
+The shared `artifact-output.ts` publisher serves full and targeted enrichment
+artifacts. All targeted enrichment artifacts, and full artifacts containing
+retained observations, require an explicit file destination and use exclusive
+mode-0600 output with file fsync before close. Ordinary full listing output
+retains its existing behavior. The guarded enrichment parent separately syncs
+the private directory before recording custody. This prevents private output
+from falling through to stdout or replacing a prior capture. A local artifact is not proof of database retention,
+canonical qualification, or queue completion. This draft remains unverified
+under the active hold.
+
+## NAI native page capture
 
 Only `CRE_NAI_NATIVE_CAPTURE_DIR` explicitly enables capture. The caller must
 supply a private owner-controlled attempt directory. Each actual publicPosts
@@ -31,3 +43,44 @@ checks and publication are synchronous. `CRE_NAI_NATIVE_CAPTURE_MAX_PAGES` and
 128 MiB of exact serialized entry bytes. Unknown, symlinked, multiply linked,
 or temporary entries refuse publication rather than being ignored. Quota
 refusal leaves previously published pages intact; exact replay adds no bytes.
+
+## Draft Buildout parsed inventory
+
+An explicit v2 policy may enable `buildout_inventory_parsed_v1` for 28
+registered sources and 29 feeds, including SVN, Lee and separately identified
+Franklin sale and lease feeds. The original 25 native receipt shapes and scope
+hashes stay unchanged. The existing source request is captured after JavaScript parsing;
+no new fetch is introduced. The representation is not original HTTP bytes or
+original numeric precision. Capture time and the nullable, possibly older
+source observation time are distinct; status and final URL are not fabricated.
+An in-memory cache hit creates no fresh page capture.
+
+The private attempt is limited to 128 pages and 128 MiB, with 16 MiB per parsed
+body. A capture failure stops the enabled path. Database admission remains
+separate: existing source and credential policies apply, and Faris collector
+projection does not sanitize native pages. The evidence lane also limits each
+fact to 3.5 MiB, each observation to 16 MiB and each page to 10,000 rows.
+This draft is unverified under the hold and not deployed; it proves no source
+acceptance, complete inventory, identity or freshness.
+
+## Avison Young website feed
+
+When the foreground coordinator supplies a private attempt directory through
+`CRE_AVISON_NATIVE_CAPTURE_DIR` and asserts
+`CRE_AVISON_NATIVE_CAPTURE_SINGLE_WRITER=1`, the website feed publishes before
+JSON parsing or listing mapping. The optional `CRE_AVISON_NATIVE_CAPTURE_MAX_PAGES`
+and `CRE_AVISON_NATIVE_CAPTURE_MAX_BYTES` lower the shared 128-page and 128 MiB
+limits. The publisher shares the bounded atomic private-file custody mechanism
+with NAI. The feed body is collector-decoded text re-encoded as UTF-8; it is not
+claimed to be the original Fetch or wire bytes. The existing transport reports a
+successful response without exposing its exact HTTP status or final URL, so the
+receipt records the attempted request and that limitation. The integration key
+and request headers are never added to the page or its receipt; a body containing
+the key, including JSON Unicode escapes, is refused with a redacted error.
+
+These pages are private local raw custody, not database admission. Avison's
+source-owned asking-price visibility projection and existing source and
+credential policies must be applied before retained evidence is written. The
+private filename hash is a local custody digest and must not be carried into a
+projected database observation when source content is withheld. No identity,
+visibility, completeness, or publisher-authentication claim follows from capture.

@@ -57,6 +57,7 @@ from datetime import datetime, timezone
 # COPY/SQL escaping are identical to the production ingest path. The monitor
 # imports these symbols; it never re-derives ids or re-implements status logic.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cre_artifact_scope import require_canonical_artifact  # noqa: E402
 from cre_ingest import (  # noqa: E402
     _STATUS_BOOL_PATHS,
     _TERMINAL_STATUSES,
@@ -227,6 +228,7 @@ def load_artifact_groups(paths):
     for path in paths:
         with open(path) as f:
             data = json.load(f)
+        require_canonical_artifact(data)
         run_meta = data.get("runMeta") or {}
         run_started_at = run_started_at or run_meta.get("startedAt")
         scraped_at = run_meta.get("finishedAt") or datetime.now(timezone.utc).isoformat()
@@ -274,6 +276,7 @@ def clean_empty_monitor_source_keys(paths):
     for path in paths:
         with open(path) as f:
             data = json.load(f)
+        require_canonical_artifact(data)
         run_meta = data.get("runMeta") or {}
         if run_meta.get("mode") != "monitor":
             return None

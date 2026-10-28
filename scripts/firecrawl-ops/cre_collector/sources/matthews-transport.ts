@@ -157,7 +157,8 @@ function logMatthewsAttempt(event: {
 export async function matthewsFetch(
   url: string,
   manualRedirect = false,
-  strict = requireFreshDetails()
+  strict = requireFreshDetails(),
+  observeTemporaryRedirect = false
 ): Promise<MatthewsFetchResult> {
   let lastError: unknown = null;
   const role = matthewsRequestRole(url);
@@ -207,7 +208,7 @@ export async function matthewsFetch(
           location: null,
         };
       }
-      if (manualRedirect && (status === 301 || status === 308)) {
+      if (manualRedirect && (status === 301 || status === 308 || (observeTemporaryRedirect && status === 307))) {
         return { html: null, status, location: res.headers.get("location") };
       }
     } catch (error) {

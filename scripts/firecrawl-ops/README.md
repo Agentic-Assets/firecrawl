@@ -4,7 +4,7 @@ This folder contains the fork-owned operating layer around the self-hosted
 Firecrawl stack and the CRE listing collector used by EQUIRE. It is not an
 upstream Firecrawl package. Treat it as Agentic Assets local infrastructure.
 
-Use `CLAUDE.md` for compact agent routing. Use this README when you need a
+Use `AGENTS.md` for agent routing; `CLAUDE.md` points to it. Use this README when you need a
 more detailed operator guide.
 
 > **Verify before operating.** Runtime, scheduler, lock, and database state
@@ -48,7 +48,8 @@ and that the active Docker context is `orbstack`.
 
 | Path | Use |
 |---|---|
-| `CLAUDE.md` | Compact routing for agents |
+| `AGENTS.md` | Agent routing and scoped instructions |
+| `CLAUDE.md` | Compatibility pointer to `AGENTS.md` |
 | `README.md` | This operator guide |
 | `cre_collector/` | Production collector, ingestor, monitor/gate, and enrichment worker |
 | `cre_scrapers/` | Legacy Python probes and detail enrichment package |
@@ -69,7 +70,7 @@ and that the active Docker context is `orbstack`.
 | `local-firepdf-adapter.Dockerfile` | Container build for the OCR adapter |
 | `pdf_ocr_benchmark.py` | Runs repeatable PDF parser and OCR comparisons |
 | `pdf_ocr_profiles.json` | Named local OCR profile settings |
-| `cre_pipeline.py`, `cre_access_matrix.py`, … | Legacy reference scripts (see `CLAUDE.md` directory map) |
+| `cre_pipeline.py`, `cre_access_matrix.py`, … | Legacy reference scripts (see `AGENTS.md` directory map) |
 
 ## CRE Listing Collector
 
@@ -83,8 +84,8 @@ Fresh machine? Run `bash cre_setup.sh` first (see `SETUP.md`).
 
 Read these before making claims or changing behavior:
 
-1. `START_HERE.md` (live counts, status matrix, launchd run-health, next steps)
-2. `CLAUDE.md` (collector orchestration and ingest contract)
+1. `START_HERE.md` (operating procedures; verify live status independently)
+2. `AGENTS.md` (collector orchestration and ingest contract)
 3. `BROKERAGE_STATUS_2026-06-12.md`
 4. `../../docs/firecrawl-ops/references/cre-intelligence-system-design.md`
 5. `../../docs/firecrawl-ops/references/cre-equire-consumer-api.md`
@@ -118,9 +119,9 @@ structurally capped (no public US commercial-sale feed), keep the ingest additiv
 (`--no-mark-missing`). The collector registers **51 source keys** in
 `collect.ts` / `types.ts`; live per-source status is in `START_HERE.md`.
 
-Live row counts, baseline artifacts, and per-source status belong in
-`cre_collector/START_HERE.md`. Do not quote coverage from memory or from
-`cre_scrapers/config.py`.
+Use current validation and checkpoint readback for live row counts and source status.
+`START_HERE.md` contains procedures and historical snapshots; do not quote coverage
+from memory or from `cre_scrapers/config.py`.
 
 ## CRE Database Target
 
@@ -190,8 +191,8 @@ into `cre_daily_update.sh` as observe-only step [3/4] with a strict
 `--no-mark-missing` fail-safe. The Tier-B worker `cre_enrich.py` drains
 `cre_enrichment_queue` via `collect.ts --enrich-input` and additive re-ingest.
 
-**Live ops status** (schedules, last-run verdicts, gated cutovers) belongs in
-`cre_collector/START_HERE.md`. Run `bash cre_status.sh` before quoting
+**Live ops status** (schedules, last-run verdicts, gated cutovers) requires current
+host and task readback; `cre_collector/START_HERE.md` contains procedures. Run `bash cre_status.sh` before quoting
 run-health. Migrations `009` through `014` are applied to prod; local OM
 parsing is retired and fails closed. Live status activation, consumer board-gate
 deploy, media backfill, and weekly mark-missing escalation
@@ -433,4 +434,3 @@ That copies `firecrawl-ops` and `firecrawl-local-api` into
 - Do not claim a broker is complete until collection, ingest, and Supabase
   validation are all documented.
 - Do not use legacy `cre_scrapers` status as production source truth.
-- Do not open a PR through an API. Cayman opens PRs manually.

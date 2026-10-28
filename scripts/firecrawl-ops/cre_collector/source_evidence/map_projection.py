@@ -1,4 +1,4 @@
-"""Narrow, irreversible projection of Faris map tile URLs in collector JSON.
+"""Narrow, irreversible projection of observed map tile URLs in collector JSON.
 
 The resulting URL is a derived reference and may not be fetchable. The receipt
 records where URLs were projected without storing their credential bytes.
@@ -13,12 +13,21 @@ from urllib.parse import unquote, urlsplit
 from buildout_observation_artifact import URL, pointer_component
 
 VERSION = "faris-google-map-tile-query/v1"
+SOURCE_VERSIONS = {"faris-lee": VERSION,
+                   "cushman-wakefield": "google-map-tile-query/v1",
+                   "nai-global": "google-map-tile-query/v1",
+                   "svn": "google-map-tile-query/v1"}
 MAX_NODES = 500_000
 MAX_RECEIPTS = 20_000
 MAX_POINTER_BYTES = 4096
 MAX_RECEIPT_BYTES = 1_000_000
 MAX_REMOVED_PARAMETERS = 128
 _BAD_ESCAPE = re.compile(r"%(?![0-9a-fA-F]{2})")
+
+
+def version_for(source_key):
+    """Return the explicitly supported version; policies must still opt in."""
+    return SOURCE_VERSIONS.get(source_key)
 
 
 def _digest(value):
@@ -50,7 +59,7 @@ def project(document, *, source_key):
     Only the observed HTTPS map tile endpoint and literal key/token query names
     are projected. Other content is left to the existing admission checks.
     """
-    if source_key != "faris-lee":
+    if version_for(source_key) is None:
         raise ValueError("map projection is not authorized for this source")
     receipts = []
     visited = 0
@@ -83,7 +92,11 @@ def project(document, *, source_key):
             if (parts.scheme != "https" or parts.netloc != "maps.googleapis.com"
                     or parts.path != "/maps/vt" or parts.fragment
                     or _BAD_ESCAPE.search(parts.query)):
-                raise ValueError("unsupported map URL requires separate handling")
+                if source_key == "faris-lee":
+                    raise ValueError("unsupported map URL requires separate handling")
+                # New source policies project only the observed tile endpoint.
+                # Other references stay unchanged for normal admission checks.
+                return match.group(0)
             pieces = parts.query.split("&")
             kept, removed = [], []
             for piece in pieces:
@@ -119,7 +132,7 @@ def project(document, *, source_key):
         return URL.sub(replace, value)
 
     result = walk(document, "", 0)
-    return result, {"version": VERSION, "sourceKey": source_key, "replacements": receipts}
+    return result, {"version": version_for(source_key), "sourceKey": source_key, "replacements": receipts}
 
 
 def canonical_digest(document, numeric_literals=None):
@@ -147,8 +160,9 @@ def prepare(raw, *, source_key):
 def validate(document, receipt, *, source_key, numeric_literals=None):
     """Validate projected representation and references without source-content hashes."""
     if (not isinstance(receipt, dict) or set(receipt) != {
-        "version", "sourceKey", "replacements", "projectedCanonicalSha256"} or receipt["version"] != VERSION
-        or source_key != "faris-lee" or receipt["sourceKey"] != source_key
+        "version", "sourceKey", "replacements", "projectedCanonicalSha256"}
+        or version_for(source_key) is None or receipt["version"] != version_for(source_key)
+        or receipt["sourceKey"] != source_key
         or not isinstance(receipt["projectedCanonicalSha256"], str)
         or not re.fullmatch(r"[0-9a-f]{64}", receipt["projectedCanonicalSha256"])
         or not isinstance(receipt["replacements"], list) or len(receipt["replacements"]) > MAX_RECEIPTS
@@ -213,7 +227,9 @@ def validate(document, receipt, *, source_key, numeric_literals=None):
                 text, _ = _url_boundary(match.group(0))
                 try:
                     parts = urlsplit(text)
-                    if parts.netloc == "maps.googleapis.com" and parts.path == "/maps/vt":
+                    if (parts.scheme == "https" and parts.netloc == "maps.googleapis.com"
+                            and parts.path == "/maps/vt" and not parts.fragment
+                            and not _BAD_ESCAPE.search(parts.query)):
                         matches.append(text)
                 except ValueError:
                     continue

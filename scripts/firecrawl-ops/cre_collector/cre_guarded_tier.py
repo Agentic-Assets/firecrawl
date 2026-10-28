@@ -170,7 +170,8 @@ def build_commands(args: argparse.Namespace, run_dir: Path, target: str | None):
     if args.apply:
         if target is None or not re.fullmatch(r"[0-9a-f]{64}", target):
             raise GuardedTierError("database target binding is unavailable")
-        argv.extend(["--expected-db-target-sha256", target])
+        argv.extend(["--expected-db-target-sha256", target,
+                     "--artifact-out", str(run_dir / "enriched.json")])
         if args.source == "matthews":
             if sys.platform != "linux" or args.deadline_seconds > 600:
                 raise GuardedTierError("targeted Matthews requires Linux and a deadline at most 600 seconds")
@@ -374,6 +375,21 @@ def run_guarded_tier(
                 run_dir / "receipt.json", json.dumps(receipt, sort_keys=True) + "\n"
             )
 
+        def settle_enrichment_artifact(phase: str) -> None:
+            if phase != "enrich_apply":
+                return
+            from source_evidence import enrichment_custody
+            marker = receipt.get("enrichment_artifact")
+            if not isinstance(marker, dict) or marker.get("state") != "awaiting_worker":
+                raise GuardedTierError("enrichment custody intent is unavailable")
+            try:
+                receipt["enrichment_artifact"] = enrichment_custody.settle(run_dir, marker)
+            except (OSError, ValueError, RuntimeError) as exc:
+                receipt["enrichment_artifact"] = {**marker, "state": "refused", "reason": type(exc).__name__}
+                persist()
+                raise GuardedTierError("enrichment artifact custody was refused") from exc
+            persist()
+
         def execute(phase: str, argv: Sequence[str]) -> None:
             nonlocal native_work_started, native_command_active, tier_worker_started
             receipt["phase"] = phase
@@ -397,11 +413,41 @@ def run_guarded_tier(
                 settled = checkpoint.command_local_settlement(exc)
                 if settled is not None:
                     receipt["local_settlement"] = {**settled, "phase": phase}
+                    settle_enrichment_artifact(phase)
+                    if phase == "enrich_apply" and "source_evidence" in receipt:
+                        from source_evidence import guarded_evidence
+                        try:
+                            guarded_evidence.seal_only(run_dir, receipt, lock, persist)
+                        except Exception as evidence_error:
+                            receipt["source_evidence"]["status"] = "incomplete"
+                            receipt["source_evidence"]["reason"] = type(evidence_error).__name__
+                            persist()
                 raise
             # The production runner returns only after its owned group is
             # settled. Exceptions deliberately leave this active witness set.
             native_command_active = False
             receipt["local_settlement"] = {"state": "confirmed", "phase": phase}
+            settle_enrichment_artifact(phase)
+            if phase == "enrich_apply":
+                receipt["canonical_enrichment"] = {"state": "completed" if command_rc == 0 else "failed",
+                                                   "returncode": command_rc}
+                persist()
+            if phase == "enrich_apply" and "source_evidence" in receipt:
+                from source_evidence import guarded_evidence
+                try:
+                    guarded_evidence.seal_and_append(run_dir, receipt, lock, persist)
+                except Exception as exc:
+                    from source_evidence.document_process import cleanup_unknown_in_chain
+                    if cleanup_unknown_in_chain(exc):
+                        raise
+                    if isinstance(exc, guarded_evidence.FenceCleanupUnknown):
+                        receipt["source_evidence"]["recovery_cleanup"] = {
+                            "state": "unknown", "reason": type(exc.__cause__).__name__
+                        }
+                    else:
+                        receipt["source_evidence"]["status"] = "incomplete"
+                        receipt["source_evidence"]["reason"] = type(exc).__name__
+                    persist()
             if command_rc != 0:
                 if phase.startswith("git_"):
                     raise PreflightRefused("checkout identity could not be verified")
@@ -456,7 +502,26 @@ def run_guarded_tier(
                         ) from exc
                     if target is not None:
                         receipt["database_target_sha256"] = target
+                    evidence_options = [getattr(args, name, None) for name in (
+                        "source_evidence_policy", "source_evidence_policy_sha256",
+                        "source_evidence_env_file", "source_evidence_target_sha256")]
+                    if any(evidence_options):
+                        if args.tier != "enrich" or not args.apply:
+                            raise PreflightRefused("evidence requires applied enrichment")
+                        from source_evidence import automatic, guarded_fence
+                        try:
+                            config = automatic.configuration(*evidence_options, args.expected_sha, [args.source])
+                            if args.source not in config["source_keys"]:
+                                raise ValueError("source outside evidence policy")
+                            guarded_fence.require_clear(lock.path)
+                        except (Exception, SystemExit) as exc:
+                            raise PreflightRefused("targeted evidence admission refused") from exc
+                        receipt["source_evidence"] = {"config": config, "status": "awaiting_worker"}
+                        persist()
                     for phase, argv in build_commands(args, run_dir, target):
+                        if phase == "enrich_apply":
+                            from source_evidence import enrichment_custody
+                            receipt["enrichment_artifact"] = enrichment_custody.mark(run_dir, args.source)
                         execute(phase, argv)
                         if phase == "collect":
                             validate_monitor_artifact(
@@ -537,8 +602,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--env-file")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--windows-admission-unix-ms", type=int)
+    parser.add_argument("--source-evidence-policy")
+    parser.add_argument("--source-evidence-policy-sha256")
+    parser.add_argument("--source-evidence-env-file")
+    parser.add_argument("--source-evidence-target-sha256")
+    parser.add_argument("--source-evidence-reconcile-receipt")
     args = parser.parse_args(argv)
     try:
+        if args.source_evidence_reconcile_receipt:
+            from source_evidence.guarded_evidence import reconcile
+            reconcile(args.source_evidence_reconcile_receipt, source=args.source, expected_sha=args.expected_sha)
+            return 0
         if __name__ == "__main__" and _CLI_STOP_CAPABILITY is not None:
             return run_guarded_tier(args, _cli_stop_capability=_CLI_STOP_CAPABILITY)
         return run_guarded_tier(args)

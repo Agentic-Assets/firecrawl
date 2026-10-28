@@ -160,3 +160,19 @@ def test_nested_foreign_source_declaration_in_collector_record_is_refused():
                "content_policy": "reviewed_for_private_retention", "source_keys": ["svn"]}
     with pytest.raises(ValueError, match="conflicting protected source"):
         events.validate_admission(value, receipt)
+
+
+@pytest.mark.parametrize("hidden", [False, True])
+def test_split_observations_do_not_bypass_avison_context_visibility(hidden):
+    data = artifact("avison-young", 0)
+    data["sources"][0]["retainedObservations"] = [
+        {"rawSharpLaunch": {"hide_price": int(hidden)}, "sale_price": 2000000,
+         "leaseRateMin": 18, "unknown": [None, False, ""]} for _ in range(60)]
+    wrapped = collector.convert(data, source_key="avison-young")
+    assert wrapped["schema"] == collector.SCHEMA_V2
+    value = events.plan(wrapped, source_key="avison-young")
+    if hidden:
+        with pytest.raises(ValueError, match="context requires source-owned price projection"):
+            events.validate_content_policy(value)
+    else:
+        events.validate_content_policy(value)

@@ -250,7 +250,7 @@ image merely because its URL looks photographic. Record source-backed role
 evidence where the adapter supports it, and test the actual mapper with a
 preferred image that initially follows other images, a filtered preferred
 image, a gallery-only fallback and an unknown layout. Transwestern's precise
-selection contract lives in `cre_collector/sources/CLAUDE.md`.
+selection contract lives in `cre_collector/sources/AGENTS.md`.
 
 Keep image classification and its evidence together at the final source
 boundary. A contact portrait belongs with its identified contact, and an
@@ -513,7 +513,7 @@ rendered-detail parsing. It does not establish current access or acceptance.
 The strict checkpoint now selects the exact-ID anonymous Coveo transport;
 the sitemap/JSON-LD renderer remains fallback code. A confirmed bootstrap
 denial must not trigger a route, client or proxy switch. Follow the
-[source contract](../../../scripts/firecrawl-ops/cre_collector/sources/CLAUDE.md)
+[source contract](../../../scripts/firecrawl-ops/cre_collector/sources/AGENTS.md)
 and [AGENTIC-4522](https://linear.app/agenticassets/issue/AGENTIC-4522) for the
 typed numeric `bootstrapStatus: 403` stop and its distinction from bounded
 transient retries. Current whole-source acceptance remains on

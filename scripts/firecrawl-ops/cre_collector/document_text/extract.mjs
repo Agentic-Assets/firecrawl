@@ -13,6 +13,14 @@ const TIMEOUT_MS = 60_000;
 const VERSION = '0.2.4';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
+function validObservationTime(value) {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d{1,6})?Z$/.exec(value);
+  if (!match || value.startsWith('0000-')) return false;
+  const whole = Date.parse(`${match[1]}Z`);
+  return Number.isFinite(whole) && new Date(whole).toISOString().slice(0, 19) === match[1];
+}
+
 async function readBounded(input, limit = MAX_BYTES, privateFile = false) {
   // O_NONBLOCK prevents a FIFO from blocking before we can inspect its type.
   const handle = await open(input, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -64,9 +72,8 @@ function convert(bytes, extension) {
 }
 
 export async function extractFile({ input, sourceUrl, observedAt }) {
-  if (!input || typeof sourceUrl !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(observedAt || '') ||
-      !Number.isFinite(Date.parse(observedAt)) || new Date(observedAt).toISOString() !== observedAt.replace('Z', '.000Z')) {
-    throw new Error('input, sourceUrl and UTC observedAt (YYYY-MM-DDTHH:mm:ssZ) are required');
+  if (!input || typeof sourceUrl !== 'string' || !validObservationTime(observedAt)) {
+    throw new Error('input, sourceUrl and UTC observedAt with at most six fractional digits are required');
   }
   let url;
   try { url = new URL(sourceUrl); } catch { throw new Error('invalid source URL'); }

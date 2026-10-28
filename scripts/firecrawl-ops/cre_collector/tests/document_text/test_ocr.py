@@ -92,3 +92,102 @@ def test_success_keeps_warning_and_utf8_digest(monkeypatch):
     assert result['extraction']['text_sha256'] == ocr.digest('café'.encode())
     assert result['extraction']['coverage'] == 'unknown'
     assert result['extraction']['warnings'] == ['tesseract_osd_failed', 'docling_logged_error']
+
+
+def test_unsupported_pdf_only_and_original_hash_unchanged():
+    raw = b'%PDF-fixture'
+    first = {'schema_version': 'cre-document-text/v1', 'source': {'url': 'https://example.test/file.pdf',
+             'observed_at': '2026-10-28T12:00:00.123456Z', 'format': 'pdf', 'byte_length': len(raw), 'sha256': ocr.digest(raw)},
+             'parser': {'name': '@firecrawl/anydoc'}, 'extraction': {'status': 'failed', 'error_code': 'unsupported'}}
+    before = json.dumps(first).encode()
+    result = ocr.make_attempt(first, before, raw, 'poppler', '26.10.0')
+    assert json.dumps(first).encode() == before
+    assert result['source']['observed_at'] == first['source']['observed_at']
+    assert result['extraction']['previous_attempt_sha256'] == ocr.digest(before)
+    assert result['parser']['name'] == 'poppler-pdftotext'
+    assert result['extraction']['text_format'] == 'plain'
+    assert result['extraction']['coverage'] == 'unknown'
+    for code in ('unknown', 'malformed', 'encrypted', 'timeout'):
+        first['extraction']['error_code'] = code
+        with pytest.raises(ValueError):
+            ocr.make_attempt(first, before, raw)
+    first['extraction']['error_code'] = 'unsupported'
+    with pytest.raises(ValueError):
+        ocr.make_attempt(first, before, b'%PDF-different')
+    first['source']['format'] = 'html'
+    with pytest.raises(ValueError):
+        ocr.make_attempt(first, before, raw)
+
+
+def test_poppler_success_retains_diagnostic_and_hash(monkeypatch):
+    def run(args, **kwargs):
+        Path(args[-1]).write_bytes('partial text'.encode())
+        kwargs['stderr'].write(b'private diagnostic')
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(ocr.subprocess, 'run', run)
+    result = ocr.convert_poppler(b'%PDF-fixture', fixture())
+    assert result['extraction']['status'] == 'extracted'
+    assert result['extraction']['text_sha256'] == ocr.digest(b'partial text')
+    assert result['extraction']['warnings'] == ['poppler_logged_diagnostic']
+    assert result['extraction']['coverage'] == 'unknown'
+
+
+def test_poppler_empty_output_is_failure(monkeypatch):
+    def run(args, **kwargs):
+        Path(args[-1]).write_bytes(b'')
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(ocr.subprocess, 'run', run)
+    assert ocr.convert_poppler(b'%PDF-fixture', fixture())['extraction']['error_code'] == 'empty_output'
+
+
+def test_docling_nonzero_with_text_preserves_partial_output(monkeypatch):
+    container = 'a' * 64
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[1] == 'create':
+            return subprocess.CompletedProcess(args, 0, stdout=(container + '\n').encode())
+        if args[1] == 'inspect':
+            label = calls[0][calls[0].index('--label') + 1].split('=', 1)[1]
+            return subprocess.CompletedProcess(args, 0, stdout=f'{container} {label}\n'.encode())
+        if args[1] == 'start':
+            mount = next(x for x in calls[0] if 'dst=/output' in x)
+            Path(mount.split('src=', 1)[1].split(',dst=', 1)[0], 'input.md').write_text('partial')
+            return subprocess.CompletedProcess(args, 1)
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(ocr.subprocess, 'run', run)
+    result = ocr.convert(b'%PDF-fixture', fixture())
+    assert result['extraction']['status'] == 'extracted'
+    assert 'converter_failed_partial_output' in result['extraction']['warnings']
+    assert result['extraction']['converter_exit_code'] == 1
+    assert result['extraction']['coverage'] == 'unknown'
+
+
+def test_poppler_nonzero_partial_output_is_not_discarded(monkeypatch):
+    def run(args, **kwargs):
+        Path(args[-1]).write_bytes(b'partial')
+        return subprocess.CompletedProcess(args, 1)
+    monkeypatch.setattr(ocr.subprocess, 'run', run)
+    result = ocr.convert_poppler(b'%PDF-fixture', fixture())
+    assert result['extraction']['status'] == 'extracted'
+    assert result['extraction']['warnings'] == ['converter_failed_partial_output']
+    assert result['extraction']['converter_exit_code'] == 1
+    assert result['extraction']['coverage'] == 'unknown'
+
+
+def test_plain_attempt_metadata_survives_evidence_reconstruction(tmp_path):
+    from source_evidence import document_export, events
+    raw = b'%PDF-fixture'
+    first = {'schema_version': 'cre-document-text/v1', 'source': {'url': 'https://example.test/a.pdf',
+             'observed_at': '2026-10-28T12:00:00Z', 'format': 'pdf', 'byte_length': len(raw), 'sha256': ocr.digest(raw)},
+             'parser': {'name': '@firecrawl/anydoc'}, 'extraction': {'status': 'failed', 'error_code': 'unsupported'}}
+    artifact = ocr.make_attempt(first, json.dumps(first).encode(), raw, 'poppler', '26.10.0')
+    artifact['extraction'].update(status='extracted', text='partial', text_sha256=ocr.digest(b'partial'),
+                                  warnings=['converter_failed_partial_output'], converter_exit_code=1)
+    rows = events.plan(artifact, source_key='svn')['events']
+    text, metadata = document_export.reconstruct(rows)
+    assert text == 'partial'
+    extraction = metadata['document']['extraction']
+    assert extraction['text_format'] == 'plain' and extraction['converter_exit_code'] == 1
+    assert extraction['warnings'] == ['converter_failed_partial_output']
+    assert metadata['coverage'] == 'unknown'

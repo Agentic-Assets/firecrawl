@@ -285,6 +285,8 @@ def test_enrichment_apply_is_exactly_bound_and_never_lifecycle_escalated(tmp_pat
     assert argv[6:] == [
         "--expected-db-target-sha256",
         target,
+        "--artifact-out",
+        str(tmp_path / "enriched.json"),
         "--env-file",
         "/private/cre.env",
     ]

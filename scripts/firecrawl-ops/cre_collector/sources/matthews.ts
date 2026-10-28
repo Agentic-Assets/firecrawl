@@ -11,6 +11,8 @@ import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
 import { SourceResult, Tx } from "../types.js";
 import { matthewsTenureFromUrl } from "./pure/matthews-identity.js";
 import { matthewsSpaceFacts } from "./pure/matthews-space-facts.js";
+import { RetainedSourceError } from "../lib/source-observations.js";
+import { captureSourcePageContext, isSourceChallengeShell } from "../lib/source-page-context/index.js";
 
 import { matthewsFetch } from "./matthews-transport.js";
 export {
@@ -454,11 +456,11 @@ export function parseMatthewsDetail(
  * never inventory or generation proof. A refusal stays omitted for retry;
  * permanent aliases must not be rekeyed or falsely marked complete by URL.
  */
-async function enrichMatthewsObservedListing(item: {
+export async function enrichMatthewsObservedListing(item: {
   externalId: string;
   url: string;
   transaction?: Tx;
-}, inventoryObservedAt?: string): Promise<any | null> {
+}, inventoryObservedAt?: string, observe?: (value: { reason: string; html?: string; observedAt?: string; redirectTarget?: string; status?: number }) => void): Promise<any | null> {
   try {
     const requested = new URL(item.url);
     if (
@@ -477,14 +479,40 @@ async function enrichMatthewsObservedListing(item: {
 
     // Explicit freshness on the existing bounded transport does not depend on
     // the full-generation CLI flag. Never follow redirects for queue completion.
-    const response = await matthewsFetch(normalized, true, true);
+    const response = await matthewsFetch(normalized, true, true, !!observe);
+    if (response.status === 307 && observe && response.location) {
+      try {
+        const target = new URL(response.location, normalized);
+        const targetUrl = target.href;
+        if (target.protocol === "https:" && !target.username && !target.password && !target.port && !target.search && !target.hash
+          && normalizedMatthewsPropertyUrl(targetUrl, MATTHEWS_HOST)
+          && matthewsTenureFromUrl(targetUrl) === tx) {
+          observe({ reason: "temporary_redirect", redirectTarget: targetUrl, status: response.status });
+        } else if (target.protocol === "https:" && !target.username && !target.password && !target.port
+          && !target.search && !target.hash && ["matthews.com", "www.matthews.com"].includes(target.hostname.toLowerCase())
+          && /^\/listings\/?$/.test(target.pathname)) {
+          let observedAt: string | undefined;
+          try { observedAt = observationNow(); } catch { /* No clock is invented. */ }
+          observe({ reason: "native_redirect_not_listing", redirectTarget: targetUrl, status: response.status, observedAt });
+        }
+      } catch { /* Invalid location is never retried. */ }
+      return null;
+    }
     if (!response.html || matthewsProviderNotFound(response.html, normalized, tx)) return null;
-    const listing = parseMatthewsDetail(response.html, normalized, tx, {
-      strict: true,
-      inventoryObservedAt,
-      detailObservedAt: observationNow(),
-    });
-    if (!listing || listing.id !== item.externalId) return null;
+    let listing: any = null;
+    try {
+      listing = parseMatthewsDetail(response.html, normalized, tx, {
+        strict: true,
+        inventoryObservedAt,
+        detailObservedAt: observationNow(),
+      });
+    } catch { /* The unqualified body may still be retained privately. */ }
+    if (!listing || listing.id !== item.externalId) {
+      if (observe && !isSourceChallengeShell(response.html)) {
+        observe({ reason: "native_detail_unqualified", html: response.html, observedAt: observationNow(), status: response.status });
+      }
+      return null;
+    }
     return prune({ ...listing, url: item.url });
   } catch {
     return null;
@@ -719,7 +747,17 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
     };
   }
 
-  const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url) => {
+  // Keep evidence outside the mapper so its strict rejection semantics stay
+  // unchanged. pmap settles already-started workers before rejecting.
+  const observations: unknown[] = new Array(take.length);
+  const parsedObservations: unknown[] = new Array(take.length);
+  const retain = (error: unknown): never => {
+    const completed = take.map((_, index) => observations[index] ?? parsedObservations[index])
+      .filter((value) => value !== undefined);
+    if (completed.length && error instanceof Error) throw new RetainedSourceError(error, completed);
+    throw error;
+  };
+  const parsed = await pmap(take, Math.min(CONCURRENCY, 2), async (url, index) => {
     try {
       const response = await matthewsFetch(url, true);
       const permanentRedirectTarget = matthewsPermanentRedirectTarget(
@@ -760,15 +798,48 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
         console.warn(`  matthews/${tx}: ${url} excluded as provider 404`);
         return { listing: null, providerNotFound: true, permanentRedirectAlias: false };
       }
-      const listing = parseMatthewsDetail(html, url, tx, {
-        inventoryObservedAt,
-        detailObservedAt: observationNow(),
-      });
+      const detailObservedAt = observationNow();
+      const retainPage = () => {
+        try { if (isSourceChallengeShell(html)) return; } catch { return; }
+        const metadata = {
+          schema: "matthews-detail-observation/v1",
+          sourceKey: "matthews",
+          requestedUrl: url,
+          requestedTransaction: tx,
+          inventoryObservedAt,
+          detailObservedAt,
+          httpStatus: response.status,
+          identity: "unverified",
+          coverage: "unverified",
+        };
+        try {
+          observations[index] = { ...metadata, contextStatus: "captured",
+            pageContext: captureSourcePageContext(html, { sourceUrl: url, detailObservedAt,
+              descriptionSelector: "section:has(#propertyTitle), .prose" }) };
+        } catch {
+          // An evidence capture failure cannot turn a canonical rejection into
+          // success, or discard an otherwise valid canonical parse.
+          observations[index] = { ...metadata, contextStatus: "failed",
+            reason: "page_context_capture_failed" };
+        }
+      };
+      let listing: any | null;
+      try {
+        listing = parseMatthewsDetail(html, url, tx, { inventoryObservedAt, detailObservedAt });
+      } catch (error) {
+        retainPage();
+        throw error;
+      }
       if (!listing) {
+        retainPage();
         console.error(`  matthews/${tx}: ${url} failed identity or detail validation`);
         if (requireFreshDetails()) {
           throw new Error(`Matthews strict ${tx} detail failed identity or detail validation: ${url}`);
         }
+      } else {
+        parsedObservations[index] = { schema: "matthews-completed-parse-observation/v1",
+          sourceKey: "matthews", reason: "source_run_failed_after_completed_parse",
+          observation: listing };
       }
       return { listing, providerNotFound: false, permanentRedirectAlias: false };
     } catch (err) {
@@ -778,7 +849,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
       }
       return { listing: null, providerNotFound: false, permanentRedirectAlias: false };
     }
-  });
+  }).catch(retain);
   const coverage = matthewsParsedCoverage(
     parsed.map((result) => result.listing),
     parsed.filter((result) => result.providerNotFound).length,
@@ -787,7 +858,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
   const listings = coverage.listings;
   const failures = coverage.failures;
   if (!listings.length) {
-    throw new Error("Matthews: sitemap enumerated detail pages but none parsed");
+    retain(new Error("Matthews: sitemap enumerated detail pages but none parsed"));
   }
   const incompleteEnumeration = take.length !== urls.length;
   const truncated = coverage.truncated || incompleteEnumeration;
@@ -817,6 +888,7 @@ export async function srcMatthews(tx: Tx, max: number, monitor: boolean): Promis
     method: "Public sitemap.xml enumeration to server-rendered detail pages, DOM parsed via throttled plain fetch",
     totalAvailable: verifiedActiveTotal,
     listings,
+    retainedObservations: observations.filter((value) => value !== undefined),
     truncated,
     note: notes.length ? notes.join("; ") : undefined,
   };
