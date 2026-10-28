@@ -14,6 +14,7 @@ import {
   srcBuildout,
 } from "./sources/buildout.js";
 import { registeredBuildoutFirmFor } from "./sources/buildout-registry.js";
+import { buildoutFeedFor } from "./sources/buildout-feeds/index.js";
 import { srcCbre } from "./sources/cbre.js";
 import { srcCbreDealflow } from "./sources/cbre-dealflow.js";
 import { srcColliers } from "./sources/colliers.js";
@@ -129,25 +130,19 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
     case "savills":
       return srcSavills(tx, max, monitor);
     case "svn":
+    case "lee-associates": {
+      const feed = buildoutFeedFor(key);
+      if (!feed) throw new Error(`missing Buildout coordinates for ${key}`);
       return srcBuildout(
-        "SVN",
-        "b933480474026c41d248b77156c84aef37dcac68",
-        "https://svn.com/properties/",
+        feed.company,
+        feed.pluginKey,
+        feed.listingsPage,
         tx,
         max,
         monitor,
-        BUILDOUT_SOURCE_INVENTORY_OPTS.svn
+        BUILDOUT_SOURCE_INVENTORY_OPTS[key]
       );
-    case "lee-associates":
-      return srcBuildout(
-        "Lee & Associates",
-        "9a64a93980aeae8db347e72cdfa8ca61017acc9a",
-        "https://www.lee-associates.com/properties/",
-        tx,
-        max,
-        monitor,
-        BUILDOUT_SOURCE_INVENTORY_OPTS["lee-associates"]
-      );
+    }
     case "nai-global":
       return srcNaiGlobal(tx, max, monitor);
     case "transwestern":

@@ -17,7 +17,7 @@ PROVENANCE = {"representation": "collector_parsed_json_not_response_bytes",
 
 
 def receipt_checked(receipt):
-    if (not isinstance(receipt, dict) or set(receipt) != RECEIPT_KEYS
+    if (not isinstance(receipt, dict) or set(receipt) not in (RECEIPT_KEYS, RECEIPT_KEYS | {"feedKey"})
             or not isinstance(receipt.get("sourceKey"), str)
             or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", receipt["sourceKey"])
             or type(receipt.get("page")) is not int or not 0 <= receipt["page"] <= 9007199254740991
@@ -30,7 +30,9 @@ def receipt_checked(receipt):
             or not isinstance(receipt.get("providerScopeSha256"), str)
             or not re.fullmatch(r"[a-f0-9]{64}", receipt["providerScopeSha256"])):
         raise ValueError("Buildout parsed receipt mismatch")
-    if receipt["providerScopeSha256"] != scope_hash(receipt["sourceKey"], receipt["inventorySort"]):
+    if "feedKey" in receipt and not isinstance(receipt["feedKey"], str):
+        raise ValueError("Buildout feed key mismatch")
+    if receipt["providerScopeSha256"] != scope_hash(receipt["sourceKey"], receipt["inventorySort"], receipt.get("feedKey")):
         raise ValueError("Buildout provider scope mismatch")
     captured = events.timestamp(receipt.get("capturedAt"))
     observed = receipt.get("sourceObservedAt")

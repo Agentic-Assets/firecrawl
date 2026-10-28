@@ -11,8 +11,9 @@ integration key or headers in capture metadata, logs, URLs, or hashes. The
 source-owned withheld-price projection and admission policy precede DB retention;
 local raw page hashes must not become projected evidence commitments.
 
-Draft Buildout capture is explicitly enabled for the 25 registered tuples only,
-excluding SVN, Lee and Franklin coordinate families. It stores parsed JavaScript
+Draft Buildout capture is explicitly enabled for 28 registered sources and 29
+feeds, including SVN, Lee and separate Franklin sale and lease feeds. The
+original 25 native receipt shapes and scope hashes stay unchanged. It stores parsed JavaScript
 JSON privately, not HTTP bytes or original numeric precision. Capture and source
 clocks are distinct, memory-cache hits do not create fresh capture, and a capture
 failure stops the enabled path. Existing source/credential policy remains

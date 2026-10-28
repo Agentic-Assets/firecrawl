@@ -34,9 +34,10 @@ refusal leaves previously published pages intact; exact replay adds no bytes.
 
 ## Draft Buildout parsed inventory
 
-An explicit v2 policy may enable `buildout_inventory_parsed_v1` for the 25
-registered source/provider tuples. SVN, Lee and Franklin coordinate families
-are excluded. The existing source request is captured after JavaScript parsing;
+An explicit v2 policy may enable `buildout_inventory_parsed_v1` for 28
+registered sources and 29 feeds, including SVN, Lee and separately identified
+Franklin sale and lease feeds. The original 25 native receipt shapes and scope
+hashes stay unchanged. The existing source request is captured after JavaScript parsing;
 no new fetch is introduced. The representation is not original HTTP bytes or
 original numeric precision. Capture time and the nullable, possibly older
 source observation time are distinct; status and final URL are not fabricated.

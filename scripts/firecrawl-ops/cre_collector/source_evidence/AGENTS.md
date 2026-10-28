@@ -39,8 +39,10 @@ JSON contexts do not assert a selected listing array. Effective-privilege checks
 are bounded preflights, not server-side credential isolation. Production writer
 activation remains subject to the shared-database review on AGENTIC-5040.
 
-Draft Buildout parsed inventory capture is an explicit v2 format opt-in for the
-25 registered tuples, excluding the SVN, Lee and Franklin coordinate families.
+Draft Buildout parsed inventory capture is an explicit v2 format opt-in for 28
+registered sources and 29 feeds, including SVN, Lee and separate Franklin sale
+and lease feeds. The original 25 native receipt shapes and scope hashes stay
+unchanged; Franklin requires its exact feed variant.
 It retains parsed JavaScript JSON, not HTTP bytes or original numeric precision;
 capture time is distinct from a nullable source clock, and memory-cache hits
 create no fresh capture. Apply existing policy and credential checks: Faris

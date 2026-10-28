@@ -1,6 +1,6 @@
 /** Private Buildout parsed-page custody. This is not an HTTP response capture. */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { buildoutFeedFor, type BuildoutFeedCoordinates } from "../../sources/buildout-feeds/index.js";
 import { observationNow } from "../observation-clock.js";
 import { publishPrivatePage } from "./private-page.js";
 
@@ -31,17 +31,17 @@ function bound(name: string, maximum: number): number {
   return number;
 }
 
-/** Fail closed for enabled captures outside the 25 registered source tuples. */
-export function assertBuildoutCaptureScope(pluginKey: string, cacheSlug: string | undefined): void {
+/** Bind an enabled capture to the source's exact configured feed variant. */
+export function assertBuildoutCaptureScope(pluginKey: string, cacheSlug: string | undefined): Readonly<BuildoutFeedCoordinates> | undefined {
   if (!process.env.CRE_BUILDOUT_NATIVE_CAPTURE_DIR) return;
   try {
     const source = process.env.CRE_BUILDOUT_NATIVE_CAPTURE_SOURCE_KEY;
-    const tuples: unknown = JSON.parse(readFileSync(new URL("../../data/cre-buildout-sources.json", import.meta.url), "utf8"));
-    if (process.env.CRE_BUILDOUT_NATIVE_CAPTURE_SINGLE_WRITER !== "1" || !source || source !== cacheSlug
-        || !Array.isArray(tuples) || tuples.length !== 25
-        || tuples.filter((tuple: unknown) => Array.isArray(tuple) && tuple[0] === source && tuple[2] === pluginKey).length !== 1) {
+    const feed = source && cacheSlug ? buildoutFeedFor(source, cacheSlug) : null;
+    if (process.env.CRE_BUILDOUT_NATIVE_CAPTURE_SINGLE_WRITER !== "1" || !source || !feed
+        || feed.pluginKey !== pluginKey) {
       throw new Error();
     }
+    return feed;
   } catch {
     throw new BuildoutNativeCaptureError();
   }
@@ -55,7 +55,8 @@ export function publishBuildoutParsedPage(input: {
   const directory = process.env.CRE_BUILDOUT_NATIVE_CAPTURE_DIR;
   if (!directory) return;
   try {
-    assertBuildoutCaptureScope(input.pluginKey, input.cacheSlug);
+    const feed = assertBuildoutCaptureScope(input.pluginKey, input.cacheSlug);
+    if (!feed) throw new Error();
     const sourceKey = process.env.CRE_BUILDOUT_NATIVE_CAPTURE_SOURCE_KEY!;
     if (!Number.isSafeInteger(input.page) || input.page < 0
         || (input.inventorySort !== undefined && input.inventorySort !== "created_at asc, id asc")
@@ -71,6 +72,7 @@ export function publishBuildoutParsedPage(input: {
     const payload = Buffer.from(JSON.stringify({
       schema: "cre-buildout-parsed-page/v1",
       receipt: { sourceKey, page: input.page,
+        ...(feed.feedKey !== feed.sourceKey ? { feedKey: feed.feedKey } : {}),
         providerScopeSha256: sha256(JSON.stringify([sourceKey, input.pluginKey, inventorySort])),
         inventorySort, capturedAt, sourceObservedAt: input.sourceObservedAt,
         cacheDisposition: input.cacheDisposition, transport: input.transport,

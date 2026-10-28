@@ -959,6 +959,14 @@ owns the preventive guard and separately approved historical decision.
 
 ## Buildout (`buildout.ts`) - Shared Adapter
 
+Provider coordinates are source-owned in `buildout-feeds/`, combining the
+unchanged 25 registered tuples with `data/cre-buildout-core-feeds.json` for SVN,
+Lee and Franklin. The shared registry has 28 source keys and 29 feed keys;
+Franklin's sale/lease cache namespaces and plugin coordinates stay distinct.
+Collection and private page capture use those same bindings. Source scope,
+canonical inventory admission and source-specific transport options remain
+separate. This consolidation is unverified under the current test/service hold.
+
 - **Diagnose the actual adapter before changing its transport.** From a clean,
   genuine isolated clone, replay the registered source's `buildoutInventoryUrl`
   and `directBuildoutJson` with its configured sort and Referer. Compare the

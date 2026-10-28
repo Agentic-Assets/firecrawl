@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertBuildoutCaptureScope, publishBuildoutParsedPage } from "../../../lib/source-evidence/buildout-page.js";
 import { fetchBuildoutInventoryPage } from "../../../sources/buildout.js";
+import { allBuildoutFeeds, buildoutFeedFor } from "../../../sources/buildout-feeds/index.js";
 
 const tuples = JSON.parse(await readFile(new URL("../../../data/cre-buildout-sources.json", import.meta.url), "utf8"));
 const [sourceKey, , pluginKey] = tuples[0];
@@ -124,5 +125,48 @@ test("unrecognized sort and invalid or future source clocks refuse", async (t) =
   assert.throws(() => publishBuildoutParsedPage({ ...page, inventorySort: "other" }), /capture failed/);
   assert.throws(() => publishBuildoutParsedPage({ ...page, sourceObservedAt: "not a timestamp" }), /capture failed/);
   assert.throws(() => publishBuildoutParsedPage({ ...page, sourceObservedAt: "9999-12-31T23:59:59Z" }), /capture failed/);
+  assert.deepEqual(await readdir(directory), []);
+});
+
+test("58 feed and cache variants retain exact registry scope across all Buildout bindings", async (t) => {
+  const first = await mkdtemp(join(tmpdir(), "buildout-all-feeds-"));
+  configure(first, t);
+  let captures = 0;
+  for (const feed of allBuildoutFeeds) {
+    const directory = await mkdtemp(join(tmpdir(), "buildout-feed-"));
+    process.env.CRE_BUILDOUT_NATIVE_CAPTURE_DIR = directory;
+    process.env.CRE_BUILDOUT_NATIVE_CAPTURE_SOURCE_KEY = feed.sourceKey;
+    for (const cacheDisposition of ["live", "generation_cache"] as const) {
+      publishBuildoutParsedPage({ pluginKey: feed.pluginKey, cacheSlug: feed.feedKey,
+        page: 0, inventorySort: undefined,
+        data: { inventory: [{ unknown: [false, null, ""], sourceLabel: feed.company }] },
+        sourceObservedAt: null, cacheDisposition, transport: cacheDisposition === "live" ? "direct_json" : null });
+      captures++;
+    }
+    const names = await readdir(directory);
+    assert.equal(names.length, 2);
+    for (const name of names) {
+      const entry = JSON.parse(await readFile(join(directory, name), "utf8"));
+      assert.equal(entry.receipt.sourceKey, feed.sourceKey);
+      assert.equal(entry.receipt.providerScopeSha256,
+        createHash("sha256").update(JSON.stringify([feed.sourceKey, feed.pluginKey, null])).digest("hex"));
+      assert.equal(entry.receipt.feedKey, feed.feedKey === feed.sourceKey ? undefined : feed.feedKey);
+      assert.equal(entry.receipt.sourceObservedAt, null);
+      assert.deepEqual(JSON.parse(Buffer.from(entry.responseBodyBase64, "base64").toString("utf8"))
+        .inventory[0].unknown, [false, null, ""]);
+    }
+  }
+  assert.equal(captures, 58);
+});
+
+test("Franklin feed variant cannot be relabeled with the other plugin scope", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "buildout-franklin-scope-"));
+  configure(directory, t);
+  process.env.CRE_BUILDOUT_NATIVE_CAPTURE_SOURCE_KEY = "franklin-street";
+  const sale = buildoutFeedFor("franklin-street", "franklin-street-sale")!;
+  const lease = buildoutFeedFor("franklin-street", "franklin-street-lease")!;
+  assert.throws(() => assertBuildoutCaptureScope(sale.pluginKey, lease.feedKey), /native capture failed/);
+  assert.throws(() => assertBuildoutCaptureScope(sale.pluginKey, "franklin-street"), /native capture failed/);
+  assert.equal(assertBuildoutCaptureScope(sale.pluginKey, sale.feedKey)?.feedKey, sale.feedKey);
   assert.deepEqual(await readdir(directory), []);
 });

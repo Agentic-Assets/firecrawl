@@ -7,6 +7,7 @@ import json
 from buildout_observation_artifact import invalid_number, unique_object
 from source_evidence import acquisition, buildout_response, events
 from source_evidence.buildout_scope import scope_hash
+from source_evidence.buildout_scope import supported_feed_keys as supported_feed_keys
 from source_evidence.buildout_scope import supported_sources as supported_sources
 
 FORMAT = "buildout_inventory_parsed_v1"
@@ -28,7 +29,7 @@ def decode_entry(raw, filename, binding, *, source_key):
     buildout_response.receipt_checked(receipt)
     if not isinstance(source_key, str) or receipt["sourceKey"] != source_key:
         raise ValueError("Buildout source is not registered")
-    if receipt["providerScopeSha256"] != scope_hash(source_key, receipt["inventorySort"]):
+    if receipt["providerScopeSha256"] != scope_hash(source_key, receipt["inventorySort"], receipt.get("feedKey")):
         raise ValueError("Buildout provider scope mismatch")
     if filename != f"page-{receipt['page']}-{hashlib.sha256(raw).hexdigest()}.json":
         raise ValueError("Buildout parsed page name mismatch")

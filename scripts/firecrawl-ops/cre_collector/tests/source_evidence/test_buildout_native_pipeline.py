@@ -74,9 +74,14 @@ def test_worker_environment_removes_foreign_scope_and_binds_one_source(tmp_path)
     assert env[prefix + '_DIR'].endswith(f'native-{SOURCE}-attempt-2')
 
 
-@pytest.mark.parametrize('source', ['svn', 'lee-associates', 'franklin-street', 'jll', 'unregistered'])
+@pytest.mark.parametrize('source', ['jll', 'unregistered'])
 def test_unscoped_sources_do_not_inherit_buildout_native_authority(source):
     assert not native_pages.format_supported(source, buildout_pages.FORMAT)
+
+
+@pytest.mark.parametrize('source', ['svn', 'lee-associates', 'franklin-street'])
+def test_core_feeds_have_an_explicit_native_format_scope(source):
+    assert native_pages.format_supported(source, buildout_pages.FORMAT)
 
 
 def test_policy_accepts_only_explicit_registered_format_and_scope(tmp_path):

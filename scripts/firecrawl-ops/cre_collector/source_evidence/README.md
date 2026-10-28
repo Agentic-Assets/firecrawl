@@ -208,8 +208,10 @@ format; it does not certify publisher identity or complete inventory.
 ### Draft Buildout parsed inventory capture
 
 The draft `buildout_inventory_parsed_v1` format requires explicit version-2
-policy opt-in for one of the 25 registered source/provider tuples. SVN, Lee and
-Franklin coordinate families are outside this draft's scope. It uses the same
+policy opt-in for one of 28 registered sources and 29 feeds. SVN and Lee each
+have one registered feed; Franklin Street has separately identified sale and
+lease feeds. The original 25 native receipt shapes and scope hashes stay unchanged.
+It uses the same
 settled native foreground lane and existing policy review, credential admission,
 JLL and Avison controls. Faris collector map projection does not apply to this
 format; credential-bearing native bodies refuse automatic admission.

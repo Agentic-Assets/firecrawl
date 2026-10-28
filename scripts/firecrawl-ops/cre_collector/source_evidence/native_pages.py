@@ -33,7 +33,7 @@ def format_supported(source, native_format):
     """Recognize explicitly scoped formats, not generic website authorization."""
     if native_format == "buildout_inventory_parsed_v1":
         from source_evidence import buildout_pages
-        return source in buildout_pages.supported_sources()
+        return source in buildout_pages.supported_feed_keys()
     return source in NATIVE_FORMATS and native_format == NATIVE_FORMATS[source]
 
 

@@ -9,13 +9,31 @@ import pytest
 from source_evidence import acquisition, buildout_pages, buildout_response
 
 
-def entry(body, *, source="faris-lee", page=0, sort="created_at asc, id asc"):
-    plugin = buildout_pages.supported_sources()[source]
+def test_registry_refuses_plugin_reuse_across_feed_variants(monkeypatch):
+    from source_evidence import buildout_scope
+    original_read = buildout_scope.Path.read_bytes
+    def altered(path):
+        raw = original_read(path)
+        if path.name == 'cre-buildout-core-feeds.json':
+            rows = json.loads(raw)
+            rows[-1][2] = rows[0][2]
+            return json.dumps(rows).encode()
+        return raw
+    monkeypatch.setattr(buildout_scope.Path, 'read_bytes', altered)
+    with pytest.raises(ValueError, match='plugin identities overlap'):
+        buildout_scope.supported_feed_keys()
+
+
+def entry(body, *, source="faris-lee", page=0, sort="created_at asc, id asc", feed_key=None):
+    from source_evidence.buildout_scope import supported_feed_keys
+    plugin = supported_feed_keys()[source][feed_key or source]
     scope = json.dumps([source, plugin, sort], ensure_ascii=False, separators=(",", ":")).encode()
     receipt = {"sourceKey": source, "page": page, "providerScopeSha256": hashlib.sha256(scope).hexdigest(),
                "inventorySort": sort, "capturedAt": "2026-10-28T15:00:00Z",
                "sourceObservedAt": "2026-10-28T14:59:59Z", "cacheDisposition": "live",
                "transport": "direct_json", "bodySha256": hashlib.sha256(body).hexdigest(), "bodyBytes": len(body)}
+    if feed_key is not None:
+        receipt["feedKey"] = feed_key
     value = {"schema": "cre-buildout-parsed-page/v1", "receipt": receipt,
              "responseBodyBase64": base64.b64encode(body).decode(), "provenance": buildout_pages.PROVENANCE}
     raw = (json.dumps(value, separators=(",", ":")) + "\n").encode()
@@ -102,3 +120,42 @@ def test_collector_git_binding_requires_exact_sha1_length():
     raw, name = entry(b'{"inventory":[]}')
     with pytest.raises(ValueError):
         buildout_pages.decode_entry(raw, name, {"collectorGitSha": "a" * 64}, source_key="faris-lee")
+
+
+@pytest.mark.parametrize("source,feed_key", [("svn", None), ("lee-associates", None),
+                                               ("franklin-street", "franklin-street-sale"),
+                                               ("franklin-street", "franklin-street-lease")])
+def test_core_feeds_keep_all_126_rows_without_claiming_coverage(source, feed_key):
+    body = json.dumps({"inventory": [{"id": i, "unknown": None} for i in range(126)]}).encode()
+    raw, name = entry(body, source=source, feed_key=feed_key)
+    observation, reason = buildout_pages.decode_entry(raw, name, {}, source_key=source)
+    assert reason is None and len(observation["records"]) == 126
+    assert ("feedKey" in observation["receipt"]) == (feed_key is not None)
+    buildout_response.validate(observation)
+
+
+def test_franklin_scope_requires_exact_variant_and_hash():
+    raw, name = entry(b'{"inventory":[]}', source="franklin-street", feed_key="franklin-street-sale")
+    observation, _ = buildout_pages.decode_entry(raw, name, {}, source_key="franklin-street")
+    for change in ({"feedKey": "franklin-street-lease"}, {"feedKey": "svn"}):
+        forged = copy.deepcopy(observation)
+        forged["receipt"].update(change)
+        with pytest.raises(ValueError):
+            buildout_response.validate(forged)
+    missing = copy.deepcopy(observation)
+    del missing["receipt"]["feedKey"]
+    with pytest.raises(ValueError):
+        buildout_response.validate(missing)
+    with pytest.raises(ValueError):
+        buildout_pages.decode_entry(raw, name, {}, source_key="svn")
+
+
+def test_original_registered_receipt_and_scope_remain_unchanged():
+    raw, name = entry(b'{"inventory":[]}', source="faris-lee")
+    observation, _ = buildout_pages.decode_entry(raw, name, {}, source_key="faris-lee")
+    assert set(observation["receipt"]) == buildout_response.RECEIPT_KEYS
+    assert observation["receipt"] == json.loads(raw)["receipt"]
+    invalid = copy.deepcopy(observation)
+    invalid["receipt"]["feedKey"] = "faris-lee"
+    with pytest.raises(ValueError):
+        buildout_response.validate(invalid)
