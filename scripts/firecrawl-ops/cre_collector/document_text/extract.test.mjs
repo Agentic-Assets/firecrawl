@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { extractFile, writePrivateArtifact } from './extract.mjs';
 
@@ -72,6 +73,22 @@ test('CLI uses a bounded owner-only provenance file, never URL arguments', async
     await writeFile(provenance, JSON.stringify({ url: 'https://example.test/a.csv', observed_at: '2026-10-28T12:00:00Z' }));
     await chmod(provenance, 0o644);
     assert.equal(run().status, 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('CLI runs when its parent directory is reached through a symlink', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cre-text-link-'));
+  try {
+    const input = join(dir, 'test.csv');
+    const provenance = join(dir, 'provenance.json');
+    const output = join(dir, 'output.json');
+    const alias = join(dir, 'adapter');
+    await symlink(dirname(fileURLToPath(import.meta.url)), alias, 'dir');
+    await writeFile(input, 'name\nExample\n');
+    await writeFile(provenance, JSON.stringify({ url: 'https://example.test/a.csv', observed_at: '2026-10-28T12:00:00Z' }), { mode: 0o600 });
+    const result = spawnSync(process.execPath, [join(alias, 'extract.mjs'), input, provenance, output], { encoding: 'utf8' });
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(await readFile(output, 'utf8')).extraction.status, 'extracted');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

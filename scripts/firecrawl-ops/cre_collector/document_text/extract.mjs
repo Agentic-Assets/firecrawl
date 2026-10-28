@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const MAX_BYTES = 100 * 1024 * 1024;
 const MAX_PROVENANCE_BYTES = 16 * 1024;
@@ -117,6 +117,12 @@ async function main() {
   await writePrivateArtifact(args[2], artifact);
   process.exitCode = artifact.extraction.status === 'extracted' ? 0 : 2;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+let invokedDirectly = false;
+try {
+  invokedDirectly = Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+} catch {
+  // An unavailable argv path cannot establish that this module is the entrypoint.
+}
+if (invokedDirectly) {
   main().catch(() => { console.error('Extraction failed: invalid arguments or filesystem error'); process.exitCode = 1; });
 }
