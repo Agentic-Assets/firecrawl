@@ -11,6 +11,7 @@ MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 CREDENTIAL_QUERY_KEYS = {"token", "access_token", "api_key", "apikey", "authorization", "auth",
                          "signature", "sig", "x-amz-signature", "x-amz-credential",
                          "x-goog-signature", "x-goog-credential", "client_secret"}
+URL_TOKEN = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 
 
 def encoded(value):
@@ -75,8 +76,14 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
     if len(raw) > MAX_ARTIFACT_BYTES:
         raise ValueError("artifact exceeds limit")
     artifact_hash = sha256(raw)
-    capture_clock = (timestamp(artifact.get("source", {}).get("observed_at"))
-                     if artifact.get("schema_version") == "cre-document-text/v1" else timestamp(observed_at))
+    if artifact.get("schema_version") == "cre-document-text/v1":
+        capture_clock = timestamp(artifact.get("source", {}).get("observed_at"))
+    elif artifact.get("schema") == "cre-retained-observations/v1":
+        capture_clock = timestamp(artifact.get("provenance", {}).get("observedAt"))
+        if observed_at is not None and timestamp(observed_at) != capture_clock:
+            raise ValueError("observation clock mismatch")
+    else:
+        capture_clock = timestamp(observed_at)
     capture = "evidence-" + sha256(encoded([source_key, external_id, artifact_hash, capture_clock]))
     provenance = {"source_identity": "unverified", "visibility": "unverified", "promotion": "not_authorized",
                   "artifact_sha256": artifact_hash, "artifact_hash_kind": "canonical_json_utf8",
@@ -115,6 +122,22 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
             event.update(document_url=url, extractor_version=str(parser.get("name")) + "@" + str(parser.get("version")),
                          extracted_text=chunk, text_sha256=sha256(chunk.encode("utf-8")))
             events.append(event)
+    elif artifact.get("schema") == "cre-retained-observations/v1":
+        from source_evidence import collector
+        if external_id is not None:
+            raise ValueError("capture-wide evidence cannot claim a listing identity")
+        context, rows = artifact.get("context"), artifact.get("records")
+        if not isinstance(context, dict) or not isinstance(rows, list) or "listings" in context:
+            raise ValueError("invalid retained observations")
+        if collector.convert({**context, "listings": rows}, source_key=source_key) != artifact:
+            raise ValueError("retained observations disagree with collector artifact")
+        provenance = {**provenance, "capture_kind": "collector_emitted_listings", "coverage": "unverified",
+                      "observed_at_origin": "collector_run_finished_at"}
+        header = {k: v for k, v in artifact.items() if k != "records"}
+        events = [_event(capture, 0, source_key, capture_clock, None, provenance,
+                         [{"kind": "retained_capture_context", "value": header}], None)]
+        events.extend(_event(capture, n, source_key, capture_clock, None, provenance,
+                             [{"kind": "source_record", "value": row}], None) for n, row in enumerate(rows, 1))
     elif artifact.get("schema") == "buildout-private-observation-artifact-v1":
         if external_id is not None:
             raise ValueError("capture-wide Buildout evidence cannot claim a listing identity")
@@ -162,6 +185,9 @@ def validate_plan(value):
         elif kind == "capture_context":
             artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
             expected = plan(artifact, source_key=value["source_key"], observed_at=first["observed_at"])
+        elif kind == "retained_capture_context":
+            artifact = {**metadata, "records": [row["facts"][0]["value"] for row in rows[1:]]}
+            expected = plan(artifact, source_key=value["source_key"])
         else:
             raise ValueError("unsupported evidence kind")
     except (KeyError, IndexError, TypeError) as exc:
@@ -184,8 +210,18 @@ def validate_admission(plan_value, admission):
     # A general artifact receipt cannot replace that source-specific policy.
     if plan_value["source_key"] in ("jll", "jll-main", "jll-investor"):
         raise ValueError("JLL requires its source-specific withheld-content adapter")
+    if plan_value["source_key"] == "avison-young":
+        from source_evidence.avison import validate_records
+        validate_records(plan_value)
+    document_text = None
+    if plan_value["events"][0]["facts"][0]["kind"] == "document_outcome":
+        # validate_plan already reconstructed and checked the complete bounded
+        # document. Scan across chunk boundaries as well as metadata.
+        document_text = "".join(row["extracted_text"] for row in plan_value["events"][1:])
     for row in plan_value["events"]:
         pending = [row]
+        if row["item_no"] == 0 and document_text is not None:
+            pending.append(document_text)
         inspected = 0
         while pending:
             inspected += 1
@@ -195,15 +231,23 @@ def validate_admission(plan_value, admission):
             if isinstance(item, dict):
                 if len(item) + len(pending) + inspected > 100000:
                     raise ValueError("source policy inspection exceeds limit")
+                for key, value in item.items():
+                    if isinstance(key, str) and re.sub(r"[^a-z0-9]", "", key.lower()) == "sourcekey" and isinstance(value, str):
+                        declared = value.strip().lower().replace("_", "-")
+                        if (declared in ("jll", "jll-main", "jll-investor", "avison-young")
+                                and declared != plan_value["source_key"]):
+                            raise ValueError("conflicting protected source declaration")
+                pending.extend(item.keys())
                 pending.extend(item.values())
             elif isinstance(item, list):
                 if len(item) + len(pending) + inspected > 100000:
                     raise ValueError("source policy inspection exceeds limit")
                 pending.extend(item)
-            elif isinstance(item, str) and item.lower().startswith(("http://", "https://")):
-                if any(char.isspace() for char in item):
-                    continue  # Document prose is not an independently classified URL.
-                http_url(item)
-                host = (urlsplit(item).hostname or "").lower().rstrip(".")
-                if host in ("jll.com", "jllproperty.com") or host.endswith((".jll.com", ".jllproperty.com")):
-                    raise ValueError("JLL URL requires its source-specific withheld-content adapter")
+            elif isinstance(item, str):
+                for match in URL_TOKEN.finditer(item):
+                    url = match.group().rstrip(".,;:!?)]}")
+                    url = re.sub(r"^https?://", lambda m: m.group().lower(), url, flags=re.IGNORECASE)
+                    http_url(url)
+                    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+                    if host in ("jll.com", "jllproperty.com") or host.endswith((".jll.com", ".jllproperty.com")):
+                        raise ValueError("JLL URL requires its source-specific withheld-content adapter")

@@ -15,7 +15,7 @@ from cre_ingest import (
     psql_connection_args,
     psql_connection_env,
 )
-from source_evidence import events
+from source_evidence import collector, events
 
 MAX_PLAN_BYTES = 32 * 1024 * 1024
 MAX_RESULTS_BYTES = 8 * 1024 * 1024
@@ -149,6 +149,9 @@ def main(argv=None):
     p = sub.add_parser('plan')
     p.add_argument('--artifact', required=True); p.add_argument('--source-key', required=True)
     p.add_argument('--observed-at'); p.add_argument('--external-id'); p.add_argument('--out', required=True)
+    c = sub.add_parser('convert-collector')
+    c.add_argument('--artifact', required=True); c.add_argument('--source-key', required=True)
+    c.add_argument('--out', required=True)
     a = sub.add_parser('append')
     a.add_argument('--plan', required=True); a.add_argument('--admission', required=True)
     a.add_argument('--env-file', required=True); a.add_argument('--expected-db-target-sha256', required=True)
@@ -166,7 +169,11 @@ def main(argv=None):
     g.add_argument('--out', required=True); g.add_argument('--env-file', required=True)
     g.add_argument('--expected-db-target-sha256', required=True)
     args = parser.parse_args(argv)
-    if args.command == 'plan':
+    if args.command == 'convert-collector':
+        result = collector.convert(read_json(args.artifact, events.MAX_ARTIFACT_BYTES), source_key=args.source_key)
+        write_private(args.out, result)
+        print(f"Converted collector artifact: {len(result['records'])} records")
+    elif args.command == 'plan':
         result = events.plan(read_json(args.artifact, events.MAX_ARTIFACT_BYTES), source_key=args.source_key,
                              observed_at=args.observed_at, external_id=args.external_id)
         write_private(args.out, result)
