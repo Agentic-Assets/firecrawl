@@ -13,6 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from buildout_observation_io import read_consistent
 from cre_ingest import BUILDOUT_SOURCE_KEYS
 
 MAX_INPUT_BYTES = 8_000_000
@@ -255,8 +256,7 @@ def build_artifact(raw, *, source_key, input_kind):
 
 
 def read_bounded(path):
-    with path.open("rb") as stream:
-        return stream.read(MAX_INPUT_BYTES + 1)
+    return read_consistent(path, MAX_INPUT_BYTES)
 
 
 def write_private(path, payload):

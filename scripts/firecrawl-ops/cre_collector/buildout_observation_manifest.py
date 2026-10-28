@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 import buildout_observation_artifact as artifact_builder
+import buildout_observation_io as observation_io
 from cre_ingest import BUILDOUT_SOURCE_KEYS
 
 SCHEMA = "buildout-private-observation-manifest-v1"
@@ -32,8 +33,7 @@ def canonical(value):
 
 
 def read_bounded(path, limit):
-    with path.open("rb") as stream:
-        return stream.read(limit + 1)
+    return observation_io.read_consistent(path, limit)
 
 
 def validate_scope(scope):
@@ -66,8 +66,17 @@ def parse_object(raw, limit):
     return value
 
 
+def fingerprint_file(path):
+    contents = read_bounded(path, 1_000_000)
+    if len(contents) > 1_000_000:
+        raise ValueError("fingerprint source exceeds byte limit")
+    return digest(contents)
+
+
 def builder_fingerprint():
-    return {"schema": ARTIFACT_SCHEMA, "moduleSha256": digest(Path(artifact_builder.__file__).read_bytes()),
+    return {"schema": ARTIFACT_SCHEMA,
+            "moduleSha256": fingerprint_file(Path(artifact_builder.__file__)),
+            "readerModuleSha256": fingerprint_file(Path(observation_io.__file__)),
             "sourceRegistrySha256": digest(canonical(sorted(BUILDOUT_SOURCE_KEYS)))}
 
 
@@ -106,6 +115,8 @@ def verify(manifest_bytes, input_bytes, artifact_bytes, *, expected_scope):
     if manifest.get("scope") != scope:
         raise ValueError("asserted scope does not match expected scope")
     expected = seal(input_bytes, artifact_bytes, scope=scope, input_kind=manifest.get("inputKind"))
+    if manifest.get("builder") != expected["builder"]:
+        raise ValueError("manifest builder or reader fingerprint changed; preserve the original input and artifact, then regenerate the manifest")
     if manifest != expected:
         raise ValueError("manifest or binding mismatch")
     return expected
