@@ -37,6 +37,8 @@ from source_evidence import (
 
 SCHEMA = "cre-automatic-source-evidence-policy/v1"
 SCHEMA_V2 = "cre-automatic-source-evidence-policy/v2"
+SCHEMA_V3 = "cre-automatic-source-evidence-policy/v3"
+DOCUMENT_TEXT_FORMAT = "local_anydoc_public_listing_v1"
 SENSITIVE_KEYS = {"xamzsecuritytoken", "xgoogsecuritytoken", "securitytoken"}
 
 
@@ -101,11 +103,14 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
     policy = json.loads(raw.decode(), object_pairs_hook=unique_object, parse_constant=invalid_number)
     expected_keys = {"schema_version", "purpose", "data_scope", "format", "collector_git_sha",
                      "target_sha256", "source_keys", "max_artifact_bytes", "max_records"}
-    version2 = isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V2
+    version3 = isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V3
+    version2 = isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V2, SCHEMA_V3)
     if version2:
         expected_keys |= {"collector_projections", "native_source_formats", "max_native_pages"}
+    if version3:
+        expected_keys.add("document_text_formats")
     allowed = policy.get("source_keys") if isinstance(policy, dict) else None
-    if (not isinstance(policy, dict) or set(policy) != expected_keys or policy["schema_version"] not in (SCHEMA, SCHEMA_V2)
+    if (not isinstance(policy, dict) or set(policy) != expected_keys or policy["schema_version"] not in (SCHEMA, SCHEMA_V2, SCHEMA_V3)
             or policy["purpose"] != "private_unverified_evidence" or policy["data_scope"] != "public_listing_source"
             or policy["format"] != "collector_artifact_v1" or policy["collector_git_sha"] != git_sha
             or policy["target_sha256"] != target or not isinstance(allowed, list) or not allowed
@@ -125,6 +130,11 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
                        for k, v in native_formats.items())
                 or type(policy["max_native_pages"]) is not int or not 1 <= policy["max_native_pages"] <= 128):
             raise ValueError("invalid native capture or projection policy")
+    if version3:
+        document_formats = policy["document_text_formats"]
+        if (not isinstance(document_formats, dict)
+                or any(k not in allowed or v != DOCUMENT_TEXT_FORMAT for k, v in document_formats.items())):
+            raise ValueError("invalid document text retention policy")
     try:
         if len(_read_private(Path(env_file), 65536)) > 65536:
             raise ValueError("automatic evidence env file exceeds limit")
@@ -138,7 +148,8 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
             "max_artifact_bytes": policy["max_artifact_bytes"], "max_records": policy["max_records"],
             "transport": transport,
             **({"collector_projections": projections, "native_source_formats": native_formats,
-                "max_native_pages": policy["max_native_pages"]} if version2 else {})}
+                "max_native_pages": policy["max_native_pages"]} if version2 else {}),
+            **({"document_text_formats": document_formats} if version3 else {})}
 
 
 def _verify_config(config, sources):
@@ -340,6 +351,10 @@ def prepare_resume(manifest, *, replay_unknown):
     states += [page for checkpoint in manifest["sources"].values()
                for attempt in checkpoint.get("attempts", [])
                for page in (attempt.get("native_source_evidence") or {}).get("pages", [])]
+    states += [document["append"] for checkpoint in manifest["sources"].values()
+               for attempt in checkpoint.get("attempts", [])
+               for document in (attempt.get("document_source_evidence") or {}).get("documents", [])
+               if isinstance(document, dict) and isinstance(document.get("append"), dict)]
     uncertain = [state for state in states if state.get("state") in {"appending", "outcome_unknown"}]
     if uncertain and replay_unknown:
         if any(state.get("state") == "refused" for state in states):
@@ -427,6 +442,11 @@ def pump(run_dir, manifest, save):
                    for source, checkpoint in manifest["sources"].items()
                    for attempt in checkpoint.get("attempts", [])
                    for page in (attempt.get("native_source_evidence") or {}).get("pages", [])]
+    candidates += [(source, attempt, document["append"])
+                   for source, checkpoint in manifest["sources"].items()
+                   for attempt in checkpoint.get("attempts", [])
+                   for document in (attempt.get("document_source_evidence") or {}).get("documents", [])
+                   if isinstance(document, dict) and isinstance(document.get("append"), dict)]
     candidates.sort(key=lambda item: (item[2].get("exact_replay_required") is not True,
                                       "filename" not in item[2]))
     for source, attempt, state in candidates:
@@ -436,7 +456,16 @@ def pump(run_dir, manifest, save):
             continue
         try:
             _verify_config(config, manifest["config"]["sources"])
-            if "filename" in state:
+            if state.get("kind") == "document_text":
+                from source_evidence import document_jobs
+                if config.get("document_text_formats", {}).get(source) != DOCUMENT_TEXT_FORMAT:
+                    raise ValueError("document text is outside policy")
+                documents = (attempt.get("document_source_evidence") or {}).get("documents", [])
+                matching = [document for document in documents if document.get("append") is state]
+                if len(matching) != 1:
+                    raise ValueError("document append association mismatch")
+                plan = document_jobs.prepare_job(run_dir, manifest, source, attempt, matching[0], state)
+            elif "filename" in state:
                 from source_evidence import native_pages
                 if source not in config["source_keys"]:
                     raise ValueError("native source is outside policy")
@@ -504,11 +533,14 @@ def pump(run_dir, manifest, save):
             _verify_config(config, manifest["config"]["sources"])
             state["state"] = "appended"
             state.pop("exact_replay_required", None)
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError, SystemExit) as exc:
+        except BaseException as exc:
             state["state"] = "outcome_unknown" if state.get("state") == "appending" else "refused"
             state["reason"] = type(exc).__name__
             manifest["automatic_source_evidence_paused"] = True
             manifest["automatic_source_evidence_status"] = "incomplete"
+            if not isinstance(exc, (Exception, SystemExit)):
+                save(run_dir, manifest)
+                raise
         save(run_dir, manifest)
         if manifest.get("automatic_source_evidence_paused"):
             return

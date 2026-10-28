@@ -4532,6 +4532,22 @@ def pump_source_documents(run_dir: Path, manifest: dict, *, owner_check) -> None
     from source_evidence import document_automatic
     try:
         document_automatic.pump(run_dir, manifest, save_manifest)
+        evidence = manifest["config"].get("automatic_source_evidence") or {}
+        formats = evidence.get("document_text_formats", {})
+        if formats:
+            from source_evidence import document_jobs
+            for source, checkpoint in manifest["sources"].items():
+                if formats.get(source) != document_jobs.FORMAT:
+                    continue
+                for attempt in checkpoint.get("attempts", []):
+                    for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
+                        if document.get("state") == "extraction_sealed":
+                            owner_check()
+                            document_jobs.mark(run_dir, manifest, source, attempt, document, save_manifest)
+            owner_check()
+            # Reuse the existing role/transport-guarded foreground writer. Its
+            # exact replays precede all ordinary collector/native/document jobs.
+            pump_source_evidence(run_dir, manifest)
     finally:
         owner_check()
 
@@ -7076,6 +7092,14 @@ def render_report(manifest: Mapping[str, Any]) -> str:
             and manifest.get("source_document_acquisition_paused") is False
             else "incomplete or not started; inspect per-attempt document receipts before any resume."
         ))
+        evidence = manifest["config"].get("automatic_source_evidence") or {}
+        if evidence.get("document_text_formats"):
+            from source_evidence import document_automatic
+            lines.insert(9, "- Private document append: " + (
+                "pending or unresolved sealed outcomes; exact append reconciliation is required."
+                if document_automatic.append_incomplete(manifest)
+                else "no pending append among recorded sealed outcomes; see separate acquisition status."
+            ))
     sources = manifest.get("sources") or {}
     for source in (manifest.get("config") or {}).get("sources") or []:
         checkpoint = sources.get(source) or {}
@@ -7510,7 +7534,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if source_document_acquisition is not None:
             from source_evidence import document_automatic
             try:
-                document_automatic.require_resume(manifest)
+                document_automatic.require_resume(manifest, replay_unknown=args.source_evidence_replay_unknown)
             except ValueError as exc:
                 raise RefreshError("source document acquisition requires prior-run reconciliation") from exc
         manifest["status"] = "running"
@@ -7760,6 +7784,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                                                make_private=make_private_artifact)
                 lock._require_authority()
             pump_source_evidence(run_dir, manifest)
+            if source_document_acquisition is not None:
+                from source_evidence import document_automatic
+                # An explicit DB replay can reconcile a prior sealed document
+                # even when acquisition is incomplete. It cannot authorize a
+                # new fetch or collector pass until that uncertainty is gone.
+                try:
+                    document_automatic.require_resume(manifest)
+                except ValueError as exc:
+                    raise RefreshError("document reconciliation remains incomplete after evidence replay") from exc
             if args.pipeline:
                 set_cpu_guard_context(cpu_guard, phase="pipeline", active_operation="bounded_pipeline_manual_reconciliation")
                 source_failures = run_bounded_pipeline(
@@ -7848,11 +7881,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     for attempt in checkpoint.get("attempts", [])
                 )
             )
+            if source_document_acquisition is not None:
+                evidence_incomplete = evidence_incomplete or document_automatic.append_incomplete(manifest)
             if automatic_source_evidence is not None:
                 manifest["automatic_source_evidence_status"] = "incomplete" if evidence_incomplete else "settled"
             documents_incomplete = bool(source_document_acquisition and (
                 manifest.get("source_document_acquisition_paused")
-                or manifest.get("source_document_acquisition_status") != "settled"))
+                or manifest.get("source_document_acquisition_status") != "settled"
+                or document_automatic.append_incomplete(manifest)))
             persist_terminal()
             print(run_dir)
             return 1 if evidence_incomplete or documents_incomplete else 0

@@ -134,11 +134,48 @@ def reconciliation_required(manifest):
     return False
 
 
-def require_resume(manifest):
+def _append_states(manifest):
+    for checkpoint in manifest.get("sources", {}).values():
+        for attempt in checkpoint.get("attempts", []):
+            for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
+                if isinstance(document, dict) and isinstance(document.get("append"), dict):
+                    yield document["append"]
+
+
+def append_incomplete(manifest):
+    """Whether explicitly admitted sealed document outcomes still need append."""
+    evidence = manifest.get("config", {}).get("automatic_source_evidence") or {}
+    formats = evidence.get("document_text_formats", {})
+    for source, checkpoint in manifest.get("sources", {}).items():
+        if formats.get(source) != automatic.DOCUMENT_TEXT_FORMAT:
+            continue
+        for attempt in checkpoint.get("attempts", []):
+            for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
+                if not isinstance(document, dict):
+                    return True
+                if document.get("state") == "extraction_sealed":
+                    job = document.get("append") or {}
+                    if (job.get("kind") != "document_text" or job.get("state") != "appended"
+                            or job.get("exact_replay_required")):
+                        return True
+    return False
+
+
+def require_resume(manifest, *, replay_unknown=False):
     """Refuse restarting an interrupted document lane before other runtime work."""
     config = manifest.get("config", {}).get("source_document_acquisition")
     if config is None:
         return
+    if type(replay_unknown) is not bool:
+        raise ValueError("invalid document replay option")
+    unknown = any(job.get("state") in ("appending", "outcome_unknown") for job in _append_states(manifest))
+    if replay_unknown and unknown:
+        # This exception permits exact DB reconciliation, never new acquisition.
+        # The caller must call require_resume again after the foreground replay
+        # and before collection, without this exception enabled.
+        return
+    if unknown or any(job.get("state") == "refused" for job in _append_states(manifest)):
+        raise ValueError("document append requires explicit exact-plan reconciliation")
     if reconciliation_required(manifest):
         raise ValueError("document attempt requires reconciliation before resume")
 

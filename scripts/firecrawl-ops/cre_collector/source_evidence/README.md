@@ -99,8 +99,8 @@ cleanup has its own saved intent and removal state. A sealed 401, 403, 429 or 45
 response stops the selection without another fetch. `keep_unresolved_until_review` retains
 copies for validated failed or OCR-needed extractions; ambiguous or interrupted
 work preserves files and requires reconciliation, with no automatic resume.
-The draft opt-in hooks do not add a document database append, writer pump,
-queue, scheduler or canonical change. They remain unverified under the
+The draft opt-in hooks add no new writer pump, queue, scheduler or canonical
+change. They remain unverified under the
 test hold. Its metadata and text do not establish publication permission,
 listing identity, complete coverage or extraction accuracy.
 
@@ -120,6 +120,15 @@ require document reconciliation; an otherwise authorized source retry may make a
 new source attempt. The old document attempt is not restarted.
 This integration is unverified, not deployed, and does not resolve the separate
 credential admission gate.
+
+Draft automatic source-evidence policy v3 separately admits document text by
+source and the `local_anydoc_public_listing_v1` format. Eligible sealed outcomes
+use the existing private event store and guarded foreground append pump. A
+pending, refused or uncertain append blocks a new series attempt; an uncertain
+write requires explicit exact sealed-plan replay in refresh, without downloading
+or extracting again. Version 1 and 2 policies do not admit document-text append jobs.
+This adds no canonical listing or OM fact writes and remains disabled by default,
+unverified and not deployed.
 
 Draft `document_seal.read` verifies an exact private file set, canonical bytes
 and an optional expected marker without rerunning extraction. The caller must

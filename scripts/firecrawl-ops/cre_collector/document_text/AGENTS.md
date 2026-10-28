@@ -29,8 +29,8 @@ transfer framing. Phase deadlines and grace do not bound all host activity or
 native memory. Ambiguous
 or interrupted work requires reconciliation without automatic resume. One
 selection is supported per source attempt; draft version-2 selection combines
-multi-page candidates. Draft refresh and series hooks do not activate document
-database append, a writer pump, queue or scheduler. These changes remain unverified under the
+multi-page candidates. Draft refresh and series hooks add no new writer pump,
+queue or scheduler. These changes remain unverified under the
 test hold and establish no publication permission, coverage or accuracy.
 
 Draft recovery verifies the private seal and optional expected marker. No-spawn
@@ -59,6 +59,13 @@ a new session are outside that guarantee. Reserved phase time includes fetch
 startup/reap and converter/reap, not a native-I/O deadline.
 Exact known no-data remains incomplete but need not block an otherwise authorized
 new source attempt; the old document attempt is not restarted.
+
+Draft automatic evidence policy v3 separately admits source-scoped document
+text to the existing guarded private event-store pump; v1 and v2 do not. Pending,
+refused or uncertain appends block a new series attempt. Reconcile an uncertain
+write by explicit exact-plan refresh replay, without another fetch or conversion;
+this grants no canonical listing or OM writes. It is disabled by default,
+unverified and not deployed.
 
 No canonical database, OM writer, network downloader, or scheduler belongs in
 this module. The private acquisition bridge is `../source_evidence/`. Private

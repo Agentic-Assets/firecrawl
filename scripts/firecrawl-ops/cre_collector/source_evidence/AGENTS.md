@@ -93,8 +93,8 @@ before policy-aware cleanup of rechecked original copies. Ambiguous or
 interrupted work requires reconciliation and never resumes automatically.
 One selection is allowed per source attempt; draft version-2 selection combines
 multi-page native candidates. Draft refresh and series hooks are explicitly
-opted in and disabled by default; no document DB append, writer pump, queue or
-scheduler is activated. They are unverified and not deployed
+opted in and disabled by default; no new writer pump, queue or scheduler is
+activated. They are unverified and not deployed
 under the hold; do not claim publisher identity, visibility, complete coverage
 or extraction accuracy.
 
@@ -129,6 +129,13 @@ deadline. The integration is disabled by default, not deployed, and
 unverified and does not bypass credential admission.
 Exact known no-data remains incomplete but does not alone block an otherwise
 authorized new source attempt; never restart its old document attempt.
+
+Draft automatic evidence policy v3 separately admits selected source document
+text to the existing guarded private event-store append lane. Version 1 and 2 do
+not admit document writes. Pending, refused or uncertain document appends block
+a new series attempt; uncertain writes require explicit exact-plan refresh
+replay, never a new download or extraction. No canonical listing or OM writes
+follow. This is disabled by default, unverified and not deployed.
 
 Document export reconstructs the complete bounded capture, verifies ordered
 chunks and text hashes, and writes exact Markdown plus provenance into a new

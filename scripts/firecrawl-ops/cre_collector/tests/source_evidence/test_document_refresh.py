@@ -5,7 +5,7 @@ import copy
 import cre_checkpoint_refresh as refresh
 import pytest
 
-from source_evidence import document_automatic
+from source_evidence import document_automatic, document_jobs
 from source_evidence.document_process import DocumentProcessCleanupUnknown
 
 CODE = "a" * 40
@@ -98,3 +98,55 @@ def test_unknown_document_cleanup_preserves_parent_recovery_barrier():
     later.__context__ = unknown
     assert refresh._cleanup_unknown_in_chain(unknown)
     assert refresh._cleanup_unknown_in_chain(later)
+
+
+def test_v3_marks_partial_seals_before_shared_foreground_append(monkeypatch, tmp_path):
+    value = manifest(tmp_path)
+    value["config"]["automatic_source_evidence"]["document_text_formats"] = {"svn": document_jobs.FORMAT}
+    document = {"state": "extraction_sealed", "extraction_state": "success"}
+    value["sources"]["svn"]["attempts"] = [{"number": 1, "document_source_evidence": {
+        "state": "reconciliation_required", "documents": [document]}}]
+    order = []
+    monkeypatch.setattr(refresh, "git_identity", lambda: (CODE, False))
+    def acquire(*_):
+        order.append("acquisition")
+        value["source_document_acquisition_paused"] = True
+    def mark(_run, _manifest, source, attempt, selected, save):
+        assert source == "svn" and selected is document
+        selected["append"] = {"state": "pending", "kind": "document_text"}
+        order.append("mark")
+    def append(*_):
+        assert document["append"]["state"] == "pending"
+        order.append("append")
+    monkeypatch.setattr(document_automatic, "pump", acquire)
+    monkeypatch.setattr(document_jobs, "mark", mark)
+    monkeypatch.setattr(refresh, "pump_source_evidence", append)
+    refresh.pump_source_documents(tmp_path, value, owner_check=lambda: None)
+    assert order == ["acquisition", "mark", "append"]
+    assert value["source_document_acquisition_paused"] is True
+
+
+def test_v1_policy_does_not_admit_document_append(monkeypatch, tmp_path):
+    value = manifest(tmp_path)
+    monkeypatch.setattr(refresh, "git_identity", lambda: (CODE, False))
+    monkeypatch.setattr(document_automatic, "pump", lambda *_: None)
+    def forbidden(*_):
+        pytest.fail("legacy evidence policy cannot grant document append")
+    monkeypatch.setattr(document_jobs, "mark", forbidden)
+    monkeypatch.setattr(refresh, "pump_source_evidence", forbidden)
+    refresh.pump_source_documents(tmp_path, value, owner_check=lambda: None)
+
+
+def test_explicit_append_replay_does_not_resolve_acquisition_uncertainty(tmp_path):
+    value = manifest(tmp_path)
+    job = {"kind": "document_text", "state": "outcome_unknown"}
+    value["sources"]["svn"]["attempts"] = [{"document_source_evidence": {
+        "state": "reconciliation_required", "documents": [{"append": job}]}}]
+    before = copy.deepcopy(value)
+    with pytest.raises(ValueError):
+        document_automatic.require_resume(value)
+    document_automatic.require_resume(value, replay_unknown=True)
+    assert value == before
+    job["state"] = "appended"
+    with pytest.raises(ValueError):
+        document_automatic.require_resume(value)

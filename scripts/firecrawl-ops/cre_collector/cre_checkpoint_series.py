@@ -871,12 +871,34 @@ def evidence_reconciliation_required(child_manifest: Mapping[str, Any]) -> bool:
     sources = child_manifest.get("sources") or {}
     config = (child_manifest.get("config") or {}).get("automatic_source_evidence") or {}
     allowed = config.get("source_keys") or []
+    document_formats = config.get("document_text_formats") or {}
+    def unresolved_document(attempt, source):
+        context = attempt.get("document_source_evidence") or {}
+        documents = context.get("documents", [])
+        if source not in document_formats:
+            return False
+        if not isinstance(documents, list):
+            return True
+        for document in documents:
+            if not isinstance(document, Mapping):
+                return True
+            job = document.get("append")
+            if document.get("state") == "extraction_sealed":
+                if not isinstance(job, Mapping) or job.get("kind") != "document_text" or job.get("state") != "appended":
+                    return True
+            if isinstance(job, Mapping) and (job.get("state") != "appended" or job.get("exact_replay_required") is True):
+                return True
+            if job is not None and not isinstance(job, Mapping):
+                return True
+        return False
     return any(
         ((attempt.get("source_evidence") or {}).get("state") in {"awaiting_artifact", "pending", "appending", "outcome_unknown", "refused"}
+         or (attempt.get("source_evidence") or {}).get("exact_replay_required") is True
          or (source in allowed and (attempt.get("source_evidence") or {}).get("state") not in ("appended", "no_artifact"))
+         or unresolved_document(attempt, source)
          or (source in (config.get("native_source_formats") or {}) and
              ((attempt.get("native_source_evidence") or {}).get("state") not in ("settled", "no_data")
-              or any(page.get("state") not in ("appended", "no_data")
+              or any(page.get("state") not in ("appended", "no_data") or page.get("exact_replay_required") is True
                      for page in (attempt.get("native_source_evidence") or {}).get("pages", [])))))
         for source, checkpoint in sources.items() if isinstance(checkpoint, Mapping)
         for attempt in (checkpoint.get("attempts") or []) if isinstance(attempt, Mapping)

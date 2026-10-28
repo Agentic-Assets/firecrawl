@@ -100,7 +100,7 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
     if (not isinstance(state, dict) or state.get("schema_version") != document_pipeline.SCHEMA
             or state.get("directory") != relative
             or state.get("selection_sha256") != events.sha256(events.encoded(selected))
-            or state.get("database_append") != "not_performed"):
+            or state.get("database_append") not in ("not_performed", "managed_by_append_jobs")):
         raise ValueError("document recovery checkpoint binding mismatch")
     document_budget._validate(state["budget"], selected)
     documents = state.get("documents")

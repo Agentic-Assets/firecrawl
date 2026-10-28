@@ -32,8 +32,8 @@ delivered to the application, not network bytes, buffered prefetch, HTTP headers
 or transfer framing. Ambiguous or interrupted work keeps
 its private files for reconciliation and never automatically resumes. One
 selection is supported per source attempt; draft version-2 selection combines
-native-page candidates. The draft refresh and series opt-ins do not activate a
-document database append, writer pump, queue or scheduler. They are unverified under the
+native-page candidates. The draft refresh and series opt-ins do not add a new
+writer pump, queue or scheduler. They are unverified under the
 test hold and does not prove publisher permission, coverage or text accuracy.
 
 Draft recovery verifies an exact private seal and optional expected marker.
@@ -66,6 +66,13 @@ revalidation and durable saves govern recovery. This is unverified and not deplo
 credential admission remains a separate gate.
 An exact known no-data outcome remains incomplete but can permit an otherwise
 authorized new source attempt without replaying the old document attempt.
+
+Draft automatic evidence policy v3 separately admits document text by source to
+the existing private event-store append pump. Earlier policies do not admit
+document writes. Pending or uncertain appends block new series work; an
+uncertain write requires explicit exact sealed-plan replay in refresh, without
+redownload or re-extraction. This does not write canonical listings or OM facts;
+the draft remains disabled by default, unverified and not deployed.
 
 Owned-process settlement is checked before publishing conversion completion;
 unknown cleanup keeps the parent recovery barrier. New-session escapees are
