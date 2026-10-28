@@ -17,7 +17,7 @@ const CONTROL = /(?:withheld|confidential|contact\s+(?:broker|agent)|not\s+(?:di
 type Field = "noi" | "yearBuilt" | "capRate";
 type Observation = { field: Field; label: string; literal: string; tableOrdinal: number; rowOrdinal: number };
 // Omission count covers recognized labels in inspected rows only, not page completeness.
-type Result = { state: "evaluated" | "not_evaluated_limit"; identity: "unverified"; visibility: "unverified"; promotion: "not_authorized"; observations: Observation[]; omittedCount: number | null };
+type Result = { state: "evaluated" | "partial_observation_limit" | "not_evaluated_limit"; identity: "unverified"; visibility: "unverified"; promotion: "not_authorized"; observations: Observation[]; omittedCount: number | null };
 
 export function offlineBuildoutDetailObservations(html: string): Result {
   const empty = (state: Result["state"], omittedCount: number | null = null): Result => ({ state, identity: "unverified", visibility: "unverified", promotion: "not_authorized", observations: [], omittedCount });
@@ -66,6 +66,9 @@ export function offlineBuildoutDetailObservations(html: string): Result {
       observations.push({ field, label, literal, tableOrdinal, rowOrdinal });
     });
   });
-  if (limitExceeded) return empty("not_evaluated_limit");
+  // Structural limits above fail closed before extraction. At the separate
+  // recognized-row limit, retain only already inspected observations; the
+  // remainder and its omissions are unknown, so no completeness count is given.
+  if (limitExceeded) return { ...empty("partial_observation_limit"), observations };
   return { ...empty("evaluated", omittedCount), observations };
 }

@@ -10,7 +10,7 @@ What it does, per source_key in a collector run artifact:
      gate reasons about is exactly the one the ingestor writes (the enumeration
      key invariant in test_enum_key_invariant.py). Ids are never re-derived here.
   2. Read each source's error state from data["sources"] (any pass carrying an
-     'error' marks that source as having a failed pass).
+     'error' or reporting truncation marks that source as incomplete).
   3. Compare current_active to the rolling baseline in
      credeals.cre_source_baseline (live read only) and emit a verdict:
        first_seen : no baseline row yet, cannot gate; mark_missing_safe=false.
@@ -363,7 +363,9 @@ def count_artifacts(inputs, quiet, *, coverage_evidence=None):
             if not sk:
                 continue
             observed.add(sk)
-            err = entry.get("error")
+            err = entry.get("error") or (
+                "source pass truncated" if entry.get("truncated") else None
+            )
             if err and not source_error.get(sk):
                 source_error[sk] = str(err)[:200]
             elif sk not in source_error:

@@ -21,11 +21,27 @@ test("omits hidden, withheld, and unsafe value text and does not pair across row
   assert.doesNotMatch(JSON.stringify(result), /999|123|secret|456|500|7%/);
 });
 
-test("rejects whole output when resource limits are exceeded", () => {
+test("rejects oversized input but preserves inspected observations at the row cap", () => {
   assert.equal(parse("x".repeat(2_000_001)).state, "not_evaluated_limit");
   const tooMany = parse(table(row("NOI", "$1").repeat(101)));
-  assert.equal(tooMany.state, "not_evaluated_limit");
-  assert.deepEqual(tooMany.observations, []);
+  assert.equal(tooMany.state, "partial_observation_limit");
+  assert.equal(tooMany.observations.length, 100);
+  assert.equal(tooMany.observations[99].rowOrdinal, 99);
+  assert.equal(tooMany.omittedCount, null);
+  assert.equal(tooMany.identity, "unverified");
+  assert.equal(tooMany.visibility, "unverified");
+  assert.equal(tooMany.promotion, "not_authorized");
+});
+
+test("partial output excludes inspected hidden values and uninspected values", () => {
+  const html = table(row("NOI", "$10") + '<tr hidden><td>NOI</td><td>$987654</td></tr>' +
+    row("Year Built", "2001").repeat(98) + row("NOI", "$876543"));
+  const result = parse(html);
+  assert.equal(result.state, "partial_observation_limit");
+  assert.equal(result.omittedCount, null);
+  assert.equal(result.observations.length, 99);
+  assert.deepEqual(result.observations.map(x => x.rowOrdinal), [0, ...Array.from({ length: 98 }, (_, i) => i + 2)]);
+  assert.doesNotMatch(JSON.stringify(result), /987654|876543/);
 });
 
 

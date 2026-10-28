@@ -28,6 +28,7 @@ export const BUILDOUT_STABLE_INVENTORY_SORT = "created_at asc, id asc";
 type BuildoutInventoryResult = {
   items: any[];
   total: number | null;
+  incomplete?: boolean;
   strictValidated?: boolean;
   generationId?: string | null;
   proofPages?: BuildoutInventoryProofPage[];
@@ -706,6 +707,7 @@ export async function buildoutInventory(
       ? { proofPages: proofPages as BuildoutInventoryProofPage[] } : {}),
     items,
     total,
+    incomplete: failedPages.size > 0 || unattemptedPages.size > 0 || declaredPages > pages,
     strictValidated: requireComplete,
     generationId: refreshGenerationId(),
   };
@@ -1006,7 +1008,7 @@ export async function srcBuildout(
 ): Promise<SourceResult> {
   // Enumeration-only source: the Buildout inventory API has no per-listing detail
   // render, so monitor output == full output (status/price/id are all in-feed).
-  const { items, total, proofPages } = await buildoutInventory(company, pluginKey, inventoryOpts);
+  const { items, total, proofPages, incomplete } = await buildoutInventory(company, pluginKey, inventoryOpts);
   const eligibleItems = items.filter((x) => {
     if (x.closed === true) return false;
     const isSale = x.sale === true;
@@ -1152,7 +1154,7 @@ export async function srcBuildout(
     method: "Buildout plugin inventory API (JSON, paginated)",
     totalAvailable: total,
     listings,
-    truncated: buildoutCapTruncated(max, listings.length, eligibleItems.length),
+    truncated: incomplete === true || buildoutCapTruncated(max, listings.length, eligibleItems.length),
   };
 }
 
