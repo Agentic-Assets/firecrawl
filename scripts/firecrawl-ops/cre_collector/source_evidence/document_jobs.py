@@ -10,6 +10,7 @@ from pathlib import Path
 from source_evidence import (
     automatic,
     doc_complement_process,
+    doc_docling_json_process,
     doc_extract_process,
     doc_sparse_ocr_process,
     document_acquisition,
@@ -27,7 +28,7 @@ FORMAT = "local_anydoc_public_listing_v1"
 
 def iter_jobs(manifest):
     """Yield primary jobs first, then complements, preserving checkpoint ownership."""
-    for key in ("append", "complement_append", "ocr_append"):
+    for key in ("append", "complement_append", "ocr_append", "docling_append"):
         for source, checkpoint in manifest.get("sources", {}).items():
             for attempt in checkpoint.get("attempts", []):
                 for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
@@ -124,7 +125,18 @@ def _derive(run_dir, manifest, source, attempt, document, *, role="primary"):
         if (not isinstance(document.get("prior_sealed"), dict) or prior.get("artifact") != first
                 or prior.get("complement") != checked["complement"] or "ocr" in prior):
             raise ValueError("OCR prior seal disagrees with final artifact")
-    if role not in ("primary", "complement", "ocr") or (role == "complement" and not required) or (role == "ocr" and not ocr_required):
+    docling_required = doc_docling_json_process.required(first, checked.get("complement"), selected)
+    if ("docling" in checked) != docling_required:
+        raise ValueError("document Docling JSON disagrees with policy")
+    if docling_required:
+        doc_docling_json_process.validate(checked["docling"], first, checked["complement"], context["receipt"], source,
+                                          selected["docling_json"])
+        prior = document_seal.read(run_dir / directory / "docling-prior-sealed", expected_context=context,
+                                   expected_marker=document.get("docling_prior_sealed"))
+        if (prior.get("artifact") != first or prior.get("complement") != checked["complement"]
+                or prior.get("ocr") != checked.get("ocr") or "docling" in prior):
+            raise ValueError("Docling prior seal disagrees with final artifact")
+    if role not in ("primary", "complement", "ocr", "docling") or (role == "complement" and not required) or (role == "ocr" and not ocr_required) or (role == "docling" and not docling_required):
         raise ValueError("document parser role not admitted")
     artifact = first if role == "primary" else checked[role]
     if not isinstance(artifact, dict):
@@ -155,13 +167,13 @@ def _derive(run_dir, manifest, source, attempt, document, *, role="primary"):
                 "capture_id": plan["events"][0]["capture_id"], "directory": directory,
                 "format": FORMAT}
     if role != "primary":
-        expected["parser_role"] = {"complement": "pdf_complement_v1", "ocr": "sparse_ocr_v1"}[role]
+        expected["parser_role"] = {"complement": "pdf_complement_v1", "ocr": "sparse_ocr_v1", "docling": "docling_json_v1"}[role]
     return expected, plan
 
 
 def prepare_job(run_dir, manifest, source, attempt, document, job):
     """Revalidate one existing job and return its exact sealed evidence plan."""
-    roles = {"append": "primary", "complement_append": "complement", "ocr_append": "ocr"}
+    roles = {"append": "primary", "complement_append": "complement", "ocr_append": "ocr", "docling_append": "docling"}
     matches = [role for key, role in roles.items() if job is not None and job is document.get(key)]
     if (not isinstance(job, dict) or len(matches) != 1
             or job.get("state") not in ("pending", "appending", "outcome_unknown", "appended")):
@@ -176,8 +188,8 @@ def mark(run_dir, manifest, source, attempt, document, save):
     """Attach a pending job once; never rearm an existing job."""
     if not callable(save):
         raise ValueError("document append job requires durable save")
-    roles = (("append", "primary"), ("complement_append", "complement"), ("ocr_append", "ocr"))
-    admitted = {"primary"} | {role for role in ("complement", "ocr") if role in document.get("sealed", {})}
+    roles = (("append", "primary"), ("complement_append", "complement"), ("ocr_append", "ocr"), ("docling_append", "docling"))
+    admitted = {"primary"} | {role for role in ("complement", "ocr", "docling") if role in document.get("sealed", {})}
     if document.get("append") is not None:
         for key, role in roles:
             if role in admitted:

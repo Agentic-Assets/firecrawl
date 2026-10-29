@@ -2,7 +2,6 @@
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -11,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ocr
+import owned_container
 
 TIMEOUT = 210
 MAX_TEXT = ocr.MAX_TEXT
@@ -112,54 +112,9 @@ def run(pdf_path, prior_artifacts, output_dir, *, max_pages, trigger_policy):
         source = root / 'input.pdf'; source.write_bytes(raw); source.chmod(0o600)
         results = root / 'output'; results.mkdir(mode=0o700)
         worker = root / 'worker.py'; worker.write_bytes(worker_bytes); worker.chmod(0o600)
-        container = None; verified_id = None; identity_confirmed = False
-        try:
-            created = subprocess.run(_arguments(source, results, name, nonce, max_pages, worker), capture_output=True, timeout=30, check=False)
-            candidate = created.stdout.decode('ascii', errors='ignore').strip()
-            container = ocr.owned_id(name, nonce)
-            if created.returncode or not re.fullmatch(r'[a-f0-9]{64}', candidate) or container != candidate:
-                extraction['error_code'] = 'container_identity_unconfirmed'
-                extraction['warnings'].append('container_cleanup_unconfirmed')
-            else:
-                identity_confirmed = True
-                try:
-                    process = subprocess.run(['docker', 'start', '--attach', container], stdout=subprocess.DEVNULL,
-                                             stderr=subprocess.DEVNULL, timeout=TIMEOUT, check=False)
-                    extraction['converter_exit_code'] = process.returncode
-                    if process.returncode:
-                        extraction['warnings'].append('worker_failed_partial_output')
-                except subprocess.TimeoutExpired:
-                    extraction['warnings'].append('worker_timeout_partial_output')
-                # Stop before reading: a timed-out daemon-side process may still write.
-                stopped = subprocess.run(['docker', 'rm', '-f', container], stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.DEVNULL, timeout=30, check=False)
-                if stopped.returncode or not _removed(container):
-                    extraction['warnings'].append('container_cleanup_unconfirmed')
-                else:
-                    verified_id = container
-                    container = None
-                    settled(verified_id)
-                    _read_results(results, extraction, max_pages)
-        except (OSError, subprocess.SubprocessError):
-            extraction['error_code'] = 'container_operation_failed'
-        finally:
-            if container is None and verified_id is None:
-                try:
-                    container = ocr.owned_id(name, nonce)
-                except (OSError, subprocess.SubprocessError):
-                    extraction['warnings'].append('container_cleanup_unconfirmed')
-            if not container and extraction.get('error_code') in ('container_identity_unconfirmed', 'container_operation_failed'):
-                extraction['warnings'].append('container_cleanup_unconfirmed')
-            if container:
-                try:
-                    removed = subprocess.run(['docker', 'rm', '-f', container], stdout=subprocess.DEVNULL,
-                                             stderr=subprocess.DEVNULL, timeout=30, check=False)
-                    if removed.returncode or not _removed(container):
-                        extraction['warnings'].append('container_cleanup_unconfirmed')
-                    elif identity_confirmed:
-                        settled(container)
-                except (OSError, subprocess.SubprocessError):
-                    extraction['warnings'].append('container_cleanup_unconfirmed')
+        owned_container.run(_arguments(source, results, name, nonce, max_pages, worker), name, nonce,
+                            extraction, settled, _removed,
+                            lambda: _read_results(results, extraction, max_pages), TIMEOUT)
     if extraction['error_code'] is None and extraction['status'] != 'extracted':
         extraction['error_code'] = 'empty_or_unavailable_output'
     ocr.write_private(out / 'sparse-ocr.json', attempt)

@@ -335,14 +335,25 @@ def validate_content_policy(plan_value):
         from source_evidence.avison import validate_records
         validate_records(plan_value)
     document_text = None
+    decoded_documents = []
     if plan_value["events"][0]["facts"][0]["kind"] == "document_outcome":
         # validate_plan already reconstructed and checked the complete bounded
         # document. Scan across chunk boundaries as well as metadata.
         document_text = "".join(row["extracted_text"] for row in plan_value["events"][1:])
+        extraction = plan_value["events"][0]["facts"][0]["value"]["extraction"]
+        if extraction.get("text_format") == "docling_json" and extraction.get("status") == "extracted":
+            from source_evidence import acquisition, encoded_json_inspection
+            decoded, _ = acquisition.decode_json(document_text.encode("utf-8"))
+            if not isinstance(decoded, dict):
+                raise ValueError("Docling JSON must be an object")
+            decoded_documents.append(decoded)
+            encoded_json_inspection._inspect_encoded_credentials(
+                decoded, decoded_callback=decoded_documents.append, inspect_keys=True)
     for row in plan_value["events"]:
         pending = [row]
         if row["item_no"] == 0 and document_text is not None:
             pending.append(document_text)
+            pending.extend(decoded_documents)
         inspected = 0
         while pending:
             inspected += 1

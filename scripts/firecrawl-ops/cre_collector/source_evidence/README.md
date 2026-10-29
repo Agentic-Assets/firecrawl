@@ -869,3 +869,25 @@ The existing text mode and its serialized configuration remain unchanged.
 Neither text mode establishes table fidelity or complete page coverage.
 `keep_unresolved_until_review` follows converter outcome and configured OCR
 omission indicators; unknown fidelity alone does not keep original copies.
+
+### Docling JSON document supplement
+
+Explicit acquisition policy v5 adds `docling_json` with mode
+`docling_json_v1` and a bounded `max_pages`. It carries v4 selection and
+existing Poppler and sparse OCR settings, and reserves additional phase time.
+The foreground coordinator seals ordered priors, verifies owned settlement and
+a completion marker, and creates a separate Docling append job. Recovery does
+not spawn a converter. Exact UTF-8 JSON is chunked as document text and exported
+as `document.docling.json`; unknown fields remain in the original bytes.
+
+Admission strictly decodes JSON and applies existing content restrictions to
+keys, strings and bounded nested JSON. This is not a universal secret detector.
+Failure, partial or omitted page output retains originals when
+`keep_unresolved_until_review` is selected; success does not prove fidelity.
+`temporary_only` keeps its explicit behavior. This draft is not deployed and
+requires separate production acceptance.
+
+For v5, an interruption while OCR is in progress leaves both original files
+in reconciliation. A verified settled OCR completion can be replayed without
+spawning to create or verify the existing Docling-prior seal. Recovery remains
+incomplete and does not create a final seal, append job, or start Docling.

@@ -107,6 +107,8 @@ def prepare(plans, candidates, policy_raw, *, expected_policy_sha256, target_sha
                   candidate_manifest_sha256=events.sha256(events.encoded(actual)), documents=[], exclusions=[])
     if "sparse_ocr" in first:
         output["sparse_ocr"] = copy.deepcopy(first["sparse_ocr"])
+    if "docling_json" in first:
+        output["docling_json"] = copy.deepcopy(first["docling_json"])
     priority = None
     if "selection_order" in first:
         from source_evidence import document_priority

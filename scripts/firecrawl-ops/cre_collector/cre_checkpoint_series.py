@@ -890,7 +890,7 @@ def evidence_reconciliation_required(child_manifest: Mapping[str, Any]) -> bool:
                 return True
             if job is not None and not isinstance(job, Mapping):
                 return True
-            for role in ("complement", "ocr"):
+            for role in ("complement", "ocr", "docling"):
                 job = document.get(role + "_append")
                 if role in (document.get("sealed") or {}):
                     if (not isinstance(job, Mapping) or job.get("kind") != "document_text"
@@ -924,7 +924,11 @@ def document_reconciliation_required(child_manifest: Mapping[str, Any], config: 
         return False
     if not _exact_json_equal((child_manifest.get("config") or {}).get("source_document_acquisition"), document):
         return True
-    from source_evidence.document_automatic import _known_no_data, _settled, reconciliation_required
+    from source_evidence.document_automatic import (
+        _known_no_data,
+        _settled,
+        reconciliation_required,
+    )
     if child_manifest.get("source_document_acquisition_paused") is not False or reconciliation_required(child_manifest):
         return True
     status = child_manifest.get("source_document_acquisition_status")
@@ -3018,7 +3022,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     document_options = (args.source_document_policy, args.source_document_policy_sha256, args.source_document_node)
     source_document_acquisition = None
     if any(document_options):
-        from source_evidence.document_automatic import configuration as document_configuration
+        from source_evidence.document_automatic import (
+            configuration as document_configuration,
+        )
         source_document_acquisition = document_configuration(*document_options, automatic_source_evidence, git_sha, sources)
     config = series_config(
         sources=sources,

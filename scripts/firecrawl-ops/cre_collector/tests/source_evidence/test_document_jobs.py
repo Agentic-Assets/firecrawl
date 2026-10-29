@@ -246,9 +246,12 @@ def test_landing_seal_rederives_append_plan_and_rejects_tamper(monkeypatch, tmp_
     with pytest.raises(ValueError):
         document_jobs.prepare_job(tmp_path, manifest, 'svn', attempt, document, job)
 
+@pytest.mark.parametrize('version', ['v4', 'v5'])
 @pytest.mark.parametrize('interrupt', [False, True, 'completed'])
 @pytest.mark.parametrize('extraction_state', ['success'])
-def test_sparse_ocr_preserves_prior_custody_and_replays_all_three_jobs(monkeypatch, tmp_path, interrupt, extraction_state):
+def test_sparse_ocr_preserves_prior_custody_and_replays_all_three_jobs(monkeypatch, tmp_path, interrupt, extraction_state, version):
+    if version == 'v5' and interrupt is False:
+        pytest.skip('the v5 full Docling path is covered separately')
     from source_evidence import automatic, document_acquisition_policy
     from source_evidence.document_process import DocumentProcessCleanupUnknown
     manifest, attempt, kwargs = setup_run(tmp_path, retention='keep_unresolved_until_review')
@@ -256,6 +259,13 @@ def test_sparse_ocr_preserves_prior_custody_and_replays_all_three_jobs(monkeypat
     policy.update(schema_version=document_acquisition_policy.SCHEMA_V3,
                   sparse_ocr={'mode': 'sparse_ocr_v1', 'strategy': 'all_pages', 'max_pages': 2},
                   pdf_complement={'mode': 'poppler_pdf_text_v1', 'pdftotext_path': '/usr/bin/pdftotext'})
+    if version == 'v4':
+        policy.update(schema_version=document_acquisition_policy.SCHEMA_V4,
+                      selection_order='property_occurrences_first_v1')
+    if version == 'v5':
+        policy.update(schema_version=document_acquisition_policy.SCHEMA_V5,
+                      selection_order='property_occurrences_first_v1',
+                      docling_json={'mode': 'docling_json_v1', 'max_pages': 1})
     policy['limits']['max_documents'] = 1
     raw = events.encoded(policy)
     plans = [kwargs['plan']]
@@ -389,6 +399,29 @@ def test_sparse_ocr_preserves_prior_custody_and_replays_all_three_jobs(monkeypat
             expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
         if interrupt is True:
             assert recovery['state'] == 'incomplete'
+            return
+        if version == 'v5':
+            assert recovery['state'] == 'incomplete'
+            assert recovery['documents'][0]['reason'] == 'settled_ocr_reverified_docling_not_started'
+            assert document['state'] == 'docling_prior_sealed' and 'sealed' not in document
+            assert 'append' not in document and 'docling_append' not in document
+            assert attempt['document_source_evidence']['budget']['attempts'][0]['outcome'] is None
+            prior_dir = tmp_path / document['directory'] / 'docling-prior-sealed'
+            marker_before = copy.deepcopy(document['docling_prior_sealed'])
+            altered = prior_dir / 'ocr-plan.json'; original = altered.read_bytes(); altered.write_bytes(b'{}')
+            blocked = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+                plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+                expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+            assert blocked['state'] == 'incomplete' and 'sealed' not in document
+            altered.write_bytes(original)
+            replayed = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+                plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+                expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+            assert replayed['state'] == 'incomplete'
+            assert replayed['documents'][0]['reason'] == 'settled_ocr_reverified_docling_not_started'
+            assert document['docling_prior_sealed'] == marker_before and 'sealed' not in document
+            assert (tmp_path / document['directory'] / 'fetch/document.bin').is_file()
+            assert (tmp_path / document['directory'] / 'extraction/document.bin').is_file()
             return
         assert recovery['state'] == 'sealed_outputs_reconciled'
         assert recovery['documents'][0]['reason'] == 'settled_ocr_completion_replayed'

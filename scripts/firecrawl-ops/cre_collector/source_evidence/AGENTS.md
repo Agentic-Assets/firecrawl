@@ -239,3 +239,10 @@ The opt-in `poppler_pdf_layout_v1` complement binds its parser mode to the
 selected policy at execution, recovery and append. Layout text is not evidence
 of complete pages or correct table relationships. Existing unresolved retention
 does not keep originals merely because fidelity remains unknown.
+
+Docling JSON is an explicit v5 document supplement. Preserve its sealed
+ordered priors, verified settlement, completion and independent append barriers.
+Scan decoded JSON before admission and retain native bytes in bounded text
+chunks; export does not depend on the current worker hash. Partial, failed, or
+omitted output is unresolved under keep-unresolved retention. Coverage stays
+unknown; no publisher, extraction fidelity, or canonical listing claim follows.

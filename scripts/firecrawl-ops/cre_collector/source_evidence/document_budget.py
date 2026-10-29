@@ -68,7 +68,12 @@ def _validate(state, selection):
             raise ValueError("invalid document attempt")
         start, phase = _seconds(attempt["started"]), _seconds(attempt["phase_seconds"])
         if "pdf_complement" in selection:
-            from source_evidence import doc_complement_process, doc_extract_process, doc_fetch_process, document_pipeline
+            from source_evidence import (
+                doc_complement_process,
+                doc_extract_process,
+                doc_fetch_process,
+                document_pipeline,
+            )
             minimum_phase = (expected["limits"]["document_timeout_seconds"] + doc_fetch_process.STARTUP_GRACE_SECONDS
                              + doc_fetch_process.REAP_GRACE_SECONDS + document_pipeline.EXTRACTION_SECONDS
                              + doc_extract_process.REAP_GRACE_SECONDS + doc_complement_process.TIMEOUT_SECONDS
@@ -76,6 +81,9 @@ def _validate(state, selection):
             if "sparse_ocr" in selection:
                 from source_evidence import doc_sparse_ocr_process
                 minimum_phase += doc_sparse_ocr_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
+            if "docling_json" in selection:
+                from source_evidence import doc_docling_json_process
+                minimum_phase += doc_docling_json_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
             if phase < minimum_phase:
                 raise ValueError("document complement phase reservation is too short")
         if start < previous or phase <= 0 or start + phase > expected["limits"]["run_timeout_seconds"]:
