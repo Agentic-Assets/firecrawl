@@ -1,5 +1,6 @@
 import { observationNow } from "./lib/observation-clock.js";
-import { writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { finishPrivateCollectorArtifact, reservePrivateCollectorArtifact, writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { observePages, readObservationInput } from "./lib/page-observations/index.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
@@ -63,6 +64,10 @@ import {
 
 // ---------- CLI ----------
 
+if (flags["observe-input"] !== undefined && (!flags["observe-input"] || !OUT_PATH ||
+    ["source", "transaction", "max-items", "page-cap", "concurrency", "monitor", "enrich-input", "matthews-targeted-refresh"].some(key => flags[key as keyof typeof flags] !== undefined))) {
+  throw new Error("observe mode requires --out and forbids other collection mode flags");
+}
 const sourceArg = (flags.source ?? "all").toLowerCase();
 const requestedSources: SourceKey[] =
   sourceArg === "all"
@@ -456,6 +461,23 @@ async function dispatch(): Promise<void> {
   flushPerformance({ terminal: false });
   try {
     const enrichInput = flags["enrich-input"];
+    if (flags["observe-input"] !== undefined) {
+      if (!OUT_PATH) throw new Error("observe mode requires --out");
+      const items = readObservationInput(flags["observe-input"]);
+      let descriptor: number;
+      try { descriptor = reservePrivateCollectorArtifact(OUT_PATH); }
+      catch { throw new Error("unable to reserve private observation output"); }
+      let result: unknown;
+      try {
+        result = await observePages(items);
+      } catch {
+        result = { runMeta: { mode: "observe", evidenceOnly: true }, sources: [], listings: [], brokers: [], totalListings: 0, error: "observation_incomplete" };
+        process.exitCode = 1;
+      }
+      try { finishPrivateCollectorArtifact(descriptor, JSON.stringify(result)); }
+      catch { throw new Error("unable to finish private observation output"); }
+      return;
+    }
     if (flags["matthews-targeted-refresh"] && !enrichInput) {
       throw new Error("Matthews targeted: requires --enrich-input");
     }

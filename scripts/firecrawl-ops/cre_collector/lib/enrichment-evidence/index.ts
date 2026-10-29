@@ -3,7 +3,7 @@ import type { ScrapedDoc } from "../../types.js";
 import { captureSourcePageContext } from "../source-page-context/index.js";
 import { RetainedSourceError } from "../source-observations.js";
 
-export type EnrichmentClaim = { sourceKey: string; externalId: string; url: string; transaction?: "sale" | "lease" };
+export type EnrichmentClaim = { sourceKey: string; externalId: string | null; url: string; transaction?: "sale" | "lease" };
 const FIELD_BYTES = 256 * 1024;
 const HTML_CONTEXT_BYTES = 2_000_000;
 const OBSERVATION_BYTES = 2_500_000;
@@ -17,7 +17,7 @@ function jsonBytes(value: unknown): number {
 }
 
 /** Refuse values that JSON.stringify would silently transform or omit. */
-function preservesJsonValue(value: unknown): boolean {
+export function preservesJsonValue(value: unknown): boolean {
   const active = new Set<object>();
   let nodes = 0;
   const visit = (item: unknown, depth: number): boolean => {
