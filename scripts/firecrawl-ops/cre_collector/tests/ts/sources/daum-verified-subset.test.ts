@@ -3,6 +3,8 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { load } from "cheerio";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { parseDaumDetail, srcDaumCommercial, type DaumCompleteCohort } from "../../../sources/daum-commercial.js";
 import { daumProof } from "../../../sources/pure/daum-proof.js";
 import { observationNow } from "../../../lib/observation-clock.js";
@@ -94,6 +96,44 @@ test("zero emitted lease with holds remains a subset scope", async t => {
   const lease = await srcDaumCommercial("lease", Infinity, false);
   assert.equal(lease.listings.length, 0); assert.equal(lease.totalAvailable, 0); assert.equal(lease.truncated, true);
   assert.equal(lease.currentInventoryProof?.schema, "daum-verified-subset-v1");
+});
+
+test("limited unknown tenure retains parsed evidence without admitting a listing", async t => {
+  const state = offline(t, 100);
+  state.unknownInventory.add(0); state.unknownDetail.add(0);
+  const result = await srcDaumCommercial("sale", 1, false);
+  assert.equal(result.listings.length, 0);
+  assert.equal(result.truncated, true);
+  assert.equal(result.currentInventoryProof, undefined);
+  assert.equal(state.gets.length, 1);
+  const [held] = result.retainedObservations as any[];
+  assert.equal(result.retainedObservations?.length, 1);
+  assert.equal(held.schema, "daum-held-observation-v1");
+  assert.equal(held.reason, "unknown_inventory_and_detail_tenure");
+  assert.equal(held.transaction, "sale");
+  assert.equal(held.inventory.url, "https://daumcommercial.com/property/Synthetic-0/");
+  assert.equal(held.detail.postId, 50000);
+  assert.equal(held.inventory.tenure, "unknown");
+  assert.equal(held.detail.tenure, "unknown");
+  assert.ok(Number.isFinite(Date.parse(held.inventoryObservedAt)));
+  assert.ok(Number.isFinite(Date.parse(held.detailObservedAt)));
+  // Exercise the actual private evidence bridge against this producer result,
+  // without issuing network requests or granting source admission.
+  const artifact = { runMeta: { finishedAt: observationNow(), evidenceOnly: true },
+    sources: [{ sourceKey: "daum-commercial", ...result }], listings: [] };
+  const bridge = spawnSync("python3", ["-c", `
+import json, sys
+from source_evidence import collector, events
+artifact = json.load(sys.stdin)
+wrapped = collector.convert(artifact, source_key="daum-commercial")
+assert wrapped["schema"] == collector.SCHEMA_V2
+plan = events.plan(wrapped, source_key="daum-commercial")
+events.validate_plan(plan)
+events.validate_content_policy(plan)
+print(json.dumps(collector.reconstruct(wrapped)))
+`], { cwd: fileURLToPath(new URL("../../../", import.meta.url)), input: JSON.stringify(artifact), encoding: "utf8" });
+  assert.equal(bridge.status, 0, bridge.stderr);
+  assert.deepEqual(JSON.parse(bridge.stdout), artifact);
 });
 
 test("mode separated success and rejection receipts never borrow", async t => {

@@ -98,3 +98,7 @@ Docling OCR and optional local Poppler text-only engine record separate parser
 provenance and the original artifact hash. Poppler does not perform OCR; retained
 partial output and converter diagnostics carry warnings and unknown coverage.
 Never treat a retry as source, canonical or production acceptance.
+The separate opt-in acquisition policy v2 may automatically complement an
+extracted, OCR-needed, or unsupported AnyDoc PDF with text-only Poppler. It
+seals both attempts and their relationship with independent evidence append
+checkpoints. Poppler does not OCR; coverage remains unknown.

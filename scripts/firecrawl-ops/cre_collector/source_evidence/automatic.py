@@ -364,10 +364,8 @@ def prepare_resume(manifest, *, replay_unknown):
     states += [page for checkpoint in manifest["sources"].values()
                for attempt in checkpoint.get("attempts", [])
                for page in (attempt.get("native_source_evidence") or {}).get("pages", [])]
-    states += [document["append"] for checkpoint in manifest["sources"].values()
-               for attempt in checkpoint.get("attempts", [])
-               for document in (attempt.get("document_source_evidence") or {}).get("documents", [])
-               if isinstance(document, dict) and isinstance(document.get("append"), dict)]
+    from source_evidence import document_jobs
+    states += [job for _, _, job in document_jobs.iter_jobs(manifest)]
     uncertain = [state for state in states if state.get("state") in {"appending", "outcome_unknown"}]
     if uncertain and replay_unknown:
         if any(state.get("state") == "refused" for state in states):
@@ -545,11 +543,8 @@ def pump(run_dir, manifest, save):
                    for source, checkpoint in manifest["sources"].items()
                    for attempt in checkpoint.get("attempts", [])
                    for page in (attempt.get("native_source_evidence") or {}).get("pages", [])]
-    candidates += [(source, attempt, document["append"])
-                   for source, checkpoint in manifest["sources"].items()
-                   for attempt in checkpoint.get("attempts", [])
-                   for document in (attempt.get("document_source_evidence") or {}).get("documents", [])
-                   if isinstance(document, dict) and isinstance(document.get("append"), dict)]
+    from source_evidence import document_jobs
+    candidates += list(document_jobs.iter_jobs(manifest))
     candidates.sort(key=lambda item: (item[2].get("exact_replay_required") is not True,
                                       "filename" not in item[2]))
     for source, attempt, state in candidates:
@@ -563,7 +558,8 @@ def pump(run_dir, manifest, save):
                 if config.get("document_text_formats", {}).get(source) != DOCUMENT_TEXT_FORMAT:
                     raise ValueError("document text is outside policy")
                 documents = (attempt.get("document_source_evidence") or {}).get("documents", [])
-                matching = [document for document in documents if document.get("append") is state]
+                matching = [document for document in documents if document.get("append") is state
+                            or document.get("complement_append") is state]
                 if len(matching) != 1:
                     raise ValueError("document append association mismatch")
                 return document_jobs.prepare_job(run_dir, manifest, source, attempt, matching[0], state)

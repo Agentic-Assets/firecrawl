@@ -121,11 +121,10 @@ text in ordered chunks with a full-text digest. Even extraction of all available
 text would not establish that financial tables, their layout, or their values
 were faithfully represented. Coverage remains unknown.
 
-A planned reader command, `source_evidence.cli export-document-text`, will use
-`--capture-id`, `--out-dir`, `--env-file`, and
-`--expected-db-target-sha256` to recover retained text. This command is under
-development and has not yet been verified; use the existing event readback and
-chunk/hash checks until it is available and verified.
+The `source_evidence.cli export-document-text` reader reconstructs retained
+text using `--capture-id`, `--out-dir`, `--env-file`, and
+`--expected-db-target-sha256`. It validates chunks and hashes, and writes
+`.txt` for plain text or `.md` for Markdown.
 
 For `ocr_needed`, the artifact retains any page numbers reported by AnyDoc and has no extracted text. An explicit local retry is also available for a PDF with the specific failed code `unsupported`, after reviewing the document and local resource budget. Other failed codes remain refused:
 
@@ -144,6 +143,16 @@ retains nonempty partial output from a failed converter with an explicit warning
 this is not proof of complete or accurate extraction. The retry remains opt-in,
 creates no database writes, and leaves the original AnyDoc artifact untouched.
 
-The existing evidence planner preserves the format metadata, but its export currently
-names all text `document.md`. Do not treat that filename as evidence of Markdown;
-format-aware export needs separate implementation before relying on this path.
+The optional acquisition-policy v2 mode `poppler_pdf_text_v1` runs
+Poppler for an AnyDoc PDF that was extracted, needs OCR, or returned the
+specific unsupported error, and retains each parser's output in a
+separate sealed artifact and evidence plan. The relationship binds canonical
+AnyDoc and Poppler artifact hashes. Each append has its own checkpoint and
+exact replay. Poppler extracts embedded text only; it does not OCR, and does not
+change AnyDoc's original outcome. Coverage and fidelity remain unknown. The mode is off
+by default and requires separate production acceptance. Its phase reserves a
+bounded process timeout and cleanup grace; native memory is not capped.
+
+Settled means that the selected attempts have recorded outcomes, including
+failed or OCR-needed outcomes. It does not mean that text was recovered from
+every document. Inspect each parser outcome before relying on its text.

@@ -99,6 +99,8 @@ def prepare(plans, candidates, policy_raw, *, expected_policy_sha256, target_sha
     output = {key: copy.deepcopy(first[key]) for key in ("policy_sha256", "source_key", "collector_git_sha",
               "target_sha256", "allowed_hosts", "limits", "original_retention", "network_execution",
               "destination_verification", "publisher", "publicness", "authority", "cumulative_byte_budget")}
+    if "pdf_complement" in first:
+        output["pdf_complement"] = copy.deepcopy(first["pdf_complement"])
     output.update(schema_version=SELECTION_SCHEMA,
                   source_evidence_plans=copy.deepcopy(actual["source_evidence_plans"]),
                   source_evidence_set_sha256=actual["source_evidence_set_sha256"],

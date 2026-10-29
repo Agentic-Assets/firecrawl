@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from source_evidence import (
+    doc_complement_process,
     doc_extract_process,
     doc_fetch_process,
     document_acquisition,
@@ -135,6 +136,26 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
         marker = document.get("sealed")
         if not isinstance(marker, dict):
             report["reason"] = "missing_persisted_seal_marker"
+            primary = document.get("primary_sealed")
+            if isinstance(primary, dict):
+                try:
+                    directory = run_dir / expected_directory / "primary-sealed"
+                    raw_context, context = document_pipeline._json(directory / "acquisition.json", document_seal.MAX_FILE)
+                    context_sha = primary.get("files", {}).get("acquisition.json")
+                    if events.sha256(raw_context) != context_sha:
+                        raise ValueError("primary context changed")
+                    context = document_acquisition.validate_archived_context(
+                        plan, candidates, policy_raw, selected, context, expected_context_sha256=context_sha, **bindings)
+                    checked = document_seal.read(directory, expected_context=context, expected_marker=primary)
+                    first = checked["artifact"]
+                    if context["candidate_index"] != index or not doc_complement_process.required(first, selected):
+                        raise ValueError("primary seal outside complement policy")
+                    status = first["extraction"]["status"]
+                    doc_extract_process.validate_artifact(first, context["receipt"], source_key=source,
+                                                         exit_code=0 if status == "extracted" else 2)
+                    report["primary_seal"] = "reverified_complement_unresolved"
+                except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+                    report["primary_seal"] = "unresolved"
             save(run_dir, manifest)
             continue
         try:
@@ -153,13 +174,20 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                 raise ValueError("sealed document candidate changed")
             checked = document_seal.read(directory / "sealed", expected_context=context, expected_marker=marker)
             artifact = checked["artifact"]
+            complement_required = doc_complement_process.required(artifact, selected)
+            if ("complement" in checked) != complement_required:
+                raise ValueError("document complement disagrees with policy")
+            if complement_required and checked["complement"]["parser"]["config"]["executable"] != selected["pdf_complement"]["pdftotext_path"]:
+                raise ValueError("document complement executable changed")
+            if complement_required:
+                document_seal.check_primary(directory / "primary-sealed", context, document.get("primary_sealed"), artifact)
             report["state"] = "seal_reverified"
             report["original_bytes_reverified"] = False
             if artifact is not None:
                 status = artifact["extraction"]["status"]
                 doc_extract_process.validate_artifact(artifact, context["receipt"], source_key=source,
                                                      exit_code=0 if status == "extracted" else 2)
-                retain = (selected["original_retention"] == "keep_unresolved_until_review" and status != "extracted")
+                retain = doc_complement_process.retain_unresolved(artifact, checked.get("complement"), selected)
                 if retain:
                     report["retention_decision"] = "keep_unresolved_until_review"
                 elif cleanup:

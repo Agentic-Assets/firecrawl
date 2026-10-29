@@ -14,6 +14,7 @@ from source_evidence import (
     acquisition,
     automatic,
     cli,
+    doc_complement_process,
     doc_extract_process,
     doc_fetch_process,
     document_acquisition,
@@ -97,8 +98,8 @@ def _remove_owned_body(path, digest, byte_length):
         os.close(directory)
 
 
-def _seal(outdir, context, *, artifact=None, landing=None):
-    return document_seal.write(outdir, context, artifact, landing=landing)
+def _seal(outdir, context, *, artifact=None, landing=None, complement=None):
+    return document_seal.write(outdir, context, artifact, landing=landing, complement=complement)
 
 
 def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_raw,
@@ -142,6 +143,8 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
     phase_seconds = (selected["limits"]["document_timeout_seconds"] + doc_fetch_process.STARTUP_GRACE_SECONDS
                      + doc_fetch_process.REAP_GRACE_SECONDS
                      + EXTRACTION_SECONDS + doc_extract_process.REAP_GRACE_SECONDS)
+    if "pdf_complement" in selected:
+        phase_seconds += doc_complement_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
     try:
         for item in selected["documents"]:
             index = item["candidate_index"]
@@ -218,16 +221,30 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
                                                            index, receipt, body, **bindings)
                 landing = None
                 extraction = extracted["artifact"].get("extraction", {})
+                complement = None
+                complement_policy = selected.get("pdf_complement")
+                if doc_complement_process.required(extracted["artifact"], selected):
+                    document["primary_sealed"] = _seal(directory / "primary-sealed", context,
+                                                       artifact=extracted["artifact"])
+                    document["state"] = "primary_sealed"
+                    save(run_dir, manifest)
+                    if (time.monotonic() - started + doc_complement_process.TIMEOUT_SECONDS
+                            + doc_extract_process.REAP_GRACE_SECONDS > selected["limits"]["run_timeout_seconds"]):
+                        raise ValueError("complement run allowance expired")
+                    document["state"] = "complement_intent"
+                    save(run_dir, manifest)
+                    complement = doc_complement_process.run(Path(extracted["input_path"]), extracted["artifact"], receipt,
+                        directory / "complement", executable=complement_policy["pdftotext_path"], source_key=source)
+                    doc_extract_process._input_checked(Path(extracted["directory"]), Path(extracted["input_path"]).name, body)
                 if (extraction.get("status") == "failed" and extraction.get("error_code") == "unsupported"
                         and document_landing.is_html(body)):
                     landing = document_landing.protect_scripts(
                         document_landing.page_context(body, final_url=receipt["final_url"]), source_key=source)
                 document["sealed"] = _seal(directory / "sealed", context, artifact=extracted["artifact"],
-                                           landing=landing)
+                                           landing=landing, complement=complement)
                 document["state"] = "extraction_sealed"
                 save(run_dir, manifest)
-                retain = (selected["original_retention"] == "keep_unresolved_until_review"
-                          and extracted["state"] != "success")
+                retain = doc_complement_process.retain_unresolved(extracted["artifact"], complement, selected)
                 if retain:
                     document["original_retention"] = "retained_unresolved"
                 else:

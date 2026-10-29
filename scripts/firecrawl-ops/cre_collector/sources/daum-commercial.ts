@@ -753,6 +753,7 @@ export async function srcDaumCommercial(
   );
   const selected = candidates.slice(0, Math.min(max, candidates.length));
   const listings = [];
+  const retainedObservations: unknown[] = [];
   let unresolvedTenureHolds = 0;
   let resolvedToOtherPass = 0;
   for (const row of selected) {
@@ -762,6 +763,12 @@ export async function srcDaumCommercial(
     const resolvedTenure = resolveDaumTenure(row.tenure, detail.tenure);
     if (resolvedTenure === "unknown") {
       unresolvedTenureHolds++;
+      retainedObservations.push({
+        schema: "daum-held-observation-v1", sourceKey: "daum-commercial",
+        reason: "unknown_inventory_and_detail_tenure", transaction: tx,
+        inventoryObservedAt: snapshot.observedAt, detailObservedAt,
+        inventory: structuredClone(row), detail: structuredClone(detail),
+      });
       continue;
     }
     if (!daumBelongsToTx(resolvedTenure, tx)) {
@@ -786,6 +793,7 @@ export async function srcDaumCommercial(
       unresolvedTenureHolds > 0 ||
       !snapshot.lifecycleExact,
     listings,
+    ...(retainedObservations.length ? { retainedObservations } : {}),
     note:
       `exact ${snapshot.total}-record/${Math.ceil(snapshot.total / DAUM_PAGE_SIZE)}-page snapshot; ` +
       `${unknownRows} blank-tenure row(s) detail-resolved or held; ` +

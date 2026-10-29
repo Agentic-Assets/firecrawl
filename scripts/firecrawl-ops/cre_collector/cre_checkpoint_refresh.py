@@ -7109,7 +7109,7 @@ def render_report(manifest: Mapping[str, Any]) -> str:
         ))
     if (manifest.get("config") or {}).get("source_document_acquisition"):
         lines.insert(8, "- Private document text: " + (
-            "selected attempts settled; extraction coverage remains unknown."
+            "selected attempts settled; recorded outcomes may include extraction failures or OCR-needed documents; coverage remains unknown."
             if manifest.get("source_document_acquisition_status") == "settled"
             and manifest.get("source_document_acquisition_paused") is False
             else "incomplete or not started; inspect per-attempt document receipts before any resume."
