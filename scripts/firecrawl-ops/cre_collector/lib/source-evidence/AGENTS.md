@@ -33,3 +33,12 @@ before parsing and validation in private gzip storage. It captures collector-dec
 UTF-8, not wire bytes; the decoded cap is 16 MiB, below the 32 MiB transport cap.
 Capture failures stop the enabled path, and unsettled workers remain fenced.
 Admission and canonical convergence remain separate.
+
+`native-json-feed.ts` shares opt-in decoded-text capture for SRS, Kidder and
+Hanley before validation, filtering and pruning. Hanley captures an embedded
+array literal, not the HTML response. The publisher binds a closed request
+profile and source; a capture failure stops the enabled path. An explicit SRS
+limit may reach 256 files; other profiles and the unset default remain 128,
+with the existing 16-MiB decoded-page and 128-MiB stored-attempt limits.
+Read the Python evidence guide before admission, including the pending SRS
+price-retention decision. Capture does not authorize admission or display.

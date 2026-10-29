@@ -194,7 +194,7 @@ test("legacy 50-row request stays unchanged; strict cache is generation-bound an
     const cached = await kidderFetchAll(Infinity);
     assert.equal(calls, 2);
     assert.equal(cached.inventoryObservedAt, first.inventoryObservedAt);
-    assert.equal(cached.items[0].__creInventoryCacheDisposition, "generation_cache");
+    assert.equal(cached.items[0].__creInventoryCacheDisposition, undefined);
     process.env.CRE_REFRESH_GENERATION = "kidder-complete-two";
     await kidderFetchAll(Infinity);
     assert.equal(calls, 3);

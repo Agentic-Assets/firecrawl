@@ -1080,6 +1080,22 @@ separate. This consolidation requires separate production acceptance.
   corrected composed detail iframe probes returned 404. Host compatibility does
   not establish live detail availability.
 
+## SRS, Kidder and Hanley native evidence
+
+The shared `lib/source-evidence/native-json-feed.ts` publisher can retain
+decoded source text before JSON validation, row qualification and pruning.
+It is default off; evidence policy, custody and append remain in
+[`source_evidence/`](../source_evidence/README.md). Unknown valid SRS/Kidder
+shapes remain unqualified context. Hanley retains the bounded embedded array
+literal and separately projects non-public rows before admission. SRS evidence
+admission awaits its source-specific price-retention decision. None of these
+observations qualifies a canonical listing or certifies inventory coverage.
+
+SRS and Kidder cache metadata uses private WeakMaps, including without native
+capture. Preserve provider fields named `__creInventoryCacheDisposition` as
+source data; they cannot assert collector cache provenance. Cache hits retain
+the original observation clock and do not publish a fresh native capture.
+
 ## Kidder Mathews complete inventory
 
 Strict Kidder runs request one `startIndex=0, numResults=8000` response from

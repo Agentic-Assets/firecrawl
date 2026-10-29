@@ -25,9 +25,13 @@ MAX_ENTRY_BYTES = ((16 * 1024 * 1024 * 4 + 2) // 3) + 64 * 1024 * 6 + 16384
 PROVENANCE = {"bodyHashKind": "fetch_delivered_body_bytes_not_wire", "identity": "unverified",
               "visibility": "unverified", "completeness": "unverified"}
 NATIVE_FORMATS = {"nai-global": "nai_public_posts_v1", "avison-young": "avison_sharplaunch_website_v1",
-                  "transwestern": "transwestern_inventory_parsed_v1", "pyramid-brokerage": "pyramid_inventory_decoded_v1"}
+                  "transwestern": "transwestern_inventory_parsed_v1", "pyramid-brokerage": "pyramid_inventory_decoded_v1",
+                  "srs": "native_json_feed_projected_v1", "kidder-mathews": "native_json_feed_projected_v1",
+                  "hanley": "native_json_feed_projected_v1"}
 ENV_PREFIXES = {"nai-global": "CRE_NAI_NATIVE_CAPTURE", "avison-young": "CRE_AVISON_NATIVE_CAPTURE",
-                "transwestern": "CRE_TRANSWESTERN_NATIVE_CAPTURE", "pyramid-brokerage": "CRE_PYRAMID_NATIVE_CAPTURE"}
+                "transwestern": "CRE_TRANSWESTERN_NATIVE_CAPTURE", "pyramid-brokerage": "CRE_PYRAMID_NATIVE_CAPTURE",
+                "srs": "CRE_NATIVE_JSON_FEED_CAPTURE", "kidder-mathews": "CRE_NATIVE_JSON_FEED_CAPTURE",
+                "hanley": "CRE_NATIVE_JSON_FEED_CAPTURE"}
 BUILDOUT_ENV_PREFIX = "CRE_BUILDOUT_NATIVE_CAPTURE"
 
 
@@ -43,6 +47,12 @@ def supported(source, config):
     return format_supported(source, config.get("native_source_formats", {}).get(source))
 
 
+def page_limit(source, config):
+    """SRS alone may opt into 256 pages; all other sources keep 128."""
+    configured = config['max_native_pages']
+    return min(configured, 256 if source == 'srs' and supported(source, config) else 128)
+
+
 def configure_worker_env(env, run_dir, source, attempt, config):
     """Remove inherited capture opt-ins; enable only the owned admitted attempt."""
     for prefix in (*ENV_PREFIXES.values(), BUILDOUT_ENV_PREFIX):
@@ -56,16 +66,19 @@ def configure_worker_env(env, run_dir, source, attempt, config):
             raise ValueError("native source format is unsupported")
         prefix = ENV_PREFIXES.get(source, BUILDOUT_ENV_PREFIX)
         env[prefix + "_DIR"] = str(run_dir / expected)
-        env[prefix + "_MAX_PAGES"] = str(config["max_native_pages"])
+        env[prefix + "_MAX_PAGES"] = str(page_limit(source, config))
         env[prefix + "_MAX_BYTES"] = str(128 * 1024 * 1024)
         env[prefix + "_SINGLE_WRITER"] = "1"
-        if prefix == BUILDOUT_ENV_PREFIX:
+        if prefix in (BUILDOUT_ENV_PREFIX, "CRE_NATIVE_JSON_FEED_CAPTURE"):
             env[prefix + "_SOURCE_KEY"] = source
 
 
 def _decode(source, raw, filename, binding, *, native_format):
     if not format_supported(source, native_format):
         raise ValueError("native source format is unsupported")
+    if source in ("srs", "kidder-mathews", "hanley"):
+        from source_evidence.native_feed_pages import decode_entry as decode_feed
+        return decode_feed(raw, filename, binding, source=source)
     if source == "pyramid-brokerage":
         from source_evidence.pyramid_pages import decode_entry as decode_pyramid
         return decode_pyramid(raw, filename, binding)
@@ -186,7 +199,7 @@ def settle(run_dir, manifest, source, attempt, save):
         entries = sorted(os.listdir(directory))
         names = [name for name in entries if not name.endswith(".json.plan")]
         if (any(name[:-5] not in names for name in entries if name.endswith(".json.plan"))
-                or len(names) > config["max_native_pages"]
+                or len(names) > page_limit(source, config)
                 or sum((directory / n).lstat().st_size for n in names) > 128 * 1024 * 1024):
             raise ValueError("native attempt exceeds bounds")
         known = {item["filename"] for item in state["pages"]}
@@ -202,6 +215,9 @@ def settle(run_dir, manifest, source, attempt, save):
                        "generation": manifest["run_id"], "attempt": attempt["number"]}
             observation, diagnostic = _decode(source, raw, name, binding,
                                                native_format=config["native_source_formats"][source])
+            if (observation is not None and source in ("srs", "kidder-mathews", "hanley")
+                    and observation.get("receipt", {}).get("sequence", 0) > page_limit(source, config)):
+                raise ValueError("native feed sequence exceeds policy limit")
             if diagnostic:
                 state["pages"].append({"state": "no_data", "filename": name,
                                        "file_sha256": hashlib.sha256(raw).hexdigest(), "reason": diagnostic})
@@ -244,7 +260,7 @@ def prepare_job(run_dir, manifest, source, attempt, page):
             or manifest.get("collector_git_sha") != config["collector_git_sha"]):
         raise ValueError("native attempt path mismatch")
     pages = container.get("pages")
-    if (not isinstance(pages, list) or len(pages) > config["max_native_pages"]
+    if (not isinstance(pages, list) or len(pages) > page_limit(source, config)
             or any(not isinstance(item, dict) or not isinstance(item.get("filename"), str) for item in pages)
             or len({item["filename"] for item in pages}) != len(pages)):
         raise ValueError("native page manifest exceeds bound or has duplicates")
@@ -264,6 +280,9 @@ def prepare_job(run_dir, manifest, source, attempt, page):
                "generation": manifest["run_id"], "attempt": attempt["number"]}
     observation, diagnostic = _decode(source, raw, name, binding,
                                       native_format=config["native_source_formats"][source])
+    if (observation is not None and source in ("srs", "kidder-mathews", "hanley")
+            and observation.get("receipt", {}).get("sequence", 0) > page_limit(source, config)):
+        raise ValueError("native feed sequence exceeds policy limit")
     if diagnostic or len(observation["records"]) > config["max_records"]:
         raise ValueError("native page is no longer admissible")
     automatic._refuse_credential_fields(observation)

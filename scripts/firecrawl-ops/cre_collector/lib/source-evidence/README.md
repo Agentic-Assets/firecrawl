@@ -92,3 +92,18 @@ for storage and a 16 MiB decoded limit, below the existing 32 MiB transport limi
 Malformed bodies remain private and are refused for observation admission.
 See [`source_evidence/README.md`](../../source_evidence/README.md) for bounds,
 credential inspection, provenance, and the separate admission and custody gates.
+
+## Native JSON feed private capture
+
+The explicit source-scoped native JSON feed publisher records bounded decoded
+SRS and Kidder JSON or Hanley's embedded JSON literal before source filtering.
+The default is 128 private page files; only an explicit SRS configuration can
+raise that limit, up to 256. The 16 MiB decoded-body and 128 MiB stored-attempt
+limits remain unchanged. These local files require source-specific policy and
+projection before evidence admission; capture is not publisher authentication,
+source visibility, complete coverage, or production acceptance.
+
+SRS and Kidder generation-cache disposition is kept in collector-owned metadata,
+not a reserved field on provider rows. Provider fields with the same name are
+preserved and cannot assert cache provenance, including when capture is disabled.
+This intentionally corrects the former source-field collision behavior.

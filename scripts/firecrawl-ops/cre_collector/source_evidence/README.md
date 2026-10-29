@@ -891,3 +891,29 @@ For v5, an interruption while OCR is in progress leaves both original files
 in reconciliation. A verified settled OCR completion can be replayed without
 spawning to create or verify the existing Docling-prior seal. Recovery remains
 incomplete and does not create a final seal, append job, or start Docling.
+
+### Draft native JSON feed projection
+
+The optional `native_json_feed_projected_v1` profile is limited to SRS, Kidder
+and Hanley. Private gzip files retain collector-decoded text, not wire bytes.
+The evidence lane reconstructs only projected JSON; original hashes, lengths
+and filenames remain in private custody. Capture time and request/status fields
+are local observations or assertions, not publisher authentication, permission,
+completeness or UI visibility.
+
+Hanley non-public and unknown-visibility rows become null at their original
+positions with a withholding witness. This prototype preserves SRS feed values,
+including `Hide_Sale_Price__c` and any associated numeric value, as source
+observations. The canonical mapper remains unchanged and continues to suppress
+the displayed price when its control is set. Whether the general public
+price-withholding rule permits retaining that value in restricted evidence is
+an outstanding owner decision: **do not activate or admit SRS while pending**.
+No conclusion about publisher rights or permission follows from a public endpoint.
+When SRS or Kidder returns valid JSON without its recognized row array, the
+whole value is preserved as unqualified context with no selected records; it
+does not prove a listing or complete coverage. Malformed JSON remains private.
+Existing event header and overall size bounds still apply. Other source content remains subject to the existing credential and JLL rules;
+screening is not a general confidentiality guarantee. All profiles are default
+off and require source-policy review and separate production acceptance.
+SRS can explicitly opt into 256 pages; other sources remain limited to 128.
+The shared attempt limit remains 128 MiB and decoded page limit 16 MiB.

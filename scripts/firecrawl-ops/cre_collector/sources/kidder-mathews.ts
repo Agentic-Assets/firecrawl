@@ -1,3 +1,4 @@
+import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
@@ -41,6 +42,10 @@ export type KidderMappingContext = {
 };
 
 let kidderCache: KidderInventoryResult | null = null;
+const kidderCacheDisposition = new WeakMap<object, CacheDisposition>();
+function kidderDisposition(row: any): CacheDisposition {
+  return kidderCacheDisposition.get(row) ?? "live";
+}
 
 function numeric(value: any): number | null {
   return value != null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -152,6 +157,7 @@ export async function kidderFetchCompleteInventory(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
+    const requestBody = JSON.stringify({ startIndex: 0, numResults: KIDDER_STRICT_MAX_RESULTS, includeAggregations: false });
     const response = await fetchImpl(KIDDER_API, {
       method: "POST",
       headers: {
@@ -160,9 +166,7 @@ export async function kidderFetchCompleteInventory(
         Origin: "https://www.kidder.com",
         "Cache-Control": "no-cache",
       },
-      body: JSON.stringify({
-        startIndex: 0, numResults: KIDDER_STRICT_MAX_RESULTS, includeAggregations: false,
-      }),
+      body: requestBody,
       cache: "no-store",
       redirect: "error",
       signal: controller.signal,
@@ -184,6 +188,8 @@ export async function kidderFetchCompleteInventory(
       text += decoder.decode(chunk.value, { stream: true });
     }
     text += decoder.decode();
+    publishNativeJsonFeed({ profile: "kidder_bulk_post_v1", sourceKey: "kidder-mathews", requestVariant: "strict",
+      requestBody, page: 0, offset: 0, status: response.status, body: text });
     const data = JSON.parse(text);
     assertKidderCompleteInventory(data);
     return data;
@@ -222,10 +228,17 @@ async function kidderPost(startIndex: number, strict = requireFreshDetails()): P
         ...(strict ? { cache: "no-store" as const } : {}),
       });
       if (!res.ok) throw new Error(`Kidder API HTTP ${res.status}`);
-      const data: any = await res.json();
+      let data: any;
+      if (nativeJsonFeedCaptureEnabled()) {
+        const text = await res.text();
+        publishNativeJsonFeed({ profile: "kidder_paged_post_v1", sourceKey: "kidder-mathews", requestVariant: "standard",
+          requestBody: body, page: startIndex / KIDDER_PAGE_SIZE, offset: startIndex, status: res.status, body: text });
+        data = JSON.parse(text);
+      } else data = await res.json();
       if (data && Array.isArray(data.results)) return data;
       throw new Error("Kidder API response missing results[]");
     } catch (err) {
+      if (err instanceof NativeJsonFeedCaptureError) throw err;
       if (attempt === 3) throw err;
       await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
     }
@@ -241,10 +254,11 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
   ) {
     return {
       ...kidderCache,
-      items: kidderCache.items.map((row) => ({
-        ...row,
-        __creInventoryCacheDisposition: "generation_cache",
-      })),
+      items: kidderCache.items.map((row) => {
+        const copy = { ...row };
+        kidderCacheDisposition.set(copy, "generation_cache");
+        return copy;
+      }),
     };
   }
   if (kidderCache) kidderCache = null;
@@ -278,7 +292,7 @@ export async function kidderFetchAll(max: number): Promise<KidderInventoryResult
       assertKidderInventoryPage(data, page, firstPage, strict);
       return data.results ?? [];
     } catch (err) {
-      if (strict) throw err;
+      if (strict || err instanceof NativeJsonFeedCaptureError) throw err;
       failed++;
       console.error(`  kidder: page ${page} failed: ${err}`);
       return [];
@@ -373,8 +387,7 @@ export function mapKidderListing(
           method: "kidder_public_inventory_feed",
           cacheDisposition:
             context.cacheDisposition ??
-            row.__creInventoryCacheDisposition ??
-            "live",
+            kidderDisposition(row),
         }
       : undefined,
     preserveChildCollections: true,
@@ -417,7 +430,7 @@ export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean): 
         strict: requireFreshDetails(),
         inventoryObservedAt,
         generationId,
-        cacheDisposition: row.__creInventoryCacheDisposition ?? "live",
+        cacheDisposition: kidderDisposition(row),
       })
     );
   }

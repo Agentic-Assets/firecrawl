@@ -1,3 +1,4 @@
+import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
 import {
@@ -69,7 +70,7 @@ function renderedHanleyInventory(html: string): {
   };
 }
 
-function embeddedArrayAt(html: string, marker: number): any[] | null {
+function embeddedArrayLiteralAt(html: string, marker: number): string | null {
   const start = html.indexOf("[", marker);
   if (start < 0) return null;
   let depth = 0;
@@ -92,9 +93,14 @@ function embeddedArrayAt(html: string, marker: number): any[] | null {
       }
     }
   }
-  if (end < 0) return null;
+  return end < 0 ? null : html.slice(start, end);
+}
+
+function embeddedArrayAt(html: string, marker: number): any[] | null {
+  const literal = embeddedArrayLiteralAt(html, marker);
+  if (literal === null) return null;
   try {
-    const parsed = JSON.parse(html.slice(start, end));
+    const parsed = JSON.parse(literal);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -205,6 +211,16 @@ export function hanleyFallbackOptions(strict = requireFreshDetails()): {
   };
 }
 
+function captureHanleyLiteral(html: string, variant: "direct" | "firecrawl", status: number | null): void {
+  if (!nativeJsonFeedCaptureEnabled()) return;
+  const match = /\brethink_properties\s*=/.exec(html);
+  const marker = match?.index ?? html.indexOf("rethink_properties");
+  if (marker < 0) return;
+  const literal = embeddedArrayLiteralAt(html, marker);
+  if (literal !== null) publishNativeJsonFeed({ profile: "hanley_embedded_array_v1", sourceKey: "hanley",
+    requestVariant: variant, requestBody: null, page: null, offset: null, status, body: literal });
+}
+
 async function fetchHanleyHtml(strict = requireFreshDetails()): Promise<string> {
   try {
     const res = await fetch(HANLEY_URL, {
@@ -218,14 +234,17 @@ async function fetchHanleyHtml(strict = requireFreshDetails()): Promise<string> 
     if (res.ok) {
       const html = await res.text();
       if (html.includes("rethink_properties")) {
+        captureHanleyLiteral(html, "direct", res.status);
         parseHanleyInventory(html, strict);
         return html;
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof NativeJsonFeedCaptureError) throw error;
     /* fall back to Firecrawl raw HTML */
   }
   const html = await scrapeRaw(HANLEY_URL, hanleyFallbackOptions(strict));
+  captureHanleyLiteral(html, "firecrawl", null);
   if (strict) parseHanleyInventory(html, true);
   return html;
 }
