@@ -58,7 +58,7 @@ import cre_parse
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
 from cre_artifact_scope import require_canonical_artifact
-from source_fields.sql import RESERVED_KEY, build_count_update
+from source_fields.sql import RESERVED_KEY, build_field_updates
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -2719,7 +2719,7 @@ def generic_enrichment_substantive(listing):
     return False
 
 
-def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None):
+def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_candidates=None):
     """Map one collector listing to a staging row dict, or None to skip."""
     if is_retired_om_parse_listing(listing):
         return None
@@ -3031,6 +3031,8 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None):
         desc = None
         markdown = None
 
+    building_decision = (building_candidates or {}).get(id(listing), {})
+    count_decision = (field_candidates or {}).get(id(listing), {})
     row = {
         "slug": slug,
         "external_id": external_id,
@@ -3127,7 +3129,10 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None):
         "power_service": clean_text(listing.get("powerService"), 128),
         "rail_served": bool_or_none(listing.get("railServed")),
         "extra_facts": extra_facts,
-        "source_field_count": (field_candidates or {}).get(id(listing)),
+        "source_field_count": count_decision.get("values", {}).get("available_space_count"),
+        "_source_field_conflict": "available_space_count" in count_decision.get("blocked", []),
+        "source_field_building": building_decision.get("values") or None,
+        "_source_building_conflicts": building_decision.get("blocked", []),
         "highlights": highlights,
         "amenities": str_array_or_none(listing.get("amenities")),
         "description": desc[:20000] if isinstance(desc, str) else None,
@@ -3271,6 +3276,8 @@ def _merge_child_collections(collection, primary, secondary):
 
 def merge_rows(a, b):
     """Merge two staged rows for the same (slug, external_id) within a batch."""
+    from source_fields.merge import merge_building_candidates
+    a["source_field_building"], a["_source_building_conflicts"] = merge_building_candidates(a, b)
     prior_candidate, incoming_candidate = a.get("source_field_count"), b.get("source_field_count")
     if a.get("_source_field_conflict") or b.get("_source_field_conflict"):
         a["source_field_count"], a["_source_field_conflict"] = None, True
@@ -3565,6 +3572,7 @@ STAGE_COLS = [
     "rail_served",
     "extra_facts",
     "source_field_count",
+    "source_field_building",
     "om_facts",
 ]
 
@@ -3745,6 +3753,7 @@ def build_sql(
             **avison_prices.project_row(row),
             "om_facts": [],
             "source_field_count": row.get("source_field_count"),
+            "source_field_building": row.get("source_field_building"),
             "extra_facts": (
                 {k: v for k, v in row["extra_facts"].items() if k != RESERVED_KEY}
                 if isinstance(row.get("extra_facts"), dict)
@@ -3932,7 +3941,8 @@ CREATE TEMP TABLE _stage (
     guarantor text, lease_years_remaining numeric, price_per_unit numeric,
     grm numeric, price_per_acre numeric, num_rooms integer, revpar numeric,
     clear_height_ft numeric, dock_doors integer, drive_in_doors integer,
-    power_service text, rail_served boolean, extra_facts jsonb, source_field_count jsonb, om_facts jsonb
+    power_service text, rail_served boolean, extra_facts jsonb, source_field_count jsonb,
+    source_field_building jsonb, om_facts jsonb
 ) ON COMMIT DROP;""")
     w(f"COPY _stage ({', '.join(STAGE_COLS)}) FROM stdin;")
     for r in rows:
@@ -5137,7 +5147,7 @@ END $$;
         .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
     )
 
-    w(build_count_update())
+    w(build_field_updates())
 
     w(targeted_observation if targeted else f"""
 -- Canonical full ingest synchronizes source observation and lifecycle mirror
@@ -6852,6 +6862,8 @@ def main():
             sys.exit(f"refusing strict freshness artifact: {exc}")
         from source_fields.buildout import qualified_counts
         field_candidates = qualified_counts(data, hashlib.sha256(image_transition_input).hexdigest())
+        from source_fields.transwestern import qualified_building_fields
+        building_candidates = qualified_building_fields(data, hashlib.sha256(image_transition_input).hexdigest())
         if is_matthews_enrich and targeted_claims is None:
             sys.exit("refusing strict freshness Matthews enrichment without caller-bound targeted claims")
         has_colliers_main = any(
@@ -6950,7 +6962,7 @@ def main():
                     )
                 inventory_only_merged[inventory_key] = inventory_row
                 continue
-            row = to_row(listing, brokers_by_idx, scraped_at, field_candidates)
+            row = to_row(listing, brokers_by_idx, scraped_at, field_candidates, building_candidates)
             if row is None:
                 skipped_no_url += 1
                 continue

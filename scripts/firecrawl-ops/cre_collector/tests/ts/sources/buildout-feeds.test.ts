@@ -37,7 +37,7 @@ test("Franklin sale and lease maintain distinct public feeds and original pacing
     const config = franklinStreetBuildoutConfig(tx);
     assert.deepEqual(config, {
       company: "Franklin Street", pluginKey: key, listingsPage: "https://www.franklinst.com/properties/",
-      opts: { preferDirectJson: true, directReferer: "https://www.franklinst.com/properties/",
+      opts: { preferDirectJson: true, inventorySort: "created_at asc, id asc", directReferer: "https://www.franklinst.com/properties/",
         pageConcurrency: 1, requireCompletePages: true, cacheSlug: feedKey, usePageCache: true,
         recoveryPasses: 1, recoveryCooldownMs: 15000, maxRecoveryPages: 30 },
     });

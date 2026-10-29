@@ -15,6 +15,17 @@ Transwestern's contact, document and photo extractors share the enrichment
 call's listing-local Cheerio instance and must remain read-only. Preserve the
 original document's links and harvest inputs; do not share a DOM across listings.
 
+Transwestern building-field observations are scoped to the unique Details tab
+at the witnessed property description hierarchy and its positional panel within
+the accepted property's detail section. Explicitly concealed ancestors outside
+the intentionally switchable panel reject promotion. These observations
+retain source literals and ambiguity, and bind the detail URL, body hash and
+observation clock. Computed visibility is not asserted: the Details panel may
+be intentionally hidden until its tab is selected. Elevator zero is valid;
+floor-size text keeps its source units and does not acquire inferred units.
+The observations do not establish a new identity, feed admission or production
+write authority. Existing feed-to-detail identity and freshness gates remain.
+
 Photo order is part of fidelity: canonical ingest uses `photos[0]` as the
 primary image. For Transwestern, prefer the canonical feed `PropertyImage`
 only when it survives the shared image filter; otherwise consider only the
