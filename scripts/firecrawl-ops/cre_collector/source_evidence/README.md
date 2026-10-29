@@ -582,6 +582,42 @@ printed. A short or punctuation-only query may require a full index scan, and
 queries have a 30-second database statement timeout. The existing document text
 search and its phrase and chunk boundaries are unchanged.
 
+## Draft property-location selection order
+
+Policy v4 requires `selection_order: property_occurrences_first_v1` and retains
+the v3 PDF complement and sparse OCR settings. It stable-partitions existing
+document candidates using eligible Transwestern property-location observations;
+other candidates retain discovery order. Existing URL, host and absolute-source
+reference checks still apply before the document cap. The manifest remains
+unchanged and each selection or exclusion retains its original candidate index
+and a priority class with its witness or null. Exact URL grouping retains every
+source occurrence; an unselected candidate remains in the bound manifest.
+
+Priority requires the same collector source record, a matching document or link
+occurrence, consistent source URL, detail/body-hash assertions and timestamps,
+and a live Transwestern detail within the recurring bound generation. Missing,
+stale, malformed, conflicting or incomplete bindings supply no priority for
+that occurrence. Independently validated property and footer occurrences can
+coexist for one exact URL; the property witness does not erase the others.
+Witnesses bind the collector artifact file hash, plan, capture, record pointer,
+generation, attempt and role hash, but these are source custody assertions; they
+do not independently authenticate the publisher or rehash unavailable original
+HTML. Manual plans lacking recurring bindings receive no priority. This is local
+draft behavior, not production acceptance; it does not admit a new URL, waive
+access checks, create a writer or change legacy v1–v3 selection behavior.
+
+Only v4 acquisition contexts add an optional `selection_binding` to the existing
+private context representation. It binds the complete selection digest, order,
+zero-based selected position and priority witness into the sealed context.
+Archived-context validation rederives these fields from the source plans and
+policy; a sidecar or a digest supplied alongside it is not independent authority.
+Sealed readback still requires the caller's authenticated context and marker.
+Legacy contexts remain unchanged. The foreground pipeline executes the selected
+order, its checkpoint and budget digests bind it, and recovery performs no new
+fetch or conversion. A selected position describes that array, not independent
+evidence of network request order. The standalone budget API reserves selected
+indices; it does not schedule work.
+
 ## Draft offline HTML landing observations
 
 `document_landing.parse_document_landing` accepts bounded acquired HTML bytes and

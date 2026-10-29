@@ -97,6 +97,19 @@ validate public IPs at each request and redirect hop and preserve actual
 acquisition clocks separately from source-observation clocks. This draft is
 not deployed; separate production acceptance is required.
 
+Draft document policy v4 explicitly opts into `property_occurrences_first_v1`.
+It keeps candidate manifest bytes and indices, groups only exact URLs, checks
+existing host/reference admission and records every cap exclusion. Stable
+priority is limited to consistent, live, same-generation Transwestern collector
+property-location witnesses; missing, stale, malformed or conflicting bindings
+cannot qualify their occurrence. A separate valid property occurrence may
+coexist with footer or unknown occurrences of the same exact URL. A collector
+artifact hash and source-body hash are bound
+assertions, not an independent rehash of the original page. Manual plans without
+recurring collector custody cannot acquire this priority. Policy versions 1–3
+keep their original ordering and selection representation. This is unverified,
+disabled unless explicitly configured and requires separate production acceptance.
+
 Draft `document_pipeline.run` connects the supervised document transport to
 local AnyDoc under the existing attempt manifest, save callback and foreground
 owner lock. It rederives policy and the sealed source plan, checks public

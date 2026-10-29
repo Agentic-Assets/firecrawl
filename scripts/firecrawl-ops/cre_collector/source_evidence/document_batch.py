@@ -107,8 +107,18 @@ def prepare(plans, candidates, policy_raw, *, expected_policy_sha256, target_sha
                   candidate_manifest_sha256=events.sha256(events.encoded(actual)), documents=[], exclusions=[])
     if "sparse_ocr" in first:
         output["sparse_ocr"] = copy.deepcopy(first["sparse_ocr"])
+    priority = None
+    if "selection_order" in first:
+        from source_evidence import document_priority
+        output["selection_order"] = first["selection_order"]
+        priority = document_priority.witnesses(plans, actual, collector_git_sha=collector_git_sha,
+                                               target_sha256=target_sha256)
     size = len(events.encoded(output))
-    for index, candidate in enumerate(actual["candidates"]):
+    indices = list(range(len(actual["candidates"])))
+    if priority is not None:
+        indices.sort(key=lambda index: priority[index] is None)
+    for index in indices:
+        candidate = actual["candidates"][index]
         reason = document_acquisition_policy.candidate_refusal(candidate, output["allowed_hosts"])
         if reason is None and len(output["documents"]) >= output["limits"]["max_documents"]:
             reason = "document_count_limit"
@@ -119,6 +129,9 @@ def prepare(plans, candidates, policy_raw, *, expected_policy_sha256, target_sha
             entry = {"candidate_index": index, "candidate_sha256": events.sha256(events.encoded(candidate)),
                      "candidate": copy.deepcopy(candidate)}
             output["documents"].append(entry)
+        if priority is not None:
+            entry["priority"] = {"class": "property" if priority[index] is not None else "unprioritized",
+                                 "witness": copy.deepcopy(priority[index])}
         size += len(events.encoded(entry)) + 1
         if size > MAX_OUTPUT:
             raise ValueError("document batch selection exceeds bound")
