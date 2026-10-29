@@ -124,6 +124,10 @@ export function assertRegisteredBuildoutFirm(
         typeof definition.detailConfig.preserveTransactionSuffix !== "boolean") {
       throw new Error(`${definition.sourceKey}: Buildout detail suffix policy must be boolean`);
     }
+    if (definition.detailConfig.allowHttpListingInput !== undefined &&
+        (definition.sourceKey !== "leibsohn" || definition.detailConfig.allowHttpListingInput !== true)) {
+      throw new Error(`${definition.sourceKey}: Buildout HTTP listing input is not admitted`);
+    }
     const listingHosts = definition.detailConfig.listingHosts;
     if (
       listingHosts.length === 0 ||
@@ -181,6 +185,7 @@ function firm(
             host: detailHost,
             listingHosts: [detailHost],
             company,
+            ...(sourceKey === "leibsohn" ? { allowHttpListingInput: true } : {}),
             ...(DETAIL_ROUTE_OVERRIDES[sourceKey]?.preserveTransactionSuffix
               ? { preserveTransactionSuffix: true } : {}),
           },

@@ -4,6 +4,7 @@ import { observationNow } from "../lib/observation-clock.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
+import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
@@ -778,6 +779,8 @@ export type BuildoutDetailConfig = {
   host: string;
   /** Keep the source's sale/lease suffix in the detail URL, not the canonical ID. */
   preserveTransactionSuffix?: boolean;
+  /** Permit a source-provided HTTP listing URL as local route input only. */
+  allowHttpListingInput?: boolean;
   /**
    * Public listing hosts allowed to supply `propertyId` values for this
    * plugin, with central bare/www equivalence. A queue row must prove ownership
@@ -862,16 +865,25 @@ function buildoutOwnedListingUrl(
 // Inventory metadata can publish HTTP or path-routed listing URLs. Keep the
 // provider's literal URL and the existing ingest identity; this does not prove
 // HTTP redirects/TLS or make path URLs resolvable by the detail iframe helper.
+function buildoutLiteralPropertyId(parsed: URL, listingUrl: string): string | null {
+  if (parsed.search.slice(1).split("&").some(part => {
+    const key = part.split("=", 1)[0];
+    return key !== "propertyId" && new URLSearchParams(part).has("propertyId");
+  })) return null;
+  const values = parsed.searchParams.getAll("propertyId").filter(Boolean);
+  const literals = [...listingUrl.matchAll(/[?&]propertyId=([^&#]+)/g)].map(match => match[1]);
+  if (values.length !== 1 || literals.length !== 1 || literals[0] !== values[0] ||
+      !/^[A-Za-z0-9_-]+$/.test(values[0]) || !values[0].replace(/-(sale|lease)$/, "")) return null;
+  return values[0];
+}
+
 function buildoutInventoryListingUrl(listingUrl: string, host: string): URL | null {
   const parsed = buildoutOwnedListingUrl(listingUrl, [host], true);
   if (!parsed) return null;
   const rawPath = listingUrl.match(/^https?:\/\/[^/?#]+([^?#]*)/i)?.[1] ?? "";
   if ((rawPath || "/") !== parsed.pathname) return null;
   if (parsed.searchParams.has("propertyId")) {
-    const values = parsed.searchParams.getAll("propertyId").filter(Boolean);
-    const literal = listingUrl.match(/[?&]propertyId=([^&#]+)/)?.[1];
-    if (values.length !== 1 || !/^[A-Za-z0-9_-]+$/.test(values[0]) ||
-        !values[0].replace(/-(sale|lease)$/, "") || literal !== values[0]) return null;
+    if (!buildoutLiteralPropertyId(parsed, listingUrl)) return null;
   } else {
     const leaf = parsed.pathname.replace(/\/$/, "").split("/").at(-1)?.toLowerCase();
     if (parsed.search || !/^\/(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_-]+\/?$/.test(parsed.pathname) ||
@@ -881,7 +893,7 @@ function buildoutInventoryListingUrl(listingUrl: string, host: string): URL | nu
 }
 
 // Compose the Buildout detail iframe content URL for a source. Returns null when
-// the input URL is not a clean HTTPS URL owned by an admitted listing host
+// the input URL is not a clean admitted listing URL (HTTPS by default)
 // (with one optional leading www. label), or when the slug cannot be derived.
 // Rejection leaves the claim queued for the weekly additive backstop. Pure;
 // never throws.
@@ -893,9 +905,10 @@ export function buildoutDetailIframeUrl(
 ): string | null {
   const cfg = detailConfig ?? BUILDOUT_ENRICH_CONFIG[sourceKey];
   if (!cfg) return null;
-  const parsed = buildoutOwnedListingUrl(listingUrl, cfg.listingHosts);
+  const parsed = buildoutOwnedListingUrl(listingUrl, cfg.listingHosts,
+    sourceKey === "leibsohn" && cfg.allowHttpListingInput === true);
   if (!parsed) return null;
-  const propertyId = parsed.searchParams.get("propertyId");
+  const propertyId = buildoutLiteralPropertyId(parsed, listingUrl!);
   if (!propertyId?.replace(/-(?:sale|lease)$/i, "")) return null;
   const slug = (cfg.preserveTransactionSuffix
     ? propertyId
@@ -911,17 +924,30 @@ export function buildoutDetailIframeUrl(
 // detail page. Treat that as unavailable detail evidence, not as fresh Markdown:
 // ingesting the shell would overwrite the last useful description and falsely
 // complete the enrichment packet.
-export function buildoutDetailDocIsUsable(
+function buildoutDetailQualification(
   doc: { markdown?: string | null; rawHtml?: string | null } | null | undefined
-): boolean {
+): "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail" {
   const body = `${doc?.markdown ?? ""}\n${doc?.rawHtml ?? ""}`.toLowerCase();
-  if (!body.trim()) return false;
-  return !(
+  if (
     body.includes("listing_not_found") ||
     body.includes("listing not found") ||
     body.includes("sorry, we can't find the listing") ||
     body.includes("sorry, we can&#39;t find the listing")
-  );
+  ) return "rejected_missing_detail_shell";
+  const $ = cheerio.load(doc?.rawHtml ?? "");
+  $("head, script, style, template, noscript, svg, a").remove();
+  const htmlText = $("body").text().replace(/\s+/g, " ").trim();
+  const markdownText = (doc?.markdown ?? "")
+    .replace(/!?\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/[#*_`~>\s-]+/g, " ").trim();
+  const hasContent = (value: string) => !!value && !/^(?:loading|please wait|loading\.\.\.)[.!…\s]*$/i.test(value);
+  return hasContent(htmlText) || hasContent(markdownText) ? "usable_detail" : "rejected_unqualified_detail";
+}
+
+export function buildoutDetailDocIsUsable(
+  doc: { markdown?: string | null; rawHtml?: string | null } | null | undefined
+): boolean {
+  return buildoutDetailQualification(doc) === "usable_detail";
 }
 
 // Tier-B detail enricher for a single Buildout (svn / lee-associates) listing.
@@ -935,7 +961,7 @@ export async function enrichBuildoutDetailObserved(
   listingUrl: string,
   detailConfig?: BuildoutDetailConfig,
   onDocument?: (doc: Awaited<ReturnType<typeof scrapeDoc>>, pageUrl: string,
-    qualification: "usable_detail" | "rejected_missing_detail_shell") => void
+    qualification: "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail") => void
 ): Promise<any | null> {
   const iframeUrl = buildoutDetailIframeUrl(sourceKey, listingUrl, detailConfig);
   if (!iframeUrl) {
@@ -953,15 +979,15 @@ export async function enrichBuildoutDetailObserved(
     console.error(`  enrich/buildout(${sourceKey}): detail iframe scrape failed for ${listingUrl}: ${err}`);
     return null;
   }
-  const usable = buildoutDetailDocIsUsable(doc);
+  const qualification = buildoutDetailQualification(doc);
   // Retain the returned response separately from canonical qualification.
   if (onDocument) {
-    try { onDocument(doc, iframeUrl, usable ? "usable_detail" : "rejected_missing_detail_shell"); }
+    try { onDocument(doc, iframeUrl, qualification); }
     catch { /* Canonical mapping remains independent. */ }
   }
-  if (!usable) {
+  if (qualification !== "usable_detail") {
     console.error(
-      `  enrich/buildout(${sourceKey}): rejected missing-detail shell for ${listingUrl}`
+      `  enrich/buildout(${sourceKey}): ${qualification} for ${listingUrl}`
     );
     return null;
   }
