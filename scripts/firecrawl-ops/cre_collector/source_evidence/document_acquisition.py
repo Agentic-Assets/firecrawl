@@ -112,7 +112,7 @@ def _context(selected, item, receipt):
     source_binding = ({"source_evidence_plans": copy.deepcopy(selected["source_evidence_plans"]),
                        "source_evidence_set_sha256": selected["source_evidence_set_sha256"]}
                       if batch else {"source_evidence_plan_sha256": selected["source_evidence_plan_sha256"]})
-    return {"schema_version": SCHEMA_V2 if batch else SCHEMA, "source_key": selected["source_key"],
+    context = {"schema_version": SCHEMA_V2 if batch else SCHEMA, "source_key": selected["source_key"],
             **source_binding,
             "candidate_manifest_sha256": selected["candidate_manifest_sha256"],
             "policy_sha256": selected["policy_sha256"], "target_sha256": selected["target_sha256"],
@@ -122,6 +122,16 @@ def _context(selected, item, receipt):
             "destination_verification": "caller_asserted_not_independently_verified",
             "redirect_location_binding": "not_observed_in_receipt", "cumulative_byte_budget": "not_verified",
             "requested_original_retention": selected["original_retention"], "original_retention": "not_asserted"}
+    if "selection_order" in selected:
+        context["selection_binding"] = {
+            "schema_version": "cre-document-selection-binding/v1",
+            "selection_sha256": events.sha256(events.encoded(selected)),
+            "selection_order": selected["selection_order"],
+            "selected_position": next(position for position, selected_item in enumerate(selected["documents"])
+                                      if selected_item["candidate_index"] == item["candidate_index"]),
+            "priority": copy.deepcopy(item["priority"]),
+        }
+    return context
 
 
 def validate_archived_context(plan, candidates, policy_raw, selection, context, *,
