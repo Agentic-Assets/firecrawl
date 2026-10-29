@@ -69,3 +69,15 @@ original-body hashes are not substituted into projected evidence. Other
 credential forms remain subject to normal scanners and may refuse. Evidence
 capture, canonical admission, target activation and production writes remain
 separate decisions.
+
+### Newmark native document-reference withholding
+
+For Newmark's projected native feed only, credential-bearing HTTP(S) document
+references at the exact `/data/<row>/secureDocumentsUrl` field are withheld as
+null with an ordered pointer receipt. Clean references, original nulls, other
+values and rows remain unchanged. The receipt describes a local projection and
+needs independent authentication; it cannot establish the original value.
+Original capture bytes and hashes remain private. Other credential-bearing
+fields still face the normal scanner and may refuse admission. The predicate is
+not a general secret detector; the profile grants no source access, database
+write, canonical promotion or production activation.

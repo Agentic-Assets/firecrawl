@@ -129,7 +129,8 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
                        for k, v in projections.items())
                 or any(k not in allowed or not native_pages.format_supported(k, v)
                        for k, v in native_formats.items())
-                or type(policy["max_native_pages"]) is not int or not 1 <= policy["max_native_pages"] <= 128):
+                or type(policy["max_native_pages"]) is not int
+                or not 1 <= policy["max_native_pages"] <= (256 if native_formats.get("srs") == "native_json_feed_projected_v1" else 128)):
             raise ValueError("invalid native capture or projection policy")
     if version3:
         document_formats = policy["document_text_formats"]

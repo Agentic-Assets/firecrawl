@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "./terminal-error.js";
 /** Private parsed-feed capture. This is not a response-byte or freshness claim. */
 import { createHash } from "node:crypto";
 import { observationNow } from "../observation-clock.js";
@@ -42,5 +43,5 @@ export function publishTranswesternParsedPage(data: unknown, transaction: string
     publishPrivatePage(directory, `page-${transaction}-${occurrence}-${sha(payload)}.json`, payload,
       /^page-(?:sale|lease)-(?:0|[1-9][0-9]*)-[a-f0-9]{64}\.json$/, MAX_ENTRY,
       bound("MAX_PAGES", 128), bound("MAX_BYTES", 128 * 1024 * 1024));
-  } catch { throw new Error("Transwestern native capture failed"); }
+  } catch { throw new NativeEvidenceTerminalError("Transwestern native capture failed"); }
 }

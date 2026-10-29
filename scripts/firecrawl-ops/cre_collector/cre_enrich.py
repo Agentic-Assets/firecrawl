@@ -473,7 +473,7 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
     listings = artifact.get("listings")
     if not isinstance(listings, list):
         raise ValueError("enriched artifact must contain a listings array")
-    if listings:
+    if listings or "terminalCaptureFailure" in artifact["runMeta"]:
         require_canonical_artifact(artifact)
     validate_hanley_enrichment_artifact(artifact)
     claimed_by_url = {row.get("url"): row for row in claimed_rows if row.get("url")}

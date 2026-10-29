@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "./source-evidence/terminal-error.js";
 // lib/enrich.ts - targeted-detail (enrich) mode registry.
 //
 // The enrichment worker (cre_enrich.py) claims a batch of new/changed listings
@@ -80,6 +81,7 @@ export const colliersMainEnricher: SourceEnricher = {
         // additive rows; keep them so the worker marks the claim done by url.
         return listing;
       } catch (err) {
+        if (err instanceof NativeEvidenceTerminalError) throw err;
         // Transient detail failure (e.g. unrecovered Cloudflare challenge). Omit
         // the row so the worker leaves the claim queued for a later retry.
         console.error(`  enrich/colliers-main: detail failed for ${item.url}: ${err}`);
@@ -160,6 +162,7 @@ export function buildoutEnricherFor(
         });
         return { listing, observation };
       } catch (err) {
+        if (err instanceof NativeEvidenceTerminalError) throw err;
         console.error(`  enrich/buildout: detail failed for ${item.url}: ${err}`);
         return { listing: null, observation };
       }
@@ -177,6 +180,7 @@ export function buildoutEnricherFor(
             detailConfig
           );
         } catch (err) {
+          if (err instanceof NativeEvidenceTerminalError) throw err;
           console.error(`  enrich/buildout: detail failed for ${item.url}: ${err}`);
           return null;
         }
@@ -449,7 +453,7 @@ export function groupEnrichItems(items: EnrichItem[]): Map<string, EnrichItem[]>
   return groups;
 }
 
-export type EnrichGroupResult = { sources: any[]; listings: any[] };
+export type EnrichGroupResult = { sources: any[]; listings: any[]; terminalCaptureFailure?: true };
 
 // Dispatch each grouped source to its enricher (resolved via resolveEnricher, so
 // the unit test can inject a fake and stay no-network) and assemble the standard
@@ -515,6 +519,10 @@ export async function runEnrichGroups(
       });
       console.error(`  ${key}: ${emitted}/${groupItems.length} enriched (enricher=${label})`);
     } catch (err) {
+      if (err instanceof NativeEvidenceTerminalError) {
+        sources.push({ sourceKey: key, supported: true, enricher: label, requested: groupItems.length, error: "native_capture_failed" });
+        return { sources, listings, terminalCaptureFailure: true };
+      }
       console.error(`  ${key} FAILED: ${err}`);
       sources.push({
         sourceKey: key,

@@ -27,9 +27,25 @@ before close; guarded custody separately syncs its private parent directory.
 Never send private artifacts to stdout or overwrite a prior capture. Ordinary
 full listing output keeps its existing publication behavior.
 This is private local custody, not database admission or canonical completion.
+Terminal capture failures use that private writer and preserve already-completed
+transactions/groups with `runMeta.terminalCaptureFailure`, then exit nonzero.
+Without `--out`, only this terminal path creates an owner-private temporary
+directory and reports its artifact path on stderr. The marker refuses canonical
+entrypoints; it does not guarantee same-group in-flight results or remote settlement.
+The source-neutral `terminal-error.ts` base stops subsequent dispatch without
+turning ordinary source errors into terminal capture failures.
 
 `pyramid-page.ts` optionally retains successful Pyramid inventory response text
 before parsing and validation in private gzip storage. It captures collector-decoded
 UTF-8, not wire bytes; the decoded cap is 16 MiB, below the 32 MiB transport cap.
 Capture failures stop the enabled path, and unsettled workers remain fenced.
 Admission and canonical convergence remain separate.
+
+`native-json-feed.ts` shares opt-in decoded-text capture for SRS, Kidder,
+Hanley and Newmark NIM before validation, filtering and pruning. Hanley captures an embedded
+array literal, not the HTML response. The publisher binds a closed request
+profile and source; a capture failure stops the enabled path. An explicit SRS
+limit may reach 256 files; other profiles and the unset default remain 128,
+with the existing 16-MiB decoded-page and 128-MiB stored-attempt limits.
+Read the Python evidence guide before admission, including the pending SRS
+price-retention decision. Capture does not authorize admission or display.

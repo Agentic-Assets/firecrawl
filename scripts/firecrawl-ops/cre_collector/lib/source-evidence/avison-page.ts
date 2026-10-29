@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "./terminal-error.js";
 import { createHash } from "node:crypto";
 import { publishPrivatePage } from "./private-page.js";
 
@@ -52,6 +53,6 @@ export function publishAvisonNativePage(directory: string, body: string, secret:
       bound("CRE_AVISON_NATIVE_CAPTURE_MAX_PAGES", MAX_PAGES),
       bound("CRE_AVISON_NATIVE_CAPTURE_MAX_BYTES", MAX_BYTES));
   } catch {
-    throw new Error("Avison Young native capture failed");
+    throw new NativeEvidenceTerminalError("Avison Young native capture failed");
   }
 }

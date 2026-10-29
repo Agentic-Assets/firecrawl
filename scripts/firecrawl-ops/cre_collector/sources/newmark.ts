@@ -1,3 +1,4 @@
+import { publishNativeJsonFeed, nativeJsonFeedCaptureEnabled, NativeJsonFeedCaptureError } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/newmark.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { CONCURRENCY } from "../lib/config.js";
@@ -603,6 +604,11 @@ export async function newmarkNimPage(
   timeoutMs = 30_000,
   retryBaseMs = 1_000
 ): Promise<any> {
+  if (nativeJsonFeedCaptureEnabled() && (take !== NEWMARK_NIM_PAGE_SIZE ||
+      !Number.isSafeInteger(page) || page < 0 || !Number.isSafeInteger(page * NEWMARK_NIM_PAGE_SIZE) ||
+      (tx !== "sale" && tx !== "lease"))) {
+    throw new NativeJsonFeedCaptureError();
+  }
   const requestBody = JSON.stringify({
     type: newmarkNimType(tx),
     listingIds: [],
@@ -638,9 +644,15 @@ export async function newmarkNimPage(
       if (response.ok) {
         // Keep the same deadline through the response body. Fetch resolving
         // headers is not proof that the JSON payload has arrived.
-        return await response.json();
+        if (!nativeJsonFeedCaptureEnabled()) return await response.json();
+        const text = await response.text();
+        publishNativeJsonFeed({ profile: tx === "sale" ? "newmark_nim_sale_post_v1" : "newmark_nim_lease_post_v1",
+          sourceKey: "newmark", requestVariant: requireFreshDetails() ? "strict" : "standard", requestBody,
+          page, offset: page * NEWMARK_NIM_PAGE_SIZE, status: response.status, body: text });
+        return JSON.parse(text);
       }
     } catch (error) {
+      if (error instanceof NativeJsonFeedCaptureError) throw error;
       requestError = controller.signal.aborted
         ? new Error(`Newmark NIM request timed out after ${timeoutMs}ms`)
         : error;

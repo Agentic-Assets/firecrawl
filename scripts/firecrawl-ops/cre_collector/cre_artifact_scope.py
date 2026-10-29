@@ -13,6 +13,7 @@ def require_canonical_artifact(data):
     meta = data.get("runMeta")
     if not isinstance(meta, dict):
         return
-    if (("evidenceOnly" in meta and meta["evidenceOnly"] is not False)
+    if (("terminalCaptureFailure" in meta and meta["terminalCaptureFailure"] is not False)
+            or ("evidenceOnly" in meta and meta["evidenceOnly"] is not False)
             or "evidencePurpose" in meta):
         raise ValueError("private source observations are not a canonical inventory artifact")

@@ -1,5 +1,6 @@
+import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
 import { observationNow } from "./lib/observation-clock.js";
-import { reservePrivateCollectorDirectory, writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 import { join } from "node:path";
 import { observePages, readObservationInput } from "./lib/page-observations/index.js";
 import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-property-observations/index.js";
@@ -189,8 +190,9 @@ async function main() {
     failures: Array<{ listingId: string; role: string; status: 404 }>;
   }> = [];
   let avisonOtherFailures = 0;
+  let terminalCaptureFailure = false;
 
-  for (const key of requestedSources) {
+  sourceLoop: for (const key of requestedSources) {
     if (UNSUPPORTED[key]) {
       console.error(`skipping unsupported source ${key}`);
       sources.push({ sourceKey: key, supported: false, note: UNSUPPORTED[key] });
@@ -237,6 +239,12 @@ async function main() {
         });
       } catch (err) {
         recordSourceCompleted(key, tx, { outcome: "failed" });
+        if (err instanceof NativeEvidenceTerminalError) {
+          sources.push({ sourceKey: key, transaction: tx, supported: true, error: "native_capture_failed" });
+          console.error(`  ${key}/${tx} FAILED: native_capture_failed`);
+          terminalCaptureFailure = true;
+          break sourceLoop;
+        }
         console.error(`  ${key}/${tx} FAILED: ${err}`);
         if (
           !MONITOR && key === "colliers-main" && requestedSources.length === 1
@@ -308,7 +316,7 @@ async function main() {
     // still recorded in `sources[].error` (enforced by the downstream coverage gate),
     // and a source emitting 0 rows is never evaluated for disappearance because its
     // key is absent from run_source_keys.
-    if (!MONITOR && !evidenceOnly) {
+    if (!MONITOR && !evidenceOnly && !terminalCaptureFailure) {
       throw new Error("no listings collected from any source");
     }
     if (MONITOR) {
@@ -317,7 +325,7 @@ async function main() {
       );
     }
   }
-  if (!evidenceOnly) {
+  if (!evidenceOnly && !terminalCaptureFailure) {
     console.error(
       `done: ${listings.length} listings from ${succeeded} sources, ${brokers.length} unique brokers`
     );
@@ -332,6 +340,7 @@ async function main() {
       maxItemsPerSource: Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : null,
       pageCap: PAGE_CAP,
       mode: MONITOR ? "monitor" : "full",
+      ...(terminalCaptureFailure ? { terminalCaptureFailure: true } : {}),
       ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
       startedAt,
       finishedAt: observationNow(),
@@ -349,10 +358,14 @@ async function main() {
   };
   const json = JSON.stringify(out);
   const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
-  writeCollectorArtifact(OUT_PATH, json, privateEvidence);
+  if (terminalCaptureFailure) {
+    const path = writeTerminalCollectorArtifact(OUT_PATH, json);
+    console.error(`terminal partial artifact: ${path}`);
+  } else writeCollectorArtifact(OUT_PATH, json, privateEvidence);
   if (OUT_PATH) {
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
   }
+  if (terminalCaptureFailure) process.exitCode = 1;
   if (evidenceOnly) {
     console.error("no listings collected from any source");
     process.exitCode = 1;
@@ -416,7 +429,7 @@ async function enrichMain(claimPath: string): Promise<void> {
     ENRICH_COMPANY[key as SourceKey] ??
     registeredBuildoutFirmFor(key as SourceKey)?.company ??
     key;
-  const { sources, listings } = await runEnrichGroups(groups, resolveEnricher, companyFor, context);
+  const { sources, listings, terminalCaptureFailure } = await runEnrichGroups(groups, resolveEnricher, companyFor, context);
   if (context) validateMatthewsTargetedRefresh(context);
   const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
   const evidenceOnly = listings.length === 0 && privateEvidence;
@@ -431,6 +444,7 @@ async function enrichMain(claimPath: string): Promise<void> {
     runMeta: {
       apiUrl: API_URL,
       mode: "enrich",
+      ...(terminalCaptureFailure ? { terminalCaptureFailure: true } : {}),
       enrichInput: claimPath,
       ...(evidenceOnly ? { evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations" } : {}),
       ...(context ? {
@@ -453,7 +467,11 @@ async function enrichMain(claimPath: string): Promise<void> {
   const json = JSON.stringify(out);
   // All targeted artifacts belong to the worker's private custody, including
   // empty and bespoke-only results without retained observation arrays.
-  writeCollectorArtifact(OUT_PATH, json, true);
+  if (terminalCaptureFailure) {
+    const path = writeTerminalCollectorArtifact(OUT_PATH, json);
+    console.error(`terminal partial artifact: ${path}`);
+    process.exitCode = 1;
+  } else writeCollectorArtifact(OUT_PATH, json, true);
   if (OUT_PATH) {
     console.error(`wrote ${OUT_PATH} (${(json.length / 1e6).toFixed(1)} MB)`);
   }

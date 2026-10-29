@@ -1,3 +1,4 @@
+import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
@@ -55,6 +56,10 @@ export type SrsMappingContext = {
 };
 
 let srsCache: SrsInventoryResult | null = null;
+const srsCacheDisposition = new WeakMap<object, CacheDisposition>();
+function srsDisposition(row: any): CacheDisposition {
+  return srsCacheDisposition.get(row) ?? "live";
+}
 
 function numeric(value: any): number | null {
   return value != null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -156,10 +161,18 @@ async function srsPost(page: number, strict = requireFreshDetails()): Promise<an
         ...(strict ? { cache: "no-store" as const } : {}),
       });
       if (!res.ok) throw new Error(`SRS API HTTP ${res.status}`);
-      const data: any = await res.json();
+      let data: any;
+      if (nativeJsonFeedCaptureEnabled()) {
+        const text = await res.text();
+        publishNativeJsonFeed({ profile: "srs_search_post_v1", sourceKey: "srs",
+          requestVariant: strict ? "strict" : "standard", requestBody: body,
+          page, offset: SRS_PAGE_SIZE * page, status: res.status, body: text });
+        data = JSON.parse(text);
+      } else data = await res.json();
       if (data && Array.isArray(data.properties)) return data;
       throw new Error("SRS API response missing properties[]");
     } catch (err) {
+      if (err instanceof NativeJsonFeedCaptureError) throw err;
       if (attempt === 3) throw err;
       await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
     }
@@ -175,10 +188,11 @@ export async function srsFetchAll(max: number): Promise<SrsInventoryResult> {
   ) {
     return {
       ...srsCache,
-      items: srsCache.items.map((row) => ({
-        ...row,
-        __creInventoryCacheDisposition: "generation_cache",
-      })),
+      items: srsCache.items.map((row) => {
+        const copy = { ...row };
+        srsCacheDisposition.set(copy, "generation_cache");
+        return copy;
+      }),
     };
   }
   if (srsCache) srsCache = null;
@@ -200,7 +214,7 @@ export async function srsFetchAll(max: number): Promise<SrsInventoryResult> {
       assertSrsInventoryPage(data, page, firstPage, strict);
       return data.properties ?? [];
     } catch (err) {
-      if (strict) throw err;
+      if (strict || err instanceof NativeJsonFeedCaptureError) throw err;
       failed++;
       console.error(`  srs: page ${page} failed: ${err}`);
       return [];
@@ -275,8 +289,7 @@ export function mapSrsListing(
           method: "srs_cloud_run_inventory_feed",
           cacheDisposition:
             context.cacheDisposition ??
-            row.__creInventoryCacheDisposition ??
-            "live",
+            srsDisposition(row),
         }
       : undefined,
     preserveChildCollections: true,
@@ -322,7 +335,7 @@ export async function srcSrs(tx: Tx, max: number, _monitor: boolean): Promise<So
         strict: requireFreshDetails(),
         inventoryObservedAt,
         generationId,
-        cacheDisposition: row.__creInventoryCacheDisposition ?? "live",
+        cacheDisposition: srsDisposition(row),
       })
     );
   }

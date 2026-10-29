@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "./terminal-error.js";
 /** Private Buildout parsed-page custody. This is not an HTTP response capture. */
 import { createHash } from "node:crypto";
 import { buildoutFeedFor, type BuildoutFeedCoordinates } from "../../sources/buildout-feeds/index.js";
@@ -19,7 +20,7 @@ function timestampKey(value: string): string {
   return `${match[1]}.${(match[2] ?? "").padEnd(6, "0")}`;
 }
 
-export class BuildoutRepresentationError extends Error {
+export class BuildoutRepresentationError extends NativeEvidenceTerminalError {
   constructor() { super("Buildout parsed value cannot be preserved exactly"); }
 }
 
@@ -27,7 +28,7 @@ export function requireBuildoutJsonValue(value: unknown): void {
   if (!preservesJsonValue(value)) throw new BuildoutRepresentationError();
 }
 
-export class BuildoutNativeCaptureError extends Error {
+export class BuildoutNativeCaptureError extends NativeEvidenceTerminalError {
   constructor() { super("Buildout native capture failed"); }
 }
 
