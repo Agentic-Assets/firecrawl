@@ -74,7 +74,8 @@ export function readObservationInput(path: string): PageItem[] {
   return validateObservationInput(input);
 }
 
-export async function observePages(items: PageItem[], fetchDoc: typeof scrapeDoc = scrapeDoc) {
+export async function observePages(items: PageItem[], fetchDoc: typeof scrapeDoc = scrapeDoc,
+  captureSourceObservation?: (sourceKey: string, sourceUrl: string, doc: ScrapedDoc) => { value: unknown; incomplete: boolean } | undefined) {
   const startedAt = observationNow();
   const observations: { value: unknown; attempted: number; returned: number; failed: number; notAttempted: number; omitted: boolean; stopReason: string | null }[] = [];
   let stop: "access_denial" | "uncertain_settlement" | "possible_challenge_header" | null = null;
@@ -94,7 +95,12 @@ export async function observePages(items: PageItem[], fetchDoc: typeof scrapeDoc
       returned++;
       let capturedAt: string | null = null;
       try { capturedAt = observationNow(); } catch { /* No source timestamp is invented. */ }
-      evidence = captureEnrichmentEvidence(claim, doc, capturedAt);
+      let captured: { value: unknown; incomplete: boolean } | undefined;
+      let sourceObservationError: "capture_failed" | undefined;
+      try { captured = captureSourceObservation?.(item.sourceKey, item.url, doc); }
+      catch { sourceObservationError = "capture_failed"; }
+      evidence = captureEnrichmentEvidence(claim, doc, capturedAt,
+        { sourceObservation: captured?.value, sourceObservationIncomplete: captured?.incomplete, sourceObservationError });
       if (Object.keys((evidence as {omissions: object}).omissions).length) { hasOmissions = true; omitted = true; }
       const status = doc.metadata?.statusCode;
       if ([401, 403, 429, 451].includes(status)) stop = "access_denial";

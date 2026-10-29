@@ -33,9 +33,11 @@ import { enrichJllInvestorListing } from "../sources/jll-investor.js";
 import {
   enrichBuildoutDetail,
   enrichBuildoutDetailObserved,
+  buildoutDetailIframeUrl,
   type BuildoutDetailConfig,
 } from "../sources/buildout.js";
 import { REGISTERED_BUILDOUT_FIRMS } from "../sources/buildout-registry.js";
+import { buildoutPropertyObservationsIncomplete, canCaptureBuildoutPropertyObservations, captureBuildoutPropertyObservations, validateBuildoutPropertyObservations } from "../sources/pure/buildout-property-observations/index.js";
 import { getAvisonYoungFeed, avisonYoungBaseListing } from "../sources/avison-young.js";
 import { enrichMarcusListing } from "../sources/marcus-millichap.js";
 import { enrichMatthewsListing, enrichMatthewsObservedListing, enrichMatthewsTargetedBatch, validateMatthewsTargetedRefresh, type MatthewsTargetedRefresh } from "../sources/matthews.js";
@@ -139,7 +141,21 @@ export function buildoutEnricherFor(
         const listing = await enrichBuildoutDetailObserved(item.sourceKey, item.url, detailConfig, (doc, pageUrl, qualification) => {
           let capturedAt: string | null = null;
           try { capturedAt = observationNow(); } catch { /* No source clock is invented. */ }
-          try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl, kind: "buildout", qualification }); }
+          try {
+            let sourceObservation;
+            let sourceObservationError: "capture_failed" | undefined;
+            let sourceObservationIncomplete = false;
+            if (canCaptureBuildoutPropertyObservations(item.sourceKey, pageUrl) &&
+                buildoutDetailIframeUrl(item.sourceKey, item.url, detailConfig) === pageUrl) {
+              try {
+                const value = captureBuildoutPropertyObservations(doc.rawHtml, pageUrl, "configured_claim_route");
+                if (!validateBuildoutPropertyObservations(value, pageUrl)) throw new Error("invalid source observation");
+                sourceObservation = value;
+                sourceObservationIncomplete = buildoutPropertyObservationsIncomplete(value);
+              } catch { sourceObservationError = "capture_failed"; }
+            }
+            observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl, kind: "buildout", qualification, sourceObservation, sourceObservationIncomplete, sourceObservationError });
+          }
           catch { observation = { ...failedEnrichmentEvidence(item, "evidence_capture_failed", "buildout"), qualification }; }
         });
         return { listing, observation };

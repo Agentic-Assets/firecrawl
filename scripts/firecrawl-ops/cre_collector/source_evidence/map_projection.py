@@ -60,7 +60,7 @@ def project(document, *, source_key, _observation_version=None):
     are projected. Other content is left to the existing admission checks.
     """
     version = version_for(source_key)
-    if source_key == "leibsohn" and _observation_version == "leibsohn-observation-map/v1":
+    if source_key in {"leibsohn", "cawley-chicago", "bradford-allen"} and _observation_version == f"{source_key}-observation-map/v1":
         version = _observation_version
     if version is None:
         raise ValueError("map projection is not authorized for this source")
@@ -163,7 +163,7 @@ def prepare(raw, *, source_key):
 def validate(document, receipt, *, source_key, numeric_literals=None, _observation_version=None):
     """Validate projected representation and references without source-content hashes."""
     expected_version = version_for(source_key)
-    if source_key == "leibsohn" and _observation_version == "leibsohn-observation-map/v1":
+    if source_key in {"leibsohn", "cawley-chicago", "bradford-allen"} and _observation_version == f"{source_key}-observation-map/v1":
         expected_version = _observation_version
     if (not isinstance(receipt, dict) or set(receipt) != {
         "version", "sourceKey", "replacements", "projectedCanonicalSha256"}

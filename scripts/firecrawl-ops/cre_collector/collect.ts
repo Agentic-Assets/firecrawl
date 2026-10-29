@@ -2,6 +2,7 @@ import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
 import { join } from "node:path";
 import { observePages, readObservationInput } from "./lib/page-observations/index.js";
+import { captureBuildoutObservationForCaller } from "./sources/pure/buildout-property-observations/index.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
@@ -468,7 +469,7 @@ async function dispatch(): Promise<void> {
       try { reservePrivateCollectorDirectory(OUT_PATH); }
       catch { throw new Error("unable to reserve private observation output"); }
       try {
-        const result = await observePages(items);
+        const result = await observePages(items, undefined, captureBuildoutObservationForCaller);
         const names = result.parts.map((_, index) => `part-${String(index + 1).padStart(4, "0")}.json`);
         for (let i = 0; i < result.parts.length; i++)
           writeCollectorArtifact(join(OUT_PATH, names[i]), JSON.stringify(result.parts[i]), true);
