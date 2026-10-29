@@ -10,6 +10,7 @@ from pathlib import Path
 
 from source_evidence import (
     doc_complement_process,
+    doc_docling_json_process,
     doc_extract_process,
     doc_fetch_process,
     doc_sparse_ocr_process,
@@ -172,7 +173,8 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                             prior.get("artifact"), prior.get("complement"), selected):
                         raise ValueError("prior seal outside OCR policy")
                     report["prior_seal"] = "reverified_ocr_unresolved"
-                    if document.get("state") == "ocr_intent":
+                    if (document.get("state") == "ocr_intent" or
+                            (document.get("state") == "docling_prior_sealed" and "docling_json" in selected)):
                         directory = run_dir / expected_directory
                         receipt = context["receipt"]
                         input_path = directory / "extraction" / doc_extract_process.input_filename(receipt)
@@ -183,26 +185,104 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                                 raise ValueError("retained OCR source changed")
                         document_seal.check_primary(directory / "primary-sealed", context,
                                                     document.get("primary_sealed"), prior["artifact"])
+                        if "docling_json" in selected:
+                            doc_complement_process.validate(prior["complement"], prior["artifact"], receipt, source,
+                                selected["pdf_complement"]["pdftotext_path"], selected["pdf_complement"]["mode"])
                         ocr = doc_sparse_ocr_process.replay(input_path, prior["artifact"], prior["complement"],
                             receipt, directory / "ocr", source_key=source, policy=selected["sparse_ocr"], prior_dir=prior_dir)
                         _, marker = document_seal.prepare(context, prior["artifact"], complement=prior["complement"], ocr=ocr)
-                        seal_dir = directory / "sealed"
-                        if seal_dir.exists():
-                            document_seal.read(seal_dir, expected_context=context, expected_marker=marker)
+                        if "docling_json" in selected:
+                            seal_dir = directory / "docling-prior-sealed"
+                            saved_marker = document.get("docling_prior_sealed")
+                            if saved_marker is not None and events.encoded(saved_marker) != events.encoded(marker):
+                                raise ValueError("Docling prior marker changed")
+                            if seal_dir.exists():
+                                document_seal.read(seal_dir, expected_context=context, expected_marker=marker)
+                            else:
+                                actual = document_seal.write(seal_dir, context, prior["artifact"],
+                                                             complement=prior["complement"], ocr=ocr)
+                                if events.encoded(actual) != events.encoded(marker):
+                                    raise ValueError("Docling prior seal changed")
+                            document["docling_prior_sealed"] = marker
+                            document["state"] = "docling_prior_sealed"
+                            document["original_retention"] = "retained_pending_reconciliation"
+                            report["reason"] = "settled_ocr_reverified_docling_not_started"
+                            report["original_bytes_reverified"] = True
                         else:
-                            actual = document_seal.write(seal_dir, context, prior["artifact"],
-                                                         complement=prior["complement"], ocr=ocr)
-                            if actual != marker:
-                                raise ValueError("OCR final seal changed")
-                        document["sealed"] = marker
-                        document["state"] = "extraction_sealed"
-                        document["original_retention"] = "retained_pending_reconciliation"
-                        report["state"] = "seal_reverified"
-                        report["reason"] = "settled_ocr_completion_replayed"
-                        report["original_bytes_reverified"] = True
+                            seal_dir = directory / "sealed"
+                            if seal_dir.exists():
+                                document_seal.read(seal_dir, expected_context=context, expected_marker=marker)
+                            else:
+                                actual = document_seal.write(seal_dir, context, prior["artifact"],
+                                                             complement=prior["complement"], ocr=ocr)
+                                if actual != marker:
+                                    raise ValueError("OCR final seal changed")
+                            document["sealed"] = marker
+                            document["state"] = "extraction_sealed"
+                            document["original_retention"] = "retained_pending_reconciliation"
+                            report["state"] = "seal_reverified"
+                            report["reason"] = "settled_ocr_completion_replayed"
+                            report["original_bytes_reverified"] = True
                         save(run_dir, manifest)
                 except (OSError, ValueError, TypeError, KeyError, RuntimeError):
                     report["prior_seal"] = "unresolved"
+            docling_prior_marker = document.get("docling_prior_sealed")
+            if isinstance(docling_prior_marker, dict) and document.get("state") == "docling_intent":
+                try:
+                    directory = run_dir / expected_directory
+                    prior_dir = directory / "docling-prior-sealed"
+                    raw_context, context = document_pipeline._json(prior_dir / "acquisition.json", document_seal.MAX_FILE)
+                    context_sha = docling_prior_marker.get("files", {}).get("acquisition.json")
+                    if events.sha256(raw_context) != context_sha:
+                        raise ValueError("Docling prior context changed")
+                    context = document_acquisition.validate_archived_context(
+                        plan, candidates, policy_raw, selected, context, expected_context_sha256=context_sha, **bindings)
+                    prior = document_seal.read(prior_dir, expected_context=context, expected_marker=docling_prior_marker)
+                    if context["candidate_index"] != index or not doc_docling_json_process.required(
+                            prior.get("artifact"), prior.get("complement"), selected):
+                        raise ValueError("Docling prior outside policy")
+                    receipt = context["receipt"]
+                    input_path = directory / "extraction" / doc_extract_process.input_filename(receipt)
+                    fetch_path = directory / "fetch" / "document.bin"
+                    for path in (fetch_path, input_path):
+                        body = document_pipeline.automatic._read_private(path, receipt["body_bytes"])
+                        if len(body) != receipt["body_bytes"] or events.sha256(body) != receipt["body_sha256"]:
+                            raise ValueError("retained Docling source changed")
+                    document_seal.check_primary(directory / "primary-sealed", context,
+                                                document.get("primary_sealed"), prior["artifact"])
+                    doc_complement_process.validate(prior["complement"], prior["artifact"], receipt, source,
+                        selected["pdf_complement"]["pdftotext_path"], selected["pdf_complement"]["mode"])
+                    prior_ocr_required = doc_sparse_ocr_process.required(prior["artifact"], prior["complement"], selected)
+                    if ("ocr" in prior) != prior_ocr_required:
+                        raise ValueError("Docling prior OCR disagrees with policy")
+                    if prior_ocr_required:
+                        doc_sparse_ocr_process.validate(prior["ocr"], prior["artifact"], prior["complement"], receipt,
+                                                        source, selected["sparse_ocr"])
+                        ocr_prior = document_seal.read(directory / "prior-sealed", expected_context=context,
+                                                       expected_marker=document.get("prior_sealed"))
+                        if (ocr_prior.get("artifact") != prior["artifact"] or
+                                ocr_prior.get("complement") != prior["complement"] or "ocr" in ocr_prior):
+                            raise ValueError("Docling prior OCR seal changed")
+                    docling = doc_docling_json_process.replay(input_path, prior["artifact"], prior["complement"],
+                        receipt, directory / "docling", source_key=source, policy=selected["docling_json"], prior_dir=prior_dir)
+                    _, final_marker = document_seal.prepare(context, prior["artifact"], complement=prior["complement"],
+                                                            ocr=prior.get("ocr"), docling=docling)
+                    seal_dir = directory / "sealed"
+                    if seal_dir.exists():
+                        document_seal.read(seal_dir, expected_context=context, expected_marker=final_marker)
+                    else:
+                        actual = document_seal.write(seal_dir, context, prior["artifact"],
+                            complement=prior["complement"], ocr=prior.get("ocr"), docling=docling)
+                        if actual != final_marker:
+                            raise ValueError("Docling final seal changed")
+                    document["sealed"] = final_marker
+                    document["state"] = "extraction_sealed"
+                    document["original_retention"] = "retained_pending_reconciliation"
+                    report.update(state="seal_reverified", reason="settled_docling_completion_replayed",
+                                  original_bytes_reverified=True)
+                    save(run_dir, manifest)
+                except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+                    report["docling_prior_seal"] = "unresolved"
             save(run_dir, manifest)
             continue
         try:
@@ -243,13 +323,25 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                 prior = document_seal.read(directory / "prior-sealed", expected_context=context, expected_marker=prior_marker)
                 if prior.get("artifact") != artifact or prior.get("complement") != checked["complement"] or "ocr" in prior:
                     raise ValueError("OCR prior seal disagrees with final artifact")
+            docling_required = doc_docling_json_process.required(artifact, checked.get("complement"), selected)
+            if ("docling" in checked) != docling_required:
+                raise ValueError("document Docling JSON disagrees with policy")
+            if docling_required:
+                doc_docling_json_process.validate(checked["docling"], artifact, checked["complement"],
+                                                   context["receipt"], source, selected["docling_json"])
+                prior = document_seal.read(directory / "docling-prior-sealed", expected_context=context,
+                                           expected_marker=document.get("docling_prior_sealed"))
+                if (prior.get("artifact") != artifact or prior.get("complement") != checked["complement"]
+                        or prior.get("ocr") != checked.get("ocr") or "docling" in prior):
+                    raise ValueError("Docling prior seal disagrees with final artifact")
             report["state"] = "seal_reverified"
             report["original_bytes_reverified"] = False
             if artifact is not None:
                 status = artifact["extraction"]["status"]
                 doc_extract_process.validate_artifact(artifact, context["receipt"], source_key=source,
                                                      exit_code=0 if status == "extracted" else 2)
-                retain = doc_sparse_ocr_process.retain_unresolved(artifact, checked.get("complement"), checked.get("ocr"), selected)
+                retain = (doc_sparse_ocr_process.retain_unresolved(artifact, checked.get("complement"), checked.get("ocr"), selected)
+                          or doc_docling_json_process.retain_unresolved(artifact, checked.get("complement"), checked.get("docling"), selected))
                 if retain:
                     report["retention_decision"] = "keep_unresolved_until_review"
                 elif cleanup:

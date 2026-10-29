@@ -7,9 +7,20 @@ The caller owns the foreground attempt lock and durable checkpoint callback.
 import os
 from pathlib import Path
 
-from source_evidence import (acquisition, automatic, cli, document_acquisition_policy,
-                             document_batch, document_pipeline, document_recovery, events)
-from source_evidence.document_process import DocumentProcessCleanupUnknown, cleanup_unknown_in_chain
+from source_evidence import (
+    acquisition,
+    automatic,
+    cli,
+    document_acquisition_policy,
+    document_batch,
+    document_pipeline,
+    document_recovery,
+    events,
+)
+from source_evidence.document_process import (
+    DocumentProcessCleanupUnknown,
+    cleanup_unknown_in_chain,
+)
 
 
 def configuration(policy_path, policy_sha256, node_executable, automatic_config, git_sha, sources):
@@ -158,7 +169,7 @@ def append_incomplete(manifest):
                     if (job.get("kind") != "document_text" or job.get("state") != "appended"
                             or job.get("exact_replay_required")):
                         return True
-                    for role in ("complement", "ocr"):
+                    for role in ("complement", "ocr", "docling"):
                         if role not in document.get("sealed", {}):
                             continue
                         job = document.get(role + "_append") or {}

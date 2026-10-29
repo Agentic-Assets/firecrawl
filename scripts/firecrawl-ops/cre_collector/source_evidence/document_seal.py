@@ -38,7 +38,7 @@ def _context_shape(context, artifact):
         raise ValueError("invalid document receipt outcome")
 
 
-def prepare(context, artifact=None, *, landing=None, complement=None, ocr=None):
+def prepare(context, artifact=None, *, landing=None, complement=None, ocr=None, docling=None):
     """Return ordered canonical file bytes and their deterministic marker."""
     _context_shape(context, artifact)
     files = [("acquisition.json", events.encoded(context))]
@@ -123,6 +123,24 @@ def prepare(context, artifact=None, *, landing=None, complement=None, ocr=None):
                   ("ocr-artifact.json", events.encoded(enriched_ocr)),
                   ("ocr-binding.json", events.encoded(ocr_binding)), ("ocr-plan.json", events.encoded(ocr_plan)),
                   ("ocr-relationship.json", events.encoded(relationship))]
+    docling_binding = docling_plan = None
+    if docling is not None:
+        from source_evidence import doc_docling_json_process
+        config = docling.get("parser", {}).get("config", {})
+        policy = {"max_pages": config.get("max_pages")}
+        doc_docling_json_process.validate(docling, artifact, complement, context["receipt"], context["source_key"], policy)
+        enriched_docling = {**docling, "acquisition_context": context,
+                        "acquisition_context_origin": "foreground_coordinator_not_converter"}
+        docling_binding, docling_plan = document_acquisition.bind_extraction(context, enriched_docling)
+        relationship = {"schema_version": "cre-document-docling-relationship/v1", "kind": "complement_of",
+                        "anydoc_artifact_sha256": events.sha256(events.encoded(artifact)),
+                        "complement_artifact_sha256": events.sha256(events.encoded(complement)),
+                        "docling_artifact_sha256": events.sha256(events.encoded(docling)),
+                        "docling_capture_id": docling_binding["document_capture_id"], "coverage": "unknown"}
+        files += [("docling-converter-artifact.json", events.encoded(docling)),
+                  ("docling-artifact.json", events.encoded(enriched_docling)),
+                  ("docling-binding.json", events.encoded(docling_binding)), ("docling-plan.json", events.encoded(docling_plan)),
+                  ("docling-relationship.json", events.encoded(relationship))]
     if any(len(payload) > MAX_FILE for _, payload in files):
         raise ValueError("document seal file exceeds bound")
     marker = {"files": {name: events.sha256(payload) for name, payload in files},
@@ -133,11 +151,13 @@ def prepare(context, artifact=None, *, landing=None, complement=None, ocr=None):
                                 "capture_id": complement_binding["document_capture_id"]}
     if ocr_plan is not None:
         marker["ocr"] = {"plan_sha256": ocr_plan["plan_sha256"], "capture_id": ocr_binding["document_capture_id"]}
+    if docling_plan is not None:
+        marker["docling"] = {"plan_sha256": docling_plan["plan_sha256"], "capture_id": docling_binding["document_capture_id"]}
     return files, marker
 
 
-def write(outdir, context, artifact=None, *, landing=None, complement=None, ocr=None):
-    files, marker = prepare(context, artifact, landing=landing, complement=complement, ocr=ocr)
+def write(outdir, context, artifact=None, *, landing=None, complement=None, ocr=None, docling=None):
+    files, marker = prepare(context, artifact, landing=landing, complement=complement, ocr=ocr, docling=docling)
     private_export.write(outdir, files)
     return marker
 
@@ -177,6 +197,12 @@ def read(outdir, *, expected_context, expected_marker=None):
                 raise ValueError("OCR requires an authenticated seal marker")
             required.update({"ocr-converter-artifact.json", "ocr-artifact.json", "ocr-binding.json",
                              "ocr-plan.json", "ocr-relationship.json"})
+        has_docling = "docling-converter-artifact.json" in names
+        if has_docling:
+            if not has_complement or not isinstance(expected_marker, dict) or "docling" not in expected_marker:
+                raise ValueError("Docling requires an authenticated seal marker")
+            required.update({"docling-converter-artifact.json", "docling-artifact.json", "docling-binding.json",
+                             "docling-plan.json", "docling-relationship.json"})
         if has_landing:
             if not has_artifact or not isinstance(expected_marker, dict) or "landing-page.json" not in expected_marker.get("files", {}):
                 raise ValueError("landing page requires an authenticated seal marker")
@@ -206,7 +232,8 @@ def read(outdir, *, expected_context, expected_marker=None):
         landing = json.loads(values["landing-page.json"]) if has_landing else None
         complement = json.loads(values["complement-converter-artifact.json"]) if has_complement else None
         ocr = json.loads(values["ocr-converter-artifact.json"]) if has_ocr else None
-        files, marker = prepare(expected_context, artifact, landing=landing, complement=complement, ocr=ocr)
+        docling = json.loads(values["docling-converter-artifact.json"]) if has_docling else None
+        files, marker = prepare(expected_context, artifact, landing=landing, complement=complement, ocr=ocr, docling=docling)
         if any(values[name] != payload for name, payload in files):
             raise ValueError("document seal bytes mismatch")
         if expected_marker is not None and events.encoded(expected_marker) != events.encoded(marker):
@@ -226,6 +253,8 @@ def read(outdir, *, expected_context, expected_marker=None):
             result["complement"] = complement
         if ocr is not None:
             result["ocr"] = ocr
+        if docling is not None:
+            result["docling"] = docling
         return result
     finally:
         os.close(directory)

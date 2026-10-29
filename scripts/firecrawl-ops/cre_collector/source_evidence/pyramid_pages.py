@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from buildout_observation_artifact import invalid_number, unique_object
 
 from source_evidence import acquisition, buildout_response, events
+from source_evidence.encoded_json_inspection import _inspect_encoded_credentials
 
 FORMAT = 'pyramid_inventory_decoded_v1'
 SCHEMA = 'cre-pyramid-decoded-observation/v1'
@@ -42,51 +43,6 @@ def receipt_checked(receipt):
         raise ValueError('Pyramid receipt mismatch')
     events.timestamp(receipt['capturedAt'])
 
-def _inspect_encoded_credentials(document):
-    """Apply existing credential policy to bounded JSON embedded in strings.
-
-    This does not assert general secret detection. Values are never transformed.
-    """
-    from source_evidence.automatic import _refuse_credential_fields
-
-    max_nodes = 500000
-    max_depth = 128
-    max_encoded_depth = 16
-    max_bytes = 16 * 1024 * 1024
-    pending = [(document, 0, 0)]
-    visited = scanned_bytes = 0
-    _refuse_credential_fields(document)
-    while pending:
-        value, depth, encoded_depth = pending.pop()
-        visited += 1
-        if visited > max_nodes or depth > max_depth:
-            raise ValueError('Pyramid encoded credential inspection exceeds limit')
-        if isinstance(value, dict):
-            pending.extend((child, depth + 1, encoded_depth) for child in value.values())
-        elif isinstance(value, list):
-            pending.extend((child, depth + 1, encoded_depth) for child in value)
-        elif isinstance(value, str):
-            candidate = value.strip()
-            if not candidate or candidate[0] not in '{["':
-                continue
-            encoded = candidate.encode('utf8')
-            scanned_bytes += len(encoded)
-            if scanned_bytes > max_bytes:
-                raise ValueError('Pyramid encoded credential inspection exceeds limit')
-            try:
-                json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            except (RecursionError, OverflowError, ValueError) as exc:
-                raise ValueError('Pyramid encoded credential inspection uncertain') from exc
-            if encoded_depth >= max_encoded_depth:
-                raise ValueError('Pyramid encoded credential inspection exceeds limit')
-            try:
-                decoded, _ = acquisition.decode_json(encoded)
-            except (ValueError, RecursionError) as exc:
-                raise ValueError('Pyramid encoded credential inspection uncertain') from exc
-            _refuse_credential_fields(decoded)
-            pending.append((decoded, depth + 1, encoded_depth + 1))
 
 def convert(document, literals, *, receipt, capture_context, json_status="parsed"):
     receipt_checked(receipt)

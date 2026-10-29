@@ -57,6 +57,8 @@ def reconstruct(rows):
     artifact = {**header, "extraction": {**extraction, "text": text}}
     expected = events.plan(artifact, source_key=first["source_key"], external_id=first["external_id"])
     events.validate_plan(expected)
+    if extraction.get("text_format") == "docling_json":
+        events.validate_content_policy(expected)
     normalized = copy.deepcopy(rows)
     for row in normalized:
         if _instant(row["observed_at"]) != source_instant:
@@ -79,7 +81,7 @@ def export(rows, outdir):
     """Create a new private directory containing exact UTF-8 text and metadata."""
     text, metadata = reconstruct(rows)
     text_format = metadata["document"]["extraction"].get("text_format", "markdown")
-    filename = {"markdown": "document.md", "plain": "document.txt"}.get(text_format)
+    filename = {"markdown": "document.md", "plain": "document.txt", "docling_json": "document.docling.json"}.get(text_format)
     if filename is None:
         raise ValueError("document export text format is unsupported")
     metadata["text_file"] = filename

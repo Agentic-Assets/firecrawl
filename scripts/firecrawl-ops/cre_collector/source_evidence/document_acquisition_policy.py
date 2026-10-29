@@ -14,6 +14,7 @@ SCHEMA = "cre-document-acquisition-policy/v1"
 SCHEMA_V2 = "cre-document-acquisition-policy/v2"
 SCHEMA_V3 = "cre-document-acquisition-policy/v3"
 SCHEMA_V4 = "cre-document-acquisition-policy/v4"
+SCHEMA_V5 = "cre-document-acquisition-policy/v5"
 MAX_OUTPUT = 16 * 1024 * 1024
 LIMITS = {
     "max_documents": (1, 1000),
@@ -73,7 +74,7 @@ def validate_policy(policy_raw, *, expected_policy_sha256, target_sha256, collec
     policy, literals = acquisition.decode_json(policy_raw, max_bytes=16384)
     fields = {"schema_version", "purpose", "data_scope", "collector_git_sha", "target_sha256",
               "source_keys", "allowed_hosts", "limits", "original_retention"}
-    if isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V2, SCHEMA_V3, SCHEMA_V4):
+    if isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5):
         fields |= {"pdf_complement"}
         complement = policy.get("pdf_complement")
         if (not isinstance(complement, dict) or set(complement) != {"mode", "pdftotext_path"}
@@ -81,19 +82,26 @@ def validate_policy(policy_raw, *, expected_policy_sha256, target_sha256, collec
                 or not isinstance(complement.get("pdftotext_path"), str)
                 or not os.path.isabs(complement["pdftotext_path"])):
             raise ValueError("invalid PDF complement policy")
-    if isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V3, SCHEMA_V4):
+    if isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V3, SCHEMA_V4, SCHEMA_V5):
         fields.add("sparse_ocr")
         ocr = policy.get("sparse_ocr")
         if (not isinstance(ocr, dict) or set(ocr) != {"mode", "strategy", "max_pages"}
                 or ocr.get("mode") != "sparse_ocr_v1" or ocr.get("strategy") not in ("no_text", "all_pages")
                 or type(ocr.get("max_pages")) is not int or not 1 <= ocr["max_pages"] <= 1000):
             raise ValueError("invalid sparse OCR policy")
-    if isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V4:
+    if isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V4, SCHEMA_V5):
         from source_evidence import document_priority
         fields.add("selection_order")
         if policy.get("selection_order") != document_priority.MODE:
             raise ValueError("invalid document selection order")
-    if (literals or not isinstance(policy, dict) or set(policy) != fields or policy["schema_version"] not in (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
+    if isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V5:
+        fields.add("docling_json")
+        setting = policy.get("docling_json")
+        if (not isinstance(setting, dict) or set(setting) != {"mode", "max_pages"}
+                or setting.get("mode") != "docling_json_v1"
+                or type(setting.get("max_pages")) is not int or not 1 <= setting["max_pages"] <= 1000):
+            raise ValueError("invalid Docling JSON policy")
+    if (literals or not isinstance(policy, dict) or set(policy) != fields or policy["schema_version"] not in (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5)
             or policy["purpose"] != "private_public_listing_document_text"
             or policy["data_scope"] != "public_listing_source"
             or policy["collector_git_sha"] != collector_git_sha or policy["target_sha256"] != target_sha256
@@ -116,7 +124,7 @@ def validate_policy(policy_raw, *, expected_policy_sha256, target_sha256, collec
     for key, (minimum, maximum) in LIMITS.items():
         if type(limits[key]) is not int or not minimum <= limits[key] <= maximum:
             raise ValueError("invalid acquisition limit")
-    if policy["schema_version"] in (SCHEMA_V2, SCHEMA_V3, SCHEMA_V4):
+    if policy["schema_version"] in (SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5):
         from source_evidence import (
             doc_complement_process,
             doc_extract_process,
@@ -127,9 +135,12 @@ def validate_policy(policy_raw, *, expected_policy_sha256, target_sha256, collec
                          + doc_fetch_process.REAP_GRACE_SECONDS + document_pipeline.EXTRACTION_SECONDS
                          + doc_extract_process.REAP_GRACE_SECONDS + doc_complement_process.TIMEOUT_SECONDS
                          + doc_extract_process.REAP_GRACE_SECONDS)
-        if policy["schema_version"] in (SCHEMA_V3, SCHEMA_V4):
+        if policy["schema_version"] in (SCHEMA_V3, SCHEMA_V4, SCHEMA_V5):
             from source_evidence import doc_sparse_ocr_process
             minimum_phase += doc_sparse_ocr_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
+        if policy["schema_version"] == SCHEMA_V5:
+            from source_evidence import doc_docling_json_process
+            minimum_phase += doc_docling_json_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
         if limits["run_timeout_seconds"] < minimum_phase:
             raise ValueError("run timeout cannot accommodate the complementary parser phase")
     return policy
@@ -157,12 +168,14 @@ def prepare(plan, candidates, policy_raw, *, expected_policy_sha256, target_sha2
               "destination_verification": "pending_each_request", "publisher": "unverified",
               "publicness": "unverified", "authority": "operator_asserted_class_policy_not_publisher_authentication",
               "cumulative_byte_budget": "not_verified_before_acquisition"}
-    if policy["schema_version"] in (SCHEMA_V2, SCHEMA_V3, SCHEMA_V4):
+    if policy["schema_version"] in (SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5):
         output["pdf_complement"] = copy.deepcopy(policy["pdf_complement"])
-    if policy["schema_version"] in (SCHEMA_V3, SCHEMA_V4):
+    if policy["schema_version"] in (SCHEMA_V3, SCHEMA_V4, SCHEMA_V5):
         output["sparse_ocr"] = copy.deepcopy(policy["sparse_ocr"])
+    if policy["schema_version"] == SCHEMA_V5:
+        output["docling_json"] = copy.deepcopy(policy["docling_json"])
     priority = None
-    if policy["schema_version"] == SCHEMA_V4:
+    if policy["schema_version"] in (SCHEMA_V4, SCHEMA_V5):
         from source_evidence import document_priority
         output["selection_order"] = policy["selection_order"]
         priority = document_priority.witnesses(plan, candidates, collector_git_sha=collector_git_sha,

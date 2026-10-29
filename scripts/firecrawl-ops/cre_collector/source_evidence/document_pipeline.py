@@ -15,6 +15,7 @@ from source_evidence import (
     automatic,
     cli,
     doc_complement_process,
+    doc_docling_json_process,
     doc_extract_process,
     doc_fetch_process,
     doc_sparse_ocr_process,
@@ -99,8 +100,8 @@ def _remove_owned_body(path, digest, byte_length):
         os.close(directory)
 
 
-def _seal(outdir, context, *, artifact=None, landing=None, complement=None, ocr=None):
-    return document_seal.write(outdir, context, artifact, landing=landing, complement=complement, ocr=ocr)
+def _seal(outdir, context, *, artifact=None, landing=None, complement=None, ocr=None, docling=None):
+    return document_seal.write(outdir, context, artifact, landing=landing, complement=complement, ocr=ocr, docling=docling)
 
 
 def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_raw,
@@ -148,6 +149,8 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
         phase_seconds += doc_complement_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
     if "sparse_ocr" in selected:
         phase_seconds += doc_sparse_ocr_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
+    if "docling_json" in selected:
+        phase_seconds += doc_docling_json_process.TIMEOUT_SECONDS + doc_extract_process.REAP_GRACE_SECONDS
     try:
         for item in selected["documents"]:
             index = item["candidate_index"]
@@ -255,15 +258,31 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
                         receipt, directory / "ocr", source_key=source, policy=selected["sparse_ocr"],
                         prior_dir=directory / "prior-sealed")
                     doc_extract_process._input_checked(Path(extracted["directory"]), Path(extracted["input_path"]).name, body)
+                docling = None
+                if doc_docling_json_process.required(extracted["artifact"], complement, selected):
+                    document["docling_prior_sealed"] = _seal(directory / "docling-prior-sealed", context,
+                        artifact=extracted["artifact"], complement=complement, ocr=ocr)
+                    document["state"] = "docling_prior_sealed"
+                    save(run_dir, manifest)
+                    if (time.monotonic() - started + doc_docling_json_process.TIMEOUT_SECONDS
+                            + doc_extract_process.REAP_GRACE_SECONDS > selected["limits"]["run_timeout_seconds"]):
+                        raise ValueError("Docling JSON run allowance expired")
+                    document["state"] = "docling_intent"
+                    save(run_dir, manifest)
+                    docling = doc_docling_json_process.run(Path(extracted["input_path"]), extracted["artifact"], complement,
+                        receipt, directory / "docling", source_key=source, policy=selected["docling_json"],
+                        prior_dir=directory / "docling-prior-sealed")
+                    doc_extract_process._input_checked(Path(extracted["directory"]), Path(extracted["input_path"]).name, body)
                 if (extraction.get("status") == "failed" and extraction.get("error_code") == "unsupported"
                         and document_landing.is_html(body)):
                     landing = document_landing.protect_scripts(
                         document_landing.page_context(body, final_url=receipt["final_url"]), source_key=source)
                 document["sealed"] = _seal(directory / "sealed", context, artifact=extracted["artifact"],
-                                           landing=landing, complement=complement, ocr=ocr)
+                                           landing=landing, complement=complement, ocr=ocr, docling=docling)
                 document["state"] = "extraction_sealed"
                 save(run_dir, manifest)
-                retain = doc_sparse_ocr_process.retain_unresolved(extracted["artifact"], complement, ocr, selected)
+                retain = (doc_sparse_ocr_process.retain_unresolved(extracted["artifact"], complement, ocr, selected)
+                          or doc_docling_json_process.retain_unresolved(extracted["artifact"], complement, docling, selected))
                 if retain:
                     document["original_retention"] = "retained_unresolved"
                 else:

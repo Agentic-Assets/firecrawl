@@ -556,14 +556,15 @@ def pump(run_dir, manifest, save):
             continue
         if manifest.get("automatic_source_evidence_replay_only") and not state.get("exact_replay_required"):
             continue
-        def prepare():
+        def prepare(state=state, source=source, attempt=attempt):
             if state.get("kind") == "document_text":
                 from source_evidence import document_jobs
                 if config.get("document_text_formats", {}).get(source) != DOCUMENT_TEXT_FORMAT:
                     raise ValueError("document text is outside policy")
                 documents = (attempt.get("document_source_evidence") or {}).get("documents", [])
                 matching = [document for document in documents if document.get("append") is state
-                            or document.get("complement_append") is state or document.get("ocr_append") is state]
+                            or document.get("complement_append") is state or document.get("ocr_append") is state
+                            or document.get("docling_append") is state]
                 if len(matching) != 1:
                     raise ValueError("document append association mismatch")
                 return document_jobs.prepare_job(run_dir, manifest, source, attempt, matching[0], state)

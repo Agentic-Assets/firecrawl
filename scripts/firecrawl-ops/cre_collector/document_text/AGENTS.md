@@ -107,3 +107,8 @@ The opt-in `poppler_pdf_layout_v1` complement preserves physical spacing with
 `-layout` and records the mode in parser config. Default text-mode artifacts
 remain unchanged. Layout is not table reconstruction or a fidelity guarantee;
 unknown fidelity alone does not retain originals under existing retention policy.
+
+The optional v5 Docling JSON supplement uses the pinned offline image, source
+and ordered prior hashes, and a parent completion marker. Preserve original
+JSON bytes, unknown coverage, page omissions and independent append barriers.
+The standalone adapter is private and is not source-content admission.
