@@ -435,6 +435,14 @@ page. HTTP status and final URL are not asserted. A memory-cache hit creates no
 fresh capture. The draft adds no source fetch and does not change listing parser,
 reconciliation, status or source-acceptance gates.
 
+Before parsed-data proof hashing, native publication, or generation-cache
+writing, the shared exact JSON-value guard refuses values serialization would
+change, including non-finite numbers and negative zero, and structures over its
+100,000-node or 128-depth limit. Refusal is explicit and is not a transport
+retry; already in-flight requests may still settle. This guard cannot restore
+original numeric lexemes or repair values already lost in older cache files.
+Collector freshness metadata is held separately from source page and row data.
+
 The attempt limits are 128 pages and 128 MiB; a parsed body is limited to
 16 MiB, each fact to 3.5 MiB, an observation to 16 MiB and a page to 10,000
 records. Capture failures stop the capture-enabled path rather than authorize

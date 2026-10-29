@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { buildoutFeedFor, type BuildoutFeedCoordinates } from "../../sources/buildout-feeds/index.js";
 import { observationNow } from "../observation-clock.js";
+import { preservesJsonValue } from "../json-value.js";
 import { publishPrivatePage } from "./private-page.js";
 
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
@@ -16,6 +17,14 @@ function timestampKey(value: string): string {
   if (!match || match[1]!.startsWith("0000-") || !Number.isFinite(millis)
       || new Date(millis).toISOString().slice(0, 19) !== match[1]) throw new Error();
   return `${match[1]}.${(match[2] ?? "").padEnd(6, "0")}`;
+}
+
+export class BuildoutRepresentationError extends Error {
+  constructor() { super("Buildout parsed value cannot be preserved exactly"); }
+}
+
+export function requireBuildoutJsonValue(value: unknown): void {
+  if (!preservesJsonValue(value)) throw new BuildoutRepresentationError();
 }
 
 export class BuildoutNativeCaptureError extends Error {
@@ -63,6 +72,7 @@ export function publishBuildoutParsedPage(input: {
         || (input.sourceObservedAt !== null && (typeof input.sourceObservedAt !== "string" || input.sourceObservedAt.length > 128))
         || !["generation_cache", "live"].includes(input.cacheDisposition)
         || ![null, "direct_json", "firecrawl_json"].includes(input.transport)) throw new Error();
+    requireBuildoutJsonValue(input.data);
     const json = JSON.stringify(input.data);
     if (json === undefined || json.length > MAX_BODY_BYTES || Buffer.byteLength(json, "utf8") > MAX_BODY_BYTES) throw new Error();
     const body = Buffer.from(json, "utf8");
