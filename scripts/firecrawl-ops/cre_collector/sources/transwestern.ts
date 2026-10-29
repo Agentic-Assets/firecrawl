@@ -17,6 +17,7 @@ import { proveTranswesternPublishedIdentity, requireCurrentTranswesternPublished
 import { filterTranswesternImages } from "./pure/transwestern-images.js";
 import { transwesternFieldObservations } from "./pure/transwestern-field-observations.js";
 import { transwesternBuildingFacts } from "./pure/transwestern-building-facts.js";
+import { transwesternDocumentMediaObservations } from "./pure/transwestern-document-media-observations.js";
 import { transwesternConcealed, transwesternPropertyPanel } from "./pure/transwestern-property-panel.js";
 import TurndownService from "turndown";
 
@@ -742,6 +743,10 @@ export async function enrichTranswesternListing(
         cacheDisposition: observed.cacheDisposition,
       },
     });
+    output.transwesternDocumentMediaObservations = transwesternDocumentMediaObservations(
+      $, harvested.documents, harvested.media, harvested.links, detailUrl,
+      createHash("sha256").update(doc.rawHtml, "utf8").digest("hex"), observed.observedAt,
+    );
     // The explicit count preserves an inspected empty observation set through outer pruning.
     output.transwesternBuildingFacts = {
       ...transwesternBuildingFacts($),

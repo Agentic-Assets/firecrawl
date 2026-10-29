@@ -66,6 +66,19 @@ An empty photo array may be omitted by `prune`; neither missing primary evidence
 nor an empty array proves that the publisher has no property imagery elsewhere.
 These source observations do not waive persisted-child or primary-role checks.
 
+Transwestern document/media role observations are additive location evidence
+bound to the accepted detail URL, body digest and observation time. A unique
+property attachment table or banner download and a unique footer provide
+separate occurrence bases; hidden or ambiguous structures and harvested URLs
+without a matching DOM occurrence remain unknown. A URL can have multiple
+occurrences and roles. Existing link-channel URLs enter only when an exact source
+download-affordance anchor matches them; this does not assert document type.
+Counters make truncation and empty observations explicit.
+These observations do not establish computed visibility, document content,
+publisher permission or property identity, and do not filter child rows or
+change document acquisition policy. Successful refreshes replace current
+`raw_data`; this is not an observation history.
+
 The Transwestern image-transition path is source-specific. It requires the exact
 strict-fresh full-source artifact, generation/start, clean collector code SHA,
 database target and ingest-attempt binding. In the same canonical ingest
