@@ -17,7 +17,11 @@ RELATIVE_COLLECTOR = Path("scripts/firecrawl-ops/cre_collector")
 
 def _git(root, *args):
     return subprocess.run(
-        ["git", "-C", str(root), *args], check=True, capture_output=True,
+        # Fixture commits must settle before the recursive read-only witness.
+        # Otherwise Git's automatic background maintenance can change .git
+        # independently of the admission operation under test.
+        ["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", str(root), *args],
+        check=True, capture_output=True,
         text=True, timeout=10,
     )
 
