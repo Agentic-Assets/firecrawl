@@ -94,6 +94,48 @@ def test_success_keeps_warning_and_utf8_digest(monkeypatch):
     assert result['extraction']['warnings'] == ['tesseract_osd_failed', 'docling_logged_error']
 
 
+@pytest.mark.parametrize('text,failed', [
+    ('<!-- image -->\n\n<!-- image -->\n', True),
+    (' \t<!-- image -->\r\n', True),
+    ('<!-- image -->\n图', False),
+    ('<!-- image -->\n1', False),
+    ('<!-- image --> caption', False),
+    ('<!-- image -->\n<!-- other -->', False),
+])
+def test_docling_image_placeholders_only_are_failed(monkeypatch, text, failed):
+    from source_evidence import events
+    container = 'a' * 64
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[1] == 'create':
+            return subprocess.CompletedProcess(args, 0, stdout=(container + '\n').encode())
+        if args[1] == 'inspect':
+            label = calls[0][calls[0].index('--label') + 1].split('=', 1)[1]
+            return subprocess.CompletedProcess(args, 0, stdout=f'{container} {label}\n'.encode())
+        if args[1] == 'start':
+            mount = next(x for x in calls[0] if 'dst=/output' in x)
+            Path(mount.split('src=', 1)[1].split(',dst=', 1)[0], 'input.md').write_text(text, encoding='utf-8')
+            kwargs['stdout'].write(b'ERROR OSD failed')
+            return subprocess.CompletedProcess(args, 0)
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(ocr.subprocess, 'run', run)
+    result = ocr.convert(b'%PDF-fixture', fixture())
+    extraction = result['extraction']
+    assert extraction['coverage'] == 'unknown'
+    assert extraction['warnings'] == ['tesseract_osd_failed', 'docling_logged_error']
+    if failed:
+        assert extraction['status'] == 'failed'
+        assert extraction['error_code'] == 'placeholder_only_output'
+        assert extraction['text'] is None and extraction['text_sha256'] is None
+        plan = events.plan(result, source_key='svn')
+        events.validate_content_policy(plan)
+    else:
+        assert extraction['status'] == 'extracted'
+        assert extraction['text'] == text
+        assert extraction['text_sha256'] == ocr.digest(text.encode())
+
+
 def test_unsupported_pdf_only_and_original_hash_unchanged():
     raw = b'%PDF-fixture'
     first = {'schema_version': 'cre-document-text/v1', 'source': {'url': 'https://example.test/file.pdf',

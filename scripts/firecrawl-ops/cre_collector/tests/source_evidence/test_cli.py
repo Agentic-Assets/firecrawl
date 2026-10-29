@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 
 import pytest
 from source_evidence import cli, events
@@ -249,3 +248,28 @@ def test_document_acquisition_planning_is_offline_and_requires_private_policy(tm
     policy_path.chmod(0o644)
     with pytest.raises(ValueError, match='not private'):
         cli.main(args)
+
+
+def test_inspect_target_binds_connection_and_writes_private_counts_only(tmp_path, monkeypatch, capsys):
+    from source_evidence import target_inspection
+    response = {'schema_version': 'cre-source-evidence-target-inspection/v1', 'hazard_count': 2,
+                'extension_count': 1, 'connectable_database_count': 1,
+                'hazards': [{'object_name': 'private-object-name'}]}
+    calls = []
+    def run(statement, env, target, **kwargs):
+        calls.append((statement, env, target, kwargs))
+        return json.dumps(response).encode()
+    monkeypatch.setattr(cli, 'run_psql', run)
+    output = tmp_path / 'inspection.json'
+    cli.main(['inspect-target', '--env-file', '/private/db.env', '--expected-db-target-sha256', 'a' * 64,
+              '--out', str(output), '--login', 'fixture_login'])
+    assert json.loads(output.read_text()) == response
+    assert os.stat(output).st_mode & 0o777 == 0o600
+    assert 'private-object-name' not in capsys.readouterr().out
+    assert calls[0][0] == target_inspection.sql('fixture_login')
+    assert calls[0][1:] == ('/private/db.env', 'a' * 64, {'max_results_bytes': target_inspection.MAX_RESULTS_BYTES})
+    with pytest.raises(ValueError):
+        target_inspection.sql("login'; DROP SCHEMA public; --")
+    with pytest.raises(FileExistsError):
+        cli.main(['inspect-target', '--env-file', '/private/db.env', '--expected-db-target-sha256', 'a' * 64,
+                  '--out', str(output)])
