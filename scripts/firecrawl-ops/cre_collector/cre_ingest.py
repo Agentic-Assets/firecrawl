@@ -3022,7 +3022,7 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     markdown = listing.get("markdown")
     highlights = str_array_or_none(listing.get("highlights"))
     extra_facts = extra_facts_or_none(listing.get("extraFacts"))
-    if source_key in ("cbre-dealflow", "colliers"):
+    if source_key in rcm_fields.CONTACT_SOURCES:
         source_contacts_for_facts = listing.get("contactsDetailed")
         if isinstance(source_contacts_for_facts, list):
             unbound_contacts = [c for c in source_contacts_for_facts if rcm_fields.source_contact(source_key, c)

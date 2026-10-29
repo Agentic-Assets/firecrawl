@@ -9,6 +9,7 @@ import json
 CONTACT_SOURCES = {
     "cbre-dealflow": "cbre_dealflow_rcm",
     "colliers": "colliers_sales_tracker",
+    "newmark": "newmark_published_rcm",
 }
 
 

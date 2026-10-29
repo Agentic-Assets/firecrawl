@@ -2,7 +2,7 @@ Parent: [collector agent guidance](../AGENTS.md).
 
 # Source fields
 
-`rcm.py` keeps the CBRE/Colliers contact-source match and the new CBRE price
+`rcm.py` keeps the CBRE, Colliers and Newmark contact-source match and the new CBRE price
 currency witness outside the ingest orchestrator. A marker binds an asserted
 source shape, not publisher authentication. Contacts without a stable name or
 email remain in source facts rather than repeatable additive child rows. A new
