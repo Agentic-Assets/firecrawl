@@ -193,7 +193,7 @@ def validate(value):
         raise ValueError('unprojected native data')
     allowed = {'hanley': {'nonpublic_or_unknown_visibility'},
                'srs': set(),
-               'kidder-mathews': set(), 'newmark': set()}[source]
+               'kidder-mathews': set(), 'newmark': {'credential-bearing-document-reference'}}[source]
     if (set(projection) != {'schema', 'sourceKey', 'withheld', 'projectedCanonicalSha256'}
             or projection.get('schema') != 'cre-native-feed-projection/v1' or projection.get('sourceKey') != source
             or projection.get('projectedCanonicalSha256') != events.sha256(canonical)
@@ -205,6 +205,10 @@ def validate(value):
                 or not isinstance(notice.get('pointer'), str) or notice['pointer'] in seen):
             raise ValueError('invalid native withholding witness')
         pointer = notice['pointer']; seen.add(pointer)
+        if source == 'newmark':
+            from source_evidence.projections import newmark_native
+            if not newmark_native.POINTER.fullmatch(pointer):
+                raise ValueError('invalid Newmark withholding pointer')
         if source == 'hanley' and not re.fullmatch(r'/(?:0|[1-9][0-9]*)', pointer):
             raise ValueError('invalid Hanley withholding pointer')
         if any(k == pointer or k.startswith(pointer + '/') for k in literals):

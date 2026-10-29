@@ -47,6 +47,9 @@ def project(document, literals, *, source):
         rows_key = 'data' if source == 'newmark' else 'results'
         if isinstance(result, dict) and isinstance(result.get(rows_key), list) and len(result[rows_key]) > MAX_ROWS:
             raise ValueError('native feed array exceeds bound')
+    if source == 'newmark':
+        from source_evidence.projections import newmark_native
+        removed.extend(newmark_native.project(result))
     paths = [x['pointer'] for x in removed]
     projected_literals = {k: v for k, v in literals.items() if not any(k == p or k.startswith(p + '/') for p in paths)}
     projected = acquisition.encode_json(json.loads(events.encoded(result)), projected_literals).encode('utf8')

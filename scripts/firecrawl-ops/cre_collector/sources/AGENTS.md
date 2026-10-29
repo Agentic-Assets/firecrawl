@@ -534,7 +534,7 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | jll-investor | `investor:` + Salesforce `listing.id` | Stable U.S. search snapshots + exact detail ID/alias; no coords |
 | cushman-wakefield | `url:v1:` + first 32 hex characters of normalized public-URL SHA-256 | Provider GUID is observational, not canonical identity; strict inventory preserves detail-only fields and children |
 | transwestern | `PageUrl` slug | Invalid rows fail closed. The provider-published `-` slug requires fresh unique official-sitemap membership and an exact primary name/full-address match, including in monitor mode. |
-| newmark | NIM canonical URL slug from `newmarkNimCanonicalIdentity` | Reconcile complete ascending 100-row pages before US filtering; provider ID and slug are separate observations |
+| newmark | NIM canonical URL slug from `newmarkNimCanonicalIdentity` | Strict mode reconciles complete ascending 100-row pages before US filtering; provider ID and slug are separate observations |
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
 | avison-young | SharpLaunch `row.id` | Strict refresh validates every selected property detail; only ordinary unlimited runs default to no detail enrichment |
 | interra-realty | Numeric WordPress `ID` | Legacy `listing/<slug>` records require an explicitly reviewed identity transition; additive ingestion refuses exact-URL cross-identity collisions |
@@ -1101,8 +1101,9 @@ the original observation clock and do not publish a fresh native capture.
 
 `srcNewmark` serves full and monitor collection from the direct public NIM
 search POST. It enumerates ascending 100-row pages for each transaction,
-reconciles provider counts and identities, then filters US geography and caps
-output. `--max-items` does not bound its inventory requests. The explicitly
+then filters US geography and caps output. Strict mode additionally reconciles
+complete provider counts and identities; non-strict mode does not certify that
+global reconciliation. `--max-items` does not bound inventory requests. The explicitly
 named Algolia legacy implementation is separate from this current dispatch.
 
 The optional native JSON feed profile captures decoded NIM response text before

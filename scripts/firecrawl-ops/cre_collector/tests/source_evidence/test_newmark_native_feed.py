@@ -108,3 +108,94 @@ def test_nim_settled_observation_replays_unknown_before_new_work(tmp_path, monke
     page.write_bytes(raw + b' ')
     with pytest.raises(ValueError):
         native_pages.prepare_job(run, manifest, 'newmark', attempt, job)
+
+
+def test_newmark_projects_only_row_document_credential_references():
+    secret = 'https://docs.example.com/file.pdf?token=synthetic-secret'
+    public = 'https://docs.example.com/file.pdf?page=2'
+    values = [secret, public, None, False, '', 17]
+    rows = [{'id': index, 'secureDocumentsUrl': values[index % len(values)],
+             'nested': {'note': False}, 'other': [None, '', index]}
+            for index in range(84)]
+    body = {'data': rows, 'unknown': {'ref': public, 'false': False, 'null': None}}
+    raw, name, source = entry('newmark_nim_sale_post_v1', body)
+    obs, _ = native_feed_pages.decode_entry(raw, name, {}, source=source)
+    projected = native_feed_pages.reconstruct(obs)
+    witnesses = obs['projection']['withheld']
+    assert len(witnesses) == 14
+    assert [entry['pointer'] for entry in witnesses] == [f'/data/{i}/secureDocumentsUrl' for i in range(0, 84, 6)]
+    assert all(entry['reason'] == 'credential-bearing-document-reference' for entry in witnesses)
+    for i, row in enumerate(projected['data']):
+        assert row['secureDocumentsUrl'] == (None if i % 6 == 0 else values[i % 6])
+        assert row['other'] == [None, '', i]
+    assert projected['unknown'] == body['unknown']
+    plan = events.plan(obs, source_key=source)
+    events.validate_plan(plan); events.validate_content_policy(plan)
+    serialized = events.encoded(plan)
+    assert b'synthetic-secret' not in serialized
+    original_entry = json.loads(raw)
+    assert original_entry['receipt']['bodySha256'].encode() not in serialized
+    assert original_entry['receipt']['storedSha256'].encode() not in serialized
+    assert native_feed_pages.reconstruct(obs) == projected
+    for pointer in ['/data/1/secureDocumentsUrl', '/data/0/nested/secureDocumentsUrl',
+                    '/data/00/secureDocumentsUrl', '/other/0/secureDocumentsUrl']:
+        forged = copy.deepcopy(obs)
+        forged['projection']['withheld'][0]['pointer'] = pointer
+        with pytest.raises((ValueError, IndexError, KeyError, TypeError)):
+            native_feed_pages.validate(forged)
+
+
+@pytest.mark.parametrize('row', [
+    {'secureDocumentUrl': 'https://docs.example.com/file?token=synthetic-secret'},
+    {'nested': {'secureDocumentsUrl': 'https://docs.example.com/file?token=synthetic-secret'}},
+    {'secureDocumentsUrl': 'https://docs.example.com/file', 'other': 'https://docs.example.com/file?token=synthetic-secret'},
+])
+def test_unknown_credential_locations_still_refuse(row):
+    raw, name, source = entry('newmark_nim_sale_post_v1', {'data': [row]})
+    obs, _ = native_feed_pages.decode_entry(raw, name, {}, source=source)
+    with pytest.raises(ValueError):
+        events.validate_content_policy(events.plan(obs, source_key=source))
+
+
+def test_newmark_exceptional_number_at_document_reference_is_preserved():
+    body = b'{"data":[{"secureDocumentsUrl":1.00000000000000001}]}'
+    raw, _, source = entry('newmark_nim_sale_post_v1', {'data': []})
+    envelope = json.loads(raw); stored = gzip.compress(body)
+    envelope['responseBodyBase64'] = base64.b64encode(stored).decode()
+    envelope['receipt'].update(bodySha256=events.sha256(body), bodyBytes=len(body),
+                               storedSha256=events.sha256(stored), storedBytes=len(stored))
+    raw = events.encoded(envelope); name = f'page-1-{events.sha256(raw)}.json'
+    obs, _ = native_feed_pages.decode_entry(raw, name, {}, source=source)
+    assert obs['projection']['withheld'] == []
+    assert '1.00000000000000001' in acquisition.encode_json(native_feed_pages.reconstruct(obs), obs['numericLiterals'])
+    events.validate_content_policy(events.plan(obs, source_key=source))
+
+
+@pytest.mark.parametrize('value', [
+    'See https://docs.example/file?token=synthetic-secret for details',
+    ' https://docs.example/file?token=synthetic-secret',
+    'https://docs.example/file?token=synthetic-secret ',
+    'https://docs.example/file?token=synthetic-secret\n',
+    'https://docs.example:bad/file?token=synthetic-secret',
+    'https://docs.example:65536/file?token=synthetic-secret',
+])
+def test_malformed_or_mixed_reference_remains_for_scanner(value):
+    raw, name, source = entry('newmark_nim_sale_post_v1', {'data': [{'secureDocumentsUrl': value}]})
+    obs, _ = native_feed_pages.decode_entry(raw, name, {}, source=source)
+    assert obs['projection']['withheld'] == []
+    assert native_feed_pages.reconstruct(obs)['data'][0]['secureDocumentsUrl'] == value
+    with pytest.raises(ValueError):
+        events.validate_content_policy(events.plan(obs, source_key=source))
+
+
+@pytest.mark.parametrize('value', [
+    'http://docs.example:8080/file?token=synthetic-secret',
+    'https://docs.example:443/file?token=synthetic-secret',
+    'https://user:password@docs.example/file',
+])
+def test_exact_credential_uri_is_withheld(value):
+    raw, name, source = entry('newmark_nim_sale_post_v1', {'data': [{'secureDocumentsUrl': value}]})
+    obs, _ = native_feed_pages.decode_entry(raw, name, {}, source=source)
+    assert native_feed_pages.reconstruct(obs)['data'][0]['secureDocumentsUrl'] is None
+    assert obs['projection']['withheld'][0]['pointer'] == '/data/0/secureDocumentsUrl'
+    events.validate_content_policy(events.plan(obs, source_key=source))
