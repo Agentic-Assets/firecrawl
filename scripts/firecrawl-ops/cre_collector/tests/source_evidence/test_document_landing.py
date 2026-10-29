@@ -1,4 +1,5 @@
 import hashlib
+from urllib.parse import urlsplit
 
 import pytest
 from source_evidence.document_landing import (
@@ -40,7 +41,12 @@ def test_oversized_body_refused():
 def test_unsupported_html_is_sealed_discoverable_and_tampering_is_refused(tmp_path):
     import json
 
-    from source_evidence import document_candidates, document_landing, document_seal, events
+    from source_evidence import (
+        document_candidates,
+        document_landing,
+        document_seal,
+        events,
+    )
     from test_document_seal import context_and_artifact
 
     context, artifact = context_and_artifact()
@@ -134,3 +140,63 @@ def test_unterminated_json_script_is_not_a_discovery_candidate():
     result = document_candidates.discover(plan)
     assert not any(c.get('url') == 'https://example.com/a.pdf' for c in result['candidates'])
     assert any(d['reason'] == 'script_text_incomplete_or_unverified' for d in result['excluded'])
+
+
+def test_frame_and_object_references_preserve_order_duplicates_and_labels():
+    from source_evidence.document_landing import page_context
+
+    body = (b'<html><iframe id="first" src="../viewer" title="View"></iframe>'
+            b'<turbo-frame id="files" src="/sharing/files?q=1" aria-label="Files"></turbo-frame>'
+            b'<turbo-frame src="/sharing/files?q=1"></turbo-frame>'
+            b'<object data="/brochure.pdf"></object><embed src="/preview">'
+            b'<turbo-frame></turbo-frame><iframe src=""></iframe><iframe src></iframe></html>')
+    page = page_context(body, final_url='https://example.test/landing')
+    links = page['links']
+    assert [(x['element'], x['attribute'], x['href']) for x in links] == [
+        ('iframe', 'src', '../viewer'), ('turbo-frame', 'src', '/sharing/files?q=1'),
+        ('turbo-frame', 'src', '/sharing/files?q=1'), ('object', 'data', '/brochure.pdf'),
+        ('embed', 'src', '/preview'), ('iframe', 'src', ''), ('iframe', 'src', None)]
+    assert 'id' not in links[0] and links[0]['title'] == 'View'
+    assert links[1]['id'] == 'files' and links[1]['aria-label'] == 'Files'
+    assert links[-1]['referenceIntegrity']['href'] == 'truncated'
+    assert page['omissions']['references'] == 0
+
+
+def _context_and_artifact():
+    from test_document_seal import context_and_artifact
+
+    return context_and_artifact()
+
+
+def test_turbo_frame_bounds_and_credentials_remain_guarded():
+    from source_evidence import document_landing, document_seal
+
+    oversized = ('<turbo-frame src="' + 'x' * (MAX_VALUE_CHARS + 1) + '"></turbo-frame>').encode()
+    ref = document_landing.page_context(oversized, final_url='https://example.test/')['links'][0]
+    assert ref['href'] is None and ref['referenceIntegrity']['href'] == 'truncated'
+    body = b'<html><turbo-frame src="https://example.com/view?token=secret"></turbo-frame></html>'
+    context, artifact = _context_and_artifact()
+    context['receipt'].update(body_sha256=hashlib.sha256(body).hexdigest(), body_bytes=len(body))
+    artifact['source'].update(sha256=context['receipt']['body_sha256'], byte_length=len(body))
+    artifact['extraction'].update(status='failed', text=None, text_sha256=None, error_code='unsupported')
+    page = document_landing.page_context(body, final_url=context['receipt']['final_url'])
+    with pytest.raises(ValueError):
+        document_seal.prepare(context, artifact, landing=page)
+
+
+def test_document_label_frame_is_discoverable_but_not_acquisition_authority():
+    from source_evidence import (
+        document_acquisition_policy,
+        document_candidates,
+        document_landing,
+        events,
+    )
+
+    context, artifact = _context_and_artifact()
+    body = b'<html><turbo-frame title="Documents" src="/folder.pdf"></turbo-frame></html>'
+    artifact['pageContext'] = document_landing.page_context(body, final_url=context['receipt']['final_url'])
+    plan = events.plan(artifact, source_key=context['source_key'])
+    discovery = document_candidates.discover(plan)
+    candidate = next(x for x in discovery['candidates'] if x['url'].endswith('/folder.pdf'))
+    assert candidate['fetch_authority'] is False
+    assert document_acquisition_policy.candidate_refusal(candidate, [urlsplit(candidate['url']).hostname]) == 'relative_only'
