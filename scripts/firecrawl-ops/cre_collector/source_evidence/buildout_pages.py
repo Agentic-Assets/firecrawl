@@ -5,20 +5,28 @@ import hashlib
 import json
 
 from buildout_observation_artifact import invalid_number, unique_object
+
 from source_evidence import acquisition, buildout_response, events
 from source_evidence.buildout_scope import scope_hash
-from source_evidence.buildout_scope import supported_feed_keys as supported_feed_keys
-from source_evidence.buildout_scope import supported_sources as supported_sources
+from source_evidence.buildout_scope import (
+    supported_feed_keys as supported_feed_keys,  # noqa: PLC0414
+)
+from source_evidence.buildout_scope import (
+    supported_sources as supported_sources,  # noqa: PLC0414
+)
 
 FORMAT = "buildout_inventory_parsed_v1"
+PROJECTED_FORMAT = "buildout_inventory_projected_v1"
 MAX_ENTRY_BYTES = ((16 * 1024 * 1024 * 4 + 2) // 3) + 16384
 PROVENANCE = {"representation": "collector_parsed_json_not_response_bytes",
               "numbers": "javascript_number_precision", "identity": "unverified",
               "visibility": "unverified", "coverage": "unverified"}
 
 
-def decode_entry(raw, filename, binding, *, source_key):
+def decode_entry(raw, filename, binding, *, source_key, native_format=FORMAT):
     """Verify a private entry then retain all parsed JSON or an invalid diagnostic."""
+    if native_format not in (FORMAT, PROJECTED_FORMAT):
+        raise ValueError("Buildout native format is unsupported")
     if not isinstance(raw, bytes) or len(raw) > MAX_ENTRY_BYTES:
         raise ValueError("Buildout parsed entry exceeds bounds")
     entry = json.loads(raw.decode("utf8"), object_pairs_hook=unique_object, parse_constant=invalid_number)
@@ -44,4 +52,14 @@ def decode_entry(raw, filename, binding, *, source_key):
         document, literals = acquisition.decode_json(body)
     except (ValueError, TypeError, KeyError, RecursionError):
         return None, "invalid_json"
+    if native_format == PROJECTED_FORMAT:
+        from source_evidence import buildout_projection
+        projected, projected_literals, projection = buildout_projection.prepare(
+            body, source_key=source_key, representation="native")
+        canonical = acquisition.encode_json(json.loads(events.encoded(projected)), projected_literals).encode("utf8")
+        projected_receipt = {key: value for key, value in receipt.items() if key not in ("bodySha256", "bodyBytes")}
+        projected_receipt.update(projectedCanonicalSha256=hashlib.sha256(canonical).hexdigest(),
+                                 projectedCanonicalBytes=len(canonical))
+        return buildout_response.convert_projected(projected, projected_literals, projection,
+            receipt=projected_receipt, capture_context=binding), None
     return buildout_response.convert(document, literals, receipt=receipt, capture_context=binding), None

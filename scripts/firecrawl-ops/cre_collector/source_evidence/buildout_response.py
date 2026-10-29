@@ -1,5 +1,6 @@
 """Private parsed Buildout JSON observations; not original HTTP bytes."""
 import copy
+import json
 import re
 from datetime import datetime
 
@@ -7,26 +8,37 @@ from source_evidence import acquisition, events
 from source_evidence.buildout_scope import scope_hash
 
 SCHEMA = "cre-buildout-parsed-observation/v1"
+PROJECTED_SCHEMA = "cre-buildout-projected-observation/v1"
 RECEIPT_KEYS = {"sourceKey", "page", "providerScopeSha256", "inventorySort", "capturedAt",
                 "sourceObservedAt", "cacheDisposition", "transport", "bodySha256", "bodyBytes"}
+PROJECTED_RECEIPT_KEYS = (RECEIPT_KEYS - {"bodySha256", "bodyBytes"}) | {
+    "projectedCanonicalSha256", "projectedCanonicalBytes"}
 PROVENANCE = {"representation": "collector_parsed_json_not_response_bytes",
               "numbers": "javascript_number_precision", "identity": "unverified",
               "visibility": "unverified", "coverage": "unverified",
               "originalBodyHashVerification": "caller_asserted_not_database_reverified",
               "httpStatus": "unobserved", "finalUrl": "unobserved"}
+PROJECTED_PROVENANCE = {"representation": "source_projected_canonical_json_not_original_parsed_body",
+                        "numbers": "javascript_number_precision", "identity": "unverified",
+                        "visibility": "unverified", "coverage": "unverified",
+                        "originalReconstruction": "not_possible", "httpStatus": "unobserved",
+                        "finalUrl": "unobserved"}
 
 
-def receipt_checked(receipt):
-    if (not isinstance(receipt, dict) or set(receipt) not in (RECEIPT_KEYS, RECEIPT_KEYS | {"feedKey"})
+def receipt_checked(receipt, *, projected=False):
+    keys = PROJECTED_RECEIPT_KEYS if projected else RECEIPT_KEYS
+    body_bytes = "projectedCanonicalBytes" if projected else "bodyBytes"
+    body_hash = "projectedCanonicalSha256" if projected else "bodySha256"
+    if (not isinstance(receipt, dict) or set(receipt) not in (keys, keys | {"feedKey"})
             or not isinstance(receipt.get("sourceKey"), str)
             or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", receipt["sourceKey"])
             or type(receipt.get("page")) is not int or not 0 <= receipt["page"] <= 9007199254740991
             or receipt.get("inventorySort") not in (None, "created_at asc, id asc")
             or receipt.get("cacheDisposition") not in ("live", "generation_cache")
             or receipt.get("transport") not in (None, "unknown", "direct_json", "firecrawl_json")
-            or type(receipt.get("bodyBytes")) is not int or not 0 <= receipt["bodyBytes"] <= events.MAX_ARTIFACT_BYTES
-            or not isinstance(receipt.get("bodySha256"), str)
-            or not re.fullmatch(r"[a-f0-9]{64}", receipt["bodySha256"])
+            or type(receipt.get(body_bytes)) is not int or not 0 <= receipt[body_bytes] <= events.MAX_ARTIFACT_BYTES
+            or not isinstance(receipt.get(body_hash), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", receipt[body_hash])
             or not isinstance(receipt.get("providerScopeSha256"), str)
             or not re.fullmatch(r"[a-f0-9]{64}", receipt["providerScopeSha256"])):
         raise ValueError("Buildout parsed receipt mismatch")
@@ -86,9 +98,40 @@ def convert(document, literals, *, receipt, capture_context):
     return result
 
 
+def convert_projected(document, literals, projection, *, receipt, capture_context):
+    """Retain only projected parsed content and a projected-byte receipt."""
+    from source_evidence import buildout_projection
+
+    receipt_checked(receipt, projected=True)
+    _binding_checked(capture_context)
+    if not isinstance(literals, dict):
+        raise ValueError("Buildout numeric literal map mismatch")  # noqa: TRY004
+    buildout_projection.validate(document, projection, source_key=receipt["sourceKey"],
+                                 representation="native", numeric_literals=literals)
+    canonical = acquisition.encode_json(json.loads(events.encoded(document)), literals).encode("utf8")
+    if (events.sha256(canonical) != receipt["projectedCanonicalSha256"]
+            or len(canonical) != receipt["projectedCanonicalBytes"]):
+        raise ValueError("Buildout projected receipt disagrees with content")
+    selected = isinstance(document, dict) and isinstance(document.get("inventory"), list)
+    if selected and len(document["inventory"]) > 10000:
+        raise ValueError("Buildout inventory exceeds record bound")
+    context = copy.deepcopy(document)
+    records = context["inventory"] if selected else []
+    if selected:
+        context["inventory"] = copy.deepcopy(acquisition.PLACEHOLDER)
+    result = {"schema": PROJECTED_SCHEMA, "receipt": copy.deepcopy(receipt),
+              "arrayPointer": "/inventory" if selected else None, "context": context,
+              "records": records, "numericLiterals": copy.deepcopy(literals),
+              "captureContext": copy.deepcopy(capture_context), "projection": copy.deepcopy(projection),
+              "provenance": copy.deepcopy(PROJECTED_PROVENANCE)}
+    if not selected:
+        result["recordSelection"] = "whole_response_no_listing_array_assertion"
+    return result
+
+
 def reconstruct(observation):
-    if not isinstance(observation, dict) or observation.get("schema") != SCHEMA:
-        raise ValueError("invalid Buildout observation")  # noqa: TRY004
+    if not isinstance(observation, dict) or observation.get("schema") not in (SCHEMA, PROJECTED_SCHEMA):
+        raise ValueError("invalid Buildout observation")
     pointer = observation.get("arrayPointer")
     if pointer not in (None, "/inventory"):
         raise ValueError("invalid Buildout array selection")
@@ -100,7 +143,11 @@ def reconstruct(observation):
 
 def validate(observation):
     document = reconstruct(observation)
-    expected = convert(document, observation.get("numericLiterals"), receipt=observation.get("receipt"),
-                       capture_context=observation.get("captureContext"))
+    if observation.get("schema") == PROJECTED_SCHEMA:
+        expected = convert_projected(document, observation.get("numericLiterals"), observation.get("projection"),
+                                     receipt=observation.get("receipt"), capture_context=observation.get("captureContext"))
+    else:
+        expected = convert(document, observation.get("numericLiterals"), receipt=observation.get("receipt"),
+                           capture_context=observation.get("captureContext"))
     if observation != expected:
         raise ValueError("Buildout observation differs from its representation")

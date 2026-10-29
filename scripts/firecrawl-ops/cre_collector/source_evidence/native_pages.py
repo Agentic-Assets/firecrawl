@@ -31,7 +31,7 @@ BUILDOUT_ENV_PREFIX = "CRE_BUILDOUT_NATIVE_CAPTURE"
 
 def format_supported(source, native_format):
     """Recognize explicitly scoped formats, not generic website authorization."""
-    if native_format == "buildout_inventory_parsed_v1":
+    if native_format in ("buildout_inventory_parsed_v1", "buildout_inventory_projected_v1"):
         from source_evidence import buildout_pages
         return source in buildout_pages.supported_feed_keys()
     return source in NATIVE_FORMATS and native_format == NATIVE_FORMATS[source]
@@ -61,13 +61,15 @@ def configure_worker_env(env, run_dir, source, attempt, config):
             env[prefix + "_SOURCE_KEY"] = source
 
 
-def _decode(source, raw, filename, binding):
+def _decode(source, raw, filename, binding, *, native_format):
+    if not format_supported(source, native_format):
+        raise ValueError("native source format is unsupported")
     if source == "avison-young":
         from source_evidence.avison_pages import decode_entry as decode_avison
         return decode_avison(raw, filename, binding)
     if source not in NATIVE_FORMATS:
         from source_evidence.buildout_pages import decode_entry as decode_buildout
-        return decode_buildout(raw, filename, binding, source_key=source)
+        return decode_buildout(raw, filename, binding, source_key=source, native_format=native_format)
     return decode_entry(raw, filename, binding)
 
 
@@ -188,7 +190,8 @@ def settle(run_dir, manifest, source, attempt, save):
                        "collectorGitSha": config["collector_git_sha"],
                        "transportSha256": events.sha256(events.encoded(config["transport"])),
                        "generation": manifest["run_id"], "attempt": attempt["number"]}
-            observation, diagnostic = _decode(source, raw, name, binding)
+            observation, diagnostic = _decode(source, raw, name, binding,
+                                               native_format=config["native_source_formats"][source])
             if diagnostic:
                 state["pages"].append({"state": "no_data", "filename": name,
                                        "file_sha256": hashlib.sha256(raw).hexdigest(), "reason": diagnostic})
@@ -249,7 +252,8 @@ def prepare_job(run_dir, manifest, source, attempt, page):
                "collectorGitSha": config["collector_git_sha"],
                "transportSha256": events.sha256(events.encoded(config["transport"])),
                "generation": manifest["run_id"], "attempt": attempt["number"]}
-    observation, diagnostic = _decode(source, raw, name, binding)
+    observation, diagnostic = _decode(source, raw, name, binding,
+                                      native_format=config["native_source_formats"][source])
     if diagnostic or len(observation["records"]) > config["max_records"]:
         raise ValueError("native page is no longer admissible")
     automatic._refuse_credential_fields(observation)

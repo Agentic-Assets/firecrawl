@@ -215,7 +215,9 @@ def main(argv=None):
     c = sub.add_parser('convert-collector')
     c.add_argument('--artifact', required=True); c.add_argument('--source-key', required=True)
     c.add_argument('--out', required=True)
-    c.add_argument('--project-map-credentials', action='store_true')
+    projection = c.add_mutually_exclusive_group()
+    projection.add_argument('--project-map-credentials', action='store_true')
+    projection.add_argument('--collector-projection-version')
     r = sub.add_parser('convert-response')
     r.add_argument('--body', required=True); r.add_argument('--receipt', required=True)
     selection = r.add_mutually_exclusive_group(required=True)
@@ -263,7 +265,11 @@ def main(argv=None):
     elif args.command == 'convert-collector':
         raw = read_consistent(args.artifact, events.MAX_ARTIFACT_BYTES)
         projection = None
-        if args.project_map_credentials:
+        if args.collector_projection_version:
+            from source_evidence import collector_projection
+            artifact, literals, projection = collector_projection.prepare(
+                raw, source_key=args.source_key, version=args.collector_projection_version)
+        elif args.project_map_credentials:
             from source_evidence import map_projection
             artifact, literals, projection = map_projection.prepare(raw, source_key=args.source_key)
         else:

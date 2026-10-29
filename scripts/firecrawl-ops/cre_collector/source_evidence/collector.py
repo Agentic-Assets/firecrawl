@@ -45,8 +45,8 @@ def convert(artifact, *, source_key, policy_binding=None, numeric_literals=None,
         digest_bytes = acquisition.encode_json(json.loads(digest_bytes), numeric_literals).encode("utf8")
         digest_kind = "canonical_json_exact_numeric_literals_utf8"
     if projection is not None:
-        from source_evidence import map_projection
-        map_projection.validate(artifact, projection, source_key=source_key, numeric_literals=numeric_literals)
+        from source_evidence import collector_projection
+        collector_projection.validate(artifact, projection, source_key=source_key, numeric_literals=numeric_literals)
         digest_kind = "projected_" + digest_kind
     binding_fields = {"policySha256", "collectorGitSha", "targetSha256", "transportSha256", "artifactFileSha256", "generation", "attempt"}
     if projection is not None:
