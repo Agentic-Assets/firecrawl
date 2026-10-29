@@ -7,6 +7,8 @@ from datetime import datetime
 from source_evidence import acquisition, avison_native, events
 
 SCHEMA = "cre-avison-native-observation/v1"
+RETAIN_SCHEMA = "cre-avison-native-observation/v2"
+RETAIN_VERSION = "avison-native-public-facts-retention/v2"
 REQUEST_URL = "https://pse-api.sharplaunch.com/data?entity=website&status=active"
 RECEIPT_KEYS = {"sourceKey", "requestUrl", "method", "httpOutcome", "startedAt", "finishedAt"}
 PROVENANCE = {"bodyKind": "source_projected_canonical_json_not_original_response",
@@ -86,8 +88,15 @@ def convert(document, literals, projection, *, receipt, capture_context=None, re
     if response_encoding == "wrapped_unmapped_json" and (set(document) != {"items", "unmappedResponse"}
                                                         or document["items"] != []):
         raise ValueError("Avison unmapped response cannot assert listing records")
-    avison_native.validate_projected(document, literals)
-    _projection_checked(document, projection)
+    retained = isinstance(projection, dict) and projection.get("version") == RETAIN_VERSION
+    if retained:
+        if projection != {"version": RETAIN_VERSION, "changes": [], "unresolvedProse": 0}:
+            raise ValueError("Avison retention receipt mismatch")
+        from source_evidence import encoded_json_inspection
+        encoded_json_inspection._inspect_encoded_credentials(document, inspect_keys=True)
+    else:
+        avison_native.validate_projected(document, literals)
+        _projection_checked(document, projection)
     if capture_context is not None:
         _binding_checked(capture_context)
     # Reconstruction preserves unknown envelope fields as well as every row.
@@ -99,7 +108,7 @@ def convert(document, literals, projection, *, receipt, capture_context=None, re
     projected_bytes = acquisition.encode_json(json.loads(events.encoded(document)), literals).encode("utf8")
     if len(projected_bytes) > events.MAX_ARTIFACT_BYTES:
         raise ValueError("Avison projected response exceeds bounds")
-    result = {"schema": SCHEMA, "receipt": copy.deepcopy(receipt), "arrayPointer": "/items",
+    result = {"schema": RETAIN_SCHEMA if retained else SCHEMA, "receipt": copy.deepcopy(receipt), "arrayPointer": "/items",
             "responseEncoding": response_encoding,
             "context": context, "records": records, "numericLiterals": copy.deepcopy(literals),
             "projection": copy.deepcopy(projection),
@@ -112,7 +121,7 @@ def convert(document, literals, projection, *, receipt, capture_context=None, re
 
 
 def reconstruct(observation):
-    if (not isinstance(observation, dict) or observation.get("schema") != SCHEMA
+    if (not isinstance(observation, dict) or observation.get("schema") not in (SCHEMA, RETAIN_SCHEMA)
             or observation.get("arrayPointer") != "/items" or not isinstance(observation.get("context"), dict)
             or observation["context"].get("items") != acquisition.PLACEHOLDER
             or not isinstance(observation.get("records"), list)):

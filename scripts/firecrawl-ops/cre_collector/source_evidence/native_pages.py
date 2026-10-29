@@ -37,6 +37,8 @@ BUILDOUT_ENV_PREFIX = "CRE_BUILDOUT_NATIVE_CAPTURE"
 
 def format_supported(source, native_format):
     """Recognize explicitly scoped formats, not generic website authorization."""
+    if source == "avison-young" and native_format == "avison_sharplaunch_website_retained_v2":
+        return True
     if native_format in ("buildout_inventory_parsed_v1", "buildout_inventory_projected_v1"):
         from source_evidence import buildout_pages
         return source in buildout_pages.supported_feed_keys()
@@ -89,7 +91,7 @@ def _decode(source, raw, filename, binding, *, native_format):
         return decode_transwestern(raw, filename, binding)
     if source == "avison-young":
         from source_evidence.avison_pages import decode_entry as decode_avison
-        return decode_avison(raw, filename, binding)
+        return decode_avison(raw, filename, binding, native_format=native_format)
     if source not in NATIVE_FORMATS:
         from source_evidence.buildout_pages import decode_entry as decode_buildout
         return decode_buildout(raw, filename, binding, source_key=source, native_format=native_format)

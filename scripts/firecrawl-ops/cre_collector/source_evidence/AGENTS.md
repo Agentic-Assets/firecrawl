@@ -68,12 +68,13 @@ Legacy map and Buildout parsed formats remain unchanged. See README.md for
 collector and native opt-ins, loss boundaries and replay. No download or writer
 activation follows from this projection.
 
-Avison's raw producer files stay private and local. `avison_pages.py` applies
-the source-owned `avison_native.py` projection before `avison_response.py`
-creates database-bound observations. Original response/file hashes, integration
-keys and withheld values must not enter those observations or capture IDs.
-Unknown JSON shapes retain projected context without claiming listing rows.
-HTTP status and final URL are unobserved by this transport; never invent them.
+Avison's raw producer files stay private and local. The historical native v1
+uses `avison_native.py`'s withholding projection; preserve its sealed replay.
+The separately policy-bound `avison_sharplaunch_website_retained_v2` retains
+public-feed source values and controls after bounded credential inspection.
+Original response/file hashes and integration keys stay out of events. Unknown
+JSON shapes remain context without listing claims. HTTP status and final URL
+are unobserved by this transport; never invent them.
 
 Fact-text search is a literal case-insensitive search over PostgreSQL's JSONB
 text representation, not semantic matching, original bytes or document text.

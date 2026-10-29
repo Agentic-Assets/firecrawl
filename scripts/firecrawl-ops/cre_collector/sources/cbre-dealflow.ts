@@ -1,3 +1,4 @@
+import { rcmSourceControls, rcmPublicContactUrl, rcmSafePriceText, RCM_CONTACT_FLAGS } from "./pure/rcm-source-controls.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/cbre-dealflow.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
@@ -435,18 +436,25 @@ export function cbreDealflowCardContacts($: cheerio.CheerioAPI, card: cheerio.Ch
   const contacts: any[] = [];
   card.find(".contacts .tab-text").each((_, el) => {
     const row = $(el);
-    const name = clean(row.find(".name").first().text()) ?? clean(row.text().match(/[A-Za-z][A-Za-z .'-]+/)?.[0] ?? null);
+    const name = clean(row.find(".name").first().text()) ??
+      (!row.find(".company, .title, .license").length ? clean(row.text().match(/[A-Za-z][A-Za-z .'-]+/)?.[0] ?? null) : null);
     const email = clean(row.find('a[href^="mailto:"]').first().attr("href")?.replace(/^mailto:/i, ""));
     const phone =
       clean(row.find('a[href^="tel:"]').first().text()) ??
       clean(row.find('a[href^="tel:"]').first().attr("href")?.replace(/^tel:/i, ""));
-    if (!name && !email && !phone) return;
+    const company = clean(row.find(".company").first().text());
+    const title = clean(row.find(".title").first().text());
+    const license = clean(row.find(".license").first().text());
+    if (!name && !email && !phone && !company && !title && !license) return;
     contacts.push(
       prune({
         name,
         email,
         phone,
-        company: "CBRE",
+        company,
+        title,
+        license,
+        rcmContactSource: "cbre_dealflow_rcm",
       }) ?? {}
     );
   });
@@ -498,14 +506,10 @@ export function parseCbreDealflowCards(html: string, tx: Tx): CbreDealflowCard[]
     if (!id) return;
     const contactsDetailed = cbreDealflowCardContacts($, card);
     const brokerIds = contactsDetailed
-      .map((c) =>
-        brokerRef({
-          name: clean(c.name),
-          email: clean(c.email),
-          phone: clean(c.phone),
-          company: "CBRE",
-        })
-      )
+      .map((c) => {
+        const company = clean(c.company);
+        return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone), company }) : null;
+      })
       .filter((id: number | null): id is number => id !== null);
     cards.push({
       id,
@@ -719,21 +723,26 @@ export function cbreDealflowContacts(data: any): any[] {
   for (const section of data?.sections ?? []) {
     for (const c of section?.contacts ?? []) {
       const name = clean(c?.Fullname) ?? clean([c?.Firstname, c?.Lastname].filter(Boolean).join(" "));
-      if (!name) continue;
-      const avatarUrl = c?.ShowProfileImage ? cbreDealflowUrl(c?.ProfileImageUrl) : null;
-      const email = c?.ShowEmail === true ? clean(c?.Email) : null;
-      const phone = c?.ShowPhone === true ? clean(c?.Phone) : null;
+      const avatarUrl = rcmPublicContactUrl(cbreDealflowUrl(c?.ProfileImageUrl));
+      const email = clean(c?.Email);
+      const phone = clean(c?.Phone);
+      const title = clean(c?.Title), company = clean(c?.CompanyName), license = clean(c?.License);
+      const profileUrl = rcmPublicContactUrl(cbreDealflowUrl(c?.ExpertBioUrl));
+      if (!name && !email && !phone && !title && !company && !license && !avatarUrl && !profileUrl) continue;
       contacts.push(
         prune({
           name,
-          title: c?.ShowTitle === true ? clean(c?.Title) : null,
+          title,
           email,
           phone,
-          company: clean(c?.CompanyName) ?? "CBRE",
+          company,
           avatarUrl,
-          profileUrl: c?.ShowExpertBio === true ? cbreDealflowUrl(c?.ExpertBioUrl) : null,
+          profileUrl,
+          license,
+          rcmContactSource: "cbre_dealflow_rcm",
+          sourceDisplayControls: rcmSourceControls(c, RCM_CONTACT_FLAGS),
           cbreContactId: c?.ProjectContactId ?? null,
-        }) ?? { name, company: "CBRE" }
+        }) ?? { name }
       );
     }
   }
@@ -837,21 +846,30 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
     const detailContacts = cbreDealflowContacts(data);
     const contactsDetailed = detailContacts.length ? detailContacts : card.contactsDetailed ?? [];
     const brokerIds = contactsDetailed
-      .map((c) =>
-        brokerRef({
-          name: clean(c.name),
-          email: clean(c.email),
-          phone: clean(c.phone),
-          avatarUrl: clean(c.avatarUrl),
-          company: "CBRE",
-        })
-      )
+      .map((c) => {
+        const company = clean(c.company);
+        return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone),
+          avatarUrl: clean(c.avatarUrl), company }) : null;
+      })
       .filter((id: number | null): id is number => id !== null);
     const size = num(Number(fields.size));
     const sizeType = clean(fields.sizetype);
     const parcelSize = num(Number(fields.parcelsize));
     const parcelType = clean(fields.parcelType);
-    const showPrice = fields.showprice === true && num(Number(fields.value));
+    const priceValue = fields.value;
+    const numericPrice = typeof priceValue === "number" || (typeof priceValue === "string" && /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(priceValue.trim()));
+    const reportedValue = numericPrice ? num(Number(priceValue)) : null;
+    const currencyText = clean(fields.currency);
+    const reportedCurrency = currencyText && /^[A-Za-z]{3}$/.test(currencyText) ? currencyText : null;
+    const symbolText = clean(fields.valuesymbol);
+    const reportedSymbol = symbolText && /^(?:[$€£¥]|US\$|USD|CAD|AUD|EUR|GBP)$/i.test(symbolText) ? symbolText : null;
+    const usdBound = reportedCurrency?.toUpperCase() === "USD" && (!symbolText || !!reportedSymbol) &&
+      (!reportedSymbol || ["$", "US$", "USD"].includes(reportedSymbol.toUpperCase()));
+    const safePriceString = typeof priceValue === "string" && priceValue.length <= 1024 && rcmSafePriceText(priceValue);
+    const reportedRawText = safePriceString ? clean(priceValue) :
+      typeof priceValue === "number" && Number.isFinite(priceValue) && priceValue > 0 ? String(priceValue) : null;
+    const reportedPriceText = reportedRawText ?
+      `${reportedCurrency ? `${reportedCurrency.toUpperCase()} ` : ""}${reportedSymbol && !reportedRawText.startsWith(reportedSymbol) ? reportedSymbol : ""}${reportedRawText}` : null;
     const docItems = cbreDealflowDocumentUrls(data);
     const photos = cbreDealflowImageUrls(data, card.photos);
     // Capture-everything harvest: scan the detail page HTML + section content
@@ -882,7 +900,18 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
     // WS1: extraFacts for cbreDealflowDetail.projectType (long-tail fact with
     // no discrete column; stored as snake_case key under extra_facts jsonb).
     const projectTypeVal = clean(data.projectType);
-    const extraFacts = projectTypeVal ? { project_type: projectTypeVal } : undefined;
+    const extraFacts = { ...(projectTypeVal ? { project_type: projectTypeVal } : {}),
+      rcm_source_contacts: contactsDetailed,
+      cbre_dealflow_reported_price: {
+        source: "cbre_dealflow_rcm", source_field: "projectfields.value", currency: reportedCurrency ?? "unverified",
+        currencyBasis: usdBound ? "source_currency_usd" : "unverified_or_conflicting", symbol: reportedSymbol,
+        valueState: !Object.hasOwn(fields, "value") ? "missing" : fields.value === null ? "null" :
+          typeof fields.value === "number" && Number.isFinite(fields.value) ? "number" :
+          typeof fields.value === "string" ? (fields.value === "" ? "empty_string" : fields.value.length > 1024 ? "string_oversize" : safePriceString ? "string" : "unresolved") : "unresolved",
+        ...(typeof fields.value === "number" && Number.isFinite(fields.value) ? { reportedNumber: fields.value } : {}),
+        ...(safePriceString ? { reportedTextJson: JSON.stringify(fields.value) } : {}),
+        displayControls: rcmSourceControls(fields, ["showprice"]),
+      } };
     return prune({
       ...card,
       // Keep the public card token as the forward identity. Existing numeric
@@ -901,11 +930,8 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
       country: clean(addr.country) ?? card.country ?? "United States",
       latitude: num(Number(addr.latitude)),
       longitude: num(Number(addr.longitude)),
-      salePriceUsd: tx === "sale" && showPrice ? Number(fields.value) : null,
-      salePriceText:
-        tx === "sale" && showPrice
-          ? `${clean(fields.valuesymbol) ?? "$"}${Number(fields.value).toLocaleString("en-US")}`
-          : null,
+      salePriceUsd: tx === "sale" && usdBound && reportedValue !== null && reportedValue > 0 ? reportedValue : null,
+      salePriceText: tx === "sale" ? reportedPriceText : null,
       sizeText: size && sizeType ? `${size.toLocaleString("en-US")} ${sizeType}` : card.sizeText,
       buildingSizeSqft: sizeType && /sq\s*ft/i.test(sizeType) ? size : null,
       lotSizeAcres: parcelSize && parcelType && /acre|ac\b/i.test(parcelType) ? parcelSize : null,
@@ -932,6 +958,7 @@ export async function enrichCbreDealflowCard(card: CbreDealflowCard, tx: Tx): Pr
         }),
         photoCount: Array.isArray(data.photos) ? data.photos.length : 0,
         sectionCount: Array.isArray(data.sections) ? data.sections.length : 0,
+        sourceDisplayControls: rcmSourceControls(fields, ["showprice", "showsize", "showunits", "showyearbuilt"]),
       },
     });
   } catch (err) {

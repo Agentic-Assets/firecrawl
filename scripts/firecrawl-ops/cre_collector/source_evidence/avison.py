@@ -7,6 +7,7 @@ from cre_avison_price_visibility import (
     asking_control,
     effective_control,
     project_value,
+    retained_policy,
 )
 
 
@@ -71,6 +72,9 @@ def validate_records(plan):
                                    if event["facts"][0]["kind"] == "source_observation"]
     original = collector.reconstruct(wrapped)
     records = original["listings"]
+    if records and all(isinstance(record, dict) and record.get("sourceKey") == "avison-young"
+                       and retained_policy(record) for record in records):
+        return
     controls = []
     for record in records:
         if not isinstance(record, dict) or record.get("sourceKey") != "avison-young":

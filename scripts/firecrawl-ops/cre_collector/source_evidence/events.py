@@ -92,7 +92,7 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
     elif artifact.get("schema") in ("cre-json-response-observation/v1", "cre-json-response-context-observation/v1",
-                                   "cre-avison-native-observation/v1"):
+                                   "cre-avison-native-observation/v1", "cre-avison-native-observation/v2"):
         capture_clock = timestamp(artifact.get("receipt", {}).get("finishedAt"))
         if observed_at is not None and timestamp(observed_at) != capture_clock:
             raise ValueError("observation clock mismatch")
@@ -189,7 +189,7 @@ def plan(artifact, *, source_key, observed_at=None, external_id=None):
         events.extend(_event(capture, n, source_key, capture_clock, url, provenance,
                              [{"kind": "source_record", "value": row}], None)
                       for n, row in enumerate(artifact["records"], 1))
-    elif artifact.get("schema") == "cre-avison-native-observation/v1":
+    elif artifact.get("schema") in ("cre-avison-native-observation/v1", "cre-avison-native-observation/v2"):
         from source_evidence import avison_response
         if source_key != "avison-young" or external_id is not None:
             raise ValueError("Avison native observation requires its source identity")

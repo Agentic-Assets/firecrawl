@@ -458,13 +458,19 @@ quotas and single-worker custody as NAI. Team-member requests are excluded.
 The integration key, request headers and key-derived commitments are excluded;
 publication fails with a redacted error if the body contains that key.
 
-The coordinator projects source-withheld asking fields and monetary aliases
+For the historical `avison_sharplaunch_website_v1` format, the coordinator
+projects source-withheld asking fields and monetary aliases
 through `avison_native.py`, preserving unaffected original values and context,
 including unknown fields, empty/null values, duplicate IDs and addressless
 records. Independently labeled financial values are retained. Monetary spans
 that remain ambiguous carry an explicit unresolved marker. A bounded receipt
 contains changed JSON pointers, actions and reasons, never removed values.
 These source-specific rules do not relax the existing collector-format guard.
+
+The explicit `avison_sharplaunch_website_retained_v2` policy format retains the
+source JSON and numeric literals after credential checks; its v2 observation
+and retention receipt do not imply publisher UI visibility or source identity.
+It does not alter earlier v1 sealed plans. Raw producer custody remains private.
 
 `cre-avison-native-observation/v1` retains projected records, the projected
 envelope, exceptional numeric literal map and projection receipt. Hashes and

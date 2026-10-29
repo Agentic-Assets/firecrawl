@@ -1,4 +1,3 @@
-import { avisonAskingControl, projectAvisonAskingPrice } from "./pure/avison-price-visibility.js";
 import { extractAvisonLeaseFacts } from "./pure/avison-lease-facts.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
@@ -2127,7 +2126,6 @@ export function assertAvisonYoungOutputIdentity(
 }
 
 export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>): any {
-  const askingControl = avisonAskingControl(row);
   const contactsDetailed = (Array.isArray(row.team_member_ids) ? row.team_member_ids : [])
     .map((id: any) => avisonYoungContact(teamMembers.get(String(id))))
     .filter(Boolean);
@@ -2194,8 +2192,9 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     country: clean(row.country) ?? "US",
     latitude: num(row.location?.lat),
     longitude: num(row.location?.lng),
-    salePriceUsd: num(row.sale_price),
-    salePriceText: row.sale_price ? `$${Number(row.sale_price).toLocaleString("en-US")}` : null,
+    // Currency and unit are source-unverified; the literal remains in rawSharpLaunch.
+    salePriceUsd: clean(row.sale_currency)?.toUpperCase() === "USD" ? num(row.sale_price) : null,
+    salePriceText: null,
     capRatePct: num(row.cap_rate),
     sizeText: avisonYoungSizeText(row),
     buildingSizeSqft: num(row.total_surface_sqft),
@@ -2233,7 +2232,7 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     detailUnavailable: true,
     detailUnavailableReason: "base feed row; current detail page not yet fetched",
     rawSharpLaunch: row,
-    avisonPriceVisibility: { schema: "avison-asking-price-v1", control: askingControl },
+    avisonPublicFactsRetention: { schema: "avison-public-facts-retention/v2" },
   });
 }
 
@@ -2575,7 +2574,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
       method: "SharpLaunch public website API base listings only (monitor mode; detail-page enrichment skipped)",
       totalAvailable: rows.length,
       truncated,
-      listings: baseListings.map(listing => projectAvisonAskingPrice({ ...listing, sourceKey: "avison-young" })),
+      listings: baseListings.map(listing => ({ ...listing, sourceKey: "avison-young" })),
       note:
         "Monitor mode: SharpLaunch inventory fields only; per-listing detail-page enrichment skipped and prior child collections preserved. " +
         (teamFeedComplete
@@ -2681,7 +2680,7 @@ export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Pro
       "SharpLaunch public website API with bounded public detail-page enrichment for selected rows",
     totalAvailable: rows.length,
     truncated,
-    listings: listings.map(listing => projectAvisonAskingPrice({ ...listing, sourceKey: "avison-young" })),
+    listings: listings.map(listing => ({ ...listing, sourceKey: "avison-young" })),
     note:
       detailLimit > 0
         ? `Detail enrichment fetched public SharpLaunch/Avison pages for ${detailLimit} selected row(s); documents, images, broker cards, profile URLs, VCard URLs, and JSON-LD are stored as URLs/raw public metadata only. ${

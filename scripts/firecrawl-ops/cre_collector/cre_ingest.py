@@ -58,6 +58,7 @@ import cre_parse
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
 from cre_artifact_scope import require_canonical_artifact
+from source_fields import rcm as rcm_fields
 from source_fields.sql import RESERVED_KEY, build_field_updates
 
 # ---------------------------------------------------------------------------
@@ -2815,11 +2816,12 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     # "$N" token, so a phrase like "Subject to Offer" never promotes to a number.
     # No extra branch needed; the existing numeric clamps cover it.
     if is_sale_psf_text(sale_price_text):
-        # (DQ guard 2) Lee salePriceUsd per-SF conflation: a per-SF sale text means
-        # the absolute sale price must NOT be read; route it to sale_price_per_sf.
-        price_per_sf = price_per_sf or num_or_none(
-            parse_money(sale_price_text), lo=0, hi=10000
-        )
+        # The new CBRE source-price context may retain a dollar symbol whose
+        # currency is unverified. Preserve its text without inventing USD/SF.
+        if rcm_fields.permits_psf_inference(source_key, listing, sale_price_text):
+            price_per_sf = price_per_sf or num_or_none(
+                parse_money(sale_price_text), lo=0, hi=10000
+            )
         sale_price = None
     if price_per_sf is None and sale_price and size_sf and size_sf > 100:
         # Apply the same economic bound to a derived value that we apply to an
@@ -2857,6 +2859,9 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         source_contacts = _safe_jll_hidden_child_metadata(source_contacts, broker=True)
     if source_contacts:
         for i, c in enumerate(source_contacts):
+            if rcm_fields.source_contact(source_key, c) and not (c.get("name") or c.get("email")):
+                # No stable child identity for additive refresh; preserve it in source facts below.
+                continue
             if not isinstance(c, dict) or not (
                 c.get("name")
                 or c.get("email")
@@ -2875,11 +2880,12 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
                     "license": clean_text(c.get("license"), 64),
                     "email": c.get("email"),
                     "phone": c.get("phone"),
-                    "company": c.get("company") or listing.get("sourceCompany"),
+                    "company": (c.get("company") if rcm_fields.source_contact(source_key, c)
+                                else c.get("company") or listing.get("sourceCompany")),
                     "profileUrl": http_url_or_none(c.get("profileUrl")),
                     "avatarUrl": http_url_or_none(c.get("avatarUrl")),
                     "vcardUrl": http_url_or_none(c.get("vcardUrl")),
-                    "isPrimary": i == 0,
+                    "isPrimary": not contacts,
                 }
             )
         if not contacts:
@@ -2900,7 +2906,7 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
                     "phone": b.get("phone"),
                     "company": b.get("company") or listing.get("sourceCompany"),
                     "avatarUrl": http_url_or_none(b.get("avatarUrl")),
-                    "isPrimary": i == 0,
+                    "isPrimary": not contacts,
                 }
             )
 
@@ -3016,6 +3022,13 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     markdown = listing.get("markdown")
     highlights = str_array_or_none(listing.get("highlights"))
     extra_facts = extra_facts_or_none(listing.get("extraFacts"))
+    if source_key in ("cbre-dealflow", "colliers"):
+        source_contacts_for_facts = listing.get("contactsDetailed")
+        if isinstance(source_contacts_for_facts, list):
+            unbound_contacts = [c for c in source_contacts_for_facts if rcm_fields.source_contact(source_key, c)
+                                and not (c.get("name") or c.get("email"))]
+            if unbound_contacts:
+                extra_facts = {**(extra_facts or {}), "rcm_unidentified_source_contacts": unbound_contacts}
     if jll_pricing_withheld:
         # A legacy/manual JLL artifact cannot prove that prose is free of an
         # asking-price disclosure. Omit it rather than attempting a future
@@ -3277,6 +3290,7 @@ def _merge_child_collections(collection, primary, secondary):
 def merge_rows(a, b):
     """Merge two staged rows for the same (slug, external_id) within a batch."""
     from source_fields.merge import merge_building_candidates
+    avison_prose = avison_prices.mixed_prose_snapshot(a, b)
     a["source_field_building"], a["_source_building_conflicts"] = merge_building_candidates(a, b)
     prior_candidate, incoming_candidate = a.get("source_field_count"), b.get("source_field_count")
     if a.get("_source_field_conflict") or b.get("_source_field_conflict"):
@@ -3376,6 +3390,10 @@ def merge_rows(a, b):
         a["status"] = sb
     elif sa is None:
         a["status"] = sb
+    # Keep distinct prose from a retained pass and a legacy projected pass.
+    # Raw source passes remain separately bound below; do not infer that a
+    # longer or newer text includes the facts in the other one.
+    avison_prices.merge_mixed_prose(a, b, avison_prose)
     # Keep both raw payloads when the passes differ.  The top-level marker is
     # deliberately carried outside that wrapper so SQL does not need to infer
     # a price-withholding state from nested, malformed, or legacy provider data.

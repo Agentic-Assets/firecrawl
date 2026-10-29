@@ -424,10 +424,53 @@ def project_value(value, amounts=(), context="", role="raw"):
     return projected
 
 
+RETAIN_SCHEMA = "avison-public-facts-retention/v2"
+
+
+def retained_policy(raw):
+    """Recognize a producer-declared public-facts path, including merged passes."""
+    if not isinstance(raw, dict):
+        return False
+    candidates = [raw, raw.get("primary"), raw.get("secondary_pass")]
+    return any(isinstance(leaf, dict) and leaf.get("sourceKey") == SOURCE
+               and leaf.get("avisonPublicFactsRetention") == {"schema": RETAIN_SCHEMA} for leaf in candidates)
+
+
+def mixed_prose_snapshot(first, second):
+    """Save source prose before ordinary staged-row merging mutates the first row."""
+    if (first.get("slug") != SOURCE or second.get("slug") != SOURCE
+            or retained_policy(first.get("raw_data")) == retained_policy(second.get("raw_data"))):
+        return None
+    return {key: list(first[key]) if isinstance(first.get(key), list) else first.get(key)
+            for key in ("description", "markdown", "highlights", "amenities")}
+
+
+def merge_mixed_prose(target, incoming, snapshot):
+    """Retain distinct passages from the legacy and public-facts source passes."""
+    if snapshot is None:
+        return
+    for field in ("description", "markdown"):
+        first, second = snapshot[field], incoming.get(field)
+        if not first or not second:
+            target[field] = first or second
+        elif first in second:
+            target[field] = second
+        elif second in first:
+            target[field] = first
+        else:
+            target[field] = first + "\n\n" + second
+    for field in ("highlights", "amenities"):
+        first, second = snapshot[field], incoming.get(field)
+        target[field] = (list(dict.fromkeys(first + second))
+                         if isinstance(first, list) and isinstance(second, list) else first or second)
+
+
 def project_row(row):
     if not isinstance(row, dict) or row.get("slug") != SOURCE:
         return row
     raw = row.get("raw_data")
+    if retained_policy(raw):
+        return row
     control = effective_control(raw)
     result = dict(row)
     if control == "withheld":
@@ -471,7 +514,7 @@ def sql_policy(rows):
     controls = [
         effective_control(row.get("raw_data"))
         for row in rows
-        if row.get("slug") == SOURCE
+        if row.get("slug") == SOURCE and not retained_policy(row.get("raw_data"))
     ]
     if "withheld" not in controls:
         return {"definitions": "", "prior_select": "", "post_sql": ""}
@@ -708,7 +751,11 @@ END $av$;
         sql = sql.replace(key, value)
     guard = """EXISTS (SELECT 1 FROM credeals.cre_brokerages avb
  WHERE avb.id=s.brokerage_id AND avb.slug='avison-young')
- AND pg_temp.avison_asking_control(s.raw_data)='withheld'"""
+ AND CASE WHEN coalesce((
+ (s.raw_data->>'sourceKey'='avison-young' AND s.raw_data->'avisonPublicFactsRetention' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb) OR
+ (s.raw_data#>>'{primary,sourceKey}'='avison-young' AND s.raw_data#>'{primary,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb) OR
+ (s.raw_data#>>'{secondary_pass,sourceKey}'='avison-young' AND s.raw_data#>'{secondary_pass,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb)), false) THEN false
+ ELSE pg_temp.avison_asking_control(s.raw_data)='withheld' END"""
     prior_select = f""", CASE WHEN {guard}
  THEN pg_temp.avison_asking_amounts(t.raw_data) || ARRAY[t.sale_price_usd]::numeric[]
  ELSE ARRAY[]::numeric[] END AS avison_asking_amounts"""
@@ -723,7 +770,7 @@ END $av$;
     for table in ("cre_listing_contacts", "cre_listing_documents", "cre_listing_media"):
         update = f"""UPDATE credeals.{table} c
  SET title=NULLIF(pg_temp.avison_asking_text(c.title,({amounts}),'child-title'),'')
- {joins.format(alias="c")}
+ {joins.replace("{alias}", "c")}
  AND c.title IS DISTINCT FROM NULLIF(pg_temp.avison_asking_text(c.title,({amounts}),'child-title'),'');
 """
         if table == "cre_listing_media":

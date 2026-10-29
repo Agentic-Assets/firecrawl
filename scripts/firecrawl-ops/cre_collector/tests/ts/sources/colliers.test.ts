@@ -199,7 +199,7 @@ test("colliersContactsFromCard extracts broker rows from card HTML", () => {
   assert.equal(contacts[0].name, "Alex Broker");
   assert.equal(contacts[0].email, "alex@colliers.com");
   assert.equal(contacts[0].phone, "555-0100");
-  assert.equal(contacts[0].company, "Colliers");
+  assert.equal(contacts[0].company, undefined);
 });
 
 test("parseColliersCards uses the ordered grouped map ProjectId", () => {
@@ -242,7 +242,7 @@ test("parseColliersCards uses the ordered grouped map ProjectId", () => {
   assert.equal(card.salePriceUsd, 5000000);
   assert.equal(card.latitude, 32.78);
   assert.equal(card.longitude, -96.8);
-  assert.equal(card.brokerIds.length, 1);
+  assert.equal(card.brokerIds.length, 0);
   assert.match(card.photos[0]!, /thumb\.jpg$/);
   assert.equal(
     card.colliersSalesTrackerCard.identitySource,
@@ -330,7 +330,7 @@ test("Colliers cards without canonical detail stay inventory-only", () => {
   assert.equal(listing.canonicalUrl, undefined);
 });
 
-test("colliersDetailContacts maps project contacts and respects ShowEmail", () => {
+test("colliersDetailContacts retains source email with ShowEmail provenance", () => {
   const detail = {
     ProjectContacts: [
       {
@@ -359,7 +359,8 @@ test("colliersDetailContacts maps project contacts and respects ShowEmail", () =
   assert.equal(contacts[0].email, "jane@colliers.com");
   assert.equal(contacts[0].profileUrl, "https://my.rcm1.com/bio/jane");
   assert.equal(contacts[0].avatarUrl, "https://my.rcm1.com/img/jane.png");
-  assert.equal("email" in contacts[1] ? contacts[1].email : undefined, undefined);
+  assert.equal(contacts[1].email, "hidden@colliers.com");
+  assert.equal(contacts[1].sourceDisplayControls.ShowEmail.state, "false");
 });
 
 test("colliersDetailImages merges gallery and fallback image URLs", () => {

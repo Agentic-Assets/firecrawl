@@ -1,3 +1,4 @@
+import { rcmSourceControls, rcmPublicContactUrl, RCM_CONTACT_FLAGS } from "./pure/rcm-source-controls.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/colliers.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
@@ -257,13 +258,19 @@ export function colliersContactsFromCard($: cheerio.CheerioAPI, card: cheerio.Ch
     const phone =
       clean(row.find(".phone").first().text()) ??
       clean(row.find('a[href^="tel:"]').first().attr("href")?.replace(/^tel:/i, ""));
-    if (!name && !email && !phone) return;
+    const company = clean(row.find(".company").first().text());
+    const title = clean(row.find(".title").first().text());
+    const license = clean(row.find(".license").first().text());
+    if (!name && !email && !phone && !company && !title && !license) return;
     contacts.push(
       prune({
         name,
         email,
         phone,
-        company: "Colliers",
+        company,
+        title,
+        license,
+        rcmContactSource: "colliers_sales_tracker",
       }) ?? {}
     );
   });
@@ -300,14 +307,10 @@ export function parseColliersCards(
     const id = `salestracker:card:${mapGroup.projectId}`;
     const contactsDetailed = colliersContactsFromCard($, card);
     const brokerIds = contactsDetailed
-      .map((c) =>
-        brokerRef({
-          name: clean(c.name),
-          email: clean(c.email),
-          phone: clean(c.phone),
-          company: "Colliers",
-        })
-      )
+      .map((c) => {
+        const company = clean(c.company);
+        return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone), company }) : null;
+      })
       .filter((brokerId: number | null): brokerId is number => brokerId !== null);
     cards.push({
       id,
@@ -436,21 +439,18 @@ export function colliersAcresToNumber(value: string | null): number | null {
 
 export function colliersDetailContacts(detail: any): any[] {
   const contacts = Array.isArray(detail?.ProjectContacts) ? detail.ProjectContacts : [];
-  return contacts
-    .map((c: any) =>
-      prune({
-        name: clean(c?.Name),
-        title: clean(c?.Title),
-        email: c?.ShowEmail === false ? null : clean(c?.Email),
-        phone: clean(c?.Phone),
-        company: clean(c?.Company) ?? "Colliers",
-        avatarUrl: colliersUrl(c?.ProfileImageUrl),
-        profileUrl: c?.ShowExpertBio === true ? colliersUrl(c?.ExpertBioUrl) : null,
-        license: clean(c?.License),
-        colliersProjectContactId: c?.ProjectContactId ?? null,
-      })
-    )
-    .filter(Boolean);
+  return contacts.map((c: any) => {
+    const contact = prune({
+      name: clean(c?.Name), title: clean(c?.Title), email: clean(c?.Email), phone: clean(c?.Phone),
+      company: clean(c?.Company), license: clean(c?.License),
+      avatarUrl: rcmPublicContactUrl(colliersUrl(c?.ProfileImageUrl)),
+      profileUrl: rcmPublicContactUrl(colliersUrl(c?.ExpertBioUrl)),
+    });
+    if (!contact) return null;
+    return { ...contact, rcmContactSource: "colliers_sales_tracker",
+      sourceDisplayControls: rcmSourceControls(c, RCM_CONTACT_FLAGS),
+      ...(c?.ProjectContactId != null ? { colliersProjectContactId: c.ProjectContactId } : {}) };
+  }).filter(Boolean);
 }
 
 export function colliersDetailImages(detail: any, fallback: string[]): string[] {
@@ -559,15 +559,11 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     const details = detail?.ProjectDetails ?? {};
     const contactsDetailed = colliersDetailContacts(detail);
     const brokerIds = contactsDetailed
-      .map((c) =>
-        brokerRef({
-          name: clean(c.name),
-          email: clean(c.email),
-          phone: clean(c.phone),
-          avatarUrl: clean(c.avatarUrl),
-          company: "Colliers",
-        })
-      )
+      .map((c) => {
+        const company = clean(c.company);
+        return company ? brokerRef({ name: clean(c.name), email: clean(c.email), phone: clean(c.phone),
+          avatarUrl: clean(c.avatarUrl), company }) : null;
+      })
       .filter((brokerId: number | null): brokerId is number => brokerId !== null);
     const description =
       stripHtmlText(detail?.SimpleLandingPageValues?.Description) ??
@@ -602,7 +598,7 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     const lr = parseLeaseRate(leaseRateText);
     // projectType into extraFacts (long-tail; no discrete column).
     const projectType = clean(details?.ProjectType?.Value);
-    const extraFacts: Record<string, string> | undefined = projectType ? { project_type: projectType } : undefined;
+    const extraFacts = { ...(projectType ? { project_type: projectType } : {}), rcm_source_contacts: contactsDetailed };
     return prune({
       ...card,
       id: projectId,
@@ -646,6 +642,7 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
         pageTitle: clean(detail?.Seo?.PageTitle),
         photoCount: Array.isArray(detail?.GalleryImages) ? detail.GalleryImages.length : 0,
         contactCount: contactsDetailed.length,
+        sourceDisplayControls: rcmSourceControls(summary?.AttributeVisibility, ["ShowValue"]),
         brochureUrl: colliersUrl(detail?.ProjectHeader?.BrochureUrl),
         agreementUrl: colliersUrl(detail?.ProjectHeader?.AgreementButton?.buttonUrl),
         brochureAndAgreementNote:

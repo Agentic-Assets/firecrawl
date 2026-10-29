@@ -2,6 +2,14 @@ Parent: [collector agent guidance](../AGENTS.md).
 
 # Source fields
 
+`rcm.py` keeps the CBRE/Colliers contact-source match and the new CBRE price
+currency witness outside the ingest orchestrator. A marker binds an asserted
+source shape, not publisher authentication. Contacts without a stable name or
+email remain in source facts rather than repeatable additive child rows. A new
+CBRE price context must match the exact source, field, displayed value and USD
+basis before text can create a numeric price per square foot; legacy inputs keep
+their prior behavior. None of these checks erases the original source values.
+
 Buildout's 25 registered shared feeds, SVN, Lee and Franklin may promote the
 lease availability count from a strictly fresh, complete, source-bound inventory
 artifact. Franklin requires independently complete sale and lease feed proofs;

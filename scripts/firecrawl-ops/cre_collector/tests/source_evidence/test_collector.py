@@ -176,3 +176,17 @@ def test_split_observations_do_not_bypass_avison_context_visibility(hidden):
             events.validate_content_policy(value)
     else:
         events.validate_content_policy(value)
+
+
+def test_avison_new_producer_retains_price_and_continues_credential_guard():
+    original = artifact('avison-young', 1)
+    row = original['listings'][0]
+    row.update(avisonPublicFactsRetention={'schema':'avison-public-facts-retention/v2'},
+               rawSharpLaunch={'hide_price':1, 'sale_price':123456}, description='Asking price: 123456')
+    value = events.plan(collector.convert(original, source_key='avison-young'), source_key='avison-young')
+    events.validate_content_policy(value)
+    assert value['events'][1]['facts'][0]['value']['rawSharpLaunch']['sale_price'] == 123456
+    row['url'] = 'https://example.test/?token=DUMMY_PRIVATE_VALUE'
+    bad = events.plan(collector.convert(original, source_key='avison-young'), source_key='avison-young')
+    with pytest.raises(ValueError):
+        events.validate_content_policy(bad)

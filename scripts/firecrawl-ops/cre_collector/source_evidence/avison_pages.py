@@ -14,7 +14,9 @@ PROVENANCE = {"bodyKind": "collector_decoded_text_reencoded_utf8_not_fetch_or_wi
               "identity": "unverified", "visibility": "unverified", "completeness": "unverified"}
 
 
-def decode_entry(raw, filename, binding):
+def decode_entry(raw, filename, binding, *, native_format=FORMAT):
+    if native_format not in (FORMAT, "avison_sharplaunch_website_retained_v2"):
+        raise ValueError("unsupported Avison native format")
     if not isinstance(raw, bytes) or len(raw) > MAX_ENTRY_BYTES:
         raise ValueError("Avison native page exceeds bounds")
     entry = json.loads(raw.decode("utf8"), object_pairs_hook=unique_object, parse_constant=invalid_number)
@@ -39,7 +41,11 @@ def decode_entry(raw, filename, binding):
         document = {"items": [], "unmappedResponse": document}
         literals = {"/unmappedResponse" + path: value for path, value in literals.items()}
         encoding = "wrapped_unmapped_json"
-    projected, projected_literals, projection = avison_native.project(document, literals)
+    if native_format == FORMAT:
+        projected, projected_literals, projection = avison_native.project(document, literals)
+    else:
+        projected, projected_literals = document, literals
+        projection = {"version": avison_response.RETAIN_VERSION, "changes": [], "unresolvedProse": 0}
     observation = avison_response.convert(projected, projected_literals, projection,
                                          receipt=entry["receipt"], capture_context=binding, response_encoding=encoding)
     return observation, None

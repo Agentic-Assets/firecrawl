@@ -857,23 +857,14 @@ SharpLaunch `sale_unit_price` has no proven per-square-foot unit: retain it in
 `rawSharpLaunch` and `saleUnitPrice`, without promoting it to `salePricePerSf`.
 Canonical ingestion can derive per-square-foot price from known total and area.
 
-Avison asking visibility uses only the source-owned SharpLaunch `hide_price`
-control: absent, numeric `0` (visible), or numeric `1` (withheld); other values
-or contradictory control evidence refuse. The strict `avisonPriceVisibility`
-marker uses schema `avison-asking-price-v1` and control `absent`, `visible`, or
-`withheld`; it cannot authorize visibility without its canonical source evidence.
-Apply the source projection after enrichment and at every final emission so
-hidden asking aliases and prose cannot reappear. Preserve independent lease
-rates, cap rate, NOI and other nonprice facts, protected identity/resource URLs,
-and original observation clocks/proofs. The optional `avison_lease_facts`
-namespace preserves literal, URL- and observation-bound suite, status, rent,
-area, lease-type and labelled/unparsed page evidence; it does not assign units,
-periods or canonical rates. `cre_avison_lease_facts.py` is the sole canonical
-normalization/cohort authority after strict source guards, including its
-post-merge and backfill paths. Raw-fact retention or a priced subset is not
-inventory-coverage or source-acceptance proof. Asking visibility is neither
-missing source data nor fresh-detail or production acceptance; follow
-[source visibility guidance](../../../../docs/firecrawl-ops/references/cre-ingest-freshness-troubleshooting.md#source-visibility-is-not-missing-data).
+Avison's public-feed producer uses `avison-public-facts-retention/v2`: retain
+reported asking values, prose and original `hide_price` controls regardless of
+their value. A flag is a source assertion, not proof of UI visibility or access.
+Promote a numeric sale amount to USD only with an explicit source USD currency;
+keep unknown-unit `sale_unit_price` untyped. Earlier `avison-asking-price-v1`
+records retain their historical projection behavior. The optional
+`avison_lease_facts` namespace and `cre_avison_lease_facts.py` continue to own
+qualified lease observations; none of these paths changes lifecycle or access.
 
 ## Monitor Mode Matrix
 
@@ -1211,3 +1202,20 @@ python3 cre_ingest.py --in /tmp/probe.json --dry-run
 - Monitor layer: `../../../../docs/firecrawl-ops/references/cre-monitor-subsystem.md`
 - Colliers-main handoff: `../HANDOFF_COLLIERS_MAIN_2026-06-13.md`, `run_colliers_main_full.sh`
 - CBRE reference: `../../prometheus/CLAUDE.md`
+
+## CBRE Deal Flow and Colliers source-reported detail facts
+
+Public RCM contact details retain supplied fields independently of `Show*`
+display flags. The source flags are preserved as typed state records in the
+contact's `sourceDisplayControls`, and the containing detail retains its price
+controls. Contact brokerage comes only from the source company field; absent
+company does not create a broker-table reference. Credential-bearing and
+nonpublic-host contact URLs remain excluded from mapped references.
+
+CBRE's source `projectfields.value` and symbol are recorded in
+`extraFacts.cbre_dealflow_reported_price`, including zero, null, missing and
+empty-string states. Sale-price text is source-reported; USD numeric mapping
+requires an explicit USD currency field and a compatible symbol. The staging
+per-square-foot fallback respects that currency basis for these new source
+facts; legacy records keep their existing behavior. This does not establish
+publisher UI visibility, source authorization, or full detail completeness.
