@@ -43,6 +43,14 @@ def test_complete_bound_lease_and_zero(tmp_path):
     assert row["source_field_count"]["tenure"] == "lease"
 
 
+def test_optional_qualification_refuses_malformed_provenance(tmp_path):
+    artifact, listing = fixture(tmp_path)
+    for malformed in ("invalid", ["invalid"], True):
+        listing["freshnessProvenance"] = malformed
+        raw = json.dumps(artifact).encode()
+        assert qualified_counts(artifact, hashlib.sha256(raw).hexdigest()) == {}
+
+
 def test_source_proof_and_literals_must_agree(tmp_path):
     artifact, listing = fixture(tmp_path, "2 Spaces")
     listing["buildoutFieldObservations"]["availableSpaceCount"]["value"] = 3

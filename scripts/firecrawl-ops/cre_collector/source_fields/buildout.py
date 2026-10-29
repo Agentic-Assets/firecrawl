@@ -174,6 +174,7 @@ def validate_inventory(
             and listing.get("inventoryObservedAt") == page["observedAt"]
         )
         provenance = listing.get("freshnessProvenance") or {}
+        require(isinstance(provenance, dict))
         require(
             provenance.get("generationId") == generation_id
             and provenance.get("cacheDisposition") == page["cacheDisposition"]
