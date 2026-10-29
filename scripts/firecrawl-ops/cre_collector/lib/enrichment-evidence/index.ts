@@ -60,7 +60,8 @@ function witness(item: EnrichmentClaim) {
 
 export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc, capturedAt: string | null,
   options: { pageUrl?: string; kind?: "generic" | "buildout";
-    qualification?: "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail" } = {}) {
+    qualification?: "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail";
+    sourceObservation?: unknown; sourceObservationIncomplete?: boolean; sourceObservationError?: "capture_failed" } = {}) {
   const { pageUrl = item.url, kind = "generic", qualification } = options;
   const fields: Record<string, unknown> = {};
   const omissions: Record<string, string> = {};
@@ -77,6 +78,18 @@ export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc
       omissions[key] = "not_json_serializable";
     }
   }
+  let sourceObservation: unknown;
+  if (options.sourceObservationError) omissions.sourceObservation = options.sourceObservationError;
+  if (options.sourceObservation !== undefined) {
+    try {
+      if (!preservesJsonValue(options.sourceObservation)) omissions.sourceObservation = "invalid_source_observation";
+      else if (jsonBytes(options.sourceObservation) > FIELD_BYTES) omissions.sourceObservation = "field_byte_limit";
+      else {
+        sourceObservation = JSON.parse(JSON.stringify(options.sourceObservation));
+        if (options.sourceObservationIncomplete) omissions.sourceObservation = "source_observation_partial";
+      }
+    } catch { omissions.sourceObservation = "not_json_serializable"; }
+  }
   let pageContext: ReturnType<typeof captureSourcePageContext> | null = null;
   if (typeof doc.rawHtml === "string") {
     if (Buffer.byteLength(doc.rawHtml, "utf8") > HTML_CONTEXT_BYTES) omissions.pageContext = "html_byte_limit";
@@ -91,12 +104,15 @@ export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc
   const result = { event: `${kind}_enrichment_observation`, schema: `cre-${kind}-enrichment-observation/v1`,
     claim: witness(item), requestedPageUrl: pageUrl, capturedAt, captureClock: capturedAt === null ? "unavailable" : "collector_after_scrape_return",
     ...(qualification === undefined ? {} : { qualification }),
+    ...(sourceObservation === undefined ? {} : { sourceObservation }),
     pageContextClockOrigin: capturedAt === null ? "unavailable" : "collector_after_scrape_return_not_provider_freshness",
     sourceFreshness: "unverified", cacheDisposition: "unverified", pageContext, scrapedDoc: fields, omissions };
   if (jsonBytes(result) <= OBSERVATION_BYTES) return result;
   const fieldOmissions = Object.fromEntries(Object.keys(fields).map((key) => [key, "observation_byte_limit"]));
-  return { ...result, pageContext: null, scrapedDoc: {},
+  const { sourceObservation: discarded, ...rest } = result;
+  return { ...rest, pageContext: null, scrapedDoc: {},
     omissions: { ...omissions, ...fieldOmissions, ...(pageContext === null ? {} : { pageContext: "observation_byte_limit" }),
+      ...(discarded === undefined ? {} : { sourceObservation: "observation_byte_limit" }),
       observation: "observation_byte_limit" } };
 }
 
