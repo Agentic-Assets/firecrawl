@@ -29,7 +29,6 @@ test("retains parsed rows, duplicates, nulls and cache metadata without plugin k
   const directory = await mkdtemp(join(tmpdir(), "buildout-capture-"));
   configure(directory, t);
   const data: any = { meta: { total: 2 }, inventory: [{ id: 1, other: [false, null, []] }, { id: 1 }] };
-  Object.defineProperty(data, "__creFreshness", { value: { observedAt: "2026-10-28T11:00:00Z" }, enumerable: false });
   publishBuildoutParsedPage({ pluginKey, cacheSlug: sourceKey, page: 0, inventorySort: undefined,
     data, sourceObservedAt: "2026-10-28T11:00:00Z", cacheDisposition: "generation_cache", transport: null });
   const names = await readdir(directory);
