@@ -34,4 +34,3 @@ export function preservesJsonValue(value: unknown): boolean {
   };
   return visit(value, 0);
 }
-
