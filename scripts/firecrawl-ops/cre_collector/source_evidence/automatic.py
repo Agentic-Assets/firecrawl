@@ -38,6 +38,8 @@ from source_evidence import (
 SCHEMA = "cre-automatic-source-evidence-policy/v1"
 SCHEMA_V2 = "cre-automatic-source-evidence-policy/v2"
 SCHEMA_V3 = "cre-automatic-source-evidence-policy/v3"
+SCHEMA_V4 = "cre-automatic-source-evidence-policy/v4"
+NEWMARK_DETAIL_FORMAT = "newmark_rcm_published_detail_v1"
 DOCUMENT_TEXT_FORMAT = "local_anydoc_public_listing_v1"
 SENSITIVE_KEYS = {"xamzsecuritytoken", "xgoogsecuritytoken", "securitytoken"}
 
@@ -103,14 +105,17 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
     policy = json.loads(raw.decode(), object_pairs_hook=unique_object, parse_constant=invalid_number)
     expected_keys = {"schema_version", "purpose", "data_scope", "format", "collector_git_sha",
                      "target_sha256", "source_keys", "max_artifact_bytes", "max_records"}
-    version3 = isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V3
-    version2 = isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V2, SCHEMA_V3)
+    version4 = isinstance(policy, dict) and policy.get("schema_version") == SCHEMA_V4
+    version3 = isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V3, SCHEMA_V4)
+    version2 = isinstance(policy, dict) and policy.get("schema_version") in (SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
     if version2:
         expected_keys |= {"collector_projections", "native_source_formats", "max_native_pages"}
     if version3:
         expected_keys.add("document_text_formats")
+    if version4:
+        expected_keys.add("enrichment_detail_formats")
     allowed = policy.get("source_keys") if isinstance(policy, dict) else None
-    if (not isinstance(policy, dict) or set(policy) != expected_keys or policy["schema_version"] not in (SCHEMA, SCHEMA_V2, SCHEMA_V3)
+    if (not isinstance(policy, dict) or set(policy) != expected_keys or policy["schema_version"] not in (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
             or policy["purpose"] != "private_unverified_evidence" or policy["data_scope"] != "public_listing_source"
             or policy["format"] != "collector_artifact_v1" or policy["collector_git_sha"] != git_sha
             or policy["target_sha256"] != target or not isinstance(allowed, list) or not allowed
@@ -137,6 +142,20 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
         if (not isinstance(document_formats, dict)
                 or any(k not in allowed or v != DOCUMENT_TEXT_FORMAT for k, v in document_formats.items())):
             raise ValueError("invalid document text retention policy")
+    if version4:
+        detail_formats = policy["enrichment_detail_formats"]
+        if (not isinstance(detail_formats, dict)
+                or any(k != "newmark" or k not in allowed or v != NEWMARK_DETAIL_FORMAT
+                       for k, v in detail_formats.items())):
+            raise ValueError("invalid enrichment detail format policy")
+    # Fetching a newly published detail route and projecting its native evidence
+    # are one explicit contract. Older policies must not acquire new behavior
+    # merely because the projection registry later gains another implementation.
+    from source_evidence.projections import newmark_rcm
+    newmark_projection = version2 and projections.get("newmark") == newmark_rcm.VERSION
+    newmark_detail = version4 and detail_formats.get("newmark") == NEWMARK_DETAIL_FORMAT
+    if newmark_projection != newmark_detail:
+        raise ValueError("Newmark published detail requires paired version-4 projection policy")
     try:
         if len(_read_private(Path(env_file), 65536)) > 65536:
             raise ValueError("automatic evidence env file exceeds limit")
@@ -151,7 +170,8 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
             "transport": transport,
             **({"collector_projections": projections, "native_source_formats": native_formats,
                 "max_native_pages": policy["max_native_pages"]} if version2 else {}),
-            **({"document_text_formats": document_formats} if version3 else {})}
+            **({"document_text_formats": document_formats} if version3 else {}),
+            **({"enrichment_detail_formats": detail_formats} if version4 else {})}
 
 
 def _verify_config(config, sources):

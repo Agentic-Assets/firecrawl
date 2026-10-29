@@ -926,3 +926,23 @@ profile is not a canonical listing, public-display, source-authority or
 complete-coverage assertion. The existing 128-page, 128-MiB attempt and 16-MiB
 decoded-page bounds apply. This prototype is default off and needs separate
 source-policy review and production acceptance.
+
+## Draft Newmark detail evidence policy
+
+A version-4 automatic evidence policy can explicitly name the Newmark RCM
+published-detail format in `enrichment_detail_formats`. This option is a draft
+and does not itself authenticate the source, approve a request, promote a
+listing, or authorize database admission. The guarded owner only enables the
+internal detail marker for the matching Newmark source and exact policy entry;
+earlier policy versions and ordinary enrichment do not enable it. Do not use
+this option until the complete detail producer, source-specific disclosure
+projection, and their independent verification are integrated and approved.
+
+The worker can carry a bounded unverified source-row witness in its private claim
+file. It joins the queue's brokerage, external ID and canonical URL to the
+listing's existing raw source record, and preserves missing, null and unresolved
+name and address components separately. Multiple properties, duplicate matches,
+unsafe text, unsupported links and missing fields remain unresolved. Its bounded control-character filter is not proof that a retained string
+contains no secret; normal source and credential admission remains required. Full original inventory evidence remains
+separate; the witness is neither an authenticated identity nor a replacement
+for it. No raw source record, document reference, or full-record digest is copied.

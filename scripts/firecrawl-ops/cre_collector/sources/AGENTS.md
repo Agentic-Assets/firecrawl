@@ -1106,6 +1106,16 @@ complete provider counts and identities; non-strict mode does not certify that
 global reconciliation. `--max-items` does not bound inventory requests. The explicitly
 named Algolia legacy implementation is separate from this current dispatch.
 
+`CRE_NEWMARK_PUBLISHED_DETAIL=1` is an explicit experimental enrichment
+route, not source permission or an authentication assertion. It resolves only
+the witnessed RCM modern landing route from a bounded Newmark source-row
+carrier, retains its exact embedded JSON literal and unqualified parsed
+context, and compares name and property-local address before considering
+substantive source fields. Unknown or mismatched pages remain observations and
+do not complete a claim. The source clock is unverified. Source visibility and
+credential projection must be reviewed before evidence admission. Normal
+dispatch remains unchanged without the marker.
+
 The optional native JSON feed profile captures decoded NIM response text before
 page validation, geography, identity and output filtering. It binds sale/lease
 request types separately, accepts only the fixed 100-row request and retains

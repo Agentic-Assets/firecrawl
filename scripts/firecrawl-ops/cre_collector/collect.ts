@@ -481,6 +481,8 @@ async function dispatch(): Promise<void> {
   flushPerformance({ terminal: false });
   try {
     const enrichInput = flags["enrich-input"];
+    if (enrichInput && process.env.CRE_NEWMARK_PUBLISHED_DETAIL === "1" && !OUT_PATH)
+      throw new Error("Newmark published-detail evidence requires a private --out file");
     if (flags["observe-input"] !== undefined) {
       if (!OUT_PATH) throw new Error("observe mode requires --out");
       const items = readObservationInput(flags["observe-input"]);

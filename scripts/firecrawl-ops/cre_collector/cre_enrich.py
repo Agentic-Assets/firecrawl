@@ -74,6 +74,8 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 
+import newmark_claim_witness
+
 # Reuse cre_ingest verbatim so env-file discovery, SQL escaping, and psql
 # discovery are identical to the production ingest path. The worker imports these
 # symbols; it never re-implements credential loading or quote-doubling.
@@ -140,7 +142,7 @@ def _normalize_source_filter(source):
     return source
 
 
-def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, targeted=False):
+def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, targeted=False, source_detail_witness=False):
     """Atomically claim up to `batch` pending rows and return their fields.
 
     Mirrors cre_monitor.build_write_sql GUC pins (ON_ERROR_STOP +
@@ -159,6 +161,8 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
     """
     batch = int(batch)
     source = _normalize_source_filter(source)
+    if source_detail_witness and (source not in (None, "newmark") or targeted):
+        raise ValueError("source detail witness requires mixed or Newmark-only non-targeted claims")
     where_source = []
     if source is not None:
         # This predicate lives inside the locked claim CTE. Consequently a
@@ -194,7 +198,8 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
         "   SET claimed_at = now()",
         "  FROM claimed WHERE q.id = claimed.id",
         "RETURNING q.id, q.source_key, q.external_id, q.url, q.reason, q.attempts"
-        + (", q.claimed_at" if targeted else "") + ";",
+        + (", q.claimed_at" if targeted else "")
+        + ((", NULL::text, CASE WHEN q.source_key = 'newmark' THEN " + newmark_claim_witness.returning_sql() + " ELSE NULL END") if source_detail_witness else "") + ";",
         "COMMIT;",
     ])
 
@@ -363,6 +368,8 @@ def claim_rows_to_items(claimed_rows, *, targeted=False):
             item["transaction"] = r.get("transaction") or "sale"
         if r.get("claimed_at"):
             item.update(claimId=r["id"], claimedAt=r["claimed_at"])
+        if r.get("source_key") == "newmark" and r.get("source_published_detail") is not None:
+            item["sourcePublishedDetail"] = r["source_published_detail"]
         items.append(item)
     return {"items": items}
 
@@ -436,7 +443,7 @@ def _psql_exec(db_url, sql):
         sys.exit(f"psql exec failed ({proc.returncode})")
 
 
-def _parse_claimed(rows):
+def _parse_claimed(rows, *, source_detail_witness=False):
     """Parse RETURNING tuples (id, source_key, external_id, url, reason, attempts)."""
     claimed = []
     for t in rows:
@@ -450,7 +457,9 @@ def _parse_claimed(rows):
             "url": url or None,
             "reason": reason or None,
             "attempts": int(attempts) if attempts not in ("", None) else 0,
-            **({"claimed_at": t[6]} if len(t) > 6 else {}),
+            **({"claimed_at": t[6]} if len(t) > 6 and t[6] else {}),
+            **({"source_published_detail": newmark_claim_witness.parse(t[7])}
+               if source_detail_witness and len(t) > 7 else {}),
         })
     return claimed
 
@@ -647,7 +656,10 @@ def run(args):
                      or not getattr(args, "expected_db_target_sha256", None)
                      or not 1 <= getattr(args, "work_seconds", 600) <= 600):
         raise ValueError("targeted Matthews worker requires exact bounded target admission")
-    claim_sql = build_claim_sql(batch, source=source, targeted=targeted)
+    evidence_witness = (os.environ.get("CRE_NEWMARK_PUBLISHED_DETAIL") == "1"
+                        and getattr(args, "artifact_out", None) is not None and not targeted
+                        and source in (None, "newmark"))
+    claim_sql = build_claim_sql(batch, source=source, targeted=targeted, source_detail_witness=evidence_witness)
 
     if args.dry_run:
         # Never connect; print the claim SQL so the shape is auditable. No url.
@@ -688,7 +700,7 @@ def run(args):
     print(f"credentials: {env_path}", file=sys.stderr)
 
     # (1) Claim a batch atomically.
-    claimed_rows = _parse_claimed(_psql_query(db_url, claim_sql))
+    claimed_rows = _parse_claimed(_psql_query(db_url, claim_sql), source_detail_witness=evidence_witness)
     if not claimed_rows:
         print("0 claimed: queue empty, nothing to enrich", file=sys.stderr)
         return 0

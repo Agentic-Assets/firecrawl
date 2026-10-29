@@ -13,7 +13,7 @@ const CONTEXT_BYTES = 64 * 1024;
 const MAX_ITEMS = 100;
 type PageItem = { sourceKey: SourceKey; url: string; sourceId?: string | null; context?: unknown };
 
-function possibleChallengeHeader(rawHtml: unknown): boolean {
+export function possibleChallengeHeader(rawHtml: unknown): boolean {
   if (typeof rawHtml !== "string" || !rawHtml) return false;
   const $ = cheerio.load(rawHtml);
   const normalize = (value: string) => value.toLowerCase().replace(/\s+/g, " ").trim()
