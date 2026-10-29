@@ -156,3 +156,25 @@ bounded process timeout and cleanup grace; native memory is not capped.
 Settled means that the selected attempts have recorded outcomes, including
 failed or OCR-needed outcomes. It does not mean that text was recovered from
 every document. Inspect each parser outcome before relying on its text.
+
+The opt-in sparse OCR complement uses the same pinned, locally cached Docling
+image solely for its prebuilt PDFium and Tesseract components. It never pulls an
+image or uploads a document. The adapter binds the original PDF and the ordered
+AnyDoc and Poppler artifacts, records page-level results and unknown coverage,
+and keeps usable partial text and bounded per-page Tesseract TSV word boxes,
+line IDs, and raw confidence values. The TSV is limited to 1 MiB in aggregate;
+text and TSV together are limited to 4 MiB. Omissions and partial page output
+are explicit. Under `keep_unresolved_until_review`, they retain the original;
+`temporary_only` preserves its existing explicit cleanup behavior.
+Coordinates are pixels in the rendered page image; confidence values are engine
+output, not calibrated probabilities. The adapter does not infer tables.
+`no_text` requires both earlier attempts to have no text; `all_pages` is an
+explicit policy for mixed or text-bearing PDFs. It
+limits rendering to 200 DPI and 25 million pixels per page, uses Tesseract
+English sparse mode without orientation detection, and applies 60-second
+per-page and 210-second worker deadlines. Temporary images have a 128 MiB
+per-file limit within a 512 MiB temporary filesystem. A private durable owner
+intent precedes container creation; a separate settlement receipt records
+verified removal. Failed pages, page limits and unconfirmed cleanup are
+reported and subject to coordinator recovery barriers. These local results establish neither source permission nor OCR
+accuracy or production acceptance.

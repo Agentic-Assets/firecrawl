@@ -122,3 +122,22 @@ def test_explicit_exclusions_and_original_retention():
         "nondefault_port", "host_not_allowed", "relative_only", "document_count_limit"}
     assert result["documents"][0]["candidate"]["url"] == "http://docs.example.test/a"
     assert result["original_retention"] == "keep_unresolved_until_review"
+
+
+@pytest.mark.parametrize('strategy,max_pages,valid', [
+    ('no_text', 1, True), ('all_pages', 1000, True), ('unknown', 1, False),
+    ('no_text', 0, False), ('no_text', 1001, False), ('no_text', True, False),
+])
+def test_v3_sparse_ocr_has_explicit_strategy_page_bound_and_phase(strategy, max_pages, valid):
+    plan = plan_for(artifact())
+    candidates = document_candidates.discover(plan)
+    value = policy_value()
+    value.update(schema_version=policy.SCHEMA_V3,
+                 pdf_complement={'mode': 'poppler_pdf_text_v1', 'pdftotext_path': '/usr/bin/pdftotext'},
+                 sparse_ocr={'mode': 'sparse_ocr_v1', 'strategy': strategy, 'max_pages': max_pages})
+    value['limits']['run_timeout_seconds'] = 3600
+    if valid:
+        assert preflight(plan, candidates, value=value)['sparse_ocr'] == value['sparse_ocr']
+        value['limits']['run_timeout_seconds'] = 300
+    with pytest.raises(ValueError):
+        preflight(plan, candidates, value=value)

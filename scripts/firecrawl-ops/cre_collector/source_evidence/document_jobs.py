@@ -7,7 +7,7 @@ Deleted original binaries are not reverified by this module.
 import os
 from pathlib import Path
 
-from source_evidence import (automatic, doc_complement_process, doc_extract_process, document_acquisition, document_automatic,
+from source_evidence import (automatic, doc_complement_process, doc_extract_process, doc_sparse_ocr_process, document_acquisition, document_automatic,
                              document_batch, document_budget, document_pipeline, document_seal, events)
 
 SCHEMA = "cre-document-evidence-append-job/v1"
@@ -16,7 +16,7 @@ FORMAT = "local_anydoc_public_listing_v1"
 
 def iter_jobs(manifest):
     """Yield primary jobs first, then complements, preserving checkpoint ownership."""
-    for key in ("append", "complement_append"):
+    for key in ("append", "complement_append", "ocr_append"):
         for source, checkpoint in manifest.get("sources", {}).items():
             for attempt in checkpoint.get("attempts", []):
                 for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
@@ -24,7 +24,7 @@ def iter_jobs(manifest):
                         yield source, attempt, document[key]
 
 
-def _derive(run_dir, manifest, source, attempt, document, *, complement=False):
+def _derive(run_dir, manifest, source, attempt, document, *, role="primary"):
     run_dir = Path(os.path.abspath(run_dir))
     configs = manifest["config"]
     evidence = configs["automatic_source_evidence"]
@@ -99,21 +99,32 @@ def _derive(run_dir, manifest, source, attempt, document, *, complement=False):
         raise ValueError("document complement executable changed")
     if required:
         document_seal.check_primary(run_dir / directory / "primary-sealed", context, document.get("primary_sealed"), first)
-    if complement and not required:
-        raise ValueError("document complement not admitted")
-    artifact = checked["complement"] if complement else first
+    ocr_required = doc_sparse_ocr_process.required(first, checked.get("complement"), selected)
+    if ("ocr" in checked) != ocr_required:
+        raise ValueError("document OCR disagrees with policy")
+    if ocr_required:
+        doc_sparse_ocr_process.validate(checked["ocr"], first, checked["complement"], context["receipt"], source,
+                                        selected["sparse_ocr"])
+        prior = document_seal.read(run_dir / directory / "prior-sealed", expected_context=context,
+                                   expected_marker=document.get("prior_sealed"))
+        if (not isinstance(document.get("prior_sealed"), dict) or prior.get("artifact") != first
+                or prior.get("complement") != checked["complement"] or "ocr" in prior):
+            raise ValueError("OCR prior seal disagrees with final artifact")
+    if role not in ("primary", "complement", "ocr") or (role == "complement" and not required) or (role == "ocr" and not ocr_required):
+        raise ValueError("document parser role not admitted")
+    artifact = first if role == "primary" else checked[role]
     if not isinstance(artifact, dict):
         raise ValueError("document append converter artifact missing")
     status = artifact.get("extraction", {}).get("status")
-    if not complement:
+    if role == "primary":
         doc_extract_process.validate_artifact(artifact, context["receipt"], source_key=source,
                                               exit_code=0 if status == "extracted" else 2)
     enriched = {**artifact, "acquisition_context": context,
                 "acquisition_context_origin": "foreground_coordinator_not_converter",
                 **({"pageContext": checked["landing"]} if "landing" in checked else {})}
     _, plan = document_acquisition.bind_extraction(context, enriched)
-    plan_name = "complement-plan.json" if complement else "plan.json"
-    plan_marker = marker["complement"] if complement else marker
+    plan_name = "plan.json" if role == "primary" else role + "-plan.json"
+    plan_marker = marker if role == "primary" else marker[role]
     saved_plan_raw, saved_plan = document_pipeline._json(seal_dir / plan_name, document_seal.MAX_FILE)
     if (events.encoded(saved_plan) != events.encoded(plan) or events.sha256(saved_plan_raw) != marker["files"].get(plan_name)
             or plan["plan_sha256"] != plan_marker.get("plan_sha256")
@@ -129,18 +140,19 @@ def _derive(run_dir, manifest, source, attempt, document, *, complement=False):
                 "seal_sha256": events.sha256(events.encoded(marker)), "plan_sha256": plan["plan_sha256"],
                 "capture_id": plan["events"][0]["capture_id"], "directory": directory,
                 "format": FORMAT}
-    if complement:
-        expected["parser_role"] = "pdf_complement_v1"
+    if role != "primary":
+        expected["parser_role"] = {"complement": "pdf_complement_v1", "ocr": "sparse_ocr_v1"}[role]
     return expected, plan
 
 
 def prepare_job(run_dir, manifest, source, attempt, document, job):
     """Revalidate one existing job and return its exact sealed evidence plan."""
-    complement = job is document.get("complement_append") and job is not None
-    if (not isinstance(job, dict) or (job is not document.get("append") and not complement)
+    roles = {"append": "primary", "complement_append": "complement", "ocr_append": "ocr"}
+    matches = [role for key, role in roles.items() if job is not None and job is document.get(key)]
+    if (not isinstance(job, dict) or len(matches) != 1
             or job.get("state") not in ("pending", "appending", "outcome_unknown", "appended")):
         raise ValueError("invalid document append job state")
-    expected, plan = _derive(run_dir, manifest, source, attempt, document, complement=complement)
+    expected, plan = _derive(run_dir, manifest, source, attempt, document, role=matches[0])
     if any(events.encoded(job.get(key)) != events.encoded(value) for key, value in expected.items()):
         raise ValueError("document append job binding changed")
     return plan
@@ -150,21 +162,19 @@ def mark(run_dir, manifest, source, attempt, document, save):
     """Attach a pending job once; never rearm an existing job."""
     if not callable(save):
         raise ValueError("document append job requires durable save")
-    existing = document.get("append")
-    if existing is not None:
-        prepare_job(run_dir, manifest, source, attempt, document, existing)
-        if "complement" in document.get("sealed", {}):
-            prepare_job(run_dir, manifest, source, attempt, document, document.get("complement_append"))
-        elif "complement_append" in document:
-            raise ValueError("unexpected complement append job")
-        return existing
-    expected, _ = _derive(run_dir, manifest, source, attempt, document)
-    complement_expected = None
-    if "complement" in document.get("sealed", {}):
-        complement_expected, _ = _derive(run_dir, manifest, source, attempt, document, complement=True)
-    document["append"] = {**expected, "state": "pending"}
-    if complement_expected is not None:
-        document["complement_append"] = {**complement_expected, "state": "pending"}
+    roles = (("append", "primary"), ("complement_append", "complement"), ("ocr_append", "ocr"))
+    admitted = {"primary"} | {role for role in ("complement", "ocr") if role in document.get("sealed", {})}
+    if document.get("append") is not None:
+        for key, role in roles:
+            if role in admitted:
+                prepare_job(run_dir, manifest, source, attempt, document, document.get(key))
+            elif key in document:
+                raise ValueError("unexpected document append job")
+        return document["append"]
+    expected = {key: _derive(run_dir, manifest, source, attempt, document, role=role)[0]
+                for key, role in roles if role in admitted}
+    for key, value in expected.items():
+        document[key] = {**value, "state": "pending"}
     attempt["document_source_evidence"]["database_append"] = "managed_by_append_jobs"
     save(run_dir, manifest)
     return document["append"]

@@ -38,7 +38,7 @@ def _context_shape(context, artifact):
         raise ValueError("invalid document receipt outcome")
 
 
-def prepare(context, artifact=None, *, landing=None, complement=None):
+def prepare(context, artifact=None, *, landing=None, complement=None, ocr=None):
     """Return ordered canonical file bytes and their deterministic marker."""
     _context_shape(context, artifact)
     files = [("acquisition.json", events.encoded(context))]
@@ -105,6 +105,24 @@ def prepare(context, artifact=None, *, landing=None, complement=None):
                   ("complement-binding.json", events.encoded(complement_binding)),
                   ("complement-plan.json", events.encoded(complement_plan)),
                   ("complement-relationship.json", events.encoded(relationship))]
+    ocr_binding = ocr_plan = None
+    if ocr is not None:
+        from source_evidence import doc_sparse_ocr_process
+        config = ocr.get("parser", {}).get("config", {})
+        policy = {"max_pages": config.get("max_pages"), "strategy": config.get("trigger_policy")}
+        doc_sparse_ocr_process.validate(ocr, artifact, complement, context["receipt"], context["source_key"], policy)
+        enriched_ocr = {**ocr, "acquisition_context": context,
+                        "acquisition_context_origin": "foreground_coordinator_not_converter"}
+        ocr_binding, ocr_plan = document_acquisition.bind_extraction(context, enriched_ocr)
+        relationship = {"schema_version": "cre-document-ocr-relationship/v1", "kind": "complement_of",
+                        "anydoc_artifact_sha256": events.sha256(events.encoded(artifact)),
+                        "complement_artifact_sha256": events.sha256(events.encoded(complement)),
+                        "ocr_artifact_sha256": events.sha256(events.encoded(ocr)),
+                        "ocr_capture_id": ocr_binding["document_capture_id"], "coverage": "unknown"}
+        files += [("ocr-converter-artifact.json", events.encoded(ocr)),
+                  ("ocr-artifact.json", events.encoded(enriched_ocr)),
+                  ("ocr-binding.json", events.encoded(ocr_binding)), ("ocr-plan.json", events.encoded(ocr_plan)),
+                  ("ocr-relationship.json", events.encoded(relationship))]
     if any(len(payload) > MAX_FILE for _, payload in files):
         raise ValueError("document seal file exceeds bound")
     marker = {"files": {name: events.sha256(payload) for name, payload in files},
@@ -113,11 +131,13 @@ def prepare(context, artifact=None, *, landing=None, complement=None):
     if complement_plan is not None:
         marker["complement"] = {"plan_sha256": complement_plan["plan_sha256"],
                                 "capture_id": complement_binding["document_capture_id"]}
+    if ocr_plan is not None:
+        marker["ocr"] = {"plan_sha256": ocr_plan["plan_sha256"], "capture_id": ocr_binding["document_capture_id"]}
     return files, marker
 
 
-def write(outdir, context, artifact=None, *, landing=None, complement=None):
-    files, marker = prepare(context, artifact, landing=landing, complement=complement)
+def write(outdir, context, artifact=None, *, landing=None, complement=None, ocr=None):
+    files, marker = prepare(context, artifact, landing=landing, complement=complement, ocr=ocr)
     private_export.write(outdir, files)
     return marker
 
@@ -151,6 +171,12 @@ def read(outdir, *, expected_context, expected_marker=None):
                 raise ValueError("complement requires an authenticated seal marker")
             required.update({"complement-converter-artifact.json", "complement-artifact.json",
                              "complement-binding.json", "complement-plan.json", "complement-relationship.json"})
+        has_ocr = "ocr-converter-artifact.json" in names
+        if has_ocr:
+            if not has_complement or not isinstance(expected_marker, dict) or "ocr" not in expected_marker:
+                raise ValueError("OCR requires an authenticated seal marker")
+            required.update({"ocr-converter-artifact.json", "ocr-artifact.json", "ocr-binding.json",
+                             "ocr-plan.json", "ocr-relationship.json"})
         if has_landing:
             if not has_artifact or not isinstance(expected_marker, dict) or "landing-page.json" not in expected_marker.get("files", {}):
                 raise ValueError("landing page requires an authenticated seal marker")
@@ -179,7 +205,8 @@ def read(outdir, *, expected_context, expected_marker=None):
         artifact = json.loads(values["converter-artifact.json"]) if has_artifact else None
         landing = json.loads(values["landing-page.json"]) if has_landing else None
         complement = json.loads(values["complement-converter-artifact.json"]) if has_complement else None
-        files, marker = prepare(expected_context, artifact, landing=landing, complement=complement)
+        ocr = json.loads(values["ocr-converter-artifact.json"]) if has_ocr else None
+        files, marker = prepare(expected_context, artifact, landing=landing, complement=complement, ocr=ocr)
         if any(values[name] != payload for name, payload in files):
             raise ValueError("document seal bytes mismatch")
         if expected_marker is not None and events.encoded(expected_marker) != events.encoded(marker):
@@ -197,6 +224,8 @@ def read(outdir, *, expected_context, expected_marker=None):
             result["landing"] = landing
         if complement is not None:
             result["complement"] = complement
+        if ocr is not None:
+            result["ocr"] = ocr
         return result
     finally:
         os.close(directory)

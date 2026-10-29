@@ -11,6 +11,7 @@ from pathlib import Path
 from source_evidence import (
     doc_complement_process,
     doc_extract_process,
+    doc_sparse_ocr_process,
     doc_fetch_process,
     document_acquisition,
     document_budget,
@@ -156,6 +157,52 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                     report["primary_seal"] = "reverified_complement_unresolved"
                 except (OSError, ValueError, TypeError, KeyError, RuntimeError):
                     report["primary_seal"] = "unresolved"
+            prior_marker = document.get("prior_sealed")
+            if isinstance(prior_marker, dict):
+                try:
+                    prior_dir = run_dir / expected_directory / "prior-sealed"
+                    raw_context, context = document_pipeline._json(prior_dir / "acquisition.json", document_seal.MAX_FILE)
+                    context_sha = prior_marker.get("files", {}).get("acquisition.json")
+                    if events.sha256(raw_context) != context_sha:
+                        raise ValueError("prior context changed")
+                    context = document_acquisition.validate_archived_context(
+                        plan, candidates, policy_raw, selected, context, expected_context_sha256=context_sha, **bindings)
+                    prior = document_seal.read(prior_dir, expected_context=context, expected_marker=prior_marker)
+                    if context["candidate_index"] != index or not doc_sparse_ocr_process.required(
+                            prior.get("artifact"), prior.get("complement"), selected):
+                        raise ValueError("prior seal outside OCR policy")
+                    report["prior_seal"] = "reverified_ocr_unresolved"
+                    if document.get("state") == "ocr_intent":
+                        directory = run_dir / expected_directory
+                        receipt = context["receipt"]
+                        input_path = directory / "extraction" / doc_extract_process.input_filename(receipt)
+                        fetch_path = directory / "fetch" / "document.bin"
+                        for path in (fetch_path, input_path):
+                            body = document_pipeline.automatic._read_private(path, receipt["body_bytes"])
+                            if len(body) != receipt["body_bytes"] or events.sha256(body) != receipt["body_sha256"]:
+                                raise ValueError("retained OCR source changed")
+                        document_seal.check_primary(directory / "primary-sealed", context,
+                                                    document.get("primary_sealed"), prior["artifact"])
+                        ocr = doc_sparse_ocr_process.replay(input_path, prior["artifact"], prior["complement"],
+                            receipt, directory / "ocr", source_key=source, policy=selected["sparse_ocr"], prior_dir=prior_dir)
+                        _, marker = document_seal.prepare(context, prior["artifact"], complement=prior["complement"], ocr=ocr)
+                        seal_dir = directory / "sealed"
+                        if seal_dir.exists():
+                            document_seal.read(seal_dir, expected_context=context, expected_marker=marker)
+                        else:
+                            actual = document_seal.write(seal_dir, context, prior["artifact"],
+                                                         complement=prior["complement"], ocr=ocr)
+                            if actual != marker:
+                                raise ValueError("OCR final seal changed")
+                        document["sealed"] = marker
+                        document["state"] = "extraction_sealed"
+                        document["original_retention"] = "retained_pending_reconciliation"
+                        report["state"] = "seal_reverified"
+                        report["reason"] = "settled_ocr_completion_replayed"
+                        report["original_bytes_reverified"] = True
+                        save(run_dir, manifest)
+                except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+                    report["prior_seal"] = "unresolved"
             save(run_dir, manifest)
             continue
         try:
@@ -181,13 +228,25 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                 raise ValueError("document complement executable changed")
             if complement_required:
                 document_seal.check_primary(directory / "primary-sealed", context, document.get("primary_sealed"), artifact)
+            ocr_required = doc_sparse_ocr_process.required(artifact, checked.get("complement"), selected)
+            if ("ocr" in checked) != ocr_required:
+                raise ValueError("document OCR disagrees with policy")
+            if ocr_required:
+                doc_sparse_ocr_process.validate(checked["ocr"], artifact, checked["complement"], context["receipt"],
+                                                source, selected["sparse_ocr"])
+                prior_marker = document.get("prior_sealed")
+                if not isinstance(prior_marker, dict):
+                    raise ValueError("OCR prior seal marker missing")
+                prior = document_seal.read(directory / "prior-sealed", expected_context=context, expected_marker=prior_marker)
+                if prior.get("artifact") != artifact or prior.get("complement") != checked["complement"] or "ocr" in prior:
+                    raise ValueError("OCR prior seal disagrees with final artifact")
             report["state"] = "seal_reverified"
             report["original_bytes_reverified"] = False
             if artifact is not None:
                 status = artifact["extraction"]["status"]
                 doc_extract_process.validate_artifact(artifact, context["receipt"], source_key=source,
                                                      exit_code=0 if status == "extracted" else 2)
-                retain = doc_complement_process.retain_unresolved(artifact, checked.get("complement"), selected)
+                retain = doc_sparse_ocr_process.retain_unresolved(artifact, checked.get("complement"), checked.get("ocr"), selected)
                 if retain:
                     report["retention_decision"] = "keep_unresolved_until_review"
                 elif cleanup:
