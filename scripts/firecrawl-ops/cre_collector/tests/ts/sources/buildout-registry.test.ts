@@ -192,6 +192,7 @@ test("all registered detail routes retain the publisher's opaque propertyId", ()
         `https://buildout.com/plugins/${firm.pluginKey}/${config.host}/inventory/${value}?pluginId=0&iframe=true&embedded=true`);
     }
     assert.equal(buildoutSlugFromUrl(`${firm.listingsPage}?propertyId=fixture-sale`), "fixture");
+    assert.equal(buildoutSlugFromUrl(`${firm.listingsPage}?propertyId=pre-sale-label-LEASE`), "pre-sale-label-LEASE");
   }
 });
 

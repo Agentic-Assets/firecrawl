@@ -574,6 +574,7 @@ test("core Buildout routes preserve the literal provider propertyId independentl
         `https://buildout.com/plugins/${config.pluginKey}/${config.host}/inventory/${value}?pluginId=0&iframe=true&embedded=true`);
     }
     assert.equal(buildoutSlugFromUrl(`https://${config.host}/properties/?propertyId=fixture-lease`), "fixture");
+    assert.equal(buildoutSlugFromUrl(`https://${config.host}/properties/?propertyId=pre-sale-label-LEASE`), "pre-sale-label-LEASE");
   }
 });
 
