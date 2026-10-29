@@ -220,3 +220,7 @@ JSONB normalization without inferring meaning or units. Legacy captures lack
 that witness and may still refuse reconstruction. Any exact-digest mismatch must
 refuse, not assert reconstruction. This draft is not deployed; separate production acceptance is required; it proves no original wire bytes, completeness, freshness
 or canonical promotion.
+
+
+Source-owned observation projection profiles live in `projections/`; read its
+scoped AGENTS and README before changing the explicit Leibsohn policy.
