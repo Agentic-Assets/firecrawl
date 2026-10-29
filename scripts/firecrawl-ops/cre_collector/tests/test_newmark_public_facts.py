@@ -232,3 +232,21 @@ def test_known_numeric_credential_in_prose_is_omitted_with_token_boundaries():
     fact = next(f for f in envelope['facts'] if f['label'] == 'nested')
     assert fact['value'] == {'copy': None, 'other': 'prefix 99887766550 suffix', 'safe': 'ordinary'}
     assert any(o['reason'] == 'unverified_content_omitted' for o in envelope['omissions'])
+
+
+def test_uninspectable_large_record_retains_explicit_partial_availability():
+    value = artifact()
+    source = value['sources'][0]['retainedObservations'][0]['sourceObservation']
+    data = json.loads(source['literal'])
+    data['oversized'] = [0] * 20001
+    data['safeSibling'] = 'ordinary'
+    source['literal'] = json.dumps(data)
+    source['parsed'] = data
+    snapshot = raw(value)
+    mapping = bridge.qualified(snapshot)
+    staged = cre_ingest.to_row(bridge.attach(value['listings'][0], mapping), {}, None)
+    envelope = staged['extra_facts']['cre_public_listing_facts']
+    assert envelope['facts'] == []
+    assert envelope['captureCompleteness'] == 'partial'
+    assert envelope['omissions'] == [{'sourcePath': None, 'reason': 'input_limit'}]
+    assert raw(value) == snapshot

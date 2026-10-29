@@ -20,6 +20,10 @@ _DETAIL_URL = re.compile(r'^https://my\.rcm1\.com/handler/modern\.aspx\?pv=[A-Za
 _SLUG = re.compile(r'^[A-Za-z0-9._~-]{1,256}$')
 
 
+class _InspectionLimit(ValueError):
+    """A bounded per-record inspection could not complete."""
+
+
 def _field(value):
     if not isinstance(value, dict) or value.get('state') != 'value':
         return None
@@ -110,7 +114,7 @@ def _collect_credential_strings(value, removed, numeric_removed):
         node = pending.pop()
         seen += 1
         if seen > 20000:
-            raise ValueError('Newmark credential subtree exceeds bound')
+            raise _InspectionLimit('Newmark credential subtree exceeds bound')
         if isinstance(node, dict):
             pending.extend(node.values())
         elif isinstance(node, list):
@@ -120,13 +124,13 @@ def _collect_credential_strings(value, removed, numeric_removed):
         elif isinstance(node, str) and node:
             removed.append(node)
             if len(removed) > 1000:
-                raise ValueError('Newmark credential count exceeds bound')
+                raise _InspectionLimit('Newmark credential count exceeds bound')
 
 
 def _encoded_json_credential(value, budget, removed, numeric_removed, depth=0):
     budget[0] += 1
     if budget[0] > 20000 or depth > 16:
-        raise ValueError('Newmark encoded JSON inspection exceeds bound')
+        raise _InspectionLimit('Newmark encoded JSON inspection exceeds bound')
     if isinstance(value, dict):
         found = False
         for key, child in value.items():
@@ -161,7 +165,7 @@ def _sanitize_encoded_labels(data, numeric):
     def visit(value, path, depth):
         nodes[0] += 1
         if nodes[0] > 20000 or depth > 32:
-            raise ValueError('Newmark public credential inspection exceeds bound')
+            raise _InspectionLimit('Newmark public credential inspection exceeds bound')
         if isinstance(value, dict):
             for key in list(value):
                 child_path = path + _pointer(key)
@@ -192,7 +196,7 @@ def _sanitize_encoded_labels(data, numeric):
             for _ in range(5):
                 work[0] += len(candidate) * max(1, len(removed) + len(numeric_removed))
                 if work[0] > 128 * 1024 * 1024:
-                    raise ValueError('Newmark credential-copy inspection exceeds bound')
+                    raise _InspectionLimit('Newmark credential-copy inspection exceeds bound')
                 if (any(secret in candidate for secret in removed)
                         or any(pattern.search(candidate) for pattern in numeric_patterns)):
                     return True
@@ -204,7 +208,7 @@ def _sanitize_encoded_labels(data, numeric):
 
         def redact(value, path, depth):
             if depth > 32:
-                raise ValueError('Newmark credential-copy inspection exceeds bound')
+                raise _InspectionLimit('Newmark credential-copy inspection exceeds bound')
             if isinstance(value, dict):
                 for key in list(value):
                     if contains_copy(key):
@@ -305,6 +309,25 @@ def _envelope(observation, projection, index):
     return result
 
 
+def _incomplete_envelope(observation, reason):
+    """Report an uninspected record without exposing any of its source values."""
+    clock = observation.get('capturedAt')
+    try:
+        if clock is not None:
+            if not isinstance(clock, str) or not clock.endswith('Z'):
+                raise ValueError('not UTC')
+            events.timestamp(clock)
+    except ValueError:
+        clock = None
+    page = observation.get('requestedPageUrl')
+    if not isinstance(page, str) or not _DETAIL_URL.fullmatch(page) or sensitive_string(page):
+        page = None
+    return {'schema': SCHEMA, 'sourceKey': 'newmark', 'codec': _CODEC,
+            'observedAt': clock, 'sourceUrl': page, 'facts': [],
+            'omissions': [{'sourcePath': None, 'reason': reason}],
+            'captureCompleteness': 'partial', 'sourceCoverage': 'unverified'}
+
+
 def qualified(raw):
     """Return copied listing facts by exact claim identity, from an accepted artifact."""
     projected, literals, receipt = newmark_rcm.prepare(raw, source_key='newmark')
@@ -345,9 +368,11 @@ def qualified(raw):
         key = (claim['externalId'], claim['url'])
         try:
             envelope = _envelope(row, receipt, index)
+        except _InspectionLimit:
+            envelope = _incomplete_envelope(row, 'input_limit')
         except (ValueError, RecursionError):
-            # Keep unsupported source material private without suppressing the accepted listing.
-            continue
+            # Preserve a visible refusal without publishing uninspected source values.
+            envelope = _incomplete_envelope(row, 'unverified_content_omitted')
         candidates.setdefault(key, []).append(envelope)
     counts = {}
     for listing in projected['listings']:
