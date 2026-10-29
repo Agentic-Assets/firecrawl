@@ -115,9 +115,10 @@ def test_real_ingest_cli_dry_run_stages_projected_facts(tmp_path):
     input_path.write_bytes(raw(artifact(2)))
     result = subprocess.run([sys.executable, 'cre_ingest.py', '--in', str(input_path), '--dry-run'],
                             text=True, capture_output=True, env={**os.environ, 'TMPDIR': str(tmp_path)}, check=True)
-    sql_path = re.search(r'^sql: (.+?) \(', result.stderr, re.M)
+    sql_path = re.search(r'^sql: (.+?) \(', result.stderr, re.MULTILINE)
     assert sql_path is not None
-    text = open(sql_path.group(1)).read()
+    with open(sql_path.group(1)) as staged_sql:
+        text = staged_sql.read()
     assert text.count('cre_public_listing_facts') == 4  # listing raw payload and staged extra facts
     assert 'newmark-rcm-enrichment-withholding/v1' in text
 

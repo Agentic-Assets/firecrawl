@@ -6,8 +6,8 @@ freshness, production admission, or permission to fetch a linked resource.
 """
 import copy
 import json
-from html import unescape
 import re
+from html import unescape
 from urllib.parse import quote, unquote
 
 from buildout_observation_artifact import credential_label, sensitive_string
