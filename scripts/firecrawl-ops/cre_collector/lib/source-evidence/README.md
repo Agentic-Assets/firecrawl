@@ -9,8 +9,7 @@ mode-0600 output with file fsync before close. Ordinary full listing output
 retains its existing behavior. The guarded enrichment parent separately syncs
 the private directory before recording custody. This prevents private output
 from falling through to stdout or replacing a prior capture. A local artifact is not proof of database retention,
-canonical qualification, or queue completion. This draft remains unverified
-under the active hold.
+canonical qualification, or queue completion. This draft is not deployed; production acceptance remains separate.
 
 ## NAI native page capture
 
@@ -60,7 +59,7 @@ body. A capture failure stops the enabled path. Database admission remains
 separate: existing source and credential policies apply, and Faris collector
 projection does not sanitize native pages. The evidence lane also limits each
 fact to 3.5 MiB, each observation to 16 MiB and each page to 10,000 rows.
-This draft is unverified under the hold and not deployed; it proves no source
+This draft is not deployed; production acceptance remains separate. It proves no source
 acceptance, complete inventory, identity or freshness.
 
 ## Avison Young website feed
@@ -84,3 +83,12 @@ credential policies must be applied before retained evidence is written. The
 private filename hash is a local custody digest and must not be carried into a
 projected database observation when source content is withheld. No identity,
 visibility, completeness, or publisher-authentication claim follows from capture.
+
+## Pyramid decoded inventory
+
+`pyramid-page.ts` is the explicitly opted-in private publisher for successful
+collector-decoded inventory text before JSON and header validation. It uses gzip
+for storage and a 16 MiB decoded limit, below the existing 32 MiB transport limit.
+Malformed bodies remain private and are refused for observation admission.
+See [`source_evidence/README.md`](../../source_evidence/README.md) for bounds,
+credential inspection, provenance, and the separate admission and custody gates.

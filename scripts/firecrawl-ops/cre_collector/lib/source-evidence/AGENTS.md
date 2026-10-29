@@ -18,7 +18,7 @@ JSON privately, not HTTP bytes or original numeric precision. Capture and source
 clocks are distinct, memory-cache hits do not create fresh capture, and a capture
 failure stops the enabled path. Existing source/credential policy remains
 separate; Faris collector projection does not apply. Read README for bounds.
-This draft is unverified under the hold and not deployed.
+This draft is not deployed; production acceptance remains separate.
 
 `artifact-output.ts` is the shared full/enrich artifact publisher. Artifacts
 with retained observations, and all targeted enrichment artifacts, require an
@@ -27,3 +27,9 @@ before close; guarded custody separately syncs its private parent directory.
 Never send private artifacts to stdout or overwrite a prior capture. Ordinary
 full listing output keeps its existing publication behavior.
 This is private local custody, not database admission or canonical completion.
+
+`pyramid-page.ts` optionally retains successful Pyramid inventory response text
+before parsing and validation in private gzip storage. It captures collector-decoded
+UTF-8, not wire bytes; the decoded cap is 16 MiB, below the 32 MiB transport cap.
+Capture failures stop the enabled path, and unsettled workers remain fenced.
+Admission and canonical convergence remain separate.

@@ -837,3 +837,28 @@ non-JSON values, or structures beyond its 100,000-node and 128-depth bounds
 before serialization; it does not reconstruct original numeric lexemes. The
 saved 415-row sale fixture measured 5,811 nodes at depth 2 during the offline
 proof, which is not a guarantee about other responses.
+
+### Pyramid decoded inventory pages (prototype)
+
+The explicit `pyramid_inventory_decoded_v1` source format privately captures each
+successful Pyramid inventory response's collector-decoded UTF-8 text before
+header, JSON, row or transaction validation. It retains asserted page, pass,
+request URL, final response status, selected numeric headers and a collector
+clock; redirect final URL, wire bytes and provider freshness are not observed.
+The private storage codec is gzip plus base64, not HTTP content encoding.
+The decoded capture ceiling is 16 MiB, stricter than the existing 32 MiB source
+transport ceiling; enabling capture can therefore refuse a response the normal
+collector otherwise accepts. Existing 128-file/128-MiB stored-attempt bounds
+remain, and a typed publication failure ends that attempt rather than retrying.
+Completed earlier files remain private for settlement; an unsettled worker must
+still pass the existing recovery fence.
+
+Valid array JSON preserves ordered rows and source fields with numeric witnesses;
+valid non-array JSON is retained as unqualified whole context. Malformed decoded text is retained only in the private page: decoding and
+admission refuse it because structured credential scanning cannot safely inspect
+its keys. The private page remains available for diagnosis. Pyramid admission
+also inspects bounded recursively JSON-encoded strings using the existing
+credential-field policy, refusing when inspection bounds are exceeded. This
+does not establish detection of every secret.
+No result proves inventory convergence, access, source authority or canonical
+listing admission. This format is opt-in and needs policy/custody review.

@@ -25,9 +25,9 @@ MAX_ENTRY_BYTES = ((16 * 1024 * 1024 * 4 + 2) // 3) + 64 * 1024 * 6 + 16384
 PROVENANCE = {"bodyHashKind": "fetch_delivered_body_bytes_not_wire", "identity": "unverified",
               "visibility": "unverified", "completeness": "unverified"}
 NATIVE_FORMATS = {"nai-global": "nai_public_posts_v1", "avison-young": "avison_sharplaunch_website_v1",
-                  "transwestern": "transwestern_inventory_parsed_v1"}
+                  "transwestern": "transwestern_inventory_parsed_v1", "pyramid-brokerage": "pyramid_inventory_decoded_v1"}
 ENV_PREFIXES = {"nai-global": "CRE_NAI_NATIVE_CAPTURE", "avison-young": "CRE_AVISON_NATIVE_CAPTURE",
-                "transwestern": "CRE_TRANSWESTERN_NATIVE_CAPTURE"}
+                "transwestern": "CRE_TRANSWESTERN_NATIVE_CAPTURE", "pyramid-brokerage": "CRE_PYRAMID_NATIVE_CAPTURE"}
 BUILDOUT_ENV_PREFIX = "CRE_BUILDOUT_NATIVE_CAPTURE"
 
 
@@ -66,8 +66,13 @@ def configure_worker_env(env, run_dir, source, attempt, config):
 def _decode(source, raw, filename, binding, *, native_format):
     if not format_supported(source, native_format):
         raise ValueError("native source format is unsupported")
+    if source == "pyramid-brokerage":
+        from source_evidence.pyramid_pages import decode_entry as decode_pyramid
+        return decode_pyramid(raw, filename, binding)
     if source == "transwestern":
-        from source_evidence.transwestern_pages import decode_entry as decode_transwestern
+        from source_evidence.transwestern_pages import (
+            decode_entry as decode_transwestern,
+        )
         return decode_transwestern(raw, filename, binding)
     if source == "avison-young":
         from source_evidence.avison_pages import decode_entry as decode_avison

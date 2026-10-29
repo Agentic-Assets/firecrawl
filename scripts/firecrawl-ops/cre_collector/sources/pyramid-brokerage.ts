@@ -1,3 +1,4 @@
+import { publishPyramidPage } from "../lib/source-evidence/pyramid-page.js";
 import { recordDirectProviderAttemptStarted, recordDirectProviderAttemptCompleted } from "../lib/performance.js";
 import { observationNow } from "../lib/observation-clock.js";
 import * as cheerio from "cheerio";
@@ -150,7 +151,7 @@ export async function pyramidFetch(
   timeoutMs = 30_000,
   attempts = 2,
   maxBytes = PYRAMID_MAX_RESPONSE_BYTES
-): Promise<{ headers: Headers; body: string }> {
+): Promise<{ headers: Headers; body: string; status: number }> {
   const initialUrl = pyramidAbsoluteUrl(url);
   if (!initialUrl) throw new Error(`Pyramid refused unsafe URL ${url}`);
   const role = new URL(initialUrl).pathname === new URL(PYRAMID_INVENTORY_URL).pathname
@@ -184,7 +185,7 @@ export async function pyramidFetch(
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await pyramidBoundedResponseText(response, maxBytes);
         recordDirectProviderAttemptCompleted(telemetry, { outcome: "succeeded", status });
-        return { headers: response.headers, body };
+        return { headers: response.headers, body, status: response.status };
       }
       throw new Error("Pyramid exceeded redirect cap");
     } catch (error) {
@@ -281,10 +282,11 @@ function textSha256(value: string): string {
 }
 
 async function fetchPyramidSnapshotPass(
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch, pass = 1
 ): Promise<PyramidSnapshot & { fingerprint: string }> {
   const first = await pyramidFetch(pyramidInventoryUrl(1), fetchImpl);
   const firstObservedAt = observationNow();
+  publishPyramidPage(first.body, pyramidInventoryUrl(1), 1, pass, first.status, first.headers);
   const total = requiredPositiveHeader(first.headers, "X-WP-Total");
   const totalPages = requiredPositiveHeader(first.headers, "X-WP-TotalPages");
   let firstRows: any;
@@ -301,6 +303,7 @@ async function fetchPyramidSnapshotPass(
     Math.min(CONCURRENCY, 2),
     async (page) => {
       const response = await pyramidFetch(pyramidInventoryUrl(page), fetchImpl);
+      publishPyramidPage(response.body, pyramidInventoryUrl(page), page, pass, response.status, response.headers);
       const pageTotal = requiredPositiveHeader(response.headers, "X-WP-Total");
       const pageCount = requiredPositiveHeader(response.headers, "X-WP-TotalPages");
       if (pageTotal !== total || pageCount !== totalPages) {
@@ -348,7 +351,7 @@ export async function fetchPyramidSnapshot(
   }
   let previous: Awaited<ReturnType<typeof fetchPyramidSnapshotPass>> | null = null;
   for (let pass = 1; pass <= maxPasses; pass++) {
-    const current = await fetchPyramidSnapshotPass(fetchImpl);
+    const current = await fetchPyramidSnapshotPass(fetchImpl, pass);
     if (
       previous
       && current.total === previous.total

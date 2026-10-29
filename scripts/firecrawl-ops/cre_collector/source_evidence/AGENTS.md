@@ -224,3 +224,13 @@ or canonical promotion.
 
 Source-owned observation projection profiles live in `projections/`; read its
 scoped AGENTS and README before changing any explicit observation policy.
+
+`pyramid_pages.py` decodes the explicit Pyramid private inventory format with
+bounded gzip validation and existing numeric witnesses. Malformed JSON remains
+private and is refused for observation admission; valid non-array JSON is
+unqualified whole context. Bounded nested JSON string inspection reuses the
+existing credential-field policy and fails closed on uncertainty; it does not
+prove universal secret detection. Source freshness and wire bytes are not established.
+The 16 MiB decoded cap is stricter than the source transport cap; event, fact,
+plan, custody and credential gates still apply. Not deployed; production
+acceptance is separate.
