@@ -307,8 +307,13 @@ Key behavior:
   `avison-public-facts-retention/v2`: retain reported asking values, prose and
   original controls without inferring currency, unit, publisher UI visibility or
   source authentication. Prior `avison-asking-price-v1` rows keep their legacy
-  projection and replay behavior. JLL retains its separate withholding boundary.
-  Do not borrow another brokerage's marker or promote failed detail as fresh.
+  projection and replay behavior. A later legacy input cannot erase a
+  prior v2 source: the locked upsert retains prior and current prose, uses
+  additive children, and stores the prior source as a bounded inert JSON string
+  with its prior listing clock. If the snapshot exceeds its bound, retain the
+  prior raw object and mark the transition incomplete. JLL retains its separate
+  withholding boundary. Do not borrow another brokerage's marker or promote
+  failed detail as fresh.
 - Upsert sets `status='active'`, resurrects soft-deleted rows (`deleted_at=NULL`),
   but only resets status to `'active'` when the prior status was `'inactive'` (a
   mark-missing soft-delete); a real terminal (`sold`/`leased`/`off_market`) that

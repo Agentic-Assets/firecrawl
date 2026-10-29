@@ -538,11 +538,62 @@ CREATE TEMP TABLE old_baseline AS SELECT * FROM credeals.cre_source_baseline;
         "\\echo 'Avison actual generated SQL retention, children, recovery and protected scopes passed'",
     ]
     retained = make("retained-new", "unknown", avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})
+    retained["highlights"] = ["Prior unique highlight", "Shared highlight"]
+    retained["amenities"] = ["Prior unique amenity", "Shared amenity"]
     legacy = make("legacy-new", 1)
     statements += [
         generated([retained, legacy], "2026-10-16T22:30:00Z"),
         check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' FROM credeals.cre_listings WHERE external_id='retained-new')", "retained facts survive mixed SQL"),
         check("(SELECT sale_price_usd IS NULL FROM credeals.cre_listings WHERE external_id='legacy-new')", "legacy withholding remains scoped"),
+    ]
+    legacy_transition = make("retained-new", 1)
+    legacy_transition["description"] = "Later independent source fact."
+    legacy_transition["noi"] = 75000
+    legacy_transition["highlights"] = ["Current unique highlight", "Shared highlight"]
+    legacy_transition["amenities"] = ["Current unique amenity", "Shared amenity"]
+    legacy_transition["documents"][0]["title"] = "Later brochure label"
+    legacy_transition["contacts"][0]["title"] = "Later contact label"
+    statements += [
+        "CREATE TEMP TABLE retained_before AS SELECT scraped_at FROM credeals.cre_listings WHERE external_id='retained-new';",
+        check("EXISTS(SELECT 1 FROM credeals.cre_listing_documents d JOIN credeals.cre_listings t ON t.id=d.listing_id WHERE t.external_id='retained-new' AND d.title LIKE '%100000%')", "prior child title exists before transition"),
+        generated([legacy_transition], "2026-10-16T22:40:00Z"),
+        check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' AND description LIKE '%Later independent source fact.%' AND noi=75000 AND scraped_at=(SELECT scraped_at FROM retained_before) FROM credeals.cre_listings WHERE external_id='retained-new')", "legacy transition keeps prior and current facts and prior detail clock"),
+        check("EXISTS(SELECT 1 FROM credeals.cre_listing_documents d JOIN credeals.cre_listings t ON t.id=d.listing_id WHERE t.external_id='retained-new' AND d.title LIKE '%100000%' AND d.title LIKE '%Later brochure label%')", "prior and current document titles retained"),
+        check("EXISTS(SELECT 1 FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings t ON t.id=c.listing_id WHERE t.external_id='retained-new' AND c.title LIKE '%100000%' AND c.title LIKE '%Later contact label%')", "prior and current contact titles retained"),
+
+    ]
+    statements += [
+        check("(SELECT highlights=ARRAY['Prior unique highlight','Shared highlight','Current unique highlight'] AND amenities=ARRAY['Prior unique amenity','Shared amenity','Current unique amenity'] FROM credeals.cre_listings WHERE external_id='retained-new')", "prior and current arrays retained without duplicate"),
+        "CREATE TEMP TABLE retained_snapshot AS SELECT COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}') AS snapshot FROM credeals.cre_listings WHERE external_id='retained-new';",
+        check("(SELECT snapshot IS NOT NULL AND (snapshot::jsonb)::text LIKE '%avison-public-facts-retention/v2%' FROM retained_snapshot)", "prior v2 source snapshot retained"),
+        generated([make("retained-new", 1)], "2026-10-16T22:41:00Z"),
+        check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' AND COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}')=(SELECT snapshot FROM retained_snapshot) FROM credeals.cre_listings WHERE external_id='retained-new')", "legacy replay preserves source without recursive growth"),
+        generated([make("overflow-v2", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:42:00Z"),
+        "UPDATE credeals.cre_listings SET raw_data=raw_data || jsonb_build_object('large_context', repeat('x',1100000)) WHERE external_id='overflow-v2';",
+        generated([make("overflow-v2", 1)], "2026-10-16T22:43:00Z"),
+        generated([make("overflow-v2", 1)], "2026-10-16T22:44:00Z"),
+        check("(SELECT sale_price_usd=100000 AND length(raw_data->>'large_context')=1100000 AND raw_data#>>'{avisonRetainedPrior,state}'='snapshot_limit' FROM credeals.cre_listings WHERE external_id='overflow-v2')", "oversize prior remains intact after legacy replay"),
+    ]
+    statements += [
+        generated([make("legacy-new", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:44:30Z"),
+        check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' FROM credeals.cre_listings WHERE external_id='legacy-new')", "v2 after legacy restores retained facts"),
+    ]
+    later_visible = make("visible-transition", 0)
+    later_visible["description"] = "Different later source fact."
+    later_visible["sale_price_usd"] = 222000
+    later_visible["raw_data"]["rawSharpLaunch"]["sale_price"] = 222000
+    absent_legacy = make("absent-transition", 0)
+    absent_legacy["raw_data"]["rawSharpLaunch"].pop("hide_price", None)
+    absent_legacy["raw_data"]["avisonPriceVisibility"]["control"] = "absent"
+    statements += [
+        generated([make("visible-transition", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:44:35Z"),
+        generated([later_visible], "2026-10-16T22:44:40Z"),
+        check("(SELECT sale_price_usd=222000 AND description LIKE '%Asking price%' AND description LIKE '%Different later source fact%' AND COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}') IS NOT NULL FROM credeals.cre_listings WHERE external_id='visible-transition')", "visible legacy retains prior and current facts"),
+        generated([later_visible], "2026-10-16T22:44:41Z"),
+        check("(SELECT description LIKE '%Asking price%' AND description LIKE '%Different later source fact%' FROM credeals.cre_listings WHERE external_id='visible-transition')", "visible legacy replay preserves prior and current facts"),
+        generated([make("absent-transition", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:44:42Z"),
+        generated([absent_legacy], "2026-10-16T22:44:43Z"),
+        check("(SELECT sale_price_usd=100000 AND COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}') IS NOT NULL FROM credeals.cre_listings WHERE external_id='absent-transition')", "absent legacy control retains prior source"),
     ]
     legacy_mixed = make("mixed-prose", 0)
     current_mixed = make("mixed-prose", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})
@@ -656,12 +707,11 @@ def test_independent_structured_role_survives_conflicting_asking_note():
     }
 
 
-def test_default_sql_policy_is_empty_without_hidden_actual_avison_rows():
+def test_default_sql_policy_is_empty_without_legacy_avison_rows():
     import cre_avison_price_visibility as visibility
 
     for rows in (
         [],
-        [ingest.to_row(listing(0), {}, None)],
         [ingest.to_row(listing(sourceKey="svn"), {}, None)],
     ):
         assert visibility.sql_policy(rows) == {
@@ -669,6 +719,7 @@ def test_default_sql_policy_is_empty_without_hidden_actual_avison_rows():
             "prior_select": "",
             "post_sql": "",
         }
+    assert visibility.sql_policy([ingest.to_row(listing(0), {}, None)])["transition_sql"]
 
 
 def test_malformed_second_direct_pass_is_checked_even_after_hidden_first():

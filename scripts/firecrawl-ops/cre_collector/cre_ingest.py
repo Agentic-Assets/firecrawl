@@ -4690,6 +4690,8 @@ SELECT t.id, t.brokerage_id, t.external_id,
 FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
 
+{avison_price_sql.get("transition_sql", "")}
+
 CREATE TEMP TABLE _prior_source_presence ON COMMIT DROP AS
 SELECT s.brokerage_id, s.external_id,
        si.observation_present, COALESCE(si.presence_generation, 0) AS presence_generation
@@ -4914,6 +4916,9 @@ WITH ins AS (
         -- while preserving children when its supplemental team feed is degraded;
         -- child refresh remains additive below.
         scraped_at        = CASE
+                              WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
+                                THEN t.scraped_at
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -4946,6 +4951,10 @@ WITH ins AS (
                               ELSE EXCLUDED.scraped_at
                             END,
         raw_data          = CASE
+                              WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
+                                THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
+                                     'avisonRetainedPrior', EXCLUDED.raw_data->'avisonRetainedPrior')
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -5161,6 +5170,7 @@ END $$;
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
+        .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
         .replace("{targeted_queue}", targeted_queue)
         .replace("{targeted_guard}", targeted_guard)
         .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
@@ -5222,7 +5232,8 @@ CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
-WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+WHERE NOT ({avison_price_sql.get('transition_predicate', 'false')})
+  AND NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
   AND (
     NOT jsonb_path_exists(
       s.raw_data,
@@ -5247,7 +5258,8 @@ JOIN _src s USING (brokerage_id, external_id)
 JOIN _prior_vals p
   ON p.brokerage_id = s.brokerage_id
  AND p.external_id = s.external_id
-WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
+WHERE ({avison_price_sql.get('transition_predicate', 'false')})
+   OR jsonb_path_exists(s.raw_data, '$.**.detailError')
    OR jsonb_path_exists(
         s.raw_data,
         '$.**.preserveChildCollections ? (@ == true || @ == "true")'
@@ -5425,7 +5437,8 @@ DO $$ BEGIN
              jsonb_path_exists(
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
-             ) AS preserve_contact
+             ) AS preserve_contact,
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5434,7 +5447,11 @@ DO $$ BEGIN
     )
     UPDATE credeals.cre_listing_contacts c SET
       name = COALESCE(i.x->>'name', c.name),
-      title = COALESCE(i.x->>'title', c.title),
+      title = CASE WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+                   THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
+                             WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
+                             ELSE c.title || E'\\n\\n' || (i.x->>'title') END
+                   ELSE COALESCE(i.x->>'title', c.title) END,
       license = COALESCE(i.x->>'license', c.license),
       email = COALESCE(i.x->>'email', c.email),
       phone = COALESCE(i.x->>'phone', c.phone),
@@ -5499,7 +5516,8 @@ DO $$ BEGIN
              jsonb_path_exists(
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
-             ) AS preserve_contact
+             ) AS preserve_contact,
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5508,7 +5526,11 @@ DO $$ BEGIN
     )
     UPDATE credeals.cre_listing_contacts c SET
       name = COALESCE(i.x->>'name', c.name),
-      title = COALESCE(i.x->>'title', c.title),
+      title = CASE WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+                   THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
+                             WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
+                             ELSE c.title || E'\\n\\n' || (i.x->>'title') END
+                   ELSE COALESCE(i.x->>'title', c.title) END,
       email = COALESCE(i.x->>'email', c.email),
       phone = COALESCE(i.x->>'phone', c.phone),
       brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
@@ -5627,7 +5649,7 @@ WHERE u.id IN (SELECT id FROM _child_additive)
   );
 
 WITH incoming AS (
-  SELECT u.id AS listing_id, x
+  SELECT u.id AS listing_id, x, {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
   FROM _up u
   JOIN _src s USING (brokerage_id, external_id)
   CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
@@ -5642,7 +5664,11 @@ UPDATE credeals.cre_listing_documents d SET
                ) THEN incoming.x->>'docType'
                ELSE d.doc_type
              END,
-  title = COALESCE(incoming.x->>'title', d.title),
+  title = CASE WHEN incoming.avison_transition AND d.title IS NOT NULL AND incoming.x->>'title' IS NOT NULL
+               THEN CASE WHEN position(incoming.x->>'title' in d.title)>0 THEN d.title
+                         WHEN position(d.title in incoming.x->>'title')>0 THEN incoming.x->>'title'
+                         ELSE d.title || E'\\n\\n' || (incoming.x->>'title') END
+               ELSE COALESCE(incoming.x->>'title', d.title) END,
   scraped_at = now()
 FROM incoming
 WHERE d.listing_id = incoming.listing_id
