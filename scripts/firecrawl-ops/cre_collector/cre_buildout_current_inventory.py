@@ -5,15 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import defaultdict
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from cre_current_inventory_admission import (
     SCOPE,
     VERDICT,
-    _time,
     admission_configuration,
     configuration,
     require,
@@ -22,9 +19,7 @@ from cre_current_inventory_admission import (
 from cre_gate import count_artifacts
 from cre_ingest import (
     BUILDOUT_SOURCE_KEYS,
-    merge_rows,
-    strict_full_source_scope,
-    to_row,
+    to_row,  # noqa: F401 - retained public compatibility
 )
 
 SCHEMA = "buildout-current-inventory-v1"
@@ -179,194 +174,14 @@ def admit(
     actual_hash = hashlib.sha256(raw).hexdigest()
     require(actual_hash == info["sha256"] and len(raw) == info["bytes"])
     artifact = json.loads(raw)
-    scope = strict_full_source_scope(artifact, source)
-    meta = artifact["runMeta"]
-    fresh = meta.get("freshness") or {}
-    start = _time(manifest["started_at"])
-    now = datetime.now(UTC)
-    require(
-        fresh.get("generationId") == manifest["run_id"]
-        and fresh.get("requireFreshDetails") is True
-    )
-    require(_time(fresh.get("generationStartedAt")) == start)
-    collect_start, collect_end = _time(meta["startedAt"]), _time(meta["finishedAt"])
-    require(start <= collect_start <= collect_end <= now + timedelta(minutes=5))
-    entries = artifact["sources"]
-    require(
-        len(entries) == 2
-        and {r.get("transaction") for r in entries} == {"sale", "lease"}
-    )
-    by_tx = {r["transaction"]: r for r in entries}
-    for tx, entry in by_tx.items():
-        require(
-            entry.get("sourceKey") == source
-            and entry.get("supported") is True
-            and not entry.get("error")
-            and entry.get("truncated") is not True
-        )
-        proof = entry.get("currentInventoryProof")
-        require(
-            isinstance(proof, dict)
-            and proof.get("schema") == SCHEMA
-            and proof.get("kind") == "complete_paginated_feed"
-        )
-        require(
-            proof.get("sourceKey") == source
-            and proof.get("transaction") == tx
-            and proof.get("generationId") == manifest["run_id"]
-        )
-        require(
-            proof.get("pluginKey") == definition["plugin"]
-            and proof.get("listingsPage") == definition["page"]
-            and proof.get("sort") == SORT
-        )
-    proof = by_tx["sale"]["currentInventoryProof"]
-    other = by_tx["lease"]["currentInventoryProof"]
-    require(
-        {k: v for k, v in proof.items() if k != "transaction"}
-        == {k: v for k, v in other.items() if k != "transaction"}
-    )
-    total, limit = proof.get("total"), proof.get("limit")
-    require(type(total) is int and total > 0 and type(limit) is int and limit > 0)
-    pages = proof.get("pages")
-    require(
-        isinstance(pages, list)
-        and len(pages) == (total + limit - 1) // limit
-        and len(pages) <= 1200
-    )
-    native = {}
-    times = []
-    for index, page in enumerate(pages):
-        require(type(page.get("index")) is int and page["index"] == index)
-        require(
-            page.get("total") == total
-            and type(page.get("total")) is int
-            and page.get("limit") == limit
-            and type(page.get("limit")) is int
-        )
-        endpoint = urlsplit(page.get("endpoint", ""))
-        require(
-            endpoint.scheme == "https"
-            and endpoint.netloc == "buildout.com"
-            and endpoint.path == f"/plugins/{definition['plugin']}/inventory.json"
-            and not endpoint.fragment
-        )
-        require(
-            parse_qs(endpoint.query, keep_blank_values=True, strict_parsing=True)
-            == {"page": [str(index)], "q[s][]": [SORT]}
-        )
-        observed = _time(page.get("observedAt"))
-        require(
-            start <= observed <= collect_end
-            and now - timedelta(hours=24) <= observed <= now + timedelta(minutes=5)
-        )
-        require(
-            page.get("generationId") == manifest["run_id"]
-            and page.get("cacheDisposition") in {"live", "generation_cache"}
-        )
-        require(page.get("transport") in {"direct_json", "firecrawl_json"})
-        _digest(page.get("parsedJsonSha256"))
-        times.append(page["observedAt"])
-        page_rows = page.get("rows")
-        require(
-            isinstance(page_rows, list)
-            and len(page_rows) == min(limit, total - index * limit)
-        )
-        for item in page_rows:
-            require(isinstance(item, dict))
-            identity = item.get("id")
-            require(
-                isinstance(identity, str)
-                and re.fullmatch(r"[1-9][0-9]{0,15}", identity)
-                and int(identity) <= 9007199254740991
-                and identity not in native
-            )
-            require(
-                all(
-                    type(item.get(k)) is bool
-                    for k in ("sale", "closed", "underContract", "alsoForSaleOrLease")
-                )
-            )
-            _owned_url(item.get("showLink"), definition["host"])
-            native[identity] = (item, page)
-    require(len(native) == total)
-    expected = {
-        identity: (item, page)
-        for identity, (item, page) in native.items()
-        if not item["closed"]
-    }
-    require(expected)
-    listings = scope["listings"]
-    require(
-        len(listings) == len(expected)
-        and len({r.get("id") for r in listings}) == len(expected)
-    )
-    require({r.get("id") for r in listings} == set(expected))
-    staged = defaultdict(list)
-    stored_id_by_url = {}
-    for listing in listings:
-        item, page = expected[listing["id"]]
-        tx = "sale" if item["sale"] else "lease"
-        require(
-            listing.get("transactionMode") == tx
-            and listing.get("transactionType")
-            == (
-                "Sale/Lease"
-                if item["alsoForSaleOrLease"]
-                else "Sale"
-                if item["sale"]
-                else "Lease"
-            )
-        )
-        require(
-            listing.get("url") == item["showLink"]
-            and listing.get("canonicalUrl") == item["showLink"]
-        )
-        require(
-            # collect.ts omits false scalars; raw receipt retains the explicit flag.
-            listing.get("underContract", False) is item["underContract"]
-            and listing.get("statusBadge")
-            == ("under_contract" if item["underContract"] else None)
-        )
-        require(
-            listing.get("preserveChildCollections") is True
-            and listing.get("inventoryObservedAt") == page["observedAt"]
-        )
-        provenance = listing.get("freshnessProvenance") or {}
-        require(
-            provenance.get("generationId") == manifest["run_id"]
-            and provenance.get("cacheDisposition") == page["cacheDisposition"]
-            and provenance.get("method") == "buildout_inventory_feed"
-            and provenance.get("detailScope") == "authoritative_inventory_feed"
-        )
-        require(not listing.get("detailObservedAt"))
-        transformed = to_row(listing, {}, meta["finishedAt"])
-        require(transformed is not None)
-        url_identity = _url_identity(listing["url"])
-        external_id = transformed["external_id"]
-        require(stored_id_by_url.get(url_identity, external_id) == external_id)
-        stored_id_by_url[url_identity] = external_id
-        staged[external_id].append((listing, transformed))
-    staged_bindings = []
-    for external, members in sorted(staged.items()):
-        require(len(members) <= 2)
-        if len(members) == 2:
-            require({m[0]["transactionMode"] for m in members} == {"sale", "lease"})
-            require(len({_url_identity(m[0]["url"]) for m in members}) == 1)
-        merged = members[0][1]
-        for _, transformed in members[1:]:
-            merged = merge_rows(merged, transformed)
-        staged_bindings.append(
-            [external, merged["transaction_type"], sorted(m[0]["id"] for m in members)]
-        )
-    for tx, entry in by_tx.items():
-        count = sum(r["transactionMode"] == tx for r in listings)
-        require(
-            type(entry.get("listingsCollected")) is int
-            and entry["listingsCollected"] == count
-            and type(entry.get("totalAvailableOnSource")) is int
-            and entry["totalAvailableOnSource"] == total
-        )
+    from source_fields.buildout import validate_inventory
+    validated = validate_inventory(artifact, source, definition, manifest["run_id"], manifest["started_at"])
+    listings = validated["listings"]
+    pages = validated["pages"]
+    times = validated["times"]
+    total = validated["total"]
+    staged = validated["staged"]
+    staged_bindings = validated["staged_bindings"]
     current, errors, sources, _, rejected = count_artifacts([str(artifact_path)], True)
     require(
         sources == {source}

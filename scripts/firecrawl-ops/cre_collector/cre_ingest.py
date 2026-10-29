@@ -58,6 +58,7 @@ import cre_parse
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
 from cre_artifact_scope import require_canonical_artifact
+from source_fields.sql import RESERVED_KEY, build_count_update
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -792,6 +793,8 @@ def extra_facts_or_none(v):
         if not isinstance(k, str):
             continue
         key = k.strip()
+        if key == RESERVED_KEY:
+            continue
         if not key:
             continue
         if val is None:
@@ -2716,7 +2719,7 @@ def generic_enrichment_substantive(listing):
     return False
 
 
-def to_row(listing, brokers_by_idx, scraped_at):
+def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None):
     """Map one collector listing to a staging row dict, or None to skip."""
     if is_retired_om_parse_listing(listing):
         return None
@@ -3124,6 +3127,7 @@ def to_row(listing, brokers_by_idx, scraped_at):
         "power_service": clean_text(listing.get("powerService"), 128),
         "rail_served": bool_or_none(listing.get("railServed")),
         "extra_facts": extra_facts,
+        "source_field_count": (field_candidates or {}).get(id(listing)),
         "highlights": highlights,
         "amenities": str_array_or_none(listing.get("amenities")),
         "description": desc[:20000] if isinstance(desc, str) else None,
@@ -3267,6 +3271,13 @@ def _merge_child_collections(collection, primary, secondary):
 
 def merge_rows(a, b):
     """Merge two staged rows for the same (slug, external_id) within a batch."""
+    prior_candidate, incoming_candidate = a.get("source_field_count"), b.get("source_field_count")
+    if a.get("_source_field_conflict") or b.get("_source_field_conflict"):
+        a["source_field_count"], a["_source_field_conflict"] = None, True
+    elif prior_candidate is not None and incoming_candidate is not None and prior_candidate != incoming_candidate:
+        a["source_field_count"], a["_source_field_conflict"] = None, True
+    elif prior_candidate is None:
+        a["source_field_count"] = incoming_candidate
     a["_modes"] |= b["_modes"]
     if a["_modes"] >= {"sale", "lease"}:
         a["transaction_type"] = "sale_or_lease"
@@ -3553,6 +3564,7 @@ STAGE_COLS = [
     "power_service",
     "rail_served",
     "extra_facts",
+    "source_field_count",
     "om_facts",
 ]
 
@@ -3728,7 +3740,19 @@ def build_sql(
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which already drops `omFacts`, but this
     # prevents a manually constructed row from restoring the retired writer.
-    rows = [{**avison_prices.project_row(row), "om_facts": []} for row in rows]
+    rows = [
+        {
+            **avison_prices.project_row(row),
+            "om_facts": [],
+            "source_field_count": row.get("source_field_count"),
+            "extra_facts": (
+                {k: v for k, v in row["extra_facts"].items() if k != RESERVED_KEY}
+                if isinstance(row.get("extra_facts"), dict)
+                else row.get("extra_facts")
+            ),
+        }
+        for row in rows
+    ]
     avison_price_sql = avison_prices.sql_policy(rows)
     targeted = matthews_targeted_targets is not None
     if targeted and (not matthews_targeted_targets or mark_missing_slugs
@@ -3908,7 +3932,7 @@ CREATE TEMP TABLE _stage (
     guarantor text, lease_years_remaining numeric, price_per_unit numeric,
     grm numeric, price_per_acre numeric, num_rooms integer, revpar numeric,
     clear_height_ft numeric, dock_doors integer, drive_in_doors integer,
-    power_service text, rail_served boolean, extra_facts jsonb, om_facts jsonb
+    power_service text, rail_served boolean, extra_facts jsonb, source_field_count jsonb, om_facts jsonb
 ) ON COMMIT DROP;""")
     w(f"COPY _stage ({', '.join(STAGE_COLS)}) FROM stdin;")
     for r in rows:
@@ -5094,7 +5118,7 @@ DO $$ BEGIN
                                   WHEN {jll_price_withheld_stage_sql} THEN NULL
                                   WHEN s.extra_facts IS NULL
                                        OR s.extra_facts = '{}'::jsonb THEN COALESCE(t.extra_facts, '{}'::jsonb)
-                                  ELSE COALESCE(t.extra_facts, '{}'::jsonb) || s.extra_facts
+                                  ELSE COALESCE(t.extra_facts, '{}'::jsonb) || (s.extra_facts - '_source_field_provenance')
                                 END
     FROM _src s
     JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
@@ -5112,6 +5136,8 @@ END $$;
         .replace("{targeted_guard}", targeted_guard)
         .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
     )
+
+    w(build_count_update())
 
     w(targeted_observation if targeted else f"""
 -- Canonical full ingest synchronizes source observation and lifecycle mirror
@@ -6785,13 +6811,9 @@ def main():
         finally:
             os.close(directory)
     for path in args.inputs:
-        if args.checkpoint_ingest_attempt is not None:
-            with open(path, "rb") as f:
-                image_transition_input = f.read()
-            data = json.loads(image_transition_input)
-        else:
-            with open(path) as f:
-                data = json.load(f)
+        with open(path, "rb") as f:
+            image_transition_input = f.read()
+        data = json.loads(image_transition_input)
         try:
             require_canonical_artifact(data)
         except ValueError as exc:
@@ -6828,6 +6850,8 @@ def main():
             )
         except ValueError as exc:
             sys.exit(f"refusing strict freshness artifact: {exc}")
+        from source_fields.buildout import qualified_counts
+        field_candidates = qualified_counts(data, hashlib.sha256(image_transition_input).hexdigest())
         if is_matthews_enrich and targeted_claims is None:
             sys.exit("refusing strict freshness Matthews enrichment without caller-bound targeted claims")
         has_colliers_main = any(
@@ -6926,7 +6950,7 @@ def main():
                     )
                 inventory_only_merged[inventory_key] = inventory_row
                 continue
-            row = to_row(listing, brokers_by_idx, scraped_at)
+            row = to_row(listing, brokers_by_idx, scraped_at, field_candidates)
             if row is None:
                 skipped_no_url += 1
                 continue
