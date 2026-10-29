@@ -87,6 +87,7 @@ from cre_ingest import (  # noqa: E402
     matthews_targeted_sql_context,
     psql_connection_args,
     psql_connection_env,
+    require_canonical_artifact,
     sql_lit,
     validate_hanley_enrichment_artifact,
     validate_matthews_targeted_artifact,
@@ -472,6 +473,8 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
     listings = artifact.get("listings")
     if not isinstance(listings, list):
         raise ValueError("enriched artifact must contain a listings array")
+    if listings:
+        require_canonical_artifact(artifact)
     validate_hanley_enrichment_artifact(artifact)
     claimed_by_url = {row.get("url"): row for row in claimed_rows if row.get("url")}
     safe = []

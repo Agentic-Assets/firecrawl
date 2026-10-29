@@ -43,3 +43,29 @@ witnessed map query and explicitly withhold the known token-named metadata and
 original-body hash fields. The same numeric-witness, ambiguous-reference,
 scanner and authenticated-receipt boundaries above apply. A profile is not
 permission to fetch documents, promote contacts or write to production.
+
+### Targeted Buildout enrichment observations
+
+The separate `leibsohn-targeted-enrichment-withholding/v1`,
+`cawley-chicago-targeted-enrichment-withholding/v1` and
+`bradford-allen-targeted-enrichment-withholding/v1` profiles apply only to the
+matching single-source `mode: enrich` artifact. They retain the complete
+projected artifact, including emitted listing records, child arrays, ordered
+retained observations and partial/omission indicators. The ordinary collector
+v2 converter and the existing guarded-worker custody, seal and recovery path
+continue to apply. A projected copy keeps `mode: enrich` and adds the existing
+`evidencePurpose` guard when absent; the receipt records whether it was added.
+Conflicting preexisting purpose metadata refuses. Projected and exported copies
+are private evidence and fail canonical ingestion and worker listing admission.
+An authenticated receipt records whether the guard was added so restoration can
+remove only that added field. The original worker artifact is unchanged. Listing records remain unverified
+source evidence; the profile does not authorize a document fetch.
+
+The profiles project the witnessed map references and withhold the observed
+response metadata and original HTML-input hashes in both detail-table listings
+and observation context. A receipt identifies projected locations and requires
+an independently authenticated seal. Null alone does not prove a prior value;
+original-body hashes are not substituted into projected evidence. Other
+credential forms remain subject to normal scanners and may refuse. Evidence
+capture, canonical admission, target activation and production writes remain
+separate decisions.
