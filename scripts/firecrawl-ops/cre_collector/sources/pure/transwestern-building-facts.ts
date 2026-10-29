@@ -1,9 +1,10 @@
 import type * as cheerio from "cheerio";
+import { transwesternConcealed, transwesternPropertyPanel } from "./transwestern-property-panel.js";
 
 type Field = "elevators" | "typical_floor_size";
 type Observation = { field: Field; label: string; literal: string; eligibility: "eligible" | "ineligible" };
 type Result = { schema: string; scope: string; visibility: string; state: string;
-  observations: Observation[]; elevatorCount?: number; typicalFloorSizeText?: string };
+  observations: Observation[]; observationCount: number; elevatorCount?: number; typicalFloorSizeText?: string };
 
 // A public Details tab is property-specific, but this static inspection does not
 // claim computed visibility. Preserve literal evidence even when it cannot lift.
@@ -11,31 +12,12 @@ export function transwesternBuildingFacts($: cheerio.CheerioAPI) {
   const observations: Observation[] = [];
   const result = (state: string, extra: Pick<Result, "elevatorCount" | "typicalFloorSizeText"> = {}): Result => ({
     schema: "transwestern-building-facts-v1", scope: "property_details_tab",
-    visibility: "not_evaluated", state, observations, ...extra,
+    visibility: "not_evaluated", state, observations, observationCount: observations.length, ...extra,
   });
   try {
-    const conceal = (node: any) => {
-      const el = $(node);
-      return el.attr("hidden") !== undefined || (el.attr("aria-hidden") ?? "").trim().toLowerCase() === "true" ||
-        /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))\b/i.test(el.attr("style") ?? "");
-    };
-    const sections = $("section.property-dtl");
-    if (sections.length !== 1) return result("ambiguous_property_section");
-    const tabs = sections.children(".fix-wrap").children(".property-dtl-inner")
-      .children(".property-dscptn").children(".prpty-dscptn-left").children("#prpty-dscptn-tab");
-    if (tabs.length !== 1 || sections.find("#prpty-dscptn-tab").length !== 1) return result("ambiguous_tab_container");
-    const labels = tabs.children("ul.resp-tabs-list");
-    const containers = tabs.children("div.resp-tabs-container");
-    if (labels.length !== 1 || containers.length !== 1) return result("ambiguous_tab_structure");
-    const names = labels.children("li");
-    const panels = containers.children("div");
-    const detailIndices = names.toArray().flatMap((node, i) =>
-      $(node).text().trim().toLowerCase() === "details" ? [i] : []);
-    if (names.length !== panels.length || detailIndices.length !== 1) return result("ambiguous_details_panel");
-    const panel = panels.eq(detailIndices[0]);
-    // The selected tab panel itself may be hidden until activation. Other
-    // explicitly concealed ancestors are not evidence of a public assertion.
-    if ([...tabs.parents().toArray(), tabs[0], containers[0]].some(conceal)) return result("concealed_property_ancestor");
+    const association = transwesternPropertyPanel($, "details");
+    if (!association.panel) return result(association.state);
+    const panel = association.panel;
     const lists = panel.children("ul");
     if (lists.length !== 1) return result("ambiguous_details_list");
     if (lists.children("li").length > 200) return result("not_evaluated_limit");
@@ -49,7 +31,7 @@ export function transwesternBuildingFacts($: cheerio.CheerioAPI) {
       const literal = $(row).text().replace(headings.first().text(), "").replace(/^\s*:\s*/, "").trim();
       const eligible = headings.length === 1 && $(row).children("b,strong").length === 1 &&
         literal.length <= 2048 && !$(row).find("li, ul, ol").length &&
-        ![lists[0], row, ...$(row).find("*").toArray()].some(conceal);
+        ![lists[0], row, ...$(row).find("*").toArray()].some(node => transwesternConcealed($, node));
       if (!eligible) malformed = true;
       observations.push({ field, label, literal, eligibility: eligible ? "eligible" : "ineligible" });
     });

@@ -17,6 +17,8 @@ import { proveTranswesternPublishedIdentity, requireCurrentTranswesternPublished
 import { filterTranswesternImages } from "./pure/transwestern-images.js";
 import { transwesternFieldObservations } from "./pure/transwestern-field-observations.js";
 import { transwesternBuildingFacts } from "./pure/transwestern-building-facts.js";
+import { transwesternConcealed, transwesternPropertyPanel } from "./pure/transwestern-property-panel.js";
+import TurndownService from "turndown";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
@@ -490,17 +492,33 @@ export function liftTranswesternScalars(
   return out;
 }
 
-export function transwesternDescription($: cheerio.CheerioAPI, doc: ScrapedDoc): string | null {
-  const candidate =
-    clean($(".property-description, .PropertyDescription, #overview").first().text()) ??
-    clean(doc.markdown.match(/Overview\s*([\s\S]{1,1800}?)(?:\n[A-Z][A-Za-z ]+\n|\n#{1,6}\s|$)/i)?.[1]);
-  if (
-    !candidate ||
-    /TREC Information About Brokerage Services|Privacy Policy|Copyright\s+Transwestern|Sitemap|Working-at-Transwestern/i.test(
-      candidate
-    )
-  ) {
-    return null;
+export function transwesternDescription($: cheerio.CheerioAPI, doc: ScrapedDoc, sourceUrl?: string): string | null {
+  const association = transwesternPropertyPanel($, "description");
+  let candidate: string | null;
+  if (association.panel) {
+    const panel = association.panel.clone();
+    panel.find("script, style, template, noscript").remove();
+    panel.find("*").toArray().filter(node => transwesternConcealed($, node)).forEach(node => $(node).remove());
+    panel.find("a[href]").each((_, node) => {
+      const anchor = $(node);
+      try {
+        const url = new URL(anchor.attr("href")!, sourceUrl);
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("unsafe link");
+        anchor.attr("href", url.href);
+      } catch {
+        anchor.removeAttr("href");
+      }
+    });
+    candidate = new TurndownService().turndown(panel.html() ?? "").trim() || null;
+  } else {
+    // Existing layouts without this tab widget retain their legacy fallbacks.
+    // A present but ambiguous widget must not borrow unrelated page content.
+    const sections = $("section.property-dtl");
+    if ($("#prpty-dscptn-tab").length || sections.find(".resp-tabs-list, .resp-tabs-container").length || sections.length > 1 ||
+        sections.toArray().some(node => [node, ...$(node).parents().toArray()].some(parent => transwesternConcealed($, parent)))) return null;
+    candidate = clean($(".property-description, .PropertyDescription, #overview").first().text()) ??
+      clean(doc.markdown.match(/Overview\s*([\s\S]{1,1800}?)(?:\n[A-Z][A-Za-z ]+\n|\n#{1,6}\s|$)/i)?.[1]);
+    if (candidate && /TREC Information About Brokerage Services|Privacy Policy|Copyright\s+Transwestern|Sitemap|Working-at-Transwestern/i.test(candidate)) return null;
   }
   return candidate;
 }
@@ -614,7 +632,7 @@ export async function enrichTranswesternListing(
       )
       .filter((id: number | null): id is number => id !== null);
     const coordMatch = doc.rawHtml.match(/myLatLng\s*=\s*\{\s*lat:\s*(-?[0-9.]+),\s*lng:\s*(-?[0-9.]+)/i);
-    const description = transwesternDescription($, doc);
+    const description = transwesternDescription($, doc, detailUrl);
     const leaseRateText =
       availability.map((a) => clean(a.rate)).find((rate) => rate && /\$|psf|sf|negotiable/i.test(rate)) ??
       null;
@@ -724,7 +742,7 @@ export async function enrichTranswesternListing(
         cacheDisposition: observed.cacheDisposition,
       },
     });
-    // Preserve false eligibility and empty evidence lists, which prune removes.
+    // The explicit count preserves an inspected empty observation set through outer pruning.
     output.transwesternBuildingFacts = {
       ...transwesternBuildingFacts($),
       sourceUrl: detailUrl,
