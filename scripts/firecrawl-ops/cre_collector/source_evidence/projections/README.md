@@ -8,8 +8,9 @@ Google Maps tile query projection with whole-value withholding at the observed
 nested `input.context.nativeContext.pdf_url` and historical replay
 `input.context.originalContext.nativeContext.pdf_url` pointers. Original
 null and missing values stay distinct from values withheld with receipts. The
-observed `quokka-content-current-token` metadata value is withheld without
-claiming its sensitivity; the original SDK capture and HTML input hashes are
+observed `quokka-content-current-token` metadata value and matching
+name/property-labeled page-context metadata content are withheld without
+claiming their sensitivity; the original SDK capture and HTML input hashes are
 also withheld because their inputs may contain the removed references. Nonsecret
 fields and text, including Markdown labels and units, remain in the projected
 representation. Receipts contain pointer/occurrence and projected-representation

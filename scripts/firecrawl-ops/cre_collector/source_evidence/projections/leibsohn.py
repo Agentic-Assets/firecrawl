@@ -14,6 +14,8 @@ VERSION = "leibsohn-page-observation-withholding/v1"
 MAP_VERSION = "leibsohn-observation-map/v1"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_RECEIPTS = 20_000
+METADATA_LABEL = "quokka-content-current-token"
+METADATA_PATH = "evidence/pageContext/metadata"
 PATHS = (
     ("input/context/nativeContext/pdf_url", "document_reference"),
     ("input/context/originalContext/nativeContext/pdf_url", "document_reference"),
@@ -53,6 +55,19 @@ def _target(row, path):
     if not isinstance(value, dict):
         return None, None
     return value, fields[-1]
+
+
+def _token_metadata_entries(row):
+    container, key = _target(row, METADATA_PATH)
+    entries = container.get(key) if container is not None else None
+    return entries if isinstance(entries, list) else []
+
+
+def _is_token_metadata(entry):
+    return isinstance(entry, dict) and any(
+        isinstance(entry.get(key), str) and entry[key].casefold() == METADATA_LABEL
+        for key in ("name", "property")
+    )
 
 
 def _refuse_ambiguous_map_references(document):
@@ -154,6 +169,18 @@ def project(document, *, source_key, numeric_literals=None):
             withheld.append({"pointer": pointer, "recordPointer": f"/sources/0/retainedObservations/{index}", "reason": reason})
             if len(withheld) > MAX_RECEIPTS:
                 raise ValueError("observation withholding exceeds bound")
+        for meta_index, entry in enumerate(_token_metadata_entries(row)):
+            if not _is_token_metadata(entry) or entry.get("content") is None or "content" not in entry:
+                continue
+            if not isinstance(entry["content"], str):
+                continue
+            pointer = f"/sources/0/retainedObservations/{index}/{METADATA_PATH}/{meta_index}/content"
+            if numeric_literals and any(p == pointer or p.startswith(pointer + "/") or pointer.startswith(p + "/") for p in numeric_literals):
+                raise ValueError("observation withholding conflicts with numeric literal")
+            entry["content"] = None
+            withheld.append({"pointer": pointer, "recordPointer": f"/sources/0/retainedObservations/{index}", "reason": "token_named_page_metadata"})
+            if len(withheld) > MAX_RECEIPTS:
+                raise ValueError("observation withholding exceeds bound")
     digest = map_projection.canonical_digest(mapped, numeric_literals or None)
     map_receipt["projectedCanonicalSha256"] = digest
     receipt = {"version": VERSION, "sourceKey": source_key, "withheld": withheld, "map": map_receipt,
@@ -191,17 +218,30 @@ def validate(document, receipt, *, source_key, numeric_literals=None):
         if not isinstance(entry, dict) or set(entry) != {"pointer", "recordPointer", "reason"}:
             raise ValueError("invalid observation withholding receipt")
         match = re.fullmatch(r"/sources/0/retainedObservations/(0|[1-9][0-9]*)/(.+)", str(entry.get("pointer", "")))
-        if not match or len(match[1]) > 3 or int(match[1]) >= len(rows) or allowed.get(match[2]) != entry.get("reason"):
+        if not match or len(match[1]) > 3 or int(match[1]) >= len(rows):
             raise ValueError("invalid observation withholding pointer")
         index, path = int(match[1]), match[2]
         if entry.get("recordPointer") != f"/sources/0/retainedObservations/{index}":
             raise ValueError("invalid observation record pointer")
         if numeric_literals and any(p == entry["pointer"] or p.startswith(entry["pointer"] + "/") or entry["pointer"].startswith(p + "/") for p in numeric_literals):
             raise ValueError("observation withholding conflicts with numeric literal")
-        target, key = _target(rows[index], path)
+        meta = re.fullmatch(r"evidence/pageContext/metadata/(0|[1-9][0-9]*)/content", path)
+        if meta:
+            if len(meta[1]) > 5 or entry.get("reason") != "token_named_page_metadata":
+                raise ValueError("invalid observation withholding pointer")
+            entries = _token_metadata_entries(rows[index])
+            meta_index = int(meta[1])
+            if meta_index >= len(entries) or not _is_token_metadata(entries[meta_index]):
+                raise ValueError("invalid observation metadata label")
+            target, key = entries[meta_index], "content"
+            order = (index, len(allowed), meta_index)
+        else:
+            if allowed.get(path) != entry.get("reason"):
+                raise ValueError("invalid observation withholding pointer")
+            target, key = _target(rows[index], path)
+            order = (index, list(allowed).index(path), 0)
         if target is None or key not in target or target[key] is not None:
             raise ValueError("observation withholding target mismatch")
-        order = (index, list(allowed).index(path))
         if expected and order <= expected[-1]:
             raise ValueError("invalid observation withholding order")
         expected.append(order)

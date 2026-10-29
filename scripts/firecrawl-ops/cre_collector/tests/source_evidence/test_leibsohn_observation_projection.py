@@ -2,7 +2,6 @@ import copy
 import json
 
 import pytest
-
 from source_evidence import collector, collector_projection, events, map_projection
 from source_evidence.automatic import _refuse_credential_fields
 from source_evidence.projections import leibsohn as projection
@@ -170,9 +169,8 @@ def test_clean_encoded_map_references_remain_unchanged():
     events.validate_content_policy(events.plan(wrapped, source_key="leibsohn"))
 
 def test_automatic_seal_replay_and_tampered_receipt(tmp_path):
-    from test_automatic import SHA, setup_policy
-
     from source_evidence import automatic
+    from test_automatic import SHA, setup_policy
 
     config, policy, policy_path = setup_policy(tmp_path, sources=("leibsohn",), count=10)
     policy.update(schema_version=automatic.SCHEMA_V2,
@@ -216,3 +214,41 @@ def test_credential_map_preserves_encoded_noncredential_query():
     row["evidence"]["scrapedDoc"]["rawHtml"] = "https://maps.googleapis.com/maps/vt?q=Main%20Street&key=SYNTHETIC"
     changed, _ = projection.project(original, source_key="leibsohn")
     assert changed["sources"][0]["retainedObservations"][0]["evidence"]["scrapedDoc"]["rawHtml"] == "https://maps.googleapis.com/maps/vt?q=Main%20Street"
+
+
+def test_page_metadata_token_labels_withhold_every_copy_and_validate_pointers():
+    original = artifact()
+    row = original["sources"][0]["retainedObservations"][0]
+    row["evidence"]["pageContext"]["metadata"] = [
+        {"name": "unrelated", "content": "public label"},
+        {"name": "Quokka-Content-Current-Token", "property": None, "content": "SYNTHETIC", "other": "keep"},
+        {"name": None, "property": "quokka-content-current-token", "content": "SYNTHETIC"},
+        {"name": "quokka-content-current-token", "content": None},
+        {"property": "quokka-content-current-token"},
+    ]
+    changed = copy.deepcopy(original)
+    changed_row = changed["sources"][0]["retainedObservations"][0]
+    changed_row["evidence"]["scrapedDoc"]["metadata"]["quokka-content-current-token"] = "DIFFERENT"
+    for index in (1, 2):
+        changed_row["evidence"]["pageContext"]["metadata"][index]["content"] = "DIFFERENT"
+    output, receipt = projection.project(original, source_key="leibsohn")
+    assert (output, receipt) == projection.project(changed, source_key="leibsohn")
+    metadata = output["sources"][0]["retainedObservations"][0]["evidence"]["pageContext"]["metadata"]
+    assert metadata[0]["content"] == "public label"
+    assert metadata[1]["content"] is None and metadata[1]["other"] == "keep"
+    assert metadata[2]["content"] is None and metadata[3]["content"] is None
+    assert "content" not in metadata[4]
+    page_receipts = [entry for entry in receipt["withheld"] if entry["reason"] == "token_named_page_metadata"]
+    assert len(page_receipts) == 2
+    assert "SYNTHETIC" not in repr((output, receipt))
+    projection.validate(output, receipt, source_key="leibsohn")
+    for path in ("evidence/pageContext/metadata/0/content", "evidence/pageContext/metadata/99/content"):
+        forged = copy.deepcopy(receipt)
+        entry = next(entry for entry in forged["withheld"] if entry["reason"] == "token_named_page_metadata")
+        entry["pointer"] = "/sources/0/retainedObservations/0/" + path
+        with pytest.raises(ValueError):
+            projection.validate(output, forged, source_key="leibsohn")
+    tampered = copy.deepcopy(output)
+    tampered["sources"][0]["retainedObservations"][0]["evidence"]["pageContext"]["metadata"][1]["name"] = "other"
+    with pytest.raises(ValueError):
+        projection.validate(tampered, receipt, source_key="leibsohn")
