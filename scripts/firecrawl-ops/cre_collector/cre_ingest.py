@@ -5232,8 +5232,8 @@ CREATE TEMP TABLE _child_refresh ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
-WHERE NOT ({avison_price_sql.get('transition_predicate', 'false')})
-  AND NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+  AND NOT ({avison_price_sql.get('transition_predicate', 'false')})
   AND (
     NOT jsonb_path_exists(
       s.raw_data,
