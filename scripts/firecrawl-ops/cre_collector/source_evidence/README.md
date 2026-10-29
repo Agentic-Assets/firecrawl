@@ -582,6 +582,63 @@ printed. A short or punctuation-only query may require a full index scan, and
 queries have a 30-second database statement timeout. The existing document text
 search and its phrase and chunk boundaries are unchanged.
 
+## Draft Buildout document-reference withholding
+
+Some Buildout inventory and collector records contain credential-bearing
+document references. The ordinary evidence scanner refuses those captures.
+The separate source-owned `buildout-document-reference-withholding/v1` rule
+replaces only exact reviewed HTTPS Buildout document URLs at
+`inventory[*].pdf_url` or `listings[*].brochures[*].url`. It preserves all other
+fields and array positions, including missing/duplicate IDs and addressless or
+closed rows. It does not establish canonical listing identity or change the
+collector's canonical closed-row behavior. Missing, original null, malformed
+and withheld references stay distinct through unchanged values and the receipt.
+Unknown clean response shapes remain intact; sensitive content outside the
+reviewed rule still causes ordinary admission refusal.
+
+The entire URL value becomes null. A bounded receipt records its source and
+record pointers, withholding reason, rule version and projected canonical
+digest. Whole-URL withholding also removes any non-secret path information; it
+is deliberately lossy. No original URI, token or digest of the removed source
+bytes enters that receipt. A null alone cannot prove a reference existed, and
+an attacker who can replace both a receipt and its self-reported digest can
+claim an original null was withheld. Trust requires the independently saved
+seal/checkpoint and policy bindings. A withheld pointer cannot overlap an
+exceptional-number literal pointer.
+
+For an offline collector conversion, explicitly select the rule:
+
+```sh
+python3 -m source_evidence.cli convert-collector --artifact /private/collector.json --source-key cawley-chicago --collector-projection-version buildout-document-reference-withholding/v1 --out /private/projected.json
+```
+
+The existing `--project-map-credentials` option retains its map-specific
+behavior and is mutually exclusive with this selector. Conversion output is
+private and only narrowly projected; it is not generally sanitized. Always
+run ordinary planning and content-policy validation before admission.
+Version-2 or version-3 automatic source policies may explicitly configure the
+same rule in `collector_projections` for supported Buildout source keys. The
+default and legacy map versions are unchanged; projections are not silently
+combined. Other credential-bearing locations can still refuse a capture.
+
+Native capture separately opts into `buildout_inventory_projected_v1` in
+`native_source_formats`. The original private entry is checked against its
+source, feed variant, page, sort, body digest and filename before projection.
+The new `cre-buildout-projected-observation/v1` observation retains only the
+projected canonical digest/length and loss receipt, alongside the original
+source/capture clocks and scope. Replay re-reads and reprojects the private
+entry against the trusted saved plan. Original file hashes remain local custody
+markers and never enter the derived events. Existing
+`buildout_inventory_parsed_v1` behavior is unchanged.
+
+Reconstruction and hashes establish the projected representation only. Removed
+URIs and original source bytes cannot be recovered from it; native input was
+already parsed JavaScript JSON, not original HTTP wire bytes. No transformed
+URL is a download target, and no document type, access, sharing permission or
+complete inventory follows. There is no new acquisition or canonical-write
+authority. Production activation and private evidence-target admission remain
+separate requirements.
+
 ## Draft property-location selection order
 
 Policy v4 requires `selection_order: property_occurrences_first_v1` and retains

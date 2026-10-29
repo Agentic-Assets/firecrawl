@@ -54,6 +54,20 @@ attempt, 16-MiB parsed-body and observation, 3.5-MiB fact and 10,000-row page
 limits apply. Capture failure stops the enabled path. This draft is not deployed
 and requires separate production acceptance; no source admission or completeness follows.
 
+Buildout document-reference withholding is a separate explicit projection,
+`buildout-document-reference-withholding/v1`, for collector artifacts, and native
+format `buildout_inventory_projected_v1`. The source-owned rule replaces only
+reviewed document URLs with null plus a pointer receipt; it never fabricates a
+token-free URL. Other fields, positions, unknown clean shapes, missing/duplicate
+identities and original nulls remain intact. An authenticated receipt is required
+to distinguish withholding from an original null; standalone validation cannot
+prove the removed value existed. Unknown sensitive content still refuses
+admission. Projected hashes and reconstruction describe only the derived JSON;
+original URI/body/file hashes stay in private custody, not projected events.
+Legacy map and Buildout parsed formats remain unchanged. See README.md for
+collector and native opt-ins, loss boundaries and replay. No download or writer
+activation follows from this projection.
+
 Avison's raw producer files stay private and local. `avison_pages.py` applies
 the source-owned `avison_native.py` projection before `avison_response.py`
 creates database-bound observations. Original response/file hashes, integration

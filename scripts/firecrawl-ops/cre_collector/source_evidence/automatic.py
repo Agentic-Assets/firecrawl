@@ -30,8 +30,8 @@ from source_evidence import (
     acquisition,
     cli,
     collector,
+    collector_projection,
     events,
-    map_projection,
     privilege_guard,
 )
 
@@ -125,7 +125,7 @@ def configuration(policy_path, expected_sha, env_file, target, git_sha, sources)
         projections = policy["collector_projections"]
         native_formats = policy["native_source_formats"]
         if (not isinstance(projections, dict) or not isinstance(native_formats, dict)
-                or any(k not in allowed or map_projection.version_for(k) is None or v != map_projection.version_for(k)
+                or any(k not in allowed or not collector_projection.supported(k, v)
                        for k, v in projections.items())
                 or any(k not in allowed or not native_pages.format_supported(k, v)
                        for k, v in native_formats.items())
@@ -297,8 +297,9 @@ def seal_collector(run_dir, config, sources, git_sha, git_dirty, generation, sou
         original_sha = hashlib.sha256(raw).hexdigest()
         projection = None
         if source in config.get("collector_projections", {}):
-            obj, numeric_literals, projection = map_projection.prepare(raw, source_key=source)
-            original_sha = map_projection.canonical_digest(obj, numeric_literals or None)
+            obj, numeric_literals, projection = collector_projection.prepare(
+                raw, source_key=source, version=config["collector_projections"][source])
+            original_sha = collector_projection.canonical_digest(obj, numeric_literals or None)
         else:
             obj, numeric_literals = acquisition.decode_json(raw)
         _refuse_credential_fields(obj)
@@ -518,7 +519,10 @@ def append_job(config, sources, state, prepare, save, mark_incomplete):
         state["state"] = "outcome_unknown" if state.get("state") == "appending" else "refused"
         state["reason"] = type(exc).__name__
         mark_incomplete()
-        from source_evidence.document_process import DocumentProcessCleanupUnknown, cleanup_unknown_in_chain
+        from source_evidence.document_process import (
+            DocumentProcessCleanupUnknown,
+            cleanup_unknown_in_chain,
+        )
         if cleanup_unknown_in_chain(exc):
             try:
                 save()
