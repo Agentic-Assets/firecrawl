@@ -152,3 +152,7 @@ exact replay. Poppler extracts embedded text only; it does not OCR, and does not
 change AnyDoc's original outcome. Coverage and fidelity remain unknown. The mode is off
 by default and requires separate production acceptance. Its phase reserves a
 bounded process timeout and cleanup grace; native memory is not capped.
+
+Settled means that the selected attempts have recorded outcomes, including
+failed or OCR-needed outcomes. It does not mean that text was recovered from
+every document. Inspect each parser outcome before relying on its text.
