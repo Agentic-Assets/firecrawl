@@ -2,7 +2,8 @@ process.argv = [process.argv[0]!, process.argv[1]!];
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildoutDetailDocIsUsable, buildoutDetailIframeUrl, enrichBuildoutDetail, enrichBuildoutDetailObserved } from "../../../sources/buildout.js";
+import { spawnSync } from "node:child_process";
+import { buildoutDetailDocIsUsable, buildoutDetailIframeUrl, buildoutSlugFromUrl, enrichBuildoutDetail, enrichBuildoutDetailObserved } from "../../../sources/buildout.js";
 import { REGISTERED_BUILDOUT_FIRMS } from "../../../sources/buildout-registry.js";
 import { firecrawl } from "../../../lib/scrape.js";
 import { buildoutEnricherFor } from "../../../lib/enrich.js";
@@ -21,6 +22,19 @@ test("HTTP source input is scoped and the constructed route uses HTTPS", () => {
   assert.equal(buildoutDetailIframeUrl("leibsohn", url, { ...leibsohn, allowHttpListingInput: undefined }), null);
   assert.equal(buildoutDetailIframeUrl("faris-lee", url, leibsohn), null);
   assert(buildoutDetailIframeUrl("leibsohn", `${url}&propertyId=`, leibsohn));
+});
+
+test("literal detail routes and JavaScript identity agree with Python staging", () => {
+  const values = ["parcel-sale", "parcel-lease", "parcel-SALE", "parcel-Lease", "pre-sale-label", "parcel"];
+  const urls = values.map(value => `http://www.leibsohn.com/properties/?propertyId=${value}`);
+  const script = `import json,sys\nfrom cre_ingest import to_row\nurls=json.load(sys.stdin)\nprint(json.dumps([to_row({'sourceKey':'leibsohn','id':'native-fixture','url':url}, {}, '2026-10-29T00:00:00Z')['external_id'] for url in urls]))`;
+  const result = spawnSync("python3", ["-c", script], { input: JSON.stringify(urls), encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ["parcel", "parcel", "parcel-SALE", "parcel-Lease", "pre-sale-label", "parcel"]);
+  assert.deepEqual(urls.map(value => buildoutSlugFromUrl(value)), JSON.parse(result.stdout));
+  for (let index = 0; index < urls.length; index++) {
+    assert(new URL(buildoutDetailIframeUrl("leibsohn", urls[index], leibsohn)!).pathname.endsWith(`/inventory/${values[index]}`));
+  }
 });
 
 test("rejects ambiguous property IDs and unsafe authorities", () => {
