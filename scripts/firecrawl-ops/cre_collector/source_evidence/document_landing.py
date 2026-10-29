@@ -69,7 +69,7 @@ class _LandingParser(HTMLParser):
                         if entry[key] is None:
                             self.omitted_metadata += 1
                 self.metadata.append(entry)
-        ref_attribute = {'a': 'href', 'iframe': 'src', 'embed': 'src', 'object': 'data'}.get(tag)
+        ref_attribute = {'a': 'href', 'iframe': 'src', 'turbo-frame': 'src', 'embed': 'src', 'object': 'data'}.get(tag)
         if ref_attribute and ref_attribute in attrs:
             raw = attrs[ref_attribute]
             if len(self.references) >= MAX_ITEMS:
@@ -82,7 +82,8 @@ class _LandingParser(HTMLParser):
                 entry['raw_reference'] = None
             entry['labels'] = {k: (v if len(v) <= MAX_VALUE_CHARS else None)
                                for k, v in attrs.items()
-                               if k in ('title', 'aria-label', 'download', 'type', 'rel') and v is not None}
+                               if (k in ('title', 'aria-label', 'download', 'type', 'rel') or (k == 'id' and tag == 'turbo-frame'))
+                               and v is not None}
             if tag == 'a':
                 entry['text'] = ''
                 entry['text_complete'] = True

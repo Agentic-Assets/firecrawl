@@ -679,7 +679,7 @@ indices; it does not schedule work.
 
 `document_landing.parse_document_landing` accepts bounded acquired HTML bytes and
 an asserted final URL and returns a private observation containing a body digest,
-visible text, metadata and raw anchor, iframe, embed and object references with
+visible text, metadata and raw anchor, iframe, turbo-frame, embed and object references with
 element, attribute and source position. It does not validate the HTTP receipt,
 classify access, resolve references, run JavaScript or discover candidates through
 `document_candidates`. Complete JSON and JSON-LD script text is recorded
