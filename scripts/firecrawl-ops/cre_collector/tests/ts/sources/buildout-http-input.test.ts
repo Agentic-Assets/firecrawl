@@ -58,6 +58,15 @@ test("empty and loading shells remain observations without a canonical detail", 
     { rawHtml: "<html><head><title>Buildout</title></head><body></body></html>", markdown: "" },
     { rawHtml: "<html><body><script>loadListing()</script><p>Loading...</p></body></html>", markdown: "Loading..." },
     { rawHtml: '<body><img src="photo.jpg"><a href="doc.pdf">Brochure</a></body>', markdown: "[Brochure](doc.pdf)" },
+    { rawHtml: '<body><img src="photo.jpg"></body>', markdown: "![Photo][1]\n\n[1]: https://example.test/photo.jpg" },
+    { rawHtml: "<body></body>", markdown: "[Brochure][]\n\n[Brochure]: https://example.test/file.pdf" },
+    { rawHtml: "<body></body>", markdown: "[Brochure]\n\n[Brochure]: https://example.test/file.pdf" },
+    { rawHtml: "<body></body>", markdown: '<img src="photo.jpg"><a href="doc.pdf">Brochure</a>' },
+    { rawHtml: "<body></body>", markdown: "[Brochure](doc.pdf). !?" },
+    { rawHtml: "<body></body>", markdown: "![photo](https://example.test/a_(1).png)" },
+    { rawHtml: "<body></body>", markdown: "![photo](<https://example.test/a_(1).png>)" },
+    { rawHtml: "<body></body>", markdown: "![photo](https://example.test/a_((1)).png)" },
+    { rawHtml: "<body></body>", markdown: "![photo](https://example.test/a_\\(1\\).png)" },
   ];
   try {
     for (const doc of shells) {
@@ -73,9 +82,28 @@ test("empty and loading shells remain observations without a canonical detail", 
     }
     assert.equal(buildoutDetailDocIsUsable({ rawHtml: "<body><p>Available space: 2,000 SF</p></body>" }), true);
     assert.equal(buildoutDetailDocIsUsable({ markdown: "Partial property description" }), true);
+    assert.equal(buildoutDetailDocIsUsable({ markdown: "[2,000 SF]" }), true);
+    assert.equal(buildoutDetailDocIsUsable({ markdown: "[Unresolved][reference]" }), true);
+    assert.equal(buildoutDetailDocIsUsable({ markdown: "Available space: [details](https://example.test)." }), true);
     (firecrawl as any).scrape = async () => shells[2];
     const captured = await buildoutEnricherFor(leibsohn).enrichWithEvidence!([{ sourceKey: "leibsohn", externalId: "fixture", url }]);
     assert.deepEqual(captured.listings, []);
     assert.equal((captured.retainedObservations[0] as any).qualification, "rejected_unqualified_detail");
+  } finally { (firecrawl as any).scrape = original; }
+});
+
+test("malformed response fields retain the original observation without completing detail", async () => {
+  const original = firecrawl.scrape;
+  try {
+    for (const doc of [{ rawHtml: 42, markdown: "partial" }, { rawHtml: "<p>partial</p>", markdown: true }]) {
+      (firecrawl as any).scrape = async () => doc;
+      let observation: any;
+      const result = await enrichBuildoutDetailObserved("leibsohn", url, leibsohn,
+        (saved, _page, qualification) => { observation = { saved, qualification }; });
+      assert.equal(result, null);
+      assert.equal(observation.qualification, "rejected_unqualified_detail");
+      assert.equal(observation.saved.rawHtml, doc.rawHtml);
+      assert.equal(observation.saved.markdown, doc.markdown);
+    }
   } finally { (firecrawl as any).scrape = original; }
 });

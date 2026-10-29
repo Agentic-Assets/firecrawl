@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
+import { Marked } from "marked";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
@@ -927,6 +928,10 @@ export function buildoutDetailIframeUrl(
 function buildoutDetailQualification(
   doc: { markdown?: string | null; rawHtml?: string | null } | null | undefined
 ): "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail" {
+  if ((doc?.rawHtml != null && typeof doc.rawHtml !== "string") ||
+      (doc?.markdown != null && typeof doc.markdown !== "string")) {
+    return "rejected_unqualified_detail";
+  }
   const body = `${doc?.markdown ?? ""}\n${doc?.rawHtml ?? ""}`.toLowerCase();
   if (
     body.includes("listing_not_found") ||
@@ -937,10 +942,17 @@ function buildoutDetailQualification(
   const $ = cheerio.load(doc?.rawHtml ?? "");
   $("head, script, style, template, noscript, svg, a").remove();
   const htmlText = $("body").text().replace(/\s+/g, " ").trim();
-  const markdownText = (doc?.markdown ?? "")
-    .replace(/!?\[[^\]]*\]\([^)]*\)/g, "")
-    .replace(/[#*_`~>\s-]+/g, " ").trim();
-  const hasContent = (value: string) => !!value && !/^(?:loading|please wait|loading\.\.\.)[.!…\s]*$/i.test(value);
+  let renderedMarkdown: string;
+  try {
+    renderedMarkdown = new Marked().parse(doc?.markdown ?? "", { async: false });
+  } catch {
+    return "rejected_unqualified_detail";
+  }
+  const markdownHtml = cheerio.load(renderedMarkdown);
+  markdownHtml("head, script, style, template, noscript, svg, a").remove();
+  const markdownText = markdownHtml("body").text().replace(/[#*_`~>\s-]+/g, " ").trim();
+  const hasContent = (value: string) => /[\p{L}\p{N}]/u.test(value) &&
+    !/^(?:loading|please wait|loading\.\.\.)[.!…\s]*$/i.test(value);
   return hasContent(htmlText) || hasContent(markdownText) ? "usable_detail" : "rejected_unqualified_detail";
 }
 
