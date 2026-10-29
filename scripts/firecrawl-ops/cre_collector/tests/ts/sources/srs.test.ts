@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { prune } from "../../../lib/util.js";
 import {
   assertSrsInventoryPage,
   assertSrsInventoryReconciled,
@@ -54,7 +55,8 @@ test("mapSrsListing maps Salesforce-backed fields", () => {
   const listing = mapSrsListing(row, "sale");
   assert.equal(listing.id, "SRS-42");
   assert.equal(listing.name, "Family Dollar");
-  assert.equal(listing.salePriceUsd, 1550000);
+  assert.equal(listing.salePriceUsd, undefined);
+  assert.equal(listing.salePriceText, "1,550,000");
   assert.equal(listing.state, "OK");
   assert.equal(listing.url, "https://www.srsre.com/properties/sale/family-dollar");
   assert.equal(listing.brokerIds.length, 1);
@@ -135,4 +137,46 @@ test("strict SRS mappings use only provider identity and emit authoritative inve
   assert.equal(listing.freshnessProvenance.detailScope, "authoritative_inventory_feed");
   assert.equal(listing.freshnessProvenance.cacheDisposition, "live");
   assert.equal(listing.preserveChildCollections, true);
+});
+
+test('SRS reports public API price and retains flag and zero/null context without inferring tenure', () => {
+  for (const [flag, state] of [[true, 'true'], [false, 'false'], [null, 'null']] as const) {
+    const row = srsRow(`flag-${state}`);
+    row.apto_data.Hide_Sale_Price__c = flag;
+    row.apto_data.Sale_Price__c = 1250000;
+    const listing = mapSrsListing(row, 'sale');
+    assert.equal(listing.salePriceUsd, undefined);
+    assert.equal(listing.salePriceText, "1,250,000");
+    assert.equal(listing.extraFacts.srs_reported_sale_price.flag_state, state);
+    assert.equal(listing.extraFacts.srs_reported_sale_price.currency, 'unverified');
+    assert.equal(listing.extraFacts.srs_reported_sale_price.reported_number, 1250000);
+  }
+  const zero = srsRow('zero'); zero.apto_data.Hide_Sale_Price__c = true; zero.apto_data.Sale_Price__c = 0;
+  const mappedZero = mapSrsListing(zero, 'sale');
+  assert.equal(mappedZero.salePriceUsd, undefined);
+  assert.equal(mappedZero.salePriceText, "0");
+  assert.equal(mappedZero.extraFacts.srs_reported_sale_price.reported_number, 0);
+  assert.equal(mappedZero.extraFacts.srs_reported_sale_price.price_state, 'number');
+  assert.equal(prune(mappedZero).extraFacts.srs_reported_sale_price.reported_number, 0);
+  assert.equal(prune(mappedZero).extraFacts.srs_reported_sale_price.flag_state, 'true');
+  const missing = srsRow('null'); missing.apto_data.Sale_Price__c = null;
+  const mappedNull = mapSrsListing(missing, 'sale');
+  assert.equal(mappedNull.salePriceUsd, undefined);
+  assert.equal(mappedNull.extraFacts.srs_reported_sale_price.price_state, 'null');
+  assert.equal(mappedNull.extraFacts.srs_reported_sale_price.flag_state, 'missing');
+  const lease = srsRow('lease'); lease.apto_data.Availability__c = 'Lease'; lease.permalink = '/properties/lease/lease';
+  lease.apto_data.Sale_Price__c = 1000000; lease.apto_data.Hide_Sale_Price__c = true;
+  const mappedLease = mapSrsListing(lease, 'lease');
+  assert.equal(mappedLease.salePriceUsd, undefined);
+  assert.equal(mappedLease.extraFacts.srs_reported_sale_price.reported_number, 1000000);
+  assert.deepEqual(srsTenure(lease), {isSale:false,isLease:true});
+});
+
+test('SRS does not coerce boolean price into a fabricated zero', () => {
+  const row = srsRow('boolean');
+  row.apto_data.Hide_Sale_Price__c = true;
+  row.apto_data.Sale_Price__c = false;
+  const listing = mapSrsListing(row, 'sale');
+  assert.equal(listing.salePriceUsd, undefined);
+  assert.equal(listing.extraFacts.srs_reported_sale_price.price_state, 'other');
 });

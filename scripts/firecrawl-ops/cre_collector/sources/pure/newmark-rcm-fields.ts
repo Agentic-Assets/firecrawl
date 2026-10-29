@@ -18,7 +18,7 @@ function reference(value: unknown, baseUrl: string): string | undefined {
   } catch { return; }
 }
 function plainText(html: string): string | undefined {
-  const $ = load(html); $("script,style,noscript,[hidden],[aria-hidden=\"true\"]").remove();
+  const $ = load(html); $("script,style,noscript").remove();
   return string($.text());
 }
 export interface NewmarkRcmFields {

@@ -20,8 +20,8 @@ test('unknown or hidden sections, risky links and ambiguous overview do not prom
  assert.deepEqual(mapNewmarkRcmFields({projectfields:{showprice:true},sections:[{isVisible:true,title:'Overview',contents:[{content:'<p>Explicit overview</p>'}]}]},base,'sale'),{description:'Explicit overview'});
 });
 
-test('description discards hidden or executable markup and absent source attributes remain absent',()=>{
- const m=mapNewmarkRcmFields({projectfields:{showprice:true,summary:'<p>Visible summary</p><script>do not retain</script><span hidden>hidden</span>'},sections:[{contacts:[{Fullname:'Person'}]}]},base,'sale');assert.equal(m.description,'Visible summary');assert.deepEqual(m.contactsDetailed,[{name:'Person'}]);
+test('description retains display-hidden text, excludes scripts and preserves absent attributes',()=>{
+ const m=mapNewmarkRcmFields({projectfields:{showprice:true,summary:'<p>Visible summary</p><script>do not retain</script><span hidden>hidden</span><span aria-hidden=\"true\">aria hidden</span>'},sections:[{contacts:[{Fullname:'Person'}]}]},base,'sale');assert.equal(m.description,'Visible summaryhiddenaria hidden');assert.deepEqual(m.contactsDetailed,[{name:'Person'}]);
 });
 
 test('descriptions remain available regardless source display flags',()=>{

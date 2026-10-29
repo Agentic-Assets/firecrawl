@@ -1088,8 +1088,11 @@ decoded source text before JSON validation, row qualification and pruning.
 It is default off; evidence policy, custody and append remain in
 [`source_evidence/`](../source_evidence/README.md). Unknown valid SRS/Kidder
 shapes remain unqualified context. Hanley retains the bounded embedded array
-literal and separately projects non-public rows before admission. SRS evidence
-admission awaits its source-specific price-retention decision. None of these
+literal and separately projects non-public rows before admission. On 2026-10-29
+the owner directed retention and display of accessible SRS API-reported prices
+regardless of `Hide_Sale_Price__c`; preserve the original control as context.
+Do not infer publisher UI visibility, price currency or source authorization.
+None of these
 observations qualifies a canonical listing or certifies inventory coverage.
 
 SRS and Kidder cache metadata uses private WeakMaps, including without native
