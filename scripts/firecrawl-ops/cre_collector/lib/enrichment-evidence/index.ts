@@ -60,7 +60,7 @@ function witness(item: EnrichmentClaim) {
 
 export function captureEnrichmentEvidence(item: EnrichmentClaim, doc: ScrapedDoc, capturedAt: string | null,
   options: { pageUrl?: string; kind?: "generic" | "buildout";
-    qualification?: "usable_detail" | "rejected_missing_detail_shell" } = {}) {
+    qualification?: "usable_detail" | "rejected_missing_detail_shell" | "rejected_unqualified_detail" } = {}) {
   const { pageUrl = item.url, kind = "generic", qualification } = options;
   const fields: Record<string, unknown> = {};
   const omissions: Record<string, string> = {};
