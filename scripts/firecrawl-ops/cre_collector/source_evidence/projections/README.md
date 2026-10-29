@@ -30,3 +30,16 @@ unchanged for the existing scanners, which check only their known credential
 patterns and are not general secret detectors. This local
 projection does not authorize source requests, database writes, canonical
 listings, or production activation.
+
+### Cawley Chicago and Bradford Allen page observations
+
+The same bounded observation mechanics are separately opt-in for
+`cawley-chicago-page-observation-withholding/v1` and
+`bradford-allen-page-observation-withholding/v1`. Each version accepts only its
+matching source key and observe-only collector parts. The original Leibsohn
+version remains separately bound. The profiles retain noncredential sections,
+card occurrences, labels, values, units and ordering; they project only the
+witnessed map query and explicitly withhold the known token-named metadata and
+original-body hash fields. The same numeric-witness, ambiguous-reference,
+scanner and authenticated-receipt boundaries above apply. A profile is not
+permission to fetch documents, promote contacts or write to production.

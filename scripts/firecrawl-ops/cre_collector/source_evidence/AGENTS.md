@@ -223,4 +223,4 @@ or canonical promotion.
 
 
 Source-owned observation projection profiles live in `projections/`; read its
-scoped AGENTS and README before changing the explicit Leibsohn policy.
+scoped AGENTS and README before changing any explicit observation policy.

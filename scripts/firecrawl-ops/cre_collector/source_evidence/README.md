@@ -802,5 +802,5 @@ Whitespace-only OCR text is discarded as non-content with an explicit warning;
 its recorded page byte counts remain diagnostic while text offsets are zero.
 
 
-Leibsohn private page-observation projection is documented in
+Source-specific private page-observation projections are documented in
 [`projections/README.md`](projections/README.md).
