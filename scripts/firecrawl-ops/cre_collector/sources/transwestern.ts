@@ -1,4 +1,5 @@
 import { observationNow } from "../lib/observation-clock.js";
+import { createHash } from "node:crypto";
 // sources/transwestern.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { brokerRef } from "../lib/broker.js";
@@ -15,6 +16,7 @@ import { requireUniqueTranswesternPlaceholderIdentity, transwesternIdentityTuple
 import { proveTranswesternPublishedIdentity, requireCurrentTranswesternPublishedProof, TranswesternPublishedIdentityProof } from "./transwestern-published-identity.js";
 import { filterTranswesternImages } from "./pure/transwestern-images.js";
 import { transwesternFieldObservations } from "./pure/transwestern-field-observations.js";
+import { transwesternBuildingFacts } from "./pure/transwestern-building-facts.js";
 
 
 // --- Transwestern: public properties GET feed plus detail enrichment ---
@@ -653,7 +655,7 @@ export async function enrichTranswesternListing(
       : filteredImages.images;
     const structured = transwesternStructured(facts);
     const scalars = liftTranswesternScalars(facts, availability, detailUrl);
-    return prune({
+    const output = prune({
       ...base,
       name: clean($("h1").first().text()) ?? base.name,
       description,
@@ -722,6 +724,14 @@ export async function enrichTranswesternListing(
         cacheDisposition: observed.cacheDisposition,
       },
     });
+    // Preserve false eligibility and empty evidence lists, which prune removes.
+    output.transwesternBuildingFacts = {
+      ...transwesternBuildingFacts($),
+      sourceUrl: detailUrl,
+      bodySha256: createHash("sha256").update(doc.rawHtml, "utf8").digest("hex"),
+      observedAt: observed.observedAt,
+    };
+    return output;
   } catch (err) {
     console.error(`  transwestern/${tx}: detail failed for ${detailUrl}: ${err}`);
     return prune({

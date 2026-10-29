@@ -1,4 +1,4 @@
-import { srcBuildout, BuildoutInventoryOpts } from "./buildout.js";
+import { srcBuildout, BuildoutInventoryOpts, BUILDOUT_STABLE_INVENTORY_SORT } from "./buildout.js";
 import { SourceResult, Tx } from "../types.js";
 import { buildoutFeedFor } from "./buildout-feeds/index.js";
 
@@ -16,6 +16,7 @@ export function franklinStreetBuildoutConfig(tx: Tx): {
     listingsPage: feed.listingsPage,
     opts: {
       preferDirectJson: true,
+      inventorySort: BUILDOUT_STABLE_INVENTORY_SORT,
       directReferer: feed.listingsPage,
       pageConcurrency: 1,
       requireCompletePages: true,

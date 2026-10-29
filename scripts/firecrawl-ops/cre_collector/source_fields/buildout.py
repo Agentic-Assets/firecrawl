@@ -1,78 +1,30 @@
 """Validated Buildout shared-feed inventory bindings and field promotion."""
 
+import json
 import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 
-def validate_inventory(
-    artifact, source, definition, generation_id, generation_started_at, *, now=None
+def _validate_feed(
+    proof, definition, generation_id, start, collect_end, now, all_listings, tx_filter
 ):
-    # Lazy imports avoid the ingest/admission import cycle.
-    from cre_buildout_current_inventory import (
-        SCHEMA,
-        SORT,
-        _digest,
-        _owned_url,
-        _url_identity,
-    )
+    from cre_buildout_current_inventory import SORT, _digest, _owned_url
     from cre_current_inventory_admission import _time, require
-    from cre_ingest import merge_rows, strict_full_source_scope, to_row
 
-    scope = strict_full_source_scope(artifact, source)
-    meta = artifact["runMeta"]
-    fresh = meta.get("freshness") or {}
-    start = _time(generation_started_at)
-    now = now or datetime.now(UTC)
-    require(
-        fresh.get("generationId") == generation_id
-        and fresh.get("requireFreshDetails") is True
-    )
-    require(_time(fresh.get("generationStartedAt")) == start)
-    collect_start, collect_end = _time(meta["startedAt"]), _time(meta["finishedAt"])
-    require(start <= collect_start <= collect_end <= now + timedelta(minutes=5))
-    entries = artifact["sources"]
-    require(
-        len(entries) == 2
-        and {r.get("transaction") for r in entries} == {"sale", "lease"}
-    )
-    by_tx = {r["transaction"]: r for r in entries}
-    for tx, entry in by_tx.items():
-        require(
-            entry.get("sourceKey") == source
-            and entry.get("supported") is True
-            and not entry.get("error")
-            and entry.get("truncated") is not True
-        )
-        proof = entry.get("currentInventoryProof")
-        require(
-            isinstance(proof, dict)
-            and proof.get("schema") == SCHEMA
-            and proof.get("kind") == "complete_paginated_feed"
-        )
-        require(
-            proof.get("sourceKey") == source
-            and proof.get("transaction") == tx
-            and proof.get("generationId") == generation_id
-        )
-        require(
-            proof.get("pluginKey") == definition["plugin"]
-            and proof.get("listingsPage") == definition["page"]
-            and proof.get("sort") == SORT
-        )
-    proof = by_tx["sale"]["currentInventoryProof"]
-    other = by_tx["lease"]["currentInventoryProof"]
-    require(
-        {k: v for k, v in proof.items() if k != "transaction"}
-        == {k: v for k, v in other.items() if k != "transaction"}
-    )
     total, limit = proof.get("total"), proof.get("limit")
-    require(type(total) is int and total > 0 and type(limit) is int and limit > 0)
+    require(
+        type(total) is int
+        and (total >= 0 if tx_filter is not None else total > 0)
+        and type(limit) is int
+        and limit > 0
+    )
     pages = proof.get("pages")
     require(
         isinstance(pages, list)
-        and len(pages) == (total + limit - 1) // limit
+        and len(pages) == max(1, (total + limit - 1) // limit)
         and len(pages) <= 1200
     )
     native = {}
@@ -135,18 +87,116 @@ def validate_inventory(
         identity: (item, page)
         for identity, (item, page) in native.items()
         if not item["closed"]
+        and (tx_filter is None or item["sale"] == (tx_filter == "sale"))
     }
-    require(expected)
-    listings = scope["listings"]
+    listings = [
+        r
+        for r in all_listings
+        if tx_filter is None or r.get("transactionMode") == tx_filter
+    ]
     require(
         len(listings) == len(expected)
         and len({r.get("id") for r in listings}) == len(expected)
     )
     require({r.get("id") for r in listings} == set(expected))
+    return listings, expected, pages, times, total
+
+
+def validate_inventory(
+    artifact, source, definition, generation_id, generation_started_at, *, now=None
+):
+    # Lazy imports avoid the ingest/admission import cycle.
+    from cre_buildout_current_inventory import (
+        SCHEMA,
+        SORT,
+        _url_identity,
+    )
+    from cre_current_inventory_admission import _time, require
+    from cre_ingest import merge_rows, strict_full_source_scope, to_row
+
+    scope = strict_full_source_scope(artifact, source)
+    meta = artifact["runMeta"]
+    fresh = meta.get("freshness") or {}
+    start = _time(generation_started_at)
+    now = now or datetime.now(UTC)
+    require(
+        fresh.get("generationId") == generation_id
+        and fresh.get("requireFreshDetails") is True
+    )
+    require(_time(fresh.get("generationStartedAt")) == start)
+    collect_start, collect_end = _time(meta["startedAt"]), _time(meta["finishedAt"])
+    require(start <= collect_start <= collect_end <= now + timedelta(minutes=5))
+    entries = artifact["sources"]
+    require(
+        len(entries) == 2
+        and {r.get("transaction") for r in entries} == {"sale", "lease"}
+    )
+    by_tx = {r["transaction"]: r for r in entries}
+    for tx, entry in by_tx.items():
+        require(
+            entry.get("sourceKey") == source
+            and entry.get("supported") is True
+            and not entry.get("error")
+            and entry.get("truncated") is not True
+        )
+        proof = entry.get("currentInventoryProof")
+        require(
+            isinstance(proof, dict)
+            and proof.get("schema") == SCHEMA
+            and proof.get("kind") == "complete_paginated_feed"
+        )
+        require(
+            proof.get("sourceKey")
+            == (f"{source}-{tx}" if source == "franklin-street" else source)
+            and proof.get("transaction") == tx
+            and proof.get("generationId") == generation_id
+        )
+        require(
+            proof.get("pluginKey")
+            == (definition[tx] if source == "franklin-street" else definition)["plugin"]
+            and proof.get("listingsPage")
+            == (definition[tx] if source == "franklin-street" else definition)["page"]
+            and proof.get("sort") == SORT
+        )
+    separate = source == "franklin-street"
+    proof = by_tx["sale"]["currentInventoryProof"]
+    other = by_tx["lease"]["currentInventoryProof"]
+    if not separate:
+        require(
+            {k: v for k, v in proof.items() if k != "transaction"}
+            == {k: v for k, v in other.items() if k != "transaction"}
+        )
+    listings = scope["listings"]
+    expected = {}
+    pages, times, totals = [], [], {}
+    for tx in ("sale", "lease") if separate else (None,):
+        selected = by_tx[tx]["currentInventoryProof"] if tx else proof
+        feed_definition = definition[tx] if separate else definition
+        feed_listings, native, feed_pages, feed_times, total = _validate_feed(
+            selected,
+            feed_definition,
+            generation_id,
+            start,
+            collect_end,
+            now,
+            listings,
+            tx,
+        )
+        for listing in feed_listings:
+            key = (listing["transactionMode"], listing["id"])
+            require(key not in expected)
+            expected[key] = native[listing["id"]]
+        pages.extend(feed_pages)
+        times.extend(feed_times)
+        if tx:
+            totals[tx] = total
+        else:
+            totals = {"sale": total, "lease": total}
+    require(expected)
     staged = defaultdict(list)
     stored_id_by_url = {}
     for listing in listings:
-        item, page = expected[listing["id"]]
+        item, page = expected[(listing["transactionMode"], listing["id"])]
         tx = "sale" if item["sale"] else "lease"
         require(
             listing.get("transactionMode") == tx
@@ -207,20 +257,71 @@ def validate_inventory(
             type(entry.get("listingsCollected")) is int
             and entry["listingsCollected"] == count
             and type(entry.get("totalAvailableOnSource")) is int
-            and entry["totalAvailableOnSource"] == total
+            and entry["totalAvailableOnSource"] == totals[tx]
         )
     return {
         "listings": listings,
         "pages": pages,
         "times": times,
-        "total": total,
+        "total": totals["sale"],
         "staged": staged,
         "staged_bindings": staged_bindings,
     }
 
 
+def _core_definitions():
+    """Read core coordinates from the same registry as the TypeScript producer."""
+    from cre_current_inventory_admission import require
+
+    rows = json.loads(
+        (
+            Path(__file__).resolve().parent.parent
+            / "data"
+            / "cre-buildout-core-feeds.json"
+        ).read_text()
+    )
+    require(isinstance(rows, list) and len(rows) == 4)
+    feeds = {}
+    for row in rows:
+        require(
+            isinstance(row, list)
+            and len(row) == 6
+            and all(isinstance(v, str) and v for v in row)
+        )
+        source, company, plugin, page, host, key = row
+        url = urlsplit(page)
+        require(
+            re.fullmatch(r"[a-f0-9]{40}", plugin)
+            and url.scheme == "https"
+            and url.netloc == host
+            and not url.query
+            and not url.fragment
+        )
+        require(key not in feeds)
+        feeds[key] = {"company": company, "plugin": plugin, "page": page, "host": host}
+        require(
+            (
+                source == "franklin-street"
+                and key in {"franklin-street-sale", "franklin-street-lease"}
+            )
+            or (source in {"svn", "lee-associates"} and key == source)
+        )
+    require(
+        set(feeds)
+        == {"svn", "lee-associates", "franklin-street-sale", "franklin-street-lease"}
+    )
+    require(len({v["plugin"] for v in feeds.values()}) == 4)
+    return {
+        "svn": feeds["svn"],
+        "lee-associates": feeds["lee-associates"],
+        "franklin-street": {
+            tx: feeds[f"franklin-street-{tx}"] for tx in ("sale", "lease")
+        },
+    }
+
+
 def qualified_counts(artifact, artifact_sha256):
-    """Return candidates keyed by input object identity after complete source proof.
+    """Return per-listing values and field holds after complete source proof.
 
     The caller has already validated strict freshness and hashed the exact bytes
     parsed into artifact. Invalid or unsupported proof yields no promotions.
@@ -256,10 +357,10 @@ def qualified_counts(artifact, artifact_sha256):
     if len(sources) != 1:
         return {}
     source = next(iter(sources))
-    definition = definitions().get(source)
-    if definition is None:
-        return {}
     try:
+        definition = definitions().get(source) or _core_definitions().get(source)
+        if definition is None:
+            return {}
         validated = validate_inventory(
             artifact,
             source,
@@ -274,12 +375,31 @@ def qualified_counts(artifact, artifact_sha256):
         if listing.get("transactionMode") != "lease":
             continue
         obs = listing.get("buildoutFieldObservations")
+        if obs is None:
+            continue
+        # An absent target label is no opinion. Once the target is present,
+        # unknown or contradictory metadata must survive as a sticky hold.
+        if isinstance(obs, dict) and "availableSpaceCount" not in obs:
+            continue
+        blocked = {"values": {}, "blocked": ["available_space_count"]}
         if (
             not isinstance(obs, dict)
             or obs.get("schema") != "buildout-field-observations-v1"
         ):
+            result[id(listing)] = blocked
             continue
         field = obs.get("availableSpaceCount")
+        if (
+            isinstance(field, dict)
+            and field.get("state") == "missing"
+            and type(field.get("omittedCount")) is int
+            and field["omittedCount"] == 0
+            and type(obs.get("malformedAttributeCount")) is int
+            and obs["malformedAttributeCount"] == 0
+            and ("literals" not in field or field["literals"] == [])
+            and "value" not in field
+        ):
+            continue
         if (
             not isinstance(field, dict)
             or field.get("state") != "observed"
@@ -288,6 +408,7 @@ def qualified_counts(artifact, artifact_sha256):
             or type(obs.get("malformedAttributeCount")) is not int
             or obs["malformedAttributeCount"] != 0
         ):
+            result[id(listing)] = blocked
             continue
         literals = field.get("literals")
         if (
@@ -295,12 +416,14 @@ def qualified_counts(artifact, artifact_sha256):
             or len(literals) != 1
             or not isinstance(literals[0], dict)
         ):
+            result[id(listing)] = blocked
             continue
         item = literals[0]
         if (
             type(item.get("sourceOrdinal")) is not int
             or not 0 <= item["sourceOrdinal"] < 1000
         ):
+            result[id(listing)] = blocked
             continue
         literal = item.get("literal")
         value = parse_buildout_available_space_count(literal)
@@ -309,8 +432,9 @@ def qualified_counts(artifact, artifact_sha256):
             or type(field.get("value")) is not int
             or field["value"] != value
         ):
+            result[id(listing)] = blocked
             continue
-        result[id(listing)] = {
+        candidate = {
             "schema_version": "cre-source-field-observation/v1",
             "field": "available_space_count",
             "source_label": "# of Spaces",
@@ -327,5 +451,9 @@ def qualified_counts(artifact, artifact_sha256):
             "literal": literal,
             "artifact_sha256": artifact_sha256,
             "value": value,
+        }
+        result[id(listing)] = {
+            "values": {"available_space_count": candidate},
+            "blocked": [],
         }
     return result

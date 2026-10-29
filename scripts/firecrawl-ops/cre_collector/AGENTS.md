@@ -265,6 +265,10 @@ It does not cap API-paginated or sitemap-driven sources (`cushman-wakefield`,
 
 ## cre_ingest.py
 
+For common source-field qualification and atomic value/provenance updates,
+read [`source_fields/AGENTS.md`](source_fields/AGENTS.md) and its README before
+changing field mappings, conflict resolution or freshness behavior.
+
 Maps collector JSON to `credeals.cre_listings` (+ contacts/documents/images
 children, + `cre_scrape_jobs` row per brokerage). Stdlib only; talks to Postgres
 via psql (`PSQL_BIN`, else `/opt/homebrew/opt/libpq/bin/psql`,
