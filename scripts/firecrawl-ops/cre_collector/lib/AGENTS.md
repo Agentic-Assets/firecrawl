@@ -10,6 +10,7 @@ READ ~/AGENTS.md FIRST (skip if missing).
 
 | File | Owns |
 |------|------|
+| `json-value.ts` | Source-neutral JSON preservation guard shared by enrichment and native capture. Rejects values JSON would silently change, with the existing 100,000-node and 128-depth limits; no DOM, fetch or source-routing dependency. |
 | `response-body.ts` | Reader-only capped UTF-8 accumulation and absolute monotonic body deadlines for DAUM, Foundry, Lyon and Matthews; bounded cancellation acknowledgement and exact-read-error settlement witnesses. Callers own reader acquisition/release, controllers, HTTP/header policy and retry decisions. |
 | `config.ts` | CLI `parseArgs` (strict, import-time); `API_URL`, `flags`, `PAGE_CAP`, `CONCURRENCY`, `OUT_PATH` |
 | `scrape.ts` | Firecrawl singleton; `scrapeRaw` / `scrapeDoc` / `scrapeJson` (up to 3× retry, no retry after a client deadline with unknown remote settlement); `parseJsonBody` for HTML-wrapped JSON. `scrapeDoc` requests `markdown`/`links`/`images`/`rawHtml` + an `attributes` selector block (video/iframe/anchor) for the harvester |

@@ -1,4 +1,5 @@
 import { observationNow } from "../lib/observation-clock.js";
+import { publishTranswesternParsedPage } from "../lib/source-evidence/transwestern-page.js";
 import { createHash } from "node:crypto";
 // sources/transwestern.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
@@ -764,16 +765,18 @@ export async function enrichTranswesternListing(
   }
 }
 
-export async function srcTranswestern(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcTranswestern(tx: Tx, max: number, monitor: boolean,
+  fetchFeed: typeof scrapeJson = scrapeJson): Promise<SourceResult> {
   const buckets = TRANSWESTERN_BUCKETS[tx];
   const rowsBySlug = new Map<string, { row: any; bucket: string; observedAt: string }>();
   const acquired: Array<{ row: any; bucket: string; observedAt: string }> = [];
   const bucketCounts: Record<string, number> = {};
-  for (const bucket of buckets) {
-    const data = await scrapeJson(transwesternFeedUrl(bucket), {
+  for (const [occurrence, bucket] of buckets.entries()) {
+    const data = await fetchFeed(transwesternFeedUrl(bucket), {
       timeout: 60000,
       ...(monitor ? {} : { maxAge: 0 }),
     });
+    publishTranswesternParsedPage(data, tx, bucket, occurrence, !monitor);
     if (!Array.isArray(data)) {
       throw new Error(`Transwestern ${tx}/${bucket} feed returned a non-array payload`);
     }

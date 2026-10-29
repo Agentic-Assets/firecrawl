@@ -804,3 +804,28 @@ its recorded page byte counts remain diagnostic while text offsets are zero.
 
 Source-specific private page-observation projections are documented in
 [`projections/README.md`](projections/README.md).
+
+### Transwestern parsed inventory buckets
+
+The explicit `transwestern_inventory_parsed_v1` native format captures each
+successfully parsed bucket before identity checks, deduplication, or row caps.
+It binds the transaction, bucket, and position in that transaction's request
+order as producer assertions, and retains duplicate and partial rows. A non-array parsed value is kept
+as whole-response context without an asserted listing array. Capture is disabled
+unless the existing source-scoped native policy enables it; ordinary credential
+and content scanners still apply. A capture failure fails the enabled path.
+
+This is the JavaScript parsed and serialized value returned by `scrapeJson`,
+not HTTP or SDK response bytes. Its parser may unwrap HTML, extract a JSON
+fragment, or repair quotation marks; JavaScript numeric precision and
+serialization apply. Capture time is a collector clock, HTTP status and final
+URL are unobserved, and a request for `maxAge: 0` is not proof of source
+freshness. Invalid or failed JSON parsing cannot be captured by this hook.
+The existing native page, body, record, fact, and plan limits apply; a refusal
+is not a complete capture. Retention provides no source admission, canonical
+identity, lifecycle authority, production activation, or document access.
+The shared exact JSON-value guard refuses non-finite numbers, negative zero,
+non-JSON values, or structures beyond its 100,000-node and 128-depth bounds
+before serialization; it does not reconstruct original numeric lexemes. The
+saved 415-row sale fixture measured 5,811 nodes at depth 2 during the offline
+proof, which is not a guarantee about other responses.
