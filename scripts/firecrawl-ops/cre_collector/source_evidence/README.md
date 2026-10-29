@@ -310,11 +310,23 @@ provenance, and source and text SHA-256 values. Evidence chunks retain their
 order and full-text digest; extraction coverage remains unknown. Extracting all
 available text alone would not prove financial-table layout or value fidelity.
 
-The planned `export-document-text` reader will accept `--capture-id`,
-`--out-dir`, `--env-file`, and `--expected-db-target-sha256` for whole-document
-recovery. It is under development and has not yet been verified. Until then,
-use the existing event readback and verify chunk ordinals and the full-text
-digest before claiming reconstruction.
+The `export-document-text` reader accepts `--capture-id`, `--out-dir`,
+`--env-file`, and `--expected-db-target-sha256`. It validates chunk order and
+full-text digest and uses `.txt` for plain text and `.md` for Markdown.
+
+Acquisition policy v2 may opt into `pdf_complement` with mode
+`poppler_pdf_text_v1` and an absolute, regular executable path in
+`pdftotext_path`. An extracted, OCR-needed, or unsupported AnyDoc PDF gets a separately sealed Poppler
+attempt and relationship, and independent evidence append checkpoints. Exact
+replay handles an uncertain append without re-extraction. Poppler is text-only,
+does not perform OCR, and does not change AnyDoc's outcome; both parser outputs have unknown
+coverage. The feature is disabled by default and requires production acceptance.
+Time and output are bounded; native memory and parent-path symlinks are not.
+Before starting Poppler, the pipeline seals the AnyDoc attempt and persists its
+marker. If Poppler settlement is uncertain, recovery can authenticate that
+primary seal but leaves the complement unresolved and does not remove originals
+or restart conversion. The `keep_unresolved_until_review` policy retains input
+copies for failed or partial complementary output as well as failed AnyDoc.
 
 ## Native JSON response retention
 

@@ -26,6 +26,26 @@ def preflight(plan, candidates, value=None, raw=None, **bindings):
                           target_sha256=bindings.get("target", TARGET), collector_git_sha=bindings.get("code", CODE))
 
 
+def test_v2_complement_requires_bounded_full_phase_and_absolute_parser():
+    plan = plan_for(artifact())
+    candidates = document_candidates.discover(plan)
+    value = policy_value()
+    value.update(schema_version=policy.SCHEMA_V2,
+                 pdf_complement={'mode': 'poppler_pdf_text_v1', 'pdftotext_path': '/usr/bin/pdftotext'})
+    with pytest.raises(ValueError):
+        preflight(plan, candidates, value=value)
+    value['limits']['run_timeout_seconds'] = 3600
+    selected = preflight(plan, candidates, value=value)
+    assert selected['pdf_complement'] == value['pdf_complement']
+    from source_evidence import document_budget
+    with pytest.raises(ValueError):
+        document_budget.reserve(document_budget.initial(selected), selected,
+                                selected['documents'][0]['candidate_index'], elapsed_seconds=0, phase_seconds=1)
+    value['pdf_complement']['pdftotext_path'] = 'pdftotext'
+    with pytest.raises(ValueError):
+        preflight(plan, candidates, value=value)
+
+
 def test_many_documents_preserve_candidates_and_explain_relative_only():
     plan = plan_for(artifact())
     candidates = document_candidates.discover(plan)

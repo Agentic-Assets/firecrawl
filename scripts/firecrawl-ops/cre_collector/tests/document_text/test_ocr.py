@@ -121,7 +121,7 @@ def test_unsupported_pdf_only_and_original_hash_unchanged():
 
 def test_poppler_success_retains_diagnostic_and_hash(monkeypatch):
     def run(args, **kwargs):
-        Path(args[-1]).write_bytes('partial text'.encode())
+        Path(args[-1]).write_bytes(b'partial text')
         kwargs['stderr'].write(b'private diagnostic')
         return subprocess.CompletedProcess(args, 0)
     monkeypatch.setattr(ocr.subprocess, 'run', run)
@@ -130,6 +130,28 @@ def test_poppler_success_retains_diagnostic_and_hash(monkeypatch):
     assert result['extraction']['text_sha256'] == ocr.digest(b'partial text')
     assert result['extraction']['warnings'] == ['poppler_logged_diagnostic']
     assert result['extraction']['coverage'] == 'unknown'
+
+
+def test_pdf_complement_preserves_success_and_binds_exact_first_bytes():
+    raw = b'%PDF-fixture'
+    first = {'schema_version': 'cre-document-text/v1', 'source': {'url': 'https://example.test/a.pdf',
+             'observed_at': '2026-10-28T12:00:00Z', 'format': 'pdf', 'byte_length': len(raw), 'sha256': ocr.digest(raw)},
+             'parser': {'name': '@firecrawl/anydoc'}, 'extraction': {'status': 'extracted', 'text': 'original',
+                       'text_sha256': ocr.digest(b'original'), 'coverage': 'unknown'}}
+    first_raw = json.dumps(first, indent=2).encode()
+    with pytest.raises(ValueError):
+        ocr.make_attempt(first, first_raw, raw, 'poppler', '26.10.0')
+    attempt = ocr.make_attempt(first, first_raw, raw, 'poppler', '26.10.0', relationship='complement')
+    assert attempt['extraction']['relationship'] == 'complement_of'
+    assert attempt['extraction']['previous_attempt_sha256'] == ocr.digest(first_raw)
+    assert first['extraction']['text'] == 'original'
+    with pytest.raises(ValueError):
+        ocr.make_attempt(first, b'{}', raw, 'poppler', '26.10.0', relationship='complement')
+    with pytest.raises(ValueError):
+        ocr.make_attempt(first, first_raw, raw, 'docling', relationship='complement')
+    first['extraction']['text_sha256'] = None
+    with pytest.raises(ValueError):
+        ocr.make_attempt(first, json.dumps(first).encode(), raw, 'poppler', '26.10.0', relationship='complement')
 
 
 def test_poppler_empty_output_is_failure(monkeypatch):

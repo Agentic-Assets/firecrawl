@@ -109,7 +109,9 @@ def _settled(state):
         return True
     return (state.get("state") == "selection_settled" and isinstance(state.get("documents"), list) and bool(state["documents"])
             and all(isinstance(item, dict) and item.get("state") == "extraction_sealed"
-                    and item.get("extraction_state") == "success" for item in state["documents"]))
+                    and (item.get("extraction_state") == "success"
+                         or (item.get("extraction_state") in ("ocr_needed", "failed")
+                             and "complement" in (item.get("sealed") or {}))) for item in state["documents"]))
 
 
 def _known_no_data(state):
@@ -135,11 +137,9 @@ def reconciliation_required(manifest):
 
 
 def _append_states(manifest):
-    for checkpoint in manifest.get("sources", {}).values():
-        for attempt in checkpoint.get("attempts", []):
-            for document in (attempt.get("document_source_evidence") or {}).get("documents", []):
-                if isinstance(document, dict) and isinstance(document.get("append"), dict):
-                    yield document["append"]
+    from source_evidence import document_jobs
+    for _, _, job in document_jobs.iter_jobs(manifest):
+        yield job
 
 
 def append_incomplete(manifest):
@@ -158,6 +158,11 @@ def append_incomplete(manifest):
                     if (job.get("kind") != "document_text" or job.get("state") != "appended"
                             or job.get("exact_replay_required")):
                         return True
+                    if "complement" in document.get("sealed", {}):
+                        job = document.get("complement_append") or {}
+                        if (job.get("kind") != "document_text" or job.get("state") != "appended"
+                                or job.get("exact_replay_required")):
+                            return True
     return False
 
 
@@ -203,7 +208,10 @@ def _validate_settled(run_dir, manifest, source, attempt, save, plans, candidate
         if len(raw) > cli.MAX_PLAN_BYTES or events.sha256(raw) != document["sealed"]["files"]["artifact.json"]:
             raise ValueError("document sealed artifact changed")
         artifact, literals = acquisition.decode_json(raw, max_bytes=cli.MAX_PLAN_BYTES)
-        if literals or artifact.get("extraction", {}).get("status") != "extracted":
+        status = artifact.get("extraction", {}).get("status")
+        if literals or (status != "extracted" and not (
+                "complement" in document.get("sealed", {})
+                and (status == "ocr_needed" or (status == "failed" and artifact["extraction"].get("error_code") == "unsupported")))):
             raise ValueError("document sealed artifact is not extracted")
 
 

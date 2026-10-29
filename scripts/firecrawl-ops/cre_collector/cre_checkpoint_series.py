@@ -890,6 +890,13 @@ def evidence_reconciliation_required(child_manifest: Mapping[str, Any]) -> bool:
                 return True
             if job is not None and not isinstance(job, Mapping):
                 return True
+            complement = document.get("complement_append")
+            if "complement" in (document.get("sealed") or {}):
+                if (not isinstance(complement, Mapping) or complement.get("kind") != "document_text"
+                        or complement.get("state") != "appended" or complement.get("exact_replay_required") is True):
+                    return True
+            elif complement is not None:
+                return True
         return False
     return any(
         ((attempt.get("source_evidence") or {}).get("state") in {"awaiting_artifact", "pending", "appending", "outcome_unknown", "refused"}

@@ -38,7 +38,7 @@ def _context_shape(context, artifact):
         raise ValueError("invalid document receipt outcome")
 
 
-def prepare(context, artifact=None, *, landing=None):
+def prepare(context, artifact=None, *, landing=None, complement=None):
     """Return ordered canonical file bytes and their deterministic marker."""
     _context_shape(context, artifact)
     files = [("acquisition.json", events.encoded(context))]
@@ -87,18 +87,48 @@ def prepare(context, artifact=None, *, landing=None):
         binding, plan = document_acquisition.bind_extraction(context, enriched)
         files += [("converter-artifact.json", events.encoded(artifact)), ("artifact.json", events.encoded(enriched)),
                   ("binding.json", events.encoded(binding)), ("plan.json", events.encoded(plan))]
+    complement_binding = complement_plan = None
+    if complement is not None:
+        from source_evidence import doc_complement_process
+        executable = complement.get("parser", {}).get("config", {}).get("executable")
+        doc_complement_process.validate(complement, artifact, context["receipt"], context["source_key"], executable)
+        enriched_complement = {**complement, "acquisition_context": context,
+                               "acquisition_context_origin": "foreground_coordinator_not_converter"}
+        complement_binding, complement_plan = document_acquisition.bind_extraction(context, enriched_complement)
+        relationship = {"schema_version": "cre-document-complement-relationship/v1",
+                        "kind": "complement_of", "anydoc_artifact_sha256": events.sha256(events.encoded(artifact)),
+                        "complement_artifact_sha256": events.sha256(events.encoded(complement)),
+                        "anydoc_capture_id": binding["document_capture_id"],
+                        "complement_capture_id": complement_binding["document_capture_id"], "coverage": "unknown"}
+        files += [("complement-converter-artifact.json", events.encoded(complement)),
+                  ("complement-artifact.json", events.encoded(enriched_complement)),
+                  ("complement-binding.json", events.encoded(complement_binding)),
+                  ("complement-plan.json", events.encoded(complement_plan)),
+                  ("complement-relationship.json", events.encoded(relationship))]
     if any(len(payload) > MAX_FILE for _, payload in files):
         raise ValueError("document seal file exceeds bound")
     marker = {"files": {name: events.sha256(payload) for name, payload in files},
               "plan_sha256": plan["plan_sha256"] if plan else None,
               "capture_id": binding["document_capture_id"] if binding else None}
+    if complement_plan is not None:
+        marker["complement"] = {"plan_sha256": complement_plan["plan_sha256"],
+                                "capture_id": complement_binding["document_capture_id"]}
     return files, marker
 
 
-def write(outdir, context, artifact=None, *, landing=None):
-    files, marker = prepare(context, artifact, landing=landing)
+def write(outdir, context, artifact=None, *, landing=None, complement=None):
+    files, marker = prepare(context, artifact, landing=landing, complement=complement)
     private_export.write(outdir, files)
     return marker
+
+
+def check_primary(directory, context, marker, artifact):
+    if not isinstance(marker, dict):
+        raise ValueError("primary seal marker missing")
+    result = read(directory, expected_context=context, expected_marker=marker)
+    if events.encoded(result["artifact"]) != events.encoded(artifact) or "complement" in result:
+        raise ValueError("primary seal disagrees with final artifact")
+    return result
 
 
 def read(outdir, *, expected_context, expected_marker=None):
@@ -115,6 +145,12 @@ def read(outdir, *, expected_context, expected_marker=None):
         required = ({"acquisition.json", "converter-artifact.json", "artifact.json", "binding.json", "plan.json"}
                     if has_artifact else {"acquisition.json"})
         has_landing = "landing-page.json" in names
+        has_complement = "complement-converter-artifact.json" in names
+        if has_complement:
+            if not has_artifact or not isinstance(expected_marker, dict) or "complement" not in expected_marker:
+                raise ValueError("complement requires an authenticated seal marker")
+            required.update({"complement-converter-artifact.json", "complement-artifact.json",
+                             "complement-binding.json", "complement-plan.json", "complement-relationship.json"})
         if has_landing:
             if not has_artifact or not isinstance(expected_marker, dict) or "landing-page.json" not in expected_marker.get("files", {}):
                 raise ValueError("landing page requires an authenticated seal marker")
@@ -142,7 +178,8 @@ def read(outdir, *, expected_context, expected_marker=None):
                 os.close(fd)
         artifact = json.loads(values["converter-artifact.json"]) if has_artifact else None
         landing = json.loads(values["landing-page.json"]) if has_landing else None
-        files, marker = prepare(expected_context, artifact, landing=landing)
+        complement = json.loads(values["complement-converter-artifact.json"]) if has_complement else None
+        files, marker = prepare(expected_context, artifact, landing=landing, complement=complement)
         if any(values[name] != payload for name, payload in files):
             raise ValueError("document seal bytes mismatch")
         if expected_marker is not None and events.encoded(expected_marker) != events.encoded(marker):
@@ -158,6 +195,8 @@ def read(outdir, *, expected_context, expected_marker=None):
         result = {"artifact": artifact, "marker": marker, "original_bytes_reverified": False}
         if landing is not None:
             result["landing"] = landing
+        if complement is not None:
+            result["complement"] = complement
         return result
     finally:
         os.close(directory)
