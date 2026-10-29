@@ -53,13 +53,16 @@ def _extend_pointer(path, component):
 def _entry_size(entry):
     return len(json.dumps(entry, ensure_ascii=True, separators=(",", ":")).encode("utf-8")) + 1
 
-def project(document, *, source_key):
+def project(document, *, source_key, _observation_version=None):
     """Return a new artifact and path receipts; do not mutate the input.
 
     Only the observed HTTPS map tile endpoint and literal key/token query names
     are projected. Other content is left to the existing admission checks.
     """
-    if version_for(source_key) is None:
+    version = version_for(source_key)
+    if source_key == "leibsohn" and _observation_version == "leibsohn-observation-map/v1":
+        version = _observation_version
+    if version is None:
         raise ValueError("map projection is not authorized for this source")
     receipts = []
     visited = 0
@@ -132,7 +135,7 @@ def project(document, *, source_key):
         return URL.sub(replace, value)
 
     result = walk(document, "", 0)
-    return result, {"version": version_for(source_key), "sourceKey": source_key, "replacements": receipts}
+    return result, {"version": version, "sourceKey": source_key, "replacements": receipts}
 
 
 def canonical_digest(document, numeric_literals=None):
@@ -157,11 +160,14 @@ def prepare(raw, *, source_key):
     return projected, literals, receipt
 
 
-def validate(document, receipt, *, source_key, numeric_literals=None):
+def validate(document, receipt, *, source_key, numeric_literals=None, _observation_version=None):
     """Validate projected representation and references without source-content hashes."""
+    expected_version = version_for(source_key)
+    if source_key == "leibsohn" and _observation_version == "leibsohn-observation-map/v1":
+        expected_version = _observation_version
     if (not isinstance(receipt, dict) or set(receipt) != {
         "version", "sourceKey", "replacements", "projectedCanonicalSha256"}
-        or version_for(source_key) is None or receipt["version"] != version_for(source_key)
+        or expected_version is None or receipt["version"] != expected_version
         or receipt["sourceKey"] != source_key
         or not isinstance(receipt["projectedCanonicalSha256"], str)
         or not re.fullmatch(r"[0-9a-f]{64}", receipt["projectedCanonicalSha256"])
@@ -188,7 +194,7 @@ def validate(document, receipt, *, source_key, numeric_literals=None):
         receipt_bytes += _entry_size(entry)
         if receipt_bytes > MAX_RECEIPT_BYTES:
             raise ValueError("map projection receipt exceeds byte bound")
-    reprojected, check = project(document, source_key=source_key)
+    reprojected, check = project(document, source_key=source_key, _observation_version=_observation_version)
     if reprojected != document or check["replacements"]:
         raise ValueError("projected artifact still contains map credentials")
     used = set()

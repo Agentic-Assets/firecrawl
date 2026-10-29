@@ -800,3 +800,7 @@ process. Missing or invalid completion or settlement remains unresolved; the
 existing budget reservation stays charged and no new acquisition is admitted.
 Whitespace-only OCR text is discarded as non-content with an explicit warning;
 its recorded page byte counts remain diagnostic while text offsets are zero.
+
+
+Leibsohn private page-observation projection is documented in
+[`projections/README.md`](projections/README.md).
