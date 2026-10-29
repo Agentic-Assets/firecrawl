@@ -25,6 +25,18 @@ be intentionally hidden until its tab is selected. Elevator zero is valid;
 floor-size text keeps its source units and does not acquire inferred units.
 The observations do not establish a new identity, feed admission or production
 write authority. Existing feed-to-detail identity and freshness gates remain.
+`observationCount` retains the number of observed target rows, including zero,
+when outer collector pruning omits an empty `observations` array.
+
+Transwestern Description uses the same unique property hierarchy and positional
+tab association as Details. The selected tab may be intentionally hidden;
+explicitly concealed ancestors reject it and concealed descendants are omitted.
+When that widget is present but ambiguous or lacks Description, do not borrow
+global overview or Markdown text, including when its identifying wrapper is
+missing but its tab structure remains. Legacy layouts without the widget retain
+their existing fallbacks and boilerplate filter. Description is source text
+rendered as Markdown with links resolved against the accepted detail URL; it
+does not establish computed visibility or completeness.
 
 Photo order is part of fidelity: canonical ingest uses `photos[0]` as the
 primary image. For Transwestern, prefer the canonical feed `PropertyImage`

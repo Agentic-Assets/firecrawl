@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { transwesternBuildingFacts as observe } from "../../../sources/pure/transwestern-building-facts.js";
 import { enrichTranswesternListing } from "../../../sources/transwestern.js";
 import { firecrawl } from "../../../lib/scrape.js";
+import { prune } from "../../../lib/util.js";
 
 const page = (rows: string, tabs = "<li>Description</li><li>Details</li>", panels = `<div>description</div><div><ul>${rows}</ul></div>`) =>
   cheerio.load(`<section class="property-dtl"><div class="fix-wrap"><div class="property-dtl-inner"><div class="property-dscptn"><div class="prpty-dscptn-left"><div id="prpty-dscptn-tab"><ul class="resp-tabs-list">${tabs}</ul><div class="resp-tabs-container">${panels}</div></div></div></div></div></div></section>`);
@@ -15,6 +16,16 @@ test("lifts zero and retains source floor units in the matching Details panel", 
   assert.equal(result.elevatorCount, 0);
   assert.equal(result.typicalFloorSizeText, "34,567 SF");
   assert.equal(result.visibility, "not_evaluated");
+  assert.equal(result.observationCount, 2);
+});
+
+test("preserves an inspected empty observation count through collector pruning", () => {
+  const facts = observe(page(""));
+  assert.equal(facts.state, "inspected");
+  assert.equal(facts.observationCount, 0);
+  const pruned = prune({ transwesternBuildingFacts: facts }) as any;
+  assert.equal(pruned.transwesternBuildingFacts.observationCount, 0);
+  assert.equal(pruned.transwesternBuildingFacts.observations, undefined);
 });
 
 test("keeps conflicting and unparseable literals, without lifting them", () => {
