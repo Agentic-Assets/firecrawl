@@ -120,10 +120,6 @@ export function assertRegisteredBuildoutFirm(
         `${definition.sourceKey}: Buildout detail host must exactly match the listings-page host`
       );
     }
-    if (definition.detailConfig.preserveTransactionSuffix !== undefined &&
-        typeof definition.detailConfig.preserveTransactionSuffix !== "boolean") {
-      throw new Error(`${definition.sourceKey}: Buildout detail suffix policy must be boolean`);
-    }
     if (definition.detailConfig.allowHttpListingInput !== undefined &&
         (definition.sourceKey !== "leibsohn" || definition.detailConfig.allowHttpListingInput !== true)) {
       throw new Error(`${definition.sourceKey}: Buildout HTTP listing input is not admitted`);
@@ -157,14 +153,6 @@ export function assertRegisteredBuildoutFirm(
   }
 }
 
-// Route differences verified against the public brokerage page. This affects
-// detail URLs only, not inventory referers or canonical listing identities.
-const DETAIL_ROUTE_OVERRIDES: Partial<Record<RegisteredBuildoutSourceKey, {
-  preserveTransactionSuffix: boolean;
-}>> = {
-  "faris-lee": { preserveTransactionSuffix: true },
-};
-
 function firm(
   sourceKey: RegisteredBuildoutSourceKey,
   company: string,
@@ -186,8 +174,6 @@ function firm(
             listingHosts: [detailHost],
             company,
             ...(sourceKey === "leibsohn" ? { allowHttpListingInput: true } : {}),
-            ...(DETAIL_ROUTE_OVERRIDES[sourceKey]?.preserveTransactionSuffix
-              ? { preserveTransactionSuffix: true } : {}),
           },
         }
       : {}),

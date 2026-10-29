@@ -778,8 +778,6 @@ export async function buildoutInventory(
 export type BuildoutDetailConfig = {
   pluginKey: string;
   host: string;
-  /** Keep the source's sale/lease suffix in the detail URL, not the canonical ID. */
-  preserveTransactionSuffix?: boolean;
   /** Permit a source-provided HTTP listing URL as local route input only. */
   allowHttpListingInput?: boolean;
   /**
@@ -807,19 +805,20 @@ export const BUILDOUT_ENRICH_CONFIG: Record<string, BuildoutDetailConfig> = {
 };
 
 // Pull the Buildout property slug (the show_link `?propertyId=` value) off a
-// listing url, dropping the dual-mode `-sale` / `-lease` suffix so a sale and a
-// lease url resolve to the same iframe. Returns null when no propertyId is
-// present. Pure; never throws.
+// listing url, dropping the dual-mode `-sale` / `-lease` suffix for the shared
+// canonical identity using the same case-sensitive rule as cre_ingest.to_row.
+// Detail requests retain the literal propertyId. Returns
+// null when no propertyId is present. Pure; never throws.
 export function buildoutSlugFromUrl(url: string | null): string | null {
   const u = clean(url);
   if (!u) return null;
   try {
     const parsed = new URL(u);
     const pid = parsed.searchParams.get("propertyId");
-    if (pid) return pid.replace(/-(?:sale|lease)$/i, "") || null;
+    if (pid) return pid.replace(/-(?:sale|lease)$/, "") || null;
   } catch {
     const m = u.match(/[?&]propertyId=([^&#]+)/i);
-    if (m) return decodeURIComponent(m[1]).replace(/-(?:sale|lease)$/i, "") || null;
+    if (m) return decodeURIComponent(m[1]).replace(/-(?:sale|lease)$/, "") || null;
   }
   return null;
 }
@@ -911,10 +910,9 @@ export function buildoutDetailIframeUrl(
   if (!parsed) return null;
   const propertyId = buildoutLiteralPropertyId(parsed, listingUrl!);
   if (!propertyId?.replace(/-(?:sale|lease)$/i, "")) return null;
-  const slug = (cfg.preserveTransactionSuffix
-    ? propertyId
-    : propertyId?.replace(/-(?:sale|lease)$/i, "")) || null;
-  if (!slug) return null;
+  // Publisher api.js appends the selected propertyId to its detail route.
+  // Canonical identity normalization is separate in buildoutSlugFromUrl.
+  const slug = propertyId;
   return (
     `https://buildout.com/plugins/${cfg.pluginKey}/${cfg.host}/inventory/` +
     `${encodeURIComponent(slug)}?pluginId=0&iframe=true&embedded=true`

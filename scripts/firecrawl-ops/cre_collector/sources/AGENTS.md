@@ -1037,6 +1037,11 @@ separate. This consolidation requires separate production acceptance.
   Leibsohn alone admits its source-provided HTTP URL as local route input. The
   request remains the configured HTTPS Buildout iframe, and the original listing
   URL is retained. A route slug does not authenticate a native record ID.
+  Buildout detail routes retain the validated literal `propertyId`, including
+  any sale/lease suffix, as the publisher's script does. The original claim URL
+  and existing unsuffixed canonical identity remain intact.
+  Canonical suffix removal is case-sensitive, matching `cre_ingest.to_row`;
+  uppercase and mixed-case suffixes remain part of the established identity.
   Empty, loading-only and tested image/document-only detail responses remain
   `rejected_unqualified_detail` observations; explicit known missing-listing
   markers retain `rejected_missing_detail_shell`. Neither completes the detail

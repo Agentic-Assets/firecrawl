@@ -558,11 +558,24 @@ test("buildoutDetailIframeUrl composes the Buildout iframe content URL per sourc
   );
   assert.equal(
     lee,
-    `https://buildout.com/plugins/${BUILDOUT_ENRICH_CONFIG["lee-associates"].pluginKey}/www.lee-associates.com/inventory/1614726?pluginId=0&iframe=true&embedded=true`
+    `https://buildout.com/plugins/${BUILDOUT_ENRICH_CONFIG["lee-associates"].pluginKey}/www.lee-associates.com/inventory/1614726-sale?pluginId=0&iframe=true&embedded=true`
   );
   // Unknown source key or missing slug -> null (no iframe URL to scrape).
   assert.equal(buildoutDetailIframeUrl("unknown", "https://x/?propertyId=a"), null);
   assert.equal(buildoutDetailIframeUrl("svn", "https://svn.com/properties/"), null);
+});
+
+test("core Buildout routes preserve the literal provider propertyId independently of canonical identity", () => {
+  for (const key of ["svn", "lee-associates"]) {
+    const config = BUILDOUT_ENRICH_CONFIG[key];
+    for (const value of ["fixture-sale", "fixture-lease", "fixture", "pre-sale-label-LEASE"]) {
+      const listing = `https://${config.host}/properties/?propertyId=${value}`;
+      assert.equal(buildoutDetailIframeUrl(key, listing),
+        `https://buildout.com/plugins/${config.pluginKey}/${config.host}/inventory/${value}?pluginId=0&iframe=true&embedded=true`);
+    }
+    assert.equal(buildoutSlugFromUrl(`https://${config.host}/properties/?propertyId=fixture-lease`), "fixture");
+    assert.equal(buildoutSlugFromUrl(`https://${config.host}/properties/?propertyId=pre-sale-label-LEASE`), "pre-sale-label-LEASE");
+  }
 });
 
 test("buildoutDetailIframeUrl rejects unowned or unclean claim URLs", () => {
