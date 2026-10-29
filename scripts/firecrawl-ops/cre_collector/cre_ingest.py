@@ -3818,6 +3818,7 @@ def build_sql(
     lines = []
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
+    buildout_source_keys_sql = ", ".join(f"'{key}'" for key in sorted(BUILDOUT_SOURCE_KEYS))
     live_source_key_sql = source_key_sql("l", "b")
     if image_transition_binding is not None:
         from cre_colliers_image_transition import valid_binding
@@ -5274,7 +5275,18 @@ WHERE {colliers_transition_sql}
   AND jsonb_path_exists(
     s.raw_data,
     '$.**.colliersMain.unresolvedExpertIds[*] ? (@ != "")'
-  );
+  )
+UNION
+-- An empty Buildout detail contact set does not establish that existing
+-- contacts disappeared. Preserve them without changing other child refreshes.
+SELECT DISTINCT u.id
+FROM _up u
+JOIN _src s USING (brokerage_id, external_id)
+JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+JOIN _prior_vals p
+  ON p.brokerage_id = s.brokerage_id AND p.external_id = s.external_id
+WHERE {staged_source_key_sql} IN ({buildout_source_keys_sql})
+  AND s.contacts = '[]'::jsonb;
 
 CREATE TEMP TABLE _contact_refresh ON COMMIT DROP AS
 SELECT id FROM _child_refresh

@@ -321,7 +321,10 @@ Key behavior:
   flickered back into a feed keeps its prior status label. Wholesale-replaces
   contacts/documents/images **unless**
   `jsonb_path_exists(raw_data, '$.**.detailError')` (preserves children on
-  transient detail failures).
+  transient detail failures). For an existing Buildout listing, an empty staged
+  contact set also preserves prior contacts; those contacts have unverified
+  current freshness. Nonempty contact sets retain the existing replacement and
+  first-contact primary behavior; document and image refresh is unchanged.
 - **Bulk lifecycle locking:** every generated ingest transaction takes exactly
   one transaction-wide lifecycle advisory lock, then locks existing source-index
   rows before listing rows in deterministic order. Never add one transaction
