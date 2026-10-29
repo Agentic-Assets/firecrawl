@@ -254,7 +254,18 @@ export function mapSrsListing(
     throw new Error("SRS strict listing requires apto_data.SRS_Listings_ID__c");
   }
   const { isSale } = srsTenure(row);
-  const salePrice = !data.Hide_Sale_Price__c ? numeric(data.Sale_Price__c) : null;
+  // The source's display flag is retained as context, not used to erase the
+  // publicly reported API value. The API value does not establish currency.
+  const rawSalePrice = data.Sale_Price__c;
+  const salePrice = typeof rawSalePrice === "number" || typeof rawSalePrice === "string"
+    ? numeric(rawSalePrice) : null;
+  const hasFlag = Object.hasOwn(data, "Hide_Sale_Price__c");
+  const flagState = !hasFlag ? "missing" : data.Hide_Sale_Price__c === null ? "null" :
+    data.Hide_Sale_Price__c === true ? "true" : data.Hide_Sale_Price__c === false ? "false" : "other";
+  const hasPrice = Object.hasOwn(data, "Sale_Price__c");
+  const priceState = !hasPrice ? "missing" : data.Sale_Price__c === null ? "null" :
+    typeof data.Sale_Price__c === "number" && Number.isFinite(data.Sale_Price__c) ? "number" :
+    typeof data.Sale_Price__c === "string" ? (data.Sale_Price__c === "" ? "empty_string" : "string") : "other";
   const photos: string[] = [];
   const listingImages = data.listing_images;
   if (Array.isArray(listingImages)) {
@@ -304,8 +315,16 @@ export function mapSrsListing(
     country: "US",
     latitude: numeric(row.location?.lat) ?? numeric(data.Property_Latitude__c) ?? numeric(data.Latitude__c),
     longitude: numeric(row.location?.lon) ?? numeric(data.Property_Longitude__c) ?? numeric(data.Longitude__c),
-    salePriceUsd: isSale ? salePrice : null,
-    salePriceText: isSale && salePrice ? `$${salePrice.toLocaleString("en-US")}` : null,
+    extraFacts: { srs_reported_sale_price: {
+      source: "srs_public_inventory_api", source_field: "Sale_Price__c",
+      flag_field: "Hide_Sale_Price__c", flag_state: flagState, price_state: priceState,
+      ...(priceState === "number" ? { reported_number: data.Sale_Price__c } : {}),
+      ...(priceState === "string" && data.Sale_Price__c.length <= 1024 ? { reported_text: data.Sale_Price__c } : {}),
+      currency: "unverified",
+    } },
+    // The feed does not establish currency; retain the source amount as text
+    // and evidence without asserting the USD-normalized column.
+    salePriceText: isSale && salePrice !== null ? salePrice.toLocaleString("en-US") : null,
     capRatePct: numeric(data.Cap_Rate__c),
     buildingSizeSqft: numeric(data.Total_Property_SF_GLA__c) ?? numeric(data.square_footage),
     lotSizeAcres: numeric(data.Total_Property_Land_Acres__c) ?? numeric(data.lot_size_acres),

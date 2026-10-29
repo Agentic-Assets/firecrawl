@@ -251,10 +251,11 @@ Draft native JSON feed projection for SRS, Kidder and Hanley is opt-in and
 subject to source-policy review and separate production acceptance. Collector
 decoded text and source identities are unverified, not HTTP wire evidence.
 Private original captures and their hashes must not enter projected events.
-Hanley non-public or unknown visibility positions are withheld. The SRS draft
-preserves observed flag and price but its downstream retention is a pending
-owner decision; do not activate or admit SRS until resolved. Its canonical
-mapper's current display control remains unchanged. SRS may explicitly opt
+Hanley non-public or unknown visibility positions are withheld. The 2026-10-29
+owner decision permits retaining and displaying accessible SRS API-reported
+prices regardless of `Hide_Sale_Price__c`; preserve that flag as source context.
+This does not establish publisher UI visibility, currency, permission or
+production activation. SRS may explicitly opt
 into 256 pages; other sources remain capped at 128. Credential and JLL rules
 still apply. Never claim source permission or confidentiality from capture.
 

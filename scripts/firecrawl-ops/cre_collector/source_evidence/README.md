@@ -904,11 +904,11 @@ completeness or UI visibility.
 Hanley non-public and unknown-visibility rows become null at their original
 positions with a withholding witness. This prototype preserves SRS feed values,
 including `Hide_Sale_Price__c` and any associated numeric value, as source
-observations. The canonical mapper remains unchanged and continues to suppress
-the displayed price when its control is set. Whether the general public
-price-withholding rule permits retaining that value in restricted evidence is
-an outstanding owner decision: **do not activate or admit SRS while pending**.
-No conclusion about publisher rights or permission follows from a public endpoint.
+observations. On 2026-10-29 the owner directed retention and display of accessible
+SRS API-reported prices regardless of that flag; the flag remains source context.
+The API does not establish currency; the amount is retained as text and source
+context, without populating the USD-normalized field. This decision
+does not establish UI visibility, publisher rights, permission or production activation.
 When SRS or Kidder returns valid JSON without its recognized row array, the
 whole value is preserved as unqualified context with no selected records; it
 does not prove a listing or complete coverage. Malformed JSON remains private.
@@ -926,3 +926,43 @@ profile is not a canonical listing, public-display, source-authority or
 complete-coverage assertion. The existing 128-page, 128-MiB attempt and 16-MiB
 decoded-page bounds apply. This prototype is default off and needs separate
 source-policy review and production acceptance.
+
+## Draft Newmark detail evidence policy
+
+A version-4 automatic evidence policy can explicitly name the Newmark RCM
+published-detail format in `enrichment_detail_formats`. This option is a draft
+and does not itself authenticate the source, approve a request, promote a
+listing, or authorize database admission. The guarded owner only enables the
+internal detail marker for the matching Newmark source and paired policy entries;
+earlier policy versions and ordinary enrichment do not enable it. Version 4
+requires both `enrichment_detail_formats.newmark = newmark_rcm_published_detail_v1`
+and `collector_projections.newmark = newmark-rcm-enrichment-withholding/v1`.
+All existing target, source, exact collector SHA and transport bindings still
+apply. A direct experimental invocation also requires a private output file.
+Source-code availability does not establish runtime or database acceptance.
+
+The worker can carry a bounded unverified source-row witness in its private claim
+file. It joins the queue's brokerage, external ID and canonical URL to the
+listing's existing raw source record, and preserves missing, null and unresolved
+name and address components separately. Multiple properties, duplicate matches,
+unsafe text, unsupported links and missing fields remain unresolved. Its bounded
+control-character filter is not proof that a retained string contains no secret;
+normal source and credential admission remains required. Full original inventory
+evidence remains separate; the witness is neither an authenticated identity nor a replacement
+for it. No raw source record, document reference, or full-record digest is copied.
+
+The source-owned enrichment route retains the embedded JSON literal before
+mapping, rejects duplicate keys, compares source name and property-local address,
+and requires substantive returned data before completing a claim. It preserves
+existing listing identity and tenure. Public listing facts are retained regardless
+of display flags under the October 29 owner decision; unknown currency is not
+normalized to USD. Serial single-attempt requests stop on a denial, challenge or
+uncertain result and retain earlier observations plus not-attempted markers.
+
+The evidence projection removes only reviewed credential fields and recorded
+contaminated copies. It keeps ordered unknown native data and exceptional numeric
+literals, with explicit pointer receipts and projected commitments. Original
+captures remain private. Uninspectable text is omitted explicitly from projected
+evidence while other bounded context survives; an unresolved page does not discard
+the complete cohort or become a canonical listing. These bounded inspections are
+not universal secret detection, publisher authentication or complete coverage.

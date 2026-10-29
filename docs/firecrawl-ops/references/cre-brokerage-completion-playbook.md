@@ -135,11 +135,19 @@ public broker/contact details; and all relevant image, media and document URLs.
 Preserve original values, text, units, currency, rate period/basis and source
 provenance alongside supported normalization. Never invent values, infer an
 unknown tenure from a missing price, or turn missing values into zero. A sale
-price can be inapplicable to a lease-only offering; an explicit public
-price-withheld control must remain withheld through every downstream channel.
+price can be inapplicable to a lease-only offering.
+**Owner decision, 2026-10-29:** retain and display all useful listing data obtained
+from accessible public sources, including API-reported prices, descriptions,
+contacts, documents and facts outside the normalized fields. Source display
+flags and competing values are context to preserve, not reasons to discard
+those facts. In particular, keep SRS `Sale_Price__c` when
+`Hide_Sale_Price__c` is set. Label API-reported values and retain their original
+flags, units, source and observation time. Do not invent currency, publisher UI
+visibility or a preferred conflicting value. This decision does not authorize
+bypassing access controls or publishing technical credentials.
 Keep offered listing tenure and asking rent separate from in-place tenant lease
 facts; tenant rent or lease type does not establish the offered transaction.
-Retention follows source visibility/redaction and shared ownership rules; use
+Retention follows the owner decision and shared ownership rules; use
 structured provenance rather than promising complete raw HTML/header retention.
 
 For a fidelity change or reported data gap, trace a representative fresh detail

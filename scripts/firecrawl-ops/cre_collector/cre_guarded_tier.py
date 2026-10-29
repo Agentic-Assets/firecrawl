@@ -404,10 +404,16 @@ def run_guarded_tier(
             native_command_active = True
             receipt["local_settlement"] = {"state": "unknown", "phase": phase}
             try:
+                worker_env = checkpoint.safe_process_env()
+                worker_env.pop("CRE_NEWMARK_PUBLISHED_DETAIL", None)
+                if (phase == "enrich_apply" and args.source == "newmark"
+                        and receipt.get("source_evidence", {}).get("config", {}).get("enrichment_detail_formats", {}).get("newmark")
+                        == "newmark_rcm_published_detail_v1"):
+                    worker_env["CRE_NEWMARK_PUBLISHED_DETAIL"] = "1"
                 command_rc = runner(
                     argv,
                     run_dir / "logs" / f"{phase}.log",
-                    env=checkpoint.safe_process_env(),
+                    env=worker_env,
                 )
             except BaseException as exc:
                 settled = checkpoint.command_local_settlement(exc)

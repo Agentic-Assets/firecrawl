@@ -1088,8 +1088,11 @@ decoded source text before JSON validation, row qualification and pruning.
 It is default off; evidence policy, custody and append remain in
 [`source_evidence/`](../source_evidence/README.md). Unknown valid SRS/Kidder
 shapes remain unqualified context. Hanley retains the bounded embedded array
-literal and separately projects non-public rows before admission. SRS evidence
-admission awaits its source-specific price-retention decision. None of these
+literal and separately projects non-public rows before admission. On 2026-10-29
+the owner directed retention and display of accessible SRS API-reported prices
+regardless of `Hide_Sale_Price__c`; preserve the original control as context.
+Do not infer publisher UI visibility, price currency or source authorization.
+None of these
 observations qualifies a canonical listing or certifies inventory coverage.
 
 SRS and Kidder cache metadata uses private WeakMaps, including without native
@@ -1105,6 +1108,16 @@ then filters US geography and caps output. Strict mode additionally reconciles
 complete provider counts and identities; non-strict mode does not certify that
 global reconciliation. `--max-items` does not bound inventory requests. The explicitly
 named Algolia legacy implementation is separate from this current dispatch.
+
+`CRE_NEWMARK_PUBLISHED_DETAIL=1` is an explicit experimental enrichment
+route, not source permission or an authentication assertion. It resolves only
+the witnessed RCM modern landing route from a bounded Newmark source-row
+carrier, retains its exact embedded JSON literal and unqualified parsed
+context, and compares name and property-local address before considering
+substantive source fields. Unknown or mismatched pages remain observations and
+do not complete a claim. The source clock is unverified. Source visibility and
+credential projection must be reviewed before evidence admission. Normal
+dispatch remains unchanged without the marker.
 
 The optional native JSON feed profile captures decoded NIM response text before
 page validation, geography, identity and output filtering. It binds sale/lease

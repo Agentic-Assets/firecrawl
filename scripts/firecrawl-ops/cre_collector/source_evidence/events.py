@@ -373,6 +373,9 @@ def validate_content_policy(plan_value):
         encoded_json_inspection._inspect_encoded_credentials(
             projected, decoded_callback=decoded_documents.append, inspect_keys=True)
     for row in plan_value["events"]:
+        if row.get("facts") and row["facts"][0].get("kind") == "source_observation":
+            from source_evidence.projections import newmark_rcm
+            newmark_rcm.validate_event_payload(row["facts"][0].get("value", {}).get("value"), plan_value["source_key"])
         pending = [row]
         if row["item_no"] == 0:
             pending.extend(decoded_documents)

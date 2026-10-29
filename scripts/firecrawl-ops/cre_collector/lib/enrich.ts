@@ -46,12 +46,15 @@ import { mapSrsListing, srsFetchAll, srsTenure } from "../sources/srs.js";
 import { enrichHanleyListings } from "../sources/hanley.js";
 import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidder-mathews.js";
 import type { ScrapedDoc, SourceKey } from "../types.js";
+import type { NewmarkDetailWitness } from "../sources/pure/newmark-detail-link.js";
+import { createNewmarkPublishedDetailEnricher } from "../sources/newmark-published-enrich.js";
 
 export type EnrichItem = {
   sourceKey: string;
   externalId: string;
   url: string;
   transaction?: "sale" | "lease";
+  sourcePublishedDetail?: NewmarkDetailWitness | { status: "unresolved"; reason: string };
 };
 
 export interface SourceEnricher {
@@ -317,6 +320,7 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
 
 export const genericEnricher: SourceEnricher = createGenericEnricher();
 
+
 function genericHasSubstantiveFields(row: any): boolean {
   if (!row?.genericEnrich?.hadJsonLd) return false;
   return ["name", "description", "salePriceText"].some((key) =>
@@ -541,6 +545,8 @@ export async function runEnrichGroups(
 // label (bespoke|generic) is surfaced in the artifact so enricher coverage is
 // visible. Exported so collect.ts and the unit test resolve identically.
 export function resolveEnricher(key: string): { enricher: SourceEnricher; label: string } {
+  if (key === "newmark" && process.env.CRE_NEWMARK_PUBLISHED_DETAIL === "1")
+    return { enricher: createNewmarkPublishedDetailEnricher(), label: "newmark-published-detail-observation" };
   const bespoke = ENRICHERS[key as SourceKey];
   return bespoke ? { enricher: bespoke, label: "bespoke" } : { enricher: genericEnricher, label: "generic" };
 }

@@ -185,6 +185,7 @@ def test_guarded_tier_keeps_canonical_outcome_separate(tmp_path, monkeypatch, re
                               source_evidence_target_sha256=config["target_sha256"])
     monkeypatch.setattr(checkpoint, "database_target_fingerprint", lambda _: {"value": "b" * 64})
     def worker(argv, log, env):
+        assert "CRE_NEWMARK_PUBLISHED_DETAIL" not in env
         path = Path(argv[argv.index("--artifact-out") + 1])
         path.write_text(json.dumps(artifact(count=1)))
         path.chmod(0o600)
@@ -519,3 +520,69 @@ def test_markerless_settled_reconciliation_still_revalidates(tmp_path, monkeypat
     monkeypatch.setattr(automatic.cli, "run_psql", lambda *a, **k: pytest.fail("unexpected DB replay"))
     with pytest.raises(ValueError):
         guarded_evidence.reconcile(run / "receipt.json", lock.path)
+
+
+@pytest.mark.parametrize('version', [1, 2, 3, 4])
+def test_newmark_detail_marker_requires_explicit_v4_policy(tmp_path, monkeypatch, version):
+    import argparse
+    import hashlib
+
+    import cre_guarded_tier as tier
+    from source_evidence import events
+    from source_evidence.projections import newmark_rcm
+
+    config, policy, path = setup_policy(tmp_path, sources=('newmark',))
+    enabled = version == 4
+    if version >= 2:
+        policy.update(schema_version=getattr(automatic, f'SCHEMA_V{version}'),
+                      collector_projections={}, native_source_formats={}, max_native_pages=128)
+        if version >= 3:
+            policy['document_text_formats'] = {}
+        if enabled:
+            policy['collector_projections'] = {'newmark': newmark_rcm.VERSION}
+            policy['enrichment_detail_formats'] = {'newmark': automatic.NEWMARK_DETAIL_FORMAT}
+        raw = events.encoded(policy); path.write_bytes(raw)
+        config = automatic.configuration(str(path), hashlib.sha256(raw).hexdigest(), config['env_file'],
+                                         config['target_sha256'], SHA, ['newmark'])
+    args = argparse.Namespace(tier='enrich', source='newmark', batch=10, deadline_seconds=30,
+                              expected_sha=SHA, apply=True, env_file='canonical.env',
+                              source_evidence_policy=config['policy_path'],
+                              source_evidence_policy_sha256=config['policy_sha256'],
+                              source_evidence_env_file=config['env_file'],
+                              source_evidence_target_sha256=config['target_sha256'])
+    monkeypatch.setattr(checkpoint, 'database_target_fingerprint', lambda _: {'value':'b' * 64})
+    monkeypatch.setenv('CRE_NEWMARK_PUBLISHED_DETAIL', '1')
+    calls = []
+    def worker(argv, log, env):
+        calls.append(env.get('CRE_NEWMARK_PUBLISHED_DETAIL'))
+        out = Path(argv[argv.index('--artifact-out') + 1]); out.write_text(json.dumps(artifact(source='newmark', count=1))); out.chmod(0o600)
+        return 0
+    monkeypatch.setattr(automatic.cli, 'run_psql', lambda *_a, **_kw: None)
+    result = tier.run_guarded_tier(args, _lock_path=tmp_path/'tier.lock', _out_root=tmp_path/'runs',
+                                   _cpu_sampler=lambda:10.0, _memory_sampler=lambda:1,
+                                   _verify_checkout=lambda *_:None, _runner=worker)
+    assert result == 0 and calls == (['1'] if enabled else [None])
+
+
+@pytest.mark.parametrize('version,projection,detail', [
+    (2, True, False), (3, True, False), (4, True, False), (4, False, True),
+])
+def test_newmark_detail_policy_requires_paired_v4_contract(tmp_path, version, projection, detail):
+    import hashlib
+
+    from source_evidence import events
+    from source_evidence.projections import newmark_rcm
+
+    config, policy, path = setup_policy(tmp_path, sources=('newmark',))
+    policy.update(schema_version=getattr(automatic, f'SCHEMA_V{version}'),
+                  collector_projections={'newmark': newmark_rcm.VERSION} if projection else {},
+                  native_source_formats={}, max_native_pages=128)
+    if version >= 3:
+        policy['document_text_formats'] = {}
+    if version == 4:
+        policy['enrichment_detail_formats'] = {'newmark': automatic.NEWMARK_DETAIL_FORMAT} if detail else {}
+    raw = events.encoded(policy)
+    path.write_bytes(raw)
+    with pytest.raises(ValueError, match='paired version-4'):
+        automatic.configuration(str(path), hashlib.sha256(raw).hexdigest(), config['env_file'],
+                                config['target_sha256'], SHA, ['newmark'])
