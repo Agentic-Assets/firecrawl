@@ -685,3 +685,25 @@ is a bounded catalog assessment, not proof of credential isolation, complete
 permissions, migration readiness, or production activation. Server-side
 restrictions, independent connections, system objects, invoker routine effects
 and concurrent ACL changes require separate review.
+
+Acquisition policy v3 explicitly adds `sparse_ocr` with mode `sparse_ocr_v1`,
+strategy `no_text` (neither prior parser returned text) or `all_pages` (also
+OCR native or mixed PDFs), and `max_pages` from 1 through 1000. It requires
+the v2 Poppler complement and reserves the versioned OCR deadline before
+fetch. Prior AnyDoc and Poppler results are sealed and saved before dispatch;
+the final seal binds all three outcomes and independent append plans. Unknown
+process or container cleanup blocks further work. Exact append replay uses the
+sealed plan and does not repeat fetch or parsers. Under
+`keep_unresolved_until_review`, failed or partial OCR, omitted pages or other
+warnings retain originals. Coverage remains unknown; this is not deployment,
+source permission, complete extraction, or a canonical database write.
+
+After OCR process settlement and verified container removal, the coordinator
+writes an exclusive completion marker binding the artifact, prior attempts,
+receipt, policy, worker and container settlement. If interrupted before the
+final seal, recovery may revalidate that marker, both retained input copies and
+the prior seals, then seal the exact existing OCR artifact without starting a
+process. Missing or invalid completion or settlement remains unresolved; the
+existing budget reservation stays charged and no new acquisition is admitted.
+Whitespace-only OCR text is discarded as non-content with an explicit warning;
+its recorded page byte counts remain diagnostic while text offsets are zero.

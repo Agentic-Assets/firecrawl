@@ -559,7 +559,7 @@ def pump(run_dir, manifest, save):
                     raise ValueError("document text is outside policy")
                 documents = (attempt.get("document_source_evidence") or {}).get("documents", [])
                 matching = [document for document in documents if document.get("append") is state
-                            or document.get("complement_append") is state]
+                            or document.get("complement_append") is state or document.get("ocr_append") is state]
                 if len(matching) != 1:
                     raise ValueError("document append association mismatch")
                 return document_jobs.prepare_job(run_dir, manifest, source, attempt, matching[0], state)

@@ -236,3 +236,219 @@ def test_landing_seal_rederives_append_plan_and_rejects_tamper(monkeypatch, tmp_
     (seal / 'landing-page.json').write_bytes(b'{}')
     with pytest.raises(ValueError):
         document_jobs.prepare_job(tmp_path, manifest, 'svn', attempt, document, job)
+
+@pytest.mark.parametrize('interrupt', [False, True, 'completed'])
+@pytest.mark.parametrize('extraction_state', ['success'])
+def test_sparse_ocr_preserves_prior_custody_and_replays_all_three_jobs(monkeypatch, tmp_path, interrupt, extraction_state):
+    from source_evidence import automatic, document_acquisition_policy
+    from source_evidence.document_process import DocumentProcessCleanupUnknown
+    manifest, attempt, kwargs = setup_run(tmp_path, retention='keep_unresolved_until_review')
+    policy = __import__('json').loads(kwargs['policy_raw'])
+    policy.update(schema_version=document_acquisition_policy.SCHEMA_V3,
+                  sparse_ocr={'mode': 'sparse_ocr_v1', 'strategy': 'all_pages', 'max_pages': 2},
+                  pdf_complement={'mode': 'poppler_pdf_text_v1', 'pdftotext_path': '/usr/bin/pdftotext'})
+    policy['limits']['max_documents'] = 1
+    raw = events.encoded(policy)
+    plans = [kwargs['plan']]
+    candidates = document_batch.discover(plans)
+    selection = document_batch.prepare(plans, candidates, raw, expected_policy_sha256=events.sha256(raw),
+                                       target_sha256=TARGET, collector_git_sha=CODE)
+    kwargs.update(plan=plans, candidates=candidates, selection=selection, policy_raw=raw,
+                  expected_policy_sha256=events.sha256(raw))
+    manifest.update(run_id='test-generation', config={'sources': ['svn']})
+    attempt.update(rc=1, finished_at='2026-10-28T12:00:00Z', document_collection_settlement={
+        'schema_version': 'cre-document-collection-settlement/v1', 'attempt_number': 1,
+        'collector_git_sha': CODE, 'rc': 1, 'finished_at': '2026-10-28T12:00:00Z'})
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(raw)
+    policy_path.chmod(0o600)
+    manifest['config']['automatic_source_evidence'] = {'source_keys': ['svn'], 'collector_git_sha': CODE,
+        'target_sha256': TARGET, 'policy_sha256': 'b' * 64, 'transport': {'kind': 'test'},
+        'document_text_formats': {'svn': document_jobs.FORMAT}}
+    manifest['config']['source_document_acquisition'] = {'source_keys': ['svn'], 'collector_git_sha': CODE,
+        'target_sha256': TARGET, 'policy_sha256': events.sha256(raw), 'policy_path': str(policy_path)}
+    monkeypatch.setattr(document_jobs.automatic, '_verify_config', lambda *args: None)
+    monkeypatch.setattr(document_jobs.document_automatic, '_verify_config', lambda *args: None)
+    install_workers(monkeypatch, extraction_state=extraction_state)
+    if extraction_state == 'failed':
+        original_extract = document_pipeline.doc_extract_process.run
+        def unsupported(*args, **kwargs):
+            result = original_extract(*args, **kwargs)
+            result['artifact']['extraction']['error_code'] = 'unsupported'
+            return result
+        monkeypatch.setattr(document_pipeline.doc_extract_process, 'run', unsupported)
+    def complement(input_path, first, receipt, outdir, *, executable, source_key):
+        text = 'Complementary text'
+        return {'schema_version': 'cre-document-text/v1', 'source': dict(first['source']),
+                'parser': {'name': 'poppler-pdftotext', 'version': '1.2',
+                           'config': {'executable': executable, 'ocr': False, 'timeout_seconds': 120,
+                                      'max_output_file_bytes': 4 * 1024 * 1024, 'max_text_bytes': 4 * 1024 * 1024}},
+                'extraction': {'status': 'extracted', 'coverage': 'unknown', 'text_format': 'plain',
+                               'text': text, 'text_sha256': events.sha256(text.encode()),
+                               'relationship': 'complement_of', 'previous_attempt_sha256': events.sha256(events.encoded(first))}}
+    monkeypatch.setattr(document_pipeline.doc_complement_process, 'run', complement)
+    def ocr(input_path, first, second, receipt, outdir, *, source_key, policy, prior_dir):
+        assert (prior_dir / 'converter-artifact.json').read_bytes() == events.encoded(first)
+        assert (prior_dir / 'complement-converter-artifact.json').read_bytes() == events.encoded(second)
+        if interrupt is True:
+            raise DocumentProcessCleanupUnknown('simulated OCR settlement unknown')
+        text = 'OCR text'
+        result = {'schema_version': 'cre-document-text/v1', 'source': dict(first['source']),
+                'parser': {'name': 'pdfium-tesseract-sparse', 'version': '1', 'config': {
+                    'image': 'quay.io/docling-project/docling-serve-cpu@sha256:528f52f5ce56be1739df117560512ffaa483be53934bf5b0458b4ca088b1a6b0',
+                    'pypdfium2': '5.8.0', 'pdfium': '149.0.7825.0', 'tesseract': '4.1.1',
+                    'language': 'eng', 'psm': 11, 'osd': False, 'dpi': 200, 'max_pixels_per_page': 25_000_000,
+                    'max_pages': 2, 'trigger_policy': 'all_pages', 'timeout_seconds': 210, 'max_text_bytes': 4 * 1024 * 1024, 'max_layout_bytes': 1024 * 1024,
+                    'per_page_timeout_seconds': 60, 'network': 'none', 'cpu': 1, 'memory_bytes': 3 * 1024**3,
+                    'worker_sha256': events.sha256((__import__('pathlib').Path(document_pipeline.__file__).parent.parent / 'document_text' / 'sparse_ocr_worker.py').read_bytes())}},
+                'extraction': {'status': 'extracted', 'coverage': 'unknown', 'text_format': 'plain',
+                    'text': text, 'text_sha256': events.sha256(text.encode()), 'converter_exit_code': 0, 'relationship': 'complement_of',
+                    'previous_attempt_sha256': events.sha256(events.encoded(second)),
+                    'page_count': 3, 'pages': [{'page': 1, 'worker_exit': 0, 'text_bytes': 4, 'text_start_byte': 0, 'text_end_byte': 4, 'layout_tsv': 'box',
+                              'layout_bytes': 3, 'layout_sha256': events.sha256(b'box')},
+                             {'page': 2, 'worker_exit': 1, 'text_bytes': 4, 'text_start_byte': 4, 'text_end_byte': 8, 'layout_tsv': 'raw',
+                              'layout_bytes': 3, 'layout_sha256': events.sha256(b'raw'), 'layout_error': 'layout_partial'}],
+                    'omitted_pages': 1, 'layout_omitted_pages': 2,
+                    'warnings': ['coverage_unknown', 'pages_omitted', 'layout_omitted', 'page_failure_or_partial_output']}}
+        if interrupt == 'completed':
+            from source_evidence import doc_sparse_ocr_process, private_export
+            nonce = 'a' * 32
+            intent = {'schema_version': 'cre-sparse-ocr-owner/v1', 'name': 'cre-sparse-' + nonce, 'nonce': nonce,
+                'source_sha256': receipt['body_sha256'], 'prior_attempt_sha256': [events.sha256(events.encoded(first)),
+                events.sha256(events.encoded(second))], 'worker_sha256': result['parser']['config']['worker_sha256'],
+                'config_sha256': events.sha256(events.encoded(result['parser']['config'])), 'uid': __import__('os').getuid()}
+            settled = {'schema_version': 'cre-sparse-ocr-settlement/v1', 'intent_sha256': events.sha256(events.encoded(intent)),
+                       'container_id': 'b' * 64, 'state': 'removed_verified'}
+            artifact_raw = events.encoded(result)
+            marker = doc_sparse_ocr_process._completion_marker(artifact_raw, result, first, second, receipt,
+                source_key, policy, 0, events.sha256(events.encoded(settled)))
+            private_export.write(outdir, [('owner-intent.json', events.encoded(intent)),
+                ('owner-settled.json', events.encoded(settled)), ('sparse-ocr.json', artifact_raw)])
+            private_export.write(outdir / 'ocr-completion', [('marker.json', events.encoded(marker))])
+            raise RuntimeError('simulated parent crash after settled OCR completion')
+        return result
+    monkeypatch.setattr(document_pipeline.doc_sparse_ocr_process, 'run', ocr)
+    if interrupt:
+        with pytest.raises(DocumentProcessCleanupUnknown if interrupt is True else RuntimeError):
+            document_pipeline.run(tmp_path, manifest, 'svn', attempt, lambda *args: None, **kwargs)
+        document = attempt['document_source_evidence']['documents'][0]
+        assert document['state'] == 'ocr_intent' and 'prior_sealed' in document
+        assert (tmp_path / document['directory'] / 'fetch' / 'document.bin').exists()
+        if interrupt == 'completed':
+            outdir = tmp_path / document['directory'] / 'ocr'
+            completion = outdir / 'ocr-completion' / 'marker.json'
+            saved_completion = completion.read_bytes()
+            completion.write_bytes(b'{')
+            blocked = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+                plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+                expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+            assert blocked['state'] == 'incomplete' and 'sealed' not in document
+            completion.write_bytes(saved_completion)
+            import json
+            original_marker = json.loads(saved_completion)
+            for key in ('artifact_sha256', 'anydoc_sha256', 'complement_sha256', 'receipt_sha256',
+                        'source_key', 'policy_sha256', 'worker_sha256', 'settlement_sha256'):
+                changed = dict(original_marker)
+                changed[key] = 'changed'
+                completion.write_bytes(events.encoded(changed))
+                blocked = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+                    plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+                    expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+                assert blocked['state'] == 'incomplete' and 'sealed' not in document
+            completion.write_bytes(saved_completion)
+            settled = outdir / 'owner-settled.json'
+            saved = settled.read_bytes()
+            settled.write_bytes(b'{}')
+            blocked = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+                plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+                expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+            assert blocked['state'] == 'incomplete' and 'sealed' not in document
+            settled.write_bytes(saved)
+            body = tmp_path / document['directory'] / 'fetch' / 'document.bin'
+            saved_body = body.read_bytes()
+            body.write_bytes(b'tampered')
+            blocked = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+                plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+                expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+            assert blocked['state'] == 'incomplete' and 'sealed' not in document
+            body.write_bytes(saved_body)
+        monkeypatch.setattr(document_pipeline.doc_sparse_ocr_process.subprocess, 'Popen',
+                            lambda *a, **k: pytest.fail('recovery must not spawn'))
+        recovery = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+            plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+            expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+        if interrupt is True:
+            assert recovery['state'] == 'incomplete'
+            return
+        assert recovery['state'] == 'sealed_outputs_reconciled'
+        assert recovery['documents'][0]['reason'] == 'settled_ocr_completion_replayed'
+        assert document['state'] == 'extraction_sealed'
+        assert attempt['document_source_evidence']['budget']['attempts'][0]['outcome'] is None
+        assert document_jobs.mark(tmp_path, manifest, 'svn', attempt, document, lambda *args: None)['state'] == 'pending'
+        assert document['ocr_append']['state'] == 'pending'
+        return
+    state = document_pipeline.run(tmp_path, manifest, 'svn', attempt, lambda *args: None, **kwargs)
+    document = state['documents'][0]
+    assert document['original_retention'] == 'retained_unresolved'
+    first_job = document_jobs.mark(tmp_path, manifest, 'svn', attempt, document, lambda *args: None)
+    second_job, third_job = document['complement_append'], document['ocr_append']
+    plans_out = [document_jobs.prepare_job(tmp_path, manifest, 'svn', attempt, document, job)
+                 for job in (first_job, second_job, third_job)]
+    assert len({plan['plan_sha256'] for plan in plans_out}) == 3
+    assert plans_out[2]['events'][0]['facts'][0]['value']['extraction']['pages'][1]['layout_tsv'] == 'raw'
+    from source_evidence import doc_sparse_ocr_process, document_seal
+    import json
+    seal_dir = tmp_path / document['directory'] / 'sealed'
+    context = json.loads((seal_dir / 'acquisition.json').read_bytes())
+    checked = document_seal.read(seal_dir, expected_context=context, expected_marker=document['sealed'])
+    bad_page = copy.deepcopy(checked['ocr'])
+    bad_page['extraction']['pages'][0]['text_bytes'] += 1
+    with pytest.raises(ValueError, match='page text bytes'):
+        doc_sparse_ocr_process.validate(bad_page, checked['artifact'], checked['complement'], context['receipt'],
+                                        'svn', selection['sparse_ocr'])
+    bad_page = copy.deepcopy(checked['ocr'])
+    text = 'éabcdef'
+    bad_page['extraction']['text'] = text
+    bad_page['extraction']['text_sha256'] = events.sha256(text.encode())
+    bad_page['extraction']['pages'][0].update(text_bytes=1, text_end_byte=1)
+    bad_page['extraction']['pages'][1].update(text_bytes=7, text_start_byte=1, text_end_byte=8)
+    with pytest.raises(ValueError, match='UTF-8'):
+        doc_sparse_ocr_process.validate(bad_page, checked['artifact'], checked['complement'], context['receipt'],
+                                        'svn', selection['sparse_ocr'])
+    bad_page = copy.deepcopy(checked['ocr'])
+    bad_page['extraction']['warnings'].remove('page_failure_or_partial_output')
+    with pytest.raises(ValueError, match='warnings'):
+        doc_sparse_ocr_process.validate(bad_page, checked['artifact'], checked['complement'], context['receipt'],
+                                        'svn', selection['sparse_ocr'])
+    oversized = copy.deepcopy(checked['ocr'])
+    oversized['extraction']['pages'][0]['extra'] = 'x' * (2 * 1024 * 1024)
+    with pytest.raises(ValueError, match='layout bounds'):
+        doc_sparse_ocr_process.validate(oversized, checked['artifact'], checked['complement'], context['receipt'],
+                                        'svn', selection['sparse_ocr'])
+    oversized = copy.deepcopy(checked['ocr'])
+    text = 'x' * (4 * 1024 * 1024 - 4)
+    oversized['extraction']['text'] = text
+    oversized['extraction']['text_sha256'] = events.sha256(text.encode())
+    oversized['extraction']['pages'][0]['text_end_byte'] = len(text)
+    oversized['extraction']['pages'][0]['text_bytes'] = len(text)
+    oversized['extraction']['pages'][1]['text_start_byte'] = len(text)
+    oversized['extraction']['pages'][1]['text_end_byte'] = len(text)
+    oversized['extraction']['pages'][1]['text_bytes'] = 0
+    with pytest.raises(ValueError, match='layout bounds'):
+        doc_sparse_ocr_process.validate(oversized, checked['artifact'], checked['complement'], context['receipt'],
+                                        'svn', selection['sparse_ocr'])
+    first_job['state'] = second_job['state'] = 'appended'
+    third_job['state'] = 'outcome_unknown'
+    automatic.prepare_resume(manifest, replay_unknown=True)
+    assert third_job['state'] == 'pending' and third_job['exact_replay_required']
+    manifest['config']['automatic_source_evidence']['env_file'] = '/unused/test-env'
+    writes = []
+    monkeypatch.setattr(automatic, 'append_sql', lambda plan: plan)
+    monkeypatch.setattr(automatic.cli, 'run_psql', lambda plan, *args, **kwargs: writes.append(plan['plan_sha256']))
+    automatic.pump(tmp_path, manifest, lambda *args: None)
+    assert writes == [third_job['plan_sha256']]
+    recovery = document_recovery.sealed(tmp_path, manifest, 'svn', attempt, lambda *args: None,
+        plan=plans, candidates=candidates, policy_raw=raw, selection=selection,
+        expected_policy_sha256=events.sha256(raw), target_sha256=TARGET, collector_git_sha=CODE, cleanup=True)
+    assert recovery['state'] == 'sealed_outputs_reconciled'
+    assert (tmp_path / document['directory'] / 'fetch' / 'document.bin').exists()

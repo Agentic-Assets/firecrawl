@@ -105,6 +105,8 @@ def prepare(plans, candidates, policy_raw, *, expected_policy_sha256, target_sha
                   source_evidence_plans=copy.deepcopy(actual["source_evidence_plans"]),
                   source_evidence_set_sha256=actual["source_evidence_set_sha256"],
                   candidate_manifest_sha256=events.sha256(events.encoded(actual)), documents=[], exclusions=[])
+    if "sparse_ocr" in first:
+        output["sparse_ocr"] = copy.deepcopy(first["sparse_ocr"])
     size = len(events.encoded(output))
     for index, candidate in enumerate(actual["candidates"]):
         reason = document_acquisition_policy.candidate_refusal(candidate, output["allowed_hosts"])

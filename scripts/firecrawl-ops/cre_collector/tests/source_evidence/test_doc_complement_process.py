@@ -1,3 +1,4 @@
+import copy
 import os
 import signal
 import subprocess
@@ -127,3 +128,56 @@ def test_real_timeout_settles_parser_and_descendant(monkeypatch, tmp_path):
                     os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_sparse_ocr_strategy_retention_and_series_barrier():
+    from source_evidence import doc_sparse_ocr_process
+    import cre_checkpoint_series
+    first = artifact()
+    complement = {'extraction': {'status': 'extracted', 'text': 'native text'}}
+    selection = {'original_retention': 'keep_unresolved_until_review', 'pdf_complement': {},
+                 'sparse_ocr': {'strategy': 'no_text', 'max_pages': 3}}
+    assert not doc_sparse_ocr_process.required(first, complement, selection)
+    no_text = copy.deepcopy(first)
+    no_text['extraction']['text'] = None
+    assert doc_sparse_ocr_process.required(no_text, {'extraction': {'status': 'failed', 'text': None}}, selection)
+    selection['sparse_ocr']['strategy'] = 'all_pages'
+    assert doc_sparse_ocr_process.required(first, complement, selection)
+    partial = {'extraction': {'status': 'extracted', 'omitted_pages': 1, 'warnings': ['coverage_unknown', 'pages_omitted']}}
+    assert doc_sparse_ocr_process.retain_unresolved(first, complement, partial, selection)
+    document = {'state': 'extraction_sealed', 'sealed': {'complement': {}, 'ocr': {}},
+                'append': {'kind': 'document_text', 'state': 'appended'},
+                'complement_append': {'kind': 'document_text', 'state': 'appended'},
+                'ocr_append': {'kind': 'document_text', 'state': 'outcome_unknown'}}
+    attempt = {'source_evidence': {'state': 'appended'}, 'document_source_evidence': {'documents': [document]}}
+    manifest = {'config': {'automatic_source_evidence': {'source_keys': ['svn'],
+                'document_text_formats': {'svn': 'local_anydoc_public_listing_v1'}}},
+                'sources': {'svn': {'attempts': [attempt]}}}
+    assert cre_checkpoint_series.evidence_reconciliation_required(manifest)
+    document['ocr_append']['state'] = 'appended'
+    assert not cre_checkpoint_series.evidence_reconciliation_required(manifest)
+
+
+def test_missing_ocr_output_keeps_container_settlement_unknown(monkeypatch, tmp_path):
+    from source_evidence import doc_sparse_ocr_process
+    source = tmp_path / 'input.pdf'
+    source.write_bytes(b'pdf')
+    source.chmod(0o600)
+    actual_receipt = {**receipt(), 'body_sha256': events.sha256(b'pdf'), 'body_bytes': 3}
+    child = SimpleNamespace(wait=lambda **kwargs: 0)
+    monkeypatch.setattr(doc_sparse_ocr_process.subprocess, 'Popen', lambda *a, **k: child)
+    monkeypatch.setattr(doc_sparse_ocr_process.OwnedProcessGroup, 'from_spawn', lambda child: object())
+    monkeypatch.setattr(doc_sparse_ocr_process, 'settle_owned_groups', lambda *a, **k: SimpleNamespace(settled=True))
+    with pytest.raises(DocumentProcessCleanupUnknown):
+        doc_sparse_ocr_process.run(source, artifact(), {}, actual_receipt, tmp_path / 'missing',
+                                   source_key='svn', policy={'max_pages': 1, 'strategy': 'all_pages'}, prior_dir=tmp_path)
+
+
+def test_ocr_completion_publication_failure_leaves_no_marker(monkeypatch, tmp_path):
+    from source_evidence import doc_sparse_ocr_process, private_export
+    tmp_path.chmod(0o700)
+    identity = doc_sparse_ocr_process.doc_extract_process._directory_identity(tmp_path)
+    monkeypatch.setattr(private_export.os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError('disk full')))
+    with pytest.raises(OSError):
+        doc_sparse_ocr_process._publish_completion(tmp_path, {'schema_version': 'test'}, identity)
+    assert not (tmp_path / 'ocr-completion').exists()

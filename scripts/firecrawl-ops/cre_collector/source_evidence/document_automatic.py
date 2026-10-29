@@ -158,8 +158,10 @@ def append_incomplete(manifest):
                     if (job.get("kind") != "document_text" or job.get("state") != "appended"
                             or job.get("exact_replay_required")):
                         return True
-                    if "complement" in document.get("sealed", {}):
-                        job = document.get("complement_append") or {}
+                    for role in ("complement", "ocr"):
+                        if role not in document.get("sealed", {}):
+                            continue
+                        job = document.get(role + "_append") or {}
                         if (job.get("kind") != "document_text" or job.get("state") != "appended"
                                 or job.get("exact_replay_required")):
                             return True
