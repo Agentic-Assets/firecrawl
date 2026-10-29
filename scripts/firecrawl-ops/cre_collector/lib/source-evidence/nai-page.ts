@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "./terminal-error.js";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
@@ -78,6 +79,6 @@ export async function publishNaiNativePage(directory: string, page: NaiNativePag
     return publishPrivatePage(dir, `page-${offset}-${hash(payload)}.json`, payload,
       /^page-(?:0|[1-9][0-9]*)-[a-f0-9]{64}\.json$/, MAX_ENTRY_BYTES, maxPages, maxBytes);
   } catch {
-    throw new Error("NAI native capture failed");
+    throw new NativeEvidenceTerminalError("NAI native capture failed");
   }
 }

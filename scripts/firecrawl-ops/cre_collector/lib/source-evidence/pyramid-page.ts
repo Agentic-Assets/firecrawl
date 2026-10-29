@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "./terminal-error.js";
 /** Bounded private capture of collector-decoded Pyramid response text. */
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
@@ -8,7 +9,7 @@ const PREFIX = "CRE_PYRAMID_NATIVE_CAPTURE";
 const MAX_BODY = 16 * 1024 * 1024;
 const MAX_ENTRY = Math.ceil((MAX_BODY + 65536) * 4 / 3) + 16384;
 const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
-export class PyramidNativeCaptureError extends Error {
+export class PyramidNativeCaptureError extends NativeEvidenceTerminalError {
   constructor() { super("Pyramid native capture failed"); this.name = "PyramidNativeCaptureError"; }
 }
 function limit(name: string, maximum: number): number {

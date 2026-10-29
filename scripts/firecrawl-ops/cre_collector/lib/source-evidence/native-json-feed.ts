@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "./terminal-error.js";
 /** Private bounded capture of explicitly scoped native JSON source responses. */
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
@@ -9,9 +10,9 @@ const MAX_BODY = 16 * 1024 * 1024;
 const MAX_ENTRY = Math.ceil((MAX_BODY + 65536) * 4 / 3) + 16384;
 const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 let sequence = 0;
-export type NativeJsonProfile = "srs_search_post_v1" | "kidder_bulk_post_v1" | "kidder_paged_post_v1" | "hanley_embedded_array_v1";
+export type NativeJsonProfile = "srs_search_post_v1" | "kidder_bulk_post_v1" | "kidder_paged_post_v1" | "hanley_embedded_array_v1" | "newmark_nim_sale_post_v1" | "newmark_nim_lease_post_v1";
 export function nativeJsonFeedCaptureEnabled(): boolean { return Boolean(process.env[`${PREFIX}_DIR`]); }
-export class NativeJsonFeedCaptureError extends Error {
+export class NativeJsonFeedCaptureError extends NativeEvidenceTerminalError {
   constructor() { super("Native JSON feed capture failed"); this.name = "NativeJsonFeedCaptureError"; }
 }
 function limit(name: string, maximum: number, defaultValue = maximum): number {
@@ -23,7 +24,7 @@ function limit(name: string, maximum: number, defaultValue = maximum): number {
   return value;
 }
 export function publishNativeJsonFeed(input: {
-  profile: NativeJsonProfile; sourceKey: "srs" | "kidder-mathews" | "hanley";
+  profile: NativeJsonProfile; sourceKey: "srs" | "kidder-mathews" | "hanley" | "newmark";
   requestVariant: "strict" | "standard" | "direct" | "firecrawl";
   requestBody: string | null; page: number | null; offset: number | null;
   status: number | null; body: string;
@@ -33,7 +34,8 @@ export function publishNativeJsonFeed(input: {
   try {
     const hanley = input.profile === "hanley_embedded_array_v1";
     const profiles = { srs_search_post_v1: "srs", kidder_bulk_post_v1: "kidder-mathews",
-      kidder_paged_post_v1: "kidder-mathews", hanley_embedded_array_v1: "hanley" } as const;
+      kidder_paged_post_v1: "kidder-mathews", hanley_embedded_array_v1: "hanley",
+      newmark_nim_sale_post_v1: "newmark", newmark_nim_lease_post_v1: "newmark" } as const;
     if (process.env[`${PREFIX}_SINGLE_WRITER`] !== "1" || process.env[`${PREFIX}_SOURCE_KEY`] !== input.sourceKey ||
         profiles[input.profile] !== input.sourceKey ||
         (hanley ? (input.page !== null || input.offset !== null || input.requestBody !== null ||
@@ -43,6 +45,8 @@ export function publishNativeJsonFeed(input: {
         (input.profile === "kidder_bulk_post_v1" && (input.requestVariant !== "strict" || input.page !== 0 || input.offset !== 0)) ||
         (input.profile === "kidder_paged_post_v1" && (input.requestVariant !== "standard" || input.offset !== (input.page as number) * 50)) ||
         (input.profile === "srs_search_post_v1" && input.offset !== (input.page as number) * 12) ||
+        ((input.profile === "newmark_nim_sale_post_v1" || input.profile === "newmark_nim_lease_post_v1") &&
+          input.offset !== (input.page as number) * 100) ||
         (hanley && input.requestVariant === "firecrawl" && input.status !== null) ||
         (input.status === null ? !(hanley && input.requestVariant === "firecrawl") :
           (!Number.isInteger(input.status) || input.status < 200 || input.status > 299))) throw new Error();

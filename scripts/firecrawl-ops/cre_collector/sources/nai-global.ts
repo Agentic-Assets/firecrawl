@@ -1,3 +1,4 @@
+import { NativeEvidenceTerminalError } from "../lib/source-evidence/terminal-error.js";
 // sources/nai-global.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
@@ -428,7 +429,7 @@ export async function naiGraphqlPost(
   const captureDir = process.env.CRE_NAI_NATIVE_CAPTURE_DIR;
   const capture = !!captureDir && url === NAI_PUBLIC_POST_URL && body?.operationName === "GET_LISTINGS_PUBLIC_POSTS";
   if (capture && (body?.query !== NAI_FEED_QUERY || process.env.CRE_NAI_NATIVE_CAPTURE_SINGLE_WRITER !== "1"))
-    throw new Error("NAI native capture failed");
+    throw new NativeEvidenceTerminalError("NAI native capture failed");
   const startedAt = capture ? observationNow() : "";
   let reader: ResponseBodyReader | undefined;
   let captureStopped = false;
@@ -493,9 +494,9 @@ export async function naiGraphqlPost(
     captureStopped = true;
     controller.abort();
     if (!reader || !(await settleResponseBodyRead(reader, error, 1_000))) {
-      throw new Error("NAI native capture failed: response settlement unconfirmed");
+      throw new NativeEvidenceTerminalError("NAI native capture failed: response settlement unconfirmed");
     }
-    throw new Error("NAI native capture failed");
+    throw new NativeEvidenceTerminalError("NAI native capture failed");
   } finally {
     captureStopped = true;
     if (timeout) clearTimeout(timeout);

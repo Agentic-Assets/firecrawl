@@ -119,10 +119,11 @@ for parallel diagnosis and testing without repeated full-batch runs.
 - Listings: `id`, `name`, `transactionType`, address/geo, prices, `brokerIds` (`brokerRef()`), `brochures`, `photos`, `url`, `lastUpdated`; use `prune()` before emit.
 - **`truncated?: boolean`**: set when this pass collected less than the feed's
   reported total (or hit a hard cap). `cre_monitor.py` treats `truncated` like
-  `error` for disappearance gating. Adapters that set it: `newmark` (Algolia
-  ~1000-hit cap unsplit), `cbre` and `cushman-wakefield` (collected <
+  `error` for disappearance gating. Adapters that set it include `newmark` (NIM
+  output cap below reconciled US inventory), `cbre` and `cushman-wakefield` (collected <
   `min(max, reported total)`), `nai-global` (`--page-cap` clip with a full last
   page), and `colliers-main` (deferred or errored detail renders).
+  The retained legacy Newmark Algolia adapter separately reports an unsplit hit cap.
 - **`monitor=true`**: cheap enumeration only. Skip detail unless the feed is already complete.
 - Folded sub-sources get ingest prefixes (`dealflow:`, `investor:`, `main:`), not adapter prefixes. `colliers-main` emits bare `usa#####`; ingest adds `main:`.
 
@@ -386,8 +387,8 @@ See the linked contract's held inventory and detail observations boundary.
 
 | Transport | Sources |
 |-----------|---------|
-| Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (ordinary detail path), newmark (cred bootstrap), buildout (fallback), savills (validated fallback only) |
-| Direct public HTTP (no Firecrawl) | avison-young (strict checkpoint detail via pinned HTTPS), cbre-dealflow, colliers (RCM), newmark (Algolia), marcus-millichap, nai-global, buildout (preferred path for registered sources), savills (server-rendered public list pages) |
+| Firecrawl `scrapeJson` / `scrapeDoc` / `scrapeRaw` | cbre, colliers-main, jll, jll-investor, cushman, transwestern, avison-young (ordinary detail path), newmark (legacy Algolia bootstrap only), buildout (fallback), savills (validated fallback only) |
+| Direct public HTTP (no Firecrawl) | avison-young (strict checkpoint detail via pinned HTTPS), cbre-dealflow, colliers (RCM), newmark (active NIM search; legacy Algolia retained), marcus-millichap, nai-global, buildout (preferred path for registered sources), savills (server-rendered public list pages) |
 
 Shared: `lib/scrape.ts` (3× scrape retry, `jsonAttempts`/`jsonBackoffMs` for interstitials), `lib/broker.ts`, `lib/html.ts`, `lib/util.ts` (`pmap`, `prune`).
 
@@ -533,7 +534,7 @@ adds no per-post inventory requests and leaves every fresh detail required.
 | jll-investor | `investor:` + Salesforce `listing.id` | Stable U.S. search snapshots + exact detail ID/alias; no coords |
 | cushman-wakefield | `url:v1:` + first 32 hex characters of normalized public-URL SHA-256 | Provider GUID is observational, not canonical identity; strict inventory preserves detail-only fields and children |
 | transwestern | `PageUrl` slug | Invalid rows fail closed. The provider-published `-` slug requires fresh unique official-sitemap membership and an exact primary name/full-address match, including in monitor mode. |
-| newmark | Algolia `slug` | Algolia 1000-hit cap per query; state+type sub-split |
+| newmark | NIM canonical URL slug from `newmarkNimCanonicalIdentity` | Reconcile complete ascending 100-row pages before US filtering; provider ID and slug are separate observations |
 | marcus-millichap | `DealId` from map tile | **Lease skipped**; list API caps ~100; map ActivityIds required |
 | avison-young | SharpLaunch `row.id` | Strict refresh validates every selected property detail; only ordinary unlimited runs default to no detail enrichment |
 | interra-realty | Numeric WordPress `ID` | Legacy `listing/<slug>` records require an explicitly reviewed identity transition; additive ingestion refuses exact-URL cross-identity collisions |
@@ -878,8 +879,8 @@ missing source data nor fresh-detail or production acceptance; follow
 
 | Behavior | Sources |
 |----------|---------|
-| Monitor ≈ full (same rows) | cbre, registered Buildout sources, savills |
-| Monitor = enum, skips detail | cushman, marcus, colliers-main, newmark (skips People lookup), avison-young, transwestern |
+| Monitor ≈ full (same rows) | cbre, registered Buildout sources, savills, newmark (NIM) |
+| Monitor = enum, skips detail | cushman, marcus, colliers-main, avison-young, transwestern |
 | Monitor ≈ full (bulk public detail fields) | nai-global |
 | Monitor returns `[]` | jll, jll-investor, cbre-dealflow, colliers (ST) - id only on detail page |
 
@@ -892,7 +893,7 @@ Monitor artifacts → `cre_monitor.py` only. Sources with `[]` stay on full-swee
 | `cbre.ts` | Internal JSON API, stealth, `waitFor: 4000` |
 | `cbre-dealflow.ts`, `colliers.ts` | RCM GET + SLP detail; direct `fetch`; detail concurrency `min(CONCURRENCY, 2)` |
 | `cushman-wakefield.ts`, `transwestern.ts`, `avison-young.ts` | Public API/feed + per-URL detail enrich |
-| `newmark.ts` | Algolia via `fetch`; People lookup on full path only |
+| `newmark.ts` | Active direct NIM search in both modes; Algolia/People implementation retained as `srcNewmarkAlgoliaLegacy` |
 | `nai-global.ts` | Infabode GraphQL `publicPosts` bulk detail feed; identical conservative eligibility on full and monitor paths |
 | `marcus-millichap.ts` | Map ActivityId tiles + detail HTML; JSONL detail cache |
 | `jll.ts` | Search pages + `__NEXT_DATA__`; disk detail cache `out/cache/jll-detail/`; strict runs set `JLL_DETAIL_CACHE_MIN_CACHED_AT` |
@@ -1095,6 +1096,23 @@ SRS and Kidder cache metadata uses private WeakMaps, including without native
 capture. Preserve provider fields named `__creInventoryCacheDisposition` as
 source data; they cannot assert collector cache provenance. Cache hits retain
 the original observation clock and do not publish a fresh native capture.
+
+## Newmark NIM inventory and evidence
+
+`srcNewmark` serves full and monitor collection from the direct public NIM
+search POST. It enumerates ascending 100-row pages for each transaction,
+reconciles provider counts and identities, then filters US geography and caps
+output. `--max-items` does not bound its inventory requests. The explicitly
+named Algolia legacy implementation is separate from this current dispatch.
+
+The optional native JSON feed profile captures decoded NIM response text before
+page validation, geography, identity and output filtering. It binds sale/lease
+request types separately, accepts only the fixed 100-row request and retains
+all returned rows as observations. Unrecognized valid JSON remains unqualified
+context. This is not canonical admission, source freshness, complete coverage,
+display permission or evidence of a publisher's visibility policy. Existing
+content checks and the 128-page/128-MiB attempt and 16-MiB decoded-page limits
+remain; see [`source_evidence/README.md`](../source_evidence/README.md).
 
 ## Kidder Mathews complete inventory
 

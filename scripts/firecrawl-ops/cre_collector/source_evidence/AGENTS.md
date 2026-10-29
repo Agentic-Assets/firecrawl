@@ -257,3 +257,9 @@ owner decision; do not activate or admit SRS until resolved. Its canonical
 mapper's current display control remains unchanged. SRS may explicitly opt
 into 256 pages; other sources remain capped at 128. Credential and JLL rules
 still apply. Never claim source permission or confidentiality from capture.
+
+The Newmark NIM sale/lease native feed is a separate default-off profile of the
+same private capture lane. Preserve decoded response rows, including non-US and
+identity-ambiguous rows, as observations without claiming canonical admission.
+Wrong or absent row-array shapes remain unqualified context. Profile-bound
+request type and page do not prove inventory coverage or source authority.

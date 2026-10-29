@@ -13,7 +13,9 @@ from source_evidence import acquisition, events, native_feed_projection
 MAX_BODY = 16 * 1024 * 1024
 MAX_ENTRY = ((MAX_BODY + 65536) * 4 + 2) // 3 + 16384
 PROFILES = {'srs_search_post_v1': 'srs', 'kidder_bulk_post_v1': 'kidder-mathews',
-            'kidder_paged_post_v1': 'kidder-mathews', 'hanley_embedded_array_v1': 'hanley'}
+            'kidder_paged_post_v1': 'kidder-mathews', 'hanley_embedded_array_v1': 'hanley',
+            'newmark_nim_sale_post_v1': 'newmark', 'newmark_nim_lease_post_v1': 'newmark'}
+ROW_KEYS = {'srs': 'properties', 'kidder-mathews': 'results', 'hanley': None, 'newmark': 'data'}
 SRS_FILTERS = {'availabilityType': ['sale', 'lease', 'investment-sale'],
     'propertyType': ['retail', 'industrial', 'office', 'land', 'multifamily', 'hospitality', 'healthcare', 'special_purpose'],
     'address': None, 'tenant': '', 'ownershipType': ['fee-simple-land-building', 'ground-lease-land-only', 'leasehold-lease-only', 'other'],
@@ -29,6 +31,11 @@ def request_bytes(profile, offset):
     elif profile in ('kidder_bulk_post_v1', 'kidder_paged_post_v1'):
         body = {'startIndex': offset, 'numResults': 8000 if profile == 'kidder_bulk_post_v1' else 50,
                 'includeAggregations': False}
+    elif profile in ('newmark_nim_sale_post_v1', 'newmark_nim_lease_post_v1'):
+        body = {'type': 2 if profile == 'newmark_nim_sale_post_v1' else 1, 'listingIds': [],
+                'propertyTypes': [], 'brokers': [], 'statuses': [], 'propertySubtypes': [], 'spaceTypes': [],
+                'buildingClasses': [], 'leaseTypes': [], 'excludeUnpriced': False, 'page': offset // 100,
+                'take': 100, 'sortBy': 'createdOn', 'isAscending': True}
     else:
         return None
     return json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode()
@@ -43,6 +50,7 @@ def _validate_request_receipt(profile, receipt, source):
             (hanley and (page is not None or offset is not None or variant not in ('direct', 'firecrawl'))) or
             (not hanley and (type(page) is not int or type(offset) is not int or not 0 <= page <= 9007199254740991
              or not 0 <= offset <= 9007199254740991 or variant not in ('strict', 'standard'))) or
+            (profile in ('newmark_nim_sale_post_v1', 'newmark_nim_lease_post_v1') and offset != page * 100) or
             (profile == 'srs_search_post_v1' and offset != page * 12) or
             (profile == 'kidder_bulk_post_v1' and (variant != 'strict' or page != 0 or offset != 0)) or
             (profile == 'kidder_paged_post_v1' and (variant != 'standard' or offset != page * 50)) or
@@ -114,7 +122,7 @@ def make_observation(projected, literals, projection, *, receipt, profile, bindi
     canonical = acquisition.encode_json(json.loads(events.encoded(projected)), literals).encode('utf8')
     if projection.get('projectedCanonicalSha256') != events.sha256(canonical):
         raise ValueError('native projected hash mismatch')
-    rows_key = {'srs': 'properties', 'kidder-mathews': 'results', 'hanley': None}[source]
+    rows_key = ROW_KEYS[source]
     if source == 'hanley':
         pointer = ''; context = acquisition.PLACEHOLDER; records = projected
     elif isinstance(projected, dict) and isinstance(projected.get(rows_key), list):
@@ -136,13 +144,13 @@ def reconstruct(value):
         raise ValueError('invalid native projected observation')
     source = value.get('receipt', {}).get('sourceKey')
     pointer = value.get('arrayPointer')
-    allowed = {'srs': (None, '/properties'), 'kidder-mathews': (None, '/results'), 'hanley': ('',)}
+    allowed = {key: ('',) if row is None else (None, '/' + row) for key, row in ROW_KEYS.items()}
     if source not in allowed or pointer not in allowed[source]:
         raise ValueError('invalid native projected array scope')
     if pointer is None:
         if value.get('records') != []:
             raise ValueError('whole context cannot claim selected rows')
-        rows_key = 'properties' if source == 'srs' else 'results'
+        rows_key = ROW_KEYS[source]
         context = value.get('context')
         if isinstance(context, dict) and isinstance(context.get(rows_key), list):
             raise ValueError('recognized native row array must be selected')
@@ -185,7 +193,7 @@ def validate(value):
         raise ValueError('unprojected native data')
     allowed = {'hanley': {'nonpublic_or_unknown_visibility'},
                'srs': set(),
-               'kidder-mathews': set()}[source]
+               'kidder-mathews': set(), 'newmark': set()}[source]
     if (set(projection) != {'schema', 'sourceKey', 'withheld', 'projectedCanonicalSha256'}
             or projection.get('schema') != 'cre-native-feed-projection/v1' or projection.get('sourceKey') != source
             or projection.get('projectedCanonicalSha256') != events.sha256(canonical)

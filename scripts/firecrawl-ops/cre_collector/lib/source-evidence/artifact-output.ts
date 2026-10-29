@@ -1,6 +1,7 @@
 /** Share collector output custody without changing ordinary listing output. */
-import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
 /** Reserve a private output directory before acquisition, without replacing it. */
 export function reservePrivateCollectorDirectory(path: string): void {
@@ -28,4 +29,11 @@ export function writeCollectorArtifact(path: string | null | undefined, json: st
       fsyncSync(descriptor);
     } finally { closeSync(descriptor); }
   } else writeFileSync(path, json);
+}
+
+/** Retain a terminal partial privately even when the caller did not select an output. */
+export function writeTerminalCollectorArtifact(path: string | null | undefined, json: string): string {
+  const actual = path ?? join(mkdtempSync(join(tmpdir(), "cre-terminal-partial-")), "artifact.json");
+  writeCollectorArtifact(actual, json, true);
+  return actual;
 }

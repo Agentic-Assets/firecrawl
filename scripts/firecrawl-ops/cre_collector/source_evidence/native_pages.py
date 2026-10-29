@@ -27,11 +27,11 @@ PROVENANCE = {"bodyHashKind": "fetch_delivered_body_bytes_not_wire", "identity":
 NATIVE_FORMATS = {"nai-global": "nai_public_posts_v1", "avison-young": "avison_sharplaunch_website_v1",
                   "transwestern": "transwestern_inventory_parsed_v1", "pyramid-brokerage": "pyramid_inventory_decoded_v1",
                   "srs": "native_json_feed_projected_v1", "kidder-mathews": "native_json_feed_projected_v1",
-                  "hanley": "native_json_feed_projected_v1"}
+                  "hanley": "native_json_feed_projected_v1", "newmark": "native_json_feed_projected_v1"}
 ENV_PREFIXES = {"nai-global": "CRE_NAI_NATIVE_CAPTURE", "avison-young": "CRE_AVISON_NATIVE_CAPTURE",
                 "transwestern": "CRE_TRANSWESTERN_NATIVE_CAPTURE", "pyramid-brokerage": "CRE_PYRAMID_NATIVE_CAPTURE",
                 "srs": "CRE_NATIVE_JSON_FEED_CAPTURE", "kidder-mathews": "CRE_NATIVE_JSON_FEED_CAPTURE",
-                "hanley": "CRE_NATIVE_JSON_FEED_CAPTURE"}
+                "hanley": "CRE_NATIVE_JSON_FEED_CAPTURE", "newmark": "CRE_NATIVE_JSON_FEED_CAPTURE"}
 BUILDOUT_ENV_PREFIX = "CRE_BUILDOUT_NATIVE_CAPTURE"
 
 
@@ -76,7 +76,7 @@ def configure_worker_env(env, run_dir, source, attempt, config):
 def _decode(source, raw, filename, binding, *, native_format):
     if not format_supported(source, native_format):
         raise ValueError("native source format is unsupported")
-    if source in ("srs", "kidder-mathews", "hanley"):
+    if source in ("srs", "kidder-mathews", "hanley", "newmark"):
         from source_evidence.native_feed_pages import decode_entry as decode_feed
         return decode_feed(raw, filename, binding, source=source)
     if source == "pyramid-brokerage":
@@ -215,7 +215,7 @@ def settle(run_dir, manifest, source, attempt, save):
                        "generation": manifest["run_id"], "attempt": attempt["number"]}
             observation, diagnostic = _decode(source, raw, name, binding,
                                                native_format=config["native_source_formats"][source])
-            if (observation is not None and source in ("srs", "kidder-mathews", "hanley")
+            if (observation is not None and source in ("srs", "kidder-mathews", "hanley", "newmark")
                     and observation.get("receipt", {}).get("sequence", 0) > page_limit(source, config)):
                 raise ValueError("native feed sequence exceeds policy limit")
             if diagnostic:
@@ -280,7 +280,7 @@ def prepare_job(run_dir, manifest, source, attempt, page):
                "generation": manifest["run_id"], "attempt": attempt["number"]}
     observation, diagnostic = _decode(source, raw, name, binding,
                                       native_format=config["native_source_formats"][source])
-    if (observation is not None and source in ("srs", "kidder-mathews", "hanley")
+    if (observation is not None and source in ("srs", "kidder-mathews", "hanley", "newmark")
             and observation.get("receipt", {}).get("sequence", 0) > page_limit(source, config)):
         raise ValueError("native feed sequence exceeds policy limit")
     if diagnostic or len(observation["records"]) > config["max_records"]:

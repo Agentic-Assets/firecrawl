@@ -917,3 +917,12 @@ screening is not a general confidentiality guarantee. All profiles are default
 off and require source-policy review and separate production acceptance.
 SRS can explicitly opt into 256 pages; other sources remain limited to 128.
 The shared attempt limit remains 128 MiB and decoded page limit 16 MiB.
+
+Newmark NIM sale and lease use separate fixed request profiles in this same
+opt-in private lane. Decoded pages preserve all source rows and context,
+including non-US and ambiguous identity rows, with numeric witnesses. Unknown
+valid response shapes remain unqualified whole context. The recorded request
+profile is not a canonical listing, public-display, source-authority or
+complete-coverage assertion. The existing 128-page, 128-MiB attempt and 16-MiB
+decoded-page bounds apply. This prototype is default off and needs separate
+source-policy review and production acceptance.

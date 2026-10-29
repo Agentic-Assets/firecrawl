@@ -28,7 +28,7 @@ def _bounded(value):
 
 def project(document, literals, *, source):
     """Project recognized shapes without mutating the original or moving rows."""
-    if source not in ('srs', 'kidder-mathews', 'hanley') or not isinstance(literals, dict):
+    if source not in ('srs', 'kidder-mathews', 'hanley', 'newmark') or not isinstance(literals, dict):
         raise ValueError('unsupported native feed source')
     _bounded(document)
     result = copy.deepcopy(document); removed = []
@@ -43,8 +43,10 @@ def project(document, literals, *, source):
     elif source == 'srs':
         if isinstance(result, dict) and isinstance(result.get('properties'), list) and len(result['properties']) > MAX_ROWS:
             raise ValueError('SRS array exceeds bound')
-    elif isinstance(result, dict) and isinstance(result.get('results'), list) and len(result['results']) > MAX_ROWS:
-        raise ValueError('Kidder array exceeds bound')
+    else:
+        rows_key = 'data' if source == 'newmark' else 'results'
+        if isinstance(result, dict) and isinstance(result.get(rows_key), list) and len(result[rows_key]) > MAX_ROWS:
+            raise ValueError('native feed array exceeds bound')
     paths = [x['pointer'] for x in removed]
     projected_literals = {k: v for k, v in literals.items() if not any(k == p or k.startswith(p + '/') for p in paths)}
     projected = acquisition.encode_json(json.loads(events.encoded(result)), projected_literals).encode('utf8')

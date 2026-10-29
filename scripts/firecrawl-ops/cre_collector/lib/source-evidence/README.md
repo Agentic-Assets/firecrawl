@@ -107,3 +107,10 @@ SRS and Kidder generation-cache disposition is kept in collector-owned metadata,
 not a reserved field on provider rows. Provider fields with the same name are
 preserved and cannot assert cache provenance, including when capture is disabled.
 This intentionally corrects the former source-field collision behavior.
+
+On a terminal native capture failure, the collector stops further dispatch,
+marks the incomplete artifact, and exits nonzero. If no output path was supplied,
+it writes the partial artifact in a newly created owner-private temporary
+folder and prints its path to stderr for recovery; ordinary stdout behavior is
+unchanged. Already-running work may have incomplete results. The partial artifact
+is private evidence, not a canonical inventory input.
