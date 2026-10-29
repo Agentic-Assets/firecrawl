@@ -28,6 +28,11 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def placeholder_only(text):
+    """Recognize Docling's image-only Markdown without discarding real text."""
+    return re.fullmatch(r'\s*<!-- image -->(?:\s*<!-- image -->)*\s*', text) is not None
+
+
 def read_limited(path, limit):
     data = read_consistent(path, limit)
     if len(data) > limit:
@@ -172,6 +177,9 @@ def convert(raw, attempt):
                 return attempt
             if not text.strip():
                 attempt['extraction']['error_code'] = 'empty_output'
+                return attempt
+            if placeholder_only(text):
+                attempt['extraction']['error_code'] = 'placeholder_only_output'
                 return attempt
             attempt['extraction'].update(status='extracted', text=text, text_sha256=digest(data))
             return attempt

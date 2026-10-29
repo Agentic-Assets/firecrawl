@@ -199,6 +199,9 @@ def run_psql(sql, env_file, target, *, validate_transport=None, max_results_byte
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
+    inspection = sub.add_parser('inspect-target')
+    inspection.add_argument('--env-file', required=True); inspection.add_argument('--expected-db-target-sha256', required=True)
+    inspection.add_argument('--out', required=True); inspection.add_argument('--login')
     p = sub.add_parser('plan')
     p.add_argument('--artifact', required=True); p.add_argument('--source-key', required=True)
     p.add_argument('--observed-at'); p.add_argument('--external-id'); p.add_argument('--out', required=True)
@@ -247,7 +250,17 @@ def main(argv=None):
     export_collector.add_argument('--env-file', required=True)
     export_collector.add_argument('--expected-db-target-sha256', required=True)
     args = parser.parse_args(argv)
-    if args.command == 'convert-collector':
+    if args.command == 'inspect-target':
+        from source_evidence import target_inspection
+        raw = run_psql(target_inspection.sql(args.login), args.env_file, args.expected_db_target_sha256,
+                       max_results_bytes=target_inspection.MAX_RESULTS_BYTES)
+        result = json.loads(raw)
+        if not isinstance(result, dict) or result.get('schema_version') != 'cre-source-evidence-target-inspection/v1':
+            raise ValueError('invalid catalog inspection response')
+        write_private(args.out, result)
+        print(f"Catalog inspection saved: {result['hazard_count']} hazards, {result['extension_count']} extensions, "
+              f"{result['connectable_database_count']} connectable databases.")
+    elif args.command == 'convert-collector':
         raw = read_consistent(args.artifact, events.MAX_ARTIFACT_BYTES)
         projection = None
         if args.project_map_credentials:
@@ -277,7 +290,11 @@ def main(argv=None):
         write_private(args.out, result)
         print(f"Document candidates saved: {len(result['candidates'])}; acquisition is not enabled.")
     elif args.command == 'plan-document-acquisition':
-        from source_evidence import automatic, document_acquisition_policy, document_candidates
+        from source_evidence import (
+            automatic,
+            document_acquisition_policy,
+            document_candidates,
+        )
         raw_policy = automatic._read_private(Path(args.policy).expanduser(), 16384)
         result = document_acquisition_policy.prepare(
             read_json(args.plan, MAX_PLAN_BYTES), read_json(args.candidates, document_candidates.MAX_MANIFEST_BYTES),
@@ -327,7 +344,10 @@ if __name__ == '__main__':
     try:
         main()
     except RuntimeError:
-        print('Database operation failed or timed out; the write outcome may be unknown. Reconcile, then retry the exact admitted plan if appropriate.', file=sys.stderr)
+        if len(sys.argv) > 1 and sys.argv[1] == 'inspect-target':
+            print('Read-only catalog inspection failed or timed out; no result saved.', file=sys.stderr)
+        else:
+            print('Database operation failed or timed out; the write outcome may be unknown. Reconcile, then retry the exact admitted plan if appropriate.', file=sys.stderr)
         sys.exit(1)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         print(f'Operation refused or failed ({type(exc).__name__}); no content printed.', file=sys.stderr)

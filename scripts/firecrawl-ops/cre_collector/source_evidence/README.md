@@ -660,3 +660,28 @@ other URLs and source content still pass the existing admission checks. Pointer
 receipts identify the projection, not original source bytes, and a projected map
 reference is not an approved download target. No source or policy is enabled by
 this support.
+
+### Read-only target catalog inspection
+
+Inspect a candidate with a private database environment and its independently
+verified target fingerprint. The optional `--login` selects an existing role to
+assess; omit it to assess the session login. Names and catalog details are saved
+to a new mode-0600 file, and only counts are printed.
+
+```sh
+python3 -m source_evidence.cli inspect-target --env-file /private/evidence-db.env \
+  --expected-db-target-sha256 TARGET_HASH --out /private/target-inspection.json
+```
+
+The command does not assume a role, invoke application functions, read evidence
+rows, or modify the database. It shares the automatic writer guard's effective
+capability predicates and reports bounded hazard, extension and connectable
+database lists with counts and truncation indicators. Other databases are not
+inspected. Role attributes and migration-related object and extension metadata
+are informational; they do not validate SQL 019/020 or role memberships. This
+includes `fact_index_name_exists`, which checks name resolution rather than
+the object's type, index definition or validity. The result
+is a bounded catalog assessment, not proof of credential isolation, complete
+permissions, migration readiness, or production activation. Server-side
+restrictions, independent connections, system objects, invoker routine effects
+and concurrent ACL changes require separate review.
