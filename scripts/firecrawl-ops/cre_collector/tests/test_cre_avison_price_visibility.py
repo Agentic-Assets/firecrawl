@@ -358,6 +358,14 @@ def postgres_contract_sql():
             brokerIds=[0],
             **({"preserveChildCollections": True} | changes),
         )
+        if isinstance(item.get("extraFacts"), dict) and isinstance(item["extraFacts"].get("avison_lease_facts"), dict):
+            facts = item["extraFacts"]["avison_lease_facts"]
+            facts["external_id"] = key
+            facts["listing_url"] = item["url"]
+            item["rawSharpLaunch"].update(id=key, external_url=item["url"], country="US", sale_currency="USD")
+            item["detailScrape"] = {"urls":[item["url"]]}
+            for page in facts["pages"]:
+                page["source_url"] = item["url"]
         return ingest.to_row(
             item,
             {
@@ -529,6 +537,73 @@ CREATE TEMP TABLE old_baseline AS SELECT * FROM credeals.cre_source_baseline;
         ),
         "\\echo 'Avison actual generated SQL retention, children, recovery and protected scopes passed'",
     ]
+    retained = make("retained-new", "unknown", avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})
+    retained["highlights"] = ["Prior unique highlight", "Shared highlight"]
+    retained["amenities"] = ["Prior unique amenity", "Shared amenity"]
+    legacy = make("legacy-new", 1)
+    statements += [
+        generated([retained, legacy], "2026-10-16T22:30:00Z"),
+        check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' FROM credeals.cre_listings WHERE external_id='retained-new')", "retained facts survive mixed SQL"),
+        check("(SELECT sale_price_usd IS NULL FROM credeals.cre_listings WHERE external_id='legacy-new')", "legacy withholding remains scoped"),
+    ]
+    legacy_transition = make("retained-new", 1)
+    legacy_transition["description"] = "Later independent source fact."
+    legacy_transition["noi"] = 75000
+    legacy_transition["highlights"] = ["Current unique highlight", "Shared highlight"]
+    legacy_transition["amenities"] = ["Current unique amenity", "Shared amenity"]
+    legacy_transition["documents"][0]["title"] = "Later brochure label"
+    legacy_transition["contacts"][0]["title"] = "Later contact label"
+    statements += [
+        "CREATE TEMP TABLE retained_before AS SELECT scraped_at FROM credeals.cre_listings WHERE external_id='retained-new';",
+        check("EXISTS(SELECT 1 FROM credeals.cre_listing_documents d JOIN credeals.cre_listings t ON t.id=d.listing_id WHERE t.external_id='retained-new' AND d.title LIKE '%100000%')", "prior child title exists before transition"),
+        generated([legacy_transition], "2026-10-16T22:40:00Z"),
+        check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' AND description LIKE '%Later independent source fact.%' AND noi=75000 AND scraped_at=(SELECT scraped_at FROM retained_before) FROM credeals.cre_listings WHERE external_id='retained-new')", "legacy transition keeps prior and current facts and prior detail clock"),
+        check("EXISTS(SELECT 1 FROM credeals.cre_listing_documents d JOIN credeals.cre_listings t ON t.id=d.listing_id WHERE t.external_id='retained-new' AND d.title LIKE '%100000%' AND d.title LIKE '%Later brochure label%')", "prior and current document titles retained"),
+        check("EXISTS(SELECT 1 FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings t ON t.id=c.listing_id WHERE t.external_id='retained-new' AND c.title LIKE '%100000%' AND c.title LIKE '%Later contact label%')", "prior and current contact titles retained"),
+
+    ]
+    statements += [
+        check("(SELECT highlights=ARRAY['Prior unique highlight','Shared highlight','Current unique highlight'] AND amenities=ARRAY['Prior unique amenity','Shared amenity','Current unique amenity'] FROM credeals.cre_listings WHERE external_id='retained-new')", "prior and current arrays retained without duplicate"),
+        "CREATE TEMP TABLE retained_snapshot AS SELECT COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}') AS snapshot FROM credeals.cre_listings WHERE external_id='retained-new';",
+        check("(SELECT snapshot IS NOT NULL AND (snapshot::jsonb)::text LIKE '%avison-public-facts-retention/v2%' FROM retained_snapshot)", "prior v2 source snapshot retained"),
+        generated([make("retained-new", 1)], "2026-10-16T22:41:00Z"),
+        check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' AND COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}')=(SELECT snapshot FROM retained_snapshot) FROM credeals.cre_listings WHERE external_id='retained-new')", "legacy replay preserves source without recursive growth"),
+        generated([make("overflow-v2", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:42:00Z"),
+        "UPDATE credeals.cre_listings SET raw_data=raw_data || jsonb_build_object('large_context', repeat('x',1100000)) WHERE external_id='overflow-v2';",
+        generated([make("overflow-v2", 1)], "2026-10-16T22:43:00Z"),
+        generated([make("overflow-v2", 1)], "2026-10-16T22:44:00Z"),
+        check("(SELECT sale_price_usd=100000 AND length(raw_data->>'large_context')=1100000 AND raw_data#>>'{avisonRetainedPrior,state}'='snapshot_limit' FROM credeals.cre_listings WHERE external_id='overflow-v2')", "oversize prior remains intact after legacy replay"),
+    ]
+    statements += [
+        generated([make("legacy-new", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:44:30Z"),
+        check("(SELECT sale_price_usd=100000 AND description LIKE '%Asking price%' FROM credeals.cre_listings WHERE external_id='legacy-new')", "v2 after legacy restores retained facts"),
+    ]
+    later_visible = make("visible-transition", 0)
+    later_visible["description"] = "Different later source fact."
+    later_visible["sale_price_usd"] = 222000
+    later_visible["raw_data"]["rawSharpLaunch"]["sale_price"] = 222000
+    absent_legacy = make("absent-transition", 0)
+    absent_legacy["raw_data"]["rawSharpLaunch"].pop("hide_price", None)
+    absent_legacy["raw_data"]["avisonPriceVisibility"]["control"] = "absent"
+    statements += [
+        generated([make("visible-transition", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:44:35Z"),
+        generated([later_visible], "2026-10-16T22:44:40Z"),
+        check("(SELECT sale_price_usd=222000 AND description LIKE '%Asking price%' AND description LIKE '%Different later source fact%' AND COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}') IS NOT NULL FROM credeals.cre_listings WHERE external_id='visible-transition')", "visible legacy retains prior and current facts"),
+        generated([later_visible], "2026-10-16T22:44:41Z"),
+        check("(SELECT description LIKE '%Asking price%' AND description LIKE '%Different later source fact%' FROM credeals.cre_listings WHERE external_id='visible-transition')", "visible legacy replay preserves prior and current facts"),
+        generated([make("absent-transition", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})], "2026-10-16T22:44:42Z"),
+        generated([absent_legacy], "2026-10-16T22:44:43Z"),
+        check("(SELECT sale_price_usd=100000 AND COALESCE(raw_data#>>'{avisonRetainedPrior,sourceJson}',raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,sourceJson}') IS NOT NULL FROM credeals.cre_listings WHERE external_id='absent-transition')", "absent legacy control retains prior source"),
+    ]
+    legacy_mixed = make("mixed-prose", 0)
+    current_mixed = make("mixed-prose", 0, avisonPublicFactsRetention={"schema":"avison-public-facts-retention/v2"})
+    legacy_mixed["description"] = "First source fact."
+    current_mixed["description"] = "Different current fact."
+    merged_mixed = ingest.merge_rows(legacy_mixed, current_mixed)
+    statements += [
+        generated([merged_mixed], "2026-10-16T22:45:00Z"),
+        check("(SELECT description LIKE '%First source fact.%' AND description LIKE '%Different current fact.%' FROM credeals.cre_listings WHERE external_id='mixed-prose')", "mixed source prose retained"),
+    ]
     rollback_row = make("must-rollback", 1)
     rollback_sql = generated([rollback_row], "2026-10-16T23:00:00Z")
     before_commit = rollback_sql.rfind("COMMIT;")
@@ -632,12 +707,11 @@ def test_independent_structured_role_survives_conflicting_asking_note():
     }
 
 
-def test_default_sql_policy_is_empty_without_hidden_actual_avison_rows():
+def test_default_sql_policy_is_empty_without_legacy_avison_rows():
     import cre_avison_price_visibility as visibility
 
     for rows in (
         [],
-        [ingest.to_row(listing(0), {}, None)],
         [ingest.to_row(listing(sourceKey="svn"), {}, None)],
     ):
         assert visibility.sql_policy(rows) == {
@@ -645,6 +719,7 @@ def test_default_sql_policy_is_empty_without_hidden_actual_avison_rows():
             "prior_select": "",
             "post_sql": "",
         }
+    assert visibility.sql_policy([ingest.to_row(listing(0), {}, None)])["transition_sql"]
 
 
 def test_malformed_second_direct_pass_is_checked_even_after_hidden_first():
@@ -782,3 +857,87 @@ def test_nested_independent_economics_preserve_prose_without_retaining_asking(ve
     import cre_avison_price_visibility as visibility
 
     assert visibility.project_value(vector["input"], [20]) == vector["expected"]
+
+
+@pytest.mark.parametrize('control', [0, 1, None, 'unexpected'])
+def test_retention_policy_keeps_source_facts_without_old_withholding(control):
+    item = listing(control, avisonPublicFactsRetention={'schema':'avison-public-facts-retention/v2'})
+    row = ingest.to_row(item, {}, None)
+    assert row['sale_price_usd'] == 2000000
+    assert row['raw_data']['rawSharpLaunch']['sale_price'] == 2000000
+    assert 'Asking price' in row['description']
+    assert ingest.avison_prices.sql_policy([row]) == {'definitions':'', 'prior_select':'', 'post_sql':''}
+
+
+def test_retention_marker_is_source_scoped_in_mixed_batch():
+    new = ingest.to_row(listing(1, avisonPublicFactsRetention={'schema':'avison-public-facts-retention/v2'}), {}, None)
+    old = ingest.to_row(listing(1), {}, None)
+    policy = ingest.avison_prices.sql_policy([new, old])
+    assert 'avisonPublicFactsRetention' in policy['post_sql']
+    foreign = {'sourceKey':'different', 'avisonPublicFactsRetention':{'schema':'avison-public-facts-retention/v2'}}
+    assert not ingest.avison_prices.retained_policy(foreign)
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_mixed_legacy_and_retained_passes_preserve_new_facts(reverse):
+    items = [listing(1), listing('unknown', avisonPublicFactsRetention={'schema':'avison-public-facts-retention/v2'})]
+    if reverse:
+        items.reverse()
+    rows = [ingest.to_row(item, {}, None) for item in items]
+    merged = ingest.merge_rows(*rows)
+    assert merged['sale_price_usd'] == 2000000
+    assert 'Asking price' in merged['description']
+    assert ingest.avison_prices.sql_policy([merged]) == {'definitions':'', 'prior_select':'', 'post_sql':''}
+
+
+def test_new_typescript_producer_output_through_ingest_and_evidence():
+    import json
+    import subprocess
+
+    from source_evidence import collector, events
+
+    script = '''import {avisonYoungBaseListing} from "./sources/avison-young.ts";
+    import {prune} from "./lib/util.ts";
+    const inputs=[0,1,null,"unknown"].map((flag,i)=>({id:String(i+1),name:"Synthetic property",hide_price:flag,
+      sale_price: 123456, sale_currency:"USD", description:"Asking 123456",
+      external_url:`https://example.test/property/${i}`}));
+    console.log(JSON.stringify(inputs.map(x=>prune({sourceKey:"avison-young",transactionMode:"sale",...avisonYoungBaseListing(x,new Map())}))));'''
+    completed = subprocess.run(['node', '--import', 'tsx', '--input-type=module', '-e', script],
+                               check=True, capture_output=True, text=True)
+    listings = json.loads(completed.stdout)
+    for item in listings:
+        staged = ingest.to_row(item, {}, None)
+        assert staged['sale_price_usd'] == 123456
+        assert staged['raw_data']['rawSharpLaunch']['sale_price'] == 123456
+        assert 'Asking 123456' in staged['description']
+    artifact = {'runMeta':{'mode':'full','finishedAt':'2026-10-29T12:00:00Z'},
+                'sources':[{'sourceKey':'avison-young'}], 'listings':listings, 'brokers':[], 'totalListings':4}
+    observed = collector.convert(artifact, source_key='avison-young')
+    plan = events.plan(observed, source_key='avison-young')
+    events.validate_content_policy(plan)
+    events.validate_plan(plan)
+    assert collector.reconstruct(observed) == artifact
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('legacy,new', [
+    ('Old detailed description with exclusive fact.', 'New short fact.'),
+    ('Old distinct fact.', 'New longer description with a different exclusive fact.'),
+    ('Same text.', 'Same text.'),
+    ('Contained text.', 'Additional introduction. Contained text.'),
+    ('Conflicting claim A.', 'Conflicting claim B.'),
+])
+def test_mixed_source_prose_preserves_both_passes(reverse, legacy, new):
+    old_item = listing(0, description=legacy, markdown=legacy)
+    new_item = listing(0, description=new, markdown=new,
+                       avisonPublicFactsRetention={'schema':'avison-public-facts-retention/v2'})
+    items = [old_item, new_item]
+    if reverse:
+        items.reverse()
+    merged = ingest.merge_rows(*(ingest.to_row(item, {}, None) for item in items))
+    for field in ('description', 'markdown'):
+        assert legacy in merged[field] and new in merged[field]
+        if legacy == new:
+            assert merged[field] == legacy
+    assert merged['raw_data']['primary']['description'] == items[0]['description']
+    assert merged['raw_data']['secondary_pass']['description'] == items[1]['description']

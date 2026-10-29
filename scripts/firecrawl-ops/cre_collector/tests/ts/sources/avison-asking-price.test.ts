@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { srcAvisonYoung } from '../../../sources/avison-young.js';
 import { firecrawl } from '../../../lib/scrape.js';
 
-test('Avison final fresh producer suppresses hidden asking without losing rent or observation proof', async (t) => {
+test('Avison final fresh producer retains asking without losing rent or observation proof', async (t) => {
   const prior = { fetch:globalThis.fetch, scrape:firecrawl.scrape, env:{...process.env} };
   t.after(() => { globalThis.fetch=prior.fetch;firecrawl.scrape=prior.scrape;process.env=prior.env; });
   process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS='1';
@@ -27,11 +27,11 @@ test('Avison final fresh producer suppresses hidden asking without losing rent o
   });
   const result=await srcAvisonYoung('sale',1,false);const row=result.listings[0];
   assert.equal(row.salePriceUsd,undefined);
-  assert.equal(row.saleUnitPrice,undefined);
-  assert.equal(row.rawSharpLaunch.sale_price,undefined);
+  assert.equal(row.saleUnitPrice,20);
+  assert.equal(row.rawSharpLaunch.sale_price,20);
   assert.equal(row.rawSharpLaunch.hide_price,1);
   assert.match(row.markdown,/Rent \$20\/SF\/YR/);
-  assert.doesNotMatch(row.markdown,/asking price|20 available/i);
+  assert.match(row.markdown,/asking price/i);
   assert.equal(row.leaseRateMin,undefined);
   assert.equal(row.rawSharpLaunch.availabilities_min_rent,20);
   assert.equal(row.extraFacts.avison_lease_facts.pages[0].observations[0].rent_text,"$20/SF/YR");
@@ -80,7 +80,7 @@ test('absent and visible projections retain legacy facts except the safe marker'
  }
 });
 
-test('Avison monitor, base-only and degraded-detail final emissions stay hidden without new freshness',async(t)=>{
+test('Avison monitor, base-only and degraded-detail retain source asking without new freshness',async(t)=>{
  const prior={fetch:globalThis.fetch,scrape:firecrawl.scrape,env:{...process.env}};
  t.after(()=>{globalThis.fetch=prior.fetch;firecrawl.scrape=prior.scrape;process.env=prior.env;});
  delete process.env.CRE_REQUIRE_FRESH_DETAILS;delete process.env.CRE_REQUIRE_FRESH_PROPERTY_DETAILS;
@@ -90,12 +90,12 @@ test('Avison monitor, base-only and degraded-detail final emissions stay hidden 
  for(const [monitor,limit] of [[true,'0'],[false,'0'],[false,'1']] as const){
   process.env.AVISON_YOUNG_DETAIL_LIMIT=limit;
   const result=await srcAvisonYoung('sale',1,monitor);const row=result.listings[0];
-  assert.equal(row.salePriceUsd,undefined);assert.equal(row.rawSharpLaunch.sale_price,undefined);
+  assert.equal(row.salePriceUsd,undefined);assert.equal(row.rawSharpLaunch.sale_price,20);
   assert.equal(row.leaseRateMin,undefined);
   assert.equal(row.rawSharpLaunch.availabilities_min_rent,20);assert.equal(row.id,'20');
   assert.equal(row.detailObservedAt,undefined);assert.equal(row.detailObservedWithChildPreservation,undefined);
   assert.equal(row.freshnessProvenance.detailScope,'inventory_only');
-  assert.equal(row.avisonPriceVisibility.control,'withheld');
+  assert.equal(row.avisonPublicFactsRetention.schema,'avison-public-facts-retention/v2');
  }
 });
 test('asking projection preserves resource spans and safe nested asking metadata',()=>{

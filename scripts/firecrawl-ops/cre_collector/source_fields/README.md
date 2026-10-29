@@ -2,6 +2,14 @@ Parent: [collector agent guidance](../AGENTS.md).
 
 # Source fields
 
+`rcm.py` keeps the CBRE, Colliers and Newmark contact-source match and the new CBRE price
+currency witness outside the ingest orchestrator. A marker binds an asserted
+source shape, not publisher authentication. Contacts without a stable name or
+email remain in source facts rather than repeatable additive child rows. A new
+CBRE price context must match the exact source, field, displayed value and USD
+basis before text can create a numeric price per square foot; legacy inputs keep
+their prior behavior. None of these checks erases the original source values.
+
 Buildout's 25 registered shared feeds, SVN, Lee and Franklin may promote the
 lease availability count from a strictly fresh, complete, source-bound inventory
 artifact. Franklin requires independently complete sale and lease feed proofs;
@@ -35,3 +43,13 @@ field holds separate from absence, so another pass cannot erase an ambiguity
 before merge. Holds and conflicts stay local to their field; agreeing property
 values can use the newer observation. The fixed three-field SQL helper shares
 the same ownership/clock checks and preserves sibling provenance atomically.
+
+Newmark's published-detail enrichment may add `cre_public_listing_facts` to a
+copied listing during ordinary ingest. The source-owned helper projects the
+original collector artifact through the existing Newmark credential-withholding
+codec and content policy, rechecks the source witness, property comparison,
+claim ID and URLs, and requires unique listing and observation bindings. The
+original input is unchanged and the projected evidence artifact remains
+non-canonical. Numeric literals and omitted source paths remain explicit; the
+collector clock and source coverage do not establish provider freshness or
+complete inventory. Unmatched observations do not produce a listing envelope.

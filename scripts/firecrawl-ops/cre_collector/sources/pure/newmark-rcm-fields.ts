@@ -24,7 +24,7 @@ function plainText(html: string): string | undefined {
 export interface NewmarkRcmFields {
   description?: string;
   photos?: string[];
-  contactsDetailed?: Array<{name: string; title?: string; email?: string; phone?: string; company?: string; license?: string; avatarUrl?: string; profileUrl?: string}>;
+  contactsDetailed?: Array<{name: string; title?: string; email?: string; phone?: string; company?: string; license?: string; avatarUrl?: string; profileUrl?: string; rcmContactSource: "newmark_published_rcm"}>;
   documents?: Array<{url: string}>;
   salePriceUsd?: number;
 }
@@ -60,7 +60,7 @@ export function mapNewmarkRcmFields(input: unknown, baseUrl: string, transaction
     for (const value of Array.isArray(section.contacts) ? section.contacts : []) {
       const c = object(value); if (!c) continue;
       const name = string(c.Fullname) ?? string([string(c.Firstname), string(c.Lastname)].filter(Boolean).join(" ")); if (!name || /^(?:n\/?a|unknown|none|contact us)$/i.test(name)) continue;
-      const contact: NonNullable<NewmarkRcmFields["contactsDetailed"]>[number] = { name };
+      const contact: NonNullable<NewmarkRcmFields["contactsDetailed"]>[number] = { name, rcmContactSource: "newmark_published_rcm" };
       if (string(c.Title)) contact.title = string(c.Title);
       if (string(c.Email)) contact.email = string(c.Email);
       if (string(c.Phone)) contact.phone = string(c.Phone);

@@ -424,10 +424,53 @@ def project_value(value, amounts=(), context="", role="raw"):
     return projected
 
 
+RETAIN_SCHEMA = "avison-public-facts-retention/v2"
+
+
+def retained_policy(raw):
+    """Recognize a producer-declared public-facts path, including merged passes."""
+    if not isinstance(raw, dict):
+        return False
+    candidates = [raw, raw.get("primary"), raw.get("secondary_pass")]
+    return any(isinstance(leaf, dict) and leaf.get("sourceKey") == SOURCE
+               and leaf.get("avisonPublicFactsRetention") == {"schema": RETAIN_SCHEMA} for leaf in candidates)
+
+
+def mixed_prose_snapshot(first, second):
+    """Save source prose before ordinary staged-row merging mutates the first row."""
+    if (first.get("slug") != SOURCE or second.get("slug") != SOURCE
+            or retained_policy(first.get("raw_data")) == retained_policy(second.get("raw_data"))):
+        return None
+    return {key: list(first[key]) if isinstance(first.get(key), list) else first.get(key)
+            for key in ("description", "markdown", "highlights", "amenities")}
+
+
+def merge_mixed_prose(target, incoming, snapshot):
+    """Retain distinct passages from the legacy and public-facts source passes."""
+    if snapshot is None:
+        return
+    for field in ("description", "markdown"):
+        first, second = snapshot[field], incoming.get(field)
+        if not first or not second:
+            target[field] = first or second
+        elif first in second:
+            target[field] = second
+        elif second in first:
+            target[field] = first
+        else:
+            target[field] = first + "\n\n" + second
+    for field in ("highlights", "amenities"):
+        first, second = snapshot[field], incoming.get(field)
+        target[field] = (list(dict.fromkeys(first + second))
+                         if isinstance(first, list) and isinstance(second, list) else first or second)
+
+
 def project_row(row):
     if not isinstance(row, dict) or row.get("slug") != SOURCE:
         return row
     raw = row.get("raw_data")
+    if retained_policy(raw):
+        return row
     control = effective_control(raw)
     result = dict(row)
     if control == "withheld":
@@ -467,13 +510,13 @@ def _pg_pattern(value):
 
 
 def sql_policy(rows):
-    """Emit only transaction-local Avison functions for a hidden Avison batch."""
+    """Emit transaction-local legacy Avison handling and retained-source transitions."""
     controls = [
         effective_control(row.get("raw_data"))
         for row in rows
-        if row.get("slug") == SOURCE
+        if row.get("slug") == SOURCE and not retained_policy(row.get("raw_data"))
     ]
-    if "withheld" not in controls:
+    if not controls:
         return {"definitions": "", "prior_select": "", "post_sql": ""}
     patterns = {
         "ask": ASK_LABEL,
@@ -706,12 +749,75 @@ END $av$;
     )
     for key, value in replacements.items():
         sql = sql.replace(key, value)
-    guard = """EXISTS (SELECT 1 FROM credeals.cre_brokerages avb
+    legacy_scope = """EXISTS (SELECT 1 FROM credeals.cre_brokerages avb
  WHERE avb.id=s.brokerage_id AND avb.slug='avison-young')
- AND pg_temp.avison_asking_control(s.raw_data)='withheld'"""
+ AND CASE WHEN coalesce((
+ (s.raw_data->>'sourceKey'='avison-young' AND s.raw_data->'avisonPublicFactsRetention' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb) OR
+ (s.raw_data#>>'{primary,sourceKey}'='avison-young' AND s.raw_data#>'{primary,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb) OR
+ (s.raw_data#>>'{secondary_pass,sourceKey}'='avison-young' AND s.raw_data#>'{secondary_pass,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb)), false) THEN false
+ ELSE true END"""
+    guard = f"({legacy_scope}) AND pg_temp.avison_asking_control(s.raw_data)='withheld'"
+    prior_retained = """(coalesce(t.raw_data->'avisonPublicFactsRetention' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb, false)
+ OR coalesce(t.raw_data#>'{primary,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb, false)
+ OR coalesce(t.raw_data#>'{secondary_pass,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb, false)
+ OR coalesce(t.raw_data#>'{latestInventoryObservation,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb, false)
+ OR coalesce(t.raw_data#>'{latestInventoryObservation,primary,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb, false)
+ OR coalesce(t.raw_data#>'{latestInventoryObservation,secondary_pass,avisonPublicFactsRetention}' = '{"schema":"avison-public-facts-retention/v2"}'::jsonb, false)
+ OR coalesce(t.raw_data#>>'{avisonRetainedPrior,schema}' = 'avison-prior-source/v1', false)
+ OR coalesce(t.raw_data#>>'{latestInventoryObservation,avisonRetainedPrior,schema}' = 'avison-prior-source/v1', false))"""
     prior_select = f""", CASE WHEN {guard}
  THEN pg_temp.avison_asking_amounts(t.raw_data) || ARRAY[t.sale_price_usd]::numeric[]
- ELSE ARRAY[]::numeric[] END AS avison_asking_amounts"""
+ ELSE ARRAY[]::numeric[] END AS avison_asking_amounts,
+ {prior_retained} AS avison_prior_retained, t.description AS avison_prior_description,
+ t.markdown AS avison_prior_markdown, t.raw_data AS avison_prior_raw,
+ t.scraped_at AS avison_prior_scraped_at, t.highlights AS avison_prior_highlights,
+ t.amenities AS avison_prior_amenities"""
+    # Only previously retained source rows receiving an incoming legacy
+    # observation enter this path. Prior source JSON is kept as inert text, so
+    # recursive current-observation selectors do not read stale flags/clocks.
+    transition_predicate = """(EXISTS (SELECT 1 FROM credeals.cre_brokerages avb
+ WHERE avb.id=s.brokerage_id AND avb.slug='avison-young')
+ AND coalesce(s.raw_data#>>'{avisonRetainedPrior,schema}' = 'avison-prior-source/v1', false))"""
+    transition_sql = f"""UPDATE _src s SET
+ sale_price_usd=coalesce(s.sale_price_usd,p.sale_price_usd),
+ sale_price_per_sf=coalesce(s.sale_price_per_sf,p.sale_price_per_sf),
+ highlights=CASE WHEN p.avison_prior_highlights IS NULL AND s.highlights IS NULL THEN NULL ELSE (
+   SELECT jsonb_agg(value ORDER BY first_ordinal) FROM (
+     SELECT value,min(ord) AS first_ordinal FROM jsonb_array_elements(
+       coalesce(to_jsonb(p.avison_prior_highlights),'[]'::jsonb) || coalesce(s.highlights,'[]'::jsonb)) WITH ORDINALITY x(value,ord)
+     GROUP BY value) q) END,
+ amenities=CASE WHEN p.avison_prior_amenities IS NULL AND s.amenities IS NULL THEN NULL ELSE (
+   SELECT jsonb_agg(value ORDER BY first_ordinal) FROM (
+     SELECT value,min(ord) AS first_ordinal FROM jsonb_array_elements(
+       coalesce(to_jsonb(p.avison_prior_amenities),'[]'::jsonb) || coalesce(s.amenities,'[]'::jsonb)) WITH ORDINALITY x(value,ord)
+     GROUP BY value) q) END,
+ description=CASE WHEN p.avison_prior_description IS NULL THEN s.description WHEN s.description IS NULL THEN p.avison_prior_description
+   WHEN position(s.description in p.avison_prior_description)>0 THEN p.avison_prior_description
+   WHEN position(p.avison_prior_description in s.description)>0 THEN s.description
+   ELSE p.avison_prior_description || E'\\n\\n' || s.description END,
+ markdown=CASE WHEN p.avison_prior_markdown IS NULL THEN s.markdown WHEN s.markdown IS NULL THEN p.avison_prior_markdown
+   WHEN position(s.markdown in p.avison_prior_markdown)>0 THEN p.avison_prior_markdown
+   WHEN position(p.avison_prior_markdown in s.markdown)>0 THEN s.markdown
+   ELSE p.avison_prior_markdown || E'\\n\\n' || s.markdown END,
+ raw_data=CASE WHEN (octet_length(p.avison_prior_raw::text)>1048576
+   AND p.avison_prior_raw#>>'{{avisonRetainedPrior,schema}}' IS DISTINCT FROM 'avison-prior-source/v1'
+   AND p.avison_prior_raw#>>'{{latestInventoryObservation,avisonRetainedPrior,schema}}' IS DISTINCT FROM 'avison-prior-source/v1')
+   OR p.avison_prior_raw#>>'{{avisonRetainedPrior,state}}'='snapshot_limit'
+   THEN jsonb_build_object('sourceKey','avison-young','avisonRetainedPrior',jsonb_build_object(
+        'schema','avison-prior-source/v1','state','snapshot_limit',
+        'incomingState',CASE WHEN octet_length(s.raw_data::text)<=1048576 THEN 'retained' ELSE 'omitted_input_limit' END,
+        'incomingJson',CASE WHEN octet_length(s.raw_data::text)<=1048576 THEN s.raw_data::text ELSE NULL END))
+   ELSE s.raw_data || jsonb_build_object('avisonRetainedPrior',
+   CASE WHEN p.avison_prior_raw#>>'{{avisonRetainedPrior,schema}}'='avison-prior-source/v1'
+        THEN p.avison_prior_raw->'avisonRetainedPrior'
+        WHEN p.avison_prior_raw#>>'{{latestInventoryObservation,avisonRetainedPrior,schema}}'='avison-prior-source/v1'
+        THEN p.avison_prior_raw#>'{{latestInventoryObservation,avisonRetainedPrior}}'
+        ELSE jsonb_build_object('schema','avison-prior-source/v1','state','retained',
+             'sourceJson',p.avison_prior_raw::text,'priorListingScrapedAt',p.avison_prior_scraped_at) END) END
+ FROM _prior_vals p
+ WHERE p.brokerage_id=s.brokerage_id AND p.external_id=s.external_id
+ AND p.avison_prior_retained AND {legacy_scope};"""
+    guard += " AND NOT coalesce(p.avison_prior_retained,false)"
     # Incoming asking channels are projected before staging. Only retained old
     # values need transient amount matching; collect those once before upsert.
     amounts = "coalesce(p.avison_asking_amounts,ARRAY[]::numeric[])"
@@ -723,7 +829,7 @@ END $av$;
     for table in ("cre_listing_contacts", "cre_listing_documents", "cre_listing_media"):
         update = f"""UPDATE credeals.{table} c
  SET title=NULLIF(pg_temp.avison_asking_text(c.title,({amounts}),'child-title'),'')
- {joins.format(alias="c")}
+ {joins.replace("{alias}", "c")}
  AND c.title IS DISTINCT FROM NULLIF(pg_temp.avison_asking_text(c.title,({amounts}),'child-title'),'');
 """
         if table == "cre_listing_media":
@@ -754,4 +860,4 @@ DO $av$ BEGIN
  END IF;
 END $av$;
 """
-    return {"definitions": sql, "prior_select": prior_select, "post_sql": post}
+    return {"definitions": sql, "prior_select": prior_select, "post_sql": post, "transition_sql": transition_sql, "transition_predicate": transition_predicate}

@@ -58,6 +58,7 @@ import cre_parse
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
 from cre_artifact_scope import require_canonical_artifact
+from source_fields import rcm as rcm_fields
 from source_fields.sql import RESERVED_KEY, build_field_updates
 
 # ---------------------------------------------------------------------------
@@ -2815,11 +2816,12 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     # "$N" token, so a phrase like "Subject to Offer" never promotes to a number.
     # No extra branch needed; the existing numeric clamps cover it.
     if is_sale_psf_text(sale_price_text):
-        # (DQ guard 2) Lee salePriceUsd per-SF conflation: a per-SF sale text means
-        # the absolute sale price must NOT be read; route it to sale_price_per_sf.
-        price_per_sf = price_per_sf or num_or_none(
-            parse_money(sale_price_text), lo=0, hi=10000
-        )
+        # The new CBRE source-price context may retain a dollar symbol whose
+        # currency is unverified. Preserve its text without inventing USD/SF.
+        if rcm_fields.permits_psf_inference(source_key, listing, sale_price_text):
+            price_per_sf = price_per_sf or num_or_none(
+                parse_money(sale_price_text), lo=0, hi=10000
+            )
         sale_price = None
     if price_per_sf is None and sale_price and size_sf and size_sf > 100:
         # Apply the same economic bound to a derived value that we apply to an
@@ -2857,6 +2859,9 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         source_contacts = _safe_jll_hidden_child_metadata(source_contacts, broker=True)
     if source_contacts:
         for i, c in enumerate(source_contacts):
+            if rcm_fields.source_contact(source_key, c) and not (c.get("name") or c.get("email")):
+                # No stable child identity for additive refresh; preserve it in source facts below.
+                continue
             if not isinstance(c, dict) or not (
                 c.get("name")
                 or c.get("email")
@@ -2875,11 +2880,12 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
                     "license": clean_text(c.get("license"), 64),
                     "email": c.get("email"),
                     "phone": c.get("phone"),
-                    "company": c.get("company") or listing.get("sourceCompany"),
+                    "company": (c.get("company") if rcm_fields.source_contact(source_key, c)
+                                else c.get("company") or listing.get("sourceCompany")),
                     "profileUrl": http_url_or_none(c.get("profileUrl")),
                     "avatarUrl": http_url_or_none(c.get("avatarUrl")),
                     "vcardUrl": http_url_or_none(c.get("vcardUrl")),
-                    "isPrimary": i == 0,
+                    "isPrimary": not contacts,
                 }
             )
         if not contacts:
@@ -2900,7 +2906,7 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
                     "phone": b.get("phone"),
                     "company": b.get("company") or listing.get("sourceCompany"),
                     "avatarUrl": http_url_or_none(b.get("avatarUrl")),
-                    "isPrimary": i == 0,
+                    "isPrimary": not contacts,
                 }
             )
 
@@ -3016,6 +3022,13 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     markdown = listing.get("markdown")
     highlights = str_array_or_none(listing.get("highlights"))
     extra_facts = extra_facts_or_none(listing.get("extraFacts"))
+    if source_key in rcm_fields.CONTACT_SOURCES:
+        source_contacts_for_facts = listing.get("contactsDetailed")
+        if isinstance(source_contacts_for_facts, list):
+            unbound_contacts = [c for c in source_contacts_for_facts if rcm_fields.source_contact(source_key, c)
+                                and not (c.get("name") or c.get("email"))]
+            if unbound_contacts:
+                extra_facts = {**(extra_facts or {}), "rcm_unidentified_source_contacts": unbound_contacts}
     if jll_pricing_withheld:
         # A legacy/manual JLL artifact cannot prove that prose is free of an
         # asking-price disclosure. Omit it rather than attempting a future
@@ -3277,6 +3290,7 @@ def _merge_child_collections(collection, primary, secondary):
 def merge_rows(a, b):
     """Merge two staged rows for the same (slug, external_id) within a batch."""
     from source_fields.merge import merge_building_candidates
+    avison_prose = avison_prices.mixed_prose_snapshot(a, b)
     a["source_field_building"], a["_source_building_conflicts"] = merge_building_candidates(a, b)
     prior_candidate, incoming_candidate = a.get("source_field_count"), b.get("source_field_count")
     if a.get("_source_field_conflict") or b.get("_source_field_conflict"):
@@ -3376,6 +3390,10 @@ def merge_rows(a, b):
         a["status"] = sb
     elif sa is None:
         a["status"] = sb
+    # Keep distinct prose from a retained pass and a legacy projected pass.
+    # Raw source passes remain separately bound below; do not infer that a
+    # longer or newer text includes the facts in the other one.
+    avison_prices.merge_mixed_prose(a, b, avison_prose)
     # Keep both raw payloads when the passes differ.  The top-level marker is
     # deliberately carried outside that wrapper so SQL does not need to infer
     # a price-withholding state from nested, malformed, or legacy provider data.
@@ -4672,6 +4690,8 @@ SELECT t.id, t.brokerage_id, t.external_id,
 FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id;
 
+{avison_price_sql.get("transition_sql", "")}
+
 CREATE TEMP TABLE _prior_source_presence ON COMMIT DROP AS
 SELECT s.brokerage_id, s.external_id,
        si.observation_present, COALESCE(si.presence_generation, 0) AS presence_generation
@@ -4896,6 +4916,9 @@ WITH ins AS (
         -- while preserving children when its supplemental team feed is degraded;
         -- child refresh remains additive below.
         scraped_at        = CASE
+                              WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
+                                THEN t.scraped_at
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -4928,6 +4951,10 @@ WITH ins AS (
                               ELSE EXCLUDED.scraped_at
                             END,
         raw_data          = CASE
+                              WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
+                                THEN COALESCE(t.raw_data, '{}'::jsonb) || jsonb_build_object(
+                                     'avisonRetainedPrior', EXCLUDED.raw_data->'avisonRetainedPrior')
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -5143,6 +5170,7 @@ END $$;
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
+        .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
         .replace("{targeted_queue}", targeted_queue)
         .replace("{targeted_guard}", targeted_guard)
         .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
@@ -5205,6 +5233,7 @@ SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 WHERE NOT jsonb_path_exists(s.raw_data, '$.**.detailError')
+  AND NOT ({avison_price_sql.get('transition_predicate', 'false')})
   AND (
     NOT jsonb_path_exists(
       s.raw_data,
@@ -5229,7 +5258,8 @@ JOIN _src s USING (brokerage_id, external_id)
 JOIN _prior_vals p
   ON p.brokerage_id = s.brokerage_id
  AND p.external_id = s.external_id
-WHERE jsonb_path_exists(s.raw_data, '$.**.detailError')
+WHERE ({avison_price_sql.get('transition_predicate', 'false')})
+   OR jsonb_path_exists(s.raw_data, '$.**.detailError')
    OR jsonb_path_exists(
         s.raw_data,
         '$.**.preserveChildCollections ? (@ == true || @ == "true")'
@@ -5407,7 +5437,8 @@ DO $$ BEGIN
              jsonb_path_exists(
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
-             ) AS preserve_contact
+             ) AS preserve_contact,
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5416,7 +5447,11 @@ DO $$ BEGIN
     )
     UPDATE credeals.cre_listing_contacts c SET
       name = COALESCE(i.x->>'name', c.name),
-      title = COALESCE(i.x->>'title', c.title),
+      title = CASE WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+                   THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
+                             WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
+                             ELSE c.title || E'\\n\\n' || (i.x->>'title') END
+                   ELSE COALESCE(i.x->>'title', c.title) END,
       license = COALESCE(i.x->>'license', c.license),
       email = COALESCE(i.x->>'email', c.email),
       phone = COALESCE(i.x->>'phone', c.phone),
@@ -5481,7 +5516,8 @@ DO $$ BEGIN
              jsonb_path_exists(
                s.raw_data,
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
-             ) AS preserve_contact
+             ) AS preserve_contact,
+             {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5490,7 +5526,11 @@ DO $$ BEGIN
     )
     UPDATE credeals.cre_listing_contacts c SET
       name = COALESCE(i.x->>'name', c.name),
-      title = COALESCE(i.x->>'title', c.title),
+      title = CASE WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
+                   THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
+                             WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
+                             ELSE c.title || E'\\n\\n' || (i.x->>'title') END
+                   ELSE COALESCE(i.x->>'title', c.title) END,
       email = COALESCE(i.x->>'email', c.email),
       phone = COALESCE(i.x->>'phone', c.phone),
       brokerage_name = COALESCE(i.x->>'company', c.brokerage_name),
@@ -5609,7 +5649,7 @@ WHERE u.id IN (SELECT id FROM _child_additive)
   );
 
 WITH incoming AS (
-  SELECT u.id AS listing_id, x
+  SELECT u.id AS listing_id, x, {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition
   FROM _up u
   JOIN _src s USING (brokerage_id, external_id)
   CROSS JOIN LATERAL jsonb_array_elements(s.documents) x
@@ -5624,7 +5664,11 @@ UPDATE credeals.cre_listing_documents d SET
                ) THEN incoming.x->>'docType'
                ELSE d.doc_type
              END,
-  title = COALESCE(incoming.x->>'title', d.title),
+  title = CASE WHEN incoming.avison_transition AND d.title IS NOT NULL AND incoming.x->>'title' IS NOT NULL
+               THEN CASE WHEN position(incoming.x->>'title' in d.title)>0 THEN d.title
+                         WHEN position(d.title in incoming.x->>'title')>0 THEN incoming.x->>'title'
+                         ELSE d.title || E'\\n\\n' || (incoming.x->>'title') END
+               ELSE COALESCE(incoming.x->>'title', d.title) END,
   scraped_at = now()
 FROM incoming
 WHERE d.listing_id = incoming.listing_id
@@ -6954,7 +6998,22 @@ def main():
                     "full snapshot for that source"
                 )
             inventory_only_scopes_merged[scope["source_key"]] = scope
+        newmark_public_facts = {}
+        if (mode == "enrich" and len(artifact_source_entries) == 1
+                and isinstance(artifact_source_entries[0], dict)
+                and artifact_source_entries[0].get("sourceKey") == "newmark"
+                and isinstance(artifact_source_entries[0].get("retainedObservations"), list)
+                and any(isinstance(o, dict) and o.get("newmarkRcmObservation") is True
+                        for o in artifact_source_entries[0]["retainedObservations"])):
+            from source_fields.newmark_public_facts import qualified
+            try:
+                newmark_public_facts = qualified(image_transition_input)
+            except (ValueError, TypeError, KeyError) as exc:
+                sys.exit(f"refusing Newmark public facts projection: {exc}")
         for listing in data.get("listings") or []:
+            if newmark_public_facts:
+                from source_fields.newmark_public_facts import attach
+                listing = attach(listing, newmark_public_facts)
             if (mode == "enrich" and isinstance(listing, dict) and "genericEnrich" in listing
                     and not generic_enrichment_substantive(listing)):
                 continue

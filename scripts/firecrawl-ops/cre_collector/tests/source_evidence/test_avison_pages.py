@@ -112,10 +112,11 @@ def test_sealed_plan_and_jsonb_key_reordering_preserve_projected_hash():
     assert sealed == plan
 
 
-def test_avison_settled_capture_survives_canonical_failure_and_replays(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_format", [avison_pages.FORMAT, "avison_sharplaunch_website_retained_v2"])
+def test_avison_settled_capture_survives_canonical_failure_and_replays(tmp_path, monkeypatch, native_format):
     config, policy, path = setup_policy(tmp_path, sources=('avison-young',), count=100)
     policy.update(schema_version=automatic.SCHEMA_V2, collector_projections={},
-                  native_source_formats={'avison-young': avison_pages.FORMAT}, max_native_pages=4)
+                  native_source_formats={'avison-young': native_format}, max_native_pages=4)
     path.write_bytes(events.encoded(policy))
     config = automatic.configuration(str(path), events.sha256(path.read_bytes()), config['env_file'],
                                      config['target_sha256'], SHA, ['avison-young'])
@@ -126,7 +127,9 @@ def test_avison_settled_capture_survives_canonical_failure_and_replays(tmp_path,
     attempt = {'number': 1, 'source_evidence': {'state': 'no_artifact'}}
     manifest['sources']['avison-young']['attempts'].append(attempt)
     directory = native_pages.mark(run, manifest, 'avison-young', attempt)
-    body = json.dumps({'z_context': 1, 'items': [{'z_value': i, 'id': i, 'unknown': {'array': [None, i, i]}}
+    body = json.dumps({'z_context': 1, 'items': [{'z_value': i, 'id': i, 'hide_price': ([0, 1, None, 'unknown'][i % 4] if native_format.endswith('_v2') else 0),
+                                                'sale_price': i + 1000, 'description': f'Asking {i + 1000}',
+                                                'unknown': {'array': [None, i, i]}}
                                                for i in range(78)], 'a_context': 2}).encode()
     raw, name = entry(body)
     (directory / name).write_bytes(raw)
@@ -136,6 +139,9 @@ def test_avison_settled_capture_survives_canonical_failure_and_replays(tmp_path,
     assert state['state'] == 'settled' and len(state['pages']) == 1
     plan = native_pages.prepare_job(run, manifest, 'avison-young', attempt, state['pages'][0])
     assert len(plan['events']) == 79
+    if native_format.endswith('_v2'):
+        assert plan['events'][2]['facts'][0]['value']['sale_price'] == 1001
+        assert plan['events'][2]['facts'][0]['value']['hide_price'] == 1
     calls = []
     monkeypatch.setattr(automatic.cli, 'run_psql', lambda *a, **k: calls.append(a))
     automatic.pump(run, manifest, lambda *_: None)
@@ -163,3 +169,27 @@ def test_capture_env_is_source_scoped_and_disabled_inherited_optins_are_cleared(
         native_pages.configure_worker_env(env, tmp_path, 'avison-young', attempt,
                                           {'native_source_formats': {'avison-young': avison_pages.FORMAT},
                                            'max_native_pages': 4})
+
+
+def test_new_retention_format_roundtrips_flags_prices_and_numerics():
+    body = b'{"items":[{"hide_price":1,"sale_price":123.0000000000000001,"description":"Asking 123"},{"hide_price":0,"sale_price":55},{"hide_price":null,"sale_price":false},{"hide_price":"unknown","sale_price":0},{"sale_price":null}],"other":[null,false,""]}'
+    raw, name = entry(body)
+    observation, reason = native_pages._decode('avison-young', raw, name, {}, native_format='avison_sharplaunch_website_retained_v2')
+    assert reason is None and observation['schema'] == avison_response.RETAIN_SCHEMA
+    assert observation['numericLiterals']['/items/0/sale_price'] == '123.0000000000000001'
+    result = avison_response.reconstruct(observation)
+    assert [x.get('hide_price', 'missing') for x in result['items']] == [1, 0, None, 'unknown', 'missing']
+    assert result['items'][0]['description'] == 'Asking 123' and result['other'] == [None, False, '']
+    plan = events.plan(observation, source_key='avison-young')
+    events.validate_content_policy(plan)
+    events.validate_plan(plan)
+    assert len(plan['events']) == 6
+
+
+def test_new_retention_format_refuses_credentials_and_old_format_unchanged():
+    raw, name = entry(b'{"items":[{"password":"DUMMY_PRIVATE_VALUE"}]}')
+    with pytest.raises(ValueError):
+        native_pages._decode('avison-young', raw, name, {}, native_format='avison_sharplaunch_website_retained_v2')
+    raw, name = entry(b'{"items":[{"hide_price":1,"sale_price":123456}]}')
+    old, _ = avison_pages.decode_entry(raw, name, {})
+    assert old['schema'] == avison_response.SCHEMA and 'sale_price' not in old['records'][0]
