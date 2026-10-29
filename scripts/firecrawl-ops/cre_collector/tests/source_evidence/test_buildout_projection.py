@@ -1,7 +1,6 @@
 import copy
 
 import pytest
-
 from source_evidence import acquisition, events, map_projection
 from source_evidence import buildout_projection as projection
 from source_evidence.automatic import _refuse_credential_fields
