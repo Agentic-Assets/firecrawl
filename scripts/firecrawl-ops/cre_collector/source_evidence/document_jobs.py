@@ -7,8 +7,19 @@ Deleted original binaries are not reverified by this module.
 import os
 from pathlib import Path
 
-from source_evidence import (automatic, doc_complement_process, doc_extract_process, doc_sparse_ocr_process, document_acquisition, document_automatic,
-                             document_batch, document_budget, document_pipeline, document_seal, events)
+from source_evidence import (
+    automatic,
+    doc_complement_process,
+    doc_extract_process,
+    doc_sparse_ocr_process,
+    document_acquisition,
+    document_automatic,
+    document_batch,
+    document_budget,
+    document_pipeline,
+    document_seal,
+    events,
+)
 
 SCHEMA = "cre-document-evidence-append-job/v1"
 FORMAT = "local_anydoc_public_listing_v1"
@@ -97,6 +108,9 @@ def _derive(run_dir, manifest, source, attempt, document, *, role="primary"):
         raise ValueError("document complement disagrees with policy")
     if required and checked["complement"]["parser"]["config"]["executable"] != selected["pdf_complement"]["pdftotext_path"]:
         raise ValueError("document complement executable changed")
+    if required:
+        doc_complement_process.validate(checked["complement"], first, context["receipt"], source,
+                                        selected["pdf_complement"]["pdftotext_path"], selected["pdf_complement"]["mode"])
     if required:
         document_seal.check_primary(run_dir / directory / "primary-sealed", context, document.get("primary_sealed"), first)
     ocr_required = doc_sparse_ocr_process.required(first, checked.get("complement"), selected)

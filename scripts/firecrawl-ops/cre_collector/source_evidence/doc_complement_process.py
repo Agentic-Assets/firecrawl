@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 from cre_owned_processes import OwnedProcessGroup, settle_owned_groups
+from document_text import poppler_modes
+
 from source_evidence import automatic, doc_extract_process, events, private_export
 from source_evidence.document_process import DocumentProcessCleanupUnknown
 
@@ -50,17 +52,19 @@ def _best_effort_failed_registration(child):
         pass
 
 
-def validate(artifact, first, receipt, source_key, executable):
+def validate(artifact, first, receipt, source_key, executable, mode=None):
     first_source = first.get("source", {})
     extraction = artifact.get("extraction", {})
     parser = artifact.get("parser", {})
+    actual_mode = poppler_modes.mode_from_config(parser.get("config"))
+    if mode is not None and mode != actual_mode:
+        raise ValueError("complement mode disagrees with policy")
     if (not required(first, {"pdf_complement": {}})
             or artifact.get("schema_version") != "cre-document-text/v1"
             or artifact.get("source") != first_source or parser.get("name") != "poppler-pdftotext"
             or not isinstance(parser.get("version"), str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", parser["version"])
             or not isinstance(executable, str) or not os.path.isabs(executable)
-            or parser.get("config") != {"executable": executable, "ocr": False, "timeout_seconds": 120,
-                                        "max_output_file_bytes": 4 * 1024 * 1024, "max_text_bytes": 4 * 1024 * 1024}
+            or parser.get("config") != poppler_modes.config(actual_mode, executable=executable)
             or extraction.get("relationship") != "complement_of"
             or extraction.get("previous_attempt_sha256") != events.sha256(events.encoded(first))
             or extraction.get("text_format") != "plain"):
@@ -72,7 +76,7 @@ def validate(artifact, first, receipt, source_key, executable):
     return plan
 
 
-def run(input_path, first, receipt, outdir, *, executable, source_key):
+def run(input_path, first, receipt, outdir, *, executable, source_key, mode=poppler_modes.TEXT):
     status = first.get("extraction", {}).get("status")
     doc_extract_process.validate_artifact(first, receipt, source_key=source_key, exit_code=0 if status == "extracted" else 2)
     if not required(first, {"pdf_complement": {}}):
@@ -86,6 +90,10 @@ def run(input_path, first, receipt, outdir, *, executable, source_key):
     output = outdir / "complement.json"
     command = [sys.executable, str(adapter), "--input", str(input_path), "--anydoc-attempt", str(outdir / "anydoc.json"),
                "--out", str(output), "--engine", "poppler", "--relationship", "complement", "--poppler-path", executable]
+    if mode not in poppler_modes.MODES:
+        raise ValueError("invalid Poppler mode")
+    if mode != poppler_modes.TEXT:
+        command += ["--poppler-mode", mode]
     child = None
     try:
         child = subprocess.Popen(command, cwd=str(adapter.parent), env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
@@ -119,7 +127,7 @@ def run(input_path, first, receipt, outdir, *, executable, source_key):
     if code not in (0, 2) or executable_identity(executable) != identity:
         raise ValueError("complement process outcome unknown")
     _, artifact = doc_extract_process._read_json(output, doc_extract_process.MAX_ARTIFACT_BYTES)
-    validate(artifact, first, receipt, source_key, executable)
+    validate(artifact, first, receipt, source_key, executable, mode)
     if (artifact["extraction"]["status"] == "extracted") != (code == 0):
         raise ValueError("complement exit mismatch")
     return artifact

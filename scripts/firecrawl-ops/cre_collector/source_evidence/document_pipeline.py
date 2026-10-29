@@ -16,8 +16,8 @@ from source_evidence import (
     cli,
     doc_complement_process,
     doc_extract_process,
-    doc_sparse_ocr_process,
     doc_fetch_process,
+    doc_sparse_ocr_process,
     document_acquisition,
     document_budget,
     document_fetch_worker,
@@ -237,7 +237,8 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
                     document["state"] = "complement_intent"
                     save(run_dir, manifest)
                     complement = doc_complement_process.run(Path(extracted["input_path"]), extracted["artifact"], receipt,
-                        directory / "complement", executable=complement_policy["pdftotext_path"], source_key=source)
+                        directory / "complement", executable=complement_policy["pdftotext_path"], source_key=source,
+                        mode=complement_policy["mode"])
                     doc_extract_process._input_checked(Path(extracted["directory"]), Path(extracted["input_path"]).name, body)
                 ocr = None
                 if doc_sparse_ocr_process.required(extracted["artifact"], complement, selected):

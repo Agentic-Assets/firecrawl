@@ -102,3 +102,8 @@ The separate opt-in acquisition policy v2 may automatically complement an
 extracted, OCR-needed, or unsupported AnyDoc PDF with text-only Poppler. It
 seals both attempts and their relationship with independent evidence append
 checkpoints. Poppler does not OCR; coverage remains unknown.
+
+The opt-in `poppler_pdf_layout_v1` complement preserves physical spacing with
+`-layout` and records the mode in parser config. Default text-mode artifacts
+remain unchanged. Layout is not table reconstruction or a fidelity guarantee;
+unknown fidelity alone does not retain originals under existing retention policy.

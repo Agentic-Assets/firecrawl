@@ -1,20 +1,28 @@
 import copy
 
 import pytest
-from source_evidence import document_automatic, document_batch, document_jobs, document_pipeline, document_recovery, events
+from source_evidence import (
+    document_automatic,
+    document_batch,
+    document_jobs,
+    document_pipeline,
+    document_recovery,
+    events,
+)
 from test_document_acquisition_policy import CODE, TARGET
 from test_document_pipeline import install_workers, setup_run
 
 
+@pytest.mark.parametrize('mode', ['poppler_pdf_text_v1', 'poppler_pdf_layout_v1'])
 @pytest.mark.parametrize('interrupt', [False, True])
 @pytest.mark.parametrize('extraction_state', ['success', 'ocr_needed', 'failed'])
-def test_complement_policy_seals_and_replays_two_independent_jobs(monkeypatch, tmp_path, interrupt, extraction_state):
+def test_complement_policy_seals_and_replays_two_independent_jobs(monkeypatch, tmp_path, interrupt, extraction_state, mode):
     from source_evidence import automatic, document_acquisition_policy, document_seal
     from source_evidence.document_process import DocumentProcessCleanupUnknown
     manifest, attempt, kwargs = setup_run(tmp_path, retention='keep_unresolved_until_review')
     policy = __import__('json').loads(kwargs['policy_raw'])
     policy.update(schema_version=document_acquisition_policy.SCHEMA_V2,
-                  pdf_complement={'mode': 'poppler_pdf_text_v1', 'pdftotext_path': '/usr/bin/pdftotext'})
+                  pdf_complement={'mode': mode, 'pdftotext_path': '/usr/bin/pdftotext'})
     policy['limits']['max_documents'] = 1
     raw = events.encoded(policy)
     plans = [kwargs['plan']]
@@ -45,14 +53,15 @@ def test_complement_policy_seals_and_replays_two_independent_jobs(monkeypatch, t
             result['artifact']['extraction']['error_code'] = 'unsupported'
             return result
         monkeypatch.setattr(document_pipeline.doc_extract_process, 'run', unsupported)
-    def complement(input_path, first, receipt, outdir, *, executable, source_key):
+    def complement(input_path, first, receipt, outdir, *, executable, source_key, mode):
         if interrupt:
             raise DocumentProcessCleanupUnknown('simulated unknown settlement')
         text = 'Complementary text'
         return {'schema_version': 'cre-document-text/v1', 'source': dict(first['source']),
                 'parser': {'name': 'poppler-pdftotext', 'version': '1.2',
                            'config': {'executable': executable, 'ocr': False, 'timeout_seconds': 120,
-                                      'max_output_file_bytes': 4 * 1024 * 1024, 'max_text_bytes': 4 * 1024 * 1024}},
+                                      'max_output_file_bytes': 4 * 1024 * 1024, 'max_text_bytes': 4 * 1024 * 1024,
+                                      **({'mode': mode} if mode == 'poppler_pdf_layout_v1' else {})}},
                 'extraction': {'status': 'extracted', 'coverage': 'unknown', 'text_format': 'plain',
                                'text': text, 'text_sha256': events.sha256(text.encode()),
                                'relationship': 'complement_of', 'previous_attempt_sha256': events.sha256(events.encoded(first))}}
@@ -277,12 +286,13 @@ def test_sparse_ocr_preserves_prior_custody_and_replays_all_three_jobs(monkeypat
             result['artifact']['extraction']['error_code'] = 'unsupported'
             return result
         monkeypatch.setattr(document_pipeline.doc_extract_process, 'run', unsupported)
-    def complement(input_path, first, receipt, outdir, *, executable, source_key):
+    def complement(input_path, first, receipt, outdir, *, executable, source_key, mode):
         text = 'Complementary text'
         return {'schema_version': 'cre-document-text/v1', 'source': dict(first['source']),
                 'parser': {'name': 'poppler-pdftotext', 'version': '1.2',
                            'config': {'executable': executable, 'ocr': False, 'timeout_seconds': 120,
-                                      'max_output_file_bytes': 4 * 1024 * 1024, 'max_text_bytes': 4 * 1024 * 1024}},
+                                      'max_output_file_bytes': 4 * 1024 * 1024, 'max_text_bytes': 4 * 1024 * 1024,
+                                      **({'mode': mode} if mode == 'poppler_pdf_layout_v1' else {})}},
                 'extraction': {'status': 'extracted', 'coverage': 'unknown', 'text_format': 'plain',
                                'text': text, 'text_sha256': events.sha256(text.encode()),
                                'relationship': 'complement_of', 'previous_attempt_sha256': events.sha256(events.encoded(first))}}
@@ -396,8 +406,9 @@ def test_sparse_ocr_preserves_prior_custody_and_replays_all_three_jobs(monkeypat
                  for job in (first_job, second_job, third_job)]
     assert len({plan['plan_sha256'] for plan in plans_out}) == 3
     assert plans_out[2]['events'][0]['facts'][0]['value']['extraction']['pages'][1]['layout_tsv'] == 'raw'
-    from source_evidence import doc_sparse_ocr_process, document_seal
     import json
+
+    from source_evidence import doc_sparse_ocr_process, document_seal
     seal_dir = tmp_path / document['directory'] / 'sealed'
     context = json.loads((seal_dir / 'acquisition.json').read_bytes())
     checked = document_seal.read(seal_dir, expected_context=context, expected_marker=document['sealed'])

@@ -234,3 +234,8 @@ prove universal secret detection. Source freshness and wire bytes are not establ
 The 16 MiB decoded cap is stricter than the source transport cap; event, fact,
 plan, custody and credential gates still apply. Not deployed; production
 acceptance is separate.
+
+The opt-in `poppler_pdf_layout_v1` complement binds its parser mode to the
+selected policy at execution, recovery and append. Layout text is not evidence
+of complete pages or correct table relationships. Existing unresolved retention
+does not keep originals merely because fidelity remains unknown.
