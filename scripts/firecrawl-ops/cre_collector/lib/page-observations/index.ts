@@ -1,5 +1,5 @@
 /** Bounded source-page observations with no canonical listing qualification. */
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isIP } from "node:net";
 import * as cheerio from "cheerio";
 import { SOURCE_KEYS, type ScrapedDoc, type SourceKey } from "../../types.js";
@@ -57,7 +57,7 @@ export function validateObservationInput(value: unknown): PageItem[] {
 export function readObservationInput(path: string): PageItem[] {
   let input: unknown;
   try {
-    const fd = openSync(path, "r");
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       if (!fstatSync(fd).isFile()) throw new Error();
       const buffer = Buffer.alloc(INPUT_BYTES + 1);
@@ -76,11 +76,13 @@ export function readObservationInput(path: string): PageItem[] {
 
 export async function observePages(items: PageItem[], fetchDoc: typeof scrapeDoc = scrapeDoc) {
   const startedAt = observationNow();
-  const observations = [];
+  const observations: { value: unknown; attempted: number; returned: number; failed: number; notAttempted: number; omitted: boolean; stopReason: string | null }[] = [];
   let stop: "access_denial" | "uncertain_settlement" | "possible_challenge_header" | null = null;
   let attempted = 0, returned = 0, failed = 0, notAttempted = 0;
   let hasOmissions = false;
   for (const item of items) {
+    const before = { attempted, returned, failed, notAttempted, stop };
+    let omitted = false;
     const claim = { sourceKey: item.sourceKey, externalId: item.sourceId ?? null, url: item.url };
     let evidence: unknown;
     if (stop) {
@@ -93,7 +95,7 @@ export async function observePages(items: PageItem[], fetchDoc: typeof scrapeDoc
       let capturedAt: string | null = null;
       try { capturedAt = observationNow(); } catch { /* No source timestamp is invented. */ }
       evidence = captureEnrichmentEvidence(claim, doc, capturedAt);
-      if (Object.keys((evidence as {omissions: object}).omissions).length) hasOmissions = true;
+      if (Object.keys((evidence as {omissions: object}).omissions).length) { hasOmissions = true; omitted = true; }
       const status = doc.metadata?.statusCode;
       if ([401, 403, 429, 451].includes(status)) stop = "access_denial";
       else if (possibleChallengeHeader(doc.rawHtml)) stop = "possible_challenge_header";
@@ -109,22 +111,37 @@ export async function observePages(items: PageItem[], fetchDoc: typeof scrapeDoc
     }
     const contextPresent = Object.hasOwn(item, "context");
     const contextTooLarge = contextPresent && Buffer.byteLength(JSON.stringify(item.context), "utf8") > CONTEXT_BYTES;
-    if (contextTooLarge) hasOmissions = true;
-    observations.push({ input: { identityBasis: item.sourceId == null ? "url" : "source_id",
+    if (contextTooLarge) { hasOmissions = true; omitted = true; }
+    observations.push({ value: { input: { identityBasis: item.sourceId == null ? "url" : "source_id",
       ...(Object.hasOwn(item, "sourceId") ? { sourceId: item.sourceId } : {}),
       ...(contextPresent && !contextTooLarge ? { context: item.context } : {}),
-      ...(contextTooLarge ? { contextOmission: "context_byte_limit" } : {}) }, evidence });
+      ...(contextTooLarge ? { contextOmission: "context_byte_limit" } : {}) }, evidence },
+      attempted: attempted - before.attempted, returned: returned - before.returned,
+      failed: failed - before.failed, notAttempted: notAttempted - before.notAttempted,
+      omitted, stopReason: before.stop !== stop ? stop : null });
   }
-  const bounded = limitEnrichmentObservations(observations);
-  return {
+  const batches: typeof observations[] = [];
+  let remaining = observations;
+  while (remaining.length) {
+    const count = limitEnrichmentObservations(remaining.map(item => item.value)).retainedObservations.length;
+    if (!count) throw new Error("single observation exceeds group limit");
+    batches.push(remaining.slice(0, count));
+    remaining = remaining.slice(count);
+  }
+  const finishedAt = observationNow();
+  const parts = batches.map((group, index) => ({
     description: "Private unqualified source-page observations.",
-    runMeta: { mode: "observe", evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations", startedAt, finishedAt: observationNow() },
-    sources: [{ sourceKey: items[0].sourceKey, supported: true, requested: items.length, attempted, returned, failed, notAttempted,
-      stopReason: stop, listingsCollected: 0,
-      retainedObservations: bounded.retainedObservations,
-      evidenceIncomplete: !!bounded.evidenceError || hasOmissions || failed > 0 || notAttempted > 0 || stop !== null,
-      ...(bounded.evidenceError ? { evidenceError: bounded.evidenceError,
-        omittedObservationCount: items.length - bounded.retainedObservations.length } : {}) }],
+    runMeta: { mode: "observe", evidenceOnly: true, evidencePurpose: "private_unqualified_source_observations", startedAt, finishedAt,
+      countsScope: "part", partNumber: index + 1, partCount: batches.length },
+    sources: [{ sourceKey: items[0].sourceKey, supported: true, requested: group.length,
+      attempted: group.reduce((n, x) => n + x.attempted, 0), returned: group.reduce((n, x) => n + x.returned, 0),
+      failed: group.reduce((n, x) => n + x.failed, 0), notAttempted: group.reduce((n, x) => n + x.notAttempted, 0),
+      stopReason: group.find(x => x.stopReason)?.stopReason ?? null, listingsCollected: 0,
+      retainedObservations: group.map(x => x.value),
+      evidenceIncomplete: group.some(x => x.omitted || x.failed > 0 || x.notAttempted > 0 || x.stopReason !== null) }],
     listings: [], brokers: [], totalListings: 0,
-  };
+  }));
+  return { parts, summary: { kind: "observation_run_summary", countsScope: "run", requested: items.length, attempted, returned, failed,
+    notAttempted, stopReason: stop, evidenceIncomplete: hasOmissions || failed > 0 || notAttempted > 0 || stop !== null,
+    partCount: parts.length } };
 }

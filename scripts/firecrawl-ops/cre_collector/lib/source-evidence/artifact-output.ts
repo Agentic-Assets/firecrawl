@@ -2,8 +2,8 @@
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-/** Reserve a private output before acquisition, without replacing an existing file. */
-export function reservePrivateCollectorArtifact(path: string): number {
+/** Reserve a private output directory before acquisition, without replacing it. */
+export function reservePrivateCollectorDirectory(path: string): void {
   const parent = dirname(path);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const info = lstatSync(parent);
@@ -11,12 +11,7 @@ export function reservePrivateCollectorArtifact(path: string): number {
       (typeof process.getuid === "function" && info.uid !== process.getuid())) {
     throw new Error("observation output directory must be owner-private");
   }
-  return openSync(path, "wx", 0o600);
-}
-
-export function finishPrivateCollectorArtifact(descriptor: number, json: string): void {
-  try { writeFileSync(descriptor, json); fsyncSync(descriptor); }
-  finally { closeSync(descriptor); }
+  mkdirSync(path, { mode: 0o700 });
 }
 
 export function writeCollectorArtifact(path: string | null | undefined, json: string, privateEvidence: boolean): void {

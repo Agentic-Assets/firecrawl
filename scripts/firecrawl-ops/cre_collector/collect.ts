@@ -1,5 +1,6 @@
 import { observationNow } from "./lib/observation-clock.js";
-import { finishPrivateCollectorArtifact, reservePrivateCollectorArtifact, writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { reservePrivateCollectorDirectory, writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { join } from "node:path";
 import { observePages, readObservationInput } from "./lib/page-observations/index.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import {
@@ -464,18 +465,19 @@ async function dispatch(): Promise<void> {
     if (flags["observe-input"] !== undefined) {
       if (!OUT_PATH) throw new Error("observe mode requires --out");
       const items = readObservationInput(flags["observe-input"]);
-      let descriptor: number;
-      try { descriptor = reservePrivateCollectorArtifact(OUT_PATH); }
+      try { reservePrivateCollectorDirectory(OUT_PATH); }
       catch { throw new Error("unable to reserve private observation output"); }
-      let result: unknown;
       try {
-        result = await observePages(items);
+        const result = await observePages(items);
+        const names = result.parts.map((_, index) => `part-${String(index + 1).padStart(4, "0")}.json`);
+        for (let i = 0; i < result.parts.length; i++)
+          writeCollectorArtifact(join(OUT_PATH, names[i]), JSON.stringify(result.parts[i]), true);
+        writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({ ...result.summary, parts: names }), true);
       } catch {
-        result = { runMeta: { mode: "observe", evidenceOnly: true }, sources: [], listings: [], brokers: [], totalListings: 0, error: "observation_incomplete" };
+        try { writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({kind: "observation_run_summary", error: "observation_incomplete"}), true); }
+        catch { /* A previously written part remains available for inspection. */ }
         process.exitCode = 1;
       }
-      try { finishPrivateCollectorArtifact(descriptor, JSON.stringify(result)); }
-      catch { throw new Error("unable to finish private observation output"); }
       return;
     }
     if (flags["matthews-targeted-refresh"] && !enrichInput) {

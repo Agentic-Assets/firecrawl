@@ -6,10 +6,17 @@ Part of [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895).
 objects with `sourceKey`, an absolute clean HTTPS `url`, optional `sourceId`, and
 optional JSON `context`. All items must share one known source. `--out` is
 required; collection, enrichment and concurrency flags are incompatible. Pages
-are scraped serially with one attempt and stored in a new mode-0600 artifact.
+are scraped serially with one client dispatch per attempted input; this does
+not count Firecrawl's internal fetches. `--out` names a new private directory;
+each ordered `part-NNNN.json` is a standard mode-0600 collector artifact and
+`run-summary.json` contains only run counts and part names.
+It is diagnostic, not an authenticated receipt. Parts are published after
+collection; a crash before publication can leave an empty directory. An absent
+summary does not establish a completed run or remote settlement.
 Input identity and context are unverified; missing IDs use the URL as a witness.
-Context over 64 KiB is explicitly omitted. Evidence size limits can omit later
-observations with an explicit count. Captured clocks are collector clocks, not
+Context over 64 KiB is explicitly omitted. Existing evidence limits apply to
+individual fields, while observations are split across parts instead of dropped.
+Part counts cover that part; summary counts cover the run. Captured clocks are collector clocks, not
 proof of publisher freshness. Metadata-only results and failures remain evidence.
 An absent or null source ID remains distinct in the input evidence. Requested,
 attempted, returned, failed and unattempted counts describe the batch; returned
@@ -26,7 +33,7 @@ contact-form CAPTCHA widgets are not a challenge signal.
 From the collector directory, for a private input prepared by the caller:
 
 ```sh
-npx tsx collect.ts --observe-input /private/path/input.json --out /private/path/output.json
+npx tsx collect.ts --observe-input /private/path/input.json --out /private/path/new-output-directory
 ```
 
 The artifact contains no listings or brokers, has `mode: observe` and
