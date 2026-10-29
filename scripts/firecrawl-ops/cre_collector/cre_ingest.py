@@ -6998,7 +6998,22 @@ def main():
                     "full snapshot for that source"
                 )
             inventory_only_scopes_merged[scope["source_key"]] = scope
+        newmark_public_facts = {}
+        if (mode == "enrich" and len(artifact_source_entries) == 1
+                and isinstance(artifact_source_entries[0], dict)
+                and artifact_source_entries[0].get("sourceKey") == "newmark"
+                and isinstance(artifact_source_entries[0].get("retainedObservations"), list)
+                and any(isinstance(o, dict) and o.get("newmarkRcmObservation") is True
+                        for o in artifact_source_entries[0]["retainedObservations"])):
+            from source_fields.newmark_public_facts import qualified
+            try:
+                newmark_public_facts = qualified(image_transition_input)
+            except (ValueError, TypeError, KeyError) as exc:
+                sys.exit(f"refusing Newmark public facts projection: {exc}")
         for listing in data.get("listings") or []:
+            if newmark_public_facts:
+                from source_fields.newmark_public_facts import attach
+                listing = attach(listing, newmark_public_facts)
             if (mode == "enrich" and isinstance(listing, dict) and "genericEnrich" in listing
                     and not generic_enrichment_substantive(listing)):
                 continue

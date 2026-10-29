@@ -43,3 +43,13 @@ field holds separate from absence, so another pass cannot erase an ambiguity
 before merge. Holds and conflicts stay local to their field; agreeing property
 values can use the newer observation. The fixed three-field SQL helper shares
 the same ownership/clock checks and preserves sibling provenance atomically.
+
+Newmark's published-detail enrichment may add `cre_public_listing_facts` to a
+copied listing during ordinary ingest. The source-owned helper projects the
+original collector artifact through the existing Newmark credential-withholding
+codec and content policy, rechecks the source witness, property comparison,
+claim ID and URLs, and requires unique listing and observation bindings. The
+original input is unchanged and the projected evidence artifact remains
+non-canonical. Numeric literals and omitted source paths remain explicit; the
+collector clock and source coverage do not establish provider freshness or
+complete inventory. Unmatched observations do not produce a listing envelope.
