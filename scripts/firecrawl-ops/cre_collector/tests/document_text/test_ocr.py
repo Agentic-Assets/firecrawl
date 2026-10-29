@@ -11,11 +11,12 @@ ocr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ocr)
 
 
-def fixture(raw=b'%PDF-fixture'):
+def fixture(raw=b'%PDF-fixture', *, engine='docling'):
     first = {'schema_version': 'cre-document-text/v1', 'source': {'url': 'https://example.test/file.pdf',
              'observed_at': '2026-10-28T12:00:00Z', 'format': 'pdf', 'byte_length': len(raw), 'sha256': ocr.digest(raw)},
              'parser': {'name': '@firecrawl/anydoc'}, 'extraction': {'status': 'ocr_needed', 'page_count': 2, 'ocr_needed_pages': [1]}}
-    return ocr.make_attempt(first, json.dumps(first).encode(), raw)
+    return ocr.make_attempt(first, json.dumps(first).encode(), raw, engine,
+                            '26.10.0' if engine == 'poppler' else None)
 
 
 def test_attempt_requires_matched_file():
@@ -167,7 +168,7 @@ def test_poppler_success_retains_diagnostic_and_hash(monkeypatch):
         kwargs['stderr'].write(b'private diagnostic')
         return subprocess.CompletedProcess(args, 0)
     monkeypatch.setattr(ocr.subprocess, 'run', run)
-    result = ocr.convert_poppler(b'%PDF-fixture', fixture())
+    result = ocr.convert_poppler(b'%PDF-fixture', fixture(engine='poppler'))
     assert result['extraction']['status'] == 'extracted'
     assert result['extraction']['text_sha256'] == ocr.digest(b'partial text')
     assert result['extraction']['warnings'] == ['poppler_logged_diagnostic']
@@ -201,7 +202,7 @@ def test_poppler_empty_output_is_failure(monkeypatch):
         Path(args[-1]).write_bytes(b'')
         return subprocess.CompletedProcess(args, 0)
     monkeypatch.setattr(ocr.subprocess, 'run', run)
-    assert ocr.convert_poppler(b'%PDF-fixture', fixture())['extraction']['error_code'] == 'empty_output'
+    assert ocr.convert_poppler(b'%PDF-fixture', fixture(engine='poppler'))['extraction']['error_code'] == 'empty_output'
 
 
 def test_docling_nonzero_with_text_preserves_partial_output(monkeypatch):
@@ -232,7 +233,7 @@ def test_poppler_nonzero_partial_output_is_not_discarded(monkeypatch):
         Path(args[-1]).write_bytes(b'partial')
         return subprocess.CompletedProcess(args, 1)
     monkeypatch.setattr(ocr.subprocess, 'run', run)
-    result = ocr.convert_poppler(b'%PDF-fixture', fixture())
+    result = ocr.convert_poppler(b'%PDF-fixture', fixture(engine='poppler'))
     assert result['extraction']['status'] == 'extracted'
     assert result['extraction']['warnings'] == ['converter_failed_partial_output']
     assert result['extraction']['converter_exit_code'] == 1
@@ -255,3 +256,48 @@ def test_plain_attempt_metadata_survives_evidence_reconstruction(tmp_path):
     assert extraction['text_format'] == 'plain' and extraction['converter_exit_code'] == 1
     assert extraction['warnings'] == ['converter_failed_partial_output']
     assert metadata['coverage'] == 'unknown'
+
+
+def test_poppler_layout_mode_exact_argv_and_reconstruction(monkeypatch):
+    from source_evidence import document_export, events
+    raw = b'%PDF-fixture'
+    first = {'schema_version': 'cre-document-text/v1', 'source': {'url': 'https://example.test/a.pdf',
+             'observed_at': '2026-10-28T12:00:00Z', 'format': 'pdf', 'byte_length': len(raw), 'sha256': ocr.digest(raw)},
+             'parser': {'name': '@firecrawl/anydoc'}, 'extraction': {'status': 'failed', 'error_code': 'unsupported'}}
+    prior = json.dumps(first).encode()
+    attempt = ocr.make_attempt(first, prior, raw, 'poppler', '26.10.0', relationship='complement',
+                               poppler_mode=ocr.LAYOUT)
+    seen = []
+    def run(args, **kwargs):
+        seen.append(args)
+        Path(args[-1]).write_bytes(b'Label    42\n')
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(ocr.subprocess, 'run', run)
+    result = ocr.convert_poppler(raw, attempt, '/test/pdftotext', mode=ocr.LAYOUT)
+    assert seen[0][1:4] == ['-layout', '-enc', 'UTF-8']
+    assert result['parser']['config']['mode'] == ocr.LAYOUT
+    text, metadata = document_export.reconstruct(events.plan(result, source_key='svn')['events'])
+    assert text == 'Label    42\n' and metadata['document']['parser']['config']['mode'] == ocr.LAYOUT
+    assert metadata['coverage'] == 'unknown'
+
+
+def test_poppler_default_argv_and_config_unchanged(monkeypatch):
+    seen = []
+    def run(args, **kwargs):
+        seen.append(args)
+        Path(args[-1]).write_bytes(b'text')
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(ocr.subprocess, 'run', run)
+    ocr.convert_poppler(b'%PDF-fixture', fixture(engine='poppler'))
+    assert seen[0][1:3] == ['-enc', 'UTF-8']
+    assert 'mode' not in ocr.config(ocr.TEXT)
+
+
+def test_poppler_mismatched_attempt_mode_refuses_before_spawn(monkeypatch):
+    attempt = fixture(engine='poppler')
+    attempt['parser']['config']['mode'] = ocr.LAYOUT
+    dispatched = []
+    monkeypatch.setattr(ocr.subprocess, 'run', lambda *args, **kwargs: dispatched.append(args))
+    with pytest.raises(ValueError, match='mode disagrees'):
+        ocr.convert_poppler(b'%PDF-fixture', attempt)
+    assert not dispatched

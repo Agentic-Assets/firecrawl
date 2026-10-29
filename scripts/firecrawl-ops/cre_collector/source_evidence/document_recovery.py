@@ -11,8 +11,8 @@ from pathlib import Path
 from source_evidence import (
     doc_complement_process,
     doc_extract_process,
-    doc_sparse_ocr_process,
     doc_fetch_process,
+    doc_sparse_ocr_process,
     document_acquisition,
     document_budget,
     document_pipeline,
@@ -226,6 +226,9 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                 raise ValueError("document complement disagrees with policy")
             if complement_required and checked["complement"]["parser"]["config"]["executable"] != selected["pdf_complement"]["pdftotext_path"]:
                 raise ValueError("document complement executable changed")
+            if complement_required:
+                doc_complement_process.validate(checked["complement"], artifact, context["receipt"], source,
+                                                selected["pdf_complement"]["pdftotext_path"], selected["pdf_complement"]["mode"])
             if complement_required:
                 document_seal.check_primary(directory / "primary-sealed", context, document.get("primary_sealed"), artifact)
             ocr_required = doc_sparse_ocr_process.required(artifact, checked.get("complement"), selected)

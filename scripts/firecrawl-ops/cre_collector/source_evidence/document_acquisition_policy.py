@@ -1,5 +1,4 @@
 """Offline operator-policy preflight for unverified document candidates."""
-
 import copy
 import ipaddress
 import os
@@ -7,6 +6,8 @@ import re
 from urllib.parse import urlsplit
 
 from cre_ingest import SOURCE_TO_BROKERAGE
+from document_text import poppler_modes
+
 from source_evidence import acquisition, document_candidates, events
 
 SCHEMA = "cre-document-acquisition-policy/v1"
@@ -76,7 +77,7 @@ def validate_policy(policy_raw, *, expected_policy_sha256, target_sha256, collec
         fields |= {"pdf_complement"}
         complement = policy.get("pdf_complement")
         if (not isinstance(complement, dict) or set(complement) != {"mode", "pdftotext_path"}
-                or complement.get("mode") != "poppler_pdf_text_v1"
+                or complement.get("mode") not in poppler_modes.MODES
                 or not isinstance(complement.get("pdftotext_path"), str)
                 or not os.path.isabs(complement["pdftotext_path"])):
             raise ValueError("invalid PDF complement policy")

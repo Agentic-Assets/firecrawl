@@ -862,3 +862,10 @@ credential-field policy, refusing when inspection bounds are exceeded. This
 does not establish detection of every secret.
 No result proves inventory convergence, access, source authority or canonical
 listing admission. This format is opt-in and needs policy/custody review.
+
+The explicit Poppler complement mode `poppler_pdf_layout_v1` uses `-layout`
+and is bound to parser configuration during acquisition, replay and append.
+The existing text mode and its serialized configuration remain unchanged.
+Neither text mode establishes table fidelity or complete page coverage.
+`keep_unresolved_until_review` follows converter outcome and configured OCR
+omission indicators; unknown fidelity alone does not keep original copies.

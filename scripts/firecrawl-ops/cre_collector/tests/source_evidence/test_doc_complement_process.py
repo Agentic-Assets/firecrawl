@@ -5,7 +5,6 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
-
 from source_evidence import doc_complement_process, events
 from source_evidence.document_process import DocumentProcessCleanupUnknown
 from test_doc_extract_process import artifact
@@ -131,8 +130,8 @@ def test_real_timeout_settles_parser_and_descendant(monkeypatch, tmp_path):
 
 
 def test_sparse_ocr_strategy_retention_and_series_barrier():
-    from source_evidence import doc_sparse_ocr_process
     import cre_checkpoint_series
+    from source_evidence import doc_sparse_ocr_process
     first = artifact()
     complement = {'extraction': {'status': 'extracted', 'text': 'native text'}}
     selection = {'original_retention': 'keep_unresolved_until_review', 'pdf_complement': {},
@@ -181,3 +180,23 @@ def test_ocr_completion_publication_failure_leaves_no_marker(monkeypatch, tmp_pa
     with pytest.raises(OSError):
         doc_sparse_ocr_process._publish_completion(tmp_path, {'schema_version': 'test'}, identity)
     assert not (tmp_path / 'ocr-completion').exists()
+
+
+def test_layout_mode_substitution_is_rejected(monkeypatch):
+    from document_text import poppler_modes
+    first = artifact()
+    text = 'label    42'
+    complement = {'schema_version': 'cre-document-text/v1', 'source': dict(first['source']),
+                  'parser': {'name': 'poppler-pdftotext', 'version': '1.2',
+                             'config': poppler_modes.config(poppler_modes.LAYOUT, executable='/usr/bin/pdftotext')},
+                  'extraction': {'status': 'extracted', 'coverage': 'unknown', 'text_format': 'plain',
+                                 'text': text, 'text_sha256': events.sha256(text.encode()),
+                                 'relationship': 'complement_of',
+                                 'previous_attempt_sha256': events.sha256(events.encoded(first))}}
+    monkeypatch.setattr(doc_complement_process.doc_extract_process, 'validate_artifact', lambda *a, **k: None)
+    doc_complement_process.validate(complement, first, receipt(), 'svn', '/usr/bin/pdftotext', poppler_modes.LAYOUT)
+    with pytest.raises(ValueError, match='mode disagrees'):
+        doc_complement_process.validate(complement, first, receipt(), 'svn', '/usr/bin/pdftotext', poppler_modes.TEXT)
+    complement['parser']['config']['mode'] = 'unknown'
+    with pytest.raises(ValueError):
+        doc_complement_process.validate(complement, first, receipt(), 'svn', '/usr/bin/pdftotext')

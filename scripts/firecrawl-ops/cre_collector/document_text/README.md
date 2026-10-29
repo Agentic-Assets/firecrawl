@@ -178,3 +178,17 @@ intent precedes container creation; a separate settlement receipt records
 verified removal. Failed pages, page limits and unconfirmed cleanup are
 reported and subject to coordinator recovery barriers. These local results establish neither source permission nor OCR
 accuracy or production acceptance.
+
+### Physical-layout Poppler complement
+
+The explicit `poppler_pdf_layout_v1` policy uses Poppler `-layout` and labels
+that mode in parser configuration. The existing `poppler_pdf_text_v1` default
+and its artifact shape remain unchanged. Layout text is a separate plain-text
+complement, not table reconstruction, OCR, or a coverage guarantee. The same
+input, text, process, privacy, custody, and replay bounds apply.
+
+`keep_unresolved_until_review` retains documented extraction failures and
+partial outputs, not every case of unknown content fidelity. When successful
+converters leave fidelity unknown and no other configured condition is
+unresolved, owned original copies can be removed. `temporary_only` retains
+its explicit cleanup behavior.

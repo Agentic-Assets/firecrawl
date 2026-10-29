@@ -1,4 +1,14 @@
 """Explicit local PDF retry of a retained AnyDoc artifact."""
+try:
+    from document_text.poppler_modes import (
+        LAYOUT,
+        MODES,
+        TEXT,
+        config,
+        mode_from_config,
+    )
+except ModuleNotFoundError:  # Direct script invocation from document_text.
+    from poppler_modes import LAYOUT, MODES, TEXT, config, mode_from_config
 import argparse
 import hashlib
 import json
@@ -54,7 +64,7 @@ def docker_arguments(input_path, output_path, name, nonce):
             '--artifacts-path', '/opt/app-root/src/.cache/docling/models', '--output', '/output', '/input.pdf']
 
 
-def make_attempt(first, first_raw, raw, engine='docling', poppler_version=None, *, relationship='retry'):
+def make_attempt(first, first_raw, raw, engine='docling', poppler_version=None, *, relationship='retry', poppler_mode=TEXT):
     if json.loads(first_raw, object_pairs_hook=unique_object, parse_constant=invalid_number) != first:
         raise ValueError('attempt bytes disagree with decoded artifact')
     extraction = first.get('extraction', {})
@@ -73,6 +83,8 @@ def make_attempt(first, first_raw, raw, engine='docling', poppler_version=None, 
         raise ValueError('unsupported parser relationship')
     if first.get('schema_version') != 'cre-document-text/v1' or not eligible:
         raise ValueError('an OCR-needed or unsupported AnyDoc PDF artifact is required')
+    if poppler_mode not in MODES or (poppler_mode != TEXT and (engine != 'poppler' or relationship != 'complement')):
+        raise ValueError('invalid Poppler mode')
     if engine not in ('docling', 'poppler') or (engine == 'poppler' and not poppler_version):
         raise ValueError('a supported engine and version are required')
     if first.get('parser', {}).get('name') != '@firecrawl/anydoc':
@@ -89,8 +101,7 @@ def make_attempt(first, first_raw, raw, engine='docling', poppler_version=None, 
                          'max_output_file_bytes': 8 * 1024 ** 2, 'max_text_bytes': MAX_TEXT}}
     if engine == 'poppler':
         parser = {'name': 'poppler-pdftotext', 'version': poppler_version,
-                  'config': {'ocr': False, 'timeout_seconds': TIMEOUT,
-                             'max_output_file_bytes': MAX_TEXT, 'max_text_bytes': MAX_TEXT}}
+                  'config': config(poppler_mode)}
     result = {'schema_version': 'cre-document-text/v1', 'source': dict(source),
             'parser': parser,
             'extraction': {'status': 'failed', 'coverage': 'unknown', 'page_count': first['extraction'].get('page_count'),
@@ -207,7 +218,11 @@ def poppler_version(executable='pdftotext'):
     return match.group(1).decode('ascii')
 
 
-def convert_poppler(raw, attempt, executable='pdftotext'):
+def convert_poppler(raw, attempt, executable='pdftotext', *, mode=TEXT):
+    parser = attempt.get('parser', {})
+    if (parser.get('name') != 'poppler-pdftotext'
+            or mode not in MODES or mode_from_config(parser.get('config')) != mode):
+        raise ValueError('Poppler mode disagrees with attempt')
     # Local extraction only: Poppler cannot OCR image-only pages. Never retain
     # its unbounded diagnostic text, which may contain document information.
     with tempfile.TemporaryDirectory(prefix='cre-poppler-') as folder:
@@ -216,7 +231,7 @@ def convert_poppler(raw, attempt, executable='pdftotext'):
         output = path / 'output.txt'
         try:
             with tempfile.TemporaryFile() as log:
-                run = subprocess.run([executable, '-enc', 'UTF-8', str(source), str(output)],
+                run = subprocess.run([executable, *(['-layout'] if mode == LAYOUT else []), '-enc', 'UTF-8', str(source), str(output)],
                                      stdout=log, stderr=log, timeout=TIMEOUT, check=False,
                                      preexec_fn=_limit_log)
                 if log.tell():
@@ -256,15 +271,16 @@ def main():
     parser.add_argument('--relationship', choices=('retry', 'complement'), default='retry',
                         help='complement also permits extracted AnyDoc PDFs; Poppler only')
     parser.add_argument('--poppler-path', default='pdftotext')
+    parser.add_argument('--poppler-mode', choices=MODES, default=TEXT)
     args = parser.parse_args()
     raw = read_limited(args.input, MAX_INPUT)
     first_raw = read_limited(args.anydoc_attempt, MAX_ARTIFACT)
     first = json.loads(first_raw, object_pairs_hook=unique_object, parse_constant=invalid_number)
     version = poppler_version(args.poppler_path) if args.engine == 'poppler' else None
-    attempt = make_attempt(first, first_raw, raw, args.engine, version, relationship=args.relationship)
+    attempt = make_attempt(first, first_raw, raw, args.engine, version, relationship=args.relationship, poppler_mode=args.poppler_mode)
     if args.relationship == 'complement':
         attempt['parser']['config']['executable'] = args.poppler_path
-    result = convert_poppler(raw, attempt, args.poppler_path) if args.engine == 'poppler' else convert(raw, attempt)
+    result = convert_poppler(raw, attempt, args.poppler_path, mode=args.poppler_mode) if args.engine == 'poppler' else convert(raw, attempt)
     write_private(args.out, result)
     print('OCR attempt recorded:', result['extraction']['status'])
     return 0 if result['extraction']['status'] == 'extracted' else 2
