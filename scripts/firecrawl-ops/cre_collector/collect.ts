@@ -474,7 +474,7 @@ async function dispatch(): Promise<void> {
           writeCollectorArtifact(join(OUT_PATH, names[i]), JSON.stringify(result.parts[i]), true);
         writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({ ...result.summary, parts: names }), true);
       } catch {
-        try { writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({kind: "observation_run_summary", error: "observation_incomplete"}), true); }
+        try { writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({kind: "observation_run_summary", runMeta: { mode: "observe", evidenceOnly: true }, error: "observation_incomplete"}), true); }
         catch { /* A previously written part remains available for inspection. */ }
         process.exitCode = 1;
       }

@@ -141,7 +141,7 @@ export async function observePages(items: PageItem[], fetchDoc: typeof scrapeDoc
       evidenceIncomplete: group.some(x => x.omitted || x.failed > 0 || x.notAttempted > 0 || x.stopReason !== null) }],
     listings: [], brokers: [], totalListings: 0,
   }));
-  return { parts, summary: { kind: "observation_run_summary", countsScope: "run", requested: items.length, attempted, returned, failed,
+  return { parts, summary: { kind: "observation_run_summary", runMeta: { mode: "observe", evidenceOnly: true }, countsScope: "run", requested: items.length, attempted, returned, failed,
     notAttempted, stopReason: stop, evidenceIncomplete: hasOmissions || failed > 0 || notAttempted > 0 || stop !== null,
     partCount: parts.length } };
 }
