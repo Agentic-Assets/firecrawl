@@ -200,7 +200,7 @@ test("Buildout listing ownership shares bare/www equivalence and URL guards", ()
     // These ownership vectors exercise the legacy URL policy independently of
     // the first registry firm's source-specific native-suffix opt-in.
     const iframe = buildoutDetailIframeUrl(firm.sourceKey, vector.url,
-      { ...firm.detailConfig!, host: vector.host, listingHosts: [vector.host], preserveTransactionSuffix: false });
+      { ...firm.detailConfig!, host: vector.host, listingHosts: [vector.host] });
     if (vector.inventoryOwned ?? vector.owned) {
       assert.equal(proof(result).pages[0].rows[0].showLink, vector.url);
       assert.equal(result.listings[0].url, vector.url);
@@ -208,7 +208,7 @@ test("Buildout listing ownership shares bare/www equivalence and URL guards", ()
       assert.equal(result.currentInventoryProof, undefined, vector.url);
     }
     if (vector.owned) {
-      assert.equal(iframe, `https://buildout.com/plugins/${firm.pluginKey}/${vector.host}/inventory/687920?pluginId=0&iframe=true&embedded=true`);
+      assert.equal(iframe, `https://buildout.com/plugins/${firm.pluginKey}/${vector.host}/inventory/687920-lease?pluginId=0&iframe=true&embedded=true`);
     } else {
       assert.equal(iframe, null, vector.url);
     }

@@ -108,7 +108,7 @@ test("optional detail configs are validated and available for registry-generated
     assert.equal(
       iframeUrl,
       `https://buildout.com/plugins/${definition.pluginKey}/` +
-        `${definition.detailConfig?.host}/inventory/${definition.sourceKey === "faris-lee" ? "listing-123-sale" : "listing-123"}` +
+        `${definition.detailConfig?.host}/inventory/listing-123-sale` +
         "?pluginId=0&iframe=true&embedded=true"
     );
   }
@@ -167,13 +167,6 @@ test("optional detail configs are validated and available for registry-generated
       }),
     /detail company must equal/
   );
-  assert.throws(
-    () => assertRegisteredBuildoutFirm({
-      ...base,
-      detailConfig: { ...base.detailConfig!, preserveTransactionSuffix: "yes" as unknown as boolean },
-    }),
-    /suffix policy must be boolean/
-  );
 });
 
 test("Faris detail retains native transaction suffix while canonical identity remains unsuffixed", () => {
@@ -188,11 +181,25 @@ test("Faris detail retains native transaction suffix while canonical identity re
   assert.equal(buildoutDetailIframeUrl("faris-lee", "https://attacker.example/listings/?propertyId=1135400-sale", faris.detailConfig), null);
 });
 
-test("Fortis and Kiser retain their preexisting route format", () => {
+test("all registered detail routes retain the publisher's opaque propertyId", () => {
+  assert.equal(REGISTERED_BUILDOUT_FIRMS.length, 25);
+  for (const firm of REGISTERED_BUILDOUT_FIRMS) {
+    const config = firm.detailConfig!;
+    assert(config);
+    for (const value of ["fixture-sale", "fixture-lease", "fixture", "pre-sale-label-LEASE"]) {
+      const listing = `${firm.listingsPage}?propertyId=${value}`;
+      assert.equal(buildoutDetailIframeUrl(firm.sourceKey, listing, config),
+        `https://buildout.com/plugins/${firm.pluginKey}/${config.host}/inventory/${value}?pluginId=0&iframe=true&embedded=true`);
+    }
+    assert.equal(buildoutSlugFromUrl(`${firm.listingsPage}?propertyId=fixture-sale`), "fixture");
+  }
+});
+
+test("Fortis and Kiser keep the literal route suffix", () => {
   for (const key of ["fortis-net-lease", "kiser-group"] as const) {
     const firm = registeredBuildoutFirmFor(key)!;
     assert.equal(buildoutDetailIframeUrl(key, `${firm.listingsPage}?propertyId=fixture-sale`, firm.detailConfig),
-      `https://buildout.com/plugins/${firm.pluginKey}/${firm.detailConfig!.host}/inventory/fixture?pluginId=0&iframe=true&embedded=true`);
+      `https://buildout.com/plugins/${firm.pluginKey}/${firm.detailConfig!.host}/inventory/fixture-sale?pluginId=0&iframe=true&embedded=true`);
   }
 });
 

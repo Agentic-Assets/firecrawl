@@ -16,7 +16,8 @@ test("HTTP source input is scoped and the constructed route uses HTTPS", () => {
   const parsed = new URL(result);
   assert.equal(parsed.protocol, "https:");
   assert.equal(parsed.hostname, "buildout.com");
-  assert(parsed.pathname.endsWith("/inventory/example"));
+  assert(parsed.pathname.endsWith("/inventory/example-sale"));
+  assert(new URL(buildoutDetailIframeUrl("leibsohn", url.replace("example-sale", "example-lease"), leibsohn)!).pathname.endsWith("/inventory/example-lease"));
   assert.equal(buildoutDetailIframeUrl("leibsohn", url, { ...leibsohn, allowHttpListingInput: undefined }), null);
   assert.equal(buildoutDetailIframeUrl("faris-lee", url, leibsohn), null);
   assert(buildoutDetailIframeUrl("leibsohn", `${url}&propertyId=`, leibsohn));
@@ -45,6 +46,7 @@ test("enrichment requests only the HTTPS iframe and echoes source URL; failure y
     };
     const result = await enrichBuildoutDetail("leibsohn", url, leibsohn);
     assert.equal(result.url, url);
+    assert.equal(result.id, "example");
     assert.equal(targets.length, 1);
     assert.equal(new URL(targets[0]).origin, "https://buildout.com");
     (firecrawl as any).scrape = async () => { throw new Error("fixture failure"); };
