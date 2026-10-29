@@ -18,6 +18,10 @@ export type CollectorScrapeOpts = ScrapeOpts & {
    * cannot silently contain the local API's default cached response.
    */
   maxAge?: number;
+  /** Private observation mode retains metadata-only responses without retries or error text. */
+  allowEmptyBody?: boolean;
+  singleAttempt?: boolean;
+  quietErrors?: boolean;
 };
 
 const DEFAULT_SCRAPE_MAX_ATTEMPTS = 3;
@@ -148,7 +152,7 @@ export async function scrapeRaw(url: string, opts: CollectorScrapeOpts = {}): Pr
 export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Promise<ScrapedDoc> {
   recordLogicalScrapeCall("doc");
   let lastErr: unknown = null;
-  const maxAttempts = configuredScrapeMaxAttempts();
+  const maxAttempts = opts.singleAttempt ? 1 : configuredScrapeMaxAttempts();
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const performanceAttempt = recordClientAttemptStarted({
       freshRequested: opts.maxAge === 0,
@@ -184,7 +188,7 @@ export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Pr
         ...(opts.proxy ? { proxy: opts.proxy } : {}),
         ...(opts.maxAge !== undefined ? { maxAge: opts.maxAge } : {}),
         timeout,
-      }, { signal }), timeout);
+      }, { signal, singleAttempt: opts.singleAttempt }), timeout);
       const anyDoc = doc as any;
       const data = anyDoc.data ?? anyDoc;
       const rawHtml = data.rawHtml ?? "";
@@ -195,13 +199,13 @@ export async function scrapeDoc(url: string, opts: CollectorScrapeOpts = {}): Pr
       // treats both as possibly-undefined and regex-falls-back over rawHtml.
       const images = Array.isArray(data.images) ? data.images : undefined;
       const attributes = Array.isArray(data.attributes) ? data.attributes : undefined;
-      if (!rawHtml && !markdown) throw new Error("empty scraped document");
+      if (!rawHtml && !markdown && !opts.allowEmptyBody) throw new Error("empty scraped document");
       recordClientAttemptCompleted(performanceAttempt, { outcome: "succeeded" });
       return { rawHtml, markdown, links, images, attributes, metadata: data.metadata };
     } catch (err) {
       recordClientAttemptCompleted(performanceAttempt, { outcome: "failed", error: err });
       lastErr = err;
-      console.error(`scrape-doc attempt ${attempt} failed for ${url}: ${err}`);
+      if (!opts.quietErrors) console.error(`scrape-doc attempt ${attempt} failed for ${url}: ${err}`);
       if (classifyPerformanceError(err).remoteSettlementUnknown) break;
       const delayMs = scrapeRetryDelayMs(attempt, maxAttempts);
       if (delayMs !== null) {

@@ -19,11 +19,12 @@ export class CancellableScrapeClient {
   async scrape(
     url: string,
     options: Record<string, unknown> = {},
-    transport: { signal?: AbortSignal } = {},
+    transport: { signal?: AbortSignal; singleAttempt?: boolean } = {},
   ): Promise<Record<string, unknown>> {
     if (!url.trim()) throw new Error("URL cannot be empty");
     const endpoint = `${this.configuration.apiUrl.replace(/\/$/, "")}/v2/scrape`;
-    for (let attempt = 0; attempt < this.configuration.maxAttempts; attempt++) {
+    const maxAttempts = transport.singleAttempt ? 1 : this.configuration.maxAttempts;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       transport.signal?.throwIfAborted();
       const response = await fetch(endpoint, {
         method: "POST",
@@ -43,7 +44,7 @@ export class CancellableScrapeClient {
       const body = await response.text();
       if (
         response.status === 502 &&
-        attempt + 1 < this.configuration.maxAttempts
+        attempt + 1 < maxAttempts
       ) {
         await sleep(500 * 2 ** attempt, undefined, {
           signal: transport.signal,

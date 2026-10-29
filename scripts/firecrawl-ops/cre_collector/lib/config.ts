@@ -14,6 +14,7 @@ export const { values: flags } = parseArgs({
     concurrency: { type: "string" }, // concurrent page fetches within a source
     monitor: { type: "boolean" }, // cheap-enumeration-only pass: skip detail render/enrichment
     "enrich-input": { type: "string" }, // path to a claim.json; targeted-detail (enrich) mode
+    "observe-input": { type: "string" }, // private source-page observation input
     "matthews-targeted-refresh": { type: "boolean" }, // caller-bound partial Matthews refresh
   },
 });

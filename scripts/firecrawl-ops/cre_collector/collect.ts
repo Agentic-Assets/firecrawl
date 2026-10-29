@@ -1,5 +1,7 @@
 import { observationNow } from "./lib/observation-clock.js";
-import { writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { reservePrivateCollectorDirectory, writeCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
+import { join } from "node:path";
+import { observePages, readObservationInput } from "./lib/page-observations/index.js";
 // collect.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import {
   AVISON_YOUNG_TERMINAL_404_EXIT_CODE,
@@ -63,6 +65,10 @@ import {
 
 // ---------- CLI ----------
 
+if (flags["observe-input"] !== undefined && (!flags["observe-input"] || !OUT_PATH ||
+    ["source", "transaction", "max-items", "page-cap", "concurrency", "monitor", "enrich-input", "matthews-targeted-refresh"].some(key => flags[key as keyof typeof flags] !== undefined))) {
+  throw new Error("observe mode requires --out and forbids other collection mode flags");
+}
 const sourceArg = (flags.source ?? "all").toLowerCase();
 const requestedSources: SourceKey[] =
   sourceArg === "all"
@@ -456,6 +462,24 @@ async function dispatch(): Promise<void> {
   flushPerformance({ terminal: false });
   try {
     const enrichInput = flags["enrich-input"];
+    if (flags["observe-input"] !== undefined) {
+      if (!OUT_PATH) throw new Error("observe mode requires --out");
+      const items = readObservationInput(flags["observe-input"]);
+      try { reservePrivateCollectorDirectory(OUT_PATH); }
+      catch { throw new Error("unable to reserve private observation output"); }
+      try {
+        const result = await observePages(items);
+        const names = result.parts.map((_, index) => `part-${String(index + 1).padStart(4, "0")}.json`);
+        for (let i = 0; i < result.parts.length; i++)
+          writeCollectorArtifact(join(OUT_PATH, names[i]), JSON.stringify(result.parts[i]), true);
+        writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({ ...result.summary, parts: names }), true);
+      } catch {
+        try { writeCollectorArtifact(join(OUT_PATH, "run-summary.json"), JSON.stringify({kind: "observation_run_summary", runMeta: { mode: "observe", evidenceOnly: true }, error: "observation_incomplete"}), true); }
+        catch { /* A previously written part remains available for inspection. */ }
+        process.exitCode = 1;
+      }
+      return;
+    }
     if (flags["matthews-targeted-refresh"] && !enrichInput) {
       throw new Error("Matthews targeted: requires --enrich-input");
     }
