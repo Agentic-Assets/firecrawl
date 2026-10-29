@@ -68,7 +68,7 @@ export function readObservationInput(path: string): PageItem[] {
         length += count;
       }
       if (length > INPUT_BYTES) throw new Error();
-      input = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+      input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length)));
     } finally { closeSync(fd); }
   } catch { throw new Error("invalid observation input file"); }
   return validateObservationInput(input);

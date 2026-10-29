@@ -77,6 +77,20 @@ test("FIFO input is refused without blocking", { skip: process.platform === "win
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("invalid UTF-8 is refused before dispatch while valid replacement characters survive", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cre-observe-utf8-"));
+  const input = join(dir, "input.json"), output = join(dir, "output"), marker = join(dir, "network-marker"), preload = join(dir, "preload.mjs");
+  const prefix = Buffer.from('{"items":[{"sourceKey":"leibsohn","url":"https://example.test/","context":"');
+  writeFileSync(input, Buffer.concat([prefix, Buffer.from([0xff]), Buffer.from('"}]}')]));
+  writeFileSync(preload, `import {writeFileSync} from 'node:fs'; globalThis.fetch=async()=>{writeFileSync(${JSON.stringify(marker)},'called'); throw Error('unexpected');};`);
+  const run = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts", "--observe-input", input, "--out", output], {encoding: "utf8"});
+  assert.notEqual(run.status, 0);
+  assert.throws(() => statSync(marker));
+  assert.throws(() => statSync(output));
+  writeFileSync(input, JSON.stringify({items: [{...item(0), context: "\ufffd"}]}));
+  assert.equal(readObservationInput(input)[0].context, "\ufffd");
+});
+
 test("private output is reserved before use and refuses replacement", () => {
   const dir = mkdtempSync(join(tmpdir(), "cre-observe-"));
   const out = join(dir, "artifact.json");
@@ -138,6 +152,9 @@ test("CLI writes a private 55-item evidence artifact without network", () => {
     const check = spawnSync("python3", ["-c", python, part], {encoding: "utf8"});
     assert.equal(check.status, 0, check.stderr);
   }
+  const summaryCheck = `import json,sys\nfrom cre_artifact_scope import require_canonical_artifact\nfrom cre_enrich import validate_enriched_artifact\nfrom cre_gate import count_artifacts\nfrom cre_monitor import load_artifact_groups\np=sys.argv[1]; a=json.load(open(p))\nfor f in (lambda: require_canonical_artifact(a),lambda: validate_enriched_artifact([],a),lambda: count_artifacts([p],True),lambda: load_artifact_groups([p])):\n try: f()\n except ValueError: continue\n raise AssertionError('unexpected summary admission')\n`;
+  const summaryRefusal = spawnSync("python3", ["-c", summaryCheck, join(output, "run-summary.json")], {encoding: "utf8"});
+  assert.equal(summaryRefusal.status, 0, summaryRefusal.stderr);
 });
 
 test("metadata denial halts later requests, but 404 continues", async () => {
