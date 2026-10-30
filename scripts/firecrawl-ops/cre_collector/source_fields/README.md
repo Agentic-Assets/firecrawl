@@ -23,6 +23,8 @@ declared bounds. The exact source paths
 treated as business fields, with their values still inspected. The original private
 artifact is unchanged. Unmarked legacy inputs retain their existing behavior
 and do not replace a newer public envelope with an empty one.
+Identified technical credentials and recognizable copies are omitted from SRS
+staging and public facts with an explicit partial notice.
 
 The current canonical schema still requires a usable source URL. Private
 observations missing that URL are retained by collection without inventing a
