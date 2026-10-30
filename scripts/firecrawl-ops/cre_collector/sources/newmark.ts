@@ -1,3 +1,4 @@
+import { captureNewmarkNimRaw, preserveNewmarkNimRaw } from "./pure/newmark-nim-raw-retention.js";
 import { newmarkNimCanonicalIdentity } from "./pure/newmark-nim-identity.js";
 export { newmarkNimCanonicalIdentity } from "./pure/newmark-nim-identity.js";
 import { publishNativeJsonFeed, nativeJsonFeedCaptureEnabled, NativeJsonFeedCaptureError } from "../lib/source-evidence/native-json-feed.js";
@@ -852,7 +853,9 @@ export function mapNewmarkNimListing(
     mainImageUrl && /^https?:\/\//i.test(mainImageUrl)
       ? [mainImageUrl]
       : [];
-  return {
+  const { raw, marker } = captureNewmarkNimRaw(record, tx, canonicalIdentity.id,
+    canonicalIdentity.url, clean(record?.id), inventoryObservedAt, observation.cacheDisposition);
+  const listing = {
     id: canonicalIdentity.id,
     name:
       clean(record?.name)
@@ -895,8 +898,8 @@ export function mapNewmarkNimListing(
       method: observation.method,
       cacheDisposition: observation.cacheDisposition,
     },
-    rawNewmarkNimRecord: record,
   };
+  return preserveNewmarkNimRaw(listing, raw, marker);
 }
 
 export async function srcNewmark(

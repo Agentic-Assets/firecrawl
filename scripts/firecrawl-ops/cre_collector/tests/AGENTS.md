@@ -77,6 +77,8 @@ python3 tests/run_daum_subset_postgres_contract.py "$(mktemp -d)/proof"  # opt-i
 python3 tests/run_jll_image_repair_postgres_contract.py  # opt-in exact-reference repair SQL contract
 python3 tests/run_transwestern_image_transition_postgres_contract.py \
   --proof-dir "$(mktemp -d)/proof" --execute-disposable-fixture  # opt-in Transwestern image transition contract
+python3 tests/source_fields/run_newmark_public_facts_postgres.py \
+  --execute-disposable-fixture --proof-dir "$(mktemp -d)/proof"  # owned socket-only PG17; no application DB URL
 ```
 
 Requires `pytest` on the host (not pinned in `package.json`). The suite includes
