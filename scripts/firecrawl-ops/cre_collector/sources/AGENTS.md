@@ -987,6 +987,22 @@ owns the preventive guard and separately approved historical decision.
 
 ## Buildout (`buildout.ts`) - Shared Adapter
 
+Normal Buildout output carries a bounded snapshot of each eligible mapped inventory
+row in `rawBuildout`, with a `buildout-raw-retention-v1` receipt binding the
+registered source/feed variant, emitted ID/URL and existing inventory clock.
+Null, false, empty values and array positions survive both mapping and collector
+pruning; over-limit or invalid snapshots are explicitly omitted. Unknown scope
+and missing IDs/URLs remain private unqualified context. This is parsed JSON,
+not original response bytes or exact numeric lexemes. It excludes closed and
+other unmapped rows; native page evidence has its own scope and controls.
+
+Full or monitor collection selecting Buildout or SRS requires `--out` before
+acquisition. Artifacts carrying new raw receipts are written exclusively as
+mode 0600 files; existing paths (including symlinks) are refused. Existing
+parent-directory permissions are not changed. Treat these files as private;
+Buildout references can contain credentials. This contract does not authorize
+source requests, runtime handoff, evidence admission or production writes.
+
 Provider coordinates are source-owned in `buildout-feeds/`, combining the
 unchanged 25 registered tuples with `data/cre-buildout-core-feeds.json` for SVN,
 Lee and Franklin. The shared registry has 28 source keys and 29 feed keys;
@@ -1071,6 +1087,19 @@ separate. This consolidation requires separate production acceptance.
   `hudsonpeters.com`; its tuple keeps that observed coordinate. Both old and
   corrected composed detail iframe probes returned 404. Host compatibility does
   not establish live detail availability.
+
+## Buildout retained inventory facts
+
+Versioned Buildout inventory carriers bind the original mapper ID and URL,
+registered source and feed variant before projecting
+`cre-public-listing-facts/v1` with `buildout-public-inventory/v1`. Parsed
+JavaScript numbers have no original numeric-literal witness. The source clock is
+the admitted `inventoryObservedAt`; an unknown clock remains unknown. Existing
+Buildout document-reference withholding applies to native `pdf_url` and mapped
+brochure URLs; known credential values and copies are removed from marked staged
+listings. Original acquisition artifacts require private custody. Existing
+unmarked rows retain their prior behavior. Source retention and projection do not
+establish inventory completeness or authorize production writes.
 
 ## SRS, Kidder and Hanley native evidence
 

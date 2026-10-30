@@ -3,9 +3,13 @@ Parent: [collector agent guidance](../AGENTS.md).
 # Source fields
 
 `public_facts.py` owns bounded JSON inspection and display-fact construction
-shared by the source-specific Newmark and SRS helpers. Source identity, URL and
+shared by the source-specific Newmark, SRS and Buildout helpers. Source identity, URL and
 observation-clock qualification remain in each source helper. A known technical
 credential omission does not prove that every possible secret was detected.
+Marked SRS and Buildout staging also inspects credential assignments and Basic
+authorization values, including recognizable copies and encoded JSON. Decoding
+is bounded to five percent/HTML transformations; unresolved input is refused.
+Ordinary prose such as "Basic rent" remains source data.
 
 SRS preserves a parsed source snapshot through both collector prune boundaries.
 `srsRawRetention` describes acquisition of that snapshot, including missing
@@ -24,6 +28,21 @@ link or bypassing admission. Incomplete inspection refuses staging, while
 display-size limits produce explicit partial envelopes. Neither a source merge
 nor saved-input replay activates production ingestion or proves full coverage.
 
+Buildout retains the eligible inventory row once at the shared mapper and
+restores it after collector pruning. Its source-qualified public envelope binds
+the exact registered source and feed variant; Franklin's sale and lease feeds
+also bind to the requested transaction pass. The inspected staging copy omits
+technical document references and recognizable copies while the private
+acquisition remains unchanged. Referenced broker records receive the same
+inspection through a local overlay, without changing the shared broker pool.
+
+When separate passes merge into one canonical property, ordered inventory
+observations retain each envelope's facts and source context. Conflicts remain
+visible inside those observations; normalized fields keep their existing merge
+rules. Bounds and omitted references remain explicit. These envelopes describe
+captured parsed values, not original number lexemes, source authentication or
+complete inventory. Unmarked legacy behavior is unchanged.
+
 `rcm.py` keeps the CBRE, Colliers and Newmark contact-source match and the new CBRE price
 currency witness outside the ingest orchestrator. A marker binds an asserted
 source shape, not publisher authentication. Contacts without a stable name or
@@ -40,6 +59,9 @@ artifacts remain outside this phase. Missing,
 invalid or conflicting observations do not create zero or clear existing data.
 A newer observation updates an existing count only when its provenance schema,
 source, native ID, URL, tenure and previous value match the existing owner.
+Qualification follows the original artifact object across staging copies. A
+count remains eligible only while its observation, identity and provenance
+witnesses survive inspection unchanged; altered evidence becomes a field hold.
 
 The source observation retains the label, ordinal, literal, original clock,
 normalized comparison clock, source identity, generation and artifact hash.

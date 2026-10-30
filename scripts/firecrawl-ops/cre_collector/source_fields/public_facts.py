@@ -1,7 +1,10 @@
 """Bounded public-fact construction and credential inspection helpers."""
+import base64
+import binascii
 import copy
 import json
 import re
+from collections import ChainMap
 from html import unescape
 from urllib.parse import unquote
 
@@ -11,6 +14,21 @@ from source_evidence import events
 
 class _InspectionLimit(ValueError):
     """A bounded per-record inspection could not complete."""
+
+
+def _decoded_variants(value, *, refuse_excess=False):
+    """Inspect the initial value and each of at most five decoded variants."""
+    candidate = value
+    for step in range(6):
+        yield candidate
+        following = unquote(unescape(candidate), errors='replace')
+        if following == candidate:
+            return
+        if step == 5:
+            if refuse_excess:
+                raise _InspectionLimit('Public credential decoding exceeds bound')
+            return
+        candidate = following
 
 
 def _pointer(label):
@@ -50,40 +68,125 @@ def _collect_credential_strings(value, removed, numeric_removed):
                 raise _InspectionLimit('Newmark credential count exceeds bound')
 
 
-def _encoded_json_credential(value, budget, removed, numeric_removed, depth=0):
+def _encoded_json_credential(value, budget, removed, numeric_removed, depth=0, *, marked=False):
     budget[0] += 1
     if budget[0] > 20000 or depth > 16:
         raise _InspectionLimit('Newmark encoded JSON inspection exceeds bound')
     if isinstance(value, dict):
         found = False
         for key, child in value.items():
-            if _credential_label_encoded(key):
+            if _credential_label_encoded(key) and not (marked and _BEARER.fullmatch(key.strip())):
                 _collect_credential_strings(child, removed, numeric_removed)
                 found = True
             else:
-                found = _encoded_json_credential(child, budget, removed, numeric_removed, depth + 1) or found
+                found = _encoded_json_credential(child, budget, removed, numeric_removed, depth + 1, marked=marked) or found
         return found
     if isinstance(value, list):
         found = False
         for child in value:
-            found = _encoded_json_credential(child, budget, removed, numeric_removed, depth + 1) or found
+            found = _encoded_json_credential(child, budget, removed, numeric_removed, depth + 1, marked=marked) or found
         return found
     if isinstance(value, str):
-        candidate = value.strip()
-        if not candidate or candidate[0] not in '{["':
-            return False
-        try:
-            parsed = json.loads(candidate)
-        except (ValueError, RecursionError):
-            return False
-        return _encoded_json_credential(parsed, budget, removed, numeric_removed, depth + 1)
+        variants = _decoded_variants(value.strip(), refuse_excess=True) if marked else (value.strip(),)
+        for candidate in variants:
+            if candidate and candidate[0] in '{["':
+                try:
+                    parsed = json.loads(candidate)
+                except (ValueError, RecursionError):
+                    pass
+                else:
+                    return _encoded_json_credential(parsed, budget, removed, numeric_removed, depth + 1, marked=marked)
+        return False
     return False
+
+
+_BEARER = re.compile(r'''\bbearer[ \t]+([A-Za-z0-9._~+/-]+={0,2})(?=$|[\s,;\"'<>}\]])''', re.IGNORECASE)
+
+
+def _bare_bearer_tokens(value):
+    # A bare Bearer scheme plus token is ambiguous source text; treat the
+    # matching token as unverified credential material for marked staging.
+    found = set()
+    candidate = value
+    for _ in range(5):
+        for match in _BEARER.finditer(candidate):
+            found.add(match.group(1))
+        following = unquote(unescape(candidate), errors='replace')
+        if following == candidate:
+            break
+        candidate = following
+    return found
+
+
+# Only unambiguous credential labels are considered assignments.  A bare
+# Basic scheme is qualified by the same canonical base64 user:password check
+# used by the Buildout observation path, avoiding ordinary "Basic rent" prose.
+_ASSIGNMENT = re.compile(r"(?=(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_-]*)[\"']?[ \t]*[=:][ \t]*[\"']?([^\s,;&\"'<>}\]]+))")
+_BASIC = re.compile(r"\bbasic[ \t]+([A-Za-z0-9+/]+={0,2})(?=$|[\s,;\"'<>}\]])", re.IGNORECASE)
+_AUTH_HEADER = re.compile(r"\bauthorization[ \t]*:[ \t]*(?:basic|bearer)[ \t]+[\"']?([^\s,;\"'<>}\]]+)", re.IGNORECASE)
+
+
+def _marked_credential_tokens(value):
+    found = set()
+    pending = [(value, 0)]
+    nodes = 0
+    while pending:
+        item, depth = pending.pop()
+        nodes += 1
+        if nodes > 20000 or depth > 16:
+            raise _InspectionLimit('Public credential JSON inspection exceeds bound')
+        if isinstance(item, dict):
+            pending.extend((child, depth + 1) for pair in item.items() for child in pair)
+            continue
+        if isinstance(item, list):
+            pending.extend((child, depth + 1) for child in item)
+            continue
+        if not isinstance(item, str):
+            continue
+        for candidate in _decoded_variants(item, refuse_excess=True):
+            parsed_json = False
+            if candidate.lstrip().startswith(('{', '[', '"')):
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, (dict, list, str)):
+                        pending.append((parsed, depth + 1))
+                        parsed_json = True
+                except (ValueError, RecursionError):
+                    pass
+            if not parsed_json:
+                found.update(_bare_bearer_tokens(candidate))
+                bearer_token_positions = {match.start(1) for match in _BEARER.finditer(candidate)}
+                for match in _ASSIGNMENT.finditer(candidate):
+                    label, token = match.groups()
+                    if (match.start(1) not in bearer_token_positions and _credential_label_encoded(label)
+                            and token.lower() not in ('basic', 'bearer')):
+                        found.add(token)
+                for match in _AUTH_HEADER.finditer(candidate):
+                    found.add(match.group(1))
+                for match in _BASIC.finditer(candidate):
+                    token = match.group(1)
+                    try:
+                        decoded = base64.b64decode(token + '=' * (-len(token) % 4), validate=True)
+                        if base64.b64encode(decoded).decode('ascii').rstrip('=') == token.rstrip('=') and b':' in decoded:
+                            found.add(token)
+                            try:
+                                literal = decoded.decode('utf-8')
+                                if literal and len(literal) <= 4096 and not any(ord(ch) < 32 for ch in literal):
+                                    found.add(literal)
+                                    password = literal.partition(':')[2]
+                                    if password:
+                                        found.add(password)
+                            except UnicodeDecodeError:
+                                pass
+                    except (ValueError, binascii.Error):
+                        pass
+    return found
 
 
 def _sensitive_encoded_string(value):
     candidate = value
     for _ in range(5):
-        if sensitive_string(candidate):
+        if sensitive_string(candidate) or _marked_credential_tokens(candidate):
             return True
         following = unquote(unescape(candidate), errors='replace')
         if following == candidate:
@@ -92,10 +195,12 @@ def _sensitive_encoded_string(value):
     return True
 
 
-def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings=False):
+def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings=False, removed_strings=()):
     """Remove encoded credential labels, retain safe siblings and array order."""
     data = copy.deepcopy(data)
-    changes, removed, numeric_removed, nodes, encoded_budget = [], [], [], [0], [0]
+    changes, removed, numeric_removed, nodes, encoded_budget = [], list(removed_strings), [], [0], [0]
+    if len(removed) > 1000 or any(not isinstance(value, str) or not value or len(value) > 4096 for value in removed):
+        raise _InspectionLimit('Public credential seed exceeds bound')
 
     def visit(value, path, depth):
         nodes[0] += 1
@@ -104,7 +209,11 @@ def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings
         if isinstance(value, dict):
             for key in list(value):
                 child_path = path + _pointer(key)
-                if _credential_label_encoded(key) and not (allow_label and allow_label(child_path, key)):
+                credential_tokens = _marked_credential_tokens(key) if inspect_strings else set()
+                if (_credential_label_encoded(key) or credential_tokens) and not (allow_label and allow_label(child_path, key)):
+                    removed.extend(credential_tokens)
+                    if len(removed) > 1000:
+                        raise _InspectionLimit('Public credential count exceeds bound')
                     secret = value.pop(key)
                     _collect_credential_strings(secret, removed, numeric_removed)
                     numeric_removed.extend(literal for number_path, literal in numeric.items()
@@ -115,10 +224,17 @@ def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings
         elif isinstance(value, list):
             for i, child in enumerate(value):
                 value[i] = visit(child, path + '/' + str(i), depth + 1)
-        elif isinstance(value, str) and ((inspect_strings and _sensitive_encoded_string(value))
-                                          or _encoded_json_credential(value, encoded_budget, removed, numeric_removed)):
-            changes.append((path, 'unverified_content_omitted'))
-            return None
+        elif isinstance(value, str):
+            marked_sensitive = inspect_strings and _sensitive_encoded_string(value)
+            # Do not short-circuit: the encoded JSON may contain additional
+            # credential-labeled values whose independent copies need removal.
+            encoded_sensitive = _encoded_json_credential(value, encoded_budget, removed, numeric_removed, marked=inspect_strings)
+            if marked_sensitive or encoded_sensitive:
+                removed.extend(_marked_credential_tokens(value) if inspect_strings else ())
+                if len(removed) > 1000:
+                    raise _InspectionLimit('Public credential count exceeds bound')
+                changes.append((path, 'unverified_content_omitted'))
+                return None
         return value
 
     data = visit(data, '', 0)
@@ -128,18 +244,13 @@ def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings
         numeric_patterns = [re.compile(r'(?<![A-Za-z0-9_.])' + re.escape(token) + r'(?![A-Za-z0-9_.])')
                             for token in set(numeric_removed)]
         def contains_copy(value):
-            candidate = value
-            for _ in range(5):
+            for candidate in _decoded_variants(value, refuse_excess=inspect_strings):
                 work[0] += len(candidate) * max(1, len(removed) + len(numeric_removed))
                 if work[0] > 128 * 1024 * 1024:
                     raise _InspectionLimit('Newmark credential-copy inspection exceeds bound')
                 if (any(secret in candidate for secret in removed)
                         or any(pattern.search(candidate) for pattern in numeric_patterns)):
                     return True
-                following = unquote(unescape(candidate), errors='replace')
-                if following == candidate:
-                    break
-                candidate = following
             return False
 
         def redact(value, path, depth):
@@ -210,3 +321,29 @@ def _build_facts(data, numeric, omissions):
         total_bytes += size
         facts.append(fact)
     return facts
+
+
+def _stage_referenced_brokers(listing, brokers):
+    """Add only this listing's contacts to the copied inspection object."""
+    if brokers is None:
+        return []
+    if '_publicFactsStagedBrokers' in listing:
+        raise ValueError('public facts broker staging field conflict')
+    ids = list(listing.get('brokerIds') or [])
+    if not ids:
+        return []
+    listing['_publicFactsStagedBrokers'] = [brokers.get(bid) for bid in ids]
+    return ids
+
+
+def _unstage_referenced_brokers(listing, brokers, ids):
+    if brokers is None:
+        return None
+    if not ids:
+        return brokers
+    if '_publicFactsStagedBrokers' not in listing:
+        raise ValueError('public facts broker staging field was removed')
+    staged = listing.pop('_publicFactsStagedBrokers')
+    if not isinstance(staged, list) or len(staged) != len(ids):
+        raise ValueError('public facts broker staging field was altered')
+    return ChainMap(dict(zip(ids, staged)), brokers)

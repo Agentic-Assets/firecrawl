@@ -10,6 +10,8 @@ from source_fields.public_facts import (
     _InspectionLimit,
     _sanitize_encoded_labels,
     _sensitive_encoded_string,
+    _stage_referenced_brokers,
+    _unstage_referenced_brokers,
 )
 
 SCHEMA = 'cre-public-listing-facts/v1'
@@ -94,14 +96,15 @@ def _clock(listing):
         return None
 
 
-def attach(listing):
+def attach(listing, brokers=None):
     if not isinstance(listing, dict) or listing.get('sourceKey') != 'srs':
-        return listing
+        return (listing, brokers) if brokers is not None else listing
     marker = listing.get('srsRawRetention')
     marked = isinstance(marker, dict) and marker.get('schema') == 'srs-raw-retention-v1'
     if not marked:
-        return listing
+        return (listing, brokers) if brokers is not None else listing
     listing = copy.deepcopy(listing)
+    broker_ids = _stage_referenced_brokers(listing, brokers)
     if isinstance(listing.get('extraFacts'), dict):
         listing['extraFacts'].pop('cre_public_listing_facts', None)
     original_id = listing.get('id')
@@ -132,10 +135,12 @@ def attach(listing):
             inspect_strings=True,
         )
         listing = inspected['payload']
+        safe_brokers = _unstage_referenced_brokers(listing, brokers, broker_ids)
         safe = listing.get('rawSrs')
         if safe is not None and len(events.encoded(safe)) > 2_000_000:
             raise _InspectionLimit('SRS staged raw exceeds bound')
-        if url is not None and (listing.get('url') != url or listing.get('id') != original_id):
+        if (listing.get('sourceKey') != 'srs' or (url is not None
+                and (listing.get('url') != url or listing.get('id') != original_id))):
             raise ValueError('SRS identity contains credential material')
     except (_InspectionLimit, ValueError, TypeError, RecursionError, OverflowError) as exc:
         raise ValueError('SRS staged listing credential inspection failed') from exc
@@ -179,4 +184,4 @@ def attach(listing):
     extra = dict(extra or {})
     extra['cre_public_listing_facts'] = envelope
     listing['extraFacts'] = extra
-    return listing
+    return (listing, safe_brokers) if brokers is not None else listing

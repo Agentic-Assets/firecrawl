@@ -283,13 +283,33 @@ def test_ordinary_setup_smoke_uses_default_bounded_source_and_preserves_override
     assert len(collect) == 1
     assert f"--source={source or 'interra-realty'}" in collect[0]
     assert "--transaction=sale" in collect[0] and "--max-items=3" in collect[0]
-    assert ["ingest", "--in", "out/setup_smoke.json", "--dry-run"] in calls
+    output = next(arg.removeprefix("--out=") for arg in collect[0] if arg.startswith("--out="))
+    assert output.startswith("out/setup-smoke.") and output.endswith("/artifact.json")
+    assert ["ingest", "--in", output, "--dry-run"] in calls
     assert ["full-healthcheck"] not in calls
     assert "Network smoke test" in result.stdout
     assert "max-items limits output, not inventory fetches" in result.stdout
     if source is None:
         assert "one inventory GET, at most 32 MiB / 60 seconds" in result.stdout
-    assert not (collector / "out/setup_smoke.json").exists()
+    assert not (collector / output).exists()
+    assert not list((collector / "out").glob("setup-smoke.*"))
+
+
+def test_setup_smoke_never_overwrites_existing_artifact(setup_clone):
+    collector, run = setup_clone
+    (collector / "out").mkdir()
+    old = collector / "out/setup_smoke.json"
+    old.write_text("owned-existing-artifact")
+    outputs = []
+    for _ in range(2):
+        result, calls = run("--no-install", CRE_SMOKE_SOURCE="svn")
+        assert result.returncode == 0, result.stdout + result.stderr
+        collect = [call for call in calls if call[:3] == ["npx", "tsx", "collect.ts"]]
+        output = next(arg.removeprefix("--out=") for arg in collect[-1] if arg.startswith("--out="))
+        outputs.append(output)
+        assert old.read_text() == "owned-existing-artifact"
+        assert not (collector / output).exists()
+    assert outputs[0] != outputs[1]
 
 
 def test_collect_failure_is_warning_and_does_not_ingest(setup_clone):

@@ -457,3 +457,16 @@ def qualified_counts(artifact, artifact_sha256):
             "blocked": [],
         }
     return result
+
+
+def rebind_count_decision(original, staged, decision):
+    """Carry a qualified count only while its staged witnesses remain intact."""
+    witnesses = (
+        "sourceKey", "id", "url", "transactionMode", "freshnessProvenance",
+        "canonicalUrl", "transactionType", "underContract", "statusBadge",
+        "preserveChildCollections", "inventoryObservedAt", "detailObservedAt",
+        "buildoutFieldObservations",
+    )
+    if any(original.get(key) != staged.get(key) for key in witnesses):
+        return {"values": {}, "blocked": ["available_space_count"]}
+    return decision

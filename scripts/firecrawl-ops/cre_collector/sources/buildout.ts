@@ -1,3 +1,4 @@
+import { buildoutRawScope, captureBuildoutRaw, preserveBuildoutRaw } from "./pure/buildout-raw-retention.js";
 import { buildoutCanonicalAttributeMap, buildoutFieldObservations, MAX_BUILDOUT_FIELD_ATTRIBUTES, safeBuildoutSpaceLiteral } from "./buildout-field-observations.js";
 import { observationNow } from "../lib/observation-clock.js";
 // sources/buildout.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
@@ -1138,11 +1139,15 @@ export async function srcBuildout(
     return tx === "sale" ? isSale : !isSale;
   });
   const listings: any[] = [];
+  const sourceScope = buildoutRawScope(company, pluginKey, listingsPage, inventoryOpts.cacheSlug);
   for (const x of eligibleItems) {
     if (listings.length >= max) break;
     const isSale = x.sale === true;
     const isLease = x.sale !== true; // inventory rows are active availabilities: not-for-sale = for-lease
     {
+      const id = x.id != null ? String(x.id) : null;
+      const observedAt = buildoutPageObservation(x)?.observedAt ?? null;
+      const { raw, marker } = captureBuildoutRaw(x, id, clean(x.show_link), observedAt, sourceScope);
       const mappedAttributes = buildoutCanonicalAttributeMap(x.index_attributes);
       const attrs = mappedAttributes.values;
       const priceText = attrs.get("Price") ?? null;
@@ -1201,8 +1206,8 @@ export async function srcBuildout(
       const isSalePsf = isPerSfText(rawSalePriceText);
       const fieldObservations = buildoutFieldObservations(x.index_attributes);
 
-      listings.push({
-        id: x.id != null ? String(x.id) : null,
+      const listing = {
+        id,
         name: clean(x.display_name) ?? clean(x.name),
         transactionType: x.also_for_sale_or_lease ? "Sale/Lease" : isLease ? "Lease" : "Sale",
         assetType: clean(x.property_sub_type_name) ?? attrs.get("Property Type") ?? null,
@@ -1239,7 +1244,7 @@ export async function srcBuildout(
         photos: [x.photo_url, x.large_thumbnail_url].filter(Boolean).slice(0, 1),
         url: clean(x.show_link),
         underContract: x.under_contract === true,
-        inventoryObservedAt: buildoutPageObservation(x)?.observedAt,
+        inventoryObservedAt: observedAt ?? undefined,
         // The bulk Buildout endpoint is an authoritative inventory feed, not a
         // rendered property-detail page. Keep the last-good detail children
         // (contacts, documents, images, media, and links) and add the current
@@ -1251,7 +1256,8 @@ export async function srcBuildout(
           method: "buildout_inventory_feed",
           cacheDisposition: buildoutPageObservation(x)?.cacheDisposition ?? "live",
         },
-      });
+      };
+      listings.push(preserveBuildoutRaw(listing, raw, marker));
     }
   }
   const generationId = refreshGenerationId();

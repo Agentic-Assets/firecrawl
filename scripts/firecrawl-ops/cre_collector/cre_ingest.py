@@ -2722,6 +2722,10 @@ def generic_enrichment_substantive(listing):
 
 def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_candidates=None):
     """Map one collector listing to a staging row dict, or None to skip."""
+    # Qualification maps are bound to the input artifact object, before any
+    # source-specific staging projection creates a sanitized copy.
+    input_listing_identity = id(listing)
+    input_listing = listing
     if is_retired_om_parse_listing(listing):
         return None
     # Inventory-only cards intentionally have no canonical listing identity or
@@ -2737,7 +2741,14 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         if (isinstance(marker, dict) and marker.get("schema") == "srs-raw-retention-v1"
                 and listing.get("url") and _safe_url(listing["url"]) is None):
             return None
-        listing = attach(listing)
+        listing, brokers_by_idx = attach(listing, brokers_by_idx)
+    if source_key in BUILDOUT_SOURCE_KEYS:
+        from source_fields.buildout_public_facts import attach, safe_url
+        marker = listing.get("buildoutRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "buildout-raw-retention-v1"
+                and listing.get("url") and safe_url(listing["url"]) is None):
+            return None
+        listing, brokers_by_idx = attach(listing, brokers_by_idx)
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     if not mapping:
         return None
@@ -3051,8 +3062,11 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         desc = None
         markdown = None
 
-    building_decision = (building_candidates or {}).get(id(listing), {})
-    count_decision = (field_candidates or {}).get(id(listing), {})
+    building_decision = (building_candidates or {}).get(input_listing_identity, {})
+    count_decision = (field_candidates or {}).get(input_listing_identity, {})
+    if count_decision and listing is not input_listing:
+        from source_fields.buildout import rebind_count_decision
+        count_decision = rebind_count_decision(input_listing, listing, count_decision)
     row = {
         "slug": slug,
         "external_id": external_id,
@@ -3374,6 +3388,8 @@ def merge_rows(a, b):
             a[k] = b[k]
     for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
         a[k] = _merge_child_collections(k, a[k], b[k])
+    from source_fields.buildout_public_facts import merge_public_facts
+    merge_public_facts(a, b)
     # extra_facts: merge the two long-tail blobs (union; the first pass wins a key
     # collision) so neither pass's facts are lost. Mirrors the jsonb `||` merge in
     # the upsert (a missing/empty pass keeps the other's blob).
