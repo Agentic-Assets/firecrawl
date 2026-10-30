@@ -256,8 +256,10 @@ elif [ ! -d node_modules ]; then
 elif [ "$API_READY" -ne 1 ]; then
   warn "smoke skipped: Firecrawl API readiness failed"
 else
-  SMOKE_OUT="out/setup_smoke.json"
   mkdir -p out
+  SMOKE_DIR="$(mktemp -d out/setup-smoke.XXXXXX)" || { warn "unable to reserve private smoke directory"; exit 1; }
+  SMOKE_OUT="$SMOKE_DIR/artifact.json"
+  trap 'rm -f "$SMOKE_OUT"; rmdir "$SMOKE_DIR" 2>/dev/null || true' EXIT
   note "This contacts the public brokerage site; max-items limits output, not inventory fetches."
   if [ "$SMOKE_SOURCE" = "interra-realty" ]; then
     note "Default Interra transport: one inventory GET, at most 32 MiB / 60 seconds; no detail requests."
@@ -275,6 +277,8 @@ else
     note "Source layouts drift; try CRE_SMOKE_SOURCE=<other> bash cre_setup.sh"
   fi
   rm -f "$SMOKE_OUT"
+  rmdir "$SMOKE_DIR" 2>/dev/null || true
+  trap - EXIT
 fi
 
 # ---------------------------------------------------------------------------

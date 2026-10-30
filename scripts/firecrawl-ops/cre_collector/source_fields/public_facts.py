@@ -2,6 +2,7 @@
 import copy
 import json
 import re
+from collections import ChainMap
 from html import unescape
 from urllib.parse import unquote
 
@@ -92,10 +93,12 @@ def _sensitive_encoded_string(value):
     return True
 
 
-def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings=False):
+def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings=False, removed_strings=()):
     """Remove encoded credential labels, retain safe siblings and array order."""
     data = copy.deepcopy(data)
-    changes, removed, numeric_removed, nodes, encoded_budget = [], [], [], [0], [0]
+    changes, removed, numeric_removed, nodes, encoded_budget = [], list(removed_strings), [], [0], [0]
+    if len(removed) > 1000 or any(not isinstance(value, str) or not value or len(value) > 4096 for value in removed):
+        raise _InspectionLimit('Public credential seed exceeds bound')
 
     def visit(value, path, depth):
         nodes[0] += 1
@@ -210,3 +213,29 @@ def _build_facts(data, numeric, omissions):
         total_bytes += size
         facts.append(fact)
     return facts
+
+
+def _stage_referenced_brokers(listing, brokers):
+    """Add only this listing's contacts to the copied inspection object."""
+    if brokers is None:
+        return []
+    if '_publicFactsStagedBrokers' in listing:
+        raise ValueError('public facts broker staging field conflict')
+    ids = list(listing.get('brokerIds') or [])
+    if not ids:
+        return []
+    listing['_publicFactsStagedBrokers'] = [brokers.get(bid) for bid in ids]
+    return ids
+
+
+def _unstage_referenced_brokers(listing, brokers, ids):
+    if brokers is None:
+        return None
+    if not ids:
+        return brokers
+    if '_publicFactsStagedBrokers' not in listing:
+        raise ValueError('public facts broker staging field was removed')
+    staged = listing.pop('_publicFactsStagedBrokers')
+    if not isinstance(staged, list) or len(staged) != len(ids):
+        raise ValueError('public facts broker staging field was altered')
+    return ChainMap(dict(zip(ids, staged)), brokers)

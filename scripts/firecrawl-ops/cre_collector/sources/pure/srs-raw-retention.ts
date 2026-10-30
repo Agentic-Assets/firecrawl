@@ -1,4 +1,4 @@
-import { preservesJsonValue } from "../../lib/json-value.js";
+import { snapshotJsonValue } from "../../lib/json-value.js";
 
 // This represents parsed JSON values, not original bytes or number lexemes.
 const SRS_RAW_MAX_BYTES = 1_000_000;
@@ -17,10 +17,7 @@ export function captureSrsRaw(value: unknown, listingId: string | null, listingU
   const binding = listingId ? (listingUrl ? "id_and_url" : "id_only") : (listingUrl ? "url_only" : "unbound");
   const marker: SrsRawRetention = { schema: "srs-raw-retention-v1", status: "omitted", binding, listingId, listingUrl };
   try {
-    if (!preservesJsonValue(value)) throw new Error();
-    const text = JSON.stringify(value);
-    if (Buffer.byteLength(text, "utf8") > SRS_RAW_MAX_BYTES) throw new Error();
-    const raw = JSON.parse(text);
+    const raw = snapshotJsonValue(value, SRS_RAW_MAX_BYTES);
     return { raw, marker: { ...marker, status: "complete" } };
   } catch {
     return { marker: { ...marker, reason: "invalid_or_over_limit" } };

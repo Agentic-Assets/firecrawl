@@ -34,3 +34,11 @@ export function preservesJsonValue(value: unknown): boolean {
   };
   return visit(value, 0);
 }
+
+/** Copy bounded parsed JSON without claiming original wire or numeric lexemes. */
+export function snapshotJsonValue(value: unknown, maxBytes: number): unknown {
+  if (!preservesJsonValue(value)) throw new Error("non-JSON value");
+  const text = JSON.stringify(value);
+  if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error("JSON value exceeds bound");
+  return JSON.parse(text);
+}

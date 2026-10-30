@@ -188,3 +188,25 @@ def test_replay_retains_partial_and_recomputes_envelope():
     assert second['srsRawStaging']['status'] == 'redacted'
     assert result['captureCompleteness'] == 'partial'
     assert 'FORGED' not in json.dumps(result)
+
+
+def test_source_credential_copy_in_referenced_broker_is_redacted():
+    value = listing()
+    value['rawSrs']['apto_data']['apiKey'] = 'SRS_EXAMPLE_SECRET'
+    value['rawSrs']['apto_data']['related_brokers'][0]['name'] = 'SRS_EXAMPLE_SECRET'
+    value['brokerIds'] = [0]
+    brokers = {0: {'name': 'SRS_EXAMPLE_SECRET', 'email': 'person@example.test'}}
+    original = copy.deepcopy(brokers)
+    row = cre_ingest.to_row(value, brokers, None)
+    assert 'SRS_EXAMPLE_SECRET' not in str(row)
+    assert row['contacts'][0]['email'] == 'person@example.test'
+    assert brokers == original
+
+
+def test_staging_key_redaction_refuses_uninspected_broker():
+    value = listing()
+    value['rawSrs']['apto_data']['apiKey'] = 'public'
+    value['brokerIds'] = [0]
+    brokers = {0: {'name': 'public', 'email': 'person@example.test'}}
+    with pytest.raises(ValueError, match='credential inspection failed'):
+        cre_ingest.to_row(value, brokers, None)
