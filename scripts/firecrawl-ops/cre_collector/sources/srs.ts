@@ -1,3 +1,4 @@
+import { captureSrsRaw, preserveSrsRaw } from "./pure/srs-raw-retention.js";
 import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
@@ -290,7 +291,10 @@ export function mapSrsListing(
     .filter((id: number | null): id is number => id !== null);
   const url = row.permalink ? `https://www.srsre.com${row.permalink}` : null;
 
-  return prune({
+  const id = providerIdentity ?? clean(row.id) ?? clean(data.Id);
+  const { raw, marker } = captureSrsRaw(row, id ?? null, url);
+
+  const listing = prune({
     id: providerIdentity ?? clean(row.id) ?? clean(data.Id),
     inventoryObservedAt: context.inventoryObservedAt,
     freshnessProvenance: context.inventoryObservedAt
@@ -334,8 +338,8 @@ export function mapSrsListing(
     photos: photos.slice(0, 12),
     url,
     canonicalUrl: url,
-    rawSrs: row,
   });
+  return preserveSrsRaw(listing, raw, marker);
 }
 
 export async function srcSrs(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {

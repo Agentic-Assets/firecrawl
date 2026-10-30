@@ -2,6 +2,28 @@ Parent: [collector agent guidance](../AGENTS.md).
 
 # Source fields
 
+`public_facts.py` owns bounded JSON inspection and display-fact construction
+shared by the source-specific Newmark and SRS helpers. Source identity, URL and
+observation-clock qualification remain in each source helper. A known technical
+credential omission does not prove that every possible secret was detected.
+
+SRS preserves a parsed source snapshot through both collector prune boundaries.
+`srsRawRetention` describes acquisition of that snapshot, including missing
+identity components; it does not establish canonical admission or exact original
+numeric literals. Marked rows receive an inspected staging copy and
+`srsRawStaging` receipt before normalization. Unknown business facts, explicit
+nulls, false values, empty values and array positions remain intact within the
+declared bounds. The two exact professional-qualification paths are treated as
+business fields, with their values still inspected. The original private
+artifact is unchanged. Unmarked legacy inputs retain their existing behavior
+and do not replace a newer public envelope with an empty one.
+
+The current canonical schema still requires a usable source URL. Private
+observations missing that URL are retained by collection without inventing a
+link or bypassing admission. Incomplete inspection refuses staging, while
+display-size limits produce explicit partial envelopes. Neither a source merge
+nor saved-input replay activates production ingestion or proves full coverage.
+
 `rcm.py` keeps the CBRE, Colliers and Newmark contact-source match and the new CBRE price
 currency witness outside the ingest orchestrator. A marker binds an asserted
 source shape, not publisher authentication. Contacts without a stable name or
