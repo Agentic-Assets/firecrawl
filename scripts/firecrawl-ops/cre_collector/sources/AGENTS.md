@@ -1083,7 +1083,16 @@ literal and separately projects non-public rows before admission. On 2026-10-29
 the owner directed retention and display of accessible SRS API-reported prices
 regardless of `Hide_Sale_Price__c`; preserve the original control as context.
 Do not infer publisher UI visibility, price currency or source authorization.
-None of these
+SRS ingest projects bounded `cre-public-listing-facts/v1` from a retained
+record only when its mapper ID or URL binds to the retention marker and all
+present identifiers match. An ID-only observation cannot bypass the existing
+canonical-row URL requirement. The
+source observation clock is `inventoryObservedAt` when admitted; parsed JS
+numbers do not carry original numeric literals. Credentials are omitted from the public projection and staged raw source with
+a partial notice and `srsRawStaging` receipt; the original acquisition artifact
+remains private. Unsafe source URLs are not staged as canonical URLs. The exact professional-certification business field is
+preserved only in the source's known broker and marketing-approver paths.
+An omitted or unbound carrier produces a partial envelope. None of these
 observations qualifies a canonical listing or certifies inventory coverage.
 
 SRS and Kidder cache metadata uses private WeakMaps, including without native

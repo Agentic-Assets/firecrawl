@@ -2731,6 +2731,13 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     if listing.get("inventoryOnly") is not None:
         return None
     source_key = listing.get("sourceKey")
+    if source_key == "srs":
+        from source_fields.srs_public_facts import _safe_url, attach
+        marker = listing.get("srsRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "srs-raw-retention-v1"
+                and listing.get("url") and _safe_url(listing["url"]) is None):
+            return None
+        listing = attach(listing)
     mapping = SOURCE_TO_BROKERAGE.get(source_key)
     if not mapping:
         return None

@@ -44,6 +44,7 @@ import { srcNewmark } from "./sources/newmark.js";
 import { srcPyramidBrokerage } from "./sources/pyramid-brokerage.js";
 import { srcSavills } from "./sources/savills.js";
 import { srcSrs } from "./sources/srs.js";
+import { preserveSrsRaw } from "./sources/pure/srs-raw-retention.js";
 import { srcTranswestern } from "./sources/transwestern.js";
 import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
@@ -225,6 +226,7 @@ async function main() {
         });
         for (const l of res.listings) {
           const listing = prune({ sourceKey: key, sourceCompany: res.company, transactionMode: tx, ...l });
+          if (key === "srs") preserveSrsRaw(listing, l.rawSrs, l.srsRawRetention);
           if (key === "lyon-stahl") preserveLyonStahlOffers(listing, l.extraFacts?.providerOffers);
           listings.push(key === "jll"
             ? preserveJllSubleaseFact(listing, l.jllDetail?.isSubleaseOnly)
