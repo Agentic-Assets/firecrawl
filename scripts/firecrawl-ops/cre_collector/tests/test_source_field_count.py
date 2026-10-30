@@ -296,15 +296,24 @@ def franklin_collector_artifact(tmp_path, *, empty_sale=False):
 
 def test_franklin_actual_offline_collector_to_ingest(tmp_path):
     artifact = franklin_collector_artifact(tmp_path)
+    original = copy.deepcopy(artifact)
     qualified = candidates(artifact)
     rows = [
         ingest.to_row(row, {}, artifact["runMeta"]["finishedAt"], qualified)
         for row in artifact["listings"]
     ]
     assert len(rows) == 2
+    assert artifact == original
     merged = ingest.merge_rows(*rows)
     assert merged["source_field_count"]["value"] == 2
     assert merged["source_field_count"]["native_id"] == "20"
+    # A separately copied artifact object did not receive the qualification.
+    detached = copy.deepcopy(artifact["listings"][1])
+    assert ingest.to_row(detached, {}, artifact["runMeta"]["finishedAt"], qualified)["source_field_count"] is None
+    unsafe = copy.deepcopy(artifact["listings"][1])
+    unsafe["url"] = "https://example.test/property?api_key=PRIVATE_EXAMPLE"
+    qualified[id(unsafe)] = qualified[id(artifact["listings"][1])]
+    assert ingest.to_row(unsafe, {}, artifact["runMeta"]["finishedAt"], qualified) is None
     assert (
         merged["raw_data"]["primary"]["buildoutFieldObservations"][
             "availableSpaceCount"
@@ -474,3 +483,37 @@ def test_mapper_cap_rate_only_missing_count_is_no_op_across_merges(tmp_path):
         assert candidates(missing)[id(missing_listing)]["blocked"] == [
             "available_space_count"
         ], change
+
+
+def test_staging_redaction_of_qualified_literal_becomes_sticky_hold(tmp_path):
+    import os
+    import re
+    import subprocess
+    import sys
+
+    artifact = franklin_collector_artifact(tmp_path)
+    target = artifact["listings"][1]
+    document = "https://buildout.com/docs/abc/123?token=Spaces"
+    target["rawBuildout"]["pdf_url"] = document
+    target["brochures"] = [{"url": document, "name": "Brochure"}]
+    original = copy.deepcopy(artifact)
+    qualified = candidates(artifact)
+    assert qualified[id(target)]["values"]["available_space_count"]["value"] == 2
+    rows = [ingest.to_row(row, {}, artifact["runMeta"]["finishedAt"], qualified)
+            for row in artifact["listings"]]
+    assert rows[1]["source_field_count"] is None
+    assert rows[1]["_source_field_conflict"] is True
+    merged = ingest.merge_rows(*rows)
+    assert merged["source_field_count"] is None
+    assert merged["_source_field_conflict"] is True
+    assert artifact == original
+    path = tmp_path / "modified-artifact.json"
+    path.write_text(json.dumps(artifact))
+    result = subprocess.run([sys.executable, "cre_ingest.py", "--in", str(path), "--dry-run"],
+                            capture_output=True, text=True, env={**os.environ, "TMPDIR": str(tmp_path)}, check=True)
+    match = re.search(r"^sql: (.+?) \(", result.stderr, re.MULTILINE)
+    assert match is not None
+    with open(match.group(1)) as staged:
+        sql = staged.read()
+    assert "token=Spaces" not in sql
+    assert "2 Spaces" not in sql

@@ -2722,6 +2722,10 @@ def generic_enrichment_substantive(listing):
 
 def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_candidates=None):
     """Map one collector listing to a staging row dict, or None to skip."""
+    # Qualification maps are bound to the input artifact object, before any
+    # source-specific staging projection creates a sanitized copy.
+    input_listing_identity = id(listing)
+    input_listing = listing
     if is_retired_om_parse_listing(listing):
         return None
     # Inventory-only cards intentionally have no canonical listing identity or
@@ -3058,8 +3062,11 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         desc = None
         markdown = None
 
-    building_decision = (building_candidates or {}).get(id(listing), {})
-    count_decision = (field_candidates or {}).get(id(listing), {})
+    building_decision = (building_candidates or {}).get(input_listing_identity, {})
+    count_decision = (field_candidates or {}).get(input_listing_identity, {})
+    if count_decision and listing is not input_listing:
+        from source_fields.buildout import rebind_count_decision
+        count_decision = rebind_count_decision(input_listing, listing, count_decision)
     row = {
         "slug": slug,
         "external_id": external_id,

@@ -55,6 +55,9 @@ artifacts remain outside this phase. Missing,
 invalid or conflicting observations do not create zero or clear existing data.
 A newer observation updates an existing count only when its provenance schema,
 source, native ID, URL, tenure and previous value match the existing owner.
+Qualification follows the original artifact object across staging copies. A
+count remains eligible only while its observation, identity and provenance
+witnesses survive inspection unchanged; altered evidence becomes a field hold.
 
 The source observation retains the label, ordinal, literal, original clock,
 normalized comparison clock, source identity, generation and artifact hash.
