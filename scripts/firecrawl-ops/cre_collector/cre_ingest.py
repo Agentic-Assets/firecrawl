@@ -2742,6 +2742,13 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
                 and listing.get("url") and _safe_url(listing["url"]) is None):
             return None
         listing, brokers_by_idx = attach(listing, brokers_by_idx)
+    if source_key == "kidder-mathews":
+        from source_fields.kidder_public_facts import _safe_url, attach
+        marker = listing.get("kidderRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "kidder-raw-retention-v1"
+                and listing.get("url") and _safe_url(listing["url"]) is None):
+            return None
+        listing, brokers_by_idx = attach(listing, brokers_by_idx)
     if source_key in BUILDOUT_SOURCE_KEYS:
         from source_fields.buildout_public_facts import attach, safe_url
         marker = listing.get("buildoutRawRetention")
@@ -3390,6 +3397,8 @@ def merge_rows(a, b):
         a[k] = _merge_child_collections(k, a[k], b[k])
     from source_fields.buildout_public_facts import merge_public_facts
     merge_public_facts(a, b)
+    from source_fields.kidder_public_facts import merge_public_facts as merge_kidder_public_facts
+    merge_kidder_public_facts(a, b)
     # extra_facts: merge the two long-tail blobs (union; the first pass wins a key
     # collision) so neither pass's facts are lost. Mirrors the jsonb `||` merge in
     # the upsert (a missing/empty pass keeps the other's blob).
