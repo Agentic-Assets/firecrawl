@@ -272,3 +272,92 @@ def test_large_dual_pass_preserves_ordered_prefix_with_limit_notice():
     assert any(item['reason'] == 'input_limit' for item in envelope['omissions'])
     assert 'primary' in merged['raw_data'] and 'secondary_pass' in merged['raw_data']
     assert merged['raw_data']['secondary_pass']['rawBuildout']['field_0'] == 'b' * 10000
+
+
+def test_real_mapper_source_values_and_credential_boundary_reach_dryrun(tmp_path):
+    """A private mapped row retains source values while staging inspects them."""
+    import os
+    import re
+    import subprocess
+    import sys
+
+    script = r'''
+import { allBuildoutFeeds } from './sources/buildout-feeds/index.js';
+import { buildoutCache, buildoutQueryFingerprint, srcBuildout } from './sources/buildout.js';
+globalThis.fetch = async () => { throw Error('unexpected transport blocked'); };
+const feed = allBuildoutFeeds.find(f => f.sourceKey === 'bradford-allen');
+const opts = {cacheSlug:feed.feedKey};
+const raw = {id:42,sale:true,show_link:'https://broker.example/show?propertyId=42-sale',
+  index_attributes:[['Cap Rate','6.25%'],['# of Spaces','Bearer secret']],
+  unknown:{copy:'prefix Bearer secret suffix'}};
+buildoutCache.set(`${feed.pluginKey}\u0000${buildoutQueryFingerprint(opts)}`, {items:[raw],total:1});
+const result = await srcBuildout(feed.company,feed.pluginKey,feed.listingsPage,'sale',1,false,opts);
+process.stdout.write(JSON.stringify({sourceKey:feed.sourceKey,transactionMode:'sale',...result.listings[0]}));
+'''
+    mapped = subprocess.run(
+        ['node', '--import', 'tsx', '--input-type=module', '-e', script],
+        capture_output=True, text=True, check=True,
+    )
+    value = json.loads(mapped.stdout)
+    assert value['rawBuildout']['index_attributes'] == [
+        ['Cap Rate', '6.25%'], ['# of Spaces', 'Bearer secret']
+    ]
+    assert value['buildoutFieldObservations']['capRate']['state'] == 'omitted_visibility_unverified'
+    assert value.get('capRatePct') is None
+    row = cre_ingest.to_row(value, {}, None)
+    assert row['cap_rate'] is None
+    assert value['rawBuildout']['unknown']['copy'] == 'prefix Bearer secret suffix'
+    assert 'Bearer secret' not in str(row)
+    facts = row['extra_facts']['cre_public_listing_facts']['facts']
+    attributes = next(item['value'] for item in facts if item['label'] == 'index_attributes')
+    assert attributes[0] == ['Cap Rate', '6.25%']
+    assert attributes[1] == ['# of Spaces', None]
+    assert row['extra_facts']['cre_public_listing_facts']['captureCompleteness'] == 'partial'
+
+    artifact = {'runMeta': {'mode': 'full', 'finishedAt': '2026-10-29T00:00:00Z'},
+                'sources': [{'sourceKey': 'bradford-allen'}], 'listings': [value],
+                'brokers': [], 'totalListings': 1}
+    source_path = tmp_path / 'artifact.json'
+    source_path.write_text(json.dumps(artifact))
+    dryrun = subprocess.run(
+        [sys.executable, 'cre_ingest.py', '--in', str(source_path), '--dry-run'],
+        capture_output=True, text=True, env={**os.environ, 'TMPDIR': str(tmp_path)}, check=True,
+    )
+    match = re.search(r'^sql: (.+?) \(', dryrun.stderr, re.MULTILINE)
+    assert match is not None
+    with open(match.group(1)) as staged:
+        sql = staged.read()
+    assert 'Bearer secret' not in sql
+    assert 'buildout-public-inventory/v1' in sql
+
+
+@pytest.mark.parametrize(('text', 'token'), [
+    ('Bearer secret', 'secret'), ('Bearer%20abcDEF', 'abcDEF'),
+    ('Bearer&#32;abcDEF', 'abcDEF'), ('prefix Bearer abcDEF suffix', 'abcDEF'),
+    ('Bearer eyJabc.defGHI.sig123', 'eyJabc.defGHI.sig123'),
+    ('Bearer alpha==', 'alpha=='), ('Bearer Abcdefghijklmnopqrstuvwxyz', 'Abcdefghijklmnopqrstuvwxyz'),
+])
+def test_bare_bearer_and_encoded_copies_are_omitted(text, token):
+    value = listing()
+    value['rawBuildout']['observation'] = text
+    value['rawBuildout']['other'] = token
+    staged = bridge.attach(value)
+    assert token not in json.dumps(staged)
+    assert staged['extraFacts']['cre_public_listing_facts']['captureCompleteness'] == 'partial'
+
+
+def test_ordinary_bearer_prose_is_preserved():
+    value = listing()
+    value['rawBuildout']['ordinary'] = 'Bonds are payable to the bearer.'
+    staged = bridge.attach(value)
+    assert staged['rawBuildout']['ordinary'] == 'Bonds are payable to the bearer.'
+
+
+def test_bare_bearer_as_key_or_encoded_json_is_removed():
+    value = listing()
+    value['rawBuildout']['Bearer secret'] = 'business'
+    value['rawBuildout']['json_copy'] = '{"Bearer secret":"x"}'
+    value['rawBuildout']['other_copy'] = 'secret'
+    staged = bridge.attach(value)
+    assert 'secret' not in json.dumps(staged).lower()
+    assert staged['extraFacts']['cre_public_listing_facts']['captureCompleteness'] == 'partial'

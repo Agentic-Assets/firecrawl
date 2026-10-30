@@ -81,10 +81,28 @@ def _encoded_json_credential(value, budget, removed, numeric_removed, depth=0):
     return False
 
 
+_BEARER = re.compile(r'''\bbearer[ \t]+([A-Za-z0-9._~+/-]+={0,2})(?=$|[\s,;\"'<>}\]])''', re.IGNORECASE)
+
+
+def _bare_bearer_tokens(value):
+    # A bare Bearer scheme plus token is ambiguous source text; treat the
+    # matching token as unverified credential material for marked staging.
+    found = set()
+    candidate = value
+    for _ in range(5):
+        for match in _BEARER.finditer(candidate):
+            found.add(match.group(1))
+        following = unquote(unescape(candidate), errors='replace')
+        if following == candidate:
+            break
+        candidate = following
+    return found
+
+
 def _sensitive_encoded_string(value):
     candidate = value
     for _ in range(5):
-        if sensitive_string(candidate):
+        if sensitive_string(candidate) or _bare_bearer_tokens(candidate):
             return True
         following = unquote(unescape(candidate), errors='replace')
         if following == candidate:
@@ -107,7 +125,11 @@ def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings
         if isinstance(value, dict):
             for key in list(value):
                 child_path = path + _pointer(key)
-                if _credential_label_encoded(key) and not (allow_label and allow_label(child_path, key)):
+                bearer_key = _bare_bearer_tokens(key) if inspect_strings else set()
+                if (_credential_label_encoded(key) or bearer_key) and not (allow_label and allow_label(child_path, key)):
+                    removed.extend(bearer_key)
+                    if len(removed) > 1000:
+                        raise _InspectionLimit('Public credential count exceeds bound')
                     secret = value.pop(key)
                     _collect_credential_strings(secret, removed, numeric_removed)
                     numeric_removed.extend(literal for number_path, literal in numeric.items()
@@ -120,6 +142,9 @@ def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings
                 value[i] = visit(child, path + '/' + str(i), depth + 1)
         elif isinstance(value, str) and ((inspect_strings and _sensitive_encoded_string(value))
                                           or _encoded_json_credential(value, encoded_budget, removed, numeric_removed)):
+            removed.extend(_bare_bearer_tokens(value) if inspect_strings else ())
+            if len(removed) > 1000:
+                raise _InspectionLimit('Public credential count exceeds bound')
             changes.append((path, 'unverified_content_omitted'))
             return None
         return value

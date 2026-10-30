@@ -34,7 +34,7 @@ test("large irrelevant nested arrays cannot cause traversal failure", () => {
   assert.equal(buildoutFieldObservations([["# of Spaces", "1 Space"], ["Other", huge]])?.availableSpaceCount.value, 1);
 });
 
-test("collector handles malformed pairs and never persists withheld cap rate", async () => {
+test("collector retains source cap rate without normalized promotion", async () => {
   const key = "fixture-field-observations";
   const memoryKey = `${key}\u0000${buildoutQueryFingerprint({})}`;
   const oldFetch = globalThis.fetch;
@@ -48,7 +48,10 @@ test("collector handles malformed pairs and never persists withheld cap rate", a
     assert.equal(listing.buildoutFieldObservations.capRate.state, "omitted_visibility_unverified");
     // Synthetic flag semantics are unproven; the legacy sale-price path is unchanged.
     assert.equal(listing.salePriceUsd, 1_000_000);
-    assert.equal(JSON.stringify(listing).includes("6.25%"), false);
+    const { rawBuildout: _privateRaw, buildoutRawRetention: _receipt, ...normalized } = listing;
+    assert.equal(JSON.stringify(normalized).includes("6.25%"), false);
+    assert.deepEqual(result.listings[0].rawBuildout.index_attributes.at(-1), ["Cap Rate", "6.25%"]);
+    assert.equal(result.listings[0].buildoutRawRetention.status, "complete");
     assert.equal(listing.capRatePct, undefined);
     assert.equal(listing.available_space_count, undefined);
   } finally { buildoutCache.delete(memoryKey); globalThis.fetch = oldFetch; }
@@ -62,7 +65,7 @@ test("malformed target-only pair is retained as an explicit omission", () => {
 });
 
 
-test("collector suppresses unsafe space text from both emitted copies", async () => {
+test("collector suppresses unsafe space text from normalized fields while retaining private source", async () => {
   const key = "fixture-unsafe-space";
   const memoryKey = `${key}\u0000${buildoutQueryFingerprint({})}`;
   const oldFetch = globalThis.fetch;
@@ -73,7 +76,10 @@ test("collector suppresses unsafe space text from both emitted copies", async ()
   ] });
   try {
     const result = await srcBuildout("Fixture", key, "https://example.test", "sale", 10, false);
-    assert.equal(JSON.stringify(result.listings[0]).includes("Bearer secret"), false);
+    const { rawBuildout, buildoutRawRetention, ...normalized } = result.listings[0];
+    assert.equal(JSON.stringify(normalized).includes("Bearer secret"), false);
+    assert.deepEqual(rawBuildout.index_attributes, [["# of Spaces", "Bearer secret"]]);
+    assert.equal(buildoutRawRetention.status, "complete");
     assert.equal(result.listings[0].buildoutFieldObservations.availableSpaceCount.omittedCount, 1);
     assert.equal(result.listings[0].extraFacts, undefined);
     assert.equal(result.listings[1].extraFacts.number_of_spaces, "3 Spaces");

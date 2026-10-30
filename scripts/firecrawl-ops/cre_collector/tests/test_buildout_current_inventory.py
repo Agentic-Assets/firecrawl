@@ -625,6 +625,8 @@ def test_actual_mocked_http_collect_artifact_enters_source_and_aggregate_gates(
         CRE_REFRESH_STARTED_AT=start,
         BUILDOUT_CACHE_DIR=str(tmp_path / "cache"),
     )
+    # The setup placeholder must not preempt the collector's private exclusive create.
+    path.unlink()
     child = subprocess.run(
         [
             node,
