@@ -6,6 +6,10 @@ Parent: [collector agent guidance](../AGENTS.md).
 shared by the source-specific Newmark, SRS and Buildout helpers. Source identity, URL and
 observation-clock qualification remain in each source helper. A known technical
 credential omission does not prove that every possible secret was detected.
+Marked SRS and Buildout staging also inspects credential assignments and Basic
+authorization values, including recognizable copies and encoded JSON. Decoding
+is bounded to five percent/HTML transformations; unresolved input is refused.
+Ordinary prose such as "Basic rent" remains source data.
 
 SRS preserves a parsed source snapshot through both collector prune boundaries.
 `srsRawRetention` describes acquisition of that snapshot, including missing
