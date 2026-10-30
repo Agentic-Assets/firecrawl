@@ -1,3 +1,4 @@
+import { captureKidderRaw, preserveKidderRaw } from "./pure/kidder-raw-retention.js";
 import { publishNativeJsonFeed, NativeJsonFeedCaptureError, nativeJsonFeedCaptureEnabled } from "../lib/source-evidence/native-json-feed.js";
 import { observationNow } from "../lib/observation-clock.js";
 import { brokerRef } from "../lib/broker.js";
@@ -377,17 +378,18 @@ export function mapKidderListing(
   const url = key != null ? `https://www.kidder.com/listings/${key}` : "https://www.kidder.com/properties/";
   const size = numeric(row.sf_avail);
 
-  return prune({
-    id: key != null ? String(key) : null,
+  const id = key != null ? String(key) : null;
+  const cacheDisposition = context.cacheDisposition ?? kidderDisposition(row);
+  const { raw, marker } = captureKidderRaw(row, id, url, context.inventoryObservedAt ?? null, context.inventoryObservedAt ? cacheDisposition : null);
+  const listing = prune({
+    id,
     inventoryObservedAt: context.inventoryObservedAt,
     freshnessProvenance: context.inventoryObservedAt
       ? {
           detailScope: "authoritative_inventory_feed",
           generationId: context.generationId ?? refreshGenerationId(),
           method: "kidder_public_inventory_feed",
-          cacheDisposition:
-            context.cacheDisposition ??
-            kidderDisposition(row),
+          cacheDisposition,
         }
       : undefined,
     preserveChildCollections: true,
@@ -410,8 +412,8 @@ export function mapKidderListing(
     photos,
     url,
     canonicalUrl: url,
-    rawKidder: row,
   });
+  return preserveKidderRaw(listing, raw, marker);
 }
 
 export async function srcKidderMathews(tx: Tx, max: number, _monitor: boolean): Promise<SourceResult> {

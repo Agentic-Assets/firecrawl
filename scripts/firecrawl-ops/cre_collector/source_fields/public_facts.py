@@ -347,3 +347,77 @@ def _unstage_referenced_brokers(listing, brokers, ids):
     if not isinstance(staged, list) or len(staged) != len(ids):
         raise ValueError('public facts broker staging field was altered')
     return ChainMap(dict(zip(ids, staged)), brokers)
+
+
+def _observation(envelope, raw, feed_resolver):
+    """Extract leaf observations from our own bounded merge wrapper."""
+    facts = envelope.get('facts')
+    if (isinstance(facts, list) and facts and all(
+            isinstance(fact, dict) and fact.get('label') == 'Inventory observation'
+            and fact.get('sourcePath') is None and isinstance(fact.get('value'), dict)
+            and set(fact['value']) == {'feedKey', 'sourceKey', 'sourceUrl', 'observedAt',
+                                       'captureCompleteness', 'omissions', 'facts'}
+            for fact in facts)):
+        return [copy.deepcopy(fact['value']) for fact in facts]
+    feed = feed_resolver(raw, envelope.get('sourceKey'))
+    source = envelope.get('sourceKey')
+    return [{'feedKey': feed, 'sourceKey': source, 'sourceUrl': envelope.get('sourceUrl'),
+             'observedAt': envelope.get('observedAt'), 'captureCompleteness': envelope.get('captureCompleteness'),
+             'omissions': copy.deepcopy(envelope.get('omissions')), 'facts': copy.deepcopy(facts)}]
+
+
+def _merge_public_facts(a, b, *, schema, codec, source_allowed, feed_resolver):
+    """Keep separately captured Buildout passes under ordered fact values."""
+    first, second = a.get('extra_facts'), b.get('extra_facts')
+    left = first.get('cre_public_listing_facts') if isinstance(first, dict) else None
+    right = second.get('cre_public_listing_facts') if isinstance(second, dict) else None
+    if not (isinstance(left, dict) and isinstance(right, dict)
+            and left.get('schema') == right.get('schema') == schema
+            and left.get('codec') == right.get('codec') == codec
+            and isinstance(left.get('sourceKey'), str)
+            and left.get('sourceKey') == right.get('sourceKey')
+            and source_allowed(left.get('sourceKey'))):
+        return
+    observations = []
+    for entry in _observation(left, a.get('raw_data'), feed_resolver) + _observation(right, b.get('raw_data'), feed_resolver):
+        if entry not in observations:
+            observations.append(entry)
+    if len(observations) == 1:
+        return
+    urls = {obs.get('sourceUrl') for obs in observations}
+    clocks = {obs.get('observedAt') for obs in observations}
+    prior_limit = any(isinstance(item, dict) and item.get('reason') == 'input_limit'
+                      for envelope in (left, right)
+                      for item in (envelope.get('omissions') if isinstance(envelope.get('omissions'), list) else []))
+    partial = (len(urls) != 1 or len(clocks) != 1 or prior_limit
+               or any(obs.get('captureCompleteness') != 'complete_for_captured_object' for obs in observations))
+    omissions = [{'sourcePath': None, 'reason': 'unverified_content_omitted'}] if partial else []
+    combined = {'schema': schema, 'sourceKey': left['sourceKey'], 'codec': codec,
+                'observedAt': next(iter(clocks)) if len(clocks) == 1 else None,
+                'sourceUrl': next(iter(urls)) if len(urls) == 1 else None,
+                'facts': [], 'omissions': omissions,
+                'captureCompleteness': 'partial' if partial else 'complete_for_captured_object',
+                'sourceCoverage': 'unverified'}
+    # Retain the largest ordered prefix admitted by the same bounded fact
+    # budget used for individual source objects. Never silently discard a pass.
+    budget, total_bytes = [1], 0
+    omitted = prior_limit
+    for obs in observations:
+        fact = {'label': 'Inventory observation', 'sourcePath': None, 'value': obs}
+        size = len(events.encoded(fact))
+        trial = budget.copy()
+        if (len(combined['facts']) >= 1000 or not _within(fact, budget=trial)
+                or total_bytes + size > 440000):
+            omitted = True
+            break
+        combined['facts'].append(fact)
+        budget = trial
+        total_bytes += size
+    if omitted:
+        combined['omissions'].append({'sourcePath': None, 'reason': 'input_limit'})
+        combined['captureCompleteness'] = 'partial'
+    if len(events.encoded(combined)) > 512000:
+        combined['facts'] = []
+        combined['omissions'] = [{'sourcePath': None, 'reason': 'input_limit'}]
+        combined['captureCompleteness'] = 'partial'
+    first['cre_public_listing_facts'] = combined

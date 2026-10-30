@@ -1,3 +1,4 @@
+import { preserveKidderRaw } from "../sources/pure/kidder-raw-retention.js";
 import { NativeEvidenceTerminalError } from "./source-evidence/terminal-error.js";
 // lib/enrich.ts - targeted-detail (enrich) mode registry.
 //
@@ -501,6 +502,7 @@ export async function runEnrichGroups(
         if (!l || !l.url) continue;
         const tx = urlToTx.get(l.url) ?? "sale";
         const listing = prune({ sourceKey: key, sourceCompany: company, transactionMode: tx, ...l });
+        if (key === "kidder-mathews") preserveKidderRaw(listing, l.rawKidder, l.kidderRawRetention);
         // Preserve caller-owned table evidence exactly: generic pruning removes
         // false flags, null attributes and empty cells with positional meaning.
         for (const field of ["detail_tables", "detail_tables_attempt"]) {

@@ -3,10 +3,10 @@ Parent: [collector agent guidance](../AGENTS.md).
 # Source fields
 
 `public_facts.py` owns bounded JSON inspection and display-fact construction
-shared by the source-specific Newmark, SRS and Buildout helpers. Source identity, URL and
+shared by the source-specific Newmark, SRS, Buildout and Kidder helpers. Source identity, URL and
 observation-clock qualification remain in each source helper. A known technical
 credential omission does not prove that every possible secret was detected.
-Marked SRS and Buildout staging also inspects credential assignments and Basic
+Marked SRS, Buildout and Kidder staging also inspects credential assignments and Basic
 authorization values, including recognizable copies and encoded JSON. Decoding
 is bounded to five percent/HTML transformations; unresolved input is refused.
 Ordinary prose such as "Basic rent" remains source data.
@@ -17,24 +17,54 @@ identity components; it does not establish canonical admission or exact original
 numeric literals. Marked rows receive an inspected staging copy and
 `srsRawStaging` receipt before normalization. Unknown business facts, explicit
 nulls, false values, empty values and array positions remain intact within the
-declared bounds. The two exact professional-qualification paths are treated as
-business fields, with their values still inspected. The original private
+declared bounds. The exact source paths
+`apto_data.marketing_approver.Professional_Credentials_Certification__c` and
+`apto_data.related_brokers[].Professional_Credentials_Certification__c` are
+treated as business fields, with their values still inspected. The original private
 artifact is unchanged. Unmarked legacy inputs retain their existing behavior
 and do not replace a newer public envelope with an empty one.
+Identified technical credentials and recognizable copies are omitted from SRS
+staging and public facts with an explicit partial notice.
 
 The current canonical schema still requires a usable source URL. Private
 observations missing that URL are retained by collection without inventing a
-link or bypassing admission. Incomplete inspection refuses staging, while
-display-size limits produce explicit partial envelopes. Neither a source merge
+link or bypassing admission. SRS projection requires the mapper ID or URL to
+bind to its receipt with every present identifier matching. Its admitted source
+clock is `inventoryObservedAt`; an unknown clock remains unknown. An omitted or
+unbound carrier produces a partial envelope; unsafe source URLs are not staged
+as canonical URLs. Incomplete inspection refuses staging, while display-size
+limits produce explicit partial envelopes. Neither a source merge
 nor saved-input replay activates production ingestion or proves full coverage.
 
 Buildout retains the eligible inventory row once at the shared mapper and
-restores it after collector pruning. Its source-qualified public envelope binds
-the exact registered source and feed variant; Franklin's sale and lease feeds
-also bind to the requested transaction pass. The inspected staging copy omits
+restores it after collector pruning. Its source-qualified
+`buildout-public-inventory/v1` envelope requires the retained mapper ID and URL
+to match the receipt and binds the exact registered source and feed variant;
+Franklin's sale and lease feeds also bind to the requested transaction pass.
+The admitted source clock is `inventoryObservedAt`; an unknown clock remains
+unknown. The inspected staging copy omits
 technical document references and recognizable copies while the private
-acquisition remains unchanged. Referenced broker records receive the same
-inspection through a local overlay, without changing the shared broker pool.
+acquisition remains unchanged. Source-specific document-reference withholding
+applies to native `pdf_url` and mapped brochure URLs; see the
+[withholding rule](../source_evidence/README.md#draft-buildout-document-reference-withholding).
+Referenced broker records receive the same inspection through a local overlay,
+without changing the shared broker pool.
+
+Kidder captures each eligible parsed inventory row privately as `rawKidder`,
+with `kidderRawRetention` binding the mapper ID, URL, observation clock and
+collector-owned cache disposition. The `kidder-public-inventory/v1` projection
+recomputes the mapper identity from `listing_key`, then the existing
+`property_key` fallback, and requires the receipt and emitted URL to match.
+The shared `/properties/` fallback is not a unique-listing claim and cannot
+qualify public facts. Numeric IDs qualify only when integral and within the
+JavaScript safe-integer range; unsupported numeric IDs remain unqualified,
+not reinterpreted. Missing or invalid observation clocks produce partial
+context, not a freshness assertion. Marked rows receive an inspected staging copy
+and `kidderRawStaging` receipt; identified technical credentials and
+recognizable copies are withheld with explicit omissions, while the private source is unchanged.
+Unmarked legacy inputs retain their prior behavior. This projection establishes
+neither source authorization, canonical admission, current freshness, nor
+complete inventory coverage.
 
 When separate passes merge into one canonical property, ordered inventory
 observations retain each envelope's facts and source context. Conflicts remain

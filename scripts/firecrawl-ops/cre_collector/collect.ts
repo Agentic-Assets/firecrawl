@@ -46,6 +46,7 @@ import { srcSavills } from "./sources/savills.js";
 import { srcSrs } from "./sources/srs.js";
 import { preserveSrsRaw } from "./sources/pure/srs-raw-retention.js";
 import { preserveBuildoutRaw } from "./sources/pure/buildout-raw-retention.js";
+import { preserveKidderRaw } from "./sources/pure/kidder-raw-retention.js";
 import { srcTranswestern } from "./sources/transwestern.js";
 import { SOURCE_KEYS, SourceKey, SourceResult, Tx } from "./types.js";
 import { prune } from "./lib/util.js";
@@ -228,6 +229,7 @@ async function main() {
         for (const l of res.listings) {
           const listing = prune({ sourceKey: key, sourceCompany: res.company, transactionMode: tx, ...l });
           if (l.buildoutRawRetention) preserveBuildoutRaw(listing, l.rawBuildout, l.buildoutRawRetention, key);
+          if (key === "kidder-mathews") preserveKidderRaw(listing, l.rawKidder, l.kidderRawRetention);
           if (key === "srs") preserveSrsRaw(listing, l.rawSrs, l.srsRawRetention);
           if (key === "lyon-stahl") preserveLyonStahlOffers(listing, l.extraFacts?.providerOffers);
           listings.push(key === "jll"
@@ -362,7 +364,7 @@ async function main() {
   };
   const json = JSON.stringify(out);
   const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
-    listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention);
+    listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention);
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
     console.error(`terminal partial artifact: ${path}`);
@@ -427,6 +429,9 @@ async function enrichMain(claimPath: string): Promise<void> {
   if (optedIn !== hasContext) throw new Error("Matthews targeted: CLI opt-in and input context must agree");
   const context = optedIn ? validateMatthewsTargetedRefresh(parsed.matthewsTargetedRefresh) : undefined;
   const groups = groupEnrichItems(items);
+  if (!OUT_PATH && groups.has("kidder-mathews")) {
+    throw new Error("Kidder targeted enrichment requires a private --out file");
+  }
   if (context && (MONITOR || (flags.source !== undefined && sourceArg !== "matthews") || groups.size !== 1 || !groups.has("matthews") || groups.get("matthews")?.length !== items.length)) {
     throw new Error("Matthews targeted: requires an exact Matthews-only enrichment input");
   }
@@ -437,7 +442,7 @@ async function enrichMain(claimPath: string): Promise<void> {
   const { sources, listings, terminalCaptureFailure } = await runEnrichGroups(groups, resolveEnricher, companyFor, context);
   if (context) validateMatthewsTargetedRefresh(context);
   const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
-    listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention);
+    listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention);
   const evidenceOnly = listings.length === 0 && privateEvidence;
 
   console.error(
@@ -488,8 +493,8 @@ async function dispatch(): Promise<void> {
   try {
     const enrichInput = flags["enrich-input"];
     if (flags["observe-input"] === undefined && !enrichInput && !OUT_PATH &&
-        requestedSources.some((key) => key === "srs" || allBuildoutFeeds.some((feed) => feed.sourceKey === key))) {
-      throw new Error("SRS and Buildout collection require a private --out file");
+        requestedSources.some((key) => key === "srs" || key === "kidder-mathews" || allBuildoutFeeds.some((feed) => feed.sourceKey === key))) {
+      throw new Error("SRS, Kidder and Buildout collection require a private --out file");
     }
     if (enrichInput && process.env.CRE_NEWMARK_PUBLISHED_DETAIL === "1" && !OUT_PATH)
       throw new Error("Newmark published-detail evidence requires a private --out file");

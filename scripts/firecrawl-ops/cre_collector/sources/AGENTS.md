@@ -996,7 +996,7 @@ and missing IDs/URLs remain private unqualified context. This is parsed JSON,
 not original response bytes or exact numeric lexemes. It excludes closed and
 other unmapped rows; native page evidence has its own scope and controls.
 
-Full or monitor collection selecting Buildout or SRS requires `--out` before
+Full or monitor collection selecting Buildout, SRS or Kidder requires `--out` before
 acquisition. Artifacts carrying new raw receipts are written exclusively as
 mode 0600 files; existing paths (including symlinks) are refused. Existing
 parent-directory permissions are not changed. Treat these files as private;
@@ -1090,16 +1090,9 @@ separate. This consolidation requires separate production acceptance.
 
 ## Buildout retained inventory facts
 
-Versioned Buildout inventory carriers bind the original mapper ID and URL,
-registered source and feed variant before projecting
-`cre-public-listing-facts/v1` with `buildout-public-inventory/v1`. Parsed
-JavaScript numbers have no original numeric-literal witness. The source clock is
-the admitted `inventoryObservedAt`; an unknown clock remains unknown. Existing
-Buildout document-reference withholding applies to native `pdf_url` and mapped
-brochure URLs; known credential values and copies are removed from marked staged
-listings. Original acquisition artifacts require private custody. Existing
-unmarked rows retain their prior behavior. Source retention and projection do not
-establish inventory completeness or authorize production writes.
+The [source-fields contract](../source_fields/README.md) owns Buildout's
+projection, inspected staging and document-reference withholding. The source
+capture, transport and admission rules above remain separate.
 
 ## SRS, Kidder and Hanley native evidence
 
@@ -1112,17 +1105,9 @@ literal and separately projects non-public rows before admission. On 2026-10-29
 the owner directed retention and display of accessible SRS API-reported prices
 regardless of `Hide_Sale_Price__c`; preserve the original control as context.
 Do not infer publisher UI visibility, price currency or source authorization.
-SRS ingest projects bounded `cre-public-listing-facts/v1` from a retained
-record only when its mapper ID or URL binds to the retention marker and all
-present identifiers match. An ID-only observation cannot bypass the existing
-canonical-row URL requirement. The
-source observation clock is `inventoryObservedAt` when admitted; parsed JS
-numbers do not carry original numeric literals. Credentials are omitted from the public projection and staged raw source with
-a partial notice and `srsRawStaging` receipt; the original acquisition artifact
-remains private. Unsafe source URLs are not staged as canonical URLs. The exact professional-certification business field is
-preserved only in the source's known broker and marketing-approver paths.
-An omitted or unbound carrier produces a partial envelope. None of these
-observations qualifies a canonical listing or certifies inventory coverage.
+The [source-fields contract](../source_fields/README.md) owns SRS projection,
+qualification, inspected staging and partial receipts. These observations do
+not qualify canonical listings or certify inventory coverage.
 
 SRS and Kidder cache metadata uses private WeakMaps, including without native
 capture. Preserve provider fields named `__creInventoryCacheDisposition` as
@@ -1159,6 +1144,23 @@ remain; see [`source_evidence/README.md`](../source_evidence/README.md).
 
 ## Kidder Mathews complete inventory
 
+Eligible Kidder rows carry a bounded parsed-JSON `rawKidder` snapshot and
+`kidder-raw-retention-v1` receipt with mapper ID/URL, inventory clock and
+collector-owned cache disposition. Missing identity remains unqualified; the
+existing URL fallback is not a unique-listing claim. Unknown values, nulls,
+false and array positions survive mapping and full-collector pruning; invalid
+or oversized snapshots are explicitly omitted. The targeted-enrich bridge
+restores a snapshot only while the claim URL still matches its mapper binding.
+These snapshots do not represent original bytes or exact numeric lexemes, and
+carry no new source-admission, freshness, lifecycle or disclosure authority.
+Provider fields resembling cache metadata remain ordinary source data.
+
+Full and monitor collection selecting Kidder requires `--out` before acquisition;
+receipt-bearing artifacts use exclusive mode-0600 files, with no change to an
+existing parent directory's permissions. The source values may contain sensitive
+references. Source evidence capture, publication, runtime handoff and any database
+or scheduler change remain separately gated.
+
 Strict Kidder runs request one `startIndex=0, numResults=8000` response from
 `https://services.kidder.com/search/public/listing`, matching the public
 property-search frontend's bulk request. This avoids unsorted 50-row page
@@ -1171,6 +1173,10 @@ caching preserves the actual observation clock, and non-strict pagination is
 unchanged. Provider evidence and the guarded live acceptance are tracked by
 [AGENTIC-4269](https://linear.app/agenticassets/issue/AGENTIC-4269); transport
 success alone does not prove source-gate or database acceptance.
+
+The [source-fields contract](../source_fields/README.md) owns Kidder's retained
+row projection and staging qualification; it does not relax these inventory or
+admission gates.
 
 ## Key Env Vars (by source)
 
