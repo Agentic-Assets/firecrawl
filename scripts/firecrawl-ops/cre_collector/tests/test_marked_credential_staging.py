@@ -224,3 +224,50 @@ def test_supported_credential_matrix_fails_closed_and_preserves_safe_business():
         staged, _, changes = _sanitize_encoded_labels(raw, {}, inspect_strings=True)
         if staged != raw or changes:
             raise AssertionError('ordinary business text changed')
+
+
+def test_credential_and_copy_decoding_cross_product():
+    """Both original forms and their value/key/array copies obey the same bound."""
+    forms = [
+        (json.dumps({'apiKey': 'X_PRIVATE_ONE'}), 'X_PRIVATE_ONE'),
+        ('apiKey=X_PRIVATE_ONE', 'X_PRIVATE_ONE'),
+        ('Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz'),
+        ('Authorization: Basic X_PRIVATE_ONE', 'X_PRIVATE_ONE'),
+        ('Bearer X_PRIVATE_ONE', 'X_PRIVATE_ONE'),
+        (json.dumps({'apiKey': 'X_PRIVATE_ONE', 'other': 'Bearer X_PRIVATE_TWO'}), 'X_PRIVATE_ONE'),
+    ]
+
+    def encoded(value, layers, style):
+        if not layers:
+            return value
+        if style == 'percent':
+            value = ''.join(f'%{byte:02X}' for byte in value.encode())
+        else:
+            value = ''.join(f'&#{ord(char)};' for char in value)
+        for _ in range(layers - 1):
+            value = quote(value, safe='')
+        return value
+
+    for case, (base, token) in enumerate(forms):
+        for form in ('plain', 'json-string'):
+            original = json.dumps(base) if form == 'json-string' else base
+            for original_layers in range(7):
+                for copy_layers in range(7):
+                    for style in ('percent', 'html'):
+                        credential = encoded(original, original_layers, 'percent')
+                        copy = encoded(token, copy_layers, style)
+                        raw = {'observation': credential, 'copy': copy,
+                               'array': [None, False, 0, '', copy], f'key_{copy}': 'safe'}
+                        try:
+                            staged, _, changes = _sanitize_encoded_labels(raw, {}, inspect_strings=True)
+                        except _InspectionLimit:
+                            if original_layers <= 5 and copy_layers <= 5:
+                                raise AssertionError(f'unexpected refusal: case={case}, form={form}, original={original_layers}, copy={copy_layers}, style={style}') from None
+                            continue
+                        if original_layers > 5 or copy_layers > 5:
+                            raise AssertionError(f'excess decode was not refused: case={case}, form={form}, original={original_layers}, copy={copy_layers}, style={style}')
+                        if (not changes or staged['copy'] is not None or staged['array'] != [None, False, 0, '', None]
+                                or f'key_{copy}' in staged or token in json.dumps(staged)):
+                            raise AssertionError(f'credential copy survived: case={case}, form={form}, original={original_layers}, copy={copy_layers}, style={style}')
+                        if raw['copy'] != copy:
+                            raise AssertionError('private source mutated')

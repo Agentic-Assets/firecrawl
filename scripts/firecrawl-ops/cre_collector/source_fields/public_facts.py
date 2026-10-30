@@ -16,6 +16,21 @@ class _InspectionLimit(ValueError):
     """A bounded per-record inspection could not complete."""
 
 
+def _decoded_variants(value, *, refuse_excess=False):
+    """Inspect the initial value and each of at most five decoded variants."""
+    candidate = value
+    for step in range(6):
+        yield candidate
+        following = unquote(unescape(candidate), errors='replace')
+        if following == candidate:
+            return
+        if step == 5:
+            if refuse_excess:
+                raise _InspectionLimit('Public credential decoding exceeds bound')
+            return
+        candidate = following
+
+
 def _pointer(label):
     return '/' + label.replace('~', '~0').replace('/', '~1')
 
@@ -72,8 +87,8 @@ def _encoded_json_credential(value, budget, removed, numeric_removed, depth=0, *
             found = _encoded_json_credential(child, budget, removed, numeric_removed, depth + 1, marked=marked) or found
         return found
     if isinstance(value, str):
-        candidate = value.strip()
-        for step in range(6 if marked else 1):
+        variants = _decoded_variants(value.strip(), refuse_excess=True) if marked else (value.strip(),)
+        for candidate in variants:
             if candidate and candidate[0] in '{["':
                 try:
                     parsed = json.loads(candidate)
@@ -81,14 +96,6 @@ def _encoded_json_credential(value, budget, removed, numeric_removed, depth=0, *
                     pass
                 else:
                     return _encoded_json_credential(parsed, budget, removed, numeric_removed, depth + 1, marked=marked)
-            if not marked:
-                break
-            following = unquote(unescape(candidate), errors='replace')
-            if following == candidate:
-                break
-            if step == 5:
-                raise _InspectionLimit('Public credential decoding exceeds bound')
-            candidate = following
         return False
     return False
 
@@ -136,8 +143,7 @@ def _marked_credential_tokens(value):
             continue
         if not isinstance(item, str):
             continue
-        candidate = item
-        for step in range(6):
+        for candidate in _decoded_variants(item, refuse_excess=True):
             parsed_json = False
             if candidate.lstrip().startswith(('{', '[', '"')):
                 try:
@@ -174,10 +180,6 @@ def _marked_credential_tokens(value):
                                 pass
                     except (ValueError, binascii.Error):
                         pass
-            following = unquote(unescape(candidate), errors='replace')
-            if following == candidate or step == 5:
-                break
-            candidate = following
     return found
 
 
@@ -242,18 +244,13 @@ def _sanitize_encoded_labels(data, numeric, *, allow_label=None, inspect_strings
         numeric_patterns = [re.compile(r'(?<![A-Za-z0-9_.])' + re.escape(token) + r'(?![A-Za-z0-9_.])')
                             for token in set(numeric_removed)]
         def contains_copy(value):
-            candidate = value
-            for _ in range(5):
+            for candidate in _decoded_variants(value, refuse_excess=inspect_strings):
                 work[0] += len(candidate) * max(1, len(removed) + len(numeric_removed))
                 if work[0] > 128 * 1024 * 1024:
                     raise _InspectionLimit('Newmark credential-copy inspection exceeds bound')
                 if (any(secret in candidate for secret in removed)
                         or any(pattern.search(candidate) for pattern in numeric_patterns)):
                     return True
-                following = unquote(unescape(candidate), errors='replace')
-                if following == candidate:
-                    break
-                candidate = following
             return False
 
         def redact(value, path, depth):
