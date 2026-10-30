@@ -55,7 +55,7 @@ def validate(artifact, first, complement, receipt, source_key, policy):
              "max_text_bytes": 4 * 1024 * 1024, "max_layout_bytes": 1024 * 1024, "network": "none", "cpu": 1,
              "memory_bytes": 3 * 1024**3, "trigger_policy": policy["strategy"],
              "worker_sha256": events.sha256(worker.read_bytes())}
-    if (artifact.get("schema_version") != "cre-document-text/v1" or artifact.get("source") != first.get("source")
+    if (artifact.get("schema_version") != "cre-document-text/v1" or events.encoded(artifact.get("source")) != events.encoded(first.get("source"))
             or parser.get("name") != "pdfium-tesseract-sparse" or parser.get("version") != "1"
             or config != fixed
             or extraction.get("relationship") != "complement_of"

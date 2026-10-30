@@ -47,9 +47,9 @@ async function readBounded(input, limit = MAX_BYTES, privateFile = false) {
   } finally { await handle.close(); }
 }
 
-function convert(bytes, extension) {
+function convert(bytes, extension, formatHint) {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, ['--max-old-space-size=512', fileURLToPath(new URL('./worker.mjs', import.meta.url)), extension], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const child = spawn(process.execPath, ['--max-old-space-size=512', fileURLToPath(new URL('./worker.mjs', import.meta.url)), extension, formatHint?.status === 'resolved' ? formatHint.format : formatHint?.status === 'unresolved' ? 'unresolved' : ''], { stdio: ['pipe', 'pipe', 'ignore'] });
     const chunks = [];
     let size = 0;
     let reason = null;
@@ -71,7 +71,27 @@ function convert(bytes, extension) {
   });
 }
 
-export async function extractFile({ input, sourceUrl, observedAt }) {
+function validateFormatHint(hint) {
+  if (hint === undefined) return;
+  const keys = ['assertion_count', 'assertions', 'assertions_sha256', 'authority', 'candidate_sha256', 'format', 'omitted_assertions', 'schema', 'selection_sha256', 'status'];
+  if (!hint || typeof hint !== 'object' || Array.isArray(hint) || Object.keys(hint).sort().join(',') !== keys.join(',') ||
+      hint.schema !== 'cre-document-format-hint/v1' || hint.authority !== 'source_asserted_unverified' ||
+      !['resolved', 'unresolved'].includes(hint.status) ||
+      !['candidate_sha256', 'selection_sha256', 'assertions_sha256'].every(k => typeof hint[k] === 'string' && /^[a-f0-9]{64}$/.test(hint[k])) ||
+      !Number.isSafeInteger(hint.assertion_count) || hint.assertion_count < 1 ||
+      !Number.isSafeInteger(hint.omitted_assertions) || hint.omitted_assertions < 0 ||
+      !Array.isArray(hint.assertions) || hint.assertions.length > 64 ||
+      hint.assertions.length + hint.omitted_assertions !== hint.assertion_count ||
+      !hint.assertions.every(a => a && typeof a === 'object' && !Array.isArray(a) && Object.keys(a).sort().join(',') === 'field,format,occurrence' &&
+        Number.isSafeInteger(a.occurrence) && a.occurrence >= 0 &&
+        ['type', 'download', 'name', 'title'].includes(a.field) && ['csv', 'unsupported'].includes(a.format)) ||
+      (hint.status === 'resolved' ? hint.format !== 'csv' || hint.omitted_assertions !== 0 || hint.assertions.some(a => a.format !== 'csv') : hint.format !== null)) {
+    throw new Error('invalid format hint');
+  }
+}
+
+export async function extractFile({ input, sourceUrl, observedAt, formatHint }) {
+  validateFormatHint(formatHint);
   if (!input || typeof sourceUrl !== 'string' || !validObservationTime(observedAt)) {
     throw new Error('input, sourceUrl and UTC observedAt with at most six fractional digits are required');
   }
@@ -86,6 +106,7 @@ export async function extractFile({ input, sourceUrl, observedAt }) {
     parser: { name: '@firecrawl/anydoc', version: VERSION, config: { ocr: 'disabled', max_bytes: MAX_BYTES, max_text_bytes: MAX_TEXT_BYTES, timeout_ms: TIMEOUT_MS } },
     extraction: { status: 'failed', coverage: 'unknown', page_count: null, ocr_needed_pages: [], text_format: 'markdown', text: null, text_sha256: null, error_code: null },
   };
+  if (formatHint) artifact.source.format_hint = formatHint;
   let bytes;
   try { bytes = await readBounded(input); }
   catch (error) {
@@ -94,7 +115,7 @@ export async function extractFile({ input, sourceUrl, observedAt }) {
     return artifact;
   }
   Object.assign(artifact.source, { sha256: digest(bytes), byte_length: bytes.length });
-  const result = await convert(bytes, extname(input));
+  const result = await convert(bytes, extname(input), formatHint);
   if (result.source) Object.assign(artifact.source, result.source);
   if (typeof result.text === 'string' && result.text.trim()) {
     const textBytes = Buffer.from(result.text, 'utf8');
@@ -119,8 +140,8 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.length !== 3) throw new Error('usage: node extract.mjs INPUT PRIVATE_PROVENANCE_JSON OUTPUT_JSON');
   const provenance = JSON.parse((await readBounded(args[1], MAX_PROVENANCE_BYTES, true)).toString('utf8'));
-  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance) || Object.keys(provenance).sort().join(',') !== 'observed_at,url') throw new Error('invalid provenance');
-  const artifact = await extractFile({ input: args[0], sourceUrl: provenance.url, observedAt: provenance.observed_at });
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance) || !['observed_at,url', 'format_hint,observed_at,url'].includes(Object.keys(provenance).sort().join(','))) throw new Error('invalid provenance');
+  const artifact = await extractFile({ input: args[0], sourceUrl: provenance.url, observedAt: provenance.observed_at, formatHint: provenance.format_hint });
   await writePrivateArtifact(args[2], artifact);
   process.exitCode = artifact.extraction.status === 'extracted' ? 0 : 2;
 }

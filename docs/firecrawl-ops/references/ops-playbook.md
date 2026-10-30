@@ -48,8 +48,10 @@ work, read `scripts/firecrawl-ops/cre_collector/START_HERE.md` and use
 `scripts/firecrawl-ops/cre_collector/SETUP.md` for host setup. Use
 `cre_checkpoint_refresh.py` for a bounded selected-source refresh and
 `cre_checkpoint_series.py --sources all` for the full registry. Before a
-resource-sensitive run, apply the reversible CRE resource profile and recreate
-the API and Playwright services. The checkpoint manifest, exact generation
+resource-sensitive run, verify the existing CRE resource profile and running
+containers. Do not reapply settings or recreate services for an ordinary
+refresh; approved resource changes follow `START_HERE.md` and the operator
+handoff rules. The checkpoint manifest, exact generation
 readback, canonical lock, live `cre_status.sh` result, and resource evidence
 (`host-cpu-guard.jsonl`, `host-memory-guard.jsonl`, plus `cpu-incidents.jsonl`
 when present) are the operational record.

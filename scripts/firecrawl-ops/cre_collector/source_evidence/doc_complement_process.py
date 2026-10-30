@@ -61,7 +61,7 @@ def validate(artifact, first, receipt, source_key, executable, mode=None):
         raise ValueError("complement mode disagrees with policy")
     if (not required(first, {"pdf_complement": {}})
             or artifact.get("schema_version") != "cre-document-text/v1"
-            or artifact.get("source") != first_source or parser.get("name") != "poppler-pdftotext"
+            or events.encoded(artifact.get("source")) != events.encoded(first_source) or parser.get("name") != "poppler-pdftotext"
             or not isinstance(parser.get("version"), str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", parser["version"])
             or not isinstance(executable, str) or not os.path.isabs(executable)
             or parser.get("config") != poppler_modes.config(actual_mode, executable=executable)
@@ -70,7 +70,8 @@ def validate(artifact, first, receipt, source_key, executable, mode=None):
             or extraction.get("text_format") != "plain"):
         raise ValueError("invalid complementary parser artifact")
     status = first.get("extraction", {}).get("status")
-    doc_extract_process.validate_artifact(first, receipt, source_key=source_key, exit_code=0 if status == "extracted" else 2)
+    doc_extract_process.validate_artifact(first, receipt, source_key=source_key, exit_code=0 if status == "extracted" else 2,
+                                          format_hint=first.get("source", {}).get("format_hint"))
     plan = events.plan(artifact, source_key=source_key)
     events.validate_content_policy(plan)
     return plan
@@ -78,7 +79,8 @@ def validate(artifact, first, receipt, source_key, executable, mode=None):
 
 def run(input_path, first, receipt, outdir, *, executable, source_key, mode=poppler_modes.TEXT):
     status = first.get("extraction", {}).get("status")
-    doc_extract_process.validate_artifact(first, receipt, source_key=source_key, exit_code=0 if status == "extracted" else 2)
+    doc_extract_process.validate_artifact(first, receipt, source_key=source_key, exit_code=0 if status == "extracted" else 2,
+                                          format_hint=first.get("source", {}).get("format_hint"))
     if not required(first, {"pdf_complement": {}}):
         raise ValueError("complement requires an eligible PDF")
     raw = automatic._read_private(input_path, 100 * 1024 * 1024)

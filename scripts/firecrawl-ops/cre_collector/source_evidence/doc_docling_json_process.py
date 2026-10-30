@@ -53,7 +53,7 @@ def validate(artifact, first, complement, receipt, source_key, policy, *, requir
                                                           "max_text_bytes", "document_timeout_seconds", "client_timeout_seconds"))
             or not isinstance(worker_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", worker_sha)
             or (require_current_worker and worker_sha != events.sha256(worker.read_bytes())) or config != expected
-            or artifact.get("source") != first.get("source") or artifact.get("schema_version") != "cre-document-text/v1"
+            or events.encoded(artifact.get("source")) != events.encoded(first.get("source")) or artifact.get("schema_version") != "cre-document-text/v1"
             or parser.get("name") != "docling-document-json" or parser.get("version") != "2.95.0"
             or extraction.get("text_format") != "docling_json" or extraction.get("coverage") != "unknown"
             or ("mode" in policy and policy["mode"] != "docling_json_v1")

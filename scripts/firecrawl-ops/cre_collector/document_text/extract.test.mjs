@@ -136,3 +136,34 @@ test('actual acquisition timestamps retain their supplied UTC fractional precisi
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('extensionless source hint is used only when format detection cannot decide', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cre-hint-'));
+  try {
+    const input = join(dir, 'document.bin');
+    const args = { input, sourceUrl: 'https://example.test/download', observedAt: '2026-10-28T12:00:00Z' };
+    const hint = { schema: 'cre-document-format-hint/v1', status: 'resolved', format: 'csv', candidate_sha256: 'a'.repeat(64), selection_sha256: 'b'.repeat(64), assertions_sha256: 'c'.repeat(64), assertion_count: 1, omitted_assertions: 0, assertions: [{ occurrence: 0, field: 'type', format: 'csv' }], authority: 'source_asserted_unverified' };
+    for (const invalid of [null, false, {}, { ...hint, assertion_count: true }]) await assert.rejects(extractFile({ ...args, formatHint: invalid }), /invalid format hint/);
+    await writeFile(input, 'property,price\nExample,0\n');
+    const detected = await extractFile({ ...args, formatHint: hint });
+    assert.equal(detected.extraction.status, 'extracted');
+    assert.equal(detected.source.format_detection, 'source_hint');
+    assert.deepEqual(detected.source.format_hint, hint);
+    assert.match(detected.extraction.text, /Example/);
+    const refused = await extractFile({ ...args, formatHint: { ...hint, status: 'unresolved', format: null } });
+    assert.notEqual(refused.source.format_detection, 'source_hint');
+    const namedInput = join(dir, 'document.csv');
+    await writeFile(namedInput, 'property,price\nExample,0\n');
+    const unresolved = { ...hint, status: 'unresolved', format: null,
+      assertions: [{ occurrence: 0, field: 'type', format: 'unsupported' }] };
+    const named = await extractFile({ ...args, input: namedInput, formatHint: unresolved });
+    assert.equal(named.extraction.status, 'extracted');
+    assert.equal(named.source.format_detection, 'extension');
+    assert.deepEqual(named.source.format_hint, unresolved);
+    await writeFile(input, '%PDF-1.4\n%%EOF');
+    const conflict = await extractFile({ ...args, formatHint: hint });
+    assert.equal(conflict.source.format_detection, 'content');
+    assert.equal(conflict.source.format, 'pdf');
+    assert.equal(conflict.source.format_hint_conflict, true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

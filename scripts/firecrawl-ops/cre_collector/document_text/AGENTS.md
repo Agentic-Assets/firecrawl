@@ -12,14 +12,15 @@ package lock; conversion runs locally with hosted OCR disabled. Preserve
 coverage and is not a claim of page completeness, table accuracy, visibility,
 listing identity, or source permission. Original bytes are not retained here.
 
-Format detection uses content first and local filename extension second. The
-acquisition bridge names an extensionless URL `document.bin`; pinned AnyDoc
-cannot identify signatureless CSV without an explicit format, and candidate
-labels or MIME hints are not currently passed to the converter. A future hint
-must be deterministic, source-labelled and bound across selection, conversion,
-seal and recovery; content detection wins, conflicting hints remain unresolved,
-and a source hint does not establish file type or permission. This is not yet
-implemented or verified.
+Format detection uses content first and local filename extension second. For
+extensionless inputs, the draft acquisition bridge may pass a bounded,
+versioned CSV hint derived from all selected candidate occurrences. It is an
+unverified source assertion, not verified file type or permission. Conflicting,
+unsupported or overflowed assertions remain unresolved. Content and filename
+detection take precedence over hints, including unresolved ones. The selected
+candidate and selection hashes bind the hint to conversion and sealed recovery;
+legacy no-hint inputs and sealed contexts retain their existing shape. This
+local behavior does not grant deployment or production acceptance.
 
 The draft offline document-candidate discovery in `../source_evidence/` does not
 download documents or invoke AnyDoc. Draft refresh and series hooks explicitly

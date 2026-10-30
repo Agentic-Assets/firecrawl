@@ -193,7 +193,7 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
                 if len(body) > job["max_bytes"]:
                     raise ValueError("document acquired body exceeds reserved cap")
             context = document_acquisition.build_context(plan, candidates, policy_raw, selected,
-                                                       index, receipt, body, **bindings)
+                                                       index, receipt, body, format_hints=True, **bindings)
             document["receipt_sha256"] = events.sha256(events.encoded(receipt))
             document["state"] = "acquired" if body is not None else "fetch_failed"
             save(run_dir, manifest)
@@ -213,7 +213,8 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
                 document["state"] = "extraction_intent"
                 save(run_dir, manifest)
                 extracted = doc_extract_process.run(fetched, job_path, directory / "extraction",
-                    node_executable=node_executable, source_key=source, timeout_seconds=EXTRACTION_SECONDS)
+                    node_executable=node_executable, source_key=source, timeout_seconds=EXTRACTION_SECONDS,
+                    **({"format_hint": context["format_hint"]} if "format_hint" in context else {}))
                 document["extraction_state"] = extracted["state"]
                 if "artifact" not in extracted:
                     state["budget"] = document_budget.settle(state["budget"], selected, index,
@@ -224,7 +225,7 @@ def run(run_dir, manifest, source, attempt, save, *, plan, candidates, policy_ra
                     return state
                 # Rebuild the context from original policy/receipt/bytes, never an editable sidecar alone.
                 context = document_acquisition.build_context(plan, candidates, policy_raw, selected,
-                                                           index, receipt, body, **bindings)
+                                                           index, receipt, body, format_hints=True, **bindings)
                 landing = None
                 extraction = extracted["artifact"].get("extraction", {})
                 complement = None

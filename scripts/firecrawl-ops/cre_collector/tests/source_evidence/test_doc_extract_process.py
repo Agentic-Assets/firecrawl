@@ -176,3 +176,76 @@ def test_replay_refuses_missing_or_tampered_custody(monkeypatch, tmp_path, mutat
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("replay must not spawn"))
     with pytest.raises((ValueError, OSError)):
         doc_extract_process.replay(fetched, job_path, directory, source_key="svn")
+
+
+def test_hint_is_bound_through_private_conversion_and_no_spawn_replay(monkeypatch, tmp_path):
+    fetched, job_path = setup_fetch(tmp_path)
+    hint = {"schema": "cre-document-format-hint/v1", "status": "resolved", "format": "csv",
+            "candidate_sha256": "a" * 64, "selection_sha256": "b" * 64,
+            "assertions": [], "assertion_count": 0, "assertions_sha256": "c" * 64,
+            "omitted_assertions": 0, "authority": "source_asserted_unverified"}
+    def popen(*args, **kwargs):
+        provenance = json.loads((tmp_path / "extracted" / "provenance.json").read_text())
+        assert provenance["format_hint"] == hint
+        value = artifact()
+        value["source"]["format_hint"] = hint
+        path = tmp_path / "extracted" / "artifact.json"
+        path.write_text(json.dumps(value))
+        path.chmod(0o600)
+        return type("Child", (), {"pid": 1234, "wait": lambda self, timeout: 0})()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable="/usr/bin/node",
+                                     source_key="svn", format_hint=hint)
+    assert result["state"] == "success"
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("replay must not spawn"))
+    assert doc_extract_process.replay(fetched, job_path, tmp_path / "extracted", source_key="svn", format_hint=hint) == result
+    with pytest.raises(ValueError):
+        doc_extract_process.replay(fetched, job_path, tmp_path / "extracted", source_key="svn",
+                                   format_hint={**hint, "candidate_sha256": "d" * 64})
+    with pytest.raises(ValueError):
+        doc_extract_process.replay(fetched, job_path, tmp_path / "extracted", source_key="svn")
+
+
+def test_real_anydoc_reads_bound_extensionless_csv_and_replays(monkeypatch, tmp_path):
+    import shutil
+    node = shutil.which("node")
+    from pathlib import Path
+    anydoc = Path(__file__).resolve().parents[2] / "document_text" / "node_modules" / "@firecrawl" / "anydoc"
+    if not node or not anydoc.is_dir():
+        pytest.skip("Node and document_text npm ci --ignore-scripts are required")
+    fetched, job_path = setup_fetch(tmp_path)
+    body = b'item,price,flag\n"Test, A",0,false\n'
+    fetch_dir = tmp_path / "fetched"
+    bound = dict(fetched["receipt"], body_bytes=len(body), body_sha256=events.sha256(body))
+    fetched["receipt"] = bound
+    (fetch_dir / "document.bin").write_bytes(body)
+    (fetch_dir / "receipt.json").write_bytes(events.encoded({"job_sha256": fetched["job_sha256"], "receipt": bound}))
+    hint = {"schema": "cre-document-format-hint/v1", "status": "resolved", "format": "csv",
+            "candidate_sha256": "a" * 64, "selection_sha256": "b" * 64,
+            "assertions": [{"occurrence": 0, "field": "type", "format": "csv"}], "assertion_count": 1,
+            "assertions_sha256": "c" * 64, "omitted_assertions": 0, "authority": "source_asserted_unverified"}
+    result = doc_extract_process.run(fetched, job_path, tmp_path / "extracted", node_executable=node,
+                                     source_key="svn", format_hint=hint)
+    assert result["state"] == "success"
+    assert result["artifact"]["source"]["format_detection"] == "source_hint"
+    assert "Test, A" in result["artifact"]["extraction"]["text"]
+    assert result["artifact"]["extraction"]["coverage"] == "unknown"
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("replay must not spawn"))
+    assert doc_extract_process.replay(fetched, job_path, tmp_path / "extracted", source_key="svn", format_hint=hint) == result
+
+
+def test_hint_comparison_is_typed_and_absence_is_not_null():
+    base = artifact()
+    hint = {"assertion_count": 1, "omitted_assertions": 0,
+            "assertions": [{"occurrence": 0}]}
+    base["source"]["format_hint"] = hint
+    assert doc_extract_process.validate_artifact(base, receipt(), source_key="svn", exit_code=0, format_hint=hint) == "success"
+    for mutated in ({**hint, "assertion_count": True}, {**hint, "omitted_assertions": False},
+                    {**hint, "assertions": [{"occurrence": False}]}):
+        with pytest.raises(ValueError):
+            doc_extract_process.validate_artifact(base, receipt(), source_key="svn", exit_code=0, format_hint=mutated)
+    with pytest.raises(ValueError):
+        doc_extract_process.validate_artifact(base, receipt(), source_key="svn", exit_code=0)
+    base["source"]["format_hint"] = None
+    with pytest.raises(ValueError):
+        doc_extract_process.validate_artifact(base, receipt(), source_key="svn", exit_code=0)

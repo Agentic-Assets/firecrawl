@@ -154,7 +154,8 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
                         raise ValueError("primary seal outside complement policy")
                     status = first["extraction"]["status"]
                     doc_extract_process.validate_artifact(first, context["receipt"], source_key=source,
-                                                         exit_code=0 if status == "extracted" else 2)
+                                                         exit_code=0 if status == "extracted" else 2,
+                                              format_hint=context.get("format_hint"))
                     report["primary_seal"] = "reverified_complement_unresolved"
                 except (OSError, ValueError, TypeError, KeyError, RuntimeError):
                     report["primary_seal"] = "unresolved"
@@ -339,7 +340,8 @@ def sealed(run_dir, manifest, source, attempt, save, *, plan, candidates, policy
             if artifact is not None:
                 status = artifact["extraction"]["status"]
                 doc_extract_process.validate_artifact(artifact, context["receipt"], source_key=source,
-                                                     exit_code=0 if status == "extracted" else 2)
+                                                     exit_code=0 if status == "extracted" else 2,
+                                              format_hint=context.get("format_hint"))
                 retain = (doc_sparse_ocr_process.retain_unresolved(artifact, checked.get("complement"), checked.get("ocr"), selected)
                           or doc_docling_json_process.retain_unresolved(artifact, checked.get("complement"), checked.get("docling"), selected))
                 if retain:
