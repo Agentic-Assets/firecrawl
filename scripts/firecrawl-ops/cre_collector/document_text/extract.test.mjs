@@ -152,6 +152,14 @@ test('extensionless source hint is used only when format detection cannot decide
     assert.match(detected.extraction.text, /Example/);
     const refused = await extractFile({ ...args, formatHint: { ...hint, status: 'unresolved', format: null } });
     assert.notEqual(refused.source.format_detection, 'source_hint');
+    const namedInput = join(dir, 'document.csv');
+    await writeFile(namedInput, 'property,price\nExample,0\n');
+    const unresolved = { ...hint, status: 'unresolved', format: null,
+      assertions: [{ occurrence: 0, field: 'type', format: 'unsupported' }] };
+    const named = await extractFile({ ...args, input: namedInput, formatHint: unresolved });
+    assert.equal(named.extraction.status, 'extracted');
+    assert.equal(named.source.format_detection, 'extension');
+    assert.deepEqual(named.source.format_hint, unresolved);
     await writeFile(input, '%PDF-1.4\n%%EOF');
     const conflict = await extractFile({ ...args, formatHint: hint });
     assert.equal(conflict.source.format_detection, 'content');

@@ -101,8 +101,9 @@ The acquisition bridge may supply a versioned source-asserted hint for a
 signatureless extensionless CSV when all bounded candidate assertions agree.
 It considers explicit `text/csv` MIME labels and filename labels, not generic
 prose or an unobserved HTTP header. Conflicting, unsupported, and overflowed
-assertions remain unresolved. Detected content takes precedence; a conflicting
-filename fallback remains unresolved, and conflicts are recorded. The hint is bound
+assertions remain unresolved. Content detection and then the filename extension
+take precedence over hints; hints cannot disable existing filename-based
+extraction, and detected conflicts are recorded. The hint is bound
 to the selected candidate and selection, private conversion provenance,
 artifact, completion marker, and sealed recovery; it is not verified file type,
 source permission, or coverage. Legacy no-hint artifacts remain unchanged.

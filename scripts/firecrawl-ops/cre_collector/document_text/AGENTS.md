@@ -16,8 +16,8 @@ Format detection uses content first and local filename extension second. For
 extensionless inputs, the draft acquisition bridge may pass a bounded,
 versioned CSV hint derived from all selected candidate occurrences. It is an
 unverified source assertion, not verified file type or permission. Conflicting,
-unsupported or overflowed assertions remain unresolved; detected content takes
-precedence, while a conflicting filename fallback remains unresolved. The selected
+unsupported or overflowed assertions remain unresolved. Content and filename
+detection take precedence over hints, including unresolved ones. The selected
 candidate and selection hashes bind the hint to conversion and sealed recovery;
 legacy no-hint inputs and sealed contexts retain their existing shape. This
 local behavior does not grant deployment or production acceptance.

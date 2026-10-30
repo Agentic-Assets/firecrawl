@@ -19,7 +19,7 @@ from test_document_pipeline import execute, setup_run
 from test_document_recovery import recover
 
 
-@pytest.mark.parametrize("case", ["csv", "conflict", "legacy"])
+@pytest.mark.parametrize("case", ["csv", "csv_extension_unresolved", "conflict", "legacy"])
 def test_real_conversion_seal_and_no_spawn_recovery(monkeypatch, tmp_path, case):
     node = shutil.which("node")
     if not node:
@@ -35,6 +35,8 @@ def test_real_conversion_seal_and_no_spawn_recovery(monkeypatch, tmp_path, case)
     labels.update(name="inventory.csv", type="text/csv")
     if case == "conflict":
         labels["name"] = "inventory.pdf"
+    if case == "csv_extension_unresolved":
+        labels.update(url="https://docs.example.test/inventory.csv", type="text/csv; charset=utf-8")
     plan = plan_for(data)
     candidates = document_candidates.discover(plan)
     policy = policy_value()
@@ -85,9 +87,9 @@ def test_real_conversion_seal_and_no_spawn_recovery(monkeypatch, tmp_path, case)
         assert hint["status"] == ("resolved" if case == "csv" else "unresolved")
         assert converted["source"]["format_hint"] == hint
         assert marker["format_hint_sha256"] == events.sha256(events.encoded(hint))
-    if case == "csv":
+    if case in ("csv", "csv_extension_unresolved"):
         assert converted["extraction"]["status"] == "extracted"
-        assert converted["source"]["format_detection"] == "source_hint"
+        assert converted["source"]["format_detection"] == ("source_hint" if case == "csv" else "extension")
         assert "Example" in converted["extraction"]["text"]
     else:
         assert converted["extraction"]["status"] == "failed"
