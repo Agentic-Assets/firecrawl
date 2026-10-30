@@ -203,8 +203,8 @@ def test_layout_mode_substitution_is_rejected(monkeypatch):
 
 
 def test_complement_source_hint_uses_json_typed_equality(monkeypatch):
-    import copy
     from document_text import poppler_modes
+
     first = artifact()
     first['source']['format_hint'] = {'assertion_count': 1, 'assertions': [{'occurrence': 0}]}
     text = 'synthetic text'
