@@ -102,7 +102,7 @@ def _fetch_binding(fetch_result, job_path, outdir, source_key):
         os.close(parent)
 
 
-def validate_artifact(artifact, receipt, *, source_key, exit_code):
+def validate_artifact(artifact, receipt, *, source_key, exit_code, format_hint=None):
     """Validate source and converter outcome without running a converter."""
     if type(exit_code) is not int or exit_code not in (0, 2):
         raise ValueError("invalid converter exit code")
@@ -116,6 +116,9 @@ def validate_artifact(artifact, receipt, *, source_key, exit_code):
                 or parser.get("name") != "@firecrawl/anydoc" or parser.get("version") != "0.2.4"
                 or parser.get("config", {}).get("ocr") != "disabled"):
             raise ValueError("extraction disagrees with acquired source")
+        if (("format_hint" in source) != (format_hint is not None)
+                or events.encoded(source.get("format_hint")) != events.encoded(format_hint)):
+            raise ValueError("extraction format hint changed")
         planned = events.plan(artifact, source_key=source_key)
         events.validate_content_policy(planned)
         status = artifact["extraction"]["status"]
@@ -151,12 +154,17 @@ def _publish_marker(outdir, marker, expected_identity):
         os.close(directory)
 
 
-def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_seconds=75):
+def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_seconds=75, format_hint=None):
     """Extract once from a rebound fetch; outcomes are not publisher assertions."""
     if (not isinstance(node_executable, str) or not os.path.isabs(node_executable)
             or type(timeout_seconds) is not int or not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS):
         raise ValueError("invalid extraction request")
     outdir, receipt, body, digest, input_name, provenance = _fetch_binding(fetch_result, job_path, outdir, source_key)
+    if format_hint is not None:
+        provenance = events.encoded({"url": receipt["final_url"], "observed_at": receipt["finished_at"],
+                                     "format_hint": format_hint})
+        if len(provenance) > 16384:
+            raise ValueError("format hint provenance exceeds bound")
     private_export.write(outdir, [(input_name, body), ("provenance.json", provenance)])
     workdir_identity = _directory_identity(outdir)
     artifact_path = outdir / "artifact.json"
@@ -204,10 +212,12 @@ def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_
         raw, artifact = _read_json(artifact_path, MAX_ARTIFACT_BYTES)
         if _directory_identity(outdir) != workdir_identity:
             raise ValueError("private extraction directory changed")
-        state = validate_artifact(artifact, receipt, source_key=source_key, exit_code=code)
+        state = validate_artifact(artifact, receipt, source_key=source_key, exit_code=code, format_hint=format_hint)
         _input_checked(outdir, input_name, body)
         marker = {"schema_version": COMPLETION_SCHEMA, "job_sha256": digest, "source_key": source_key,
                   "artifact_sha256": events.sha256(raw), "exit_code": code, "input_filename": input_name}
+        if format_hint is not None:
+            marker["format_hint_sha256"] = events.sha256(events.encoded(format_hint))
         _publish_marker(outdir, marker, workdir_identity)
     except (ValueError, OSError, KeyError, TypeError, AttributeError, RecursionError):
         return {"state": "ambiguous", "directory": str(outdir)}
@@ -215,13 +225,16 @@ def run(fetch_result, job_path, outdir, *, node_executable, source_key, timeout_
             "artifact_path": str(artifact_path), "artifact": artifact, "input_path": str(outdir / input_name)}
 
 
-def replay(fetch_result, job_path, outdir, *, source_key):
+def replay(fetch_result, job_path, outdir, *, source_key, format_hint=None):
     """Revalidate a settled conversion marker without executing a converter."""
     outdir, receipt, body, digest, input_name, _ = _fetch_binding(fetch_result, job_path, outdir, source_key)
     initial = _directory_identity(outdir)
     _, marker = _read_json(outdir / "conversion-complete.json", 16384)
     keys = {"schema_version", "job_sha256", "source_key", "artifact_sha256", "exit_code", "input_filename"}
+    if format_hint is not None:
+        keys.add("format_hint_sha256")
     if (not isinstance(marker, dict) or set(marker) != keys or marker["schema_version"] != COMPLETION_SCHEMA
+            or (format_hint is not None and marker.get("format_hint_sha256") != events.sha256(events.encoded(format_hint)))
             or marker["job_sha256"] != digest or marker["source_key"] != source_key
             or marker["input_filename"] != input_name or not re.fullmatch(r"document\.[a-z0-9]{1,5}", input_name)):
         raise ValueError("invalid conversion completion marker")
@@ -230,7 +243,7 @@ def replay(fetch_result, job_path, outdir, *, source_key):
     if events.sha256(raw) != marker["artifact_sha256"]:
         raise ValueError("conversion artifact digest mismatch")
     _input_checked(outdir, input_name, body)
-    state = validate_artifact(artifact, receipt, source_key=source_key, exit_code=marker["exit_code"])
+    state = validate_artifact(artifact, receipt, source_key=source_key, exit_code=marker["exit_code"], format_hint=format_hint)
     if _directory_identity(outdir) != initial:
         raise ValueError("private extraction directory changed")
     return {"state": state, "directory": str(outdir), "artifact_path": str(artifact_path),

@@ -200,3 +200,23 @@ def test_layout_mode_substitution_is_rejected(monkeypatch):
     complement['parser']['config']['mode'] = 'unknown'
     with pytest.raises(ValueError):
         doc_complement_process.validate(complement, first, receipt(), 'svn', '/usr/bin/pdftotext')
+
+
+def test_complement_source_hint_uses_json_typed_equality(monkeypatch):
+    import copy
+    from document_text import poppler_modes
+    first = artifact()
+    first['source']['format_hint'] = {'assertion_count': 1, 'assertions': [{'occurrence': 0}]}
+    text = 'synthetic text'
+    complement = {'schema_version': 'cre-document-text/v1', 'source': copy.deepcopy(first['source']),
+                  'parser': {'name': 'poppler-pdftotext', 'version': '1.2',
+                             'config': poppler_modes.config(poppler_modes.TEXT, executable='/usr/bin/pdftotext')},
+                  'extraction': {'status': 'extracted', 'coverage': 'unknown', 'text_format': 'plain',
+                                 'text': text, 'text_sha256': events.sha256(text.encode()),
+                                 'relationship': 'complement_of',
+                                 'previous_attempt_sha256': events.sha256(events.encoded(first))}}
+    monkeypatch.setattr(doc_complement_process.doc_extract_process, 'validate_artifact', lambda *a, **k: None)
+    doc_complement_process.validate(complement, first, receipt(), 'svn', '/usr/bin/pdftotext')
+    complement['source']['format_hint']['assertions'][0]['occurrence'] = False
+    with pytest.raises(ValueError, match='invalid complementary parser artifact'):
+        doc_complement_process.validate(complement, first, receipt(), 'svn', '/usr/bin/pdftotext')

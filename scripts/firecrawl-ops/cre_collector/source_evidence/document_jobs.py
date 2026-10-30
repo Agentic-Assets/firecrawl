@@ -144,7 +144,8 @@ def _derive(run_dir, manifest, source, attempt, document, *, role="primary"):
     status = artifact.get("extraction", {}).get("status")
     if role == "primary":
         doc_extract_process.validate_artifact(artifact, context["receipt"], source_key=source,
-                                              exit_code=0 if status == "extracted" else 2)
+                                              exit_code=0 if status == "extracted" else 2,
+                                              format_hint=context.get("format_hint"))
     enriched = {**artifact, "acquisition_context": context,
                 "acquisition_context_origin": "foreground_coordinator_not_converter",
                 **({"pageContext": checked["landing"]} if "landing" in checked else {})}

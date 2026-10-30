@@ -112,3 +112,38 @@ def test_connection_close_failure_is_preserved():
                  "completion": "incomplete", "body_sha256": None, "body_bytes": None}
     values[6] = None
     assert context_for(values)["receipt"]["failure_code"] == "connection_close_failed"
+
+
+def test_hinted_context_and_artifact_are_rederived_and_bound():
+    source_artifact = artifact()
+    source_artifact["listings"][0]["brochures"][0]["type"] = "text/csv"
+    plan = plan_for(source_artifact)
+    candidates = document_candidates.discover(plan)
+    raw = events.encoded(policy_value())
+    selection = preflight(plan, candidates)
+    chosen = selection["documents"][0]
+    _, _, _, _, _, receipt, body, binding = fixture()
+    context = adapter.build_context(plan, candidates, raw, selection, chosen["candidate_index"], receipt, body,
+                                    format_hints=True, **binding)
+    assert context["format_hint"]["status"] == "resolved"
+    saved_hash = events.sha256(events.encoded(context))
+    assert adapter.validate_archived_context(plan, candidates, raw, selection, context,
+                                             expected_context_sha256=saved_hash, **binding) == context
+    changed = copy.deepcopy(context)
+    changed["format_hint"]["candidate_sha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        adapter.validate_archived_context(plan, candidates, raw, selection, changed,
+                                          expected_context_sha256=events.sha256(events.encoded(changed)), **binding)
+    receipt = context["receipt"]
+    text = "synthetic extracted text"
+    result = {"schema_version": "cre-document-text/v1",
+              "source": {"url": receipt["final_url"], "observed_at": receipt["finished_at"],
+                         "sha256": receipt["body_sha256"], "byte_length": receipt["body_bytes"],
+                         "format_hint": context["format_hint"]},
+              "parser": {"name": "@firecrawl/anydoc", "version": "0.2.4"},
+              "extraction": {"status": "extracted", "coverage": "unknown", "text": text,
+                             "text_sha256": events.sha256(text.encode())}}
+    adapter.bind_extraction(context, result)
+    result["source"]["format_hint"] = None
+    with pytest.raises(ValueError):
+        adapter.bind_extraction(context, result)

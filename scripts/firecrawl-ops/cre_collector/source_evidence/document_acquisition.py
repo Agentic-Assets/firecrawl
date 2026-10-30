@@ -91,7 +91,7 @@ def _receipt_checked(receipt, body, candidate, selection):
 
 
 def build_context(plan, candidates, policy_raw, selection, candidate_index, receipt, body, *,
-                  expected_policy_sha256, target_sha256, collector_git_sha):
+                  expected_policy_sha256, target_sha256, collector_git_sha, format_hints=False):
     """Recompute selection and bind the actual attempted receipt to one candidate."""
     selected = validate_selection(plan, candidates, policy_raw, selection,
                                   expected_policy_sha256=expected_policy_sha256,
@@ -103,10 +103,10 @@ def build_context(plan, candidates, policy_raw, selection, candidate_index, rece
         raise ValueError("document candidate is not selected")
     candidate = matches[0]["candidate"]
     _receipt_checked(receipt, body, candidate, selected)
-    return _context(selected, matches[0], receipt)
+    return _context(selected, matches[0], receipt, format_hints=format_hints)
 
 
-def _context(selected, item, receipt):
+def _context(selected, item, receipt, *, format_hints=False):
     """One context representation for acquisition and authenticated local readback."""
     batch = selected["schema_version"] == "cre-document-acquisition-plan/v2"
     source_binding = ({"source_evidence_plans": copy.deepcopy(selected["source_evidence_plans"]),
@@ -131,6 +131,11 @@ def _context(selected, item, receipt):
                                       if selected_item["candidate_index"] == item["candidate_index"]),
             "priority": copy.deepcopy(item["priority"]),
         }
+    if format_hints:
+        from source_evidence import document_format_hint
+        hint = document_format_hint.derive(selected, item)
+        if hint is not None:
+            context["format_hint"] = hint
     return context
 
 
@@ -152,7 +157,7 @@ def validate_archived_context(plan, candidates, policy_raw, selection, context, 
             or not isinstance(context.get("receipt"), dict)):
         raise ValueError("archived acquisition context binding mismatch")
     matches = [item for item in selected["documents"] if item["candidate_index"] == context["candidate_index"]]
-    if (len(matches) != 1 or events.encoded(context) != events.encoded(_context(selected, matches[0], context["receipt"]))):
+    if (len(matches) != 1 or events.encoded(context) != events.encoded(_context(selected, matches[0], context["receipt"], format_hints="format_hint" in context))):
         raise ValueError("archived acquisition context disagrees with source selection")
     return copy.deepcopy(context)
 
@@ -171,6 +176,10 @@ def bind_extraction(context, artifact):
                 "byte_length": receipt["body_bytes"], "observed_at": receipt["finished_at"]}
     if actual is None or events.encoded(actual) != events.encoded(expected):
         raise ValueError("document extraction disagrees with acquired bytes or clock")
+    if (artifact.get("parser", {}).get("name") == "@firecrawl/anydoc"
+            and (("format_hint" in artifact.get("source", {})) != ("format_hint" in context)
+                 or events.encoded(artifact.get("source", {}).get("format_hint")) != events.encoded(context.get("format_hint")))):
+        raise ValueError("document format hint disagrees with acquired context")
     plan = events.plan(artifact, source_key=context["source_key"])
     events.validate_content_policy(plan)
     return {"schema_version": "cre-document-extraction-binding/v1",
