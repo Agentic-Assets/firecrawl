@@ -996,7 +996,7 @@ and missing IDs/URLs remain private unqualified context. This is parsed JSON,
 not original response bytes or exact numeric lexemes. It excludes closed and
 other unmapped rows; native page evidence has its own scope and controls.
 
-Full or monitor collection selecting Buildout, SRS or Kidder requires `--out` before
+Full or monitor collection selecting Buildout, SRS, Kidder or Newmark requires `--out` before
 acquisition. Artifacts carrying new raw receipts are written exclusively as
 mode 0600 files; existing paths (including symlinks) are refused. Existing
 parent-directory permissions are not changed. Treat these files as private;
@@ -1115,6 +1115,17 @@ source data; they cannot assert collector cache provenance. Cache hits retain
 the original observation clock and do not publish a fresh native capture.
 
 ## Newmark NIM inventory and evidence
+
+Eligible mapped NIM inventory rows retain a bounded parsed-JSON
+`rawNewmarkNimRecord` and `newmark-nim-raw-retention-v1` receipt through the
+outer collector prune. The receipt binds the mapper ID/URL, separate provider
+ID, requested transaction, inventory clock and collector provenance. A binding
+failure or invalid/oversized snapshot is explicitly omitted without dropping
+the mapped row. These snapshots are not original bytes or numeric lexemes and
+provide no new source, freshness, lifecycle or display authorization. Non-US
+and otherwise unmapped input rows remain outside normal listing output; the
+separate native page evidence has its own controls. Legacy Algolia and targeted
+RCM enrichment retain their existing paths.
 
 `srcNewmark` serves full and monitor collection from the direct public NIM
 search POST. It enumerates ascending 100-row pages for each transaction,

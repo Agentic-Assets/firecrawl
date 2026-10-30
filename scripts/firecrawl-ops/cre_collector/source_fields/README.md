@@ -127,3 +127,27 @@ original input is unchanged and the projected evidence artifact remains
 non-canonical. Numeric literals and omitted source paths remain explicit; the
 collector clock and source coverage do not establish provider freshness or
 complete inventory. Unmatched observations do not produce a listing envelope.
+
+Newmark NIM inventory uses `newmark-nim-inventory/v1` in separate
+`cre_newmark_nim_sale_public_listing_facts` and
+`cre_newmark_nim_lease_public_listing_facts` slots. Each binds its transaction,
+mapper ID and URL, separate nullable provider ID, inventory clock and receipt.
+The source identity and geography filters remain with the adapter. Parsed
+numbers do not provide original numeric witnesses. The exact native
+`secureDocumentsUrl` credential-reference rule and shared bounded inspection
+omit technical references and recognizable copies from the staging copy;
+original captures remain private and unchanged.
+
+Marked NIM payloads and referenced brokers receive inspection for every ingest
+caller. Only a full-mode artifact can publish a new inventory envelope. The
+staging helper discards unqualified incoming inventory-slot copies and
+recomputes only the current transaction's slot, preserving the independently
+qualified RCM slot and unrelated keys. Thus an enrichment pass cannot restamp
+old inventory facts. Separate staged or persisted transaction slots coexist
+under the existing additive key merge.
+
+This key layout preserves inventory and published detail across different-slot
+writes, not earlier versions of the same slot. A later same-slot observation
+can replace its predecessor, including a partial observation. Neither
+`raw_data` nor these current-value envelopes are a durable history store.
+Long-term evidence retention has its separate admission and activation gates.

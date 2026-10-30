@@ -73,11 +73,10 @@ test('actual both-transaction CLI dispatch stops for every terminal class and co
     rmSync(calls);
     const fallback = spawnSync(process.execPath, ['--import','tsx','--import',preload,'collect.ts','--source','newmark','--transaction','both'], {cwd:process.cwd(),encoding:'utf8',timeout:20000,env:{...process.env,TEST_TERMINAL_CLASS:'NativeEvidenceTerminalError',TEST_FAIL_TX:'lease',TMPDIR:dir}});
     assert.equal(fallback.status,1,fallback.stderr); assert.equal(fallback.stdout,'');
-    assert.equal(readFileSync(calls,'utf8'),'sale\nlease\n');
-    const fallbackPath = fallback.stderr.match(/terminal partial artifact: (.+)/)?.[1];
-    assert.ok(fallbackPath); assert.equal(statSync(fallbackPath).mode & 0o777,0o600);
-    assert.equal(statSync(join(fallbackPath,'..')).mode & 0o777,0o700);
-    assert.equal(JSON.parse(readFileSync(fallbackPath,'utf8')).listings.length,1);
+    assert.match(fallback.stderr, /Newmark and Buildout collection require a private --out file/);
+    const { existsSync } = await import('node:fs');
+    assert.equal(existsSync(calls),false, 'missing output must refuse before source dispatch');
+    assert.doesNotMatch(fallback.stderr, /terminal partial artifact:/);
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
 

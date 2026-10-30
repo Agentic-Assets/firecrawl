@@ -2720,7 +2720,7 @@ def generic_enrichment_substantive(listing):
     return False
 
 
-def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_candidates=None):
+def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_candidates=None, *, allow_newmark_nim=False):
     """Map one collector listing to a staging row dict, or None to skip."""
     # Qualification maps are bound to the input artifact object, before any
     # source-specific staging projection creates a sanitized copy.
@@ -2735,6 +2735,13 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
     if listing.get("inventoryOnly") is not None:
         return None
     source_key = listing.get("sourceKey")
+    if source_key == "newmark":
+        from source_fields.newmark_nim_public_facts import _safe_url, attach
+        marker = listing.get("newmarkNimRawRetention")
+        if (isinstance(marker, dict) and marker.get("schema") == "newmark-nim-raw-retention-v1"
+                and listing.get("url") and _safe_url(listing["url"]) is None):
+            return None
+        listing, brokers_by_idx = attach(listing, brokers_by_idx, publish=allow_newmark_nim)
     if source_key == "srs":
         from source_fields.srs_public_facts import _safe_url, attach
         marker = listing.get("srsRawRetention")
@@ -7065,7 +7072,8 @@ def main():
                     )
                 inventory_only_merged[inventory_key] = inventory_row
                 continue
-            row = to_row(listing, brokers_by_idx, scraped_at, field_candidates, building_candidates)
+            row = to_row(listing, brokers_by_idx, scraped_at, field_candidates, building_candidates,
+                         allow_newmark_nim=mode == "full")
             if row is None:
                 skipped_no_url += 1
                 continue
