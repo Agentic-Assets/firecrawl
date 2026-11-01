@@ -29,6 +29,7 @@ from cre_ingest import (
     source_key_sql,
 )
 from cre_source_policy import load_source_policy
+import cre_geo
 
 FULL_VALIDATION_PROFILE = "full"
 CHECKPOINT_PREFLIGHT_PROFILE = "checkpoint-preflight"
@@ -172,6 +173,108 @@ FROM active
 GROUP BY source_key
 ORDER BY source_key;
 """
+
+def render_coordinate_conflict_sql(source_key_sql_text: str, count_cast: str, *, detail: bool = False) -> str:
+    """Active rows whose lat/lng the ingest guard would reject (AGENTIC-5133).
+
+    SQL twin of cre_ingest.guard_row_coordinates over credeals.cre_zip_cbsa_crosswalk:
+    a provider default pin, or a point whose nearest centroid within
+    cre_geo.MAX_LATLNG_KM is in another state while no centroid of the listing's
+    state is that close and the row's ZIP does not resolve to the point's
+    state. Rows sharing a 0.25-degree cell with a same-state centroid are
+    within about 39 km of it and are settled by an equality join; only the
+    rest are measured, over 0.5-degree cells (+/-1 latitude, +/-4 longitude
+    covers 50 km below about 77 degrees north). detail=True returns the
+    rejected rows for a repair instead of per-source counts.
+    """
+    max_km = cre_geo.MAX_LATLNG_KM
+    placeholders = " OR ".join(
+        f"(round(l.lat::numeric, 4) = {lat} AND round(l.lng::numeric, 4) = {lng})"
+        for lat, lng in sorted(cre_geo.PLACEHOLDER_POINTS)
+    ) or "false"
+    body = f"""
+WITH cw AS (
+  SELECT upper(btrim(state::text)) AS state, zip5, centroid_lat AS lat, centroid_lng AS lng,
+         floor(centroid_lat * 2)::int AS cy, floor(centroid_lng * 2)::int AS cx,
+         floor(centroid_lat * 4)::int AS fy, floor(centroid_lng * 4)::int AS fx
+  FROM credeals.cre_zip_cbsa_crosswalk
+  WHERE centroid_lat IS NOT NULL AND centroid_lng IS NOT NULL
+),
+fine_cells AS (SELECT DISTINCT state, fy, fx FROM cw),
+states AS (SELECT DISTINCT state FROM cw),
+listing AS (
+  SELECT
+    {source_key_sql_text} AS source_key,
+    l.id, l.lat, l.lng,
+    upper(btrim(l.state::text)) AS state,
+    CASE WHEN length(regexp_replace(coalesce(l.zip, ''), '[^0-9]', '', 'g')) >= 5
+         THEN left(regexp_replace(l.zip, '[^0-9]', '', 'g'), 5) END AS zip5,
+    ({placeholders}) AS placeholder
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL AND l.status = 'active'
+    AND l.lat IS NOT NULL AND l.lng IS NOT NULL
+),
+undecided AS (
+  SELECT l.*
+  FROM listing l
+  JOIN states s ON s.state = l.state
+  WHERE NOT l.placeholder
+    AND NOT EXISTS (
+      SELECT 1 FROM fine_cells f
+      WHERE f.state = l.state AND f.fy = floor(l.lat * 4)::int AND f.fx = floor(l.lng * 4)::int
+    )
+),
+near AS (
+  SELECT u.id, u.state AS listing_state, cw.state,
+         2 * 6371.0 * asin(sqrt(
+           power(sin(radians(cw.lat - u.lat) / 2), 2)
+           + cos(radians(u.lat)) * cos(radians(cw.lat)) * power(sin(radians(cw.lng - u.lng) / 2), 2)
+         )) AS km
+  FROM undecided u
+  CROSS JOIN LATERAL generate_series(floor(u.lat * 2)::int - 1, floor(u.lat * 2)::int + 1) AS gy(cy)
+  CROSS JOIN LATERAL generate_series(floor(u.lng * 2)::int - 4, floor(u.lng * 2)::int + 4) AS gx(cx)
+  JOIN cw ON cw.cy = gy.cy AND cw.cx = gx.cx
+),
+nearest AS (
+  SELECT id, bool_or(state = listing_state) AS same_state_near,
+         (array_agg(state ORDER BY km))[1] AS coordinates_state
+  FROM near
+  WHERE km < {max_km}
+  GROUP BY id
+),
+rejected AS (
+  SELECT l.source_key, l.id, l.state AS listing_state, l.lat, l.lng,
+         'placeholder_point' AS reason, NULL::text AS coordinates_state
+  FROM listing l
+  WHERE l.placeholder
+  UNION ALL
+  SELECT u.source_key, u.id, u.state, u.lat, u.lng,
+         'outside_listing_state', n.coordinates_state
+  FROM undecided u
+  JOIN nearest n ON n.id = u.id
+  WHERE NOT n.same_state_near
+    AND NOT EXISTS (
+      SELECT 1 FROM cw z WHERE z.zip5 = u.zip5 AND z.state = n.coordinates_state
+    )
+)"""
+    if detail:
+        return body + """
+SELECT id, source_key, listing_state, lat, lng, reason, coordinates_state
+FROM rejected
+ORDER BY source_key, id;
+"""
+    return body + f"""
+SELECT
+  source_key,
+  count(*){count_cast} AS coords_rejected,
+  count(*) FILTER (WHERE reason = 'placeholder_point'){count_cast} AS placeholder_point,
+  count(*) FILTER (WHERE reason = 'outside_listing_state'){count_cast} AS outside_listing_state
+FROM rejected
+GROUP BY source_key
+ORDER BY source_key;
+"""
+
 
 # Raw payloads may be stored flat, as a merged sale/lease pass, or beneath the
 # inventory-only preservation wrapper.  Keep this ordered tuple shared by the
@@ -897,6 +1000,9 @@ ORDER BY source_key;
     # Report-only; closed_price_text_active is a lifecycle finding routed to the
     # lifecycle owner.
     "listing_basis_quality": render_listing_basis_sql(SOURCE_KEY_SQL, "::text"),
+    # Report-only (AGENTIC-5133): rows the forward ingest would no longer stage
+    # coordinates for. Should fall to zero once the legacy rows are repaired.
+    "coordinate_conflicts": render_coordinate_conflict_sql(SOURCE_KEY_SQL, "::text"),
     "duplicates": f"""
 WITH active AS (
   SELECT
@@ -1618,6 +1724,7 @@ def render_markdown(report):
         "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
         "listing_basis_quality": "Listing Basis Quality",
+        "coordinate_conflicts": "Coordinate Conflicts",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",

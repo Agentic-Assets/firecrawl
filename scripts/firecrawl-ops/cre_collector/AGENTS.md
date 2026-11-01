@@ -310,8 +310,19 @@ Key behavior:
   explicit non-US country); `merge_rows` re-derives on the merged row. The
   institutional UPDATE writes them keep-wins (the backfill's rule; CBSA code and
   name only as a pair), so a stored value is never overwritten and a later ZIP
-  correction does not re-derive. `market` is not derived. `cre_validate.py` `quality_by_source` reports `geo_inputs_without_cbsa`
+  correction does not re-derive. `market` is not derived. A source county is
+  stored as `"<County>, <ST>"` (the crosswalk form EQUIRE's county filter
+  matches) only when the ZIP resolves to that county in the listing's state;
+  otherwise verbatim. `cre_validate.py` `quality_by_source` reports `geo_inputs_without_cbsa`
   and `geo_inputs_underived` (report-only).
+- **Coordinate guard:** before geo derives, `guard_row_coordinates` drops lat/lng
+  on a provider default pin (`cre_geo.PLACEHOLDER_POINTS`) or in another state
+  (nearest centroid within 50 km is elsewhere, none of the listing's state is,
+  and the ZIP does not agree with the point). The pair and reason ride
+  `extra_facts.coordinates_rejected`; `raw_data` keeps the source values. The
+  upsert keeps a stored lat/lng when the new one is null, so legacy rows need a
+  repair; `coordinate_conflicts` in `cre_validate.py` (full profile) counts them
+  with the same rule.
 - **Source controls are source facts.** New Avison public-feed rows carry
   `avison-public-facts-retention/v2`: retain reported asking values, prose and
   original controls without inferring currency, unit, publisher UI visibility or

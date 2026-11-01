@@ -586,6 +586,7 @@ def test_render_markdown_all_query_labels_present():
         "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
         "listing_basis_quality": "Listing Basis Quality",
+        "coordinate_conflicts": "Coordinate Conflicts",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",

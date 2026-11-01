@@ -8,8 +8,11 @@ Covers:
   - ZIP-only row -> crosswalk_zip bundle.
   - lat/lng-only row -> crosswalk_latlng bundle; a cross-state centroid fails closed.
   - Row with neither -> all-None bundle (nothing staged, nothing written).
-  - Source-verbatim county (Newmark/Pyramid) -> geo_source='source', county kept,
-    CBSA filled from the ZIP.
+  - Source-verbatim county (Newmark/Pyramid) -> geo_source='source', county
+    canonicalized to "<County>, <ST>" when the ZIP confirms it, CBSA filled from
+    the ZIP.
+  - guard_row_coordinates drops a point in another state or on a provider
+    default pin, before geo derives from it.
   - A stored CBSA (or any stored geo value) is kept: the generated UPDATE is
     keep-wins COALESCE(t.col, s.col), the same precedence as the backfill.
   - merge_rows takes a sale/lease pass's geo bundle whole, never column-mixed.
@@ -90,10 +93,10 @@ def test_unknown_zip_without_coordinates_stages_no_geo():
     assert set(_geo(_row(postalCode="00000")).values()) == {None}
 
 
-def test_source_county_is_kept_and_cbsa_filled_from_zip():
+def test_source_county_is_canonicalized_and_cbsa_filled_from_zip():
     row = _row(county="Cook", postalCode="60606", state="IL")
     assert _geo(row) == {
-        "county": "Cook",
+        "county": "Cook County, IL",
         "cbsa_code": "16980",
         "cbsa_name": "Chicago-Naperville-Elgin IL-IN-WI",
         "geo_source": "source",
@@ -153,7 +156,7 @@ def test_merge_keeps_source_county_from_either_pass():
     zip_only = _row(transactionMode="sale", postalCode="60606", state="IL")
     with_county = _row(transactionMode="lease", county="Cook")
     merged = ci.merge_rows(zip_only, with_county)
-    assert merged["county"] == "Cook"
+    assert merged["county"] == "Cook County, IL"
     assert merged["cbsa_code"] == "16980"
     assert merged["geo_source"] == "source"
 
@@ -238,3 +241,141 @@ def test_latlng_at_each_unique_centroid_returns_that_zip():
     unique = [(k, v[0]) for k, v in seen.items() if len(v) == 1 and k[0] and k[1]]
     for (lat, lng), zip5 in unique[:: max(1, len(unique) // 300)]:
         assert cw.by_latlng(float(lat), float(lng)) is cw.by_zip(zip5)
+
+
+# ---- Canonical source county --------------------------------------------------
+
+
+def test_source_county_with_zip_in_another_county_is_kept_verbatim():
+    row = _row(county="Harris", postalCode="75201", state="TX")
+    assert row["county"] == "Harris"
+    assert row["geo_source"] == "source"
+
+
+def test_source_county_without_zip_is_kept_verbatim():
+    assert _row(county="Cook", state="IL")["county"] == "Cook"
+
+
+def test_source_county_with_zip_in_another_state_is_kept_verbatim():
+    assert _row(county="Cook", postalCode="60601", state="IN")["county"] == "Cook"
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["King", "king county", "KING COUNTY, WA", "  King  "],
+)
+def test_source_county_spellings_canonicalize(source):
+    assert _row(county=source, postalCode="98101", state="WA")["county"] == "King County, WA"
+
+
+def test_canonical_county_needs_a_whole_word_prefix():
+    zip_rec = {"state": "SD", "county_name": "Kingsbury County"}
+    assert cre_geo.canonical_source_county("King", "SD", zip_rec) == "King"
+    city_rec = {"state": "MO", "county_name": "St. Louis city"}
+    assert cre_geo.canonical_source_county("St. Louis", "MO", city_rec) == "St. Louis city, MO"
+    parish_rec = {"state": "LA", "county_name": "Orleans Parish"}
+    assert cre_geo.canonical_source_county("Orleans", "LA", parish_rec) == "Orleans Parish, LA"
+
+
+# ---- Coordinate guard ------------------------------------------------------------
+
+
+def test_coordinates_in_another_state_are_dropped_before_geo():
+    # Pre-July-2026 Colliers SalesTracker pairing: a Saint Paul card with a Miami pin.
+    row = _row(city="Saint Paul", state="MN", latitude=25.7681, longitude=-80.1900,
+               extraFacts={"project_type": "Office"})
+    assert row["lat"] is None and row["lng"] is None
+    assert set(_geo(row).values()) == {None}
+    assert row["extra_facts"]["project_type"] == "Office"
+    assert row["extra_facts"]["coordinates_rejected"] == {
+        "latitude": 25.7681,
+        "longitude": -80.19,
+        "reason": "outside_listing_state",
+        "listing_state": "MN",
+        "coordinates_state": "FL",
+    }
+
+
+def test_coordinates_in_the_listing_state_are_kept():
+    row = _row(state="TX", latitude=32.7870, longitude=-96.7970)
+    assert (row["lat"], row["lng"]) == (32.7870, -96.7970)
+    assert "coordinates_rejected" not in (row["extra_facts"] or {})
+
+
+def test_zip_agreeing_with_the_point_keeps_coordinates():
+    # The listing state is the suspect field: ZIP and point are both New York.
+    row = _row(state="PA", postalCode="10019", latitude=40.7658, longitude=-73.9876)
+    assert (row["lat"], row["lng"]) == (40.7658, -73.9876)
+
+
+def test_point_far_from_every_centroid_is_kept():
+    # No positive evidence of another state (open water, remote land).
+    row = _row(state="FL", latitude=30.0, longitude=-60.0)
+    assert (row["lat"], row["lng"]) == (30.0, -60.0)
+
+
+def test_state_outside_crosswalk_coverage_is_not_judged():
+    row = _row(state="BC", latitude=25.7681, longitude=-80.1900)
+    assert row["lat"] == 25.7681
+
+
+def test_provider_default_pin_is_dropped_in_any_state():
+    row = _row(state="NE", latitude=40.054, longitude=-98.237)
+    assert row["lat"] is None and row["lng"] is None
+    assert row["extra_facts"]["coordinates_rejected"]["reason"] == "placeholder_point"
+
+
+def test_merge_rejudges_coordinates_on_the_merged_row():
+    # The lease pass has the point but no state; the sale pass supplies MN.
+    sale = _row(transactionMode="sale", state="MN")
+    lease = _row(transactionMode="lease", latitude=25.7681, longitude=-80.1900)
+    assert lease["lat"] == 25.7681
+    merged = ci.merge_rows(sale, lease)
+    assert merged["lat"] is None and merged["lng"] is None
+    assert merged["extra_facts"]["coordinates_rejected"]["coordinates_state"] == "FL"
+    assert set(_geo(merged).values()) == {None}
+
+
+def test_crosswalk_conflict_requires_positive_evidence():
+    cw = cre_geo.ZipCbsaCrosswalk(csv_path=_MINI_CSV)
+    assert cw.coordinate_state_conflict(25.7681, -80.19, "mn") == "FL"
+    assert cw.coordinate_state_conflict(25.7681, -80.19, "FL") is None
+    assert cw.coordinate_state_conflict(None, -80.19, "MN") is None
+    assert cw.coordinate_state_conflict("x", "y", "MN") is None
+    assert cw.coordinate_state_conflict(25.7681, -80.19, None) is None
+
+
+def test_validate_reports_coordinate_conflicts_in_the_full_profile_only():
+    full = cre_validate.queries_for_profile()
+    preflight = cre_validate.queries_for_profile(cre_validate.CHECKPOINT_PREFLIGHT_PROFILE)
+    assert "coordinate_conflicts" in full
+    assert "coordinate_conflicts" not in preflight
+    sql = full["coordinate_conflicts"]
+    assert f"km < {cre_geo.MAX_LATLNG_KM}" in sql
+    for lat, lng in cre_geo.PLACEHOLDER_POINTS:
+        assert f"round(l.lat::numeric, 4) = {lat}" in sql
+        assert f"round(l.lng::numeric, 4) = {lng}" in sql
+    for column in ("coords_rejected", "placeholder_point", "outside_listing_state"):
+        assert f"AS {column}" in sql
+    detail = cre_validate.render_coordinate_conflict_sql(
+        cre_validate.SOURCE_KEY_SQL, "::text", detail=True
+    )
+    assert "SELECT id, source_key, listing_state, lat, lng, reason, coordinates_state" in detail
+
+
+def test_derive_geo_ignores_a_provider_default_pin(tmp_path):
+    # The backfill calls derive_geo directly, without the ingest guard. A centroid
+    # sits on the pin, so only the placeholder rule keeps it from matching.
+    path = tmp_path / "pin.csv"
+    path.write_text(
+        "zip5,county_fips,county_name,state,cbsa_code,cbsa_name,centroid_lat,centroid_lng\n"
+        "68978,31129,Nuckolls County,NE,,,40.0540,-98.2380\n",
+        encoding="utf-8",
+    )
+    cw = cre_geo.ZipCbsaCrosswalk(csv_path=str(path))
+    assert cw.by_latlng(40.054, -98.237) is not None
+    near_pin = {"state": "NE", "latitude": 40.054, "longitude": -98.237}
+    assert cre_geo.derive_geo(near_pin, cw) == (None, None, None, None, None)
+    beside_pin = {"state": "NE", "latitude": 40.0541, "longitude": -98.2371}
+    assert cre_geo.derive_geo(beside_pin, cw)[0] == "Nuckolls County, NE"
+    assert cre_geo.canonical_source_county(None, "IL", {"state": "IL", "county_name": "Cook County"}) is None
