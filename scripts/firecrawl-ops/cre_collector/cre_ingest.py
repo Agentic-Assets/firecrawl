@@ -628,7 +628,7 @@ def norm_property_type(asset_type):
 
 
 # A listed cap rate under 2% is a placeholder or a parse slip (68 Marcus &
-# Millichap rows stored 0.01 from a raw "1%"), not a yield. AGENTIC-5119.
+# Millichap rows stored 0.01 from a raw "1%"), not a yield.
 MIN_PLAUSIBLE_CAP_RATE = 0.02
 
 
@@ -677,8 +677,10 @@ def parse_size_text(text):
 
 
 # Sources whose generic area field holds land area on a land listing (CBRE
-# Dynamic.TotalArea, JLL surfaceArea). AGENTIC-5119.
+# Dynamic.TotalArea, JLL surfaceArea).
 LAND_AREA_SIZE_SOURCE_KEYS = frozenset({"cbre", "jll"})
+# A building size this close to the lot is the same land area stated twice.
+LAND_AREA_DUPLICATE_TOLERANCE = 0.01
 
 
 def land_area_to_lot(source_key, property_type, size_sf, lot_size_sf):
@@ -686,15 +688,13 @@ def land_area_to_lot(source_key, property_type, size_sf, lot_size_sf):
 
     On a land listing from a LAND_AREA_SIZE_SOURCE_KEYS source the stated area
     is land area: it fills lot_size_sf when that is empty, and size_sf is never
-    left equal to it (within 1%). Every other row passes through unchanged.
+    left equal to it. Every other row passes through unchanged.
     """
-    if source_key not in LAND_AREA_SIZE_SOURCE_KEYS or property_type != "land":
-        return size_sf, lot_size_sf
-    if size_sf is None:
+    if size_sf is None or property_type != "land" or source_key not in LAND_AREA_SIZE_SOURCE_KEYS:
         return size_sf, lot_size_sf
     if lot_size_sf is None:
         return None, round(size_sf, 2)
-    if abs(size_sf - lot_size_sf) <= 0.01 * lot_size_sf:
+    if abs(size_sf - lot_size_sf) <= LAND_AREA_DUPLICATE_TOLERANCE * lot_size_sf:
         return None, lot_size_sf
     return size_sf, lot_size_sf
 
@@ -2908,9 +2908,8 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         t_size, t_lot = parse_size_text(listing.get("sizeText"))
         size_sf = size_sf if size_sf is not None else t_size
         lot_size_sf = lot_size_sf if lot_size_sf is not None else t_lot
-    size_sf, lot_size_sf = land_area_to_lot(
-        source_key, norm_property_type(listing.get("assetType")), size_sf, lot_size_sf
-    )
+    property_type = norm_property_type(listing.get("assetType"))
+    size_sf, lot_size_sf = land_area_to_lot(source_key, property_type, size_sf, lot_size_sf)
 
     sale_price_text = listing.get("salePriceText")
     sale_price = num_or_none(
@@ -3179,7 +3178,7 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         "source_url": url,
         "canonical_url": http_url_or_none(listing.get("canonicalUrl")),
         "transaction_type": transaction_type_of(listing),
-        "property_type": norm_property_type(listing.get("assetType")),
+        "property_type": property_type,
         "title": title[:500] if isinstance(title, str) else None,
         "address": listing.get("street"),
         "city": listing.get("city"),

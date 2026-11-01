@@ -9,8 +9,8 @@ SOURCE = "avison-young"
 SCHEMA = "avison-asking-price-v1"
 CONTROLS = {"absent", "visible", "withheld"}
 ASK_KEYS = set(
-    "askingamount askingprice saleprice salepricepersf salepricetext salepriceusd "
-    "saleunitprice ".split()
+    "askingamount askingprice priceperacre saleprice salepricepersf salepricetext "
+    "salepriceusd saleunitprice ".split()
 )
 PROTECTED = set(
     "address avatarurl bodysha256 canonicalurl city detailobservedat email embedurl "
@@ -476,7 +476,7 @@ def project_row(row):
     if control == "withheld":
         amounts = asking_amounts(raw)
         result["raw_data"] = project_value(raw, amounts)
-        for column in ("sale_price_usd", "sale_price_per_sf"):
+        for column in ("sale_price_usd", "sale_price_per_sf", "price_per_acre"):
             result[column] = None
         for column in (
             "title",
@@ -840,7 +840,7 @@ END $av$;
             )
         post += update
     post += f"""UPDATE credeals.cre_listings t SET
- sale_price_usd=NULL, sale_price_per_sf=NULL,
+ sale_price_usd=NULL, sale_price_per_sf=NULL, price_per_acre=NULL,
  title=pg_temp.avison_asking_text(t.title,({amounts}),'identity'),
  description=pg_temp.avison_asking_text(t.description,({amounts})),
  markdown=pg_temp.avison_asking_text(t.markdown,({amounts})),

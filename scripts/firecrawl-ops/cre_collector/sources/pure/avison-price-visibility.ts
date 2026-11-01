@@ -4,7 +4,7 @@ const SCHEMA = "avison-asking-price-v1";
 const object = (v: any): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 const words = (key: string) => key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 const compact = (key: string) => words(key).join("");
-const ASK_KEYS = new Set(["salepriceusd", "salepricetext", "salepricepersf", "saleunitprice", "saleprice", "askingprice", "askingamount"]);
+const ASK_KEYS = new Set(["salepriceusd", "salepricetext", "salepricepersf", "saleunitprice", "saleprice", "askingprice", "askingamount", "priceperacre"]);
 const GENERIC_PRICE = new Set(["price", "amount", "value", "priceperunit", "priceperacre"]);
 const PROSE = new Set(["description", "markdown", "highlights", "amenities", "extrafacts", "note", "notes", "caption", "label", "title", "hidepricetext"]);
 const INDEPENDENT = new Set(["lease", "rent", "leaseratetext", "leaseratemin", "leaseratemax", "leaseratetype", "availabilitiesminrent", "availabilitiesmaxrent", "caprate", "capratepct", "noi", "netoperatingincome", "grm", "grossrentmult", "grossrentmultiplier", "grossrevenue", "revpar", "expenses", "operatingexpenses", "tax", "taxes"]);

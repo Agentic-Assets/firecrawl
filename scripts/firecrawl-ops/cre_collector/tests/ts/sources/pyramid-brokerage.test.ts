@@ -16,6 +16,7 @@ import {
   pyramidDetailTransaction,
   pyramidInventoryUrl,
   srcPyramidBrokerage,
+  pyramidSizeFacts,
 } from "../../../sources/pyramid-brokerage.js";
 import { brokers, resetBrokerStateForTests } from "../../../lib/broker.js";
 
@@ -633,4 +634,20 @@ test("Pyramid actual Price-only primary detail uses only bound record-owned tenu
   const fact = '<li><span class="name">Sale/Lease:</span><span class="value">Lease</span></li>';
   assert.throws(() => map(record, parsePyramidDetail(html.replace(price, price + fact + fact), record.id)), /duplicate/);
   assert.throws(() => parsePyramidDetail(html.replace(price, price + '<li><span class="name">Sale/Lease:</span></li>'), record.id), /malformed/);
+});
+
+test("Pyramid sizes: building area only in size, available space apart, acreage to lot", () => {
+  assert.deepEqual(
+    pyramidSizeFacts({ "Building Size": "99,620 +/-SF", "Largest Available": "14,000 +/-SF", "Smallest Available": "4,500 +/-SF" }),
+    { sizeText: "99,620 +/-SF", buildingSizeSqft: 99_620, availableSf: 14_000 }
+  );
+  // Available space with no building size never becomes size_sf.
+  assert.deepEqual(pyramidSizeFacts({ Available: "2,400 +/-SF" }), { availableSf: 2_400 });
+  // A date is not available space.
+  assert.deepEqual(pyramidSizeFacts({ Available: "2/1/2027" }), {});
+  // Land: the offered acreage is the lot.
+  assert.deepEqual(pyramidSizeFacts({ "Building Size": "0.00", "Largest Available": "2.00+/- Acres" }), {
+    sizeText: "2.00+/- Acres",
+  });
+  assert.deepEqual(pyramidSizeFacts(undefined), {});
 });

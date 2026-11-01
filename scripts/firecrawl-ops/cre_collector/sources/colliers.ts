@@ -431,20 +431,25 @@ export function colliersSqftToNumber(value: string | null): number | null {
 }
 
 // Colliers SalesTracker multifamily "Size" is often the average unit size
-// ("931 sq ft" on a 196-unit mid-rise, Indigo 19, ProjectId 147023). The test
-// mirrors the cre_validate.py mf_avg_unit_size row; without a unit count, a
-// sub-3,000 SF size priced above $1,000/SF is also read as per unit.
+// ("931 sq ft" on a 196-unit mid-rise). The rule matches the cre_validate.py
+// mf_avg_unit_size check; without a unit count, a small size priced above
+// $1,000/SF is also read as per unit.
+const COLLIERS_MAX_SF_PER_UNIT = 300;
+const COLLIERS_MAX_AVG_UNIT_SF = 3000;
+const COLLIERS_MIN_UNITS_FOR_SMALL_SIZE = 10;
+const COLLIERS_MIN_PRICE_PER_SF_FOR_UNIT_SIZE = 1000;
 export function colliersAverageUnitSf(
   assetType: string | null | undefined,
   sizeSf: number | null,
   units: number | null | undefined,
   salePriceUsd: number | null | undefined
 ): number | null {
-  if (!sizeSf || sizeSf <= 0 || !/multi-?family|apartment/i.test(assetType ?? "")) return null;
+  if (!sizeSf || sizeSf <= 0 || !/multi[\s-]?family|apartment/i.test(assetType ?? "")) return null;
+  const small = sizeSf < COLLIERS_MAX_AVG_UNIT_SF;
   if (units && units > 0) {
-    return sizeSf / units < 300 || (sizeSf < 3000 && units > 10) ? sizeSf : null;
+    return sizeSf / units < COLLIERS_MAX_SF_PER_UNIT || (small && units > COLLIERS_MIN_UNITS_FOR_SMALL_SIZE) ? sizeSf : null;
   }
-  return sizeSf < 3000 && (salePriceUsd ?? 0) > sizeSf * 1000 ? sizeSf : null;
+  return small && (salePriceUsd ?? 0) > sizeSf * COLLIERS_MIN_PRICE_PER_SF_FOR_UNIT_SIZE ? sizeSf : null;
 }
 
 export function colliersAcresToNumber(value: string | null): number | null {
@@ -619,7 +624,7 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     const salePriceUsd =
       parseMoney(clean(summary?.AskingPrice)) ?? parseMoney(colliersProjectField(details, "Asking Price")) ?? card.salePriceUsd;
     const sizeField = colliersProjectField(details, "Size");
-    const avgUnitSf = colliersAverageUnitSf(assetType, colliersSqftToNumber(sizeField), lifted.units, salePriceUsd);
+    const avgUnitSf = colliersAverageUnitSf(assetType, colliersSqftToNumber(sizeField ?? card.sizeText), lifted.units, salePriceUsd);
     const extraFacts = {
       ...(projectType ? { project_type: projectType } : {}),
       ...(avgUnitSf !== null ? { avg_unit_sf: avgUnitSf } : {}),

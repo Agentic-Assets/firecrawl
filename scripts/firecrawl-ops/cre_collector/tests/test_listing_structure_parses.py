@@ -1,16 +1,17 @@
-"""AGENTIC-5119: size and money basis at capture (pure, no DB, no network).
+"""Listing size and money basis at capture (pure, no DB, no network).
 
-Covers the Python side of the listing-structure parse fixes: the shared money
-parser's magnitude suffixes, the cap-rate plausibility floor on both writers
-(ingest and the raw_data backfill), land area routed to lot_size_sf for CBRE and
-JLL land, Pyramid "+/-" sizes, "N units" size text, and the Avison per-acre unit
-price. The TS side and the shared golden vectors are asserted separately.
+Covers the Python-only paths of the listing-structure parse rules: the cap-rate
+plausibility floor on both writers (ingest and the raw_data backfill), land area
+routed to lot_size_sf for CBRE and JLL land, "N units" size text, and the Avison
+per-acre unit price with its withheld-price projection. Shared parser behavior
+(money magnitudes, "+/-" sizes) is held by tests/fixtures/golden_parse_vectors.json.
 """
 
 from datetime import datetime, timezone
 
 import pytest
 
+import cre_avison_price_visibility as av
 import cre_backfill_raw_data as bf
 import cre_ingest as ci
 import cre_parse
@@ -23,31 +24,9 @@ def _row(**listing):
     return ci.to_row({**base, **listing}, {}, _SCRAPED_AT)
 
 
-@pytest.mark.parametrize(
-    "text,expected",
-    [
-        ("$275M", 275_000_000),
-        ("Asking $2.5 MM", 2_500_000),
-        ("$1.2 million", 1_200_000),
-        ("$500K", 500_000),
-        ("$1.5B", 1_500_000_000),
-        ("$80,000,000", 80_000_000),
-        ("$950,000 M&M exclusive", 950_000),
-        ("$12 Monthly", 12),
-        ("$0", None),
-        ("Contact Broker for Pricing", None),
-    ],
-)
-def test_parse_money_reads_magnitude_suffixes(text, expected):
-    got = cre_parse.parse_money(text)
-    assert got == (pytest.approx(expected) if expected is not None else None)
-
-
-def test_currency_label_amount_keeps_its_magnitude():
-    # Mirrors lib/parse.ts parseAmountIgnoringCurrencyLabel, which delegates to
-    # parseMoney after stripping the label.
-    assert cre_parse.parse_amount_ignoring_currency_label("POUND 1.5M") == 1_500_000
-    assert cre_parse.parse_amount_ignoring_currency_label("POUND 2500000") == 2_500_000
+def test_parse_money_rejects_zero_like_the_ts_parser():
+    assert cre_parse.parse_money("$0") is None
+    assert cre_parse.parse_money("Contact Broker for Pricing") is None
 
 
 @pytest.mark.parametrize(
@@ -93,9 +72,7 @@ def test_land_with_distinct_building_keeps_both():
     assert ci.land_area_to_lot("jll", "land", 12000, 435600) == (12000, 435600)
 
 
-def test_pyramid_plus_minus_sizes_parse():
-    assert cre_parse.parse_size_text("4,863 +/-SF") == (4863, None)
-    assert cre_parse.parse_size_text("2.00+/- Acres") == (None, 87120)
+def test_pyramid_plus_minus_acres_reach_lot():
     row = _row(sourceKey="pyramid-brokerage", sizeText="123.50+/- Acres", assetType="Land")
     assert row["lot_size_sf"] == pytest.approx(123.5 * 43560)
 
@@ -144,6 +121,26 @@ def test_avison_unproved_unit_price_writes_nothing(override):
     cols, _ = bf.derive_columns("avison-young", _avison_raw(**override))
     assert "price_per_acre" not in cols
     assert "sale_price_per_sf" not in cols
+
+
+def test_avison_acreage_from_entity_text():
+    raw = _avison_raw(description="<p>60.84 &plusmn; Acres</p>")
+    assert bf.avison_price_per_acre(raw["rawSharpLaunch"]) == 18_500
+
+
+def test_avison_withheld_price_writes_no_price_per_acre():
+    cols, _ = bf.derive_columns("avison-young", _avison_raw(hide_price=1))
+    assert "price_per_acre" not in cols
+
+
+def test_avison_withheld_projection_drops_price_per_acre():
+    # A per-acre price from a visible pass is an asking amount once any pass
+    # withholds, so the projection must drop it rather than refuse the row.
+    raw = {"sourceKey": "avison-young", "pricePerAcre": 18_500,
+           "rawSharpLaunch": {**_avison_raw()["rawSharpLaunch"], "hide_price": 1}}
+    out = av.project_row({"slug": "avison-young", "raw_data": raw, "price_per_acre": 18_500})
+    assert out["price_per_acre"] is None
+    assert "pricePerAcre" not in out["raw_data"]
 
 
 def test_avison_acreage_from_total_surface():

@@ -70,9 +70,10 @@ export function isPerSfText(text: string | null): boolean {
 
 // A magnitude word directly after the number ("$275M", "$2.5 MM", "$1.2
 // million", "$500K", "$1.5B"). The lookahead keeps "$12 Monthly", "$5 Bldg",
-// "$950,000 M&M" and "$40 m2" from reading as a magnitude.
+// "$950,000 M&M", "$40 m2", "$40 m²", "$24 M.G.", "$15 M/G" and "$3 B-2" from
+// reading as a magnitude; a sentence-ending "$2.5M." still does.
 const MONEY_RE =
-  /\$\s*([0-9]+(?:\.[0-9]+)?)(?:\s*(billion|bn|b|million|mil|mm|mn|m|thousand|k)(?![a-z0-9&]))?/i;
+  /\$\s*([0-9]+(?:\.[0-9]+)?)(?:\s*(billion|bn|b|million|mil|mm|mn|m|thousand|k)(?![a-z0-9&²]|[./-][a-z0-9]))?/i;
 const MONEY_MAGNITUDE: Record<string, number> = {
   billion: 1e9, bn: 1e9, b: 1e9,
   million: 1e6, mil: 1e6, mm: 1e6, mn: 1e6, m: 1e6,
@@ -137,7 +138,6 @@ export function parseAmountIgnoringCurrencyLabel(text: string | null): number | 
 // "2.00+/- Acres", "±12.65 ac") is allowed, as Pyramid writes every size that
 // way. Mirrors cre_parse._APPROX.
 const APPROX = String.raw`\s*(?:\+\s*\/\s*-|±)?\s*`;
-const ACRES_RE = new RegExp(String.raw`([0-9][0-9,]*(?:\.[0-9]+)?)` + APPROX + String.raw`ac(?:res?)?\b`, "i");
 const ACRES_NO_COMMA_RE = new RegExp(String.raw`([0-9]+(?:\.[0-9]+)?)` + APPROX + String.raw`ac(?:res?)?\b`, "i");
 const SF_NO_COMMA_RE = new RegExp(
   String.raw`([0-9]+(?:\.[0-9]+)?)` + APPROX + String.raw`(?:sf|sq\.?\s*ft|square\s*feet)\b`,
@@ -244,7 +244,7 @@ export function parseSizeText(text: string | null): { sizeSf: number | null; lot
   if (sfMatch) {
     const v = Number(sfMatch[1]);
     sizeSf = isFinite(v) && v > 0 ? v : null;
-  } else if (!ACRES_RE.test(s) && !UNITS_ONLY_RE.test(s)) {
+  } else if (!ACRES_NO_COMMA_RE.test(cleaned) && !UNITS_ONLY_RE.test(s)) {
     // No explicit unit: treat the first number as SF (only when no acres token).
     const numMatch = cleaned.match(/([0-9]+(?:\.[0-9]+)?)/);
     if (numMatch) {

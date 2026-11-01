@@ -2370,3 +2370,10 @@ test("jll fixture: jllStrandedStructured does not throw on null/undefined/empty"
   assert.deepEqual(jllStrandedStructured(null), {});
   assert.deepEqual(jllStrandedStructured(undefined), {});
 });
+
+test("JLL tenure types ride extra_facts deduped", () => {
+  assert.deepEqual(jllStrandedStructured({ tenureTypes: ["sale", "sale", " rent "] }).extraFacts, {
+    tenure_types: ["sale", "rent"],
+  });
+  assert.equal(jllStrandedStructured({ tenureTypes: [] }).extraFacts, undefined);
+});

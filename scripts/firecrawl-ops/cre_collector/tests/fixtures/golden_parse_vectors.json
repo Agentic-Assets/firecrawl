@@ -226,5 +226,41 @@
     "input": "POUND 1.5M",
     "expected": 1500000,
     "note": "AGENTIC-5119: the currency-label path keeps the magnitude"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$24.00 M.G.",
+    "expected": 24,
+    "note": "AGENTIC-5119: a lease basis abbreviation is not a magnitude"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$15 M/G",
+    "expected": 15,
+    "note": "AGENTIC-5119: a slashed abbreviation is not a magnitude"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$40 m²",
+    "expected": 40,
+    "note": "AGENTIC-5119: square meters are not a magnitude"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$3 B-2 zoned",
+    "expected": 3,
+    "note": "AGENTIC-5119: a zoning code is not a magnitude"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "Price: $2.5M.",
+    "expected": 2500000,
+    "note": "AGENTIC-5119: a sentence-ending magnitude still applies"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$2.5M-$3M",
+    "expected": 2500000,
+    "note": "AGENTIC-5119: a range keeps the first magnitude"
   }
 ]

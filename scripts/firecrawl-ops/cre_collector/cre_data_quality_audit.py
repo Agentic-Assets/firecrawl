@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cre_ingest import find_psql, load_db_url
+from cre_validate import LISTING_BASIS_WARN_KEYS, render_listing_basis_sql
 
 
 SOURCE_KEY_SQL = """
@@ -163,67 +164,8 @@ ORDER BY source_key;
     ),
     "listing_basis_quality": AuditQuery(
         "Listing Basis Quality",
-        f"""
-WITH active AS (
-  SELECT {SOURCE_KEY_SQL} AS source_key, l.*
-  FROM credeals.cre_listings l
-  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
-  WHERE l.deleted_at IS NULL AND l.status = 'active'
-)
-SELECT
-  source_key,
-  count(*)::bigint AS rows_checked,
-  count(*) FILTER (
-    WHERE property_type = 'multifamily'
-      AND units > 0
-      AND size_sf > 0
-      AND (size_sf::numeric / units < 300 OR (size_sf < 3000 AND units > 10))
-  )::bigint AS mf_avg_unit_size,
-  count(*) FILTER (
-    WHERE sale_price_per_sf IS NOT NULL
-      AND sale_price_usd > 0
-      AND size_sf > 0
-      AND abs(sale_price_per_sf - sale_price_usd::numeric / size_sf)
-        > 0.02 * (sale_price_usd::numeric / size_sf)
-  )::bigint AS stored_psf_mismatch,
-  count(*) FILTER (
-    WHERE sale_price_per_sf IS NOT NULL
-      AND (size_sf IS NULL OR size_sf = 0)
-  )::bigint AS stored_psf_without_size,
-  count(*) FILTER (
-    WHERE sale_price_per_sf IS NOT NULL
-      AND (size_sf IS NULL OR size_sf = 0)
-      AND property_type = 'land'
-  )::bigint AS land_stored_psf_without_size,
-  count(*) FILTER (
-    WHERE property_type IS DISTINCT FROM 'land'
-      AND size_sf > 0
-      AND lot_size_sf > 0
-      AND abs(size_sf - lot_size_sf) <= 0.01 * lot_size_sf
-  )::bigint AS non_land_size_equals_lot,
-  count(*) FILTER (
-    WHERE property_type = 'land'
-      AND size_sf IS NOT NULL
-      AND lot_size_sf IS NULL
-  )::bigint AS land_size_without_lot,
-  count(*) FILTER (
-    WHERE size_sf > 0 AND size_sf < 100 AND sale_price_usd > 0
-  )::bigint AS tiny_size_with_price,
-  count(*) FILTER (WHERE cap_rate > 0 AND cap_rate < 0.02)::bigint AS cap_rate_under_2pct,
-  count(*) FILTER (
-    WHERE transaction_type = 'lease' AND sale_price_usd IS NOT NULL
-  )::bigint AS lease_with_sale_price,
-  count(*) FILTER (
-    WHERE sale_price_usd > 1000000000 AND coalesce(title, '') !~* 'portfolio'
-  )::bigint AS price_over_1b_non_portfolio,
-  count(*) FILTER (
-    WHERE lower(btrim(raw_data->>'salePriceText')) = 'closed'
-  )::bigint AS closed_price_text_active
-FROM active
-GROUP BY source_key
-ORDER BY source_key;
-""",
-        "Report-only (AGENTIC-5119) over active rows. Legacy rows are not repaired here; the listing-structure sidecar (AGENTIC-5122) owns basis, and closed_price_text_active routes to the lifecycle owner (AGENTIC-2895).",
+        render_listing_basis_sql(SOURCE_KEY_SQL, "::bigint", include_rows_checked=True),
+        "Report-only over active rows. Legacy rows are not repaired here; the listing-structure sidecar owns basis, and closed_price_text_active routes to the lifecycle owner.",
     ),
     "field_fill_by_source": AuditQuery(
         "High-Value Field Fill Rates",
@@ -699,20 +641,6 @@ def is_positive(row: dict[str, Any], *keys: str) -> bool:
 
 def finding(severity: str, title: str, detail: str) -> dict[str, str]:
     return {"severity": severity, "title": title, "detail": detail}
-
-
-LISTING_BASIS_WARN_KEYS = (
-    "mf_avg_unit_size",
-    "stored_psf_mismatch",
-    "stored_psf_without_size",
-    "land_stored_psf_without_size",
-    "non_land_size_equals_lot",
-    "land_size_without_lot",
-    "tiny_size_with_price",
-    "cap_rate_under_2pct",
-    "lease_with_sale_price",
-    "price_over_1b_non_portfolio",
-)
 
 
 def build_findings(results: dict[str, list[dict[str, Any]]]) -> list[dict[str, str]]:

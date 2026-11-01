@@ -1,4 +1,5 @@
 import { extractAvisonLeaseFacts } from "./pure/avison-lease-facts.js";
+import { avisonYoungPricePerAcre, avisonYoungSaleType } from "./pure/avison-listing-structure.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
@@ -2519,45 +2520,6 @@ export async function enrichAvisonYoungListing(
     };
   }
   return result;
-}
-
-// The detail page fact list's "Sale type" value ("Investment", "Owner User"),
-// verbatim. The first page that states one wins; nothing is interpreted here.
-export function avisonYoungSaleType(docs: Array<{ doc: ScrapedDoc }>): string | null {
-  for (const { doc } of docs) {
-    if (typeof doc?.rawHtml !== "string" || !doc.rawHtml) continue;
-    const $ = cheerio.load(doc.rawHtml);
-    for (const li of $("li").toArray()) {
-      const spans = $(li).children("span");
-      if (spans.length === 2 && clean(spans.first().text())?.toLowerCase() === "sale type") {
-        const value = clean(spans.last().text());
-        if (value) return value;
-      }
-    }
-  }
-  return null;
-}
-
-// SharpLaunch gives sale_unit_price with no unit. On a land row it is a price
-// per acre only when sale_price / sale_unit_price reproduces the stated acreage
-// (total_surface in acres, or "N acres" in the name or description) within 2%.
-export function avisonYoungPricePerAcre(row: any): number | null {
-  const unitPrice = num(row?.sale_unit_price);
-  const price = num(row?.sale_price);
-  const types = Array.isArray(row?.type) ? row.type : [];
-  if (clean(row?.sale_currency)?.toUpperCase() !== "USD") return null;
-  if (!unitPrice || !price || unitPrice <= 0 || unitPrice >= price) return null;
-  if (!types.some((t: unknown) => typeof t === "string" && /^land\b/i.test(t))) return null;
-  const acreages: number[] = [];
-  if (/^(?:ac|acres?)$/i.test(clean(row?.total_surface_unit) ?? "") && num(row?.total_surface)) {
-    acreages.push(Number(row.total_surface));
-  }
-  const prose = [row?.name, row?.meta_title, stripHtmlText(row?.description)].filter(Boolean).join(" ");
-  for (const m of prose.replace(/,/g, "").matchAll(/([0-9]+(?:\.[0-9]+)?)\s*(?:\+\/-|±)?\s*(?:ac|acres?)\b/gi)) {
-    acreages.push(Number(m[1]));
-  }
-  const implied = price / unitPrice;
-  return acreages.some((acres) => acres > 0 && Math.abs(implied - acres) <= 0.02 * acres) ? unitPrice : null;
 }
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {

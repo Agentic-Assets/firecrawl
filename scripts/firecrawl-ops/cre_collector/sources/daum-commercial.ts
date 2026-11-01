@@ -56,7 +56,7 @@ function signedNumber(value: unknown): number | null {
 function meaningfulMoney(value: unknown): string | null {
   const text = clean(value);
   const amount = parseMoney(text);
-  return amount && amount > 0 ? text : null;
+  return amount !== null ? text : null;
 }
 
 export function parseDaumSearchPage(html: string): DaumPage {

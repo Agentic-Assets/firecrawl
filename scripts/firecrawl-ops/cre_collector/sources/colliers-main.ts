@@ -571,7 +571,7 @@ export function mapColliersMainCoveoListing(
     yearBuilt, zoning, canonicalUrl: entry.url, statusBadge: clean(raw.propertyz32xstatus),
     // Coveo sale and lease types are Sitecore item IDs. Their labels are not in
     // the public index, so the IDs are carried verbatim for the downstream
-    // classifier; nothing here maps them to a meaning (AGENTIC-5119).
+    // classifier; nothing here maps them to a meaning.
     extraFacts: {
       colliers_sale_type_id: normalizeCoveoId(raw.salez32xtype),
       colliers_lease_type_id: normalizeCoveoId(raw.leasez32xtype),

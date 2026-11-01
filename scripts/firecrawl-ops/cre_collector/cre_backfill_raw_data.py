@@ -58,6 +58,7 @@ Usage:
 """
 
 import argparse
+import html
 import json
 import os
 import re
@@ -348,19 +349,21 @@ def derive_marcus_millichap(raw):
     return cols, extra
 
 
-_AVISON_ACRES_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*(?:\+/-|±)?\s*(?:ac|acres?)\b", re.I)
+_AVISON_ACRES_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*(?:\+\s*/\s*-|±)?\s*(?:ac|acres?)\b", re.I)
+AVISON_ACREAGE_TOLERANCE = 0.02
 
 
 def avison_price_per_acre(rsl):
-    """Python mirror of sources/avison-young.ts avisonYoungPricePerAcre.
+    """Mirror of sources/pure/avison-listing-structure.ts avisonYoungPricePerAcre.
 
-    SharpLaunch gives sale_unit_price with no unit. On a USD land row it is a
-    price per acre only when sale_price / sale_unit_price reproduces the stated
-    acreage (total_surface in acres, or "N acres" in the name or description)
-    within 2%. Anything else returns None.
+    The unitless sale_unit_price is a USD land row's price per acre only when
+    sale_price / sale_unit_price reproduces a stated acreage within the
+    tolerance; a withheld price (hide_price 1) or anything else gives None.
     """
-    unit_price = num_or_none(rsl.get("sale_unit_price"), lo=0, hi=1e9)
-    price = num_or_none(rsl.get("sale_price"), lo=0, hi=1e11)
+    if rsl.get("hide_price") == 1:
+        return None
+    unit_price = num_or_none(rsl.get("sale_unit_price"), lo=0)
+    price = num_or_none(rsl.get("sale_price"), lo=0)
     if str(rsl.get("sale_currency") or "").strip().upper() != "USD":
         return None
     if not unit_price or not price or unit_price >= price:
@@ -373,13 +376,13 @@ def avison_price_per_acre(rsl):
     if re.fullmatch(r"ac|acres?", unit, re.I) and num_or_none(rsl.get("total_surface"), lo=0):
         acreages.append(float(rsl["total_surface"]))
     prose = " ".join(
-        re.sub(r"<[^>]+>", " ", str(rsl.get(k)))
+        html.unescape(re.sub(r"<[^>]+>", " ", rsl[k]))
         for k in ("name", "meta_title", "description")
-        if rsl.get(k)
+        if isinstance(rsl.get(k), str)
     ).replace(",", "")
     acreages.extend(float(m.group(1)) for m in _AVISON_ACRES_RE.finditer(prose))
     implied = price / unit_price
-    if any(a > 0 and abs(implied - a) <= 0.02 * a for a in acreages):
+    if any(a > 0 and abs(implied - a) <= AVISON_ACREAGE_TOLERANCE * a for a in acreages):
         return unit_price
     return None
 
@@ -423,7 +426,7 @@ def derive_avison_young(raw):
          norm_cap_rate(dual_get(raw, "capRatePct")) or norm_cap_rate(rsl.get("cap_rate")))
 
     # sale_unit_price has no declared unit, so it never becomes sale_price_per_sf
-    # (that copy stored land prices per acre as $/SF, AGENTIC-5119). It becomes
+    # (that copy stored land prices per acre as $/SF). It becomes
     # price_per_acre only when it reproduces the stated acreage on a land row.
     _set(cols, "price_per_acre", avison_price_per_acre(rsl))
 

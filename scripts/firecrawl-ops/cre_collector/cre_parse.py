@@ -42,11 +42,12 @@ _MONEY_RE = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
 
 # parse_money: the same amount plus an optional magnitude word ("$275M", "$2.5
 # MM", "$1.2 million", "$500K", "$1.5B"). The lookahead keeps "$12 Monthly",
-# "$5 Bldg", "$950,000 M&M" and "$40 m2" from reading as a magnitude. Verbatim
-# mirror of lib/parse.ts MONEY_RE.
+# "$5 Bldg", "$950,000 M&M", "$40 m²", "$24 M.G.", "$15 M/G" and "$3 B-2" from
+# reading as a magnitude. Matches the same text as lib/parse.ts MONEY_RE (that
+# one runs on comma-stripped text); the golden vectors hold them equal.
 _MONEY_AMOUNT_RE = re.compile(
     _MONEY_RE.pattern
-    + r"(?:\s*(billion|bn|b|million|mil|mm|mn|m|thousand|k)(?![a-z0-9&]))?",
+    + r"(?:\s*(billion|bn|b|million|mil|mm|mn|m|thousand|k)(?![a-z0-9&²]|[./-][a-z0-9]))?",
     re.I,
 )
 _MONEY_MAGNITUDE = {

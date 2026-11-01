@@ -586,12 +586,10 @@ export function pyramidSizeFacts(facts: Record<string, string> | undefined): {
   const buildingSize = parseSizeText(building);
   const available = [facts?.Available, facts?.["Largest Available"], facts?.["Smallest Available"]]
     .map((value) => clean(value))
-    .filter((value): value is string => Boolean(value));
-  const availableSf = available.map((value) => parseSizeText(value).sizeSf).find((value) => value !== null);
-  const acreageOnly = available.find((value) => {
-    const parsed = parseSizeText(value);
-    return parsed.lotSf !== null && parsed.sizeSf === null;
-  });
+    .filter((value): value is string => Boolean(value) && /\b(?:sf|sq|ac|acres?)\b/i.test(value!))
+    .map((text) => ({ text, ...parseSizeText(text) }));
+  const availableSf = available.find((value) => value.sizeSf !== null)?.sizeSf;
+  const acreageOnly = available.find((value) => value.lotSf !== null && value.sizeSf === null)?.text;
   const sizeText = buildingSize.sizeSf !== null || buildingSize.lotSf !== null ? building : acreageOnly;
   return {
     ...(sizeText ? { sizeText } : {}),

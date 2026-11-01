@@ -1597,7 +1597,7 @@ export function jllStrandedStructured(property: any): Record<string, any> {
   const extraFacts: Record<string, unknown> = {};
   if (locationDescription)
     extraFacts.location_description = locationDescription;
-  // Source tenure labels verbatim (today "sale" or "rent"); AGENTIC-5119.
+  // Source tenure labels verbatim (today "sale" or "rent").
   const tenureTypes = Array.isArray(property?.tenureTypes)
     ? dedupeStrings(property.tenureTypes.map((value: any) => clean(value)).filter(Boolean))
     : [];
