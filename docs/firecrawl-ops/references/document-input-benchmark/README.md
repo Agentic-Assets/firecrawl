@@ -8,6 +8,14 @@ The [open-weight model and provider follow-up](2026-11-01-open-models/README.md)
 
 The [full-cohort native-PDF comparison](2026-11-01-native-pdf-30/README.md) tests current Luna and Gemini routes against a fresh, matched Haiku reference on all thirty PDFs, with independent source-fact review and actual task costs.
 
+The [three-model XHigh follow-up](2026-11-01-native-pdf-xhigh-30/README.md)
+adds 90 whole-PDF calls, source review and matched High/XHigh comparisons for
+Meta Contributor, Haiku and Luna. It also preserves the configurable runner,
+qualification fixture and generator, offline adoption, complete-reference checks
+and comparison code as a [reusable system](../../../../scripts/firecrawl-ops/benchmarks/document_input/README.md).
+XHigh was slower and more expensive for all three in this cohort; its quality
+changes were mixed, including two truncated Haiku outputs.
+
 ## November 1, 2026: 30 documents, three models
 
 **AnyDoc is a useful text-retention baseline. Native PDF input still adds value for visual associations.** Haiku 5.5 was a lower-cost native-PDF candidate worth further testing. This is a provisional result from a convenience sample, not a production-default decision or a representative accuracy ranking.

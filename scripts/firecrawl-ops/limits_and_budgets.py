@@ -4,6 +4,10 @@ These benchmark-only constants do not alter the collector's existing limits.
 """
 # Fixed cohort size for this paired experiment, including failed and unrun cells.
 DOCUMENT_BENCH_MAX_DOCUMENTS = 30
+# Configurable native-PDF trials may use larger explicitly selected corpora.
+# This does not change the original experiment's fixed thirty-document contract.
+NATIVE_PDF_BENCH_MAX_DOCUMENTS = 1000
+NATIVE_PDF_BENCH_PROBE_MAX_OUTPUT_TOKENS = 4096
 # Large original PDFs fit locally; a narrower provider limit remains a visible error.
 DOCUMENT_BENCH_MAX_PDF_BYTES = 100 * 1024 * 1024
 # Bound local text/reference allocation without silently slicing the document.

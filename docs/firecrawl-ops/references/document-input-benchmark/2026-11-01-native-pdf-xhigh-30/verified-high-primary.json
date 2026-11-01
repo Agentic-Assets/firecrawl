@@ -1,0 +1,5650 @@
+{
+  "intent_count": 120,
+  "manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "note": "Read-only; rows cover settled results only, not completeness; null costs unknown.",
+  "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+  "result_count": 120,
+  "rows": [
+    {
+      "cost_usd": 0.0047757,
+      "document_id": "core-01",
+      "effort": "high",
+      "elapsed_seconds": 30.86959920899244,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1ba306b4f7e2e086ca2099feda890591b9766a89e2b81351183ad4c770ed7b32",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "provider": "anthropic",
+      "result_sha256": "2b47b99524dd82667b50f1b0a84ed836741e132c6210d4a5f470c26ec8a1df22",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8399,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5109
+        },
+        "cost": 0.0047757,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0047757,
+        "market_cost": 0.0047757,
+        "prompt_tokens": 5762,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14161
+      }
+    },
+    {
+      "cost_usd": 0.0075083,
+      "document_id": "core-01",
+      "effort": "high",
+      "elapsed_seconds": 8.604439209011616,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "42ab530e460503ba19065ffc7730ba8c5f4c9cfb14aa039446e4235d8cacd13b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "provider": "vertex",
+      "result_sha256": "95163f18ccbdd10ade896997f90b9b26fd42bc0405fc176376d1ab435c7e0c3f",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2801,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1511
+        },
+        "cost": 0.0075083,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0075083,
+        "market_cost": 0.0075083,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4487
+      }
+    },
+    {
+      "cost_usd": 0.0261045,
+      "document_id": "core-01",
+      "effort": "high",
+      "elapsed_seconds": 47.76114158297423,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "072090a89bb64c3a30fb5f2cd975d026e5a246d4c96441881b447fffae0288b1",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "provider": "vertex",
+      "result_sha256": "152b9cbd1a7e1b14fca55c2eae2ae151a73cad4a6c28a76f420125811a897ed3",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6624,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4128
+        },
+        "cost": 0.0261045,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0261045,
+        "market_cost": 0.0261045,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8310
+      }
+    },
+    {
+      "cost_usd": 0.0031963,
+      "document_id": "core-01",
+      "effort": "high",
+      "elapsed_seconds": 30.56354079200537,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "5cc262673e6fd9388d86e2dc442115863a3dce8bd97e2da8da53da9a95d19ea3",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "provider": "openai",
+      "result_sha256": "db4fe887bda2737aa26469cb7fab6cbb9c1f40aacaad476569e55c8af2cc3949",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9268,
+        "completion_tokens": 4075,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1979
+        },
+        "cost": 0.0031963,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0031963,
+        "market_cost": 0.0031963,
+        "prompt_tokens": 9271,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13346
+      }
+    },
+    {
+      "cost_usd": 0.003703,
+      "document_id": "core-02",
+      "effort": "high",
+      "elapsed_seconds": 21.89515479200054,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "fcf076fce668d850c9facac626ef341a1e5e6925d0e0d1350ab317dc8ce38697",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "provider": "anthropic",
+      "result_sha256": "9610f8ead1e06c762300fa7a53963b59523fd1976de7a84fcfae690dccc28b76",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6222,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3182
+        },
+        "cost": 0.003703,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003703,
+        "market_cost": 0.003703,
+        "prompt_tokens": 5920,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12142
+      }
+    },
+    {
+      "cost_usd": 0.0121808,
+      "document_id": "core-02",
+      "effort": "high",
+      "elapsed_seconds": 15.169873666978674,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "72c43095c61c5198f74191a5aa8f2ff5da0cd15814af5e2aa411f13ed580e7c4",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "provider": "vertex",
+      "result_sha256": "2540b04990604f84485c3b0d601f542eeb4b5aab8e1955c9abe1c5f634302a98",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4670,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2946
+        },
+        "cost": 0.0121808,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0121808,
+        "market_cost": 0.0121808,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6356
+      }
+    },
+    {
+      "cost_usd": 0.0162495,
+      "document_id": "core-02",
+      "effort": "high",
+      "elapsed_seconds": 30.019823000009637,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "86bc3fe9b969fa2c6fe5b9fd1b6743c2654dd259ed4cb64f19423286b48ef848",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "provider": "vertex",
+      "result_sha256": "21457f626b0efd58510d3aa05f42590637613f1fae364c12d5c7d7d21b3df276",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3996,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2032
+        },
+        "cost": 0.0162495,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0162495,
+        "market_cost": 0.0162495,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5682
+      }
+    },
+    {
+      "cost_usd": 0.0028618,
+      "document_id": "core-02",
+      "effort": "high",
+      "elapsed_seconds": 25.001854625006672,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b38a83d210854809d3d93d10e0e7ddcfa6ca7d0f9e27a98becc1b603c2e17e58",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "provider": "openai",
+      "result_sha256": "9220d45e8d070aa4fcb5a3eeeb7ab2bcf763c1ded2db5662340ad7da0f29f665",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9376,
+        "completion_tokens": 3379,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1640
+        },
+        "cost": 0.0028618,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0028618,
+        "market_cost": 0.0028618,
+        "prompt_tokens": 9379,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12758
+      }
+    },
+    {
+      "cost_usd": 0.0028494,
+      "document_id": "core-03",
+      "effort": "high",
+      "elapsed_seconds": 15.52769458401599,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "bbbeabb195ec9e4f6b138b0c00236f83fcd190ca4e3dd142d3a30c12ba8370ac",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "provider": "anthropic",
+      "result_sha256": "431dd5895880b32cf226e5f41767c8d480c062f560c514e9a3c578691290fce3",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4536,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1516
+        },
+        "cost": 0.0028494,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0028494,
+        "market_cost": 0.0028494,
+        "prompt_tokens": 5814,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10350
+      }
+    },
+    {
+      "cost_usd": 0.0098683,
+      "document_id": "core-03",
+      "effort": "high",
+      "elapsed_seconds": 16.192829665989848,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "f894d5d3a839c89425bf44e0c1408f0b2d5c11663776e0774cf7dce7f5acb23f",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "provider": "vertex",
+      "result_sha256": "9f6f60e225d788051b8699705179f141b9b3328dccb3a4e3e14bf367ae07ea1b",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3745,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2318
+        },
+        "cost": 0.0098683,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0098683,
+        "market_cost": 0.0098683,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5431
+      }
+    },
+    {
+      "cost_usd": 0.02136075,
+      "document_id": "core-03",
+      "effort": "high",
+      "elapsed_seconds": 44.01130658297916,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e83edf9ec22f037051f764b716a4be9dd590ad10ff7d77ecbeef49719f69ae4c",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "provider": "vertex",
+      "result_sha256": "c905095b35e938d42517f68e8dc8bd443b82a325a40dde7b2b9f484c3fcaf126",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5359,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3365
+        },
+        "cost": 0.02136075,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.02136075,
+        "market_cost": 0.02136075,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 7045
+      }
+    },
+    {
+      "cost_usd": 0.0027953,
+      "document_id": "core-03",
+      "effort": "high",
+      "elapsed_seconds": 28.910473541007377,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "67f9e780da5dde3203a760b02bc2d3e456707f1f0e191a3d96ac2655eb54321b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "provider": "openai",
+      "result_sha256": "1406b0ef45cfed4f63d8c7990e9f938d8884a1ea5709dc2b58bbd8ddf9f7ec59",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9296,
+        "completion_tokens": 3266,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1517
+        },
+        "cost": 0.0027953,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0027953,
+        "market_cost": 0.0027953,
+        "prompt_tokens": 9299,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12565
+      }
+    },
+    {
+      "cost_usd": 0.0030528,
+      "document_id": "core-04",
+      "effort": "high",
+      "elapsed_seconds": 18.053137499984587,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "89340dada35ad4dcf3cf50f4b610df90ca4f4855fd5996c96ba937d60c6f5282",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "provider": "anthropic",
+      "result_sha256": "ad198187ac21df04573177fee076ac6cb877d8a8780374958d27522c88359486",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5309,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3196
+        },
+        "cost": 0.0030528,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0030528,
+        "market_cost": 0.0030528,
+        "prompt_tokens": 3983,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9292
+      }
+    },
+    {
+      "cost_usd": 0.0069673,
+      "document_id": "core-04",
+      "effort": "high",
+      "elapsed_seconds": 9.96657150000101,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "cba21194e99f4f6f74881d5785e83d631f83e1dc10a33c6825a6302bf62547a1",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "provider": "vertex",
+      "result_sha256": "d8ec36d8b366098e72812e8e9c1c7af5407209eec1c29ba9fa28cba89927d2c0",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2647,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1978
+        },
+        "cost": 0.0069673,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0069673,
+        "market_cost": 0.0069673,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 3813
+      }
+    },
+    {
+      "cost_usd": 0.013617,
+      "document_id": "core-04",
+      "effort": "high",
+      "elapsed_seconds": 28.468054791010218,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "36564a6583f22f6aa63f0b7751d45203a0c1d8f59cba1148a356f40a4b6809fe",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "provider": "vertex",
+      "result_sha256": "53db33afe3fb7e5dcc3a2770e5c56d2d23c17492bd6494621b00ea195974d856",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3398,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2062
+        },
+        "cost": 0.013617,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.013617,
+        "market_cost": 0.013617,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4564
+      }
+    },
+    {
+      "cost_usd": 0.002015675,
+      "document_id": "core-04",
+      "effort": "high",
+      "elapsed_seconds": 27.481999291019747,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "833a39ef86fb9b3e988a23c8a1357558050946fed3508582efcf0d9ebca85dea",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "provider": "openai",
+      "result_sha256": "77956127b423eb2846183467e7f4e37d5a73965ba49a730fd27943b9c037b40d",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6239,
+        "completion_tokens": 2471,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1153
+        },
+        "cost": 0.002015675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002015675,
+        "market_cost": 0.002015675,
+        "prompt_tokens": 6242,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8713
+      }
+    },
+    {
+      "cost_usd": 0.0065,
+      "document_id": "core-05",
+      "effort": "high",
+      "elapsed_seconds": 41.70013170898892,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "cdb905bef32a7649a86ccbaf669ca925ce506bda76fcd910c1647a6dafe3e3c9",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "provider": "anthropic",
+      "result_sha256": "b6f83ae7f69f0c05fe9da4b4a5c5778cbb6a7d38a0078f05941353c22bf3231c",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 11798,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 6075
+        },
+        "cost": 0.0065,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0065,
+        "market_cost": 0.0065,
+        "prompt_tokens": 6010,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 17808
+      }
+    },
+    {
+      "cost_usd": 0.0139858,
+      "document_id": "core-05",
+      "effort": "high",
+      "elapsed_seconds": 19.573387375014136,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "3758de1e96f1004d94e16bd97965a2bd9cb669e826c283a491a118a4b0ce2551",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "provider": "vertex",
+      "result_sha256": "74c334e9752f587a64f9981b6cba9ad5bc01ff8bf311e067a2eecfe85bca6219",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5392,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3337
+        },
+        "cost": 0.0139858,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0139858,
+        "market_cost": 0.0139858,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 7078
+      }
+    },
+    {
+      "cost_usd": 0.02593575,
+      "document_id": "core-05",
+      "effort": "high",
+      "elapsed_seconds": 34.83691370798624,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "6795f047b758f3b44058ad1c11c1baaa7b625ad1ddc58107f65859a2e14c16e6",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "provider": "vertex",
+      "result_sha256": "b68812d52b1afc09a8bf2c2b6a6c90afea450ed679ffd950f15a3bfa388e0cf5",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6579,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4133
+        },
+        "cost": 0.02593575,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.02593575,
+        "market_cost": 0.02593575,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8265
+      }
+    },
+    {
+      "cost_usd": 0.003848925,
+      "document_id": "core-05",
+      "effort": "high",
+      "elapsed_seconds": 40.98128562499187,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1d7d85cc3b48bb544ea4c9c7aafe2bf4820c9204c0f9555e96f905308de0cc51",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "provider": "openai",
+      "result_sha256": "8d087e0a6f0a18adfa5d324f603fadde761bc65689391f64c88bff64448b6b10",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9393,
+        "completion_tokens": 5349,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2414
+        },
+        "cost": 0.003848925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003848925,
+        "market_cost": 0.003848925,
+        "prompt_tokens": 9396,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14745
+      }
+    },
+    {
+      "cost_usd": 0.0038512,
+      "document_id": "core-06",
+      "effort": "high",
+      "elapsed_seconds": 26.9549003749853,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "3a3e2f856367fb3a3c39a73a9a567ef77850d02d3d1c5c8b1c0f160507ebad03",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "provider": "anthropic",
+      "result_sha256": "bdc43d96fd9147a630d8fbe003bb2436285a16af009ba01771ca964df26afa4a",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6563,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4086
+        },
+        "cost": 0.0038512,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0038512,
+        "market_cost": 0.0038512,
+        "prompt_tokens": 5697,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12260
+      }
+    },
+    {
+      "cost_usd": 0.0090608,
+      "document_id": "core-06",
+      "effort": "high",
+      "elapsed_seconds": 15.253426374983974,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "c9264e76f81a20c6a78b1d7e46818d86f544da3796c0f9908290cf216a7c73fc",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "provider": "vertex",
+      "result_sha256": "99c6066a4e838ccd32676adde25778e01e617970edbfbd9859fec9afb114581b",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3422,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2051
+        },
+        "cost": 0.0090608,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0090608,
+        "market_cost": 0.0090608,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5108
+      }
+    },
+    {
+      "cost_usd": 0.0136995,
+      "document_id": "core-06",
+      "effort": "high",
+      "elapsed_seconds": 26.66743841697462,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b2e5ccb8af93f8843c6d5cc16ac1db61c03df61441fe6bd3ef7c4702f4793ad4",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "provider": "vertex",
+      "result_sha256": "6c2d1cf5923499451347b1eb35947518401845966a6638ca385bfeab1341dfd3",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3316,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1695
+        },
+        "cost": 0.0136995,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0136995,
+        "market_cost": 0.0136995,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5002
+      }
+    },
+    {
+      "cost_usd": 0.0038748,
+      "document_id": "core-06",
+      "effort": "high",
+      "elapsed_seconds": 49.6699736250157,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "19ccc510df2e34eef9f730988ee71e45008632610aa13d84c4bed6630d309859",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "provider": "openai",
+      "result_sha256": "ad27778d0b308272b51e207aff6645b0c7c0e855a2f019ffad4717a306d66942",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9256,
+        "completion_tokens": 5435,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3948
+        },
+        "cost": 0.0038748,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0038748,
+        "market_cost": 0.0038748,
+        "prompt_tokens": 9259,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 14694
+      }
+    },
+    {
+      "cost_usd": 0.0030988,
+      "document_id": "core-07",
+      "effort": "high",
+      "elapsed_seconds": 21.44434020802146,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "da3b9ccb42e4797100aaa1adf5cd5fccf2071ece27f6875d8393ec502dc1fba5",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "provider": "anthropic",
+      "result_sha256": "55a9ea79c7e1aa6a82df0ce68924498afa598aebf3eb47e48bc13bbe75d35091",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5425,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3307
+        },
+        "cost": 0.0030988,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0030988,
+        "market_cost": 0.0030988,
+        "prompt_tokens": 3863,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9288
+      }
+    },
+    {
+      "cost_usd": 0.0088298,
+      "document_id": "core-07",
+      "effort": "high",
+      "elapsed_seconds": 16.47108849999495,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "900ca243c0340fd69bbbda5b604166bc80a39cf36d98d9d36a6a99e84567a1ac",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "provider": "vertex",
+      "result_sha256": "bb399ffce5e46f48dc686ae210beb5552e23c4f46ff743c83c449c7ede92df13",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3392,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2260
+        },
+        "cost": 0.0088298,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0088298,
+        "market_cost": 0.0088298,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4558
+      }
+    },
+    {
+      "cost_usd": 0.0115995,
+      "document_id": "core-07",
+      "effort": "high",
+      "elapsed_seconds": 20.52924079200602,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "2c169366ad096dced2f903c0511d017f20f4847b980eb7771c49e63988a8ffb7",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "provider": "vertex",
+      "result_sha256": "e612f80a507fb32cf1a3385953aeb5386ac4e2a918f12953617d04daa5453f93",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2860,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1743
+        },
+        "cost": 0.0115995,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0115995,
+        "market_cost": 0.0115995,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4026
+      }
+    },
+    {
+      "cost_usd": 0.002376425,
+      "document_id": "core-07",
+      "effort": "high",
+      "elapsed_seconds": 31.8720909160038,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "68cb20e7b5303dabc0edaf5112248e88864af4fe0ea9e1647b5674f5c5d7db52",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "provider": "openai",
+      "result_sha256": "f0bf429e83e5e16ae53b653b997cecbc2339f65dc8de912ac5c0e2d74022fc12",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6201,
+        "completion_tokens": 3202,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2326
+        },
+        "cost": 0.002376425,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002376425,
+        "market_cost": 0.002376425,
+        "prompt_tokens": 6204,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9406
+      }
+    },
+    {
+      "cost_usd": 0.0027965,
+      "document_id": "core-08",
+      "effort": "high",
+      "elapsed_seconds": 15.67542204199708,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "145227e5b699b184a0188699add1ecb4c9600e3e38b30af0794a5407490063e4",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "provider": "anthropic",
+      "result_sha256": "496395e5bd9451fc21dbff984ce0fffae88b3e178e92725fadebb86c62af53a3",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4464,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2035
+        },
+        "cost": 0.0027965,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0027965,
+        "market_cost": 0.0027965,
+        "prompt_tokens": 5645,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10109
+      }
+    },
+    {
+      "cost_usd": 0.0081483,
+      "document_id": "core-08",
+      "effort": "high",
+      "elapsed_seconds": 11.83560124997166,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "d4102dcb9d7192cd98e7eed7cb61b0da085c8e5f172f3865f60f94bf9c8d61e4",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "provider": "vertex",
+      "result_sha256": "11ec7e3def80a774984d711af8872dda36ad6958d59745b9cb6d8da9ce90a6f7",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3057,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1787
+        },
+        "cost": 0.0081483,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0081483,
+        "market_cost": 0.0081483,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4743
+      }
+    },
+    {
+      "cost_usd": 0.0139245,
+      "document_id": "core-08",
+      "effort": "high",
+      "elapsed_seconds": 19.783472291979706,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8543fb4ee93b605d517b82990df79c5710b18495a8bffea629f61d644c455c14",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "provider": "vertex",
+      "result_sha256": "6ed5fc3f7b2cc81ba58e48e94302188028a8df4f81ea585e4c6d4cc06b6773e3",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3376,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1865
+        },
+        "cost": 0.0139245,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0139245,
+        "market_cost": 0.0139245,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5062
+      }
+    },
+    {
+      "cost_usd": 0.00249855,
+      "document_id": "core-08",
+      "effort": "high",
+      "elapsed_seconds": 22.97024179098662,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "0cf8b76827b290a1141e2648ebc3160c506675e267f4b70b9da5c791f70d1d62",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "provider": "openai",
+      "result_sha256": "303ca3f0a3a8d8a57d3324314c20ac1043f1006695fee327bc174b0fdcbe27e6",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9170,
+        "completion_tokens": 2704,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1268
+        },
+        "cost": 0.00249855,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00249855,
+        "market_cost": 0.00249855,
+        "prompt_tokens": 9173,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11877
+      }
+    },
+    {
+      "cost_usd": 0.0036628,
+      "document_id": "core-09",
+      "effort": "high",
+      "elapsed_seconds": 26.576485917001264,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "fb3795ac02aba5e2f020382c96524e453ff19f7084751d14cd4ef21d84171498",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "provider": "anthropic",
+      "result_sha256": "bb4319e4d1e7cb6e91ec303d5d007785a069fed83b231555a2adc7771a0f3ed0",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6552,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3815
+        },
+        "cost": 0.0036628,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0036628,
+        "market_cost": 0.0036628,
+        "prompt_tokens": 3868,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10420
+      }
+    },
+    {
+      "cost_usd": 0.0095748,
+      "document_id": "core-09",
+      "effort": "high",
+      "elapsed_seconds": 13.006772042019293,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "5f25044fc76bf1fcf08e1e2b9850fb2d260dbc80b26a06266b08f0e06f18c4dd",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "provider": "vertex",
+      "result_sha256": "54683b320f0b56b3911968eefebee3e4eaa23f5b5350d353a51d53fd7ce2aeb0",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3690,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2504
+        },
+        "cost": 0.0095748,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0095748,
+        "market_cost": 0.0095748,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4856
+      }
+    },
+    {
+      "cost_usd": 0.0126645,
+      "document_id": "core-09",
+      "effort": "high",
+      "elapsed_seconds": 27.631395167001756,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8afcd55e668691a26b81ed641cf4583dee9377098f153a10c86fbac399d016db",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "provider": "vertex",
+      "result_sha256": "1001a501131a607a76abc2e255e7a8c5d9ce34561585da20fb28affdb9ecb119",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3144,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1661
+        },
+        "cost": 0.0126645,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0126645,
+        "market_cost": 0.0126645,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4310
+      }
+    },
+    {
+      "cost_usd": 0.002178425,
+      "document_id": "core-09",
+      "effort": "high",
+      "elapsed_seconds": 25.623487582983216,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "261c0fb61ffd7fdcc058ceaffe600d8568ff8f8f429f85fccc5f71223e3ce58b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "provider": "openai",
+      "result_sha256": "9754ec76a6b3c80a2825184f78801b9a1e08bc30681e130bcdadee89de9cb080",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6213,
+        "completion_tokens": 2803,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1840
+        },
+        "cost": 0.002178425,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002178425,
+        "market_cost": 0.002178425,
+        "prompt_tokens": 6216,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9019
+      }
+    },
+    {
+      "cost_usd": 0.002855,
+      "document_id": "core-10",
+      "effort": "high",
+      "elapsed_seconds": 20.789986499992665,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "3ff26f161b7f8b08e8ca31661645629573134aa4f0f9431f31c1df15ccf92457",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "provider": "anthropic",
+      "result_sha256": "3383aa53c83a44ccb863eeeaa44231ca8a2fc2ba0184a8c0dabb9d256e8d5746",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4938,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2883
+        },
+        "cost": 0.002855,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002855,
+        "market_cost": 0.002855,
+        "prompt_tokens": 3860,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8798
+      }
+    },
+    {
+      "cost_usd": 0.0081248,
+      "document_id": "core-10",
+      "effort": "high",
+      "elapsed_seconds": 13.180967958003748,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "456c0b26b3cf94fd1884ce1d5afde2ca0166eba479db0764e8a19ad7fbc34ad9",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "provider": "vertex",
+      "result_sha256": "9a6440c75bcd3126ca2aba9a7e2e0ff07798f288c364e84c9eac52e86b874409",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3110,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2320
+        },
+        "cost": 0.0081248,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0081248,
+        "market_cost": 0.0081248,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4276
+      }
+    },
+    {
+      "cost_usd": 0.01056825,
+      "document_id": "core-10",
+      "effort": "high",
+      "elapsed_seconds": 22.059908875002293,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "55112a30fcf30701039f3a636c3205b9373267341ea5e15a9497868b86e7b429",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "provider": "vertex",
+      "result_sha256": "5b0eac17b27d1211a3026b5d5b8208a589a4542ef108d2b0bdf35aca5b3c192e",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2585,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1572
+        },
+        "cost": 0.01056825,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.01056825,
+        "market_cost": 0.01056825,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 3751
+      }
+    },
+    {
+      "cost_usd": 0.002347675,
+      "document_id": "core-10",
+      "effort": "high",
+      "elapsed_seconds": 30.912013499997556,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1c2e94e1f4eb1674af1dbe5aaf002562d370b94669bb78d03ab3a6040122f2e2",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "provider": "openai",
+      "result_sha256": "cb25bfe414e705fcc8504d71a387bf00ecb42e3587a8513ec36217d35c887b96",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6171,
+        "completion_tokens": 3152,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2307
+        },
+        "cost": 0.002347675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002347675,
+        "market_cost": 0.002347675,
+        "prompt_tokens": 6174,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9326
+      }
+    },
+    {
+      "cost_usd": 0.0047196,
+      "document_id": "core-11",
+      "effort": "high",
+      "elapsed_seconds": 31.890883374988334,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e199174f3159f31cecc984ffa148eee1a4ba5449faee2fa41461eee2553fa9c6",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "provider": "anthropic",
+      "result_sha256": "a7a3120ceab16198b0e67722ce365e2dde5217146295be7c8d4eefb69338babc",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8304,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4624
+        },
+        "cost": 0.0047196,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0047196,
+        "market_cost": 0.0047196,
+        "prompt_tokens": 5676,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13980
+      }
+    },
+    {
+      "cost_usd": 0.0087408,
+      "document_id": "core-11",
+      "effort": "high",
+      "elapsed_seconds": 13.990865208004834,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8a0c96c214daf866e30eb3f00b88df7b36421f403d08ef7988f88cc0353db904",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "provider": "vertex",
+      "result_sha256": "962eefb93eda276a023470413d8bfb258c33c4bb1600fc9ec14cf271fb68a071",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3294,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2402
+        },
+        "cost": 0.0087408,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0087408,
+        "market_cost": 0.0087408,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4980
+      }
+    },
+    {
+      "cost_usd": 0.01721325,
+      "document_id": "core-11",
+      "effort": "high",
+      "elapsed_seconds": 29.785623542004032,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "13a17ed687ead03275b914549a1d2ed5991be95e6f4d82908a2c542cd8606c44",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "provider": "vertex",
+      "result_sha256": "ec09f5e129ff4205ba8560d1767991bff5f40b96e9813eb9b8cbb5910eb23d09",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4253,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2274
+        },
+        "cost": 0.01721325,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.01721325,
+        "market_cost": 0.01721325,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5939
+      }
+    },
+    {
+      "cost_usd": 0.003100175,
+      "document_id": "core-11",
+      "effort": "high",
+      "elapsed_seconds": 42.304991458018776,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "53491e848775345a61e29176bbf51e33bfc8afa43b14dbbaebef4f2281014dc5",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "provider": "openai",
+      "result_sha256": "42e17d2d84df090f3ed4bdc560227c92d5d5310952ffc86d47e70ef2651632f9",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9235,
+        "completion_tokens": 3891,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2389
+        },
+        "cost": 0.003100175,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003100175,
+        "market_cost": 0.003100175,
+        "prompt_tokens": 9238,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13129
+      }
+    },
+    {
+      "cost_usd": 0.0027042,
+      "document_id": "core-13",
+      "effort": "high",
+      "elapsed_seconds": 18.700315624999348,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "64355d70f577946bde1350b00d67f217b09312e5e0c5cdfc5a880829f1844c71",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "provider": "anthropic",
+      "result_sha256": "d86d3f918283eec123078d0bdea007daead6713508d67c87a6c021b3c12b177a",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4633,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2603
+        },
+        "cost": 0.0027042,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0027042,
+        "market_cost": 0.0027042,
+        "prompt_tokens": 3877,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8510
+      }
+    },
+    {
+      "cost_usd": 0.0076723,
+      "document_id": "core-13",
+      "effort": "high",
+      "elapsed_seconds": 12.703441165998811,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "5bd9081b97e1ff73a0dd4e6fda977575d91f223695c6e24ce4e4c7bf5ec1acd5",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "provider": "vertex",
+      "result_sha256": "15ed2cb81d9fcc7cabca3ad827383402e0340257f6a7f1f581bc06cec071e2cb",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2929,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1952
+        },
+        "cost": 0.0076723,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0076723,
+        "market_cost": 0.0076723,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4095
+      }
+    },
+    {
+      "cost_usd": 0.016182,
+      "document_id": "core-13",
+      "effort": "high",
+      "elapsed_seconds": 29.44613299999037,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "ab0d17a1f92b8e501c9fdd62b575cdbb1ad1493d60981692138023df78a0ad28",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "provider": "vertex",
+      "result_sha256": "b47fdb422c9652734b19c9f8fd65b7408b5a82dd5ed678ff3f7855438ed12c23",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4082,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2557
+        },
+        "cost": 0.016182,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.016182,
+        "market_cost": 0.016182,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5248
+      }
+    },
+    {
+      "cost_usd": 0.0023898,
+      "document_id": "core-13",
+      "effort": "high",
+      "elapsed_seconds": 38.395046749996254,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1e5a581438ce39d4b973a65b46a72280db2f5c93a1e3e1ee2735fdc2e1efef21",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "provider": "openai",
+      "result_sha256": "1396afc3926e8801d635d0e307e7bfb8efe96d9c563e3bcefeb233adaab52769",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6204,
+        "completion_tokens": 3228,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2456
+        },
+        "cost": 0.0023898,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0023898,
+        "market_cost": 0.0023898,
+        "prompt_tokens": 6207,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9435
+      }
+    },
+    {
+      "cost_usd": 0.0034487,
+      "document_id": "core-14",
+      "effort": "high",
+      "elapsed_seconds": 24.681307499995455,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "12be7c668bd9e6361ced776f4a97f0bd8173620c70daeb2460b565b034ec5b1f",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "provider": "anthropic",
+      "result_sha256": "ec18a1bf504d7b8f7021e9cf81a0312fd2de660820f492d80ca338adaacd7837",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6118,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4152
+        },
+        "cost": 0.0034487,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0034487,
+        "market_cost": 0.0034487,
+        "prompt_tokens": 3897,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10015
+      }
+    },
+    {
+      "cost_usd": 0.0061323,
+      "document_id": "core-14",
+      "effort": "high",
+      "elapsed_seconds": 10.468377541023074,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e1177e9a9db69d789d4bbaaaa19b0eeffa8dd0196ff3c49d3d234ce331196420",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "provider": "vertex",
+      "result_sha256": "12559876465e6d0dde223901187da46cfa18d62964705448c3e4f9c89f5de06e",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2313,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1348
+        },
+        "cost": 0.0061323,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0061323,
+        "market_cost": 0.0061323,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 3479
+      }
+    },
+    {
+      "cost_usd": 0.01425825,
+      "document_id": "core-14",
+      "effort": "high",
+      "elapsed_seconds": 26.85986608301755,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "0ab0b6d0e76dc34949e26805f6aa3dd4695c291881bc06a19d79c571ca8a7707",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "provider": "vertex",
+      "result_sha256": "cff9a0f2e8e860a172bcf28d15cb192e558d146e2359386918fb5e44c1af8da2",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3569,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2351
+        },
+        "cost": 0.01425825,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.01425825,
+        "market_cost": 0.01425825,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4735
+      }
+    },
+    {
+      "cost_usd": 0.00290405,
+      "document_id": "core-14",
+      "effort": "high",
+      "elapsed_seconds": 38.511685249977745,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b0e1d78037047d3689490d96e1184218a2a83029c6363414bd3bd741a3f92aea",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "provider": "openai",
+      "result_sha256": "de77f471b4f01102cb6483e8debcd98a870a0dcd1498c70a08425d73b8b5f5c1",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6218,
+        "completion_tokens": 4253,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3173
+        },
+        "cost": 0.00290405,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00290405,
+        "market_cost": 0.00290405,
+        "prompt_tokens": 6221,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10474
+      }
+    },
+    {
+      "cost_usd": 0.005131,
+      "document_id": "core-15",
+      "effort": "high",
+      "elapsed_seconds": 34.58398841699818,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "528cc6aaa26eb3127e145a80c1341ec76b3d2c5bf8487bb79df694ebb3857a29",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "provider": "anthropic",
+      "result_sha256": "5a1e04bb6a113b8c10e766cf2fdb3f42a44fffe36baf268bc854f5e608bafec7",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8793,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4824
+        },
+        "cost": 0.005131,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.005131,
+        "market_cost": 0.005131,
+        "prompt_tokens": 7345,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 16138
+      }
+    },
+    {
+      "cost_usd": 0.0121168,
+      "document_id": "core-15",
+      "effort": "high",
+      "elapsed_seconds": 21.155925415980164,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "d276164e56738fd04efc9153f7014cbbd9ce5273ea85656119e43d8334fa2a8a",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "provider": "vertex",
+      "result_sha256": "4546a923b6c14e9022baeabdcbd9711676c4632cc79363518b22c4e18ca5544d",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4582,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2966
+        },
+        "cost": 0.0121168,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0121168,
+        "market_cost": 0.0121168,
+        "prompt_tokens": 2206,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6788
+      }
+    },
+    {
+      "cost_usd": 0.03036075,
+      "document_id": "core-15",
+      "effort": "high",
+      "elapsed_seconds": 42.889220042008674,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "97869e0fc9f0445b9ab321296b1a8cd74052bf8a3c939ec5be2a04091ce846db",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "provider": "vertex",
+      "result_sha256": "6ffc76deb1bf73b9b449ff0e68582a521cb90f28e83c60ef44f70d43dde91eed",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7655,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4888
+        },
+        "cost": 0.03036075,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.03036075,
+        "market_cost": 0.03036075,
+        "prompt_tokens": 2206,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9861
+      }
+    },
+    {
+      "cost_usd": 0.004125675,
+      "document_id": "core-15",
+      "effort": "high",
+      "elapsed_seconds": 48.0852293750213,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "a2f00bc2ecb16a8a217c8588e2514339ae47ca2bee53101198d7c1393ef0eb2f",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "provider": "openai",
+      "result_sha256": "e4df858d17eb2f8c08ccfe4bc2157521c0a585d7b07b554aab577d25ac634120",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 12119,
+        "completion_tokens": 5221,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3375
+        },
+        "cost": 0.004125675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004125675,
+        "market_cost": 0.004125675,
+        "prompt_tokens": 12122,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 17343
+      }
+    },
+    {
+      "cost_usd": 0.0027168,
+      "document_id": "core-16",
+      "effort": "high",
+      "elapsed_seconds": 18.394188250007574,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "ec8a3312f154e077540a6aba085e34b6a9402c417d542d9aad3c9751dc08cdcf",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "provider": "anthropic",
+      "result_sha256": "e40a0dbfe69976af383f71acd2b7a557e228767aa542013dd146028bcf3e745a",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4652,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2550
+        },
+        "cost": 0.0027168,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0027168,
+        "market_cost": 0.0027168,
+        "prompt_tokens": 3908,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8560
+      }
+    },
+    {
+      "cost_usd": 0.0075998,
+      "document_id": "core-16",
+      "effort": "high",
+      "elapsed_seconds": 16.821480499987956,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "d0568b0021447d2eaa19b92fd83d218ffa5217c54b935ba273a19d3eabe7e8c6",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "provider": "vertex",
+      "result_sha256": "27494f28e6c6ed8f106d5ac261d8f0cdca990b4fed1e762c75f54abc3ad59ec3",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2900,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1701
+        },
+        "cost": 0.0075998,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0075998,
+        "market_cost": 0.0075998,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4066
+      }
+    },
+    {
+      "cost_usd": 0.013467,
+      "document_id": "core-16",
+      "effort": "high",
+      "elapsed_seconds": 28.309137041011127,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "54efa61f43303f8c73f78fe68d04f6fcda9b6b7cd42d45a70d079dc0d3a79564",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "provider": "vertex",
+      "result_sha256": "fcd7dc347f2778f7b94d0f8adcecc35793125df8a4fb977d6d506b597ce3e600",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3358,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1959
+        },
+        "cost": 0.013467,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.013467,
+        "market_cost": 0.013467,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4524
+      }
+    },
+    {
+      "cost_usd": 0.002150675,
+      "document_id": "core-16",
+      "effort": "high",
+      "elapsed_seconds": 23.55484041699674,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "cf47d5d6bfae9de18c1625784c227e418214ac6f93ffb109b2c9fbec721baef5",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "provider": "openai",
+      "result_sha256": "ca88d4877e34fa16dae7dbc31ce7b5a858b1640a5d3e29ebc4bd920222e449b3",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6219,
+        "completion_tokens": 2746,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1782
+        },
+        "cost": 0.002150675,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002150675,
+        "market_cost": 0.002150675,
+        "prompt_tokens": 6222,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8968
+      }
+    },
+    {
+      "cost_usd": 0.004855,
+      "document_id": "core-17",
+      "effort": "high",
+      "elapsed_seconds": 36.05444770801114,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "5b06c7e0f44b094a48a19784565e7fddc4bcae64af0536a2d78406c8876c41f6",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "provider": "anthropic",
+      "result_sha256": "5cd19e7f8575212d0f34effbd7bac5f49b55882f2d486d14317fc516c0abae54",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8926,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5649
+        },
+        "cost": 0.004855,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004855,
+        "market_cost": 0.004855,
+        "prompt_tokens": 3920,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12846
+      }
+    },
+    {
+      "cost_usd": 0.0066973,
+      "document_id": "core-17",
+      "effort": "high",
+      "elapsed_seconds": 11.616856957989512,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1d34fce1a2a1675d8f2dd4b23d2247c24aa871d5c283001d1f614efbcf88fc9b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "provider": "vertex",
+      "result_sha256": "b162f945f7a506a909b7d3c0dd994aaf131ad2e1a85d8ed14b3b1b03981ca38e",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2539,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1515
+        },
+        "cost": 0.0066973,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0066973,
+        "market_cost": 0.0066973,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 3705
+      }
+    },
+    {
+      "cost_usd": 0.01272825,
+      "document_id": "core-17",
+      "effort": "high",
+      "elapsed_seconds": 27.700132375000976,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "dfca35536a7359db1efa7b5ab91d9fc269f97b79f0c53ff55d4e142fe72e43f1",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "provider": "vertex",
+      "result_sha256": "b0c8a23224b3350b94276cb14f8529cd2a127c4f5c6c86f59b13d060a0ae13f5",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3161,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1642
+        },
+        "cost": 0.01272825,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.01272825,
+        "market_cost": 0.01272825,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4327
+      }
+    },
+    {
+      "cost_usd": 0.0021323,
+      "document_id": "core-17",
+      "effort": "high",
+      "elapsed_seconds": 23.71033758399426,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "f56733098ace642144986265ab327e5e8eb6a9bc3dd9e22987a02d2c6e82358a",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "provider": "openai",
+      "result_sha256": "d614f2bb7f44f56020d9b146adc7a68f9f16b8c2c0ddd3b984c3ff933ed196d0",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6240,
+        "completion_tokens": 2704,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1706
+        },
+        "cost": 0.0021323,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0021323,
+        "market_cost": 0.0021323,
+        "prompt_tokens": 6243,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8947
+      }
+    },
+    {
+      "cost_usd": 0.0029051,
+      "document_id": "core-18",
+      "effort": "high",
+      "elapsed_seconds": 19.275983083993196,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "2abc92e0ebe36f716b6f254a16dd6ac26db117fe7954cd18ea3537d613763841",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "provider": "anthropic",
+      "result_sha256": "4d34b0daf0e97b79a4d6dcf8aa513e9576ba4b2403ab049df61acf45c8ba613f",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5032,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2872
+        },
+        "cost": 0.0029051,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0029051,
+        "market_cost": 0.0029051,
+        "prompt_tokens": 3891,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8923
+      }
+    },
+    {
+      "cost_usd": 0.0081998,
+      "document_id": "core-18",
+      "effort": "high",
+      "elapsed_seconds": 13.052830125001492,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "f9f0e560a49aa4b17ba5676ee0f58958a43e6be7336a1dac7cef2ba5d985546a",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "provider": "vertex",
+      "result_sha256": "7a1188af577f3b7117ddb6f6b762de7326966b6bc334ae4202e5fb1f5fdc13a8",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3140,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2017
+        },
+        "cost": 0.0081998,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0081998,
+        "market_cost": 0.0081998,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4306
+      }
+    },
+    {
+      "cost_usd": 0.012717,
+      "document_id": "core-18",
+      "effort": "high",
+      "elapsed_seconds": 26.570357832999434,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8c039d41a5875061b29d790920ab2608d924c2bbdedcb6b93a6797e342039952",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "provider": "vertex",
+      "result_sha256": "7e3a180603fa1a67e59d2abca2c7eb20044e6c8e4cfdf0e6b216ab4ed64afd47",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3158,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1855
+        },
+        "cost": 0.012717,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.012717,
+        "market_cost": 0.012717,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4324
+      }
+    },
+    {
+      "cost_usd": 0.0023023,
+      "document_id": "core-18",
+      "effort": "high",
+      "elapsed_seconds": 30.3270872500143,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b8c586bf2090e91e7232f3c0baba08f2cf6a12ccd1031ac18b1e2b51b2978884",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "provider": "openai",
+      "result_sha256": "a103d479a7b3027b3c9c2feb67130aa18ddf2bd631a1a6300fd75de2aa66551f",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6236,
+        "completion_tokens": 3045,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2130
+        },
+        "cost": 0.0023023,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0023023,
+        "market_cost": 0.0023023,
+        "prompt_tokens": 6239,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9284
+      }
+    },
+    {
+      "cost_usd": 0.0025908,
+      "document_id": "core-20",
+      "effort": "high",
+      "elapsed_seconds": 17.94828108299407,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "4b61239bd7578654b81672ad3f9231b9990a8c371cf931f4fe4f7bd1281a07d7",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "provider": "anthropic",
+      "result_sha256": "7e8bff0b2e0061acded5b7d74096ac214295b1dc17eec5a32086fd3f10d512b0",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4030,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1886
+        },
+        "cost": 0.0025908,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0025908,
+        "market_cost": 0.0025908,
+        "prompt_tokens": 5758,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9788
+      }
+    },
+    {
+      "cost_usd": 0.0073958,
+      "document_id": "core-20",
+      "effort": "high",
+      "elapsed_seconds": 14.290302999987034,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "f14d8c91fe541958532a82bbf2876baf059ca1a2d1671485d35587df1af5eb91",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "provider": "vertex",
+      "result_sha256": "b0bf2975749f2c242cf9100c6f3f99f7e27b8feba7d1bdd388ec226be0e8687e",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2756,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1550
+        },
+        "cost": 0.0073958,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0073958,
+        "market_cost": 0.0073958,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4442
+      }
+    },
+    {
+      "cost_usd": 0.011307,
+      "document_id": "core-20",
+      "effort": "high",
+      "elapsed_seconds": 23.037397250009235,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1493b60fecbe834179944e8060a183de661bde7f309cca6eb462de2ef88da33b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "provider": "vertex",
+      "result_sha256": "2fd88bf30df7713f92b8d215b9288bb385f9b40fce7f8a5a53b2c4e65dc69c78",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2678,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1405
+        },
+        "cost": 0.011307,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.011307,
+        "market_cost": 0.011307,
+        "prompt_tokens": 1686,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4364
+      }
+    },
+    {
+      "cost_usd": 0.0030638,
+      "document_id": "core-20",
+      "effort": "high",
+      "elapsed_seconds": 35.346911166998325,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "356ae36255e25f54946d26dc94b522b0c57eefa7fb9b987f81ef594ab0c5f9e3",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "provider": "openai",
+      "result_sha256": "c640d2d0c0f348a7e251b0f23deed259cc3b1f3395bdb1a80241353db06ad752",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 9284,
+        "completion_tokens": 3806,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2415
+        },
+        "cost": 0.0030638,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0030638,
+        "market_cost": 0.0030638,
+        "prompt_tokens": 9287,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13093
+      }
+    },
+    {
+      "cost_usd": 0.0033065,
+      "document_id": "external-01",
+      "effort": "high",
+      "elapsed_seconds": 20.237771084008273,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "5ac3d5864d559d7eda9adab421be77fc3e69c5aeee4b3f05c343361f9f6a57e2",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "provider": "anthropic",
+      "result_sha256": "8a0cd88ec7640c21a249f31e3d05b3a8fba6fd2ca7b3f1eb323d2d06ef5ac07d",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5648,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3126
+        },
+        "cost": 0.0033065,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0033065,
+        "market_cost": 0.0033065,
+        "prompt_tokens": 4825,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10473
+      }
+    },
+    {
+      "cost_usd": 0.0113498,
+      "document_id": "external-01",
+      "effort": "high",
+      "elapsed_seconds": 15.967521332990145,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1552099066a2b51534b9de04020231d95b5a769a6b44af52111973fe340eab8f",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "provider": "vertex",
+      "result_sha256": "c53ce0c15b22057946fe656839553f0d597e138e862d4ebe84bacf9d24f49599",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4400,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2783
+        },
+        "cost": 0.0113498,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0113498,
+        "market_cost": 0.0113498,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5566
+      }
+    },
+    {
+      "cost_usd": 0.0144045,
+      "document_id": "external-01",
+      "effort": "high",
+      "elapsed_seconds": 29.750825041992357,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "6a429898235c73c290b838d5abec4b42feb1bc47c9430c82a3cef9aa5cab4943",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "provider": "vertex",
+      "result_sha256": "13694d281a2a28ddf8787c6e8aef59c3d18a2f888a5c7c8846af1f76ff251123",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3608,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1852
+        },
+        "cost": 0.0144045,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0144045,
+        "market_cost": 0.0144045,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4774
+      }
+    },
+    {
+      "cost_usd": 0.00242805,
+      "document_id": "external-01",
+      "effort": "high",
+      "elapsed_seconds": 27.19807520802715,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "d0a8b4cd595f69ecf495b625fc18f34343d1dbdf71c2e9a3aa87db8c09853c4a",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "provider": "openai",
+      "result_sha256": "0ca0d61c62d46fe1a21ba0e021712ec1689e43c65bd3403a044364ee0fa54351",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6562,
+        "completion_tokens": 3215,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2062
+        },
+        "cost": 0.00242805,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00242805,
+        "market_cost": 0.00242805,
+        "prompt_tokens": 6565,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9780
+      }
+    },
+    {
+      "cost_usd": 0.00565,
+      "document_id": "external-19",
+      "effort": "high",
+      "elapsed_seconds": 34.31759933300782,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "3b52e52da12e6ce686fd08b5458621838adaa5a0b7f3e9dd1bb3771a05a2f89c",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "provider": "anthropic",
+      "result_sha256": "e975cc037772460d1b5cd345fa6cff894b7c3c162fea5bf6c0a9cb46f8982c57",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 10141,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4025
+        },
+        "cost": 0.00565,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00565,
+        "market_cost": 0.00565,
+        "prompt_tokens": 5795,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15936
+      }
+    },
+    {
+      "cost_usd": 0.0145998,
+      "document_id": "external-19",
+      "effort": "high",
+      "elapsed_seconds": 19.05116070798249,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e11b2eec9051a56d557389a1ddbea4aa6641dd1b0b3e78efe88d267f04ad8963",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "provider": "vertex",
+      "result_sha256": "ea9ee81d34aa46165b0c5fc8fcf01f903460fbb9c0c1514a6fedfcd0dd714d31",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5700,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3117
+        },
+        "cost": 0.0145998,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0145998,
+        "market_cost": 0.0145998,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6866
+      }
+    },
+    {
+      "cost_usd": 0.0303345,
+      "document_id": "external-19",
+      "effort": "high",
+      "elapsed_seconds": 177.14203499999712,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "82e4254ac8d337cd66745eb9cec5dc7993cebf482fb6a20adc1e473e555a89c4",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "provider": "vertex",
+      "result_sha256": "20c037fba3682b9bea8bdfaa537bc6784421aa7fc763f51faa13e98c833e6130",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7856,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3220
+        },
+        "cost": 0.0303345,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0303345,
+        "market_cost": 0.0303345,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9022
+      }
+    },
+    {
+      "cost_usd": 0.003948925,
+      "document_id": "external-19",
+      "effort": "high",
+      "elapsed_seconds": 45.79101374998572,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "f9347fcffaae70fc34b5f3616f4bf1a4ecceaadb46fa4478fbf9c5406e699e70",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "provider": "openai",
+      "result_sha256": "c2dd8d38dc5f3c64f2262dd13ca7ed69b3455ccf5b593176776e39d714abf984",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6989,
+        "completion_tokens": 6150,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2150
+        },
+        "cost": 0.003948925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003948925,
+        "market_cost": 0.003948925,
+        "prompt_tokens": 6992,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13142
+      }
+    },
+    {
+      "cost_usd": 0.0022173,
+      "document_id": "external-20",
+      "effort": "high",
+      "elapsed_seconds": 14.426062666025246,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "59bb2c60252d7771ee1b2eddca8560b551844e5209b8fa0070061b4af005bfec",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "provider": "anthropic",
+      "result_sha256": "58fe4288092fc2a29c81cb6b8181c727c1159b066a43e295d97abb1670c4fd95",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3902,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1746
+        },
+        "cost": 0.0022173,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0022173,
+        "market_cost": 0.0022173,
+        "prompt_tokens": 2663,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6565
+      }
+    },
+    {
+      "cost_usd": 0.0150413,
+      "document_id": "external-20",
+      "effort": "high",
+      "elapsed_seconds": 17.788253791979514,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "51519b44526727724ede36372726f36e6df37df579f9ae29c02ce3c130032368",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "provider": "vertex",
+      "result_sha256": "f8563ead5e9be1c99961f83d0b3a63d5d48d01eec3844c44101733bcc8bc85b0",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5939,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3967
+        },
+        "cost": 0.0150413,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0150413,
+        "market_cost": 0.0150413,
+        "prompt_tokens": 646,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6585
+      }
+    },
+    {
+      "cost_usd": 0.01226325,
+      "document_id": "external-20",
+      "effort": "high",
+      "elapsed_seconds": 27.319492082984652,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "52b0c785ef58294e905b9c162e6d776211bcfb47f6ffc9eca1b0e3be5bcddb57",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "provider": "vertex",
+      "result_sha256": "f4072c9ac517971b07150da1a9b049199176e6c896367662cfe1acdaea8fd4d3",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3141,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1263
+        },
+        "cost": 0.01226325,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.01226325,
+        "market_cost": 0.01226325,
+        "prompt_tokens": 646,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 3787
+      }
+    },
+    {
+      "cost_usd": 0.001465175,
+      "document_id": "external-20",
+      "effort": "high",
+      "elapsed_seconds": 19.670254708995344,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "d258dc073d333d2f911d36bc9b0aebfc60fa88f5c11fa1906d59810827074f5a",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "provider": "openai",
+      "result_sha256": "5bb3195586e343097023a7bab8314c403466fa077c667ee71bc88f9dc6a5919d",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 2647,
+        "completion_tokens": 2268,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1034
+        },
+        "cost": 0.001465175,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001465175,
+        "market_cost": 0.001465175,
+        "prompt_tokens": 2650,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4918
+      }
+    },
+    {
+      "cost_usd": 0.146918,
+      "document_id": "external-21",
+      "effort": "high",
+      "elapsed_seconds": 43.38323308399413,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "fc9bcc6cc24c1da91527e5d4acc6777474895f34d17b303c6b46e3abb3189094",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "provider": "anthropic",
+      "result_sha256": "6158e57410f0eeadaf108675ded49f40b7b8716a005d0242ab96d0644fa31b9e",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 10712,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4386
+        },
+        "cost": 0.146918,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.146918,
+        "market_cost": 0.146918,
+        "prompt_tokens": 240276,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 250988
+      }
+    },
+    {
+      "cost_usd": 0.0276618,
+      "document_id": "external-21",
+      "effort": "high",
+      "elapsed_seconds": 140.26071641698945,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": false,
+      "field_object_view": null,
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "92048bc0f07dc8c525e492dad98be60affab89bc3a142f948f15df9b48cf9c93",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "provider": "vertex",
+      "result_sha256": "9009238bd362394748846e684b3bdbb9a7a507d61befecf7024b9692fa65b882",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5808,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1497
+        },
+        "cost": 0.0276618,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0276618,
+        "market_cost": 0.0276618,
+        "prompt_tokens": 43806,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 49614
+      }
+    },
+    {
+      "cost_usd": 0.117462,
+      "document_id": "external-21",
+      "effort": "high",
+      "elapsed_seconds": 164.91556212498108,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "13992ae82658b12415b3f9920209cd1c26cc26db2bf258f452171c369d48595f",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "provider": "vertex",
+      "result_sha256": "690eb1c80ca6790ae16bb5571a4c48d894330437fbd159e3e22e1c042472008e",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 22562,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 13069
+        },
+        "cost": 0.117462,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.117462,
+        "market_cost": 0.117462,
+        "prompt_tokens": 43806,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 66368
+      }
+    },
+    {
+      "cost_usd": 0.0798496,
+      "document_id": "external-21",
+      "effort": "high",
+      "elapsed_seconds": 43.099937750026584,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "2d6e36f9177bc8b6d76e43114d78cefe10ea7f0bae8d6a27395f2de7225e8742",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "provider": "openai",
+      "result_sha256": "3f5103e2e85c697d1673f78f6bb737507390e6f679093b640857b63159351577",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 306994,
+        "completion_tokens": 4134,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1627
+        },
+        "cost": 0.0798496,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0798496,
+        "market_cost": 0.0798496,
+        "prompt_tokens": 306997,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 311131
+      }
+    },
+    {
+      "cost_usd": 0.0042196,
+      "document_id": "public-02",
+      "effort": "high",
+      "elapsed_seconds": 29.577273167000385,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "a38a7da7742b37203ccd488489ca841fff92636760c06557f6e4d7e6d8260b37",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "provider": "anthropic",
+      "result_sha256": "33bc8fee486a0dee7316c7d976f82923115799e4004333e1274b07a4c7bfdcc6",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7596,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4914
+        },
+        "cost": 0.0042196,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0042196,
+        "market_cost": 0.0042196,
+        "prompt_tokens": 4216,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11812
+      }
+    },
+    {
+      "cost_usd": 0.0088648,
+      "document_id": "public-02",
+      "effort": "high",
+      "elapsed_seconds": 16.956620666984236,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e0a66cea162b8fb59bda47b50b282b73e65f5b5e1ae560f9f05a2ae89da16a19",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "provider": "vertex",
+      "result_sha256": "eadad8d42b7384a82634132f6982aedc3813bbc9dc2c9b8d9bc17dab7702d72d",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3406,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2165
+        },
+        "cost": 0.0088648,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0088648,
+        "market_cost": 0.0088648,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4572
+      }
+    },
+    {
+      "cost_usd": 0.0154995,
+      "document_id": "public-02",
+      "effort": "high",
+      "elapsed_seconds": 43.20809274999192,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b11992019572e7c3272abf1997cd8d015b2bc045269a2763e800280b5d1b4450",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "provider": "vertex",
+      "result_sha256": "76c42a3ca5ca9905becdc0b0b0486894b4a2b35fb9b3e67ab77c3bce127011ac",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3900,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1969
+        },
+        "cost": 0.0154995,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0154995,
+        "market_cost": 0.0154995,
+        "prompt_tokens": 1166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 5066
+      }
+    },
+    {
+      "cost_usd": 0.00260255,
+      "document_id": "public-02",
+      "effort": "high",
+      "elapsed_seconds": 28.729436583002098,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "f579157d0427b3683f364195b7a2ca0f7114a32cd82b8006bf12e5a5e04806c6",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "provider": "openai",
+      "result_sha256": "d60dccee2ba3725d9af53980af06d2e13bcad198dd6d72e3e1f8b05561a9ff17",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 6394,
+        "completion_tokens": 3606,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2295
+        },
+        "cost": 0.00260255,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00260255,
+        "market_cost": 0.00260255,
+        "prompt_tokens": 6397,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10003
+      }
+    },
+    {
+      "cost_usd": 0.0055803,
+      "document_id": "public-04",
+      "effort": "high",
+      "elapsed_seconds": 34.33685579200392,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "088fde075c1bae49ea98340adb536b96241d21e321bd795d02278a2ca4ece1aa",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "provider": "anthropic",
+      "result_sha256": "65e765f19e232249b0256ebd149bb1ad97e95e3254535562812f2ece31fbb7cf",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 9680,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 5745
+        },
+        "cost": 0.0055803,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0055803,
+        "market_cost": 0.0055803,
+        "prompt_tokens": 7403,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 17083
+      }
+    },
+    {
+      "cost_usd": 0.0135868,
+      "document_id": "public-04",
+      "effort": "high",
+      "elapsed_seconds": 17.907423625001684,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "4421f6d2b97c8fe67293814072cbced5269a3781892d4c6353353e0e9e23cc76",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "provider": "vertex",
+      "result_sha256": "5b87352d5285fae17488c1e6a98829fe737fe9263a29f99a1cacf9c1b37a4b55",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5170,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3288
+        },
+        "cost": 0.0135868,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0135868,
+        "market_cost": 0.0135868,
+        "prompt_tokens": 2206,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 7376
+      }
+    },
+    {
+      "cost_usd": 0.02370825,
+      "document_id": "public-04",
+      "effort": "high",
+      "elapsed_seconds": 33.74895216600271,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "2ac9bee2919df264ba3cb34e6009ce7e7ed2a0f506e60903cc898f7b7dbdef57",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "provider": "vertex",
+      "result_sha256": "b36dfdc50d395684e886cd2a5dd41a79001f42c510e3389987e3ebc8649aa1fa",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5881,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3469
+        },
+        "cost": 0.02370825,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.02370825,
+        "market_cost": 0.02370825,
+        "prompt_tokens": 2206,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8087
+      }
+    },
+    {
+      "cost_usd": 0.0032608,
+      "document_id": "public-04",
+      "effort": "high",
+      "elapsed_seconds": 29.908918041997822,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "fca62d69837629edd8f87433aba1ebf74b196d38edb186b871ef96c976f036a9",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "provider": "openai",
+      "result_sha256": "ca50a463ae2ace0120aa82f535dfa94c088593c2f3f6d7357c81d789a6aecd23",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 11824,
+        "completion_tokens": 3565,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1535
+        },
+        "cost": 0.0032608,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0032608,
+        "market_cost": 0.0032608,
+        "prompt_tokens": 11827,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15392
+      }
+    },
+    {
+      "cost_usd": 0.0031838,
+      "document_id": "public-05",
+      "effort": "high",
+      "elapsed_seconds": 17.51912425001501,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "fb854682f7e842e0d9a3404c42333088ca40939969ae8374b1b1d48d00564229",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "provider": "anthropic",
+      "result_sha256": "037bbd0bd42dc203fa2623f02a546da2395680782d3a7c5c30ab21b54925983c",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4617,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2816
+        },
+        "cost": 0.0031838,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0031838,
+        "market_cost": 0.0031838,
+        "prompt_tokens": 8753,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13370
+      }
+    },
+    {
+      "cost_usd": 0.0062853,
+      "document_id": "public-05",
+      "effort": "high",
+      "elapsed_seconds": 10.141100500011817,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b23f6ec1c691e470486a6d0f5c4e694d52ded17d5d05dc48d8f5ccfffaf58e67",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "provider": "vertex",
+      "result_sha256": "c850da770ad3d8ef096dbc8ef82a686a161d74cb7cd75c556203e683f083dfd8",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 2187,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1153
+        },
+        "cost": 0.0062853,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0062853,
+        "market_cost": 0.0062853,
+        "prompt_tokens": 2726,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 4913
+      }
+    },
+    {
+      "cost_usd": 0.01516575,
+      "document_id": "public-05",
+      "effort": "high",
+      "elapsed_seconds": 22.464331249997485,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "294b258a0e1d339368db4bd7b314edef1a8ad03a58ae9af4f4ac7d8345d7a893",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "provider": "vertex",
+      "result_sha256": "7b2a850c8c71daf8e21d5deeff2304a4b19800afc6f8203b55494e7fbe0ca59f",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3499,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1917
+        },
+        "cost": 0.01516575,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.01516575,
+        "market_cost": 0.01516575,
+        "prompt_tokens": 2726,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6225
+      }
+    },
+    {
+      "cost_usd": 0.003147425,
+      "document_id": "public-05",
+      "effort": "high",
+      "elapsed_seconds": 27.353463875013404,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "7ccb548c62eeab9785baba0ac3a01d887a28f00b437e7581003a636791d64a8f",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "provider": "openai",
+      "result_sha256": "000780adb27794a09912a377ea6972617dec59b6cf026a8b08e45a4225be0b75",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 14261,
+        "completion_tokens": 2729,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1821
+        },
+        "cost": 0.003147425,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003147425,
+        "market_cost": 0.003147425,
+        "prompt_tokens": 14264,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 16993
+      }
+    },
+    {
+      "cost_usd": 0.0080792,
+      "document_id": "public-07",
+      "effort": "high",
+      "elapsed_seconds": 45.198805417021504,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e31ae6a1e97702c1da368bcdaebfd9b1df39a74ab25163c0d74bc60a756c1e9a",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "provider": "anthropic",
+      "result_sha256": "dc9d67919dd41fa457e7fa6785cc3111104c84ffad3c39ec67257ba5add3ce60",
+      "schema_validity": "invalid",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 13212,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 7509
+        },
+        "cost": 0.0080792,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0080792,
+        "market_cost": 0.0080792,
+        "prompt_tokens": 14732,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 27944
+      }
+    },
+    {
+      "cost_usd": 0.0176383,
+      "document_id": "public-07",
+      "effort": "high",
+      "elapsed_seconds": 19.943893375020707,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": false,
+      "field_object_view": null,
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "252f157ccb87aa5547385ccea0a7f8f701450ac5b98f96c424bcc9a1171d0bd9",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "provider": "vertex",
+      "result_sha256": "638a7888eb586b6d5d85ffe616747d6505e5673f290610c7e5cfcb8e13987be3",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6541,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3394
+        },
+        "cost": 0.0176383,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0176383,
+        "market_cost": 0.0176383,
+        "prompt_tokens": 4286,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 10827
+      }
+    },
+    {
+      "cost_usd": 0.03421575,
+      "document_id": "public-07",
+      "effort": "high",
+      "elapsed_seconds": 48.00327124999603,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "a7f60d488337cbf914d51428ad9490030dd5c7f12061001112d0d628b47fe926",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "provider": "vertex",
+      "result_sha256": "0c49bde2a1bcd9f106196aa2d05e6e5553fd3b558e90a0650c85a24ca95cf664",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8267,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4279
+        },
+        "cost": 0.03421575,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.03421575,
+        "market_cost": 0.03421575,
+        "prompt_tokens": 4286,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12553
+      }
+    },
+    {
+      "cost_usd": 0.0062468,
+      "document_id": "public-07",
+      "effort": "high",
+      "elapsed_seconds": 74.59264454199001,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "f9d48b505d05bc52e75c4ed761fe1c5ab657ef76f583fbe27d9dea8222827e4f",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "provider": "openai",
+      "result_sha256": "438ce6897932685a062a87340324712464c690255c2cc6b5407ad1757dbf1452",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 23088,
+        "completion_tokens": 6721,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2635
+        },
+        "cost": 0.0062468,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0062468,
+        "market_cost": 0.0062468,
+        "prompt_tokens": 23091,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 29812
+      }
+    },
+    {
+      "cost_usd": 0.0103841,
+      "document_id": "public-08",
+      "effort": "high",
+      "elapsed_seconds": 60.37521970801754,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "891e1f2ac3e1cff0005d9e9864df93b98e234b9a894360f16c8e7fb45520eaad",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "provider": "anthropic",
+      "result_sha256": "80fb8f3833ab3d0ed564c84c03219f7f25a1faafa24e667b3be1a3b468498f70",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": false,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 17335,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 9608
+        },
+        "cost": 0.0103841,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0103841,
+        "market_cost": 0.0103841,
+        "prompt_tokens": 17166,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 34501
+      }
+    },
+    {
+      "cost_usd": 0.0142208,
+      "document_id": "public-08",
+      "effort": "high",
+      "elapsed_seconds": 19.128907665988663,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "1cecd8e99265fb5d7ad818c2223a0f7c8a33ff8e7a6a67e7a11221265baff8ae",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "provider": "vertex",
+      "result_sha256": "c3efa3b51b0f5e509ead15e0b2e1c24d760c6536df0efb8da3fbb610be862f6b",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5174,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2827
+        },
+        "cost": 0.0142208,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0142208,
+        "market_cost": 0.0142208,
+        "prompt_tokens": 4286,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9460
+      }
+    },
+    {
+      "cost_usd": 0.03308325,
+      "document_id": "public-08",
+      "effort": "high",
+      "elapsed_seconds": 71.12963433301775,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "2e07a1491f9800fe7c3b0674da493d279f052e270f89edd1c7a3ecc176962a5c",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "provider": "vertex",
+      "result_sha256": "4af59423ba2d3f6effbcc2d384a16f01535afdd7fc0bd73c4318f1b5aa8a2d90",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7965,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3814
+        },
+        "cost": 0.03308325,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.03308325,
+        "market_cost": 0.03308325,
+        "prompt_tokens": 4286,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12251
+      }
+    },
+    {
+      "cost_usd": 0.00656405,
+      "document_id": "public-08",
+      "effort": "high",
+      "elapsed_seconds": 61.00661979202414,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8e2f0a7a67fec0ef5a721c51a033e23b5902588c2d1ad032f3084766e127c04c",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "provider": "openai",
+      "result_sha256": "d82698d9da12f294a27eaf3ca83f4c732b5440687a97eda214e6581ece11b361",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 25694,
+        "completion_tokens": 6704,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2303
+        },
+        "cost": 0.00656405,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00656405,
+        "market_cost": 0.00656405,
+        "prompt_tokens": 25697,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 32401
+      }
+    },
+    {
+      "cost_usd": 0.0062693,
+      "document_id": "public-12",
+      "effort": "high",
+      "elapsed_seconds": 40.232057332992554,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "eaa0bc02d111ac17b531bb669aa8670e78e500a772223d25125e25c7871b02be",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "provider": "anthropic",
+      "result_sha256": "8e6a4a26e84f42eb8ceb6ef69fc0e959af020a9397bbfc961ebe7c9c6d52fb07",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 10472,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4647
+        },
+        "cost": 0.0062693,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0062693,
+        "market_cost": 0.0062693,
+        "prompt_tokens": 10333,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 20805
+      }
+    },
+    {
+      "cost_usd": 0.0160703,
+      "document_id": "public-12",
+      "effort": "high",
+      "elapsed_seconds": 21.221627541992348,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8da57cdc3315b9595fa8d98bc15e50695568d2556b05697929b8c98280fca53c",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "provider": "vertex",
+      "result_sha256": "0bf9420cc603b163f0a2177a392bfe8f194456d628ded6f2815e296284f79f75",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6101,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3751
+        },
+        "cost": 0.0160703,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0160703,
+        "market_cost": 0.0160703,
+        "prompt_tokens": 2726,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8827
+      }
+    },
+    {
+      "cost_usd": 0.0550845,
+      "document_id": "public-12",
+      "effort": "high",
+      "elapsed_seconds": 121.95876229097485,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "308c0b3a2819c29b3a228b1a4217d4e7a5c51424986ffb06e42a1875872d1ed0",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "provider": "vertex",
+      "result_sha256": "83fcf1ccd8f549669a072f578541cb3693615887a9bde89736dc64a68e90f664",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 14144,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 9479
+        },
+        "cost": 0.0550845,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0550845,
+        "market_cost": 0.0550845,
+        "prompt_tokens": 2726,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 16870
+      }
+    },
+    {
+      "cost_usd": 0.004427925,
+      "document_id": "public-12",
+      "effort": "high",
+      "elapsed_seconds": 41.82058900000993,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "d6694f408950fac90b627723037fce819793351b0b9ad7c6fd8e445766dddbec",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "provider": "openai",
+      "result_sha256": "edc67db68b90fdae27dab1aa709ebdff2f19cdfdb86bd727b56be2cd0264e544",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 15885,
+        "completion_tokens": 4884,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2677
+        },
+        "cost": 0.004427925,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.004427925,
+        "market_cost": 0.004427925,
+        "prompt_tokens": 15888,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 20772
+      }
+    },
+    {
+      "cost_usd": 0.0183737,
+      "document_id": "public-15",
+      "effort": "high",
+      "elapsed_seconds": 90.34859999999753,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "0b8cd547f0efe2e61d44cb4177fb885c068687134fdb92ad6b4e783c1b0c0a92",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "provider": "anthropic",
+      "result_sha256": "a83c71b8f1c7efaea2da88e0482d1fac755743e64ad1e2fdd5a9ca3339dd020e",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 28116,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 8307
+        },
+        "cost": 0.0183737,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0183737,
+        "market_cost": 0.0183737,
+        "prompt_tokens": 43157,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 71273
+      }
+    },
+    {
+      "cost_usd": 0.0513083,
+      "document_id": "public-15",
+      "effort": "high",
+      "elapsed_seconds": 60.64032941698679,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "7871f45ff15d149af8c3544e0fb33bb3dc47301dd9fbe830955aeb435ed5f507",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "provider": "vertex",
+      "result_sha256": "f19f79882523274fac7585937ed6df59dd312899466dd74bab596116e9bd0f9b",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 19385,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 9893
+        },
+        "cost": 0.0513083,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0513083,
+        "market_cost": 0.0513083,
+        "prompt_tokens": 9486,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 28871
+      }
+    },
+    {
+      "cost_usd": 0.05312325,
+      "document_id": "public-15",
+      "effort": "high",
+      "elapsed_seconds": 64.36795454099774,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b7dd44a9416bcfa5a2bd98123aaa68c3ceec947130cdcc7561afe99582870c40",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "provider": "vertex",
+      "result_sha256": "d7c6ffb3c3456747e402375104852d834cb27d82266e3117bcb367ff835cc864",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 12269,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1643
+        },
+        "cost": 0.05312325,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.05312325,
+        "market_cost": 0.05312325,
+        "prompt_tokens": 9486,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 21755
+      }
+    },
+    {
+      "cost_usd": 0.00707705,
+      "document_id": "public-15",
+      "effort": "high",
+      "elapsed_seconds": 100.15657566598384,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "efa62447fcd516dfda8fb8da5abb8395eba4f3cd4336c93607cd7b5bdb9739c9",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "provider": "openai",
+      "result_sha256": "3419d4bdb0876ea9806e8a9f1c19b153d68d54d108d960d011d71c0ca79c2452",
+      "schema_validity": "invalid",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": false,
+      "usage": {
+        "cache_creation_input_tokens": 14646,
+        "completion_tokens": 10492,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1537
+        },
+        "cost": 0.00707705,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.00707705,
+        "market_cost": 0.00707705,
+        "prompt_tokens": 14649,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 25141
+      }
+    },
+    {
+      "cost_usd": 0.0048352,
+      "document_id": "public-16",
+      "effort": "high",
+      "elapsed_seconds": 27.6164165000082,
+      "error_code": null,
+      "fence_recovered": true,
+      "field_object_readable": true,
+      "field_object_view": "outer_json_fence_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "a0fab7dc7864bbf80053fc56c7c3ecbab764a17c7fbf6cfc3b5472c1833c66dd",
+      "json_syntax": "invalid_json",
+      "max_tokens": 65000,
+      "model": "anthropic/claude-haiku-5.5",
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "provider": "anthropic",
+      "result_sha256": "8b47bb103de186935f9f406efbf906be646056c83dfab9dc4440b84bd23a201f",
+      "schema_validity": "unavailable",
+      "status": "incomplete",
+      "strict_usable": false,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8000,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3265
+        },
+        "cost": 0.0048352,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0048352,
+        "market_cost": 0.0048352,
+        "prompt_tokens": 8352,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 16352
+      }
+    },
+    {
+      "cost_usd": 0.0110893,
+      "document_id": "public-16",
+      "effort": "high",
+      "elapsed_seconds": 15.750922125007492,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "eb0b17913deadfaf844669d303b949b1f4edba8747323d14377217743c44290d",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.5-flash-lite",
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "provider": "vertex",
+      "result_sha256": "9308c6cb8b75a473778e8cdedfe1034a047c38706fc6393b217bfb25706b5521",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4171,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1817
+        },
+        "cost": 0.0110893,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0110893,
+        "market_cost": 0.0110893,
+        "prompt_tokens": 2206,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 6377
+      }
+    },
+    {
+      "cost_usd": 0.0230745,
+      "document_id": "public-16",
+      "effort": "high",
+      "elapsed_seconds": 35.980526125000324,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "6a7d2a9b3ffb987f87668601c6cd40fc4a3f12181f585b1755f7ecc03e809bac",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "google/gemini-3.8-flash",
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "provider": "vertex",
+      "result_sha256": "8db7b02818ab3c3294b680292c0daf787febbd0bf1af4a9e95872389d30af0a4",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5712,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3031
+        },
+        "cost": 0.0230745,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0230745,
+        "market_cost": 0.0230745,
+        "prompt_tokens": 2206,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 7918
+      }
+    },
+    {
+      "cost_usd": 0.0041953,
+      "document_id": "public-16",
+      "effort": "high",
+      "elapsed_seconds": 40.45785804200568,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "28c18a402d7b6847094298ffb9f7f1081ce3cacb4579f3fb9ee0e444ecd43133",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "openai/gpt-6-luna",
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "provider": "openai",
+      "result_sha256": "5b228dffb7e614f62d301537fdf5dd3fc7e0e2c655d04e5cb34378096c1f1123",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 13148,
+        "completion_tokens": 5103,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2387
+        },
+        "cost": 0.0041953,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0041953,
+        "market_cost": 0.0041953,
+        "prompt_tokens": 13151,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 18254
+      }
+    }
+  ],
+  "schema": "native-pdf-legacy-inspection/v1"
+}

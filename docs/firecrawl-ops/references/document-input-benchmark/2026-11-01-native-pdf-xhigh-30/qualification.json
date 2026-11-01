@@ -1,0 +1,59 @@
+{
+  "schema": "native-pdf-xhigh-qualification/v1",
+  "rows": [
+    {
+      "model": "meta/muse-spark-1.3-contributor",
+      "requested_provider": "meta",
+      "actual_provider": "meta",
+      "receipt_model": "meta/muse-spark-1.3-contributor",
+      "effort": "xhigh",
+      "max_tokens": 4096,
+      "http_status": 200,
+      "finish_reason": "stop",
+      "cost_usd": 0.0002911,
+      "is_byok": false,
+      "image_only_probe_sha256": "d64dfdb48b80399a628b1bcb1459ec050efd64cf935f731777cec698f148c04f",
+      "intent_sha256": "f93cb801ced0fd64a96d8aed1d789ec511ed7f5c52789ed3ac717dd71d5f9825",
+      "result_sha256": "778dc25f06fb8542340fca46aefa531d2f79e7be951edbfeb6072c88d8dc62e5",
+      "receipt_sha256": "9e5c6b3bb4758d394e10efa0492b17de06072bcc9b946fc7c8a00c32dc3ee1b4",
+      "script_sha256": "8107f6fbc1d2a4a908aba150698908327fe453df39531776b8898ab238dce943",
+      "marker_and_two_associations_pass": true
+    },
+    {
+      "model": "anthropic/claude-haiku-5.5",
+      "requested_provider": "anthropic",
+      "actual_provider": "anthropic",
+      "receipt_model": "anthropic/claude-haiku-5.5",
+      "effort": "xhigh",
+      "max_tokens": 4096,
+      "http_status": 200,
+      "finish_reason": "stop",
+      "cost_usd": 0.000341,
+      "is_byok": false,
+      "image_only_probe_sha256": "d64dfdb48b80399a628b1bcb1459ec050efd64cf935f731777cec698f148c04f",
+      "intent_sha256": "84deba5fdec42ca710cafd0120cf069dfe53617d3a834928860ded20f98057ee",
+      "result_sha256": "b5456eee0193d5c7b74fb40255f90c0a3e00ce6468c1316029011973109385aa",
+      "receipt_sha256": "e040843fb43dbd0f5a699400c2c9ecdabdf9c4645d567d83e8698d2af2c10220",
+      "script_sha256": "8107f6fbc1d2a4a908aba150698908327fe453df39531776b8898ab238dce943",
+      "marker_and_two_associations_pass": true
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "requested_provider": "openai",
+      "actual_provider": "openai",
+      "receipt_model": "openai/gpt-6-luna",
+      "effort": "xhigh",
+      "max_tokens": 4096,
+      "http_status": 200,
+      "finish_reason": "stop",
+      "cost_usd": 0.00034055,
+      "is_byok": false,
+      "image_only_probe_sha256": "d64dfdb48b80399a628b1bcb1459ec050efd64cf935f731777cec698f148c04f",
+      "intent_sha256": "6fab921e37dc3c8433aed68e84a34cedfc1a9378cc1056a4ae33d0892eb4f211",
+      "result_sha256": "0beefba01ba33cf24710cacdd5a9c42437eb09d2a4ff5307d139ff4d87c2fba4",
+      "receipt_sha256": "8c9ab712efd954b4bbef83bc5578a22e8d050bd8cf1189b1ca247923ef4087ae",
+      "script_sha256": "8107f6fbc1d2a4a908aba150698908327fe453df39531776b8898ab238dce943",
+      "marker_and_two_associations_pass": true
+    }
+  ]
+}
