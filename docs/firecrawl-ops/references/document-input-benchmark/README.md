@@ -2,6 +2,10 @@ Related program: [AGENTIC-5134](https://linear.app/agenticassets/issue/AGENTIC-5
 
 # Document text and native PDF comparison
 
+Cayman selected the [Meta High / AnyDoc / Haiku review policy](../native-pdf-extraction-routing.md)
+on November 1, 2026. The studies below remain historical measurements; source
+implementation and scheduled-worker acceptance are recorded separately.
+
 This reference preserves measured comparisons for the listing-brochure program. The reusable runner is [document_input](../../../../scripts/firecrawl-ops/benchmarks/document_input/README.md). It makes no collector, production model-profile, database, OM-writer or scheduler changes.
 
 The [open-weight model and provider follow-up](2026-11-01-open-models/README.md) adds current model research, synthetic PDF/image capability checks and a small matched brochure challenge. It is separate from the thirty-document cohort below.
