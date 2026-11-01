@@ -68,20 +68,36 @@ export function isPerSfText(text: string | null): boolean {
 // parseMoney
 // ---------------------------------------------------------------------------
 
+// A magnitude word directly after the number ("$275M", "$2.5 MM", "$1.2
+// million", "$500K", "$1.5B"). The lookahead keeps "$12 Monthly", "$5 Bldg",
+// "$950,000 M&M", "$40 m2", "$40 m²", "$24 M.G.", "$15 M/G" and "$3 B-2" from
+// reading as a magnitude; a sentence-ending "$2.5M." still does.
+const MONEY_RE =
+  /\$\s*([0-9]+(?:\.[0-9]+)?)(?:\s*(billion|bn|b|million|mil|mm|mn|m|thousand|k)(?![a-z0-9&²]|[./-][a-z0-9]))?/i;
+const MONEY_MAGNITUDE: Record<string, number> = {
+  billion: 1e9, bn: 1e9, b: 1e9,
+  million: 1e6, mil: 1e6, mm: 1e6, mn: 1e6, m: 1e6,
+  thousand: 1e3, k: 1e3,
+};
+// A magnitude word after an already-large number ("$950,000 M") is not a
+// multiplier; the number stands as written.
+const MONEY_MAGNITUDE_MAX_BASE = 10000;
+
 /**
  * Extract first "$N[,N][.N]" from text, strip commas, return as number.
- * Also handles bare numeric strings that start with a digit (no $ required)
- * when called internally from parseAmountIgnoringCurrencyLabel.
- * Returns null when no dollar amount is found.
+ * A magnitude suffix (K, M, MM, million, B, billion) multiplies the amount.
+ * Returns null when no positive dollar amount is found.
  */
 export function parseMoney(text: string | null): number | null {
   const s = toStr(text);
   if (!s) return null;
   // Match a $ followed by a number (commas as thousands separators OK).
-  const m = s.replace(/,/g, "").match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
+  const m = s.replace(/,/g, "").match(MONEY_RE);
   if (!m) return null;
-  const v = Number(m[1]);
-  return isFinite(v) && v > 0 ? v : null;
+  const base = Number(m[1]);
+  if (!isFinite(base) || base <= 0) return null;
+  const magnitude = m[2] && base < MONEY_MAGNITUDE_MAX_BASE ? MONEY_MAGNITUDE[m[2].toLowerCase()]! : 1;
+  return magnitude === 1 ? base : round(base * magnitude, 2);
 }
 
 /** Internal: parse a bare numeric string (no leading $). */
@@ -118,7 +134,17 @@ export function parseAmountIgnoringCurrencyLabel(text: string | null): number | 
 // acresToSf
 // ---------------------------------------------------------------------------
 
-const ACRES_RE = /([0-9][0-9,]*(?:\.[0-9]+)?)\s*ac(?:res?)?\b/i;
+// An approximate marker between the number and the unit ("4,863 +/-SF",
+// "2.00+/- Acres", "±12.65 ac") is allowed, as Pyramid writes every size that
+// way. Mirrors cre_parse._APPROX.
+const APPROX = String.raw`\s*(?:\+\s*\/\s*-|±)?\s*`;
+const ACRES_NO_COMMA_RE = new RegExp(String.raw`([0-9]+(?:\.[0-9]+)?)` + APPROX + String.raw`ac(?:res?)?\b`, "i");
+const SF_NO_COMMA_RE = new RegExp(
+  String.raw`([0-9]+(?:\.[0-9]+)?)` + APPROX + String.raw`(?:sf|sq\.?\s*ft|square\s*feet)\b`,
+  "i"
+);
+// A size summary that is only a unit count is not an area.
+const UNITS_ONLY_RE = /^\s*[0-9][0-9,]*\s*units?\s*$/i;
 
 /**
  * Acres -> SF (x 43560). Accepts "3.83 acres" / "3.83 ac" / bare number+unit.
@@ -127,7 +153,7 @@ const ACRES_RE = /([0-9][0-9,]*(?:\.[0-9]+)?)\s*ac(?:res?)?\b/i;
 export function acresToSf(text: string | null): number | null {
   const s = toStr(text);
   if (!s) return null;
-  const m = s.replace(/,/g, "").match(/([0-9]+(?:\.[0-9]+)?)\s*ac(?:res?)?\b/i);
+  const m = s.replace(/,/g, "").match(ACRES_NO_COMMA_RE);
   if (!m) return null;
   const acres = Number(m[1]);
   if (!isFinite(acres) || acres <= 0) return null;
@@ -214,11 +240,11 @@ export function parseSizeText(text: string | null): { sizeSf: number | null; lot
   const cleaned = s.replace(/,/g, "");
 
   // Match an explicit SF/sq.ft token.
-  const sfMatch = cleaned.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:sf|sq\.?\s*ft|square\s*feet)\b/i);
+  const sfMatch = cleaned.match(SF_NO_COMMA_RE);
   if (sfMatch) {
     const v = Number(sfMatch[1]);
     sizeSf = isFinite(v) && v > 0 ? v : null;
-  } else if (!ACRES_RE.test(s)) {
+  } else if (!ACRES_NO_COMMA_RE.test(cleaned) && !UNITS_ONLY_RE.test(s)) {
     // No explicit unit: treat the first number as SF (only when no acres token).
     const numMatch = cleaned.match(/([0-9]+(?:\.[0-9]+)?)/);
     if (numMatch) {

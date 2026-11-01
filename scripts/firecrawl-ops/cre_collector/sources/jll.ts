@@ -19,14 +19,13 @@ import {
   stripHtmlText,
   titleFromFilename,
 } from "../lib/html.js";
-import { normBuildingClass } from "../lib/parse.js";
+import { normBuildingClass, parseMoney } from "../lib/parse.js";
 import { recordJllDetailCache } from "../lib/performance.js";
 import { scrapeDoc } from "../lib/scrape.js";
 import { DocItem, MediaItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
 import {
   boundedInt,
   clean,
-  moneyToNumber,
   num,
   pmap,
   prune,
@@ -174,7 +173,7 @@ export function parseJllSearchPage(
       state: m ? m[2] : null,
       postalCode: m?.[3] ?? null,
       country: "US",
-      salePriceUsd: tx === "sale" ? moneyToNumber(priceText) : null,
+      salePriceUsd: tx === "sale" ? parseMoney(priceText) : null,
       salePriceText: tx === "sale" ? priceText : null,
       leaseRateText: tx === "lease" ? priceText : null,
       sizeText,
@@ -1598,6 +1597,11 @@ export function jllStrandedStructured(property: any): Record<string, any> {
   const extraFacts: Record<string, unknown> = {};
   if (locationDescription)
     extraFacts.location_description = locationDescription;
+  // Source tenure labels verbatim (today "sale" or "rent").
+  const tenureTypes = Array.isArray(property?.tenureTypes)
+    ? dedupeStrings(property.tenureTypes.map((value: any) => clean(value)).filter(Boolean))
+    : [];
+  if (tenureTypes.length) extraFacts.tenure_types = tenureTypes;
 
   return (
     prune({

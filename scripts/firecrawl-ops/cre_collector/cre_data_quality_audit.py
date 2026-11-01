@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cre_ingest import find_psql, load_db_url
+from cre_validate import LISTING_BASIS_WARN_KEYS, render_listing_basis_sql
 
 
 SOURCE_KEY_SQL = """
@@ -160,6 +161,11 @@ FROM active
 GROUP BY source_key
 ORDER BY source_key;
 """,
+    ),
+    "listing_basis_quality": AuditQuery(
+        "Listing Basis Quality",
+        render_listing_basis_sql(SOURCE_KEY_SQL, "::bigint", include_rows_checked=True),
+        "Report-only over active rows. Legacy rows are not repaired here; the listing-structure sidecar owns basis, and closed_price_text_active routes to the lifecycle owner.",
     ),
     "field_fill_by_source": AuditQuery(
         "High-Value Field Fill Rates",
@@ -684,6 +690,19 @@ def build_findings(results: dict[str, list[dict[str, Any]]]) -> list[dict[str, s
             findings.append(finding("INFO", f"{row['source_key']} state fill gap", f"{missing_state}/{rows} active rows have no state."))
         if missing_coords / rows >= 0.15:
             findings.append(finding("INFO", f"{row['source_key']} coordinate fill gap", f"{missing_coords}/{rows} active rows have no coordinates."))
+
+    for row in results.get("listing_basis_quality", []):
+        bits = [f"{key}={row[key]}" for key in LISTING_BASIS_WARN_KEYS if as_int(row.get(key))]
+        if bits:
+            findings.append(finding("WARN", f"{row['source_key']} listing basis flags", ", ".join(bits)))
+        if as_int(row.get("closed_price_text_active")):
+            findings.append(
+                finding(
+                    "INFO",
+                    f"{row['source_key']} active rows with closed price text",
+                    f"{row['closed_price_text_active']} active rows show a closed price; route to the lifecycle owner.",
+                )
+            )
 
     numeric_total = sum(as_int(row.get("flagged_rows")) for row in results.get("numeric_anomaly_summary", []))
     if numeric_total:

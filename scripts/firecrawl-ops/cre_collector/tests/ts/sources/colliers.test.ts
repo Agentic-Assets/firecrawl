@@ -32,6 +32,8 @@ import {
   colliersStrandedMedia,
   colliersStrandedStructured,
   srcColliers,
+  colliersAverageUnitSf,
+  enrichColliersCard,
 } from "../../../sources/colliers.js";
 import { harvestDetail } from "../../../lib/harvest.js";
 import { parseLeaseRate } from "../../../lib/parse.js";
@@ -657,4 +659,64 @@ test("Colliers SalesTracker does not retry malformed page data or exceed one eli
   laterMapAttempts = 0;
   await assert.rejects(srcColliers("sale", 4, false), /HTTP 503/);
   assert.deepEqual([laterListAttempts, laterMapAttempts], [2, 2]);
+});
+
+function salesTrackerCard(sizeText: string | null): any {
+  return {
+    id: "147023", mapProjectId: "147023",
+    url: "https://my.rcm1.com/handler/landing.aspx?pv=fixture",
+    detailUrl: "https://my.rcm1.com/handler/landing.aspx?pv=fixture", detailPv: "fixture",
+    name: "Indigo 19", transactionType: "Sale", assetType: null, status: null,
+    city: "Virginia Beach", state: "VA", country: "US",
+    salePriceUsd: null, salePriceText: null, sizeText,
+    latitude: null, longitude: null, brokerIds: [], contactsDetailed: [], photos: [],
+    colliersSalesTrackerCard: {},
+  };
+}
+
+function salesTrackerDetail(assetType: string, fields: Array<{ Name: string; Value: string }>): any {
+  return {
+    ProjectSummary: { ProjectId: 147023, ProjectName: "Indigo 19", AskingPrice: "$48,020,000", Address: {} },
+    ProjectDetails: { AssetType: { Value: assetType }, ProjectType: { Value: "Investment Sale" }, ProjectFields: fields },
+  };
+}
+
+test("Colliers multifamily average unit size never reaches building size", async (t) => {
+  installSalesTrackerFetch(t, async () => jsonResponse(
+    salesTrackerDetail("Multifamily - Mid-Rise", [{ Name: "Size", Value: "931 sq ft" }, { Name: "Units", Value: "196" }])
+  ));
+  const row: any = await enrichColliersCard(salesTrackerCard("931 sq ft"));
+  assert.equal(row.buildingSizeSqft, undefined);
+  assert.equal(row.sizeText, undefined, "the ingest would re-parse sizeText into size_sf");
+  assert.equal(row.extraFacts.avg_unit_sf, 931);
+  assert.equal(row.extraFacts.project_type, "Investment Sale");
+  assert.equal(row.colliersSalesTrackerDetail.sizeField, "931 sq ft");
+  assert.equal(row.units, 196);
+});
+
+test("Colliers average unit size is caught from the card when the detail has no Size", async (t) => {
+  installSalesTrackerFetch(t, async () => jsonResponse(
+    salesTrackerDetail("Multi Family", [{ Name: "Units", Value: "196" }])
+  ));
+  const row: any = await enrichColliersCard(salesTrackerCard("931 sq ft"));
+  assert.equal(row.sizeText, undefined);
+  assert.equal(row.extraFacts.avg_unit_sf, 931);
+});
+
+test("Colliers office Size stays building size", async (t) => {
+  installSalesTrackerFetch(t, async () => jsonResponse(salesTrackerDetail("Office", [{ Name: "Size", Value: "931 sq ft" }])));
+  const row: any = await enrichColliersCard(salesTrackerCard("931 sq ft"));
+  assert.equal(row.buildingSizeSqft, 931);
+  assert.equal(row.sizeText, "931 sq ft");
+  assert.equal(row.extraFacts.avg_unit_sf, undefined);
+});
+
+test("colliersAverageUnitSf: per-unit sizes with and without a unit count", () => {
+  assert.equal(colliersAverageUnitSf("Multifamily", 931, 196, 48_020_000), 931);
+  assert.equal(colliersAverageUnitSf("Multifamily", 2_400, 12, null), 2_400);
+  assert.equal(colliersAverageUnitSf("Multifamily", 182_000, 196, 48_020_000), null);
+  // No unit count: a small size priced above $1,000/SF is per unit.
+  assert.equal(colliersAverageUnitSf("Multifamily - Garden", 872, null, 95_760_000), 872);
+  assert.equal(colliersAverageUnitSf("Multifamily", 2_400, null, 600_000), null);
+  assert.equal(colliersAverageUnitSf("Retail", 931, 196, 48_020_000), null);
 });

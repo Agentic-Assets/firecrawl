@@ -14,8 +14,8 @@ import { BuildoutCurrentInventoryProof, BuildoutInventoryProofPage, SourceResult
 import { harvestDetail } from "../lib/harvest.js";
 import { captureDetailTables } from "../lib/detail-tables/index.js";
 import { assertBuildoutCaptureScope, BuildoutNativeCaptureError, BuildoutRepresentationError, publishBuildoutParsedPage, requireBuildoutJsonValue } from "../lib/source-evidence/buildout-page.js";
-import { clean, isPerSfPriceText, moneyToNumber, num, pmap } from "../lib/util.js";
-import { isPerSfText, parseLeaseRate, parseSizeText } from "../lib/parse.js";
+import { clean, isPerSfPriceText, num, pmap } from "../lib/util.js";
+import { isPerSfText, parseLeaseRate, parseMoney, parseSizeText } from "../lib/parse.js";
 import {
   generationMatches,
   refreshGenerationId,
@@ -1221,8 +1221,8 @@ export async function srcBuildout(
         // Apply the isPerSfText DQ guard: if salePriceText is a per-SF value,
         // suppress salePriceUsd (do not emit a false absolute price) and place
         // the value in salePricePerSf instead.
-        salePriceUsd: tx === "sale" && !isSalePsf && !isPerSfPriceText(priceText) ? moneyToNumber(priceText) : null,
-        salePricePerSf: tx === "sale" && (isSalePsf || isPerSfPriceText(priceText)) ? moneyToNumber(priceText) : null,
+        salePriceUsd: tx === "sale" && !isSalePsf && !isPerSfPriceText(priceText) ? parseMoney(priceText) : null,
+        salePricePerSf: tx === "sale" && (isSalePsf || isPerSfPriceText(priceText)) ? parseMoney(priceText) : null,
         salePriceText: rawSalePriceText,
         leaseRateText,
         leaseRateMin: leaseRateMin,

@@ -21,12 +21,6 @@ export function boundedInt(value: string | undefined, fallback: number, lo: numb
   return Math.max(lo, Math.min(hi, Math.trunc(finite)));
 }
 
-export function moneyToNumber(t: string | null): number | null {
-  if (!t) return null;
-  const m = t.replace(/,/g, "").match(/\$\s*([0-9]+(?:\.[0-9]+)?)/);
-  return m ? Number(m[1]) : null;
-}
-
 export function isPerSfPriceText(t: string | null): boolean {
   return Boolean(t && /(?:\/|\bper\s+)\s*(?:s\.?f\.?|sq\.?\s*ft|square\s*feet)|\bpsf\b/i.test(t));
 }

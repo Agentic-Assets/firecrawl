@@ -10,8 +10,8 @@ import { refreshGenerationId } from "../lib/freshness.js";
 import { parseJsonBody } from "../lib/scrape.js";
 import { recordRetry } from "../lib/performance.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { parseLeaseRate } from "../lib/parse.js";
-import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import { parseLeaseRate, parseMoney } from "../lib/parse.js";
+import { clean, num, pmap, prune } from "../lib/util.js";
 import {
   COLLIERS_PAGE_SIZE as pureColliersPageSize,
   COLLIERS_RCM_BASE as pureColliersRcmBase,
@@ -325,7 +325,7 @@ export function parseColliersCards(
       city: location.city,
       state: location.state,
       country: "US",
-      salePriceUsd: moneyToNumber(salePriceText),
+      salePriceUsd: parseMoney(salePriceText),
       salePriceText,
       sizeText,
       latitude: mapCoordinates.latitude,
@@ -428,6 +428,28 @@ export function colliersSqftToNumber(value: string | null): number | null {
   if (!text) return null;
   const match = text.match(/([0-9][0-9,.]*)\s*(?:sq\.?\s*ft\.?|sf)\b/i);
   return match ? Number(match[1].replace(/,/g, "")) : null;
+}
+
+// Colliers SalesTracker multifamily "Size" is often the average unit size
+// ("931 sq ft" on a 196-unit mid-rise). The rule matches the cre_validate.py
+// mf_avg_unit_size check; without a unit count, a small size priced above
+// $1,000/SF is also read as per unit.
+const COLLIERS_MAX_SF_PER_UNIT = 300;
+const COLLIERS_MAX_AVG_UNIT_SF = 3000;
+const COLLIERS_MIN_UNITS_FOR_SMALL_SIZE = 10;
+const COLLIERS_MIN_PRICE_PER_SF_FOR_UNIT_SIZE = 1000;
+export function colliersAverageUnitSf(
+  assetType: string | null | undefined,
+  sizeSf: number | null,
+  units: number | null | undefined,
+  salePriceUsd: number | null | undefined
+): number | null {
+  if (!sizeSf || sizeSf <= 0 || !/multi[\s-]?family|apartment/i.test(assetType ?? "")) return null;
+  const small = sizeSf < COLLIERS_MAX_AVG_UNIT_SF;
+  if (units && units > 0) {
+    return sizeSf / units < COLLIERS_MAX_SF_PER_UNIT || (small && units > COLLIERS_MIN_UNITS_FOR_SMALL_SIZE) ? sizeSf : null;
+  }
+  return small && (salePriceUsd ?? 0) > sizeSf * COLLIERS_MIN_PRICE_PER_SF_FOR_UNIT_SIZE ? sizeSf : null;
 }
 
 export function colliersAcresToNumber(value: string | null): number | null {
@@ -598,13 +620,22 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
     const lr = parseLeaseRate(leaseRateText);
     // projectType into extraFacts (long-tail; no discrete column).
     const projectType = clean(details?.ProjectType?.Value);
-    const extraFacts = { ...(projectType ? { project_type: projectType } : {}), rcm_source_contacts: contactsDetailed };
+    const assetType = clean(details?.AssetType?.Value) ?? card.assetType;
+    const salePriceUsd =
+      parseMoney(clean(summary?.AskingPrice)) ?? parseMoney(colliersProjectField(details, "Asking Price")) ?? card.salePriceUsd;
+    const sizeField = colliersProjectField(details, "Size");
+    const avgUnitSf = colliersAverageUnitSf(assetType, colliersSqftToNumber(sizeField ?? card.sizeText), lifted.units, salePriceUsd);
+    const extraFacts = {
+      ...(projectType ? { project_type: projectType } : {}),
+      ...(avgUnitSf !== null ? { avg_unit_sf: avgUnitSf } : {}),
+      rcm_source_contacts: contactsDetailed,
+    };
     return prune({
       ...card,
       id: projectId,
       name: clean(summary?.ProjectName) ?? card.name,
       description,
-      assetType: clean(details?.AssetType?.Value) ?? card.assetType,
+      assetType,
       status: resolvedStatus,
       street: clean(address?.Street),
       city: clean(address?.City) ?? card.city,
@@ -613,10 +644,13 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
       country: clean(address?.CountryCode) ?? card.country,
       latitude: num(Number(address?.Latitude)) ?? card.latitude,
       longitude: num(Number(address?.Longitude)) ?? card.longitude,
-      salePriceUsd: moneyToNumber(clean(summary?.AskingPrice)) ?? moneyToNumber(colliersProjectField(details, "Asking Price")) ?? card.salePriceUsd,
+      salePriceUsd,
       salePriceText: clean(summary?.AskingPrice) ?? colliersProjectField(details, "Asking Price") ?? card.salePriceText,
-      sizeText: colliersProjectField(details, "Size") ?? card.sizeText,
-      buildingSizeSqft: colliersSqftToNumber(colliersProjectField(details, "Size")),
+      // An average unit size is not building area: neither the number nor the
+      // text (which the ingest would re-parse) may reach size_sf. The value
+      // rides extra_facts.avg_unit_sf; the raw label stays in the detail block.
+      sizeText: avgUnitSf !== null ? null : sizeField ?? card.sizeText,
+      buildingSizeSqft: avgUnitSf !== null ? null : colliersSqftToNumber(sizeField),
       lotSizeAcres: colliersAcresToNumber(colliersProjectField(details, "Parcel")),
       yearBuilt: num(Number(colliersProjectField(details, "Year Built"))),
       ...lifted,
@@ -639,6 +673,7 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
         projectId,
         projectType,
         assetType: clean(details?.AssetType?.Value),
+        sizeField,
         pageTitle: clean(detail?.Seo?.PageTitle),
         photoCount: Array.isArray(detail?.GalleryImages) ? detail.GalleryImages.length : 0,
         contactCount: contactsDetailed.length,

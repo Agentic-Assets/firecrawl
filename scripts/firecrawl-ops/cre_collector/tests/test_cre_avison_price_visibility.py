@@ -106,9 +106,11 @@ def test_independent_staged_economics_are_not_cleared():
     row = ingest.to_row(listing(), {}, None)
     row.update(price_per_unit=10, price_per_acre=30, grm=9)
     projected = visibility.project_row(row)
+    # Avison's price_per_acre is the SharpLaunch sale_unit_price on land, an
+    # asking amount, so a withheld row clears it; the others stay independent.
     assert [projected[k] for k in ("price_per_unit", "price_per_acre", "grm")] == [
         10,
-        30,
+        None,
         9,
     ]
 

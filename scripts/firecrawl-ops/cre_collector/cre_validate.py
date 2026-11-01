@@ -20,6 +20,7 @@ from pathlib import Path
 from cre_ingest import (
     INVENTORY_ONLY_SOURCE_DEFINITIONS,
     MAX_NORMALIZED_SALE_PRICE_USD,
+    MIN_PLAUSIBLE_CAP_RATE,
     assert_expected_database_target,
     find_psql,
     load_db_url,
@@ -47,6 +48,130 @@ CHECKPOINT_PREFLIGHT_QUERY_NAMES = (
 )
 
 SOURCE_KEY_SQL = source_key_sql()
+
+# Report-only listing-basis diagnostics over active rows: the single source for
+# the validator query and the data-quality audit. The legacy rows these flag are
+# not repaired here; the listing-structure sidecar owns basis.
+LISTING_BASIS_MIN_MF_AVG_UNIT_SF = 300
+LISTING_BASIS_MIN_MF_LARGE_COMPLEX_SF = 3000
+LISTING_BASIS_MF_LARGE_COMPLEX_UNITS = 10
+LISTING_BASIS_PSF_MISMATCH_TOLERANCE = 0.02
+LISTING_BASIS_SIZE_LOT_TOLERANCE = 0.01
+LISTING_BASIS_TINY_SIZE_SF = 100
+LISTING_BASIS_MAX_NON_PORTFOLIO_PRICE_USD = 1_000_000_000
+
+# Ordered (check name, SQL boolean over the active listing row).
+LISTING_BASIS_CHECKS: tuple[tuple[str, str], ...] = (
+    (
+        "mf_avg_unit_size",
+        f"""property_type = 'multifamily'
+      AND units > 0
+      AND size_sf > 0
+      AND (
+        size_sf::numeric / units < {LISTING_BASIS_MIN_MF_AVG_UNIT_SF}
+        OR (
+          size_sf < {LISTING_BASIS_MIN_MF_LARGE_COMPLEX_SF}
+          AND units > {LISTING_BASIS_MF_LARGE_COMPLEX_UNITS}
+        )
+      )""",
+    ),
+    (
+        "stored_psf_mismatch",
+        f"""sale_price_per_sf IS NOT NULL
+      AND sale_price_usd > 0
+      AND size_sf > 0
+      AND abs(sale_price_per_sf - sale_price_usd::numeric / size_sf)
+        > {LISTING_BASIS_PSF_MISMATCH_TOLERANCE} * (sale_price_usd::numeric / size_sf)""",
+    ),
+    (
+        "stored_psf_without_size",
+        """sale_price_per_sf IS NOT NULL
+      AND (size_sf IS NULL OR size_sf = 0)""",
+    ),
+    (
+        "land_stored_psf_without_size",
+        """sale_price_per_sf IS NOT NULL
+      AND (size_sf IS NULL OR size_sf = 0)
+      AND property_type = 'land'""",
+    ),
+    (
+        "non_land_size_equals_lot",
+        f"""property_type IS DISTINCT FROM 'land'
+      AND size_sf > 0
+      AND lot_size_sf > 0
+      AND abs(size_sf - lot_size_sf) <= {LISTING_BASIS_SIZE_LOT_TOLERANCE} * lot_size_sf""",
+    ),
+    (
+        "land_size_without_lot",
+        """property_type = 'land'
+      AND size_sf IS NOT NULL
+      AND lot_size_sf IS NULL""",
+    ),
+    (
+        "tiny_size_with_price",
+        f"size_sf > 0 AND size_sf < {LISTING_BASIS_TINY_SIZE_SF} AND sale_price_usd > 0",
+    ),
+    (
+        "cap_rate_under_2pct",
+        f"cap_rate > 0 AND cap_rate < {MIN_PLAUSIBLE_CAP_RATE}",
+    ),
+    (
+        "lease_with_sale_price",
+        "transaction_type = 'lease' AND sale_price_usd IS NOT NULL",
+    ),
+    (
+        "price_over_1b_non_portfolio",
+        f"""sale_price_usd > {LISTING_BASIS_MAX_NON_PORTFOLIO_PRICE_USD}
+      AND coalesce(title, '') !~* 'portfolio'""",
+    ),
+    (
+        "closed_price_text_active",
+        "lower(btrim(raw_data->>'salePriceText')) = 'closed'",
+    ),
+)
+
+# closed_price_text_active is a lifecycle finding, so it is informational here
+# and never joins the basis warning set.
+LISTING_BASIS_INFO_KEY = "closed_price_text_active"
+LISTING_BASIS_WARN_KEYS = tuple(
+    name for name, _ in LISTING_BASIS_CHECKS if name != LISTING_BASIS_INFO_KEY
+)
+
+
+def render_listing_basis_sql(
+    source_key_sql_text: str,
+    count_cast: str,
+    *,
+    include_rows_checked: bool = False,
+) -> str:
+    """Per-source counts for every listing-basis check over active rows.
+
+    The validator renders text counts; the audit adds rows_checked and bigint
+    counts.
+    """
+    rows_checked = (
+        f"  count(*){count_cast} AS rows_checked,\n" if include_rows_checked else ""
+    )
+    counts = ",\n".join(
+        f"  count(*) FILTER (\n    WHERE {condition}\n  ){count_cast} AS {name}"
+        for name, condition in LISTING_BASIS_CHECKS
+    )
+    return f"""
+WITH active AS (
+  SELECT
+    {source_key_sql_text} AS source_key,
+    l.*
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL AND l.status = 'active'
+)
+SELECT
+  source_key,
+{rows_checked}{counts}
+FROM active
+GROUP BY source_key
+ORDER BY source_key;
+"""
 
 # Raw payloads may be stored flat, as a merged sale/lease pass, or beneath the
 # inventory-only preservation wrapper.  Keep this ordered tuple shared by the
@@ -769,6 +894,9 @@ FROM active
 GROUP BY source_key
 ORDER BY source_key;
 """,
+    # Report-only; closed_price_text_active is a lifecycle finding routed to the
+    # lifecycle owner.
+    "listing_basis_quality": render_listing_basis_sql(SOURCE_KEY_SQL, "::text"),
     "duplicates": f"""
 WITH active AS (
   SELECT
@@ -1489,6 +1617,7 @@ def render_markdown(report):
         "inventory_only_index": "Inventory-Only Source Index",
         "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
+        "listing_basis_quality": "Listing Basis Quality",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",

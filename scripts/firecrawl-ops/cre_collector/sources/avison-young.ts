@@ -1,4 +1,5 @@
 import { extractAvisonLeaseFacts } from "./pure/avison-lease-facts.js";
+import { avisonYoungPricePerAcre, avisonYoungSaleType } from "./pure/avison-listing-structure.js";
 // sources/avison-young.ts - extracted verbatim from collect.ts (see tasks/tmp backup)
 import * as cheerio from "cheerio";
 import { lookup } from "node:dns/promises";
@@ -2210,6 +2211,7 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     rawSubtypes: rawTypes,
     // The feed does not declare a per-SF basis for this value. Retain it untyped.
     saleUnitPrice: num(row.sale_unit_price),
+    pricePerAcre: avisonYoungPricePerAcre(row),
     availableMinSqft: num(row.availabilities_min_surface_sqft),
     availableMaxSqft: num(row.availabilities_max_surface_sqft),
     // Stranded structured-field lift onto the shared listing vocabulary keys.
@@ -2505,12 +2507,17 @@ export async function enrichAvisonYoungListing(
     detailUnavailableReason: undefined,
     detailWarning: errors.length ? errors.join("; ") : undefined,
   }) ?? {};
-  if (leaseFacts) {
+  const saleType = avisonYoungSaleType(docs);
+  if (leaseFacts || saleType) {
     const extraFacts =
       base.extraFacts !== null && typeof base.extraFacts === "object" && !Array.isArray(base.extraFacts)
         ? base.extraFacts
         : {};
-    result.extraFacts = { ...extraFacts, avison_lease_facts: leaseFacts };
+    result.extraFacts = {
+      ...extraFacts,
+      ...(leaseFacts ? { avison_lease_facts: leaseFacts } : {}),
+      ...(saleType ? { sale_type: saleType } : {}),
+    };
   }
   return result;
 }

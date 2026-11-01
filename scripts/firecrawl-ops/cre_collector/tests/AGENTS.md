@@ -217,7 +217,7 @@ should import those modules directly, not `config.ts` or `collect.ts`.
 | File | Focus |
 |------|-------|
 | `smoke.test.ts` | Harness wiring smoke check |
-| `lib/util.test.ts` | `clean`, `num`, `boundedInt`, `moneyToNumber`, `isPerSfPriceText`, `prune`, `pmap` |
+| `lib/util.test.ts` | `clean`, `num`, `boundedInt`, `isPerSfPriceText`, `prune`, `pmap` |
 | `lib/html.test.ts` | `decodeHtmlEntities`, `jsonLdObjects`, `firstJsonLd`, sitemap XML, `dedupeStrings` |
 | `lib/scrape.test.ts` | `parseJsonBody`, `repairUnescapedJsonStringQuotes` (no network) |
 | `lib/broker.test.ts` | `brokerRef` dedupe and field merge (`resetBrokerStateForTests`) |

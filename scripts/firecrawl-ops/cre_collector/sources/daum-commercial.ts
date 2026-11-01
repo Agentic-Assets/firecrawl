@@ -6,7 +6,8 @@ import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshD
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { SourceResult, Tx, type DaumInventoryPass, type DaumInventoryRow, type DaumDetail, type DaumEmptyTitleObservation } from "../types.js";
 import { daumProof } from "./pure/daum-proof.js";
-import { clean, moneyToNumber, prune } from "../lib/util.js";
+import { parseMoney } from "../lib/parse.js";
+import { clean, prune } from "../lib/util.js";
 import { canonicalDaumPropertyUrl, daumAbsoluteUrl, daumListingId, DAUM_HOST, DAUM_SEARCH_URL, daumPageUrl, daumTenure, resolveDaumTenure, type DaumTenure } from "./pure/daum-identity.js";
 import { DaumPoliteTransport } from "./daum-transport.js";
 
@@ -54,8 +55,8 @@ function signedNumber(value: unknown): number | null {
 
 function meaningfulMoney(value: unknown): string | null {
   const text = clean(value);
-  const amount = moneyToNumber(text);
-  return amount && amount > 0 ? text : null;
+  const amount = parseMoney(text);
+  return amount !== null ? text : null;
 }
 
 export function parseDaumSearchPage(html: string): DaumPage {
@@ -619,7 +620,7 @@ export function mapDaumListing(
     postalCode: detail.postalCode ?? inventory.postalCode,
     latitude: inventory.latitude,
     longitude: inventory.longitude,
-    salePriceUsd: tx === "sale" ? moneyToNumber(salePriceText) : null,
+    salePriceUsd: tx === "sale" ? parseMoney(salePriceText) : null,
     salePriceText: tx === "sale" ? salePriceText : null,
     leaseRateText: tx === "lease" ? detail.leaseRateText ?? inventory.leaseRateText : null,
     sizeText: detail.sizeText ?? inventory.sizeText,

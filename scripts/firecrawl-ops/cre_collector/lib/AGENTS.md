@@ -26,7 +26,7 @@ READ ~/AGENTS.md FIRST (skip if missing).
 | `enrichment-evidence/` | Bounded private generic and Buildout enrichment observations, separate from canonical rows and queue completion. Source results mark incomplete evidence without discarding qualified rows; read scoped `AGENTS.md` and README. Targeted artifacts are not automatically saved to the evidence database. |
 | `broker.ts` | Run-wide `brokers[]` + `brokerRef()` dedupe (`email\|name\|company`); merged by `collect.ts` |
 | `html.ts` | JSON-LD, sitemap XML, entity decode, `stripHtmlText`, `dedupeStrings` |
-| `util.ts` | `clean`, `num`, `prune`, `pmap`, `moneyToNumber`, `isPerSfPriceText`, `boundedInt` |
+| `util.ts` | `clean`, `num`, `prune`, `pmap`, `isPerSfPriceText`, `boundedInt` (money text goes through `parse.ts` `parseMoney`) |
 
 ## Naming & Boundaries
 

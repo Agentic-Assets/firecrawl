@@ -1310,3 +1310,22 @@ for (const scenario of [
     }
   });
 }
+
+test("Colliers-main Coveo sale and lease type IDs are carried verbatim", () => {
+  const mapped = mapColliersMainCoveoListing(
+    { id: "usa1171157", url: "https://www.colliers.com/en/properties/a/usa1171157", lastmod: "2026-10-01" },
+    { raw: {
+      propertyz32xtitle: "Free Standing Walgreens",
+      propertyz32xfullz32xaddress: "2205 W 22nd St, Oak Brook, IL 60523, USA",
+      forz32xsale: "1",
+      forz32xlease: "1",
+      salez32xtype: "E339916E-B7C0-45AD-8178-6D862EB519FB",
+      leasez32xtype: "6ab7b7628c1241839f17f10a09bc3a19",
+    } } as any
+  );
+  assert.deepEqual(mapped.extraFacts, {
+    colliers_sale_type_id: "e339916eb7c045ad81786d862eb519fb",
+    colliers_lease_type_id: "6ab7b7628c1241839f17f10a09bc3a19",
+  });
+  assert.equal(mapped.colliersMain.rawPricing.saleType, "E339916E-B7C0-45AD-8178-6D862EB519FB");
+});

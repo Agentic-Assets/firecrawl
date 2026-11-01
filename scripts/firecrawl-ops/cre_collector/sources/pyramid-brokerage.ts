@@ -8,7 +8,8 @@ import { CONCURRENCY } from "../lib/config.js";
 import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshPropertyDetails } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { PyramidCurrentInventoryProof, PyramidInventoryPass, SourceResult, Tx } from "../types.js";
-import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
+import { parseMoney, parseSizeText } from "../lib/parse.js";
+import { clean, pmap, prune } from "../lib/util.js";
 
 export const PYRAMID_HOST = "https://www.pyramidbrokerage.com";
 export const PYRAMID_INVENTORY_URL =
@@ -571,6 +572,32 @@ function pyramidFeaturedPhoto(row: any): string | null {
   );
 }
 
+// Pyramid states building area ("Building Size") apart from available space
+// ("Available", "Smallest/Largest Available"), every value as "N +/-SF" or
+// "N+/- Acres". Building area alone may reach size_sf: an available-space value
+// rides availableSf, and only an acreage-only availability (land offered) is
+// passed on as sizeText so the ingest can route it to lot_size_sf.
+export function pyramidSizeFacts(facts: Record<string, string> | undefined): {
+  sizeText?: string;
+  buildingSizeSqft?: number;
+  availableSf?: number;
+} {
+  const building = clean(facts?.["Building Size"]);
+  const buildingSize = parseSizeText(building);
+  const available = [facts?.Available, facts?.["Largest Available"], facts?.["Smallest Available"]]
+    .map((value) => clean(value))
+    .filter((value): value is string => Boolean(value) && /\b(?:sf|sq|ac|acres?)\b/i.test(value!))
+    .map((text) => ({ text, ...parseSizeText(text) }));
+  const availableSf = available.find((value) => value.sizeSf !== null)?.sizeSf;
+  const acreageOnly = available.find((value) => value.lotSf !== null && value.sizeSf === null)?.text;
+  const sizeText = buildingSize.sizeSf !== null || buildingSize.lotSf !== null ? building : acreageOnly;
+  return {
+    ...(sizeText ? { sizeText } : {}),
+    ...(buildingSize.sizeSf !== null ? { buildingSizeSqft: buildingSize.sizeSf } : {}),
+    ...(availableSf != null ? { availableSf } : {}),
+  };
+}
+
 function pyramidEmbeddedTerms(row: any, taxonomy: string): string[] {
   const groups = Array.isArray(row?._embedded?.["wp:term"]) ? row._embedded["wp:term"] : [];
   return groups
@@ -626,13 +653,10 @@ export function mapPyramidListing(
     state: pyramidEmbeddedTerms(row, "state")[0],
     city: pyramidEmbeddedTerms(row, "city")[0],
     county: pyramidEmbeddedTerms(row, "county")[0],
-    salePriceUsd: tx === "sale" ? moneyToNumber(priceText) : null,
+    salePriceUsd: tx === "sale" ? parseMoney(priceText) : null,
     salePriceText: tx === "sale" ? priceText : null,
     leaseRateText: tx === "lease" ? priceText : null,
-    sizeText:
-      detail?.facts?.["Smallest Available"] && detail?.facts?.["Largest Available"]
-        ? `${detail.facts["Smallest Available"]} - ${detail.facts["Largest Available"]}`
-        : detail?.facts?.["Largest Available"] ?? detail?.facts?.["Smallest Available"],
+    ...pyramidSizeFacts(detail?.facts),
     brokerIds: brokers,
     contactsDetailed: detail?.contacts,
     brochures: detail?.brochures,

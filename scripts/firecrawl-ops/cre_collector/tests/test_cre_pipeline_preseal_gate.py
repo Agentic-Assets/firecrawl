@@ -246,7 +246,7 @@ def test_preseal_hold_writes_nothing_while_other_unit_gets_full_audit_and_readba
     assert units[0]["state"] == "verified"
     assert units[0]["unit_id"] == "unit-0001"
     report = json.loads((case.root / units[0]["validation_path"]).read_text())
-    assert set(report["queries"]) == set(QUERIES) and len(report["queries"]) == 14
+    assert set(report["queries"]) == set(QUERIES) and len(report["queries"]) == 15
     assert case.manifest["pipeline"]["status"] == "partial"
     assert (case.root / "sources/cbre.json").is_file()
     gate = held["gate"]

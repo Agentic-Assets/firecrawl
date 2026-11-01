@@ -7,7 +7,8 @@ import {
   refreshStartedAt,
   requireFreshDetails,
 } from "../lib/freshness.js";
-import { clean, moneyToNumber, pmap, prune } from "../lib/util.js";
+import { parseMoney } from "../lib/parse.js";
+import { clean, pmap, prune } from "../lib/util.js";
 import { SourceResult, Tx } from "../types.js";
 import { matthewsTenureFromUrl } from "./pure/matthews-identity.js";
 import { matthewsSpaceFacts } from "./pure/matthews-space-facts.js";
@@ -433,7 +434,7 @@ export function parseMatthewsDetail(
     state: addr.state,
     postalCode: addr.postalCode,
     country: "US",
-    salePriceUsd: tx === "sale" && realPrice ? moneyToNumber(realPrice) : null,
+    salePriceUsd: tx === "sale" && realPrice ? parseMoney(realPrice) : null,
     salePriceText: tx === "sale" ? realPrice : null,
     capRatePct,
     leaseRateText: tx === "lease" ? realPrice ?? priceText ?? null : null,

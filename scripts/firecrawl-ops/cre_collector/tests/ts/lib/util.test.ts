@@ -4,7 +4,6 @@ import {
   clean,
   num,
   boundedInt,
-  moneyToNumber,
   isPerSfPriceText,
   prune,
   pmap,
@@ -46,17 +45,6 @@ test("boundedInt clamps and truncates", () => {
 test("boundedInt uses fallback for undefined and non-finite input", () => {
   assert.equal(boundedInt(undefined, 5, 1, 10), 5);
   assert.equal(boundedInt("not-a-number", 7, 1, 10), 7);
-});
-
-test("moneyToNumber parses dollar amounts", () => {
-  assert.equal(moneyToNumber("$1,250,000"), 1250000);
-  assert.equal(moneyToNumber("asking $ 42.50 today"), 42.5);
-});
-
-test("moneyToNumber returns null when no dollar amount", () => {
-  assert.equal(moneyToNumber(null), null);
-  assert.equal(moneyToNumber(""), null);
-  assert.equal(moneyToNumber("price on application"), null);
 });
 
 test("isPerSfPriceText detects per-SF lease phrasing", () => {
