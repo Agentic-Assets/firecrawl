@@ -1,0 +1,63 @@
+{
+  "schema": "open-model-document-study-provenance/v1",
+  "checked_utc": "2026-11-01T18:39:00.174310+00:00",
+  "parent_issues": [
+    "AGENTIC-5134",
+    "AGENTIC-2895"
+  ],
+  "consumer_issues": [
+    "AGENTIC-5140",
+    "AGENTIC-5141"
+  ],
+  "source_baseline_git_sha": "90a13e7e94f5585a6855ce17703e0c1409155a33",
+  "paid_request_count": 48,
+  "synthetic_request_count": 18,
+  "brochure_request_count": 30,
+  "brochure_document_count": 3,
+  "brochure_pages": 17,
+  "private_manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+  "executed_helper_sha256": "8e7e4df6217e9717e37ae8eea83439056819d0f06d3472ce6585fc985e15d330",
+  "scripts_sha256": {
+    "export.py": "e700298d55d97737486bdeb37d6648e2254fdf24a17ae1b202b7e118cb465b81",
+    "inkling.py": "4be7276c5792179a0aa082489f05e4ca628c9eee65bb66f8afa8769bee8f0ecb",
+    "pilot.py": "633c6c25473b695dbd5456b24a3b1781247a58d13c65452553f844c7bb062523",
+    "postprocess.py": "ea03d79b309b95196059ad09a4a406b4995bc45dcf161ce0bdc77382a7853915",
+    "resume.py": "e27f2744fb6718dfdc05e6c4e03a906b4c8bdd84c34b554e2e554631fb9674e9",
+    "runner.py": "8e7e4df6217e9717e37ae8eea83439056819d0f06d3472ce6585fc985e15d330"
+  },
+  "run_metadata_sha256": {
+    "inkling-run.json": "e4caae93abd176619a85dafe8f8f4dd13f488ffc9f83c22e098f617b9589ff3a",
+    "resume-run.json": "2f060cccce5b543a74a52eec683ed4ef79242241351890aa40ee2b70b71f0f9d",
+    "run.json": "78ac4d17dc5152faf63cd5bc385ca4d711c121e03d8ce91cd7ccff55d183a111"
+  },
+  "private_qualification_script_sha256": "bff2296d66c70c861103fef7afdcced8447a26a4356101c9b1f7b9898a84a29d",
+  "private_extension_script_sha256": "32ef33486dcb4233c62a68e50b447b57cc0dceeb900a24fbe62bb263ed0bdfc4",
+  "private_original_qualification_audit_sha256": "3873a2a5df48c2375935ba77e493721db809abcd0ea0855a0ae881a3f5fa0c3f",
+  "private_extension_audit_sha256": "4b2fae64805b0f0e69a50ff8588427a91629a8b8ac277c900a4a152454f224a0",
+  "known_brochure_cost_usd": 0.250102286,
+  "known_synthetic_cost_usd": 0.003849642,
+  "known_total_cost_usd": 0.253951928,
+  "unreconciled_brochure_cost_count": 0,
+  "unknown_rejected_probe_cost_count": 10,
+  "unresolved_dispatch_count": 0,
+  "client_inference_retry_count": 0,
+  "production_changes": false,
+  "future_evaluation_direction": {
+    "text_baseline": "latest verified DeepSeek Flash release",
+    "current_verified_id": "deepseek/deepseek-v4.1-flash-1017",
+    "native_document_candidates": "high intelligence, low measured task cost and latency; open or closed eligible",
+    "no_more_minimax_or_glm_experiments": true,
+    "automatic_production_model_upgrades_authorized": false
+  },
+  "raw_evidence": "Owner-only ignored scratch; no source bodies, response bodies, private witnesses, credentials or generation identifiers committed. Source URLs/hashes are in the original public corpus index.",
+  "reproduction_limit": "Scratch dispatch scripts identified by hash, not committed as a new runner. Exact source bytes and private reviewed gold required; no one-command reproduction claim.",
+  "artifact_sha256": {
+    "README.md": "499665c5975fa2347ecdeccf10628ad69e2a64064315f7f93a9540aca274a49a",
+    "association-audit.json": "54c316669781d3fcd9783f171fd7f8cce1b44f1ba88c71895f6fe954c51b62fd",
+    "capability-probes.json": "03a855dc773ef018654e17bfb814a5734d0ca3caa8199d2e5a77c7ab3eb07028",
+    "historical-comparators.json": "a21168718479e65980d69b2489ffd88e9a11249995de848907bacbaff30bdf70",
+    "pilot-measurements.json": "4985e0b6a310e01e879f8d22b8f6dcdbb69fd6c98305f0b70cbb47b67c99241a",
+    "research.json": "aa5c968ed63fd2d1f42ce170eb3309610d8698a5cdd7a8aac500ad6e9275fd98"
+  }
+}

@@ -1,0 +1,533 @@
+{
+  "checked_utc": "2026-11-01T18:16:55.868903+00:00",
+  "aa_source": "https://artificialanalysis.ai/data-api/docs#overview-hero",
+  "aa_intelligence_version": 5,
+  "gateway_source": "https://ai-gateway.vercel.sh/v1/models",
+  "pricing_unit": "USD per million tokens; Gateway endpoint metadata, not measured task cost",
+  "aa_effort_warning": "AA row label only; unspecified effort remains unspecified. Scores are general intelligence, not extraction quality.",
+  "inkling_release_primary": "https://thinkingmachines.ai/news/inkling-small/",
+  "weight_availability": "Creator model cards report weights; checkpoint not downloaded and hosted provider identity does not prove exact checkpoint equivalence.",
+  "models": [
+    {
+      "gateway_id": "deepseek/deepseek-v4.1-flash-1017",
+      "release_date_gateway": "2026-10-17",
+      "gateway_listed_modalities": [
+        "text",
+        "image"
+      ],
+      "aa_v5_variants": [
+        {
+          "slug": "deepseek-v4-1-flash-1017",
+          "name_including_effort": "DeepSeek V4.1 Flash 1017 (Max)",
+          "score": 32.5
+        },
+        {
+          "slug": "deepseek-v4-1-flash-1017-non-reasoning",
+          "name_including_effort": "DeepSeek V4.1 Flash 1017 (Non-reasoning)",
+          "score": 18.5
+        }
+      ],
+      "selected_provider_endpoints": [
+        {
+          "provider": "baseten",
+          "status": 0,
+          "input_usd_per_million": 0.3,
+          "output_usd_per_million": 1.2,
+          "zdr": true,
+          "no_training": true
+        },
+        {
+          "provider": "morph",
+          "status": 0,
+          "input_usd_per_million": 0.049999999999999996,
+          "output_usd_per_million": 0.192,
+          "zdr": true,
+          "no_training": true
+        }
+      ],
+      "license": "MIT",
+      "model_card": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+    },
+    {
+      "gateway_id": "minimax/minimax-m3.1-flash",
+      "release_date_gateway": "2026-10-19",
+      "gateway_listed_modalities": [
+        "text",
+        "image"
+      ],
+      "aa_v5_variants": [
+        {
+          "slug": "minimax-m3-1-flash",
+          "name_including_effort": "MiniMax-M3.1-Flash",
+          "score": 28.9
+        }
+      ],
+      "selected_provider_endpoints": [
+        {
+          "provider": "fireworks",
+          "status": 0,
+          "input_usd_per_million": 0.15,
+          "output_usd_per_million": 0.6,
+          "zdr": true,
+          "no_training": true
+        }
+      ],
+      "license": "MiniMax Community License: commercial use including API requires prominent Built with MiniMax M3.1-Flash attribution and one-time notice; prior written authorization if relevant products/services generate over USD 20 million annual revenue; prohibited uses apply.",
+      "model_card": "https://huggingface.co/MiniMaxAI/MiniMax-M3.1-Flash",
+      "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-M3.1-Flash/blob/main/LICENSE"
+    },
+    {
+      "gateway_id": "zai/glm-5.3-flash",
+      "release_date_gateway": "2026-08-26",
+      "gateway_listed_modalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "aa_v5_variants": [
+        {
+          "slug": "glm-5-3-flash",
+          "name_including_effort": "GLM-5.3-Flash",
+          "score": 27.8
+        }
+      ],
+      "selected_provider_endpoints": [
+        {
+          "provider": "baseten",
+          "status": 0,
+          "input_usd_per_million": 0.15,
+          "output_usd_per_million": 0.5,
+          "zdr": true,
+          "no_training": true
+        }
+      ],
+      "license": "MIT",
+      "model_card": "https://huggingface.co/zai-org/GLM-5.3-Flash"
+    },
+    {
+      "gateway_id": "alibaba/qwen3.8-27b",
+      "release_date_gateway": "2026-08-14",
+      "gateway_listed_modalities": [
+        "text",
+        "image",
+        "pdf",
+        "video"
+      ],
+      "aa_v5_variants": [
+        {
+          "slug": "qwen3-8-27b",
+          "name_including_effort": "Qwen3.8 27B (Xhigh)",
+          "score": 20.1
+        },
+        {
+          "slug": "qwen3-8-27b-medium",
+          "name_including_effort": "Qwen3.8 27B (Medium)",
+          "score": 17.5
+        },
+        {
+          "slug": "qwen3-8-27b-low",
+          "name_including_effort": "Qwen3.8 27B (Low)",
+          "score": 15.7
+        },
+        {
+          "slug": "qwen3-8-27b-non-reasoning",
+          "name_including_effort": "Qwen3.8 27B (Non-reasoning)",
+          "score": 10
+        }
+      ],
+      "selected_provider_endpoints": [
+        {
+          "provider": "alibaba",
+          "status": 0,
+          "input_usd_per_million": 0.5,
+          "output_usd_per_million": 3.0,
+          "zdr": true,
+          "no_training": true
+        },
+        {
+          "provider": "deepinfra",
+          "status": 0,
+          "input_usd_per_million": 0.15,
+          "output_usd_per_million": 1.875,
+          "zdr": false,
+          "no_training": true
+        },
+        {
+          "provider": "parasail",
+          "status": 0,
+          "input_usd_per_million": 0.24,
+          "output_usd_per_million": 2.2,
+          "zdr": true,
+          "no_training": true
+        }
+      ],
+      "license": "Apache-2.0",
+      "model_card": "https://huggingface.co/Qwen/Qwen3.8-27B"
+    },
+    {
+      "gateway_id": "nvidia/nemotron-3.5-super-vl",
+      "release_date_gateway": "2026-10-15",
+      "gateway_listed_modalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "aa_v5_variants": [
+        {
+          "slug": "nemotron-3-5-super-vl",
+          "name_including_effort": "Nemotron 3.5 Super VL",
+          "score": 13.6
+        }
+      ],
+      "selected_provider_endpoints": [
+        {
+          "provider": "baseten",
+          "status": 0,
+          "input_usd_per_million": 0.19999999999999998,
+          "output_usd_per_million": 0.5,
+          "zdr": true,
+          "no_training": true
+        }
+      ],
+      "license": "OpenMDW-1.1 per official NVFP4 checkpoint; provider exact checkpoint unverified",
+      "model_card": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
+    },
+    {
+      "gateway_id": "xiaomi/mimo-v2.6-flash",
+      "release_date_gateway": "2026-09-21",
+      "gateway_listed_modalities": [
+        "text",
+        "audio",
+        "image",
+        "video"
+      ],
+      "aa_v5_variants": [
+        {
+          "slug": "mimo-v2-6-flash",
+          "name_including_effort": "MiMo-V2.6-Flash",
+          "score": 26.7
+        }
+      ],
+      "selected_provider_endpoints": [
+        {
+          "provider": "xiaomi",
+          "status": 0,
+          "input_usd_per_million": 0.14,
+          "output_usd_per_million": 0.28,
+          "zdr": false,
+          "no_training": false
+        }
+      ],
+      "license": "MIT per Flash-RL card; provider checkpoint equivalence unverified",
+      "model_card": "https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL"
+    },
+    {
+      "gateway_id": "thinkingmachines/inkling-small",
+      "release_date_gateway": "2026-07-30",
+      "gateway_listed_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "aa_v5_variants": [
+        {
+          "slug": "inkling-small",
+          "name_including_effort": "Inkling Small",
+          "score": 12.9
+        }
+      ],
+      "selected_provider_endpoints": [
+        {
+          "provider": "deepinfra",
+          "status": 0,
+          "input_usd_per_million": 0.44999999999999996,
+          "output_usd_per_million": 1.2,
+          "zdr": false,
+          "no_training": true
+        }
+      ],
+      "license": "Apache-2.0",
+      "model_card": "https://huggingface.co/thinkingmachines/Inkling-Small"
+    },
+    {
+      "gateway_id": "google/gemma-4-31b-it",
+      "release_date_gateway": "2026-04-02",
+      "gateway_listed_modalities": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "aa_v5_variants": [],
+      "selected_provider_endpoints": [
+        {
+          "provider": "parasail",
+          "status": 0,
+          "input_usd_per_million": 0.15,
+          "output_usd_per_million": 0.39999999999999997,
+          "zdr": true,
+          "no_training": true
+        }
+      ],
+      "license": "Apache-2.0 per official model card",
+      "model_card": "https://huggingface.co/google/gemma-4-31b-it",
+      "aa_score_note": "No matching score in fetched current top 150 rows; not proof an AA score does not exist."
+    }
+  ],
+  "higher_intelligence_review": {
+    "checked_utc": "2026-11-01T18:18:10.315105+00:00",
+    "note": "AA labels are effort-specific where shown; medium-pilot results cannot be represented by AA Max/Xhigh scores. Scores are generic intelligence, not CRE extraction. Gateway metadata is unprobed. Kimi K3.1 excluded because open-weight release not verified.",
+    "rows": [
+      {
+        "id": "zai/glm-5.3",
+        "status": "open_weights",
+        "released_gateway": "2026-08-18",
+        "gateway_modalities": [
+          "text"
+        ],
+        "gateway_catalog_usd_per_million_input": 1.4,
+        "gateway_catalog_usd_per_million_output": 4.4,
+        "aa_variants": [
+          {
+            "aa_slug": "glm-5-3",
+            "aa_name": "GLM-5.3 (Max)",
+            "intelligence_v5": 31.7,
+            "aa_cost_per_index_task_usd": 5.0093,
+            "aa_input_usd_per_million": 1.4,
+            "aa_output_usd_per_million": 4.4
+          },
+          {
+            "aa_slug": "glm-5-3-low",
+            "aa_name": "GLM-5.3 (Low)",
+            "intelligence_v5": 23.1,
+            "aa_cost_per_index_task_usd": 1.5749,
+            "aa_input_usd_per_million": 1.4,
+            "aa_output_usd_per_million": 4.4
+          }
+        ],
+        "license": "GLM-5.3 custom license; commercial security review applies to qualifying model-as-a-service businesses exceeding $10B aggregate revenue in 12 months.",
+        "model_card": "https://huggingface.co/zai-org/GLM-5.3",
+        "license_url": "https://huggingface.co/zai-org/GLM-5.3/blob/main/LICENSE"
+      },
+      {
+        "id": "deepseek/deepseek-v4-pro-0813",
+        "status": "open_weights",
+        "released_gateway": "2026-08-12",
+        "gateway_modalities": [
+          "text"
+        ],
+        "gateway_catalog_usd_per_million_input": 0.66,
+        "gateway_catalog_usd_per_million_output": 1.9800000000000002,
+        "aa_variants": [
+          {
+            "aa_slug": "deepseek-v4-pro",
+            "aa_name": "DeepSeek V4 Pro 0813 (Max)",
+            "intelligence_v5": 23.1,
+            "aa_cost_per_index_task_usd": 1.7691,
+            "aa_input_usd_per_million": 1.32,
+            "aa_output_usd_per_million": 3.96
+          }
+        ],
+        "license": "MIT",
+        "model_card": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813",
+        "license_url": null
+      },
+      {
+        "id": "alibaba/qwen3.8-2.4t-a95b",
+        "status": "open_weights",
+        "released_gateway": "2026-08-02",
+        "gateway_modalities": [
+          "text",
+          "image"
+        ],
+        "gateway_catalog_usd_per_million_input": 2.0,
+        "gateway_catalog_usd_per_million_output": 6.0,
+        "license": "Qwen3.8-Max custom license: attribution for specified 100M MAU or $20M monthly revenue; separate licensing for qualifying model-as-a-service or AI work assistant businesses exceeding $50M annual aggregated revenue, subject to exceptions.",
+        "model_card": "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B",
+        "license_url": "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/blob/main/LICENSE",
+        "related_hosted_product_benchmarks": [
+          {
+            "aa_slug": "qwen3-8-max",
+            "aa_name": "Qwen3.8 Max (0902)",
+            "intelligence_v5": 33.6,
+            "aa_cost_per_index_task_usd": 10.0239,
+            "aa_input_usd_per_million": 2,
+            "aa_output_usd_per_million": 6,
+            "exact_checkpoint_equivalence_verified": false
+          }
+        ],
+        "aa_variants": []
+      },
+      {
+        "id": "anthropic/claude-haiku-5.5",
+        "status": "closed comparator",
+        "released_gateway": "2026-10-07",
+        "gateway_modalities": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "gateway_catalog_usd_per_million_input": 0.09999999999999999,
+        "gateway_catalog_usd_per_million_output": 0.5,
+        "aa_variants": [
+          {
+            "aa_slug": "claude-haiku-5-5",
+            "aa_name": "Claude Haiku 5.5 (Max)",
+            "intelligence_v5": 36.2,
+            "aa_cost_per_index_task_usd": 0.411,
+            "aa_input_usd_per_million": 0.1,
+            "aa_output_usd_per_million": 0.5
+          },
+          {
+            "aa_slug": "claude-haiku-5-5-xhigh",
+            "aa_name": "Claude Haiku 5.5 (Xhigh)",
+            "intelligence_v5": 34.3,
+            "aa_cost_per_index_task_usd": 0.2484,
+            "aa_input_usd_per_million": 0.1,
+            "aa_output_usd_per_million": 0.5
+          },
+          {
+            "aa_slug": "claude-haiku-5-5-high",
+            "aa_name": "Claude Haiku 5.5 (High)",
+            "intelligence_v5": 29.6,
+            "aa_cost_per_index_task_usd": 0.1586,
+            "aa_input_usd_per_million": 0.1,
+            "aa_output_usd_per_million": 0.5
+          },
+          {
+            "aa_slug": "claude-haiku-5-5-medium",
+            "aa_name": "Claude Haiku 5.5 (Medium)",
+            "intelligence_v5": 24.6,
+            "aa_cost_per_index_task_usd": 0.0918,
+            "aa_input_usd_per_million": 0.1,
+            "aa_output_usd_per_million": 0.5
+          },
+          {
+            "aa_slug": "claude-haiku-5-5-low",
+            "aa_name": "Claude Haiku 5.5 (Low)",
+            "intelligence_v5": 18.6,
+            "aa_cost_per_index_task_usd": 0.0438,
+            "aa_input_usd_per_million": 0.1,
+            "aa_output_usd_per_million": 0.5
+          }
+        ],
+        "license": "proprietary",
+        "model_card": null,
+        "license_url": null
+      },
+      {
+        "id": "openai/gpt-6.1-terra",
+        "status": "closed comparator",
+        "released_gateway": "2026-10-26",
+        "gateway_modalities": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "gateway_catalog_usd_per_million_input": 1.0,
+        "gateway_catalog_usd_per_million_output": 5.0,
+        "aa_variants": [
+          {
+            "aa_slug": "gpt-6-1-terra",
+            "aa_name": "GPT-6.1 Terra (Max)",
+            "intelligence_v5": 51,
+            "aa_cost_per_index_task_usd": 0.9611,
+            "aa_input_usd_per_million": 1,
+            "aa_output_usd_per_million": 5
+          },
+          {
+            "aa_slug": "gpt-6-1-terra-xhigh",
+            "aa_name": "GPT-6.1 Terra (Xhigh)",
+            "intelligence_v5": 45,
+            "aa_cost_per_index_task_usd": 0.4007,
+            "aa_input_usd_per_million": 1,
+            "aa_output_usd_per_million": 5
+          },
+          {
+            "aa_slug": "gpt-6-1-terra-high",
+            "aa_name": "GPT-6.1 Terra (High)",
+            "intelligence_v5": 42.3,
+            "aa_cost_per_index_task_usd": 0.2593,
+            "aa_input_usd_per_million": 1,
+            "aa_output_usd_per_million": 5
+          },
+          {
+            "aa_slug": "gpt-6-1-terra-medium",
+            "aa_name": "GPT-6.1 Terra (Medium)",
+            "intelligence_v5": 38.1,
+            "aa_cost_per_index_task_usd": 0.1688,
+            "aa_input_usd_per_million": 1,
+            "aa_output_usd_per_million": 5
+          },
+          {
+            "aa_slug": "gpt-6-1-terra-non-reasoning",
+            "aa_name": "GPT-6.1 Terra (Non-reasoning)",
+            "intelligence_v5": 30.4,
+            "aa_cost_per_index_task_usd": 0.2259,
+            "aa_input_usd_per_million": 1,
+            "aa_output_usd_per_million": 5
+          },
+          {
+            "aa_slug": "gpt-6-1-terra-low",
+            "aa_name": "GPT-6.1 Terra (Low)",
+            "intelligence_v5": 29.2,
+            "aa_cost_per_index_task_usd": 0.0713,
+            "aa_input_usd_per_million": 1,
+            "aa_output_usd_per_million": 5
+          }
+        ],
+        "license": "proprietary",
+        "model_card": null,
+        "license_url": null
+      },
+      {
+        "id": "inclusionai/ling-3.1-flash-1019",
+        "status": "open_weights",
+        "released_gateway": "2026-10-30",
+        "gateway_modalities": [
+          "text"
+        ],
+        "gateway_catalog_usd_per_million_input": 0.0,
+        "gateway_catalog_usd_per_million_output": 0.0,
+        "aa_variants": [
+          {
+            "aa_slug": "ling-3-1-flash-1019",
+            "aa_name": "Ling 3.1 Flash 1019",
+            "intelligence_v5": 29.5,
+            "aa_cost_per_index_task_usd": 3.1851,
+            "aa_input_usd_per_million": 0.3,
+            "aa_output_usd_per_million": 0.9
+          }
+        ],
+        "license": "MIT",
+        "model_card": "https://huggingface.co/inclusionAI/Ling-3.1-flash-1019",
+        "license_url": null
+      },
+      {
+        "id": "xiaomi/mimo-v2.6-pro",
+        "status": "open per Gateway; verify provider checkpoint",
+        "released_gateway": "2026-09-21",
+        "gateway_modalities": [
+          "text",
+          "audio",
+          "image",
+          "video"
+        ],
+        "gateway_catalog_usd_per_million_input": 0.435,
+        "gateway_catalog_usd_per_million_output": 0.87,
+        "aa_variants": [
+          {
+            "aa_slug": "mimo-v2-6-pro",
+            "aa_name": "MiMo-V2.6-Pro",
+            "intelligence_v5": 29.9,
+            "aa_cost_per_index_task_usd": 0.2572,
+            "aa_input_usd_per_million": 0.435,
+            "aa_output_usd_per_million": 0.87
+          }
+        ],
+        "license": "unknown; do not infer Flash license",
+        "model_card": null,
+        "license_url": null
+      }
+    ]
+  }
+}
