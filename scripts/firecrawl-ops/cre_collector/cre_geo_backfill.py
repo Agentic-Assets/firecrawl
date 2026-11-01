@@ -254,10 +254,15 @@ BEGIN
         geo_source = COALESCE(l.geo_source, s.geo_source)
     FROM _geo_stage s
     WHERE l.id = s.id
-      -- Only update when at least one staged value is non-NULL (avoids no-op rows).
-      AND (s.county IS NOT NULL OR s.cbsa_code IS NOT NULL OR s.geo_source IS NOT NULL)
-      -- Only update when the target column is still NULL (COALESCE-keep semantics).
-      AND (l.county IS NULL OR l.cbsa_code IS NULL OR l.cbsa_name IS NULL OR l.geo_source IS NULL);
+      -- Only update rows that gain a value: a NULL target column with a
+      -- non-NULL staged value (COALESCE-keep). Skipping no-op rewrites keeps
+      -- updated_at and the applied-row count honest on re-runs.
+      AND (
+        (l.county IS NULL AND s.county IS NOT NULL)
+        OR (l.cbsa_code IS NULL AND s.cbsa_code IS NOT NULL)
+        OR (l.cbsa_name IS NULL AND s.cbsa_name IS NOT NULL)
+        OR (l.geo_source IS NULL AND s.geo_source IS NOT NULL)
+      );
     GET DIAGNOSTICS updated_rows = ROW_COUNT;
     RAISE NOTICE 'geo backfill applied % row(s)', updated_rows;
   END IF;

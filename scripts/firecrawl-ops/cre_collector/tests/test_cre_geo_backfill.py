@@ -624,3 +624,11 @@ def test_derive_row_rejects_cross_state_latlng_centroid():
     raw = {"id": "x", "latitude": 32.7870, "longitude": -96.7970}  # Dallas centroid
     assert derive_row(raw, cw)["cbsa_code"] == "19100"
     assert derive_row({**raw, "state": "MN"}, cw)["geo_source"] is None
+
+
+def test_update_skips_rows_that_gain_nothing():
+    """A non-metro row already holding its county and no CBSA is re-staged on
+    every run; the UPDATE must not rewrite it (and bump updated_at)."""
+    sql = " ".join(build_sql([]).split())
+    for col in ("county", "cbsa_code", "cbsa_name", "geo_source"):
+        assert f"(l.{col} IS NULL AND s.{col} IS NOT NULL)" in sql
