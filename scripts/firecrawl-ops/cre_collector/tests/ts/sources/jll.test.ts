@@ -2345,8 +2345,8 @@ test("jll fixture: jllStrandedStructured lifts all Phase-2 fields from real raw_
     "https://property.jll.com/listings/1401-e-memorial-dr-not-tracked-indiana",
   );
 
-  // extraFacts: locationDescription
-  assert.deepEqual(out.extraFacts, { location_description: "Suburbs" });
+  // extraFacts: locationDescription and the source tenure (AGENTIC-5119)
+  assert.deepEqual(out.extraFacts, { location_description: "Suburbs", tenure_types: ["sale"] });
 });
 
 test("jll fixture: jllContacts emits license string on contacts with licenses", () => {

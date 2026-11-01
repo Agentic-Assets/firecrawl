@@ -15,6 +15,7 @@ Public surface (contract C.3):
     parse_percent_to_fraction(text)            -> float | None  in (0, 1]
     norm_building_class(text) -> 'A'|'B'|'C'|'D'|None
     parse_size_text(text)   -> (size_sf, lot_sf)
+    parse_units_text(text)  -> int | None   "120 Units" -> 120 (Python only)
     is_per_sf_text(text)    -> bool
     classify_doc(url, title) -> doc_type token (mirror of lib/harvest.classifyDoc)
 
@@ -39,6 +40,24 @@ SQFT_PER_ACRE = 43560
 # First "$N[,N][.N]" -> the captured numeric (commas stripped by the caller).
 _MONEY_RE = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
 
+# parse_money: the same amount plus an optional magnitude word ("$275M", "$2.5
+# MM", "$1.2 million", "$500K", "$1.5B"). The lookahead keeps "$12 Monthly",
+# "$5 Bldg", "$950,000 M&M" and "$40 m2" from reading as a magnitude. Verbatim
+# mirror of lib/parse.ts MONEY_RE.
+_MONEY_AMOUNT_RE = re.compile(
+    _MONEY_RE.pattern
+    + r"(?:\s*(billion|bn|b|million|mil|mm|mn|m|thousand|k)(?![a-z0-9&]))?",
+    re.I,
+)
+_MONEY_MAGNITUDE = {
+    "billion": 1e9, "bn": 1e9, "b": 1e9,
+    "million": 1e6, "mil": 1e6, "mm": 1e6, "mn": 1e6, "m": 1e6,
+    "thousand": 1e3, "k": 1e3,
+}
+# A magnitude word after an already-large number ("$950,000 M") is not a
+# multiplier; the number stands as written.
+_MONEY_MAGNITUDE_MAX_BASE = 10000
+
 # A bare numeric token (with optional grouping commas / decimals), no $ required.
 _NUM_RE = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)")
 
@@ -55,11 +74,17 @@ _PER_SF_TEXT_RE = re.compile(
 # so a value is only trusted as a per-SF lease rate when the text says so.
 _LEASE_PER_SF_CONTEXT_RE = re.compile(r"(/|per\s|\s)s\.?f|psf|square\s*f", re.I)
 
-# Size-in-SF and area-in-acres extractors (mirror cre_ingest._SF_RE / _ACRE_RE).
+# Size-in-SF and area-in-acres extractors (mirror lib/parse.ts). An approximate
+# marker between the number and the unit ("4,863 +/-SF", "2.00+/- Acres",
+# "±12.65 ac") is allowed, as Pyramid writes every size that way.
+_APPROX = r"\s*(?:\+\s*/\s*-|±)?\s*"
 _SF_RE = re.compile(
-    r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:sf\b|sq\.?\s*ft|square\s*feet)", re.I
+    r"([0-9][0-9,]*(?:\.[0-9]+)?)" + _APPROX + r"(?:sf\b|sq\.?\s*ft|square\s*feet)", re.I
 )
-_ACRE_RE = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*ac(?:res?)?\b", re.I)
+_ACRE_RE = re.compile(r"([0-9][0-9,]*(?:\.[0-9]+)?)" + _APPROX + r"ac(?:res?)?\b", re.I)
+
+# A size summary that is only a unit count ("120 Units", "1,175 units").
+_UNITS_ONLY_RE = re.compile(r"^\s*([0-9][0-9,]*)\s*units?\s*$", re.I)
 
 # Money RANGE ("$10 - 16", "$1.50 to 2.25"): the upper bound often has no $ of
 # its own. Anchored on a leading numeric so a parenthetical second per-SF value
@@ -201,11 +226,23 @@ def parse_lease_rate(text):
 
 
 def parse_money(text):
-    """First "$N[,N][.N]" -> float, commas stripped, currency words ignored."""
+    """First "$N[,N][.N]" -> float, commas stripped, currency words ignored.
+
+    A magnitude suffix (K, M, MM, million, B, billion) multiplies the amount.
+    Returns None when no positive dollar amount is found (mirrors lib/parse.ts).
+    """
     if not isinstance(text, str):
         return None
-    m = _MONEY_RE.search(text)
-    return _to_num(m.group(1)) if m else None
+    m = _MONEY_AMOUNT_RE.search(text)
+    if not m:
+        return None
+    base = _to_num(m.group(1))
+    if base <= 0:
+        return None
+    suffix = m.group(2)
+    if not suffix or base >= _MONEY_MAGNITUDE_MAX_BASE:
+        return base
+    return round(base * _MONEY_MAGNITUDE[suffix.lower()], 2)
 
 
 def acres_to_sf(text):
@@ -234,6 +271,18 @@ def parse_size_text(text):
     return size_sf, lot_sf
 
 
+def parse_units_text(text):
+    """A size summary that states only a unit count ("120 Units") -> int, else
+    None. Any other text (an SF or acre size, prose) returns None."""
+    if not isinstance(text, str):
+        return None
+    m = _UNITS_ONLY_RE.match(text)
+    if not m:
+        return None
+    units = int(m.group(1).replace(",", ""))
+    return units if units > 0 else None
+
+
 def parse_amount_ignoring_currency_label(text):
     """Strip a leading currency word/symbol (POUND|GBP|USD|EUR|$|£|€) then take
     the first numeric; the value is treated as USD regardless of the stripped
@@ -241,7 +290,12 @@ def parse_amount_ignoring_currency_label(text):
     """
     if not isinstance(text, str):
         return None
-    stripped = _CURRENCY_PREFIX_RE.sub("", text, count=1)
+    stripped = _CURRENCY_PREFIX_RE.sub("", text, count=1).strip()
+    # Mirror lib/parse.ts: parse_money first (so "POUND 1.5M" keeps its
+    # magnitude), then the first bare numeric.
+    amount = parse_money(stripped if stripped.startswith("$") else "$" + stripped)
+    if amount is not None:
+        return amount
     m = _NUM_RE.search(stripped)
     return _to_num(m.group(1)) if m else None
 

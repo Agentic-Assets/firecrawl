@@ -2210,6 +2210,7 @@ export function avisonYoungBaseListing(row: any, teamMembers: Map<string, any>):
     rawSubtypes: rawTypes,
     // The feed does not declare a per-SF basis for this value. Retain it untyped.
     saleUnitPrice: num(row.sale_unit_price),
+    pricePerAcre: avisonYoungPricePerAcre(row),
     availableMinSqft: num(row.availabilities_min_surface_sqft),
     availableMaxSqft: num(row.availabilities_max_surface_sqft),
     // Stranded structured-field lift onto the shared listing vocabulary keys.
@@ -2505,14 +2506,58 @@ export async function enrichAvisonYoungListing(
     detailUnavailableReason: undefined,
     detailWarning: errors.length ? errors.join("; ") : undefined,
   }) ?? {};
-  if (leaseFacts) {
+  const saleType = avisonYoungSaleType(docs);
+  if (leaseFacts || saleType) {
     const extraFacts =
       base.extraFacts !== null && typeof base.extraFacts === "object" && !Array.isArray(base.extraFacts)
         ? base.extraFacts
         : {};
-    result.extraFacts = { ...extraFacts, avison_lease_facts: leaseFacts };
+    result.extraFacts = {
+      ...extraFacts,
+      ...(leaseFacts ? { avison_lease_facts: leaseFacts } : {}),
+      ...(saleType ? { sale_type: saleType } : {}),
+    };
   }
   return result;
+}
+
+// The detail page fact list's "Sale type" value ("Investment", "Owner User"),
+// verbatim. The first page that states one wins; nothing is interpreted here.
+export function avisonYoungSaleType(docs: Array<{ doc: ScrapedDoc }>): string | null {
+  for (const { doc } of docs) {
+    if (typeof doc?.rawHtml !== "string" || !doc.rawHtml) continue;
+    const $ = cheerio.load(doc.rawHtml);
+    for (const li of $("li").toArray()) {
+      const spans = $(li).children("span");
+      if (spans.length === 2 && clean(spans.first().text())?.toLowerCase() === "sale type") {
+        const value = clean(spans.last().text());
+        if (value) return value;
+      }
+    }
+  }
+  return null;
+}
+
+// SharpLaunch gives sale_unit_price with no unit. On a land row it is a price
+// per acre only when sale_price / sale_unit_price reproduces the stated acreage
+// (total_surface in acres, or "N acres" in the name or description) within 2%.
+export function avisonYoungPricePerAcre(row: any): number | null {
+  const unitPrice = num(row?.sale_unit_price);
+  const price = num(row?.sale_price);
+  const types = Array.isArray(row?.type) ? row.type : [];
+  if (clean(row?.sale_currency)?.toUpperCase() !== "USD") return null;
+  if (!unitPrice || !price || unitPrice <= 0 || unitPrice >= price) return null;
+  if (!types.some((t: unknown) => typeof t === "string" && /^land\b/i.test(t))) return null;
+  const acreages: number[] = [];
+  if (/^(?:ac|acres?)$/i.test(clean(row?.total_surface_unit) ?? "") && num(row?.total_surface)) {
+    acreages.push(Number(row.total_surface));
+  }
+  const prose = [row?.name, row?.meta_title, stripHtmlText(row?.description)].filter(Boolean).join(" ");
+  for (const m of prose.replace(/,/g, "").matchAll(/([0-9]+(?:\.[0-9]+)?)\s*(?:\+\/-|±)?\s*(?:ac|acres?)\b/gi)) {
+    acreages.push(Number(m[1]));
+  }
+  const implied = price / unitPrice;
+  return acreages.some((acres) => acres > 0 && Math.abs(implied - acres) <= 0.02 * acres) ? unitPrice : null;
 }
 
 export async function srcAvisonYoung(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {

@@ -6,11 +6,11 @@ import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { decodeHtmlEntities, firstJsonLd, titleFromFilename } from "../lib/html.js";
 import { harvestDetail } from "../lib/harvest.js";
-import { parseLeaseRate } from "../lib/parse.js";
+import { parseLeaseRate, parseMoney } from "../lib/parse.js";
 import { recordRetry } from "../lib/performance.js";
 import { scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { ScrapeOpts, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { boundedInt, clean, moneyToNumber, pmap, prune } from "../lib/util.js";
+import { boundedInt, clean, pmap, prune } from "../lib/util.js";
 import {
   detailObservation,
   refreshGenerationId,
@@ -671,7 +671,7 @@ export async function enrichCushmanListing(
       },
       name: clean(listingLd?.name) ?? base.name,
       description: clean(listingLd?.description) ?? clean(doc.markdown.match(/Overview\s*-+\s*([\s\S]{1,2500}?)(?:\n[A-Z][A-Za-z ]+\n-+|\n#{1,6}\s|\nCONTACT|\nLOCATION|$)/i)?.[1]),
-      salePriceUsd: tx === "sale" ? moneyToNumber(salePriceText) : null,
+      salePriceUsd: tx === "sale" ? parseMoney(salePriceText) : null,
       salePriceText: tx === "sale" ? salePriceText ?? base.salePriceText : null,
       leaseRateText: tx === "lease" ? leaseRateText : null,
       leaseRateMin: leaseRateMin ?? undefined,

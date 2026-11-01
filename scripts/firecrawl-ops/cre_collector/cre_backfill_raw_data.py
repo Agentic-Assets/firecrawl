@@ -348,6 +348,42 @@ def derive_marcus_millichap(raw):
     return cols, extra
 
 
+_AVISON_ACRES_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*(?:\+/-|±)?\s*(?:ac|acres?)\b", re.I)
+
+
+def avison_price_per_acre(rsl):
+    """Python mirror of sources/avison-young.ts avisonYoungPricePerAcre.
+
+    SharpLaunch gives sale_unit_price with no unit. On a USD land row it is a
+    price per acre only when sale_price / sale_unit_price reproduces the stated
+    acreage (total_surface in acres, or "N acres" in the name or description)
+    within 2%. Anything else returns None.
+    """
+    unit_price = num_or_none(rsl.get("sale_unit_price"), lo=0, hi=1e9)
+    price = num_or_none(rsl.get("sale_price"), lo=0, hi=1e11)
+    if str(rsl.get("sale_currency") or "").strip().upper() != "USD":
+        return None
+    if not unit_price or not price or unit_price >= price:
+        return None
+    types = rsl.get("type") if isinstance(rsl.get("type"), list) else []
+    if not any(isinstance(t, str) and re.match(r"land\b", t, re.I) for t in types):
+        return None
+    acreages = []
+    unit = str(rsl.get("total_surface_unit") or "").strip()
+    if re.fullmatch(r"ac|acres?", unit, re.I) and num_or_none(rsl.get("total_surface"), lo=0):
+        acreages.append(float(rsl["total_surface"]))
+    prose = " ".join(
+        re.sub(r"<[^>]+>", " ", str(rsl.get(k)))
+        for k in ("name", "meta_title", "description")
+        if rsl.get(k)
+    ).replace(",", "")
+    acreages.extend(float(m.group(1)) for m in _AVISON_ACRES_RE.finditer(prose))
+    implied = price / unit_price
+    if any(a > 0 and abs(implied - a) <= 0.02 * a for a in acreages):
+        return unit_price
+    return None
+
+
 def derive_avison_young(raw):
     """Avison Young: nested raw_data->'rawSharpLaunch' (gap doc). Dual-mode."""
     cols, extra = {}, {}
@@ -386,9 +422,10 @@ def derive_avison_young(raw):
     _set(cols, "cap_rate",
          norm_cap_rate(dual_get(raw, "capRatePct")) or norm_cap_rate(rsl.get("cap_rate")))
 
-    # sale_price_per_sf <- top-level saleUnitPrice / sale_unit_price.
-    _set(cols, "sale_price_per_sf",
-         num_or_none(dual_get(raw, "saleUnitPrice") or rsl.get("sale_unit_price"), lo=0, hi=1e5))
+    # sale_unit_price has no declared unit, so it never becomes sale_price_per_sf
+    # (that copy stored land prices per acre as $/SF, AGENTIC-5119). It becomes
+    # price_per_acre only when it reproduces the stated acreage on a land row.
+    _set(cols, "price_per_acre", avison_price_per_acre(rsl))
 
     # units <- units.
     _set(cols, "units", int_or_none(rsl.get("units"), lo=0, hi=1e6))

@@ -72,6 +72,23 @@ candidate in Section "New-column candidates" AND a consumer would filter on it,
 it gets a discrete column listed in A.4; everything else the adapter promotes
 goes into `extra_facts` under a stable snake_case key.
 
+#### A.1.1 Registered listing-structure keys (AGENTIC-5119)
+
+Structure signals are captured verbatim, with no interpretation. Downstream
+classification (sale structure, lease basis) belongs to the consumer, not the
+adapter.
+
+| key | source | value |
+|---|---|---|
+| `colliers_sale_type_id` | colliers-main Coveo `salez32xtype` | Lowercase hyphen-free GUID. Label not yet decoded; do not map it to a sale type without a verified Coveo lookup. |
+| `colliers_lease_type_id` | colliers-main Coveo `leasez32xtype` | Lowercase hyphen-free GUID. Same caveat. |
+| `sale_type` | avison-young detail page "Sale type" fact | Source text as printed (e.g. `Investment`). |
+| `tenure_types` | jll `tenureTypes` | Deduped array of the source strings (today `sale`, `rent`). |
+| `avg_unit_sf` | colliers Sales Tracker multifamily `Size` | Average unit size in SF when the source `Size` is per unit, not per building. Held here because an `avg_unit_sf` column needs DDL. |
+
+Unchanged: colliers `project_type` (ProjectType), the JLL `dealType` path, the
+M&M auction type path and `salePriceText` in `raw_data`.
+
 ### A.2 OM-parsed fields: reuse vs new table (decision)
 
 DECISION:

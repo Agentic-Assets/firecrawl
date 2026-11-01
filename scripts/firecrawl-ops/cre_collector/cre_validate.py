@@ -756,6 +756,71 @@ FROM active
 GROUP BY source_key
 ORDER BY source_key;
 """,
+    # Report-only listing-basis diagnostics (AGENTIC-5119); not a refresh gate.
+    # Legacy rows are not repaired here: the GetCREdata listing-structure
+    # sidecar (AGENTIC-5122) owns basis. closed_price_text_active is a
+    # lifecycle finding routed to the lifecycle owner (AGENTIC-2895).
+    "listing_basis_quality": f"""
+WITH active AS (
+  SELECT
+    {SOURCE_KEY_SQL} AS source_key,
+    l.*
+  FROM credeals.cre_listings l
+  JOIN credeals.cre_brokerages b ON b.id = l.brokerage_id
+  WHERE l.deleted_at IS NULL AND l.status = 'active'
+)
+SELECT
+  source_key,
+  count(*) FILTER (
+    WHERE property_type = 'multifamily'
+      AND units > 0
+      AND size_sf > 0
+      AND (size_sf::numeric / units < 300 OR (size_sf < 3000 AND units > 10))
+  )::text AS mf_avg_unit_size,
+  count(*) FILTER (
+    WHERE sale_price_per_sf IS NOT NULL
+      AND sale_price_usd > 0
+      AND size_sf > 0
+      AND abs(sale_price_per_sf - sale_price_usd::numeric / size_sf)
+        > 0.02 * (sale_price_usd::numeric / size_sf)
+  )::text AS stored_psf_mismatch,
+  count(*) FILTER (
+    WHERE sale_price_per_sf IS NOT NULL
+      AND (size_sf IS NULL OR size_sf = 0)
+  )::text AS stored_psf_without_size,
+  count(*) FILTER (
+    WHERE sale_price_per_sf IS NOT NULL
+      AND (size_sf IS NULL OR size_sf = 0)
+      AND property_type = 'land'
+  )::text AS land_stored_psf_without_size,
+  count(*) FILTER (
+    WHERE property_type IS DISTINCT FROM 'land'
+      AND size_sf > 0
+      AND lot_size_sf > 0
+      AND abs(size_sf - lot_size_sf) <= 0.01 * lot_size_sf
+  )::text AS non_land_size_equals_lot,
+  count(*) FILTER (
+    WHERE property_type = 'land'
+      AND size_sf IS NOT NULL
+      AND lot_size_sf IS NULL
+  )::text AS land_size_without_lot,
+  count(*) FILTER (
+    WHERE size_sf > 0 AND size_sf < 100 AND sale_price_usd > 0
+  )::text AS tiny_size_with_price,
+  count(*) FILTER (WHERE cap_rate > 0 AND cap_rate < 0.02)::text AS cap_rate_under_2pct,
+  count(*) FILTER (
+    WHERE transaction_type = 'lease' AND sale_price_usd IS NOT NULL
+  )::text AS lease_with_sale_price,
+  count(*) FILTER (
+    WHERE sale_price_usd > 1000000000 AND coalesce(title, '') !~* 'portfolio'
+  )::text AS price_over_1b_non_portfolio,
+  count(*) FILTER (
+    WHERE lower(btrim(raw_data->>'salePriceText')) = 'closed'
+  )::text AS closed_price_text_active
+FROM active
+GROUP BY source_key
+ORDER BY source_key;
+""",
     "duplicates": f"""
 WITH active AS (
   SELECT
@@ -1476,6 +1541,7 @@ def render_markdown(report):
         "inventory_only_index": "Inventory-Only Source Index",
         "enrichment_queue_health": "Enrichment Queue Health",
         "quality_by_source": "Quality By Source",
+        "listing_basis_quality": "Listing Basis Quality",
         "duplicates": "Duplicate Checks",
         "child_counts": "Child Counts",
         "bad_child_urls": "Bad Child URLs",

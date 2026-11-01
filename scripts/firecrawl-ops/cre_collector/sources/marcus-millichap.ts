@@ -21,7 +21,7 @@ import {
   parseSizeText,
 } from "../lib/parse.js";
 import { DocItem, ScrapedDoc, SourceResult, Tx } from "../types.js";
-import { clean, moneyToNumber, num, pmap, prune } from "../lib/util.js";
+import { clean, num, pmap, prune } from "../lib/util.js";
 import {
   marcusHeaders as pureMarcusHeaders,
   marcusMapDetailBody as pureMarcusMapDetailBody,
@@ -208,7 +208,7 @@ export function parseMarcusTileHtml(tileHtml: string | null | undefined, row: an
     country: "US",
     latitude: num(Number(row.Latitude)),
     longitude: num(Number(row.Longitude)),
-    salePriceUsd: moneyToNumber(priceText),
+    salePriceUsd: parseMoney(priceText),
     salePriceText: priceText,
     capRatePct: capRate ? Number(capRate) : null,
     brokerIds: [],
@@ -825,7 +825,7 @@ export async function enrichMarcusListing(base: any): Promise<any> {
       city: address.city ?? base.city,
       state: address.state ?? base.state,
       postalCode: address.postalCode ?? base.postalCode,
-      salePriceUsd: moneyToNumber(priceText) ?? base.salePriceUsd,
+      salePriceUsd: parseMoney(priceText) ?? base.salePriceUsd,
       salePriceText: priceText,
       // capRatePct from detail spec wins; scalars.capRatePct is already the best available.
       capRatePct: capRate ? Number(capRate) : scalars.capRatePct ?? base.capRatePct,

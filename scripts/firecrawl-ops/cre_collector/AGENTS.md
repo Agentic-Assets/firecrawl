@@ -297,7 +297,9 @@ Key behavior:
   source-specific namespaces and watermarks. Colliers canonical ProjectIds are
   one-to-one and never merge, including identical duplicates.
 - `cap_rate` stored as a decimal fraction (e.g. `0.065`); `norm_cap_rate` drops
-  non-numeric, `<= 0`, percent inputs `>= 30`, and `>= 0.5`. Upsert uses
+  non-numeric, `<= 0`, percent inputs `>= 30`, `>= 0.5`, and fractions below
+  `MIN_PLAUSIBLE_CAP_RATE` (`0.02`, so a raw M&M `1` or `1.00%` never lands);
+  the backfill shares the function. Upsert uses
   `COALESCE` so a null new cap rate keeps the existing DB value. Price columns
   (`sale_price_usd`, `sale_price_per_sf`, `lease_rate_min`, `lease_rate_max`)
   also COALESCE-keep: a transient parse miss does not blank a previously-good

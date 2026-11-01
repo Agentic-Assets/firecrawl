@@ -626,8 +626,15 @@ def norm_property_type(asset_type):
     return "other"
 
 
+# A listed cap rate under 2% is a placeholder or a parse slip (68 Marcus &
+# Millichap rows stored 0.01 from a raw "1%"), not a yield. AGENTIC-5119.
+MIN_PLAUSIBLE_CAP_RATE = 0.02
+
+
 def norm_cap_rate(v):
-    """capRatePct is usually a percent (6.5); occasionally already a fraction."""
+    """capRatePct is usually a percent (6.5); occasionally already a fraction.
+
+    Returns a fraction in [MIN_PLAUSIBLE_CAP_RATE, 0.5), else None."""
     if not isinstance(v, (int, float)) or v <= 0:
         return None
     if v <= 1:
@@ -636,7 +643,7 @@ def norm_cap_rate(v):
         frac = v / 100.0
     else:
         return None
-    return round(frac, 6) if 0 < frac < 0.5 else None
+    return round(frac, 6) if MIN_PLAUSIBLE_CAP_RATE <= frac < 0.5 else None
 
 
 def parse_lease_rates(text):
@@ -666,6 +673,29 @@ def parse_size_text(text):
 
     Delegates to cre_parse.parse_size_text (identical to lib/parse.ts)."""
     return cre_parse.parse_size_text(text)
+
+
+# Sources whose generic area field holds land area on a land listing (CBRE
+# Dynamic.TotalArea, JLL surfaceArea). AGENTIC-5119.
+LAND_AREA_SIZE_SOURCE_KEYS = frozenset({"cbre", "jll"})
+
+
+def land_area_to_lot(source_key, property_type, size_sf, lot_size_sf):
+    """(size_sf, lot_size_sf) with land area moved out of building size.
+
+    On a land listing from a LAND_AREA_SIZE_SOURCE_KEYS source the stated area
+    is land area: it fills lot_size_sf when that is empty, and size_sf is never
+    left equal to it (within 1%). Every other row passes through unchanged.
+    """
+    if source_key not in LAND_AREA_SIZE_SOURCE_KEYS or property_type != "land":
+        return size_sf, lot_size_sf
+    if size_sf is None:
+        return size_sf, lot_size_sf
+    if lot_size_sf is None:
+        return None, round(size_sf, 2)
+    if abs(size_sf - lot_size_sf) <= 0.01 * lot_size_sf:
+        return None, lot_size_sf
+    return size_sf, lot_size_sf
 
 
 def num_or_none(v, lo=0, hi=None):
@@ -2819,6 +2849,9 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         t_size, t_lot = parse_size_text(listing.get("sizeText"))
         size_sf = size_sf if size_sf is not None else t_size
         lot_size_sf = lot_size_sf if lot_size_sf is not None else t_lot
+    size_sf, lot_size_sf = land_area_to_lot(
+        source_key, norm_property_type(listing.get("assetType")), size_sf, lot_size_sf
+    )
 
     sale_price_text = listing.get("salePriceText")
     sale_price = num_or_none(
@@ -3121,7 +3154,10 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
             else num_or_none(listing.get("grossRevenue"), lo=0, hi=1e12)
         ),
         "occupancy_rate": norm_occupancy_rate(listing.get("occupancyRate")),
-        "units": num_or_none(listing.get("units"), lo=0, hi=1e6),
+        "units": (
+            num_or_none(listing.get("units"), lo=0, hi=1e6)
+            or num_or_none(cre_parse.parse_units_text(listing.get("sizeText")), lo=0, hi=1e6)
+        ),
         "floors": num_or_none(listing.get("floors"), lo=0, hi=1e4),
         "parking_spaces": num_or_none(listing.get("parkingSpaces"), lo=0, hi=1e6),
         "parking_ratio": num_or_none(listing.get("parkingRatio"), lo=0, hi=1e4),

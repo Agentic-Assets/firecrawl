@@ -142,5 +142,89 @@
     "input": "$6.00/SF",
     "expected": true,
     "note": "Lee salePriceUsd conflation: per-SF text"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$275M",
+    "expected": 275000000,
+    "note": "AGENTIC-5119: EY Plaza style M suffix (was 275)"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$2.5 MM",
+    "expected": 2500000,
+    "note": "AGENTIC-5119: MM suffix with a space"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$1.2 million",
+    "expected": 1200000,
+    "note": "AGENTIC-5119: million word"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$500K",
+    "expected": 500000,
+    "note": "AGENTIC-5119: K suffix"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$1.5B",
+    "expected": 1500000000,
+    "note": "AGENTIC-5119: B suffix"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$950,000 M&M exclusive",
+    "expected": 950000,
+    "note": "AGENTIC-5119: M&M is not a magnitude"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$12 Monthly",
+    "expected": 12,
+    "note": "AGENTIC-5119: a word starting with M is not a magnitude"
+  },
+  {
+    "fn": "parseMoney",
+    "input": "$950,000 M",
+    "expected": 950000,
+    "note": "AGENTIC-5119: a magnitude after an already-large number is ignored"
+  },
+  {
+    "fn": "parseSizeText",
+    "input": "4,863 +/-SF",
+    "expected": { "sizeSf": 4863, "lotSf": null },
+    "note": "AGENTIC-5119: Pyramid +/-SF"
+  },
+  {
+    "fn": "parseSizeText",
+    "input": "2.00+/- Acres",
+    "expected": { "sizeSf": null, "lotSf": 87120 },
+    "note": "AGENTIC-5119: Pyramid +/- Acres"
+  },
+  {
+    "fn": "parseSizeText",
+    "input": "±12.65 ac",
+    "expected": { "sizeSf": null, "lotSf": 551034 },
+    "note": "AGENTIC-5119: plus-minus sign before acres"
+  },
+  {
+    "fn": "parseSizeText",
+    "input": "120 Units",
+    "expected": { "sizeSf": null, "lotSf": null },
+    "note": "AGENTIC-5119: a unit count is not an area"
+  },
+  {
+    "fn": "acresToSf",
+    "input": "2.00+/- Acres",
+    "expected": 87120,
+    "note": "AGENTIC-5119: Pyramid +/- Acres"
+  },
+  {
+    "fn": "parseAmountIgnoringCurrencyLabel",
+    "input": "POUND 1.5M",
+    "expected": 1500000,
+    "note": "AGENTIC-5119: the currency-label path keeps the magnitude"
   }
 ]
