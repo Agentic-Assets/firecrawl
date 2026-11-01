@@ -766,6 +766,14 @@ def _geo_crosswalk():
     global _GEO_CROSSWALK
     if _GEO_CROSSWALK is None:
         _GEO_CROSSWALK = cre_geo.ZipCbsaCrosswalk()
+        if not len(_GEO_CROSSWALK):
+            # Ingest still runs (geo is additive), but say so: an empty
+            # crosswalk stages no county/CBSA for any row.
+            print(
+                "[cre_ingest] WARNING: data/zip_cbsa_crosswalk.csv is missing or "
+                "empty; rows will be staged without county/CBSA.",
+                file=sys.stderr,
+            )
     return _GEO_CROSSWALK
 
 

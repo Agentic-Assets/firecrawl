@@ -167,7 +167,23 @@ def test_latlng_band_keeps_centroids_up_to_the_radius(tmp_path):
     assert cw.by_latlng(float("nan"), -87.6186) is None
 
 
-@pytest.mark.skipif(not os.path.exists(_FULL_CSV), reason="committed crosswalk absent")
+def test_committed_crosswalk_is_the_ingest_default():
+    """The forward path loads the committed CSV; a missing file would stage no geo."""
+    cw = cre_geo.ZipCbsaCrosswalk()
+    assert len(cw) == 33791
+    assert cw.by_zip("60601")["cbsa_code"] == "16980"
+
+
+def test_empty_crosswalk_warns_once(monkeypatch, tmp_path, capsys):
+    absent = str(tmp_path / "absent.csv")
+    real = cre_geo.ZipCbsaCrosswalk
+    monkeypatch.setattr(ci, "_GEO_CROSSWALK", None)
+    monkeypatch.setattr(cre_geo, "ZipCbsaCrosswalk", lambda: real(csv_path=absent))
+    assert set(_geo(_row(postalCode="60601")).values()) == {None}
+    _row(postalCode="10019")
+    assert capsys.readouterr().err.count("zip_cbsa_crosswalk.csv is missing or empty") == 1
+
+
 def test_latlng_at_each_unique_centroid_returns_that_zip():
     cw = cre_geo.ZipCbsaCrosswalk(csv_path=_FULL_CSV)
     with open(_FULL_CSV, newline="", encoding="utf-8") as fh:
