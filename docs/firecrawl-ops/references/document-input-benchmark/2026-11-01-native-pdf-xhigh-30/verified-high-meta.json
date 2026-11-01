@@ -1,0 +1,1420 @@
+{
+  "intent_count": 30,
+  "manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "note": "Read-only; rows cover settled results only, not completeness; null costs unknown.",
+  "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+  "result_count": 30,
+  "rows": [
+    {
+      "cost_usd": 0.0018875,
+      "document_id": "core-01",
+      "effort": "high",
+      "elapsed_seconds": 22.038096083007986,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "329088f338be46e81b8cb849baf9c384486f00a1afef395036ed0393e55e820b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "c7f0f3b516e3225d5c45e21357a4a7ca68e7b78980c199d3a1e5a52806ead381",
+      "provider": "meta",
+      "result_sha256": "34aef1aa172ffa5054317cefe7fb67f4dbf85cdc323deb2a0bdc27b4285625ba",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5358,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3143
+        },
+        "cost": 0.0018875,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0018875,
+        "market_cost": 0.0018875,
+        "prompt_tokens": 8159,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13517
+      }
+    },
+    {
+      "cost_usd": 0.0018635,
+      "document_id": "core-02",
+      "effort": "high",
+      "elapsed_seconds": 19.77790012501646,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "7ed4212e7d9ad614d3970b707ecf6b8d1e96729db93149865dcd5f8294b5a1a7",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "7feb92611112c1b922e8e4349989e6ebdd11ada8d6cb7042d4ebc6246f615e98",
+      "provider": "meta",
+      "result_sha256": "d0861f57a1ce5fd309174baaacdc56c3e20f94b39a6544ca63823524b456dcdf",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5198,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3226
+        },
+        "cost": 0.0018635,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0018635,
+        "market_cost": 0.0018635,
+        "prompt_tokens": 8239,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 13437
+      }
+    },
+    {
+      "cost_usd": 0.0017201,
+      "document_id": "core-03",
+      "effort": "high",
+      "elapsed_seconds": 18.034029999980703,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "c81d9b885873e825030b637f0085df915777e0cda938e467e3f2fe19f5562c44",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "1275dab5d57e15edb3aa89e2b3d51af69ab11e6866017a42f3873e4985e665f5",
+      "provider": "meta",
+      "result_sha256": "4c5ec89bb79dd160c4d97fef40ac91fd0ecbfe2d2cc82c17d5cd38f9880d5ad8",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4513,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2681
+        },
+        "cost": 0.0017201,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0017201,
+        "market_cost": 0.0017201,
+        "prompt_tokens": 8175,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12688
+      }
+    },
+    {
+      "cost_usd": 0.0012421,
+      "document_id": "core-04",
+      "effort": "high",
+      "elapsed_seconds": 16.212486125004943,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "57e09655acc292494be2dffa4d7afb7ee6b44024bdaacfc98a25b19127ff02f5",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "a038ea75e8c2bea94452b91114c9dd67ea8b93bfde81940bef41bd2f390cce19",
+      "provider": "meta",
+      "result_sha256": "d02b932384d4d12a9261fb96f956520280d43c77389e2ae10840ac9f1e3055d9",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3461,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2223
+        },
+        "cost": 0.0012421,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0012421,
+        "market_cost": 0.0012421,
+        "prompt_tokens": 5499,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 8960
+      }
+    },
+    {
+      "cost_usd": 0.001611998,
+      "document_id": "core-05",
+      "effort": "high",
+      "elapsed_seconds": 18.257975541986525,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "361892324fe042a3cf3925c15bc9bd363d2b92bbed08004fa7e19dcf2eff4255",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "88aae0bc32983388b77a325a92b7b9d53dc8996cdef4c605a607a3cf2fd454e2",
+      "provider": "meta",
+      "result_sha256": "7a61a84262f10261755c7950a8c4203f8212a77001b9ab4ad81f45c08666c37a",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3958,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1576
+        },
+        "cost": 0.001611998,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001611998,
+        "market_cost": 0.001611998,
+        "prompt_tokens": 8301,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 12259
+      }
+    },
+    {
+      "cost_usd": 0.001729898,
+      "document_id": "core-06",
+      "effort": "high",
+      "elapsed_seconds": 22.415759958996205,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "384f8471bf0f1f743025e9890dcc5645272e38cadcb11213d681ee7935b789aa",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "9be1b1ebf5bab492d912d6fdc14e8a83518cb1ea6e3d95bc336db1ae86d2eda7",
+      "provider": "meta",
+      "result_sha256": "5d6c5eba8a6817cf1b9e51e5047916d62f0b71537c0e8b3c06c8e8736dfc7890",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4617,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3041
+        },
+        "cost": 0.001729898,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001729898,
+        "market_cost": 0.001729898,
+        "prompt_tokens": 8162,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 12779
+      }
+    },
+    {
+      "cost_usd": 0.001352898,
+      "document_id": "core-07",
+      "effort": "high",
+      "elapsed_seconds": 20.410155416990165,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8073aa844eaab1d92d0afc87ddd4aabc9e485f996687e2e9e6339a69dbf4362c",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "b1bb7f9b13d9e523f2f0066d53b2335369e028e7b459ec194edc58b7054fd607",
+      "provider": "meta",
+      "result_sha256": "5206fa816f9867cfd97d2132c43c78c5dec508f1c960e46dba3bdcde5728b80f",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4074,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2816
+        },
+        "cost": 0.001352898,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001352898,
+        "market_cost": 0.001352898,
+        "prompt_tokens": 5478,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9552
+      }
+    },
+    {
+      "cost_usd": 0.0016396,
+      "document_id": "core-08",
+      "effort": "high",
+      "elapsed_seconds": 17.184755666996352,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "69c1330f816ece97c76bd3e264712251ac89434a9b146799de94240b8d58f5b8",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "ae0330a1f15daf50bc8befe060837aac7ae8bd2dfd2d7a648b7cd31c71f03c04",
+      "provider": "meta",
+      "result_sha256": "2cc8008bd3b2233dde59a39330adb610763498ce96ee38dc3ff43e0202c620f5",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4160,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2717
+        },
+        "cost": 0.0016396,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0016396,
+        "market_cost": 0.0016396,
+        "prompt_tokens": 8076,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12236
+      }
+    },
+    {
+      "cost_usd": 0.0014042,
+      "document_id": "core-09",
+      "effort": "high",
+      "elapsed_seconds": 18.415111457987223,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "c8bfb1b9ed88944b4ba13ec02937fd86ff4fb158dac85bed0592cfb4e9308120",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "4d35d9391ec62827db2fa883e7f5516a3cfdb09de4ec21f719f79d85d0d29c86",
+      "provider": "meta",
+      "result_sha256": "10f4e451f593f74f80db556b57e6c0d6585b30a6f3725574460db5f4a0a24608",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4283,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3001
+        },
+        "cost": 0.0014042,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0014042,
+        "market_cost": 0.0014042,
+        "prompt_tokens": 5476,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9759
+      }
+    },
+    {
+      "cost_usd": 0.001290698,
+      "document_id": "core-10",
+      "effort": "high",
+      "elapsed_seconds": 19.26664158399217,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "10d48d603aede99d704361d9e85676001996994163425a677afe67055fcff974",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "e62502ecf93492366f1f833b85dfb7c995675afb2340521bc12cdafa77acd20e",
+      "provider": "meta",
+      "result_sha256": "c43d5a3d9d1501adc00eb3117a149847cec02e5d393a70eeebf1b43b7c60f6c1",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3774,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2703
+        },
+        "cost": 0.001290698,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001290698,
+        "market_cost": 0.001290698,
+        "prompt_tokens": 5456,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9230
+      }
+    },
+    {
+      "cost_usd": 0.0016395,
+      "document_id": "core-11",
+      "effort": "high",
+      "elapsed_seconds": 19.889355624996824,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "293dbef8570d23ab775cb712892abaf5e4cbea7427014b6352a5c796b4254169",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "86bf7adf10ee5cccb3badbf28042b8e3ea8b3a98114d07b62790ad8a820bc5e2",
+      "provider": "meta",
+      "result_sha256": "9cd7eec366d6e80cfe896c56be6c414b56b80ef4dde4d111cd28d9e490ef1479",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4135,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2447
+        },
+        "cost": 0.0016395,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0016395,
+        "market_cost": 0.0016395,
+        "prompt_tokens": 8125,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 12260
+      }
+    },
+    {
+      "cost_usd": 0.001402,
+      "document_id": "core-13",
+      "effort": "high",
+      "elapsed_seconds": 19.959902583999792,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "22b00583c28b213f97eaca88a06d473ada32410ba28443e34a5ad0fd69fffb0d",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "c483543f48857b94a26529f3b3c4bd1b37ece2cd9c344729b77f632c26dc110a",
+      "provider": "meta",
+      "result_sha256": "72907d554abf65ab6ec988b7ff7f214cd58a33c781baa3868da5d997672845b9",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4270,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3063
+        },
+        "cost": 0.001402,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001402,
+        "market_cost": 0.001402,
+        "prompt_tokens": 5480,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9750
+      }
+    },
+    {
+      "cost_usd": 0.001330198,
+      "document_id": "core-14",
+      "effort": "high",
+      "elapsed_seconds": 16.93884866699227,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "8b457ce53566f4a8910d7186afe7b09d7d1e489664bb8d30c09f35dd464a0bf4",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "417a4338e737508e5fca69efae4ca68ed74f94d50c4e9ce06cffeb313a72e482",
+      "provider": "meta",
+      "result_sha256": "7b0ebbd7ad3ab90e7e73e4835b8f06b13a150570f1e99c09e93f3c6dfba3934a",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3953,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2900
+        },
+        "cost": 0.001330198,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001330198,
+        "market_cost": 0.001330198,
+        "prompt_tokens": 5493,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9446
+      }
+    },
+    {
+      "cost_usd": 0.002090898,
+      "document_id": "core-15",
+      "effort": "high",
+      "elapsed_seconds": 19.161110791988904,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e8424047f31f2865c43a9bb1b517a0b5f37842b5bba52425694bce039a141275",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 4,
+      "pdf_sha256": "f96b86df869a1f5e4fbd1d9922eeef42d9cd620309415ba9d7b7d78542206f88",
+      "provider": "meta",
+      "result_sha256": "f80fcafd644c53092551dbb682b774bde01bbdeab7c4052632376d9c8ddebfa6",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5151,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2762
+        },
+        "cost": 0.002090898,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002090898,
+        "market_cost": 0.002090898,
+        "prompt_tokens": 10704,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 15855
+      }
+    },
+    {
+      "cost_usd": 0.001296698,
+      "document_id": "core-16",
+      "effort": "high",
+      "elapsed_seconds": 17.75975041699712,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "eb71a260ec26b756de3ebf6f86f6ec772c133aad4e51cf2560b1d55f1aaf781a",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "0a3162756c7640ee87c85ad9c0356342117e2957b17524f9fbe2282e07c298c6",
+      "provider": "meta",
+      "result_sha256": "4627c53f6910e9321b249a6611507ce89ed4ad3bf2419dbcb2478e12f0bbedd9",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3785,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2656
+        },
+        "cost": 0.001296698,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001296698,
+        "market_cost": 0.001296698,
+        "prompt_tokens": 5494,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9279
+      }
+    },
+    {
+      "cost_usd": 0.001594798,
+      "document_id": "core-17",
+      "effort": "high",
+      "elapsed_seconds": 21.436979040998267,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "74bc03d2df99d251ec482d04c076b4d8b2f7124ce94005a7240ad031af169ba8",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "32a9495a8f0d251cc5c1b6b269ef1e97c0a49c1d9cd8a132a369aa2e93c2a299",
+      "provider": "meta",
+      "result_sha256": "6f18989066b753d153f351de51a77625871957388765ddfd26a07915062cf3db",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5265,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3639
+        },
+        "cost": 0.001594798,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001594798,
+        "market_cost": 0.001594798,
+        "prompt_tokens": 5515,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 10780
+      }
+    },
+    {
+      "cost_usd": 0.001377998,
+      "document_id": "core-18",
+      "effort": "high",
+      "elapsed_seconds": 18.665851958008716,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e9571f24f4a290b18a37bde3eb04d751ec02d7840472abc6e513cf3e417091c5",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "9467ebdcfedd97787ebd6a1ecfc191623e2bf6e6905b121f191455580661133a",
+      "provider": "meta",
+      "result_sha256": "9b712a2daa99646111bf632a78bc95598c32e346bfe967faa16c12fb5421fbbf",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4192,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3046
+        },
+        "cost": 0.001377998,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001377998,
+        "market_cost": 0.001377998,
+        "prompt_tokens": 5493,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 9685
+      }
+    },
+    {
+      "cost_usd": 0.001615898,
+      "document_id": "core-20",
+      "effort": "high",
+      "elapsed_seconds": 17.807667582994327,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "20402653460b2befb9ac75242153f145b08b844581ec66f3b2bf553f75d60eed",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 3,
+      "pdf_sha256": "c7eaf40943cd984baf7e0569bada21b28c7332ded03553b440a2a1168ba0704d",
+      "provider": "meta",
+      "result_sha256": "ee0e5d04774026cd7ef70e5f826dca05cdc057e9bf608407f5e8cda4e65b0aec",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4037,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2369
+        },
+        "cost": 0.001615898,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001615898,
+        "market_cost": 0.001615898,
+        "prompt_tokens": 8182,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 12219
+      }
+    },
+    {
+      "cost_usd": 0.0012788,
+      "document_id": "external-01",
+      "effort": "high",
+      "elapsed_seconds": 18.30357216700213,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "0331783b3eee9c7ddf3504aeea66941ed00d85c4e6c07d0d5089fe157d68a4f7",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "f825e553341b522020cd1df196e75ceb34b173d1bc301b975a4f87bd2c9b62cc",
+      "provider": "meta",
+      "result_sha256": "13d972da859c4dec8c89e538a10abea99d7aae33ed69e16250039931104613f6",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 3476,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 1936
+        },
+        "cost": 0.0012788,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0012788,
+        "market_cost": 0.0012788,
+        "prompt_tokens": 5836,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 9312
+      }
+    },
+    {
+      "cost_usd": 0.001959198,
+      "document_id": "external-19",
+      "effort": "high",
+      "elapsed_seconds": 20.68744887498906,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "b803fc28b8d28ff146f11929dd687463756b5036fe421ede61698da95c075d49",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "cfe6a4afa0d52bd6ba695299c4f63992443ac2117e68d7409bab171f934f5be8",
+      "provider": "meta",
+      "result_sha256": "ddfb6c9a317d1762cce3fe5a01f6f7ba4321f49b43a448081cb5861ab5bb6d29",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6345,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2331
+        },
+        "cost": 0.001959198,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001959198,
+        "market_cost": 0.001959198,
+        "prompt_tokens": 6999,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 13344
+      }
+    },
+    {
+      "cost_usd": 0.001252298,
+      "document_id": "external-20",
+      "effort": "high",
+      "elapsed_seconds": 18.909197582979687,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "468c2b78e0f59bb58bcd83f7ee080777b6deb3b4a135195dd3da83703089b21f",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 1,
+      "pdf_sha256": "125157e4491580a275d935ee1978f5eacfd27d3d5cc4f5638b73b0c4ddafec0a",
+      "provider": "meta",
+      "result_sha256": "0775aefb1631a95bbaffcb0b41a9a27f23677196989e011a815346a6e2e1fd7f",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4656,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2562
+        },
+        "cost": 0.001252298,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.001252298,
+        "market_cost": 0.001252298,
+        "prompt_tokens": 3308,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 7964
+      }
+    },
+    {
+      "cost_usd": 0.022617698,
+      "document_id": "external-21",
+      "effort": "high",
+      "elapsed_seconds": 52.37180641698069,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "e2bbf30284d85186f06af22e13aebee90b76cab765fae9b800fee654a37282fc",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 84,
+      "pdf_sha256": "4421dc77a4474cc2814997db80dbc305c6215bf98fa8aabf9fd9a0cc1202259d",
+      "provider": "meta",
+      "result_sha256": "281aeafa8cdd604a512113425a2b1fd47166d8e766874bed973865522b908128",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 12262,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2607
+        },
+        "cost": 0.022617698,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.022617698,
+        "market_cost": 0.022617698,
+        "prompt_tokens": 201750,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 214012
+      }
+    },
+    {
+      "cost_usd": 0.0017998,
+      "document_id": "public-02",
+      "effort": "high",
+      "elapsed_seconds": 22.8416319169919,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "abd0ed5f9e9c5cad9cdd101a7ca6c5e406d45c9d1a8ce8af785000b1a480da8b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 2,
+      "pdf_sha256": "af7ab151fc9e78392354392a5bd2b6a95eb708498cec2ff8bd24300377ca1676",
+      "provider": "meta",
+      "result_sha256": "b9476d46ed3624eb5bba57b59eb782dcde00dab0938affeddd727204806f1b50",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 6118,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4321
+        },
+        "cost": 0.0017998,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0017998,
+        "market_cost": 0.0017998,
+        "prompt_tokens": 5762,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 11880
+      }
+    },
+    {
+      "cost_usd": 0.0020991,
+      "document_id": "public-04",
+      "effort": "high",
+      "elapsed_seconds": 18.43719808300375,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "50bfba14d6819d9a8d591a02c76c78ff93c95c79ee16d7fc82f307fa71b4fa28",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 4,
+      "pdf_sha256": "7b725991313c4ec40e06845277990ee0451f4148082c5ae1a47304104058bc62",
+      "provider": "meta",
+      "result_sha256": "70fdb9596fe4a6131c2f8382ce0a74b28f38221e510d394c26f5a4403d3a9b02",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 5095,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3232
+        },
+        "cost": 0.0020991,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0020991,
+        "market_cost": 0.0020991,
+        "prompt_tokens": 10801,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 15896
+      }
+    },
+    {
+      "cost_usd": 0.0021525,
+      "document_id": "public-05",
+      "effort": "high",
+      "elapsed_seconds": 19.73670770798344,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "86564432f6a9ed8e725a2d0a8ca6642ee90e6b2e475f105692ccb311e663181b",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 5,
+      "pdf_sha256": "6e5d4c6c65c677b437c4baa8cc59f43c5c30d080650191e80119bb7e9ec54571",
+      "provider": "meta",
+      "result_sha256": "091ce63dfa6b966df4f05b2b188f3300ff97dd6fec7edc952c290354c400ce1b",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 4177,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2417
+        },
+        "cost": 0.0021525,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0021525,
+        "market_cost": 0.0021525,
+        "prompt_tokens": 13171,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 17348
+      }
+    },
+    {
+      "cost_usd": 0.003890398,
+      "document_id": "public-07",
+      "effort": "high",
+      "elapsed_seconds": 34.704982875002315,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "64a08a2575ca730cd8b336307fa3a6cc91cd97c242bd2f9556f3d0210260f083",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 8,
+      "pdf_sha256": "1225b6875ffa520f3846bf7d6b80ecb23e31f5a55bc0a26d1b55dab4dd00834b",
+      "provider": "meta",
+      "result_sha256": "683864a94d88a2cf95efdfd973c78efe0d0e123dc8e11ceb2f2ef75d43425cf8",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8766,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4866
+        },
+        "cost": 0.003890398,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003890398,
+        "market_cost": 0.003890398,
+        "prompt_tokens": 21469,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 30235
+      }
+    },
+    {
+      "cost_usd": 0.0040438,
+      "document_id": "public-08",
+      "effort": "high",
+      "elapsed_seconds": 33.59424220802612,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "cd84d64a381fb0b3c9e8bc736d9890e5434fffd0a05e91a21df5b78db51316ae",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 8,
+      "pdf_sha256": "0f5d4bbfc93857d2e680d411f6f26c53f29df1245b07dbdd50c18b6ce26e3848",
+      "provider": "meta",
+      "result_sha256": "a6a8114ade8be2519866ea6c81c86478d0212d98f25826fb189ca974cad97da9",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8721,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2626
+        },
+        "cost": 0.0040438,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.0040438,
+        "market_cost": 0.0040438,
+        "prompt_tokens": 22996,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0,
+          "video_tokens": 0
+        },
+        "total_tokens": 31717
+      }
+    },
+    {
+      "cost_usd": 0.003136798,
+      "document_id": "public-12",
+      "effort": "high",
+      "elapsed_seconds": 32.00013991599553,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "3e9b74703dc77bf64ae0e1d1c626391236902096aa95c96403316b0d38b7882e",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 5,
+      "pdf_sha256": "cd07e6267f4a0e6cabbad21402bd74bf465ab8aff552cf1586aee78c734b44ca",
+      "provider": "meta",
+      "result_sha256": "d972cd06fb96e8888c6f847c20bc82f62b3debfda98e419502cfffbf1961deba",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 8654,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 4495
+        },
+        "cost": 0.003136798,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.003136798,
+        "market_cost": 0.003136798,
+        "prompt_tokens": 14157,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 22811
+      }
+    },
+    {
+      "cost_usd": 0.007859798,
+      "document_id": "public-15",
+      "effort": "high",
+      "elapsed_seconds": 42.43912729198928,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "4034bdb9b0c426d1d669cb25c7f327062d0cf08378342010b0dd8fcfe57ac84c",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 18,
+      "pdf_sha256": "3342fb2981d60778e014497adea538ed7ebbfa43d363684c5c135f7d5a3e0fdd",
+      "provider": "meta",
+      "result_sha256": "46651f1a6d9d5c7fb6ccc6c4b4d01ede62e621c93fc72eb2794531070091d355",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 12246,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 2833
+        },
+        "cost": 0.007859798,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.007859798,
+        "market_cost": 0.007859798,
+        "prompt_tokens": 54203,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 66449
+      }
+    },
+    {
+      "cost_usd": 0.002568298,
+      "document_id": "public-16",
+      "effort": "high",
+      "elapsed_seconds": 32.556408832984744,
+      "error_code": null,
+      "fence_recovered": false,
+      "field_object_readable": true,
+      "field_object_view": "strict_json_object",
+      "finish_reason": "stop",
+      "http_status": 200,
+      "intent_sha256": "6255ba08ebd4aeff2808651ea8f7e0fe918427b09e58b76b8343203db55db245",
+      "json_syntax": "valid_json",
+      "max_tokens": 65000,
+      "model": "meta/muse-spark-1.3-contributor",
+      "pages": 4,
+      "pdf_sha256": "cdd5147600530ca8b5c02666b5e0f48d3d1be8fdd3beb37b809385cb21684a37",
+      "provider": "meta",
+      "result_sha256": "39b2d94834056aecffa9984e04dfc493eb33c6e9004b439f1431b89a649542f4",
+      "schema_validity": "valid",
+      "status": "completed",
+      "strict_usable": true,
+      "truncated": false,
+      "usable_after_fence": true,
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "completion_tokens": 7145,
+        "completion_tokens_details": {
+          "image_tokens": 0,
+          "reasoning_tokens": 3881
+        },
+        "cost": 0.002568298,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0,
+          "upstream_inference_prompt_cost": 0
+        },
+        "gateway_cost": 0.002568298,
+        "market_cost": 0.002568298,
+        "prompt_tokens": 11490,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 99,
+          "video_tokens": 0
+        },
+        "total_tokens": 18635
+      }
+    }
+  ],
+  "schema": "native-pdf-legacy-inspection/v1"
+}
