@@ -20,8 +20,8 @@
 -- Registered in 000_run_all.sql AFTER 012 and BEFORE 014/006/005 (so the table
 -- exists before 005, the view migration, exposes it via v_cre_listings_full).
 -- The collector keeps compatibility-only, to_regclass-guarded SQL for archive
--- handling, but it stages an empty om_facts array by policy. A pre-apply daily /
--- enrich run is therefore a no-op for OM facts.
+-- handling and stages no OM facts. A pre-apply daily / enrich run is therefore a
+-- no-op for OM facts.
 --
 -- Requires: 001_cre_brokerages.sql, 002_cre_listings.sql (cre_listings).
 -- 003..012 run before this in 000_run_all.sql.
@@ -58,19 +58,36 @@ CREATE TABLE IF NOT EXISTS credeals.cre_listing_om_facts (
 
 CREATE INDEX IF NOT EXISTS cre_listing_om_facts_listing_idx
     ON credeals.cre_listing_om_facts (listing_id);
+
+ALTER TABLE credeals.cre_listing_om_facts ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
+
+-- The five-column unique index and the table comment are created ONLY while the
+-- GetCREdata run-lineage column (extraction_run_id) is absent. GetCREdata
+-- (sql/migrations/20261101_om_fact_run_lineage*.sql, AGENTIC-5136/5137) drops this
+-- index in favor of a six-column key and owns the table comment from then on, so
+-- a rerun of 013 (it is included by 000_run_all.sql) must neither recreate the
+-- retired index nor rewrite GetCREdata's ownership text.
 -- NULLS NOT DISTINCT so the dedup holds even if a (defensive) NULL leaked into a
 -- key column; a plain UNIQUE would treat NULLs as all-distinct and let duplicate
 -- fact rows accumulate (mirrors the 011 media/links unique-index convention).
 -- The parser version is part of the key so parser generations can coexist and
 -- be audited without overwriting one another. Migration 015 aligns existing
 -- installations created with the former four-column key.
-CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_om_facts_uq
-    ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url, parser_version) NULLS NOT DISTINCT;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+     WHERE attrelid = to_regclass('credeals.cre_listing_om_facts')
+       AND attname = 'extraction_run_id'
+       AND NOT attisdropped
+  ) THEN
+    CREATE UNIQUE INDEX IF NOT EXISTS cre_listing_om_facts_uq
+        ON credeals.cre_listing_om_facts (listing_id, fact_group, fact_key, source_doc_url, parser_version) NULLS NOT DISTINCT;
 
-ALTER TABLE credeals.cre_listing_om_facts ENABLE ROW LEVEL SECURITY;  -- collector-owned; RLS on, no public policy (see 001).
-
-COMMENT ON TABLE credeals.cre_listing_om_facts IS
-    'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. The listing collector owns schema migration; GetCREdata documents pipeline is the sole production writer under the proposed CREDEALS_OWNERSHIP.md contract, and formal cross-repository approval remains required. The collector does not write or promote OM values. Service-role only (RLS on, no public policy).';
+    COMMENT ON TABLE credeals.cre_listing_om_facts IS
+        'OM/PDF-parsed facts (scalar underwriting + unit_mix + rent_roll) with parse provenance. The listing collector owns schema migration; GetCREdata documents pipeline is the sole production writer under the proposed CREDEALS_OWNERSHIP.md contract, and formal cross-repository approval remains required. The collector does not write or promote OM values. Service-role only (RLS on, no public policy).';
+  END IF;
+END $$;
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_group     IS 'Row class: ''scalar'' (a writer-defined scalar fact), ''unit_mix'' (one row per unit type), or ''rent_roll'' (one row per tenant line).';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_key       IS 'Stable snake_case fact name, e.g. ''noi'',''cap_rate'',''unit_type'',''tenant''. For scalar rows this matches the cre_listings column name.';
 COMMENT ON COLUMN credeals.cre_listing_om_facts.fact_value_text IS 'Free-text value of the fact when not numeric (e.g. tenant name, unit_type label).';

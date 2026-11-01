@@ -2926,15 +2926,14 @@ def test_to_row_discards_legacy_om_facts_payload():
             ],
         }
     )
-    assert r["om_facts"] == []
+    assert "om_facts" not in r
 
     sql = ci.build_sql([r], [], _SCRAPED_AT, set())
-    copy_start = sql.index("COPY _stage")
-    copy_data_start = sql.index("\n", copy_start) + 1
-    copy_data_end = sql.index("\n\\.\n", copy_data_start)
-    fields = sql[copy_data_start:copy_data_end].split("\t")
     assert "legacy/1" in sql  # retained only inside raw_data provenance
-    assert fields[ci.STAGE_COLS.index("om_facts")] == "[]"
+    # No staging column exists for OM facts: nothing could write them.
+    assert "om_facts" not in ci.STAGE_COLS
+    stage_ddl = sql[sql.index("CREATE TEMP TABLE _stage") : sql.index("COPY _stage")]
+    assert "om_facts" not in stage_ddl
 
 
 def test_normal_brokerage_scalars_are_not_rejected_with_retired_artifacts():

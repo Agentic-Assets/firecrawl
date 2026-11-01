@@ -194,7 +194,7 @@ and resolve confirmed findings before shipping.
 | `cre_geo_backfill.py` | Additive/idempotent geo derivation (county/cbsa/geo_source) for existing rows via `cre_geo`. `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (85,618 of 87,328 rows) |
 | `om_classify_existing.py` | One-time additive re-classification of `doc_type='brochure'` rows into flyer/floor_plan/om/financials. `--dry-run` default; APPLIED 2026-06-15 (14,087 of 70,414 upgraded). Upgrade-only, never downgrades |
 | `om_url_resolver.py` | Resolves viewer-wrapped / non-`.pdf` brochure URLs (Buildout iframe, DocumentCloud, etc.) to the real `.pdf` document URL for parser regression coverage |
-| `om_parse.py` | Retired Firecrawl OM writer. Pure extractors and dry-run artifacts remain for regression coverage; `--apply` exits `78`. GetCREdata is the sole production OM extraction writer. |
+| `om_parse.py` | Retired Firecrawl OM writer. Pure extractors and dry-run artifacts remain for regression coverage; `--apply` exits `78`. GetCREdata is the sole production OM extraction writer, and (AGENTIC-5136) the migration home for `cre_listing_om_facts` and `cre_listing_om_facts_archive`: Firecrawl only acknowledges that move, authors no om_facts DDL, and `cre_ingest.py` no longer writes the table. `sql/013` created the tables and `sql/015` is superseded. |
 | `run_colliers_main_full.sh` | Resumable colliers-main batch driver (~15,896 URLs) |
 | `launchd/` | Legacy macOS tier templates and installer (`*.plist.template`, `install_launchd.sh`); scheduler state is host-local and must be freshly verified - see `launchd/AGENTS.md` |
 | `tests/` | pytest contracts - see `tests/AGENTS.md` |
@@ -435,6 +435,16 @@ zip/CBSA crosswalk tables) plus three additive backfills (`cre_backfill_raw_data
 `om_classify_existing`, `cre_geo_backfill`); `status` was never touched. Current
 coverage requires fresh validation and exact checkpoint-manifest readback; record
 execution evidence on [AGENTIC-2902](https://linear.app/agenticassets/issue/AGENTIC-2902).
+
+OM facts ownership (AGENTIC-5136/5137): the DDL home for `credeals.cre_listing_om_facts`
+and `credeals.cre_listing_om_facts_archive` is GetCREdata
+(`sql/migrations/20261101_om_fact_run_lineage*.sql`, `sql/contracts/om_fact_run_lineage_v2.schema.json`).
+The retired five-column `ON CONFLICT` upsert and the `om_facts` staging column are
+removed from `cre_ingest.py`. The retire-time archive snapshot carries
+`extraction_run_id` once it exists on both tables (a guarded `EXECUTE`), so it runs
+unchanged before and after the GetCREdata DDL. `sql/013` creates the five-column
+index and table comment only while `extraction_run_id` is absent, so a rerun cannot
+recreate the retired index. Do not add om_facts writes or DDL here.
 
 ## Authorized maintenance
 

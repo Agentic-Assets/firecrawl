@@ -5,6 +5,13 @@
 -- parser-version-inclusive conflict key. This migration is intentionally
 -- guarded: a database already on the five-column key is left untouched.
 --
+-- SUPERSEDED (AGENTIC-5136/5137): the migration home for cre_listing_om_facts
+-- moved to GetCREdata (sql/migrations/20261101_om_fact_run_lineage*.sql), which
+-- adds extraction_run_id and replaces the five-column unique index with a
+-- six-column NULLS NOT DISTINCT key. Once extraction_run_id exists this file does
+-- nothing, so a rerun on a migrated database can never recreate or drop the key.
+-- Firecrawl only acknowledges the move and keeps no om_facts DDL authority.
+--
 -- REVIEW BOUNDARY: this file is staged for review only. Do not apply it to a
 -- production database without the schema-owner approval recorded in
 -- CREDEALS_OWNERSHIP.md and a maintenance-window decision for index rebuilds.
@@ -31,7 +38,15 @@
   $$;
 \endif
 
-SELECT CASE WHEN EXISTS (
+SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'credeals'
+      AND table_name = 'cre_listing_om_facts'
+      AND column_name = 'extraction_run_id'
+) AS om_facts_lineage_migrated \gset
+
+SELECT CASE WHEN :'om_facts_lineage_migrated'::boolean THEN false WHEN EXISTS (
     SELECT 1
     FROM pg_index i
     JOIN pg_class idx ON idx.oid = i.indexrelid
@@ -51,6 +66,8 @@ SELECT CASE WHEN EXISTS (
   CREATE UNIQUE INDEX cre_listing_om_facts_uq
     ON credeals.cre_listing_om_facts
     (listing_id, fact_group, fact_key, source_doc_url, parser_version) NULLS NOT DISTINCT;
+\elif :om_facts_lineage_migrated
+  \echo 'cre_listing_om_facts is on the GetCREdata run-lineage schema (extraction_run_id exists); superseded, no change'
 \else
   \echo 'cre_listing_om_facts_uq already uses the canonical five-column key; no change'
 \endif
