@@ -1,0 +1,318 @@
+{
+  "schema": "document-input-parser-baseline/v1",
+  "documents": 30,
+  "pages": 189,
+  "anydoc_extracted": 29,
+  "anydoc_ocr_needed": 1,
+  "median_poppler_token_overlap_proxy": 0.975,
+  "range_poppler_token_overlap_proxy": [
+    0.38686131386861317,
+    1.0
+  ],
+  "successful_output_utf8_bytes": 378412,
+  "successful_pdf_bytes": 93975967,
+  "conversion_seconds_total": 4.7300561639422085,
+  "rows": [
+    {
+      "document_id": "public-02",
+      "pages": 2,
+      "pdf_bytes": 2674009,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1722,
+      "anydoc_seconds": 0.11990545797743835,
+      "reference_token_count": 268,
+      "anydoc_poppler_token_overlap_proxy": 0.9328358208955224
+    },
+    {
+      "document_id": "public-04",
+      "pages": 4,
+      "pdf_bytes": 829838,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1684,
+      "anydoc_seconds": 0.04656404198613018,
+      "reference_token_count": 282,
+      "anydoc_poppler_token_overlap_proxy": 1.0
+    },
+    {
+      "document_id": "public-05",
+      "pages": 5,
+      "pdf_bytes": 2001732,
+      "anydoc_status": "ocr_needed",
+      "anydoc_utf8_bytes": 0,
+      "anydoc_seconds": 0.11636304200510494,
+      "reference_token_count": 280,
+      "anydoc_poppler_token_overlap_proxy": null
+    },
+    {
+      "document_id": "public-08",
+      "pages": 8,
+      "pdf_bytes": 7339464,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 8322,
+      "anydoc_seconds": 0.6204801249841694,
+      "reference_token_count": 1236,
+      "anydoc_poppler_token_overlap_proxy": 0.941747572815534
+    },
+    {
+      "document_id": "external-01",
+      "pages": 2,
+      "pdf_bytes": 1254929,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 2387,
+      "anydoc_seconds": 0.04628262500045821,
+      "reference_token_count": 379,
+      "anydoc_poppler_token_overlap_proxy": 0.38786279683377306
+    },
+    {
+      "document_id": "core-01",
+      "pages": 3,
+      "pdf_bytes": 2355097,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1405,
+      "anydoc_seconds": 0.04024645799654536,
+      "reference_token_count": 263,
+      "anydoc_poppler_token_overlap_proxy": 0.8326996197718631
+    },
+    {
+      "document_id": "core-02",
+      "pages": 3,
+      "pdf_bytes": 1879394,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1622,
+      "anydoc_seconds": 0.047165041003609076,
+      "reference_token_count": 293,
+      "anydoc_poppler_token_overlap_proxy": 0.8225255972696246
+    },
+    {
+      "document_id": "core-03",
+      "pages": 3,
+      "pdf_bytes": 3415768,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1635,
+      "anydoc_seconds": 0.04322525000316091,
+      "reference_token_count": 250,
+      "anydoc_poppler_token_overlap_proxy": 0.904
+    },
+    {
+      "document_id": "core-04",
+      "pages": 2,
+      "pdf_bytes": 1040919,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1280,
+      "anydoc_seconds": 0.04087983301724307,
+      "reference_token_count": 174,
+      "anydoc_poppler_token_overlap_proxy": 0.9885057471264368
+    },
+    {
+      "document_id": "core-05",
+      "pages": 3,
+      "pdf_bytes": 2249044,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 2042,
+      "anydoc_seconds": 0.04627799999434501,
+      "reference_token_count": 338,
+      "anydoc_poppler_token_overlap_proxy": 0.8520710059171598
+    },
+    {
+      "document_id": "core-06",
+      "pages": 3,
+      "pdf_bytes": 4562029,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1236,
+      "anydoc_seconds": 0.0537969580036588,
+      "reference_token_count": 242,
+      "anydoc_poppler_token_overlap_proxy": 0.6818181818181818
+    },
+    {
+      "document_id": "core-07",
+      "pages": 2,
+      "pdf_bytes": 4764426,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1184,
+      "anydoc_seconds": 0.262395750003634,
+      "reference_token_count": 160,
+      "anydoc_poppler_token_overlap_proxy": 0.975
+    },
+    {
+      "document_id": "core-08",
+      "pages": 3,
+      "pdf_bytes": 3311835,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1382,
+      "anydoc_seconds": 0.17750420901575126,
+      "reference_token_count": 185,
+      "anydoc_poppler_token_overlap_proxy": 0.9783783783783784
+    },
+    {
+      "document_id": "core-09",
+      "pages": 2,
+      "pdf_bytes": 2561966,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1101,
+      "anydoc_seconds": 0.10891366700525396,
+      "reference_token_count": 162,
+      "anydoc_poppler_token_overlap_proxy": 0.9814814814814815
+    },
+    {
+      "document_id": "core-10",
+      "pages": 2,
+      "pdf_bytes": 6832870,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1087,
+      "anydoc_seconds": 0.0532227499934379,
+      "reference_token_count": 145,
+      "anydoc_poppler_token_overlap_proxy": 0.9862068965517241
+    },
+    {
+      "document_id": "core-11",
+      "pages": 3,
+      "pdf_bytes": 6773375,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1194,
+      "anydoc_seconds": 0.059498832997633144,
+      "reference_token_count": 237,
+      "anydoc_poppler_token_overlap_proxy": 0.7046413502109705
+    },
+    {
+      "document_id": "core-13",
+      "pages": 2,
+      "pdf_bytes": 3272475,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1206,
+      "anydoc_seconds": 0.048156125005334616,
+      "reference_token_count": 164,
+      "anydoc_poppler_token_overlap_proxy": 0.9817073170731707
+    },
+    {
+      "document_id": "core-14",
+      "pages": 2,
+      "pdf_bytes": 3049474,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1245,
+      "anydoc_seconds": 0.06306920800125226,
+      "reference_token_count": 173,
+      "anydoc_poppler_token_overlap_proxy": 0.9826589595375722
+    },
+    {
+      "document_id": "core-15",
+      "pages": 4,
+      "pdf_bytes": 4238200,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1464,
+      "anydoc_seconds": 0.049918208009330556,
+      "reference_token_count": 268,
+      "anydoc_poppler_token_overlap_proxy": 0.7574626865671642
+    },
+    {
+      "document_id": "core-16",
+      "pages": 2,
+      "pdf_bytes": 2325263,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1229,
+      "anydoc_seconds": 0.10860899998806417,
+      "reference_token_count": 166,
+      "anydoc_poppler_token_overlap_proxy": 0.9819277108433735
+    },
+    {
+      "document_id": "core-17",
+      "pages": 2,
+      "pdf_bytes": 2288275,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1347,
+      "anydoc_seconds": 0.4749548339750618,
+      "reference_token_count": 180,
+      "anydoc_poppler_token_overlap_proxy": 0.9777777777777777
+    },
+    {
+      "document_id": "core-18",
+      "pages": 2,
+      "pdf_bytes": 6767096,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1224,
+      "anydoc_seconds": 0.08553412498440593,
+      "reference_token_count": 176,
+      "anydoc_poppler_token_overlap_proxy": 0.9886363636363636
+    },
+    {
+      "document_id": "core-20",
+      "pages": 3,
+      "pdf_bytes": 6131212,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1276,
+      "anydoc_seconds": 0.04920629202388227,
+      "reference_token_count": 269,
+      "anydoc_poppler_token_overlap_proxy": 0.6356877323420075
+    },
+    {
+      "document_id": "external-19",
+      "pages": 2,
+      "pdf_bytes": 132444,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 5735,
+      "anydoc_seconds": 0.05746020798687823,
+      "reference_token_count": 838,
+      "anydoc_poppler_token_overlap_proxy": 0.9928400954653938
+    },
+    {
+      "document_id": "external-20",
+      "pages": 1,
+      "pdf_bytes": 88975,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 1805,
+      "anydoc_seconds": 0.05152083400753327,
+      "reference_token_count": 198,
+      "anydoc_poppler_token_overlap_proxy": 1.0
+    },
+    {
+      "document_id": "external-21",
+      "pages": 84,
+      "pdf_bytes": 1521588,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 288735,
+      "anydoc_seconds": 1.2741225409845356,
+      "reference_token_count": 46194,
+      "anydoc_poppler_token_overlap_proxy": 0.9781140407845175
+    },
+    {
+      "document_id": "public-15",
+      "pages": 18,
+      "pdf_bytes": 1237583,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 32228,
+      "anydoc_seconds": 0.07088841599761508,
+      "reference_token_count": 5404,
+      "anydoc_poppler_token_overlap_proxy": 0.9901924500370096
+    },
+    {
+      "document_id": "public-16",
+      "pages": 4,
+      "pdf_bytes": 2257334,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 3883,
+      "anydoc_seconds": 0.1114625410118606,
+      "reference_token_count": 523,
+      "anydoc_poppler_token_overlap_proxy": 0.9063097514340345
+    },
+    {
+      "document_id": "public-07",
+      "pages": 8,
+      "pdf_bytes": 1861374,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 3554,
+      "anydoc_seconds": 0.06737179099582136,
+      "reference_token_count": 1096,
+      "anydoc_poppler_token_overlap_proxy": 0.38686131386861317
+    },
+    {
+      "document_id": "public-12",
+      "pages": 5,
+      "pdf_bytes": 6959711,
+      "anydoc_status": "extracted",
+      "anydoc_utf8_bytes": 4198,
+      "anydoc_seconds": 0.33505999998305924,
+      "reference_token_count": 774,
+      "anydoc_poppler_token_overlap_proxy": 0.8049095607235142
+    }
+  ],
+  "limitation": "Poppler is an imperfect reference; multiset overlap ignores reading order, tables, units and semantics. Small extracted output is not lossless compression."
+}

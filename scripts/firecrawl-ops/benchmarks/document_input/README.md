@@ -1,6 +1,6 @@
 # Document input comparison
 
-Part of AGENTIC-2895. This opt-in benchmark compares the same 30 public PDFs in
+Part of [AGENTIC-5134](https://linear.app/agenticassets/issue/AGENTIC-5134) and [AGENTIC-2895](https://linear.app/agenticassets/issue/AGENTIC-2895). This opt-in benchmark compares the same 30 public PDFs in
 three models, each with two input arms: pinned AnyDoc Markdown and the original
 PDF. It does not change the collector, extraction service, scheduler, database,
 or model profile. Only use reviewed public source documents and a private run
@@ -75,3 +75,26 @@ AnyDoc extraction completeness are not established by token counts.
 Gateway wire format and generation lookup: [Chat Completions PDF inputs](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/images),
 [provider options](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/advanced),
 and [generation lookup](https://vercel.com/docs/ai-gateway/observability-and-spend/usage).
+
+
+## Measured findings and body-free export
+
+The [30-document findings and committed measurements](../../../../docs/firecrawl-ops/references/document-input-benchmark/README.md)
+record the corpus, costs, speed, visual association witnesses and limitations.
+Retain the raw parser text independently of model-generated transcriptions.
+`postprocess.py` preserves original hashes and strict outcomes while deriving a
+separate view of one complete outer JSON fence. `summarize.py` explicitly scores
+that recovered-content sensitivity, excludes truncated answers, validates the
+prepared inputs and complete intent identity, and exports metadata only:
+
+```sh
+python3 scripts/firecrawl-ops/benchmarks/document_input/summarize.py \
+  --manifest /private/corpus/manifest.json \
+  --gold /private/corpus/reviewed_associations.json \
+  --expected-gold-sha256 <reviewed-blind-gold-sha256> \
+  --results /private/settled-run --out /private/new-measurements
+```
+
+Gold is independently agent-reviewed, not a human certification. Exact matches
+are lower-bound probes, not semantic precision. A valid response and normal stop
+also do not establish full text or fact coverage.

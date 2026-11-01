@@ -69,7 +69,7 @@ def load_manifest(path):
     seen = set()
     paths = set()
     for doc in docs:
-        if not isinstance(doc, dict) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", doc.get("id", "")) or doc["id"] in seen:
+        if not isinstance(doc, dict) or not re.fullmatch(rf"[a-z0-9][a-z0-9_-]{{0,{limits.DOCUMENT_BENCH_MAX_ID_CHARS - 1}}}", doc.get("id", "")) or doc["id"] in seen:
             raise ValueError("invalid or duplicate document id")
         seen.add(doc["id"])
         for field, sha_field in (("path", "sha256"), ("gold_path", "gold_sha256")):
@@ -170,8 +170,8 @@ def request_json(url, key, *, data=None):
             return {"http_status": response.status, "body": json.loads(body)}
     except urllib.error.HTTPError as exc:
         try:
-            raw = exc.read(65537)
-            if len(raw) > 65536:
+            raw = exc.read(limits.DOCUMENT_BENCH_MAX_ERROR_BYTES + 1)
+            if len(raw) > limits.DOCUMENT_BENCH_MAX_ERROR_BYTES:
                 return {"http_status": exc.code, "error": "http_error_body_limit"}
             raw = raw.replace(key.encode(), b"[REDACTED]")
             body = json.loads(raw)
@@ -303,7 +303,7 @@ def unsupported_evidence(path):
     if path is None:
         return None
     raw = path.read_bytes()
-    if len(raw) > 1024 * 1024:
+    if len(raw) > limits.DOCUMENT_BENCH_MAX_METADATA_BYTES:
         raise ValueError("unsupported-route evidence exceeds bound")
     data = json.loads(raw)
     error = data.get("response", {}).get("error", {})
@@ -497,7 +497,7 @@ def read_env_key(path):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 1024 * 1024:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > limits.DOCUMENT_BENCH_MAX_METADATA_BYTES:
             raise ValueError("credential file must be owner-only and bounded")
         with os.fdopen(fd, "r", encoding="utf8", closefd=False) as stream:
             matches = [line.split("=", 1)[1].strip() for line in stream

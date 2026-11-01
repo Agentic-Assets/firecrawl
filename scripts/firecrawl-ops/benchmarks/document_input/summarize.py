@@ -42,8 +42,12 @@ def generate(manifest_path, gold_path, results, expected_gold_sha256):
     if len(golden) != len(gold["documents"]) or set(golden) != {d["id"] for d in manifest["documents"]}:
         raise ValueError("reviewed gold must cover the exact document set once")
     seal = json.loads((results / "preparation.json").read_bytes())
-    if json.loads((results / "run.json").read_bytes())["manifest_sha256"] != manifest_hash:
+    run = json.loads((results / "run.json").read_bytes())
+    settings = json.loads((results / "settings.json").read_bytes())
+    if run.get("manifest_sha256") != manifest_hash or settings.get("manifest_sha256") != manifest_hash:
         raise ValueError("run manifest changed")
+    if run.get("prompt_sha256") != runner.digest(runner.PROMPT.encode()) or settings.get("prompt_sha256") != run["prompt_sha256"]:
+        raise ValueError("run prompt changed")
     rows = []
     for document in manifest["documents"]:
         if golden[document["id"]]["pdf_sha256"] != document["sha256"]:
@@ -66,6 +70,22 @@ def generate(manifest_path, gold_path, results, expected_gold_sha256):
                 if original.get("preparation_sha256") != seal[document["id"]]:
                     raise ValueError("model result reference binding changed")
                 intent = json.loads(path.with_name(path.name.replace(".result.json", ".intent.json")).read_bytes())
+                if intent.get("dispatch") not in ("started", "not_started"):
+                    raise ValueError("invalid dispatch disposition")
+                identity = intent.get("identity", {})
+                expected_identity = {"document_id": document["id"], "pdf_sha256": document["sha256"],
+                                     "model": model, "arm": arm, "preparation_sha256": seal[document["id"]],
+                                     "prompt_sha256": run["prompt_sha256"], "effort": settings["effort"],
+                                     "max_tokens": settings["max_tokens"], "reservation_usd": settings["reservation_usd"],
+                                     "requested_provider": model.split("/")[0]}
+                if arm == "native_pdf":
+                    expected_identity["input_sha256"] = document["sha256"]
+                elif anydoc["status"] == "extracted":
+                    expected_identity["input_sha256"] = runner.digest(anydoc["text"].encode())
+                if model == "alibaba/qwen3.8-flash" and arm == "native_pdf" and settings.get("unsupported_native_evidence_sha256"):
+                    expected_identity["unsupported_evidence_sha256"] = settings["unsupported_native_evidence_sha256"]
+                if runner.canonical(identity) != runner.canonical(expected_identity) or runner.canonical(identity) != runner.canonical({key: original.get(key) for key in identity}):
+                    raise ValueError("intent and result identity mismatch")
                 dispatched = intent.get("dispatch") == "started"
                 derived = postprocess.derive(raw)
                 usable = bool(derived["normalized_valid"] and original.get("finish_reason") == "stop" and not original.get("truncated") and original.get("http_status") == 200)
@@ -118,6 +138,7 @@ def generate(manifest_path, gold_path, results, expected_gold_sha256):
             measured = [r for r in group if r["http_status"] == 200]
             usable = [r for r in group if r["usable_after_fence_normalization"]]
             latencies = [r["elapsed_seconds"] for r in measured if r["elapsed_seconds"] is not None]
+            end_to_end = [r["end_to_end_seconds"] for r in measured if r["end_to_end_seconds"] is not None]
             dispatched = [r for r in group if r["api_dispatched"]]
             costs = [r["actual_gateway_cost_usd"] for r in dispatched if r["actual_gateway_cost_usd"] is not None]
             overlaps = [r["transcription_token_recall_proxy"] for r in usable if r["transcription_token_recall_proxy"] is not None]
@@ -133,6 +154,8 @@ def generate(manifest_path, gold_path, results, expected_gold_sha256):
                 "cost_unknown_dispatched": len(dispatched) - len(costs),
                 "median_request_seconds": statistics.median(latencies) if latencies else None,
                 "p95_request_seconds": percentile(latencies, .95),
+                "median_end_to_end_seconds": statistics.median(end_to_end) if end_to_end else None,
+                "p95_end_to_end_seconds": percentile(end_to_end, .95),
                 "median_token_recall_proxy_usable": statistics.median(overlaps) if overlaps else None,
             }
             for name in ("reviewed_fact_probes", "fact_matched", "fact_missed", "fact_wrong_association_candidate", "fact_unknown", "fact_unscorable", "table_matched", "table_missed", "table_wrong_association_candidate", "table_unknown", "table_unscorable"):

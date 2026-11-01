@@ -25,17 +25,21 @@ def fixture(tmp_path, monkeypatch):
     (results / "d1.input.json").write_bytes(prepared)
     prep_hash = runner.digest(prepared)
     (results / "preparation.json").write_bytes(runner.canonical({"d1": prep_hash}))
-    (results / "run.json").write_bytes(runner.canonical({"manifest_sha256": "manifest-hash"}))
+    (results / "run.json").write_bytes(runner.canonical({"manifest_sha256": "manifest-hash", "prompt_sha256": runner.digest(runner.PROMPT.encode())}))
+    (results / "settings.json").write_bytes(runner.canonical({"manifest_sha256": "manifest-hash", "prompt_sha256": runner.digest(runner.PROMPT.encode()), "effort": "medium", "max_tokens": 1000, "reservation_usd": 1.0}))
     raw_text = json.dumps({"transcription": "Occupancy 100%", "facts": [{"label": "Cap rate", "value": "100%"}], "tables": []})
     for index, model in enumerate(runner.MODELS):
         for arm in runner.ARMS:
             stem = f"d1--{index}--{arm}"
             result = {"document_id": "d1", "pdf_sha256": "a" * 64, "model": model, "arm": arm,
-                      "preparation_sha256": prep_hash, "status": "incomplete", "http_status": 200,
+                      "preparation_sha256": prep_hash, "prompt_sha256": runner.digest(runner.PROMPT.encode()),
+                      "effort": "medium", "max_tokens": 1000, "reservation_usd": 1.0, "requested_provider": model.split("/")[0],
+                      "input_sha256": "a" * 64 if arm == "native_pdf" else runner.digest(b"Occupancy 100%"),
+                      "status": "incomplete", "http_status": 200,
                       "finish_reason": "stop", "truncated": False, "raw_output": f"```json\n{raw_text}\n```",
                       "actual_cost_usd": 0.1}
             (results / f"{stem}.result.json").write_bytes(runner.canonical(result))
-            (results / f"{stem}.intent.json").write_bytes(runner.canonical({"dispatch": "started"}))
+            (results / f"{stem}.intent.json").write_bytes(runner.canonical({"dispatch": "started", "identity": {k: result[k] for k in ("document_id", "pdf_sha256", "model", "arm", "preparation_sha256", "prompt_sha256", "effort", "max_tokens", "reservation_usd", "requested_provider", "input_sha256")}}))
     return manifest_path, gold_path, results, runner.digest(gold_path.read_bytes())
 
 
@@ -67,3 +71,28 @@ def test_truncated_fenced_output_never_upgraded_and_failed_dispatch_cost_counted
     row, summary = report["rows"][0], report["summary"][0]
     assert not row["usable_after_fence_normalization"] and row["fact_unknown"] == 1
     assert summary["http_200"] == 0 and summary["actual_gateway_cost_usd_known"] == 0.1
+
+
+def test_mismatched_intent_refused(tmp_path, monkeypatch):
+    args = fixture(tmp_path, monkeypatch)
+    path = args[2] / "d1--0--anydoc_text.intent.json"
+    intent = json.loads(path.read_bytes())
+    intent["identity"]["model"] = "wrong/model"
+    path.write_bytes(runner.canonical(intent))
+    with pytest.raises(ValueError, match="intent and result identity"):
+        summarize.generate(*args)
+
+
+def test_removed_required_identity_and_changed_input_refused(tmp_path, monkeypatch):
+    args = fixture(tmp_path, monkeypatch)
+    path = args[2] / "d1--0--anydoc_text.intent.json"
+    intent = json.loads(path.read_bytes())
+    del intent["identity"]["effort"]
+    path.write_bytes(runner.canonical(intent))
+    with pytest.raises(ValueError, match="identity mismatch"):
+        summarize.generate(*args)
+    intent["identity"]["effort"] = "medium"
+    intent["identity"]["input_sha256"] = "0" * 64
+    path.write_bytes(runner.canonical(intent))
+    with pytest.raises(ValueError, match="identity mismatch"):
+        summarize.generate(*args)

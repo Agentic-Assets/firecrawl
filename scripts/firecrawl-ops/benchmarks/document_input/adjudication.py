@@ -1,6 +1,6 @@
 """Conservative, partial-gold association checks for private benchmark results.
 
-Gold is an independent, human-reviewed sidecar bound to the frozen manifest hash.
+Gold is an independent, source-reviewed sidecar bound to the frozen manifest hash.
 Matches are exact after case/whitespace normalization; they are lower-bound probes,
 not a measure of overall precision or complete document recall.
 """
@@ -11,8 +11,12 @@ import hashlib
 import json
 import os
 import re
+import sys
 from collections import Counter
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import limits_and_budgets as limits
 
 
 def norm(value):
@@ -145,7 +149,7 @@ def main():
     rows = []
     models = ("anthropic/claude-haiku-5.5", "openai/gpt-6.1-terra", "alibaba/qwen3.8-flash")
     for doc in probes:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", doc["id"]) or docs.get(doc["id"]) != doc.get("pdf_sha256"):
+        if not re.fullmatch(rf"[a-z0-9][a-z0-9_-]{{0,{limits.DOCUMENT_BENCH_MAX_ID_CHARS - 1}}}", doc["id"]) or docs.get(doc["id"]) != doc.get("pdf_sha256"):
             raise ValueError("gold document binding mismatch")
         for index, model in enumerate(models):
             for arm in ("anydoc_text", "native_pdf"):
