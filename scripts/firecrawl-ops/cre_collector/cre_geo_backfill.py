@@ -9,9 +9,9 @@ the offline ZipCbsaCrosswalk (data/zip_cbsa_crosswalk.csv).
 WHY THIS EXISTS
 ---------------
 The 012 migration adds cbsa_code / cbsa_name / geo_source columns to
-cre_listings. Those columns start NULL on all existing rows. The forward path
-(cre_ingest.py) will populate them on the NEXT full collect run, but this
-script backfills existing rows NOW, without requiring another collect pass.
+cre_listings. The forward path (cre_ingest.py, AGENTIC-5133) derives them for
+every row it stages, with the same keep-wins COALESCE; this script fills rows
+that no ingest has touched since, without requiring another collect pass.
 
 Precedence (mirrors derive_geo in cre_geo.py, contract Section C.4 / Section E):
   1. county / market / submarket already present (source-verbatim, Newmark etc.)
@@ -227,7 +227,9 @@ CREATE TEMP TABLE _geo_stage (
 -- Geo backfill: COALESCE-keep UPDATE on {_TABLE}.
 -- Skips rows whose derived value is NULL (no crosswalk hit).
 -- Skips rows where the target column already has a non-NULL value (keep-wins).
-DO $$ BEGIN
+DO $$
+DECLARE updated_rows bigint;
+BEGIN
   -- Guard: ensure the cbsa_code column exists (migration 012 applied).
   IF NOT EXISTS (
       SELECT 1 FROM pg_attribute a
@@ -252,7 +254,8 @@ DO $$ BEGIN
       AND (s.county IS NOT NULL OR s.cbsa_code IS NOT NULL OR s.geo_source IS NOT NULL)
       -- Only update when the target column is still NULL (COALESCE-keep semantics).
       AND (l.county IS NULL OR l.cbsa_code IS NULL OR l.cbsa_name IS NULL OR l.geo_source IS NULL);
-    RAISE NOTICE 'geo backfill applied % row(s)', FOUND::int;
+    GET DIAGNOSTICS updated_rows = ROW_COUNT;
+    RAISE NOTICE 'geo backfill applied % row(s)', updated_rows;
   END IF;
 END $$;""")
 

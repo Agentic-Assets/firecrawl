@@ -101,7 +101,8 @@ CREATE UNLOGGED TABLE credeals.cre_listings(
  raw_data jsonb, deleted_at timestamptz, transaction_type text DEFAULT 'sale',
  scraped_at timestamptz DEFAULT '2026-01-01T00:00:00Z', canonical_url text,
  title text, state text, lat numeric, lng numeric, sale_price_usd numeric,
- sale_price_per_sf numeric, lease_rate_min numeric, lease_rate_max numeric, cap_rate numeric);
+ sale_price_per_sf numeric, lease_rate_min numeric, lease_rate_max numeric, cap_rate numeric,
+ zip text, cbsa_code text, geo_source text);
 """
     sql += "INSERT INTO credeals.cre_brokerages VALUES " + broker_rows + ";\n"
     sql += (
