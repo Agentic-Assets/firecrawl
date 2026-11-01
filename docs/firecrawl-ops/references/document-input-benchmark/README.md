@@ -6,6 +6,8 @@ This reference preserves measured comparisons for the listing-brochure program. 
 
 The [open-weight model and provider follow-up](2026-11-01-open-models/README.md) adds current model research, synthetic PDF/image capability checks and a small matched brochure challenge. It is separate from the thirty-document cohort below.
 
+The [full-cohort native-PDF comparison](2026-11-01-native-pdf-30/README.md) tests current Luna and Gemini routes against a fresh, matched Haiku reference on all thirty PDFs, with independent source-fact review and actual task costs.
+
 ## November 1, 2026: 30 documents, three models
 
 **AnyDoc is a useful text-retention baseline. Native PDF input still adds value for visual associations.** Haiku 5.5 was a lower-cost native-PDF candidate worth further testing. This is a provisional result from a convenience sample, not a production-default decision or a representative accuracy ranking.

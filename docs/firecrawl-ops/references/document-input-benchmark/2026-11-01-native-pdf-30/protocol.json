@@ -1,0 +1,42 @@
+{
+  "baseline": "fresh anthropic/claude-haiku-5.5 via anthropic under this same protocol",
+  "budget_usd": 30,
+  "control": "external-21",
+  "documents": 30,
+  "effort": "high",
+  "file_input": "whole original PDF byte upload",
+  "format": "json_object",
+  "historical_baseline": "previous medium/65536 results are context only",
+  "manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "max_tokens": 65000,
+  "pages": 189,
+  "prompt_sha256": "2997f83bad31ab437ec04a61225ff5701119bff4150c83d5287280531601f463",
+  "required_routes": [
+    {
+      "model": "anthropic/claude-haiku-5.5",
+      "provider": "anthropic"
+    },
+    {
+      "model": "openai/gpt-6-luna",
+      "provider": "openai"
+    },
+    {
+      "model": "google/gemini-3.8-flash",
+      "provider": "vertex"
+    },
+    {
+      "model": "google/gemini-3.5-flash-lite",
+      "provider": "vertex"
+    }
+  ],
+  "reservation_usd": 3.5,
+  "retries": 0,
+  "reviewed_gold_document_count": 30,
+  "reviewed_gold_manifest_sha256": "702a4fbd57f56a513da16933d9da988ded70f368b4941dd18d9e88e5e8a8af6d",
+  "reviewed_gold_sha256": "0f11938434dad29d0b4972d33386b18f3571e6071babc39e119173d9d9f2a497",
+  "routes": 4,
+  "routes_config_sha256": "c16e45d851f15c577a1c264c8858ba311b579625b91f854432e659c2ec511eda",
+  "runner_sha256": "8e7e4df6217e9717e37ae8eea83439056819d0f06d3472ce6585fc985e15d330",
+  "schema": "native-pdf-30-protocol/v3",
+  "workers": 4
+}
