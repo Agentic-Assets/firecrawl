@@ -20,7 +20,7 @@ Sources: [Gateway catalog](https://ai-gateway.vercel.sh/v1/models) and model-spe
 
 Each of the four selected routes passed an actual image-only PDF canary: exact marker, two label/value associations, HTTP 200 and normal stop, with a generation receipt confirming the selected provider. These four requests cost **$0.00504235** in total. Qualification establishes only this simple input path, not completeness on long documents. [Google's document documentation](https://ai.google.dev/gemini-api/docs/document-processing) describes native PDF text and vision; the route-specific requests supply the evidence for the tested Gateway interface.
 
-Meta Muse Spark 1.3 Contributor was also screened using only our generated synthetic PDF. It passed, with `meta` confirmed and a $0.0002739 receipt. Its 0.10 / 0.20 token rate is distinct from Standard mode's 1.25 / 4.25: [Contributor pricing permits use of submitted files and responses for future training](https://dev.meta.ai/docs/pricing-rate-limits). Cayman then explicitly authorized using this Contributor route for the same public corpus and required it in the test. It is included as a separately sealed thirty-document supplement, with the training terms recorded. This approval does not extend to private deal files. The Standard product's AA Max score is not a separately measured Contributor score or a score for this experiment's requested high effort.
+Meta Muse Spark 1.3 Contributor was initially screened using our generated synthetic PDF. It passed, with `meta` confirmed and a $0.0002739 receipt. Its 0.10 / 0.20 token rate is distinct from Standard mode's 1.25 / 4.25: [Contributor pricing permits use of submitted files and responses for future training](https://dev.meta.ai/docs/pricing-rate-limits). Cayman then explicitly authorized using this Contributor route for the same public corpus and required it in the test. It is included as a separately sealed thirty-document supplement, with the training terms recorded. This approval does not extend to private deal files. The Standard product's AA Max score is not a separately measured Contributor score or a score for this experiment's requested high effort.
 
 ## Matched protocol
 
@@ -46,10 +46,86 @@ For tables, the sixteen frozen reference rows require source-supported row/colum
 
 Actual task-cost comparisons include the cost of failed calls, with unknown charges kept unknown. Format-usable tasks and documents passing the reviewed fact checks are reported separately. Median and nearest-rank p90 request times exclude downloads, queueing and cost reconciliation. Successful matched-document comparisons use the same document IDs on both sides; a fast error is not a performance win. Cache-token usage is retained because billed charges are not necessarily cold-cache prices. The full thirty-document cohort remains primary; the long control is also reported separately.
 
+The initial private evaluation sketch mentioned an interpolated p90; the final analysis uses explicitly labeled nearest-rank p90. Both variants are retained in the measurements. Reported provider token/cache fields are usage observations, not a reconstruction of charges. For example, Luna reports 590,470 cache-creation tokens; that number does not establish an extra billable fee or a cold-cache estimate. The authoritative costs here are the actual non-BYOK generation receipts.
+
 ## Source-reference correction discovered before adjudication
 
 `core-10` contains two different source ranges: a headline and an offering-summary field disagree. The frozen reference's generic label does not distinguish them. The original gold is unchanged; that one probe is marked `uncertain_reference` consistently for all five models and excluded from the scorable semantic denominator. Its source-supported alternatives are retained, rather than labeling a model's faithful headline reading an invention. The original ninety-eight-probe diagnostic denominator remains available.
 
+## Measured cost and speed
+
+**All 150 cohort calls completed**, with matching requested model, provider and non-BYOK cost receipts. Every response reported HTTP 200, normal `stop` and `truncated: false`, including responses that were not usable. No client inference was retried and neither finite dispatcher remains active. Cohort spend was **$1.631255416**; five canaries add $0.00531625, for **$1.636571666 total**. No charge remains unknown.
+
+**Meta Contributor is the strongest cost/speed candidate in this experiment.** Its thirty-document bill was **71.0% lower** than fresh Haiku, and its median request time was **26.2% lower**. These are observations from one small corpus, not a randomized latency study or proof of equal extraction reliability. It ran later with two workers rather than four. Its recorded input-cache hits were 1,683 tokens; Haiku reported zero.
+
+| Route | Cost, all 30 PDFs | Median API seconds | p90 API seconds | Format and reviewed-check passes / 30 | Cost per such pass |
+|---|---:|---:|---:|---:|---:|
+| Haiku 5.5 / Anthropic | $0.2852334 | 26.77 | 43.38 | 28 | $0.010187 |
+| GPT-6 Luna / OpenAI | $0.1753763 | 31.39 | 49.67 | 29 | $0.006047 |
+| Gemini 3.8 Flash / Vertex | $0.72137625 | 29.77 | 71.13 | 30 | $0.024046 |
+| Gemini 3.5 Flash-Lite / Vertex | $0.3665205 | 15.86 | 21.16 | 25 | $0.014661 |
+| Muse Spark 1.3 Contributor / Meta | $0.082748966 | 19.76 | 33.59 | 29 | $0.002853 |
+
+The passing-document gate requires a usable whole response after the permitted single-fence recovery and all scorable selected fact/table references for that document to be correct. The numerator includes **every paid cohort attempt**, including unusable outputs. This is cost per passing **reviewed checks**, not a claim that the entire document was extracted correctly. Known errors outside the references remain outside this gate and are disclosed below.
+
+The cost/speed advantage is not only the long control: excluding that one document leaves Meta at **$0.060131268 versus Haiku $0.1383154** across 29 documents, with medians **19.74 versus 26.58 seconds**. Across the **27 same documents where both models passed format and selected-reference checks**, Meta was cheaper on all 27 and faster on 20; its paired-set median was 19.27 seconds versus Haiku 24.68. Its lower cost and time therefore persist on matched usable cases, with the later-run timing caveat intact.
+
+Luna's full-cohort bill was **38.5% lower** than Haiku's, but median latency was **17.3% higher**. Flash-Lite was faster but cost more and missed or failed to provide more reference facts. Gemini 3.8 Flash improved whole-response format consistency but cost about **2.53 times** Haiku and was not faster in this run.
+
+## What the quality review establishes
+
+The independent review records **490 fact decisions and 80 selected table-row decisions**. After the one source-ambiguous reference is excluded consistently, there are **97 scorable fact references per model**. The field-level semantic view below can inspect otherwise-readable facts/tables in a valid JSON object whose sibling fields violate the whole-response schema. That view does not silently turn a schema-invalid response into a usable one.
+
+| Route | Clean selected facts / 97 | Missing / unscorable facts | Correct selected table rows / 16 | Strict / fence-recovered whole responses |
+|---|---:|---|---:|---|
+| Haiku | 97 | 0 / 0 | 16 | 9 strict + 19 fence-recovered; 2 schema failures |
+| Luna | 97 | 0 / 0 | 16 | 29 strict; 1 schema failure |
+| Gemini 3.8 Flash | 97 | 0 / 0 | 16 | 30 strict |
+| Gemini 3.5 Flash-Lite | 85 | 4 / 8 | 10; 6 unscorable | 28 strict; 2 JSON syntax failures |
+| Meta Contributor | 96 | 1 / 0 | 16 | 30 strict |
+
+Haiku's two whole-response schema failures still contain all selected fact associations in the separate readable-field view. Luna's one schema failure is likewise kept separate from its semantic fact matches. Thirteen headerless table rows were judged against their manually inspected source context; this is a separate manual selected-row result, not an expansion of the original three-row strict matching proxy.
+
+Meta's scored omission was an IRS form-attachment association. Across the **27 non-IRS listing/city-record documents**, it and Haiku both supplied all selected references in the field-level view; Meta passed the whole-response gate on all 27, versus Haiku on 25. This does **not** establish that every property fact in those documents was correct.
+
+**Important errors beyond the frozen checklist:**
+
+* In `core-05`, Luna reversed office and warehouse areas on a plan despite getting all three frozen target facts correct.
+* In `core-06`, Meta misread a total-building-area numeral in both a fact and a table while correctly identifying the distinct suite area and the frozen targets. The source plan was visually checked.
+* Flash-Lite omitted some structured details even when their literals remained in transcription. Matching text presence is not the same as producing a usable fact.
+* Luna and Meta sometimes used a printed folio instead of the physical PDF page index. Examples include the long control's table, where the printed page is 1 but the PDF page is 5, and Meta's `public-15` printed folio 17 on the first PDF page. The prompt did not define this convention precisely, so these are locator mismatches to resolve, not invented numeric values.
+
+These counterexamples are retained in [additional findings](additional-findings.json) and the per-reference flags. The references are not exhaustive, and false-positive precision, unreviewed table cells and complete page citation accuracy were not measured. A 97/97 score cannot be relabeled as error-free extraction.
+
+## Long-document retention remains a separate problem
+
+All five routes received the intact 84-page `external-21` PDF. All reported normal stop without output-limit truncation. Those signals did not establish full transcription:
+
+| Route | Control API seconds | Control cost | Transcription-field Poppler overlap proxy |
+|---|---:|---:|---:|
+| Haiku | 43.38 | $0.146918 | 2.33% |
+| Luna | 43.10 | $0.0798496 | 2.24% |
+| Gemini 3.8 Flash | 164.92 | $0.117462 | 4.21% |
+| Gemini 3.5 Flash-Lite | 140.26 | $0.0276618 | unavailable: unusable JSON |
+| Meta Contributor | 52.37 | $0.022617698 | 3.81% |
+
+For the same source, independently retained AnyDoc text has **287,750 characters** and **97.81%** multiset token overlap against Poppler's 46,194-token reference. Poppler is imperfect; these are diagnostics, not semantic completeness percentages. The model metric measures only the transcription field and ignores additional text in facts/tables. Even so, normal stop, a large output ceiling, newer models and direct PDF input did not establish full text retention. The original parser text must remain independently saved.
+
+## Decision for the existing pipeline
+
+Carry **Muse Spark 1.3 Contributor / Meta** forward as the leading inexpensive, fast candidate from this explicitly approved **thirty-document public corpus**. Its measured cost/speed advantage warrants a production-shaped evaluation; its omitted instruction and confirmed area error prevent calling it a drop-in reliability upgrade over Haiku. This study establishes no private-document approval or production routing decision. Retain Haiku as the reference and escalation candidate. Luna is a lower-cost option with a speed tradeoff, not a winner on both requested dimensions here. Neither tested Gemini route beat Haiku on both cost and speed.
+
+Keep the latest verified **DeepSeek Flash** as the text-model baseline, per the preceding founder direction. This document comparison does not reopen general text-model testing or change a production model profile.
+
+The next W5/W6 evaluation should use the actual typed facts-only schema while retaining AnyDoc/parser text separately, require source evidence and explicit physical-PDF versus printed-page locators, and test numerical/layout grounding on the observed failure cases. Preserve original and conflicting facts rather than discarding useful data because a sibling field is malformed. No extra inference or production change was performed to make these follow-up recommendations.
+
 ## Durable artifacts
 
-The report and body-free exports preserve all planned outcomes, actual charges, request timing, source/request/result/receipt hashes and review decisions. Raw PDFs, extracted text, full responses, billing generation IDs and private review witnesses remain in owner-only ignored scratch. The original corpus index supplies source URLs and hashes. Private reviewed references and exact source bytes are required for reproduction. No production extraction runner or second OM writer is introduced.
+The report and body-free exports preserve all planned outcomes, actual charges, request timing, source/request/result/receipt hashes and review decisions:
+
+* [Research snapshot](research.json), [primary protocol](protocol.json), [Meta supplement protocol](meta-protocol.json), [exact shared prompt](prompt.txt) and [five qualified input probes](qualification.json).
+* [All 150 measured cells and five model summaries](measurements.json), including token/cache counts, both p90 conventions, control outcomes, matched pairs and denominator-aware costs.
+* [All 570 source-review decisions](semantic-review.json), with immutable source/result/witness bindings and document-level selected-reference gates.
+* [Confirmed errors outside the frozen references](additional-findings.json) and [study provenance](provenance.json).
+
+Raw PDFs, extracted text, full responses, billing generation IDs and private review witnesses remain in owner-only ignored scratch. The original corpus index supplies source URLs and hashes. Private reviewed references and exact source bytes are required for reproduction. Finite scratch dispatch and analysis scripts are identified by hash rather than installed as another operational runner; there is no one-command reproduction claim. No production extraction runner or second OM writer is introduced.
