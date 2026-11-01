@@ -88,7 +88,7 @@ _MAX_ROWS_DEFAULT = 0
 # keys derive_geo expects. cbsa_code / cbsa_name / geo_source are the sql/012
 # columns this backfill fills (the read needs them to skip already-derived rows,
 # so this step runs AFTER 012 is applied).
-_READ_COLS = "id, county, market, submarket, zip, lat, lng, cbsa_code, cbsa_name, geo_source"
+_READ_COLS = "id, county, market, submarket, state, zip, lat, lng, cbsa_code, cbsa_name, geo_source"
 
 # Table and schema.
 _TABLE = "credeals.cre_listings"
@@ -115,9 +115,13 @@ def _read_rows_sql(limit=0):
     # Inner SELECT for iter_copy_json_rows (CSV COPY). The live cre_listings geo
     # columns are zip / lat / lng; derive_geo expects postal_code / latitude /
     # longitude, so alias them here. Cast to ::text for a clean CSV round-trip.
+    # state feeds derive_geo's cross-state guard, which rejects a lat/lng
+    # centroid in another state (AGENTIC-5133: without it, bad coordinates
+    # gave 245 active rows another state's county and CBSA).
     return (
         "SELECT jsonb_build_object("
         "'id', id, 'county', county, 'market', market, 'submarket', submarket, "
+        "'state', btrim(state::text), "
         "'postal_code', zip, 'latitude', lat, 'longitude', lng, "
         "'cbsa_code', cbsa_code, 'cbsa_name', cbsa_name, 'geo_source', geo_source)::text "
         f"FROM {_TABLE} WHERE {where_sql}{limit_sql}"
@@ -250,10 +254,15 @@ BEGIN
         geo_source = COALESCE(l.geo_source, s.geo_source)
     FROM _geo_stage s
     WHERE l.id = s.id
-      -- Only update when at least one staged value is non-NULL (avoids no-op rows).
-      AND (s.county IS NOT NULL OR s.cbsa_code IS NOT NULL OR s.geo_source IS NOT NULL)
-      -- Only update when the target column is still NULL (COALESCE-keep semantics).
-      AND (l.county IS NULL OR l.cbsa_code IS NULL OR l.cbsa_name IS NULL OR l.geo_source IS NULL);
+      -- Only update rows that gain a value: a NULL target column with a
+      -- non-NULL staged value (COALESCE-keep). Skipping no-op rewrites keeps
+      -- updated_at and the applied-row count honest on re-runs.
+      AND (
+        (l.county IS NULL AND s.county IS NOT NULL)
+        OR (l.cbsa_code IS NULL AND s.cbsa_code IS NOT NULL)
+        OR (l.cbsa_name IS NULL AND s.cbsa_name IS NOT NULL)
+        OR (l.geo_source IS NULL AND s.geo_source IS NOT NULL)
+      );
     GET DIAGNOSTICS updated_rows = ROW_COUNT;
     RAISE NOTICE 'geo backfill applied % row(s)', updated_rows;
   END IF;
