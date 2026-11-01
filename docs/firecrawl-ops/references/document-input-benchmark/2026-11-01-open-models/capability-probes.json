@@ -1,10 +1,10 @@
 {
   "schema": "open-model-document-qualification/v1",
   "date": "2026-11-01",
-  "request_count": 16,
-  "method": "One image-only synthetic PDF and its single 150-dpi PNG; marker plus two label/value associations; no retries. HTTP400 is route/request-shape rejection.",
+  "request_count": 18,
+  "method": "One image-only synthetic PDF and its single 150-dpi PNG; marker plus two label/value associations; no retries. HTTP400/422 is route/request-shape rejection.",
   "known_cost_usd": 0.003849642,
-  "unknown_cost_count": 8,
+  "unknown_cost_count": 10,
   "private_audit_sha256": "3873a2a5df48c2375935ba77e493721db809abcd0ea0855a0ae881a3f5fa0c3f",
   "rows": [
     {
@@ -246,6 +246,40 @@
       "error_category": "deserialization_error",
       "api_seconds": 0.3713583339995239,
       "generation_id_present": false
+    },
+    {
+      "cell": "pdf--deepseek_deepseek-v4.1-flash-1017--morph",
+      "http_status": 400,
+      "provider_requested": "morph",
+      "provider_measured": null,
+      "checks_correct": null,
+      "finish_reason": null,
+      "cost_usd": null,
+      "intent_sha256": "7207e5688c446a3519d0769b325e703864576bbcfbbef5224158fd64fa0b9ce5",
+      "result_sha256": "8b011857d5e3c61a92e34a7b38c49c18981071c5b75050d535907f2964121f29",
+      "source_intent_sha256": "49f7702d0025267b6b9ddb861b4ab43565b7752b57830682b54827557968aee5",
+      "request_matches_source_except_provider": true,
+      "error_category": "deserialization_error",
+      "api_seconds": 0.5853235420072451,
+      "generation_id_present": false
+    },
+    {
+      "cell": "pdf--thinkingmachines_inkling-small--thinkingmachines",
+      "http_status": 422,
+      "provider_requested": "thinkingmachines",
+      "provider_measured": null,
+      "checks_correct": null,
+      "finish_reason": null,
+      "cost_usd": null,
+      "intent_sha256": "3a5e930651e24a9192ab7e749ba331ed49152055cc10c320427198fc7f44d15b",
+      "result_sha256": "408d0dc04d8fee18bf6fd53da06de84ee1f12519b0f57e48ea372e196379f995",
+      "source_intent_sha256": "8918a93b1c93d41359ff124f1ff5b79b4998de6211beaf2353f17a9c117b80a0",
+      "request_matches_source_except_provider": true,
+      "error_category": "validation_error",
+      "api_seconds": 0.5738482919987291,
+      "generation_id_present": false
     }
-  ]
+  ],
+  "extension_audit_sha256": "4b2fae64805b0f0e69a50ff8588427a91629a8b8ac277c900a4a152454f224a0",
+  "source_pdf_sha256": "d64dfdb48b80399a628b1bcb1459ec050efd64cf935f731777cec698f148c04f"
 }

@@ -2,7 +2,7 @@ Part of [AGENTIC-5134](https://linear.app/agenticassets/issue/AGENTIC-5134) and 
 
 # Open-weight document extraction and provider routes
 
-Checked November 1, 2026. This extends the [original thirty-document comparison](../README.md) with live model research, sixteen synthetic capability requests, and a deliberately small matched brochure challenge. It changes no production model, database, writer, scheduler or deployment.
+Checked November 1, 2026. This extends the [original thirty-document comparison](../README.md) with live model research, eighteen synthetic capability requests, and a deliberately small matched brochure challenge. It changes no production model, database, writer, scheduler or deployment.
 
 ## Research scope
 
@@ -30,9 +30,10 @@ The canary was the same synthetic image-only PDF used in the earlier study. Popp
 
 * **PDF upload passed:** Inkling Small / DeepInfra copied all three checks correctly. This proves that exact Gateway Chat Completions path could read the image-only PDF. It does not reveal whether a provider wrapper rasterized it or prove that model weights consume PDF bytes directly.
 * **PDF file-part requests returned HTTP 400:** Qwen 27B / Alibaba, Parasail and DeepInfra; Gemma 4 31B / Parasail; DeepSeek / Baseten; MiniMax / Fireworks; GLM / Baseten; Nemotron / Baseten. Errors differed: unsupported file parts, content-template errors, deserialization errors and request validation errors. This is rejection of the submitted request shape on those routes, not proof that every API for those models lacks PDF support.
+* **Same-model provider difference:** the exact Inkling PDF request that passed through DeepInfra returned HTTP 422 file-part validation on the Thinking Machines route. DeepSeek / Morph also rejected the PDF file part (HTTP 400), while its image input passed. The extension changed only the provider pin in each corresponding earlier request; original evidence remains immutable.
 * **PNG passed:** DeepSeek / Baseten and Morph; MiniMax / Fireworks; GLM / Baseten; Qwen 27B / Parasail; Nemotron / Baseten; MiMo / Xiaomi. All seven copied the marker and both associations correctly. Later generation receipts confirmed all requested serving providers.
 
-Eight successful receipts totaled **$0.003849642**. The eight HTTP 400s had no generation IDs; their costs are unknown, not assumed zero. Capability proof on one page does not establish CRE quality, multipage limits, reliability or a production-ready route.
+Eight successful receipts totaled **$0.003849642**. Ten rejected requests (nine HTTP 400 and one HTTP 422) had no generation IDs; their costs are unknown, not assumed zero. Capability proof on one page does not establish CRE quality, multipage limits, reliability or a production-ready route.
 
 [Alibaba's direct Responses reference](https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses) limits its documented PDF `input_file` models and excludes Qwen 27B despite Gateway's model-level PDF flag. Direct Alibaba Responses and Gateway Chat Completions are different API paths. Switching only the Qwen 27B serving provider did not produce a working PDF file-part route in our three probes; its image route did work.
 
@@ -40,13 +41,66 @@ Eight successful receipts totaled **$0.003849642**. The eight HTTP 400s had no g
 
 The same `public-07`, `public-12` and `public-16` PDFs from the original corpus were chosen because their layout and associations had already been visually reviewed. They have 8, 5 and 4 pages, respectively: **three PDFs, seventeen pages**, not another thirty-document benchmark. These are public, source-hash-bound brochures, with no private deals, gated portals or production writes.
 
-Four routes compare the original, unchanged AnyDoc text with **all** pages rendered at 150 dpi and sent as explicitly numbered PNG image inputs: DeepSeek / Baseten, DeepSeek / Morph, MiniMax / Fireworks and GLM / Baseten. Inkling / DeepInfra compares that same text with original PDF upload. There are thirty planned model/document/arm cells. No route silently replaces a failed PDF request with images.
+Four routes compare the original, unchanged AnyDoc text with **all** pages rendered at 150 dpi and sent as explicitly numbered PNG image inputs: DeepSeek / Baseten, DeepSeek / Morph, MiniMax / Fireworks and GLM / Baseten. Inkling / DeepInfra compares that same text with original PDF upload. All thirty planned model/document/arm cells settled. No route silently replaces a failed PDF request with images.
 
-The shared prompt requests full transcription, structured facts and all table rows, requesting medium reasoning and a 65,536-token output ceiling. Provider-effective reasoning settings were not independently audited. This is not a facts-only production extraction workload. No inference request is retried. Full outputs stay in ignored owner-only scratch; committed artifacts contain measurements, abstract document IDs and hashes. The original strict JSON result remains separate from a derived view that removes only one exact complete JSON fence.
+The shared prompt requests full transcription, structured facts and all table rows, requesting medium reasoning and a 65,536-token output ceiling. The nested `reasoning.effort` field is a [documented Gateway Chat Completions extension](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/reasoning), with `reasoning_effort` as an alias. Gateway translates effort for each serving provider; equal labels do not establish equal thinking-token budgets, and effective settings were not independently audited. This is not a facts-only production extraction workload. No inference request is retried. Full outputs stay in ignored owner-only scratch; committed artifacts contain measurements, abstract document IDs and hashes. The original strict JSON result remains separate from a derived view that removes only one exact complete JSON fence.
 
 An independent agent reviews the same six preselected source facts, including context-bearing table rows. A number appearing somewhere in transcription is insufficient. Qualifiers, units and label/value relationships matter. This purposive challenge is too small to estimate overall accuracy or statistical superiority. Each cell is one invocation; sampling defaults, provider preprocessing and checkpoint revisions were not pinned. Repeated trials are needed to assess reliability. Any Poppler token overlap remains an imperfect text-presence diagnostic, not complete-text recall or table accuracy.
 
 API latency excludes page rendering, downloads, batching and cost reconciliation. Initial render time was not recorded. A separate repeated rendering took 4.08, 7.07 and 2.14 seconds for the three PDFs, respectively; every PNG matched the original render hash. These warm repeat timings are not measured end-to-end run times. Rendering cost and time must be considered before a deployment choice. Hosted provider identity is established by generation receipts, not only the requested pin; exact checkpoint parity is unverified.
+
+## Measured outcomes
+
+All thirty brochure requests returned HTTP 200 and have result-bound, non-BYOK generation receipts confirming the requested provider. Their total charge was **$0.250102286**. Including successful synthetic probes, the new study's known charges are **$0.253951928**, with ten rejected synthetic requests lacking cost receipts. Historical comparators below were not called again and are excluded from new spend.
+
+There are **23 whole-response schema successes, five valid JSON objects with schema mismatches, and two empty final-content responses**. No pilot response was recovered by removing a JSON fence. The five shape failures include list/dictionary transcriptions, string page numbers, a missing fact label and a null table cell. They are not all malformed JSON, and a shape failure does not mean every fact is absent.
+
+The table separates accepted whole responses from a second, **field-level** review of readable fact/table objects. That sensitivity review recovers nine correct associations and one wrong value from the five schema-invalid JSON objects without rewriting any original output. Empty final responses remain unscorable. Clean counts exclude conflicting values. Each row covers the same three documents and six preselected associations, not all source facts.
+
+| Model / serving provider | Input | Whole responses usable / 3 | Clean field-level associations / 6 | Median API seconds | Total USD, three documents |
+|---|---|---:|---:|---:|---:|
+| DeepSeek V4.1 Flash / Baseten | AnyDoc text | 3 | 6 | 106.68 | 0.0747234 |
+| DeepSeek V4.1 Flash / Baseten | Page images | 2 | 6 | 95.46 | 0.0660606 |
+| DeepSeek V4.1 Flash / Morph | AnyDoc text | 2 | 4 | 51.89 | 0.005003274 |
+| DeepSeek V4.1 Flash / Morph | Page images | 2 | 4 | 78.38 | 0.007603882 |
+| MiniMax M3.1 Flash / Fireworks | AnyDoc text | 2 | 3 | 44.71 | 0.01486959 |
+| MiniMax M3.1 Flash / Fireworks | Page images | 3 | 5 | 31.99 | 0.01100784 |
+| Inkling Small / DeepInfra | AnyDoc text | 3 | 6 | 10.85 | 0.0193255 |
+| Inkling Small / DeepInfra | PDF upload | 3 | 6 | 10.51 | 0.03044425 |
+| GLM 5.3 Flash / Baseten | AnyDoc text | 2 | 6 | 17.69 | 0.00711335 |
+| GLM 5.3 Flash / Baseten | Page images | 1 | 6 | 33.85 | 0.0139506 |
+| Haiku 5.5 / Anthropic, historical | PDF upload | 3 after fence recovery | 6 | 20.71 | 0.0137842 |
+| Terra 6.1 / OpenAI, historical | PDF upload | 3 | 6 | 38.24 | 0.11171525 |
+
+The independent field-level review finds **52 clean associations, one correct value with a conflicting second claim, three incorrect associations/values/qualifiers, and four unscorable probes** across sixty comparisons. The strict whole-response gate accepts 43 of those associations and leaves fourteen unscorable. The alternate review does not turn schema-invalid outputs into production-compatible responses. Historical Haiku and Terra PDF outputs were re-reviewed against the same six criteria and each retained six correct associations; Haiku needed fence removal on two of three documents.
+
+Notable failures and limits:
+
+* Both Morph responses for `public-16` had empty final `content` despite HTTP 200, `stop`, nontruncated status and billed reasoning tokens. They are empty answers, not malformed nonempty JSON, and were not silently retried or mined for facts from reasoning. Low token prices alone did not establish a reliable result on this route.
+* MiniMax supplied a wrong source qualifier in the image arm. Its text arm also supplied a contradictory building-size claim, assigned a warehouse value to the wrong size field, and gave a wrong height value with a wrong page locator. A correct number elsewhere does not cancel these errors.
+* DeepSeek / Baseten text and Inkling text retained correct height facts while a separate table row was malformed. Clean probe counts are not a claim that every table cell or page citation is correct.
+* Transcription-only Poppler overlap medians for structurally usable outputs ranged from about 58% to 80%; Inkling PDF was 59.3% on three documents. This diagnostic ignores text in separate facts/tables and does not measure semantic completeness. Together with the original long-document study, it supports retaining parser text independently rather than treating a model-generated transcription as the full archive.
+
+## Decision and founder direction
+
+**Cayman's November 1 direction:** use the latest verified **DeepSeek Flash** release as the text-model evaluation baseline. As checked for this study, that is `deepseek/deepseek-v4.1-flash-1017`. Refresh catalog discovery before future work and preserve the exact tested release/provider in each receipt. This is a model-selection direction, not proof that the existing production profile was changed or approval for an unattended floating-version updater.
+
+No further MiniMax or GLM experiments are planned from this work. Their already-completed observations are retained. Future model screening should focus on high-intelligence, inexpensive and fast **direct document/file-input** routes, with open and closed models both eligible. Do not expand general text-model testing beyond the DeepSeek Flash baseline on the strength of this study.
+
+**Inkling Small / DeepInfra is the successful open-weight PDF candidate to carry into a larger representative trial.** It combined three schema-valid PDF responses, all six selected associations and a 10.5-second median at roughly one cent per document here. Its low general-intelligence score did not predict this narrow extraction result. This is a candidate, not evidence of parity across the original thirty documents or a production model choice. Haiku remains an important already-tested direct-PDF comparator: its same-document charge was lower, while Inkling's median request time was lower.
+
+Keep AnyDoc's retained text and source hashes as a separate evidence layer. The next document trial should use a typed facts-only extraction schema plus full retained parser text, test scans and dense tables, score table cells and page citations explicitly, and qualify the actual provider's direct file input. This is evaluation input for W5/W6, not a second extraction writer or a new production router.
+
+## Durable evidence and reproducibility
+
+* [Research snapshot](research.json): selected live scores, releases, provider prices and creator licenses.
+* [Capability probes](capability-probes.json): eighteen outcomes, receipt hashes and the same-model provider-change witnesses.
+* [Pilot measurements](pilot-measurements.json): all thirty cells, ten three-document groups, syntax/schema distinctions, hashes, costs and API timing.
+* [Association audit](association-audit.json): sixty strict decisions, sixty separately labeled field-level decisions, and twelve historical native-PDF comparisons.
+* [Historical measurements](historical-comparators.json): twelve prior calls, including text arms, with result/receipt bindings; excluded from new spend.
+* [Provenance](provenance.json): study scripts, prompt, input and artifact bindings and scope limits.
+
+Raw PDFs, AnyDoc text, responses and detailed witnesses remain in ignored owner-only scratch. Billing generation IDs are omitted from public exports; immutable result and receipt hashes bind the measurements. Reproduction requires the original source hashes and privately reviewed gold described in the original study. The finite scratch dispatch scripts are recorded by hash rather than installed as a new operational runner; the committed runner and prompt supply the shared request/measurement helpers. There is no one-command reproduction claim for the extension. The first dispatch script stopped on a tuple/list resume-metadata mismatch; a separately hashed resume script verified every prior request identity and skipped completed calls, without overwriting intents or repeating inference. All thirty planned cells are settled and no paid process remains active.
 
 ## Prebuilt alternatives and deployment boundary
 
