@@ -34,6 +34,18 @@ Its existing pilot/backfill entrypoints use the shared extractor and writer.
 GetCREdata remains the sole OM-facts writer. Firecrawl captures source listings
 and document links and preserves its ownership boundary.
 
+Implementation and integration proof are in
+[GetCREdata #65](https://github.com/Agentic-Assets/GetCREdata/pull/65) and
+[#66](https://github.com/Agentic-Assets/GetCREdata/pull/66). Both provider routes
+passed an owned synthetic native-PDF test at requested High, with all four
+expected facts correct and matching provider cost receipts. Meta uses a closed
+strict JSON schema. Haiku's full nullable schema exceeds its provider's union
+limit, so its request uses JSON-object mode with the schema in the trusted prompt
+and local Pydantic validation, including an exact single outer-fence recovery.
+That validation does not establish strict compliance of the raw Haiku response.
+The [body-free live proof](https://github.com/Agentic-Assets/GetCREdata/blob/main/documents/eval/native_pdf_routing_smoke.json)
+preserves the successful calls and rejected compatibility diagnostics separately.
+
 The global self-hosted Firecrawl text-model profile is a separate surface, owned
 by the [model-routing procedure](model-routing.md). This document selects the
 native-PDF listing extractor's routing; it does not prescribe a global scraper
