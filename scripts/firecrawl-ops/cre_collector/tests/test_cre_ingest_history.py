@@ -147,12 +147,34 @@ def test_om_facts_generated_sql_never_writes_or_conflicts_on_the_facts_table():
         assert "fact_key, source_doc_url" not in sql
 
 
-def test_om_facts_archive_insert_keeps_its_explicit_column_list():
-    sql = _guarded_mm_sql()
-    start = sql.index("INSERT INTO credeals.cre_listing_om_facts_archive")
-    archive = sql[start:sql.index("END $$;", start)]
-    assert "(source_listing_id, fact_group, fact_key, fact_value_text, fact_value_num," in archive
-    assert "extraction_run_id" not in archive
+def _om_facts_archive_block(sql):
+    start = sql.index("-- (013) Archive final OM facts of retired listings.")
+    return sql[start:sql.index("END $$;", start)]
+
+
+def test_om_facts_archive_snapshot_carries_run_lineage_once_the_column_exists():
+    # GetCREdata adds extraction_run_id to both tables. The retire snapshot must
+    # carry it (else a retired listing's archive rows read as legacy) yet still run
+    # before that DDL is applied, so the column is added by a guarded EXECUTE.
+    for guard in (True, False):
+        sql = ci.build_sql([], [], _SCRAPED_AT, {"svn"}, history_guard=guard)
+        archive = _om_facts_archive_block(sql)
+        assert "EXECUTE" in archive
+        for table in ("cre_listing_om_facts_archive", "cre_listing_om_facts"):
+            assert (
+                f"attrelid = to_regclass('credeals.{table}')" in archive
+            ), table
+        assert "attname = 'extraction_run_id'" in archive
+        assert "_lineage := ', extraction_run_id'" in archive
+        assert "_lineage_src := ', f.extraction_run_id'" in archive
+        # The pre-DDL column list is still explicit, with no static lineage column.
+        assert (
+            "(source_listing_id, fact_group, fact_key, fact_value_text, fact_value_num,"
+            in archive
+        )
+        static = archive.replace("_lineage := ', extraction_run_id'", "")
+        static = static.replace("_lineage_src := ', f.extraction_run_id'", "")
+        assert "extraction_run_id" not in static.split("EXECUTE", 1)[1]
 
 
 def test_om_facts_source_migration_still_creates_the_five_column_key_for_fresh_schemas():

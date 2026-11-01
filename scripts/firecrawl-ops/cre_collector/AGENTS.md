@@ -439,9 +439,12 @@ execution evidence on [AGENTIC-2902](https://linear.app/agenticassets/issue/AGEN
 OM facts ownership (AGENTIC-5136/5137): the DDL home for `credeals.cre_listing_om_facts`
 and `credeals.cre_listing_om_facts_archive` is GetCREdata
 (`sql/migrations/20261101_om_fact_run_lineage*.sql`, `sql/contracts/om_fact_run_lineage_v2.schema.json`).
-The retired five-column `ON CONFLICT` upsert is removed from `cre_ingest.py`; the
-retire-time archive snapshot keeps its explicit column list, so the added archive
-column is harmless. Do not add om_facts writes or DDL here.
+The retired five-column `ON CONFLICT` upsert and the `om_facts` staging column are
+removed from `cre_ingest.py`. The retire-time archive snapshot carries
+`extraction_run_id` once it exists on both tables (a guarded `EXECUTE`), so it runs
+unchanged before and after the GetCREdata DDL. `sql/013` creates the five-column
+index and table comment only while `extraction_run_id` is absent, so a rerun cannot
+recreate the retired index. Do not add om_facts writes or DDL here.
 
 ## Authorized maintenance
 

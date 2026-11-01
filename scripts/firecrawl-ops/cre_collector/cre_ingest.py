@@ -3168,10 +3168,9 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
                     }
                 )
 
-    # GetCREdata is the sole production OM writer. Ignore an `omFacts` payload
-    # in every Firecrawl collector artifact so a legacy or manually supplied
+    # GetCREdata is the sole production OM writer. An `omFacts` payload in a
+    # Firecrawl collector artifact is never read, so a legacy or manually supplied
     # artifact cannot write cre_listing_om_facts through this ingestor.
-    om_facts = []
 
     title = (
         clean_text(listing.get("name"))
@@ -3330,7 +3329,6 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         "images": images,
         "media": media,
         "links": links,
-        "om_facts": om_facts,
         "_modes": {listing.get("transactionMode")},
         "_geo_source_county": clean_text(listing.get("county"), 128),
         "_geo_country": clean_text(listing.get("country"), 64),
@@ -3368,14 +3366,6 @@ def _child_identity(collection, item):
         url = clean_text(item.get("url"))
         if url:
             return ("link", item.get("linkType") or "other", url)
-    elif collection == "om_facts":
-        return (
-            "om_fact",
-            item.get("factGroup") or "scalar",
-            item.get("factKey"),
-            item.get("sourceDocUrl"),
-            item.get("parserVersion"),
-        )
     return ("row", json.dumps(item, sort_keys=True, default=str))
 
 
@@ -3543,7 +3533,7 @@ def merge_rows(a, b):
             a[k] = b.get(k)
     guard_row_coordinates(a)
     a.update(derive_row_geo(a))
-    for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
+    for k in ("contacts", "documents", "images", "media", "links"):
         a[k] = _merge_child_collections(k, a[k], b[k])
     from source_fields.buildout_public_facts import merge_public_facts
     merge_public_facts(a, b)
@@ -3752,7 +3742,7 @@ STAGE_COLS = [
     "source_lastmod",
     "canonical_key",
     # Phase-2 data-lift (sql/012): canonical_url + discrete institutional columns
-    # + extra_facts jsonb. om_facts is staged as a jsonb array (sql/013 child).
+    # + extra_facts jsonb. OM facts are not staged (GetCREdata is the sole writer).
     "canonical_url",
     "building_class",
     "property_subtype",
@@ -3773,7 +3763,6 @@ STAGE_COLS = [
     "extra_facts",
     "source_field_count",
     "source_field_building",
-    "om_facts",
     # Forward geo (AGENTIC-5133): derive_row_geo bundle, written COALESCE-keep.
     *GEO_COLS,
 ]
@@ -3948,12 +3937,12 @@ def build_sql(
     transwestern_image_transition_binding=None,
 ):
     # Defense in depth for direct callers of this builder. Normal ingestion
-    # reaches here through to_row(), which already drops `omFacts`, but this
-    # prevents a manually constructed row from restoring the retired writer.
+    # reaches here through to_row(), which never reads `omFacts`; no staging
+    # column or writer exists for OM facts, so a manually constructed row's
+    # `om_facts` key is ignored.
     rows = [
         {
             **avison_prices.project_row(row),
-            "om_facts": [],
             "source_field_count": row.get("source_field_count"),
             "source_field_building": row.get("source_field_building"),
             "extra_facts": (
@@ -4145,7 +4134,7 @@ CREATE TEMP TABLE _stage (
     grm numeric, price_per_acre numeric, num_rooms integer, revpar numeric,
     clear_height_ft numeric, dock_doors integer, drive_in_doors integer,
     power_service text, rail_served boolean, extra_facts jsonb, source_field_count jsonb,
-    source_field_building jsonb, om_facts jsonb,
+    source_field_building jsonb,
     county text, cbsa_code text, cbsa_name text, geo_source text
 ) ON COMMIT DROP;""")
     w(f"COPY _stage ({', '.join(STAGE_COLS)}) FROM stdin;")
@@ -5952,7 +5941,7 @@ END $$;
 {avison_price_sql["post_sql"]}
 -- OM-parsed facts (sql/013 cre_listing_om_facts) are not written here. GetCREdata
 -- is the sole OM writer (credeals.write_cre_listing_om_facts_v1) and this ingestor
--- stages an empty om_facts array by policy. The former insert-only upsert was
+-- stages no OM facts. The former insert-only upsert was
 -- removed (AGENTIC-5136/5137): it carried ON CONFLICT on the five-column key,
 -- which Postgres resolves at plan time even for zero rows, so it would fail every
 -- ingest once the five-column unique index is replaced by the run-lineage key.
@@ -6147,17 +6136,37 @@ DO $$ BEGIN
 END $$;
 
 -- (013) Archive final OM facts of retired listings. Existence-guarded (013 may
--- not be applied yet), mirroring the 011 media/links archive snapshot.
-DO $$ BEGIN
+-- not be applied yet), mirroring the 011 media/links archive snapshot. GetCREdata
+-- owns the run-lineage DDL (AGENTIC-5136/5137) that adds extraction_run_id to
+-- both tables. The column is carried only once it exists on BOTH, so a retired
+-- listing's archive rows keep their lineage and this block runs unchanged before
+-- and after that DDL is applied. The statement is dynamic because a static column
+-- list naming a missing column fails at plan time.
+DO $$
+DECLARE
+  _lineage text := '';
+  _lineage_src text := '';
+BEGIN
   IF to_regclass('credeals.cre_listing_om_facts_archive') IS NOT NULL
      AND to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
-    INSERT INTO credeals.cre_listing_om_facts_archive
+    IF EXISTS (SELECT 1 FROM pg_attribute
+                WHERE attrelid = to_regclass('credeals.cre_listing_om_facts_archive')
+                  AND attname = 'extraction_run_id' AND NOT attisdropped)
+       AND EXISTS (SELECT 1 FROM pg_attribute
+                    WHERE attrelid = to_regclass('credeals.cre_listing_om_facts')
+                      AND attname = 'extraction_run_id' AND NOT attisdropped) THEN
+      _lineage := ', extraction_run_id';
+      _lineage_src := ', f.extraction_run_id';
+    END IF;
+    EXECUTE 'INSERT INTO credeals.cre_listing_om_facts_archive
         (source_listing_id, fact_group, fact_key, fact_value_text, fact_value_num,
-         unit_count, source_doc_url, parsed_at, parser_version, confidence)
+         unit_count, source_doc_url, parsed_at, parser_version, confidence'
+        || _lineage || ')
     SELECT f.listing_id, f.fact_group, f.fact_key, f.fact_value_text, f.fact_value_num,
-           f.unit_count, f.source_doc_url, f.parsed_at, f.parser_version, f.confidence
+           f.unit_count, f.source_doc_url, f.parsed_at, f.parser_version, f.confidence'
+        || _lineage_src || '
     FROM credeals.cre_listing_om_facts f
-    JOIN _retired r ON r.id = f.listing_id;
+    JOIN _retired r ON r.id = f.listing_id';
   END IF;
 END $$;"""
         if history_guard:

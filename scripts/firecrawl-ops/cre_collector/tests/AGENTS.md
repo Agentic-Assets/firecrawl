@@ -99,10 +99,12 @@ prior proof, and run all applicable repository-required checks on the integrated
 final candidate. Never present an older result as a new candidate pass.
 
 The PostgreSQL contract runner is intentionally outside pytest: it applies the
-source OM-facts migration and executes the generated production upsert in an
-unexposed disposable PostgreSQL 17 container. It proves fresh-schema
-five-column-key creation, refusal of legacy alignment without its psql approval
-variable, and approved legacy idempotence. It requires Docker and always removes
+source OM-facts migration and executes the generated retire-time archive snapshot
+in an unexposed disposable PostgreSQL 17 container. It proves fresh-schema
+five-column-key creation and 013 rerun idempotence, the archive snapshot before
+and after the run-lineage column exists, refusal of legacy alignment without its
+psql approval variable, approved legacy idempotence, and that 013 and 015 are
+no-ops on a run-lineage schema. It requires Docker and always removes
 its container; it must never target Supabase or a collector database.
 The lifecycle contract runner creates and drops a uniquely named local test
 database, proves migration/event/locking invariants, and exits 78 when the local
