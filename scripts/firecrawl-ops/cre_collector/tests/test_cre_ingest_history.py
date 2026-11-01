@@ -29,10 +29,6 @@ import cre_ingest as ci
 
 _SCRAPED_AT = datetime(2026, 6, 15, 0, 0, 0, tzinfo=timezone.utc).isoformat()
 
-_OM_FACTS_CONFLICT_TARGET = (
-    "ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url, parser_version)"
-)
-
 
 # ===========================================================================
 # build_sql with mark_missing_slugs, guarded form (history_guard=True)
@@ -134,32 +130,38 @@ def test_no_mark_missing_block_when_slugs_empty():
 
 
 # ===========================================================================
-# OM-facts writer contract. Production has a five-column, NULLS NOT DISTINCT
-# unique index. Generated ingest SQL must use that exact target so re-parses of
-# one parser release update in place, while a later parser release can coexist.
+# OM-facts: GetCREdata is the sole OM writer (AGENTIC-5136/5137). Generated ingest
+# SQL must never INSERT into cre_listing_om_facts or name any ON CONFLICT target on
+# it: Postgres resolves ON CONFLICT inference at plan time even for zero rows, so
+# a target on the retired five-column unique index would fail every ingest once
+# GetCREdata replaces that index with the run-lineage key.
 # ===========================================================================
 
 
-def _om_facts_sql():
-    sql = ci.build_sql([], [], _SCRAPED_AT, set(), history_guard=True)
-    start = sql.index("INSERT INTO credeals.cre_listing_om_facts")
-    return sql[start:sql.index("END $$;", start)]
+def test_om_facts_generated_sql_never_writes_or_conflicts_on_the_facts_table():
+    for guard in (True, False):
+        sql = ci.build_sql([], [], _SCRAPED_AT, set(), history_guard=guard)
+        assert "INSERT INTO credeals.cre_listing_om_facts (" not in sql
+        assert "INSERT INTO credeals.cre_listing_om_facts\n" not in sql
+        assert "source_doc_url, parser_version) DO UPDATE" not in sql
+        assert "fact_key, source_doc_url" not in sql
 
 
-def test_om_facts_generated_upsert_uses_canonical_five_column_target():
-    om_sql = _om_facts_sql()
-    assert f"{_OM_FACTS_CONFLICT_TARGET} DO UPDATE SET" in om_sql
-    assert "ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url) DO UPDATE" not in om_sql
-    assert "parser_version  = EXCLUDED.parser_version" in om_sql
+def test_om_facts_archive_insert_keeps_its_explicit_column_list():
+    sql = _guarded_mm_sql()
+    start = sql.index("INSERT INTO credeals.cre_listing_om_facts_archive")
+    archive = sql[start:sql.index("END $$;", start)]
+    assert "(source_listing_id, fact_group, fact_key, fact_value_text, fact_value_num," in archive
+    assert "extraction_run_id" not in archive
 
 
-def test_om_facts_source_migration_declares_the_writer_conflict_target():
+def test_om_facts_source_migration_still_creates_the_five_column_key_for_fresh_schemas():
     migration = (
         Path(__file__).resolve().parents[2]
         / "sql"
         / "013_cre_listing_om_facts.sql"
     ).read_text()
-    index_columns = _OM_FACTS_CONFLICT_TARGET.removeprefix("ON CONFLICT ")
+    index_columns = "(listing_id, fact_group, fact_key, source_doc_url, parser_version)"
     assert f"ON credeals.cre_listing_om_facts {index_columns} NULLS NOT DISTINCT" in migration
 
 

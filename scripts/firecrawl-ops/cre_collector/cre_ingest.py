@@ -5950,45 +5950,12 @@ DO $$ BEGIN
 END $$;
 
 {avison_price_sql["post_sql"]}
--- OM-parsed facts (sql/013 cre_listing_om_facts). Existence-guarded so a pre-013
--- ingest is a no-op. UNLIKE media/links, om_facts is NOT wholesale-deleted on
--- refresh: it is a provenance-bearing audit trail, and a normal (non-OM) detail
--- pass carries no om_facts, so a DELETE would wipe a prior OM parse. Insert-only
--- with ON CONFLICT DO UPDATE on the (listing_id, fact_group, fact_key,
--- source_doc_url, parser_version) unique key, so a re-parse of the SAME parser
--- release and doc is idempotent (refreshes value/confidence/parsed_at), while a
--- new parser release or doc adds an auditable row. Rides the same _child_refresh
--- set, so detailError rows never write (invariant). The OM tier sets the matching
--- cre_listings scalar via the institutional UPDATE / COALESCE-keep path; this
--- table is the audit home. parser_version/source_doc_url are NOT NULL in the
--- table. Firecrawl ingestion stages an empty om_facts array by policy; this
--- retained upsert shape protects migration compatibility and archive handling.
-DO $$ BEGIN
-  IF to_regclass('credeals.cre_listing_om_facts') IS NOT NULL THEN
-    INSERT INTO credeals.cre_listing_om_facts (
-        listing_id, fact_group, fact_key, fact_value_text, fact_value_num,
-        unit_count, source_doc_url, parsed_at, parser_version, confidence)
-    SELECT u.id, COALESCE(x->>'factGroup','scalar'), x->>'factKey',
-           x->>'factValueText', NULLIF(x->>'factValueNum','')::numeric,
-           NULLIF(x->>'unitCount','')::integer, x->>'sourceDocUrl', now(),
-           x->>'parserVersion', NULLIF(x->>'confidence','')::numeric
-    FROM _up u
-    JOIN _src s USING (brokerage_id, external_id)
-    CROSS JOIN LATERAL jsonb_array_elements(s.om_facts) x
-    WHERE u.id IN (SELECT id FROM _child_refresh)
-      AND jsonb_typeof(s.om_facts) = 'array'
-      AND x->>'factKey' IS NOT NULL
-      AND x->>'sourceDocUrl' IS NOT NULL
-      AND x->>'parserVersion' IS NOT NULL
-    ON CONFLICT (listing_id, fact_group, fact_key, source_doc_url, parser_version) DO UPDATE SET
-        fact_value_text = EXCLUDED.fact_value_text,
-        fact_value_num  = EXCLUDED.fact_value_num,
-        unit_count      = EXCLUDED.unit_count,
-        parsed_at       = EXCLUDED.parsed_at,
-        parser_version  = EXCLUDED.parser_version,
-        confidence      = EXCLUDED.confidence;
-  END IF;
-END $$;
+-- OM-parsed facts (sql/013 cre_listing_om_facts) are not written here. GetCREdata
+-- is the sole OM writer (credeals.write_cre_listing_om_facts_v1) and this ingestor
+-- stages an empty om_facts array by policy. The former insert-only upsert was
+-- removed (AGENTIC-5136/5137): it carried ON CONFLICT on the five-column key,
+-- which Postgres resolves at plan time even for zero rows, so it would fail every
+-- ingest once the five-column unique index is replaced by the run-lineage key.
 """.replace('{avison_price_sql["post_sql"]}', avison_price_sql["post_sql"]))
 
     # (H4a) Append-only price/status history: one row per listing whose watched

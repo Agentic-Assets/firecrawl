@@ -41,6 +41,15 @@ def test_legacy_alignment_refuses_without_explicit_psql_approval():
     assert "REFUSED: migration 015 requires" in migration
 
 
+def test_015_is_a_no_op_once_the_getcredata_run_lineage_column_exists():
+    migration = MIGRATION_015.read_text()
+
+    assert "SUPERSEDED (AGENTIC-5136/5137)" in migration
+    assert "column_name = 'extraction_run_id'" in migration
+    assert "WHEN :'om_facts_lineage_migrated'::boolean THEN false" in migration
+    assert "\\elif :om_facts_lineage_migrated" in migration
+
+
 def test_disposable_postgres_contract_covers_refusal_and_approved_idempotence():
     contract = POSTGRES_CONTRACT.read_text()
 
