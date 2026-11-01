@@ -1,0 +1,327 @@
+{
+  "gateway_checked_utc": "2026-11-01T18:44:40.327407+00:00",
+  "aa_cache_checked_utc": "2026-11-01T18:17:38Z",
+  "aa_source": "https://artificialanalysis.ai/data-api/docs#overview-hero",
+  "aa_intelligence_index_version": 5,
+  "gateway_source": "https://ai-gateway.vercel.sh/v1/models",
+  "google_pdf_primary": "https://ai.google.dev/gemini-api/docs/document-processing",
+  "effort_note": "AA effort labels describe AA benchmark settings, not necessarily Gateway mapping or pilot settings. Gemini Gateway advertises low/high only; medium mapping unverified.",
+  "catalog_note": "PDF presence is a catalog claim; provider-specific Gateway PDF input unprobed. Selected providers status 0. Prices USD per million tokens.",
+  "performance_note": "No task cost, speed or accuracy measured here; token prices alone cannot establish task winner.",
+  "results": [
+    {
+      "id": "google/gemini-3.8-flash",
+      "gateway_release_date": "2026-09-02",
+      "gateway_listed_input": [
+        "text",
+        "image",
+        "pdf",
+        "video"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 65535,
+      "gateway_reasoning_options": [
+        {
+          "type": "effort",
+          "values": [
+            "low",
+            "high"
+          ]
+        }
+      ],
+      "selected_provider": {
+        "provider": "vertex",
+        "status": 0,
+        "has_zdr": true,
+        "has_no_training": true,
+        "context_length": 1000000,
+        "max_completion_tokens": 65535,
+        "input_price_mtok": 0.75,
+        "output_price_mtok": 3.75
+      },
+      "aa_v5_variants": [
+        {
+          "slug": "gemini-3-8-flash",
+          "name_with_effort": "Gemini 3.8 Flash (High)",
+          "score": 30.5,
+          "cost_per_index_task_usd": 7.766
+        },
+        {
+          "slug": "gemini-3-8-flash-medium",
+          "name_with_effort": "Gemini 3.8 Flash (Medium)",
+          "score": 30,
+          "cost_per_index_task_usd": 6.2586
+        },
+        {
+          "slug": "gemini-3-8-flash-low",
+          "name_with_effort": "Gemini 3.8 Flash (Low)",
+          "score": 22.3,
+          "cost_per_index_task_usd": null
+        }
+      ]
+    },
+    {
+      "id": "google/gemini-3.5-flash-lite",
+      "gateway_release_date": "2026-07-21",
+      "gateway_listed_input": [
+        "text",
+        "image",
+        "pdf",
+        "video"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 65000,
+      "gateway_reasoning_options": [
+        {
+          "type": "effort",
+          "values": [
+            "low",
+            "high"
+          ]
+        }
+      ],
+      "selected_provider": {
+        "provider": "vertex",
+        "status": 0,
+        "has_zdr": true,
+        "has_no_training": true,
+        "context_length": 1000000,
+        "max_completion_tokens": 65000,
+        "input_price_mtok": 0.3,
+        "output_price_mtok": 2.5
+      },
+      "aa_v5_variants": [
+        {
+          "slug": "gemini-3-5-flash-lite",
+          "name_with_effort": "Gemini 3.5 Flash-Lite",
+          "score": 11.7,
+          "cost_per_index_task_usd": 0.6929
+        }
+      ]
+    },
+    {
+      "id": "openai/gpt-6-luna",
+      "gateway_release_date": "2026-09-22",
+      "gateway_listed_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "gateway_reasoning_options": [
+        {
+          "type": "toggle"
+        },
+        {
+          "type": "effort",
+          "values": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      ],
+      "selected_provider": {
+        "provider": "openai",
+        "status": 0,
+        "has_zdr": true,
+        "has_no_training": true,
+        "context_length": 1050000,
+        "max_completion_tokens": 128000,
+        "input_price_mtok": 0.09999999999999999,
+        "output_price_mtok": 0.5
+      },
+      "aa_v5_variants": [
+        {
+          "slug": "gpt-6-luna",
+          "name_with_effort": "GPT-6 Luna (Max)",
+          "score": 27.8,
+          "cost_per_index_task_usd": 0.152
+        },
+        {
+          "slug": "gpt-6-luna-xhigh",
+          "name_with_effort": "GPT-6 Luna (Xhigh)",
+          "score": 23.3,
+          "cost_per_index_task_usd": 0.1041
+        },
+        {
+          "slug": "gpt-6-luna-high",
+          "name_with_effort": "GPT-6 Luna (High)",
+          "score": 21.4,
+          "cost_per_index_task_usd": 0.0729
+        },
+        {
+          "slug": "gpt-6-luna-medium",
+          "name_with_effort": "GPT-6 Luna (Medium)",
+          "score": 18.3,
+          "cost_per_index_task_usd": 0.0422
+        },
+        {
+          "slug": "gpt-6-luna-low",
+          "name_with_effort": "GPT-6 Luna (Low)",
+          "score": 9.7,
+          "cost_per_index_task_usd": 0.0051
+        },
+        {
+          "slug": "gpt-6-luna-non-reasoning",
+          "name_with_effort": "GPT-6 Luna (Non-reasoning)",
+          "score": 9.4,
+          "cost_per_index_task_usd": 0.0714
+        }
+      ]
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "gateway_release_date": "2026-10-07",
+      "gateway_listed_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "gateway_reasoning_options": [
+        {
+          "type": "toggle"
+        },
+        {
+          "type": "effort",
+          "values": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        }
+      ],
+      "selected_provider": {
+        "provider": "anthropic",
+        "status": 0,
+        "has_zdr": true,
+        "has_no_training": true,
+        "context_length": 1000000,
+        "max_completion_tokens": 128000,
+        "input_price_mtok": 0.09999999999999999,
+        "output_price_mtok": 0.5
+      },
+      "aa_v5_variants": [
+        {
+          "slug": "claude-haiku-5-5",
+          "name_with_effort": "Claude Haiku 5.5 (Max)",
+          "score": 36.2,
+          "cost_per_index_task_usd": 0.411
+        },
+        {
+          "slug": "claude-haiku-5-5-xhigh",
+          "name_with_effort": "Claude Haiku 5.5 (Xhigh)",
+          "score": 34.3,
+          "cost_per_index_task_usd": 0.2484
+        },
+        {
+          "slug": "claude-haiku-5-5-high",
+          "name_with_effort": "Claude Haiku 5.5 (High)",
+          "score": 29.6,
+          "cost_per_index_task_usd": 0.1586
+        },
+        {
+          "slug": "claude-haiku-5-5-medium",
+          "name_with_effort": "Claude Haiku 5.5 (Medium)",
+          "score": 24.6,
+          "cost_per_index_task_usd": 0.0918
+        },
+        {
+          "slug": "claude-haiku-5-5-low",
+          "name_with_effort": "Claude Haiku 5.5 (Low)",
+          "score": 18.6,
+          "cost_per_index_task_usd": 0.0438
+        }
+      ]
+    }
+  ],
+  "selected_cohort": {
+    "checked_utc": "2026-11-01T18:50:16.093250+00:00",
+    "routes": [
+      {
+        "id": "anthropic/claude-haiku-5.5",
+        "provider": "anthropic",
+        "role": "fresh matched baseline",
+        "price_usd_per_million": [
+          0.1,
+          0.5
+        ]
+      },
+      {
+        "id": "openai/gpt-6-luna",
+        "provider": "openai",
+        "role": "candidate",
+        "price_usd_per_million": [
+          0.1,
+          0.5
+        ]
+      },
+      {
+        "id": "google/gemini-3.8-flash",
+        "provider": "vertex",
+        "role": "candidate",
+        "price_usd_per_million": [
+          0.75,
+          3.75
+        ]
+      },
+      {
+        "id": "google/gemini-3.5-flash-lite",
+        "provider": "vertex",
+        "role": "candidate",
+        "price_usd_per_million": [
+          0.3,
+          2.5
+        ]
+      }
+    ],
+    "planned_protocol": "30 original PDFs, 189 pages, whole original PDF, high effort requested, 65000 max output, no retries; effective provider reasoning not independently verified",
+    "selection_note": "Catalog prices and generic intelligence do not establish task quality, speed or measured task cost.",
+    "synthetic_canaries": "All four high-effort PDF canaries passed marker and associations and actual providers were confirmed by generation receipts; synthetic page does not establish full-document performance."
+  },
+  "meta_contributor": {
+    "id": "meta/muse-spark-1.3-contributor",
+    "provider": "meta",
+    "catalog_usd_per_million": [
+      0.1,
+      0.2
+    ],
+    "standard_id": "meta/muse-spark-1.3",
+    "standard_catalog_usd_per_million": [
+      1.25,
+      4.25
+    ],
+    "aa_standard_max_score_v5": 36.4,
+    "score_scope": "AA measures standard Max, not separately tested contributor or high pilot",
+    "training_terms_url": "https://dev.meta.ai/docs/pricing-rate-limits",
+    "synthetic_canary": {
+      "request_sha256": "842b851b16f6e9283e04fd41a337d7304d9e4ddb36a01468eb9eecb52c468d87",
+      "intent_sha256": "f591995a12eed4a2da0a41d7331d08f104efe987050dd75f0aaf82ccd43b10f5",
+      "result_sha256": "110c8fe237a0ec793a624a3423d36d224a778cffaf9ec3219e67258c4272fdf4",
+      "receipt_sha256": "938b925e57f40f9979343012cacb2a154ef3524b4800c61ef0004df89d4d7407",
+      "status": 200,
+      "finish_reason": "stop",
+      "provider_requested": "meta",
+      "provider_measured": "meta",
+      "model": "meta/muse-spark-1.3-contributor",
+      "cost_usd": 0.0002739,
+      "elapsed_seconds": 9.649487791990396,
+      "checks_passed": true,
+      "input": "self-generated image-only PDF only",
+      "effort": "high",
+      "max_output_tokens": 4096
+    },
+    "eligibility": "User explicitly authorized the 30-document public corpus for contributor processing on 2026-11-01; this authorization includes model-training contribution and does not cover private documents. Earlier synthetic-only exclusion was prior to this direction.",
+    "authorization_recorded_utc": "2026-11-01T19:04:09Z",
+    "planned_supplement": "Same 30 PDFs and prompt, requested high reasoning, 65000 output ceiling, separate from original cohort-v3."
+  }
+}
