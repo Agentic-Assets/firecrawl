@@ -812,6 +812,43 @@ def _geo_crosswalk():
     return _GEO_CROSSWALK
 
 
+def guard_row_coordinates(row):
+    """Drop lat/lng that place the listing in another state or on a provider
+    default pin (AGENTIC-5133).
+
+    The upsert writes lat/lng with the new value winning, and the map and
+    lat/lng-derived county/CBSA trust them, so a coordinate the source attached
+    to the wrong listing must not be staged. cre_geo decides the conflict from
+    the crosswalk centroids (positive evidence only; a border point, a non-US
+    state or a ZIP agreeing with the point keeps it). The rejected pair and the
+    reason ride extra_facts.coordinates_rejected; raw_data keeps the source
+    values. Call before derive_row_geo so geo never derives from the dropped
+    point.
+    """
+    lat, lng, state = row.get("lat"), row.get("lng"), row.get("state")
+    if lat is None or lng is None:
+        return
+    rejected = None
+    if cre_geo.is_placeholder_point(lat, lng):
+        rejected = {"reason": "placeholder_point"}
+    elif state:
+        other = _geo_crosswalk().coordinate_state_conflict(lat, lng, state, postal=row.get("zip"))
+        if other:
+            rejected = {
+                "reason": "outside_listing_state",
+                "listing_state": state,
+                "coordinates_state": other,
+            }
+    if not rejected:
+        return
+    row["lat"] = None
+    row["lng"] = None
+    row["extra_facts"] = {
+        **(row.get("extra_facts") or {}),
+        "coordinates_rejected": {"latitude": lat, "longitude": lng, **rejected},
+    }
+
+
 def derive_row_geo(row):
     """Return the staged geo bundle for one row: county, CBSA and geo_source.
 
@@ -3298,6 +3335,7 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         "_geo_source_county": clean_text(listing.get("county"), 128),
         "_geo_country": clean_text(listing.get("country"), 64),
     }
+    guard_row_coordinates(row)
     row.update(derive_row_geo(row))
     return avison_leases.project_row(avison_prices.project_row(row))
 
@@ -3503,6 +3541,7 @@ def merge_rows(a, b):
     for k in GEO_INPUT_KEYS:
         if a.get(k) is None:
             a[k] = b.get(k)
+    guard_row_coordinates(a)
     a.update(derive_row_geo(a))
     for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
         a[k] = _merge_child_collections(k, a[k], b[k])
