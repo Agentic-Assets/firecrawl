@@ -2,7 +2,8 @@
 """cre_geo.py: offline ZIP->county+CBSA crosswalk resolver (Phase-2 data-lift, Section C.4/E).
 
 Single source of truth in Python for geo-derivation. Used by cre_geo_backfill.py
-(the 87k-row backfill pass) and optionally by cre_ingest.py on the forward path.
+(the existing-row backfill pass) and by cre_ingest.py on the forward path, so
+every new or updated listing row carries county/CBSA/geo_source.
 The TS side (lib/geo.ts) exposes only pure normalizers (zip5, geoKey); the full
 crosswalk lookup runs here because the backfill and ingest both run in Python.
 
@@ -27,6 +28,7 @@ Python stdlib only. Pure functions (ZipCbsaCrosswalk is load-once, O(1) lookups)
 No network. Import-safe (no side effects at import time beyond the class definition).
 """
 
+import bisect
 import csv
 import math
 import os
@@ -49,6 +51,10 @@ _MAX_LATLNG_KM = 50.0
 
 # Earth radius in km (WGS-84 mean).
 _EARTH_KM = 6371.0
+
+# Kilometres per degree of latitude. Any point within max_km lies inside a
+# latitude band of max_km / _KM_PER_LAT_DEG degrees, which bounds the scan.
+_KM_PER_LAT_DEG = math.pi * _EARTH_KM / 180.0
 
 # ZIP-5 normalizer: strip leading/trailing whitespace, zero-pad to 5 digits.
 _ZIP_CLEAN_RE = re.compile(r"[^0-9]")
@@ -98,6 +104,10 @@ class ZipCbsaCrosswalk:
         self._by_zip = {}
         self._centroids = []
         self._load(path)
+        # Stable sort by latitude so by_latlng can bisect to a latitude band
+        # instead of scanning every centroid (forward ingest calls it per row).
+        self._centroids.sort(key=lambda c: c[0])
+        self._centroid_lats = [c[0] for c in self._centroids]
 
     def _load(self, path):
         try:
@@ -137,10 +147,10 @@ class ZipCbsaCrosswalk:
     def by_latlng(self, lat, lng, max_km=_MAX_LATLNG_KM):
         """Return the nearest-centroid record when within max_km, else None.
 
-        Scans the centroid list linearly (O(n) on ~41k rows).  On a modern CPU
-        this is <10 ms per lookup; the backfill calls it only when by_zip misses,
-        so total overhead is acceptable.  A spatial index would be needed only
-        if the call rate approaches thousands per second.
+        Only centroids inside the latitude band that can lie within max_km are
+        measured (bisect on the latitude-sorted list), so a lookup touches a
+        small slice of the ~33k centroids. Both the backfill and the forward
+        ingest call it only when by_zip misses.
         """
         if lat is None or lng is None:
             return None
@@ -148,10 +158,15 @@ class ZipCbsaCrosswalk:
             lat_f, lng_f = float(lat), float(lng)
         except (TypeError, ValueError):
             return None
+        if not (math.isfinite(lat_f) and math.isfinite(lng_f)):
+            return None
 
+        band = max_km / _KM_PER_LAT_DEG
+        lo = bisect.bisect_left(self._centroid_lats, lat_f - band)
+        hi = bisect.bisect_right(self._centroid_lats, lat_f + band)
         best_km = max_km
         best_rec = None
-        for c_lat, c_lng, rec in self._centroids:
+        for c_lat, c_lng, rec in self._centroids[lo:hi]:
             km = _haversine_km(lat_f, lng_f, c_lat, c_lng)
             if km < best_km:
                 best_km = km

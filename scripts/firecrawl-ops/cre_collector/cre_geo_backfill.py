@@ -9,9 +9,9 @@ the offline ZipCbsaCrosswalk (data/zip_cbsa_crosswalk.csv).
 WHY THIS EXISTS
 ---------------
 The 012 migration adds cbsa_code / cbsa_name / geo_source columns to
-cre_listings. Those columns start NULL on all existing rows. The forward path
-(cre_ingest.py) will populate them on the NEXT full collect run, but this
-script backfills existing rows NOW, without requiring another collect pass.
+cre_listings. The forward path (cre_ingest.py, AGENTIC-5133) derives them for
+every row it stages, with the same keep-wins COALESCE; this script fills rows
+that no ingest has touched since, without requiring another collect pass.
 
 Precedence (mirrors derive_geo in cre_geo.py, contract Section C.4 / Section E):
   1. county / market / submarket already present (source-verbatim, Newmark etc.)

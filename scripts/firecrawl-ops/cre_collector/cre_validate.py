@@ -745,6 +745,19 @@ SELECT
   count(*) FILTER (WHERE state IS NULL OR btrim(state::text) = '')::text AS missing_state,
   count(*) FILTER (WHERE state IS NOT NULL AND state::text !~ '^[A-Z]{{2}}$')::text AS invalid_state,
   count(*) FILTER (WHERE lat IS NULL OR lng IS NULL)::text AS missing_coords,
+  -- AGENTIC-5133 geo coverage (report-only, not a refresh gate). The first
+  -- counts rows with a ZIP or lat/lng but no CBSA, including non-metro ZIPs the
+  -- crosswalk resolves without a CBSA. The second counts the same inputs where
+  -- derivation never ran or found no match (geo_source NULL); it should stay
+  -- near zero once the forward ingest and backfill have run.
+  count(*) FILTER (
+    WHERE cbsa_code IS NULL
+      AND (NULLIF(btrim(zip), '') IS NOT NULL OR (lat IS NOT NULL AND lng IS NOT NULL))
+  )::text AS geo_inputs_without_cbsa,
+  count(*) FILTER (
+    WHERE geo_source IS NULL
+      AND (NULLIF(btrim(zip), '') IS NOT NULL OR (lat IS NOT NULL AND lng IS NOT NULL))
+  )::text AS geo_inputs_underived,
   count(*) FILTER (WHERE lat IS NOT NULL AND (lat < -90 OR lat > 90))::text AS impossible_lat,
   count(*) FILTER (WHERE lng IS NOT NULL AND (lng < -180 OR lng > 180))::text AS impossible_lng,
   count(*) FILTER (WHERE sale_price_usd IS NOT NULL AND (sale_price_usd <= 0 OR sale_price_usd > {MAX_NORMALIZED_SALE_PRICE_USD}))::text AS sale_price_flags,
