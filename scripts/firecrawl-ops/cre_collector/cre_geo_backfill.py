@@ -88,7 +88,7 @@ _MAX_ROWS_DEFAULT = 0
 # keys derive_geo expects. cbsa_code / cbsa_name / geo_source are the sql/012
 # columns this backfill fills (the read needs them to skip already-derived rows,
 # so this step runs AFTER 012 is applied).
-_READ_COLS = "id, county, market, submarket, zip, lat, lng, cbsa_code, cbsa_name, geo_source"
+_READ_COLS = "id, county, market, submarket, state, zip, lat, lng, cbsa_code, cbsa_name, geo_source"
 
 # Table and schema.
 _TABLE = "credeals.cre_listings"
@@ -115,9 +115,13 @@ def _read_rows_sql(limit=0):
     # Inner SELECT for iter_copy_json_rows (CSV COPY). The live cre_listings geo
     # columns are zip / lat / lng; derive_geo expects postal_code / latitude /
     # longitude, so alias them here. Cast to ::text for a clean CSV round-trip.
+    # state feeds derive_geo's cross-state guard, which rejects a lat/lng
+    # centroid in another state (AGENTIC-5133: without it, bad coordinates
+    # gave 245 active rows another state's county and CBSA).
     return (
         "SELECT jsonb_build_object("
         "'id', id, 'county', county, 'market', market, 'submarket', submarket, "
+        "'state', btrim(state::text), "
         "'postal_code', zip, 'latitude', lat, 'longitude', lng, "
         "'cbsa_code', cbsa_code, 'cbsa_name', cbsa_name, 'geo_source', geo_source)::text "
         f"FROM {_TABLE} WHERE {where_sql}{limit_sql}"

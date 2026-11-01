@@ -609,3 +609,18 @@ def test_apply_notice_reports_updated_row_count():
     assert "GET DIAGNOSTICS updated_rows = ROW_COUNT;" in sql
     assert "applied % row(s)', updated_rows;" in sql
     assert "FOUND::int" not in sql
+
+
+def test_read_rows_sql_feeds_state_to_the_cross_state_guard():
+    """derive_geo rejects a lat/lng centroid in another state only when it sees
+    the listing's state, so the read must project it."""
+    assert "'state', btrim(state::text)" in _read_rows_sql()
+
+
+def test_derive_row_rejects_cross_state_latlng_centroid():
+    from cre_geo import ZipCbsaCrosswalk
+
+    cw = ZipCbsaCrosswalk(csv_path=_MINI_CSV)
+    raw = {"id": "x", "latitude": 32.7870, "longitude": -96.7970}  # Dallas centroid
+    assert derive_row(raw, cw)["cbsa_code"] == "19100"
+    assert derive_row({**raw, "state": "MN"}, cw)["geo_source"] is None
