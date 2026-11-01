@@ -89,8 +89,8 @@ def _haversine_km(lat1, lng1, lat2, lng2):
 class ZipCbsaCrosswalk:
     """Loads the committed offline ZIP->county+CBSA CSV once into memory.
 
-    Memory footprint for the full ~41k-row file is ~15 MB; acceptable as a
-    module-level singleton or a script-scoped instance.
+    The committed file is 33,791 rows (2.3 MB) and loads in well under a
+    second; use it as a module-level singleton or a script-scoped instance.
 
     Columns expected in the CSV (see data/README.md):
         zip5, county_fips, county_name, state, cbsa_code, cbsa_name,

@@ -151,9 +151,8 @@ BEGIN
       END IF;
     ELSIF r.external_id = 'svn-collision' THEN
       IF (r.county, r.cbsa_code, r.cbsa_name, r.geo_source)
-         IS DISTINCT FROM ('Cook County, IL', '11111',
-                           'Chicago-Naperville-Elgin IL-IN-WI', 'crosswalk_zip') THEN
-        RAISE EXCEPTION 'stored CBSA was overwritten or NULL geo columns not filled';
+         IS DISTINCT FROM ('Cook County, IL', '11111', NULL, 'crosswalk_zip') THEN
+        RAISE EXCEPTION 'stored CBSA was overwritten, mixed, or NULL geo columns not filled';
       END IF;
     ELSIF (r.county, r.cbsa_code, r.cbsa_name, r.geo_source)
           IS DISTINCT FROM ('Cook County, IL', '16980',

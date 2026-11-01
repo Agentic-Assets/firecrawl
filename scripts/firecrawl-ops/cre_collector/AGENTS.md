@@ -304,10 +304,11 @@ Key behavior:
   numeric price. Prior price/SF must remain in `(0, 10000]` and prior lease
   rates in `(0, 500]`, matching their existing forward-normalization bounds.
 - **Forward geo:** `to_row` stages `county`/`cbsa_code`/`cbsa_name`/`geo_source`
-  from `cre_geo.derive_geo` (source county, then ZIP, then lat/lng). The
-  institutional UPDATE writes them keep-wins (`COALESCE(t.col, s.col)`, the
-  backfill's rule), so a stored value is never overwritten. `market` is not
-  derived. `cre_validate.py` `quality_by_source` reports `geo_inputs_without_cbsa`
+  from `cre_geo.derive_geo` (source county, then ZIP, then lat/lng; none for an
+  explicit non-US country); `merge_rows` re-derives on the merged row. The
+  institutional UPDATE writes them keep-wins (the backfill's rule; CBSA code and
+  name only as a pair), so a stored value is never overwritten and a later ZIP
+  correction does not re-derive. `market` is not derived. `cre_validate.py` `quality_by_source` reports `geo_inputs_without_cbsa`
   and `geo_inputs_underived` (report-only).
 - **Source controls are source facts.** New Avison public-feed rows carry
   `avison-public-facts-retention/v2`: retain reported asking values, prose and

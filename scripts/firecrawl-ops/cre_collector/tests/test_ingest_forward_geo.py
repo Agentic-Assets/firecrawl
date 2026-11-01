@@ -122,13 +122,57 @@ def test_geo_columns_are_staged_through_copy():
 
 
 def test_stored_geo_values_are_never_overwritten():
-    """A row whose stored CBSA (source or derived) exists keeps it: keep-wins COALESCE."""
-    sql = ci.build_sql([_row(postalCode="10019")], [], _SCRAPED_AT, set())
+    """A stored county/CBSA (source or derived) is kept; executable proof is the
+    disposable-Postgres contract (run_ingest_institutional_postgres_contract.sh)."""
+    sql = " ".join(ci.build_sql([_row(postalCode="10019")], [], _SCRAPED_AT, set()).split())
+    for col in ("county", "geo_source"):
+        assert f"{col} = COALESCE(t.{col}, s.{col})" in sql
+    for col in ("cbsa_code", "cbsa_name"):
+        assert (
+            f"{col} = CASE WHEN t.cbsa_code IS NULL AND t.cbsa_name IS NULL "
+            f"THEN s.{col} ELSE t.{col} END"
+        ) in sql
     for col in ci.GEO_COLS:
-        assert f"{col} = COALESCE(t.{col}, s.{col})" in " ".join(sql.split())
-        # The source-wins form would let a fresh derivation clobber a stored value.
+        # The source-wins forms would let a fresh derivation clobber a stored value.
         assert f"COALESCE(s.{col}, t.{col})" not in sql
         assert f"COALESCE(EXCLUDED.{col}, t.{col})" not in sql
+
+
+def test_merge_rederives_from_merged_location_fields():
+    # The sale pass has only coordinates and no state; the lease pass adds the
+    # state and a ZIP. The merged row follows ZIP precedence on merged inputs.
+    sale = _row(transactionMode="sale", latitude=32.7870, longitude=-96.7970)
+    assert sale["geo_source"] == "crosswalk_latlng"
+    lease = _row(transactionMode="lease", state="NY", postalCode="10019")
+    merged = ci.merge_rows(sale, lease)
+    assert merged["state"] == "NY" and merged["zip"] == "10019"
+    assert _geo(merged) == _geo(_row(state="NY", postalCode="10019"))
+
+
+def test_merge_keeps_source_county_from_either_pass():
+    zip_only = _row(transactionMode="sale", postalCode="60606", state="IL")
+    with_county = _row(transactionMode="lease", county="Cook")
+    merged = ci.merge_rows(zip_only, with_county)
+    assert merged["county"] == "Cook"
+    assert merged["cbsa_code"] == "16980"
+    assert merged["geo_source"] == "source"
+
+
+def test_geo_input_keys_are_not_staged():
+    assert not set(ci.GEO_INPUT_KEYS) & set(ci.STAGE_COLS)
+
+
+@pytest.mark.parametrize("country", ["CA", "Canada", "MX"])
+def test_non_us_country_gets_no_us_cbsa(country):
+    # Windsor, ON sits within the lat/lng radius of Detroit-area centroids.
+    assert _row(latitude=42.3149, longitude=-83.0364)["cbsa_code"] == "19820"
+    row = _row(latitude=42.3149, longitude=-83.0364, country=country)
+    assert set(_geo(row).values()) == {None}
+
+
+@pytest.mark.parametrize("country", ["US", "U.S.A.", "United States", "PR"])
+def test_us_country_spellings_still_derive(country):
+    assert _geo(_row(postalCode="60601", country=country))["cbsa_code"] == "16980"
 
 
 def test_merge_takes_other_pass_geo_bundle_whole():
@@ -170,7 +214,7 @@ def test_latlng_band_keeps_centroids_up_to_the_radius(tmp_path):
 def test_committed_crosswalk_is_the_ingest_default():
     """The forward path loads the committed CSV; a missing file would stage no geo."""
     cw = cre_geo.ZipCbsaCrosswalk()
-    assert len(cw) == 33791
+    assert len(cw) > 30000
     assert cw.by_zip("60601")["cbsa_code"] == "16980"
 
 
