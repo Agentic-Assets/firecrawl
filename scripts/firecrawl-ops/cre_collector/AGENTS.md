@@ -189,7 +189,7 @@ and resolve confirmed findings before shipping.
 | `cre_repair_jll_images.py` | Dedicated exact-manifest JLL malformed image-reference repair and restoration. Default read-only; [operator guide](../../../docs/firecrawl-ops/references/jll-image-reference-repair.md) covers private evidence, transaction checks and recovery. |
 | `backfill_media_from_raw_data.py` | One-time additive lift of media/docs already stranded in `raw_data` into `cre_listing_media`/`cre_listing_links`/`cre_listing_documents`; `--dry-run` default, `--apply` gated on go-ahead; `011` DDL now applied 2026-06-15 (only the media backfill RUN remains gated). See `HANDOFF_MEDIA_CAPTURE_2026-06-15.md` |
 | `cre_parse.py` | Python mirror of `lib/parse.ts`: shared CRE text parsers (price/sqft/cap-rate/address). Imported by `cre_ingest.py` and the raw_data backfill; verifiably identical to the TS side via a shared golden test-vector table |
-| `cre_geo.py` | Offline ZIP->county+CBSA crosswalk resolver (`data/zip_cbsa_crosswalk.csv`). `ZipCbsaCrosswalk` + `derive_geo()`; used by `cre_geo_backfill.py` and optionally `cre_ingest.py`. Pure, stdlib-only, no network |
+| `cre_geo.py` | Offline ZIP->county+CBSA crosswalk resolver (`data/zip_cbsa_crosswalk.csv`). `ZipCbsaCrosswalk` + `derive_geo()`; used by `cre_geo_backfill.py` and by `cre_ingest.py` for every staged row. Pure, stdlib-only, no network |
 | `cre_backfill_raw_data.py` | One-time additive/idempotent Class-1 scalar backfill from `raw_data` into `cre_listings` (canonical_url + institutional cols). `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (canonical_url 0->87,324, 0 decode failures). Never touches `status`/`deleted_at` |
 | `cre_geo_backfill.py` | Additive/idempotent geo derivation (county/cbsa/geo_source) for existing rows via `cre_geo`. `--dry-run` default, `--apply` gated; APPLIED 2026-06-15 (85,618 of 87,328 rows) |
 | `om_classify_existing.py` | One-time additive re-classification of `doc_type='brochure'` rows into flyer/floor_plan/om/financials. `--dry-run` default; APPLIED 2026-06-15 (14,087 of 70,414 upgraded). Upgrade-only, never downgrades |
@@ -303,6 +303,13 @@ Key behavior:
   also COALESCE-keep: a transient parse miss does not blank a previously-good
   numeric price. Prior price/SF must remain in `(0, 10000]` and prior lease
   rates in `(0, 500]`, matching their existing forward-normalization bounds.
+- **Forward geo:** `to_row` stages `county`/`cbsa_code`/`cbsa_name`/`geo_source`
+  from `cre_geo.derive_geo` (source county, then ZIP, then lat/lng; none for an
+  explicit non-US country); `merge_rows` re-derives on the merged row. The
+  institutional UPDATE writes them keep-wins (the backfill's rule; CBSA code and
+  name only as a pair), so a stored value is never overwritten and a later ZIP
+  correction does not re-derive. `market` is not derived. `cre_validate.py` `quality_by_source` reports `geo_inputs_without_cbsa`
+  and `geo_inputs_underived` (report-only).
 - **Source controls are source facts.** New Avison public-feed rows carry
   `avison-public-facts-retention/v2`: retain reported asking values, prose and
   original controls without inferring currency, unit, publisher UI visibility or

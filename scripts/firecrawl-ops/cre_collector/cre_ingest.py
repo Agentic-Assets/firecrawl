@@ -55,6 +55,7 @@ from urllib.parse import parse_qsl, quote, unquote_to_bytes, urlsplit, urlunspli
 # below (parse_lease_rates, parse_money, parse_size_text, is_sale_psf_text)
 # delegate to it without changing their observable to_row()-level behavior.
 import cre_parse
+import cre_geo
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
 from cre_artifact_scope import require_canonical_artifact
@@ -752,6 +753,64 @@ def norm_lease_rate_type(v):
     if "gross" in low:
         return "gross"
     return None
+
+
+# Forward geo derivation (AGENTIC-5133). cre_geo.derive_geo is the one
+# resolver shared with cre_geo_backfill.py; the committed crosswalk loads once
+# per process, on the first row that needs it.
+GEO_COLS = ("county", "cbsa_code", "cbsa_name", "geo_source")
+# Private row keys carrying the source's own county/country into merge_rows,
+# which re-derives geo on the merged row; main() drops them before staging.
+GEO_INPUT_KEYS = ("_geo_source_county", "_geo_country")
+# Country spellings treated as the crosswalk's coverage (US ZCTAs incl. PR).
+_GEO_US_COUNTRIES = {"US", "USA", "UNITEDSTATES", "UNITEDSTATESOFAMERICA", "PR", "PUERTORICO"}
+_GEO_CROSSWALK = None
+
+
+def _geo_crosswalk():
+    global _GEO_CROSSWALK
+    if _GEO_CROSSWALK is None:
+        _GEO_CROSSWALK = cre_geo.ZipCbsaCrosswalk()
+        if not len(_GEO_CROSSWALK):
+            # Ingest still runs (geo is additive), but say so: an empty
+            # crosswalk stages no county/CBSA for any row.
+            print(
+                "[cre geo] WARNING: data/zip_cbsa_crosswalk.csv is missing or "
+                "empty; rows will be staged without county/CBSA.",
+                file=sys.stderr,
+            )
+    return _GEO_CROSSWALK
+
+
+def derive_row_geo(row):
+    """Return the staged geo bundle for one row: county, CBSA and geo_source.
+
+    Inputs are the row's normalized zip/lat/lng/state plus the source-verbatim
+    county (Newmark, Pyramid) kept in a private key. derive_geo keeps its
+    precedence: source county, then ZIP crosswalk, then lat/lng nearest
+    centroid; all None when none apply, or when the source names a country
+    outside the crosswalk's US coverage. The upsert writes these keep-wins, so a
+    value already stored is never overwritten.
+    """
+    country = row.get("_geo_country")
+    if country and re.sub(r"[^A-Z]", "", country.upper()) not in _GEO_US_COUNTRIES:
+        return dict.fromkeys(GEO_COLS)
+    county, cbsa_code, cbsa_name, _submarket, geo_source = cre_geo.derive_geo(
+        {
+            "county": row.get("_geo_source_county"),
+            "state": row.get("state"),
+            "postal_code": row.get("zip"),
+            "latitude": row.get("lat"),
+            "longitude": row.get("lng"),
+        },
+        _geo_crosswalk(),
+    )
+    return {
+        "county": county,
+        "cbsa_code": cbsa_code,
+        "cbsa_name": cbsa_name,
+        "geo_source": geo_source,
+    }
 
 
 # Phase-2 data-lift institutional-field normalizers (contract Section B). Each
@@ -3201,7 +3260,10 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         "links": links,
         "om_facts": om_facts,
         "_modes": {listing.get("transactionMode")},
+        "_geo_source_county": clean_text(listing.get("county"), 128),
+        "_geo_country": clean_text(listing.get("country"), 64),
     }
+    row.update(derive_row_geo(row))
     return avison_leases.project_row(avison_prices.project_row(row))
 
 
@@ -3400,6 +3462,13 @@ def merge_rows(a, b):
     ):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
+    # Geo is derived, not merged: re-derive from the merged location fields so
+    # the bundle follows ZIP-over-lat/lng precedence and the state guard on the
+    # fullest inputs either pass supplied.
+    for k in GEO_INPUT_KEYS:
+        if a.get(k) is None:
+            a[k] = b.get(k)
+    a.update(derive_row_geo(a))
     for k in ("contacts", "documents", "images", "media", "links", "om_facts"):
         a[k] = _merge_child_collections(k, a[k], b[k])
     from source_fields.buildout_public_facts import merge_public_facts
@@ -3631,6 +3700,8 @@ STAGE_COLS = [
     "source_field_count",
     "source_field_building",
     "om_facts",
+    # Forward geo (AGENTIC-5133): derive_row_geo bundle, written COALESCE-keep.
+    *GEO_COLS,
 ]
 
 INVENTORY_ONLY_COLS = [
@@ -4000,7 +4071,8 @@ CREATE TEMP TABLE _stage (
     grm numeric, price_per_acre numeric, num_rooms integer, revpar numeric,
     clear_height_ft numeric, dock_doors integer, drive_in_doors integer,
     power_service text, rail_served boolean, extra_facts jsonb, source_field_count jsonb,
-    source_field_building jsonb, om_facts jsonb
+    source_field_building jsonb, om_facts jsonb,
+    county text, cbsa_code text, cbsa_name text, geo_source text
 ) ON COMMIT DROP;""")
     w(f"COPY _stage ({', '.join(STAGE_COLS)}) FROM stdin;")
     for r in rows:
@@ -5189,6 +5261,17 @@ DO $$ BEGIN
         drive_in_doors        = COALESCE(s.drive_in_doors, t.drive_in_doors),
         power_service         = COALESCE(s.power_service, t.power_service),
         rail_served           = COALESCE(s.rail_served, t.rail_served),
+        -- Forward geo (AGENTIC-5133): keep-wins like cre_geo_backfill.py. A
+        -- stored county/CBSA, including a source value, is never overwritten;
+        -- only NULL columns are filled, and the CBSA code and name only as a
+        -- pair so one row never mixes two CBSAs. Geo comes from this pass's
+        -- location fields; a later ZIP correction does not re-derive it.
+        county                = COALESCE(t.county, s.county),
+        cbsa_code             = CASE WHEN t.cbsa_code IS NULL AND t.cbsa_name IS NULL
+                                     THEN s.cbsa_code ELSE t.cbsa_code END,
+        cbsa_name             = CASE WHEN t.cbsa_code IS NULL AND t.cbsa_name IS NULL
+                                     THEN s.cbsa_name ELSE t.cbsa_name END,
+        geo_source            = COALESCE(t.geo_source, s.geo_source),
         -- extra_facts: jsonb merge, keeping prior keys; a NULL/empty staged blob
         -- (no new facts this pass) leaves the prior blob untouched.
         extra_facts           = CASE
@@ -7104,6 +7187,8 @@ def main():
         sys.exit("nothing to ingest (0 usable listings or inventory-only rows)")
     for r in rows:
         r.pop("_modes", None)
+        for k in GEO_INPUT_KEYS:
+            r.pop(k, None)
     started_at = started_at or datetime.now(timezone.utc).isoformat()
     finished_at = finished_at or started_at
 

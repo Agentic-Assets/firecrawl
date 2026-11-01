@@ -108,6 +108,15 @@ INSERT INTO credeals.cre_listings
 SELECT brokerage_id, external_id, raw_data, 'A',
        500, 500, 500, 500, '{"retained":true}'::jsonb
 FROM _src;
+-- AGENTIC-5133 forward geo: every staged row derives a ZIP bundle; one stored
+-- row carries a source bundle and one a partial stored CBSA.
+UPDATE _src SET county = 'Cook County, IL', cbsa_code = '16980',
+  cbsa_name = 'Chicago-Naperville-Elgin IL-IN-WI', geo_source = 'crosswalk_zip';
+UPDATE credeals.cre_listings SET county = 'Cook', cbsa_code = '16980',
+  cbsa_name = 'Chicago (source)', geo_source = 'source'
+WHERE external_id = 'cbre-visible';
+UPDATE credeals.cre_listings SET cbsa_code = '11111'
+WHERE external_id = 'svn-collision';
 """)
 # Execute the exact production DO block twice to check repeat application too.
 print(update)
@@ -135,9 +144,24 @@ BEGIN
     ELSIF r.extra_facts IS DISTINCT FROM '{"retained":true}'::jsonb THEN
       RAISE EXCEPTION 'non-withheld extra facts were cleared';
     END IF;
+    IF r.external_id = 'cbre-visible' THEN
+      IF (r.county, r.cbsa_code, r.cbsa_name, r.geo_source)
+         IS DISTINCT FROM ('Cook', '16980', 'Chicago (source)', 'source') THEN
+        RAISE EXCEPTION 'stored source geo bundle was overwritten';
+      END IF;
+    ELSIF r.external_id = 'svn-collision' THEN
+      IF (r.county, r.cbsa_code, r.cbsa_name, r.geo_source)
+         IS DISTINCT FROM ('Cook County, IL', '11111', NULL, 'crosswalk_zip') THEN
+        RAISE EXCEPTION 'stored CBSA was overwritten, mixed, or NULL geo columns not filled';
+      END IF;
+    ELSIF (r.county, r.cbsa_code, r.cbsa_name, r.geo_source)
+          IS DISTINCT FROM ('Cook County, IL', '16980',
+                            'Chicago-Naperville-Elgin IL-IN-WI', 'crosswalk_zip') THEN
+      RAISE EXCEPTION 'NULL geo columns were not filled from the staged bundle';
+    END IF;
   END LOOP;
 END $$;
 ROLLBACK;
-SELECT 'institutional PostgreSQL contract passed: 5 cases, 2 applications';
+SELECT 'institutional PostgreSQL contract passed: 5 cases (incl. geo keep-wins), 2 applications';
 """)
 PY
