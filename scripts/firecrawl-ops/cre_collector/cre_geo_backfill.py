@@ -227,7 +227,9 @@ CREATE TEMP TABLE _geo_stage (
 -- Geo backfill: COALESCE-keep UPDATE on {_TABLE}.
 -- Skips rows whose derived value is NULL (no crosswalk hit).
 -- Skips rows where the target column already has a non-NULL value (keep-wins).
-DO $$ BEGIN
+DO $$
+DECLARE updated_rows bigint;
+BEGIN
   -- Guard: ensure the cbsa_code column exists (migration 012 applied).
   IF NOT EXISTS (
       SELECT 1 FROM pg_attribute a
@@ -252,7 +254,8 @@ DO $$ BEGIN
       AND (s.county IS NOT NULL OR s.cbsa_code IS NOT NULL OR s.geo_source IS NOT NULL)
       -- Only update when the target column is still NULL (COALESCE-keep semantics).
       AND (l.county IS NULL OR l.cbsa_code IS NULL OR l.cbsa_name IS NULL OR l.geo_source IS NULL);
-    RAISE NOTICE 'geo backfill applied % row(s)', FOUND::int;
+    GET DIAGNOSTICS updated_rows = ROW_COUNT;
+    RAISE NOTICE 'geo backfill applied % row(s)', updated_rows;
   END IF;
 END $$;""")
 

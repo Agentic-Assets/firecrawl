@@ -601,3 +601,11 @@ def test_main_no_rows_exits_early(monkeypatch, capsys):
     cre_geo_backfill.main()
     out = capsys.readouterr().out
     assert "nothing to backfill" in out.lower() or "0 row" in out.lower()
+
+
+def test_apply_notice_reports_updated_row_count():
+    """The apply NOTICE carries ROW_COUNT, not FOUND (which is only 0 or 1)."""
+    sql = build_sql([])
+    assert "GET DIAGNOSTICS updated_rows = ROW_COUNT;" in sql
+    assert "applied % row(s)', updated_rows;" in sql
+    assert "FOUND::int" not in sql
