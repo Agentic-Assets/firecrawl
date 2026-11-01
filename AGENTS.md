@@ -68,6 +68,8 @@ production DDL, cache refresh, scheduling, or deployment. The collector must
 preserve the five-column OM-facts identity; it does not own OM extraction
 writes, market-data objects, or EQUIRE product views.
 
+The R2 listing document archive (bucket `cre-listing-documents` and the three `cre_document_*` tables, AGENTIC-5147) is GetCREdata's. The collector neither writes nor reads it.
+
 For development, launcher, runtime, and isolated-test checkout roles—including exact-SHA
 handoff and database rollback limits, see [Development and runtime checkouts](docs/firecrawl-ops/references/development-and-runtime-checkouts.md).
 
