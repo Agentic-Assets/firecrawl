@@ -214,6 +214,33 @@ def test_receipt_and_response_tampering_refused(tmp_path, monkeypatch):
     path.write_bytes(trial.runner.canonical(bad))
     with pytest.raises(ValueError, match="provider receipt"):
         trial.report(out, plan, ph)
+    for field, value in (
+        ("usage", {"prompt_tokens": 9999999}),
+        ("status", "incomplete"),
+    ):
+        bad = {**original, field: value}
+        path.write_bytes(trial.runner.canonical(bad))
+        with pytest.raises(ValueError, match="response " + field):
+            trial.report(out, plan, ph)
+
+
+def test_legacy_adoption_of_missing_source_is_read_only(tmp_path):
+    missing = tmp_path / "missing-source"
+    with pytest.raises(ValueError, match="existing private legacy source"):
+        trial.adopt(
+            missing,
+            tmp_path / "unused",
+            tmp_path / "unused",
+            tmp_path / "unused",
+            tmp_path / "unused",
+        )
+    assert not missing.exists()
+
+
+def test_malformed_provider_or_receipt_body_retains_failed_unknown_outcome(tmp_path):
+    trial.validate_response({"provider_response": [], "status": "incomplete"})
+    result = {"generation_lookup": {"http_status": 200, "body": {"data": []}}}
+    assert trial.verified_cost(tmp_path, tmp_path / "unused.result.json", result, {}) is None
 
 
 def test_pdf_mutation_refuses_before_dispatch(tmp_path):

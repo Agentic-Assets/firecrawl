@@ -361,6 +361,17 @@ def validate_response(result):
         result.get("finish_reason"),
     ):
         raise ValueError("response content mismatch")
+    if result.get("usage") != (body.get("usage") if isinstance(body, dict) else None):
+        raise ValueError("response usage mismatch")
+    expected_status = (
+        "unsupported"
+        if result.get("error") == "unsupported_file_input"
+        else "completed"
+        if parsed is not None and finish == "stop"
+        else "incomplete"
+    )
+    if result.get("status") != expected_status:
+        raise ValueError("response status mismatch")
 
 
 def verified_cost(directory, path, result, identity):
@@ -369,6 +380,8 @@ def verified_cost(directory, path, result, identity):
         return None
     body = lookup.get("body", {})
     body = body.get("data", body) if isinstance(body, dict) else {}
+    if not isinstance(body, dict):
+        return None
     provider, model = body.get("provider_name"), body.get("model")
     if provider is not None and provider != identity["requested_provider"]:
         raise ValueError("provider receipt mismatch")
@@ -711,6 +724,8 @@ def report(out, plan, ph):
 
 def adopt(source, manifest_path, protocol_path, config_path, script_path):
     """Verify existing legacy results against explicit historical source bindings."""
+    if not source.is_dir() or source.is_symlink():
+        raise ValueError("existing private legacy source directory required")
     ensure_private(source)
     documents, manifest_hash = validate_manifest(manifest_path.resolve(strict=True))
     docs = {doc["id"]: doc for doc in documents}
@@ -783,18 +798,7 @@ def adopt(source, manifest_path, protocol_path, config_path, script_path):
         )
         if runner.digest(runner.canonical(request)) != identity.get("request_sha256"):
             raise ValueError("legacy request reconstruction mismatch")
-        body = value.get("provider_response", {})
-        text, parsed, finish = (
-            runner.response_content(body)
-            if isinstance(body, dict)
-            else (None, None, None)
-        )
-        if (
-            text != value.get("raw_output")
-            or parsed != value.get("parsed")
-            or finish != value.get("finish_reason")
-        ):
-            raise ValueError("legacy response content mismatch")
+        validate_response(value)
         row = {
             "document_id": identity.get("document_id"),
             "model": identity.get("model"),
