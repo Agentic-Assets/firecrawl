@@ -1,5 +1,10 @@
 # Firecrawl Model Routing
 
+Public CRE listing-document native PDF extraction follows the
+[Meta High / AnyDoc / Haiku review decision](native-pdf-extraction-routing.md),
+implemented by GetCREdata's document extractor. The API profiles below govern
+the separate global self-hosted scraper text-model surface.
+
 ## Target outcome
 
 Maximize throughput and value while preserving quality for hard tasks.
