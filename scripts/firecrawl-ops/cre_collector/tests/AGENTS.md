@@ -24,7 +24,7 @@ suite's own loopback servers. Verify namespace support first; from the genuine
 standalone QA clone, the command carrier is:
 
 ```bash
-unshare --user --map-current-user --net --keep-caps -- sh -c 'ip link set lo up && exec "$@"' qa <test-command> <arguments>
+unshare --user --map-current-user --net --keep-caps -- sh -c 'ip link set lo up && "$@"; result=$?; exit "$result"' qa <test-command> <arguments>
 ```
 
 Only the new namespace's loopback is enabled; host services and public routes
@@ -36,6 +36,18 @@ loopback bind before the suite. Install the sidecar's pinned Node dependencies
 as described in SETUP; Python's C10 loopback fixtures use its `tsx` package.
 Keep normal configuration defaults unless the test deliberately varies them;
 an unrelated URL override or rewritten interpreter argv can break the harness.
+
+Keep the inner shell alive while tests run: an `exec` can give the test process
+an unmapped outer parent, making a legitimate signal-zero ownership check fail.
+User namespaces can also map the host's root-owned filesystem ancestors to
+UID 65534, so ownership-sensitive output tests may correctly refuse them. On
+Windows/WSL, a qualified alternative is to create only a new network namespace
+as WSL root, enable its loopback, then use `runuser` to run a retained shell and
+the suite as the normal non-root user. Verify UID/EUID, parent signal-zero,
+root/temporary-directory ownership, an owned loopback bind and absence of
+external routes before using that carrier. Root performs namespace setup only;
+never run collector tests or runtime work as root, change host networking, or
+weaken production ownership guards to accommodate a test carrier.
 
 For website or provider variations, build fixtures from sanitized, genuinely
 observed responses and call the real mapper and verifier. Cover supported

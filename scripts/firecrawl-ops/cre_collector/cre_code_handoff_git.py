@@ -6,7 +6,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-from cre_code_handoff_evidence import require, safe_relative, sha
+from cre_code_handoff_evidence import identity, require, safe_relative, sha
 
 
 def local_path(value):
@@ -96,6 +96,15 @@ class Git:
         require(self.text(root, "rev-parse", release["selected"]["sha"] + "^{tree}") == release["selected"]["tree"],
                 "selected release tree changed")
 
+    def maintenance_ancestry(self, repo, old, native_before, selected):
+        """Prove each actual root identity lies on the selected forward history."""
+        for value in (old, native_before, selected):
+            identity(value)
+            require(self.text(repo, "rev-parse", value["sha"] + "^{tree}") == value["tree"],
+                    "maintenance commit tree differs")
+        self.command(repo, "merge-base", "--is-ancestor", old["sha"], native_before["sha"])
+        self.command(repo, "merge-base", "--is-ancestor", native_before["sha"], selected["sha"])
+
     def entries(self, repo, commit):
         result = {}
         for row in self.command(repo, "ls-tree", "-rz", "--full-tree", commit).split(b"\0"):
@@ -105,15 +114,18 @@ class Git:
                 result[path.decode()] = {"mode": mode, "type": kind, "oid": oid}
         return result
 
-    def paths(self, repo, release):
+    def paths(self, repo, release, *, allowed_dependency_paths=()):
         old, new = release["deployed"]["sha"], release["selected"]["sha"]
         paths = self.command(repo, "diff", "--no-renames", "--name-only", "-z", old, new)
         require(paths == b"".join(p.encode() + b"\0" for p in release["allowed_paths"]),
                 "exact changed-path NUL order differs")
         before, after = self.entries(repo, old), self.entries(repo, new)
-        for path in set(before) | set(after):
-            if Path(path).name in {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "requirements.txt", "pyproject.toml", "uv.lock"}:
-                require(before.get(path) == after.get(path), "dependency manifests/locks changed")
+        dependency_names = {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "requirements.txt", "pyproject.toml", "uv.lock"}
+        changed_dependencies = {path for path in set(before) | set(after)
+                                if Path(path).name in dependency_names and before.get(path) != after.get(path)}
+        require(len(allowed_dependency_paths) == len(set(allowed_dependency_paths))
+                and changed_dependencies == set(allowed_dependency_paths),
+                "dependency manifests/locks changed outside exact maintenance binding")
         object_map = release["objects"]
         require(set(object_map) == set(release["allowed_paths"]), "object map incomplete")
         for raw in release["allowed_paths"]:
@@ -146,6 +158,14 @@ class Git:
                             "untracked/nonregular/hardlinked leaf collision")
 
     def fast_forward(self, repo, release, bundle):
+        self._fast_forward(repo, release, bundle, ())
+
+    def maintenance_fast_forward(self, repo, release, bundle, *, allowed_dependency_paths):
+        """Advance only with the exact reviewed dependency path set; caller owns admission."""
+        require(isinstance(allowed_dependency_paths, list), "explicit changed dependency paths required")
+        self._fast_forward(repo, release, bundle, allowed_dependency_paths)
+
+    def _fast_forward(self, repo, release, bundle, allowed_dependency_paths):
         self.clean(repo, release["deployed"])
         new, old = release["selected"], release["deployed"]
         wire_bundle = windows_path(bundle) if str(local_path(repo)).startswith("/mnt/") else str(local_path(bundle))
@@ -156,7 +176,7 @@ class Git:
         witness = self.text(repo, "rev-parse", "refs/remotes/origin/main")
         self.command(repo, "merge-base", "--is-ancestor", old["sha"], witness)
         self.command(repo, "merge-base", "--is-ancestor", witness, new["sha"])
-        self.paths(repo, release)
+        self.paths(repo, release, allowed_dependency_paths=allowed_dependency_paths)
         self.hooks(repo)
         self.command(repo, "update-ref", "refs/remotes/origin/main", new["sha"], witness)
         self.command(repo, "merge", "--ff-only", "--no-overwrite-ignore", new["sha"])

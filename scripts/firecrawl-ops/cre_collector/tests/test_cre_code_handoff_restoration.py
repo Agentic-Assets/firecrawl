@@ -1,6 +1,7 @@
 """Explicit synthetic producer-shaped restoration cases; never altered A data."""
 
 import copy
+import sys
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -164,6 +165,70 @@ def test_complete_synthetic_failed_attempt_and_restoration_packet_join(restorati
     assert source["task_baseline"][2]["last_task_result"] == packet["task_baseline"][2]["last_task_result"] == 1
 
 
+def test_historical_failure_is_validated_against_its_own_selected_identity(restoration_case):
+    packet, evidence, _, _, _ = restoration_case
+    packet["code"] = OLD  # A later packet identity cannot rewrite the failed attempt.
+    source, _, _, _ = validate_failed_handoff(packet, evidence, failed_code=NEW)
+    assert source["selected"] == NEW
+    with pytest.raises(HandoffError):
+        validate_failed_handoff(packet, evidence, failed_code=OLD)
+
+
+@pytest.fixture
+def maintenance_case(restoration_case, monkeypatch):
+    """Synthetic verifier seam; producer integration is covered separately."""
+    packet, _, inputs, put, path = restoration_case
+    latest = {"sha": "e" * 40, "tree": "f" * 40}
+    failed = packet["failed_handoff"]
+    release_raw = inputs.data[path(failed["release"])]
+    rows = {}
+    for baseline in packet["task_baseline"]:
+        before = inputs.data[path(baseline["xml"])]
+        after = before.replace(NEW["sha"].encode(), latest["sha"].encode())
+        before_tuple = copy.deepcopy(baseline)
+        baseline["xml"] = put(baseline["key"] + "-maintenance-held", after)
+        baseline["actions"] = [{field: value.replace(NEW["sha"], latest["sha"])
+                                for field, value in action.items()} for action in baseline["actions"]]
+        rows[baseline["key"]] = {"before_xml": before, "final_xml": after, "independent_xml": after,
+                                 "before_tuple": before_tuple, "after_tuple": copy.deepcopy(baseline)}
+    verified = {"old": NEW, "new": latest, "roots": {key: packet["roots"][key] for key in ("native", "runtime")},
+                "failed_handoff_release_sha256": sha(release_raw), "tasks": rows,
+                "runtime_snapshot": json_bytes(inputs.data[path("runtime_snapshot")])}
+    packet["maintenance_transition"] = put("maintenance", {"schema": "synthetic-qualified-maintenance"})
+    packet["code"] = latest
+    monkeypatch.setitem(sys.modules, "cre_runtime_maintenance_transition", SimpleNamespace(
+        validate_maintenance_transition=lambda *args, **kwargs: verified))
+    return packet, inputs, verified
+
+
+def test_restoration_accepts_verified_maintenance_after_original_failed_attempt(maintenance_case):
+    packet, inputs, _ = maintenance_case
+    validate_restoration(packet, inputs.evidence(packet))
+
+
+@pytest.mark.parametrize("change", ["old", "new", "release", "roots", "before_xml", "after_xml", "result", "before_result", "clock"])
+def test_restoration_rejects_maintenance_that_does_not_join_failed_and_held_state(maintenance_case, change):
+    packet, inputs, verified = maintenance_case
+    if change in {"old", "new"}:
+        verified[change] = OLD
+    elif change == "release":
+        verified["failed_handoff_release_sha256"] = "0" * 64
+    elif change == "roots":
+        verified["roots"]["runtime"] = "/foreign"
+    elif change == "before_xml":
+        verified["tasks"]["interra"]["before_xml"] = b"foreign"
+    elif change == "after_xml":
+        verified["tasks"]["interra"]["independent_xml"] = b"foreign"
+    elif change == "result":
+        verified["tasks"]["interra"]["after_tuple"]["last_task_result"] = 999
+    elif change == "before_result":
+        verified["tasks"]["interra"]["before_tuple"]["last_task_result"] = 999
+    else:
+        verified["tasks"]["interra"]["after_tuple"]["next_run_utc"] = NOW.isoformat()
+    with pytest.raises(HandoffError):
+        validate_restoration(packet, inputs.evidence(packet))
+
+
 @pytest.mark.parametrize("change", ["code", "flags", "result", "last", "xml", "duplicate", "ready", "failure", "command", "audit", "seal"])
 def test_restoration_packet_rejects_substitution_or_missing_settlement(restoration_case, change):
     packet, _, inputs, _, path = restoration_case
@@ -209,7 +274,7 @@ def test_restoration_packet_rejects_substitution_or_missing_settlement(restorati
 
 
 def held_observation(packet, inputs):
-    return dict(fixtures.host_observation(), schema="cre-code-restoration-observation-v1", native=NEW, runtime=NEW,
+    return dict(fixtures.host_observation(), schema="cre-code-restoration-observation-v1", native=packet["code"], runtime=packet["code"],
                 restoration_sha256=sha(fixtures.encoded(packet)),
                 observed_at=NOW.isoformat(), qualified_at=NOW.isoformat(), resources_ok=True, queues_idle=True,
                 ownership={"phase": "released-clear", "verified": True, "recovery_required": False},
@@ -502,11 +567,11 @@ def synthetic_reconciliation(case):
             write(path, final)
         row.update(enabled=True, state="Ready", xml_sha256=sha(final),
                    xml_reference={"path": str(root / (row["key"] + "-observed.xml")), "bytes": len(final), "sha256": sha(final)})
-    write(root / "restoration-ready.json", dict(common, schema="cre-code-restoration-ready-v1", code=NEW,
+    write(root / "restoration-ready.json", dict(common, schema="cre-code-restoration-ready-v1", code=packet["code"],
           readiness=ready, recovery_required_at_publication=True,
           dependencies=dict.fromkeys(("package.json", "package-lock.json", "node_modules/.package-lock.json"), "0" * 64)))
     failed_source = next(row for row in packet["inputs"] if row["role"] == packet["failed_handoff"]["release"])
-    write(root / "restoration-terminal.json", dict(common, schema="cre-code-restoration-terminal-v1", code=NEW,
+    write(root / "restoration-terminal.json", dict(common, schema="cre-code-restoration-terminal-v1", code=packet["code"],
           status="restored", canonical_lease_released=True, finished_at=(NOW + timedelta(seconds=1)).isoformat(),
           ready_sha256=sha(files[str(root / "restoration-ready.json")]), failed_predecessor_release_sha256=failed_source["sha256"]))
     write(str(root) + ".stdout.raw", b"synthetic real-stream-shaped completion"); write(str(root) + ".stderr.raw", b"")
@@ -524,8 +589,17 @@ def synthetic_reconciliation(case):
     def read(path):
         return files[str(path)]
     receipt = make_reconciliation(packet, packet_path, root, independent, read)
-    validate_reconciliation(receipt, OLD, NEW, read)
+    validate_reconciliation(receipt, OLD, packet["code"], read)
     return packet, receipt, files
+
+
+def test_reconciliation_accepts_verified_maintenance_and_original_failed_history(restoration_case, maintenance_case):
+    packet, inputs, verified = maintenance_case
+    zero_missed_packet((packet, None, inputs, *restoration_case[3:]))
+    for row in packet["task_baseline"]:
+        verified["tasks"][row["key"]]["after_tuple"]["next_run_utc"] = row["next_run_utc"]
+    _, receipt, files = synthetic_reconciliation((packet, None, inputs, *restoration_case[3:]))
+    validate_reconciliation(receipt, OLD, packet["code"], lambda path: files[str(path)])
 
 
 @pytest.mark.parametrize("new_result", [0, 1])

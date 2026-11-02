@@ -194,12 +194,13 @@ def restoration_execution(packet, evidence, observation):
         outcomes[key] = {"state": state, "instance": str(guid), "source_settlement": "unverified"}
     return outcomes
 
-def validate_failed_handoff(packet, evidence):
+def validate_failed_handoff(packet, evidence, *, failed_code=None):
     """Finite reader for an actually failed post-ready handoff and sealed audit."""
+    code = packet["code"] if failed_code is None else identity(failed_code)
     failed = packet["failed_handoff"]
     source_raw = evidence.raw(failed["release"])
     source = json_bytes(source_raw)
-    require(source.get("schema") == "cre-code-release-v1" and source.get("selected") == packet["code"],
+    require(source.get("schema") == "cre-code-release-v1" and source.get("selected") == code,
             "failed handoff selected code differs")
     mutation = evidence.obj(failed["mutation"])
     authorization_raw = evidence.raw(failed["authorization"])
@@ -218,7 +219,7 @@ def validate_failed_handoff(packet, evidence):
     require(clock(authorization.get("authorized_at")) <= clock(mutation.get("entered_at"))
             < clock(authorization.get("expires_at")), "original mutation outside original authorization")
     ready = evidence.obj(failed["commit_ready"])
-    require(ready.get("schema") == "cre-code-commit-ready-v1" and ready.get("selected") == packet["code"]
+    require(ready.get("schema") == "cre-code-commit-ready-v1" and ready.get("selected") == code
             and ready.get("release_sha256") == sha(source_raw)
             and ready.get("authorization_sha256") == sha(authorization_raw)
             and canonical_path(ready.get("operation_output")) == operation
@@ -290,7 +291,7 @@ def validate_failed_handoff(packet, evidence):
             require(flags.get("-OwnerPid") == owner and isinstance(owner, str) and owner.isdecimal(), "failed command owner differs")
         else:
             collector = canonical_path(source["roots"]["runtime"]) + "/scripts/firecrawl-ops/cre_collector"
-            require(receipt.get("schema") == "cre-owned-gate-v1" and receipt.get("identity") == packet["code"]
+            require(receipt.get("schema") == "cre-owned-gate-v1" and receipt.get("identity") == code
                     and receipt.get("unchanged") is True
                     and canonical_path(receipt.get("effective_cwd")) == collector
                     and canonical_path(receipt.get("cwd")) == collector
@@ -330,12 +331,12 @@ def validate_failed_handoff(packet, evidence):
             and type(audit["saved_failed_operation"].get("original_exit")) is int
             and audit["saved_failed_operation"]["original_exit"] != 0,
             "failed handoff settlement is not independently clear")
-    require({key: audit["current_linux_git"].get(key) for key in ("sha", "tree")} == packet["code"]
+    require({key: audit["current_linux_git"].get(key) for key in ("sha", "tree")} == code
             and audit["current_linux_git"].get("status") == "", "failed audit code differs")
     native_git_raw = evidence.raw(failed["native_git"])
     require(any(row["sha256"] == sha(native_git_raw) for row in seal), "failed native Git observation not sealed")
     native_git = unique(json_bytes(native_git_raw), "role")["native"]
-    require({key: native_git.get(key) for key in ("sha", "tree")} == packet["code"]
+    require({key: native_git.get(key) for key in ("sha", "tree")} == code
             and native_git.get("status") == ""
             and canonical_path(native_git.get("root")) == canonical_path(source["roots"]["native"]),
             "failed native code identity differs")
@@ -357,13 +358,27 @@ def validate_restoration(packet, evidence, *, historical=False):
             "restoration native tools/Ubuntu missing")
     require(isinstance(packet.get("preserve_files"), list)
             and packet.get("runtime_env_file") in packet["preserve_files"], "restoration preservation references missing")
-    source, _, ready, audit = validate_failed_handoff(packet, evidence)
+    transition = None
+    if "maintenance_transition" in packet:
+        from cre_runtime_maintenance_transition import validate_maintenance_transition
+
+        transition = validate_maintenance_transition(evidence.obj(packet["maintenance_transition"]), evidence.read,
+                                                     retain=evidence.original_payloads)
+        historical_code = identity(transition["old"])
+        require(transition["new"] == packet["code"]
+                and transition["failed_handoff_release_sha256"] == sha(evidence.raw(packet["failed_handoff"]["release"]))
+                and all(canonical_path(transition["roots"][key]) == canonical_path(packet["roots"][key])
+                        for key in ("native", "runtime")), "maintenance transition identity or roots differ")
+    else:
+        historical_code = packet["code"]
+    source, _, ready, audit = validate_failed_handoff(packet, evidence, failed_code=historical_code)
     require(all(canonical_path(packet["roots"][key]) == canonical_path(source["roots"][key])
                 for key in ("native", "runtime")), "restoration target checkout differs")
     require(packet["runtime_env_file"] == source["runtime_env_file"]
             and packet["preserve_files"] == source["preserve_files"], "restoration private preservation references differ")
-    require(evidence.obj("runtime_snapshot") == json_bytes(evidence.read(
-        next(row["path"] for row in source["inputs"] if row["role"] == "runtime_snapshot"))),
+    snapshot = (transition["runtime_snapshot"] if transition is not None else json_bytes(evidence.read(
+        next(row["path"] for row in source["inputs"] if row["role"] == "runtime_snapshot"))))
+    require(evidence.obj("runtime_snapshot") == snapshot,
         "restoration runtime snapshot differs from failed operation")
     current = unique(packet.get("task_baseline"), "key", TASKS)
     original = unique(source["task_baseline"], "key", TASKS)
@@ -374,18 +389,37 @@ def validate_restoration(packet, evidence, *, historical=False):
         old = original[key]
         xml = xml_rows[key]
         before, final, held = (evidence.raw(xml[field]) for field in ("before", "final", "audited"))
-        validate_xml_transition(before, final, source["deployed"]["sha"], packet["code"]["sha"])
+        validate_xml_transition(before, final, source["deployed"]["sha"], historical_code["sha"])
         require(before == evidence.read(next(row["path"] for row in source["inputs"] if row["role"] == old["xml"])),
                 "restoration original XML differs")
         require(pins[key].get("xml_sha256") == sha(held)
                 and any(row.get("sha256") == sha(held) and canonical_path(row["path"]) == canonical_path(pins[key]["xml_path"])
                         for row in evidence.obj(packet["failed_handoff"]["settlement_seal"]))
-                and pins[key].get("expected_sha_values") == [packet["code"]["sha"]]
+                and pins[key].get("expected_sha_values") == [historical_code["sha"]]
                 and xml_enabled(final) is old["enabled"] and xml_enabled(held) is False
                 and xml_enabled(evidence.raw(baseline["xml"])) is False
-                and enabled_xml_contract(final, False) == enabled_xml_contract(held, False)
-                and enabled_xml_contract(held, False) == enabled_xml_contract(evidence.raw(baseline["xml"]), False),
+                and enabled_xml_contract(final, False) == enabled_xml_contract(held, False),
                 "restoration held XML differs beyond original code/Enabled change")
+        current_xml = evidence.raw(baseline["xml"])
+        if transition is None:
+            require(enabled_xml_contract(held, False) == enabled_xml_contract(current_xml, False),
+                    "restoration held XML differs")
+        else:
+            maintained = transition["tasks"][key]
+            require(maintained["before_xml"] == held
+                    and maintained["final_xml"] == maintained["independent_xml"] == current_xml,
+                    "maintenance held XML differs")
+            validate_xml_transition(held, current_xml, historical_code["sha"], packet["code"]["sha"])
+            prior_actions = [{name: value.replace(source["deployed"]["sha"], historical_code["sha"])
+                              for name, value in action.items()} for action in old["actions"]]
+            prior = maintained["before_tuple"]
+            require(prior.get("enabled") is False and prior.get("actions") == prior_actions
+                    and all(prior.get(field) == old.get(field) for field in
+                            ("task_path", "task_name", "last_task_result", "last_run_utc")),
+                    "maintenance pre-transition task tuple differs")
+            for field in ("task_path", "task_name", "enabled", "last_task_result", "last_run_utc", "next_run_utc", "actions"):
+                require(maintained["after_tuple"].get(field) == baseline.get(field),
+                        "maintenance held task tuple differs")
         require(baseline.get("enabled") is False and baseline.get("desired_enabled") is old["enabled"]
                 and type(baseline.get("missed_runs")) is int and baseline["missed_runs"] >= 0,
                 "restoration original flags/current missed count malformed")
@@ -508,7 +542,12 @@ def validate_restoration_enable_boundary(packet, evidence, current):
     mode = packet.get("enable_boundary")
     require(mode in {"zero-missed-no-crossed-trigger-v1", "founder-approved-catchup-v1"},
             "restoration catch-up admission unsupported; bounded absence cannot authorize Enable")
-    source, _, _, audit = validate_failed_handoff(packet, evidence)
+    if "maintenance_transition" in packet:
+        validate_restoration(packet, evidence, historical=True)
+        failed_code = evidence.obj(packet["failed_handoff"]["release"])["selected"]
+    else:
+        failed_code = packet["code"]
+    source, _, _, audit = validate_failed_handoff(packet, evidence, failed_code=failed_code)
     require(clock(audit["current_windows_observed_at"]) <= current
             and clock(audit["current_linux_observed_at"]) <= current, "restoration audit is from the future")
     original = unique(source["task_baseline"], "key", TASKS)

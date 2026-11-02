@@ -1,6 +1,7 @@
-<# Foreground code-only route. Preview is offline and is the default.
-Observe/Postreadback are read-only. Hold/Publish are internal owned steps.
-No task, runtime, install or provider action follows from a prepared release.
+<# Foreground code-only, runtime maintenance and held-task restoration routes.
+Preview is offline and is the default. Observe/Postreadback are read-only.
+Hold/Repin are internal owned steps; maintenance never enables tasks.
+Prepared inputs alone cause no task, runtime, installation or provider action.
 #>
 [CmdletBinding(DefaultParameterSetName='Release')]
 param(
@@ -9,6 +10,8 @@ param(
     [Parameter(Mandatory=$true,ParameterSetName='Release')][ValidatePattern('^[0-9a-f]{64}$')][string]$ReleaseSha,
     [Parameter(Mandatory=$true,ParameterSetName='Restoration')][string]$RestorationPath,
     [Parameter(Mandatory=$true,ParameterSetName='Restoration')][ValidatePattern('^[0-9a-f]{64}$')][string]$RestorationSha,
+    [Parameter(Mandatory=$true,ParameterSetName='Maintenance')][string]$MaintenancePath,
+    [Parameter(Mandatory=$true,ParameterSetName='Maintenance')][ValidatePattern('^[0-9a-f]{64}$')][string]$MaintenanceSha,
     [string]$Output,
     [string]$Observation,
     [string]$Authorization,
@@ -19,21 +22,25 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'CreCodeHandoff.ps1')
 $restoration=$PSCmdlet.ParameterSetName -ceq 'Restoration'
+$maintenance=$PSCmdlet.ParameterSetName -ceq 'Maintenance'
 if($restoration) {$ReleasePath=$RestorationPath;$ReleaseSha=$RestorationSha}
+if($maintenance) {$ReleasePath=$MaintenancePath;$ReleaseSha=$MaintenanceSha}
 $digestField=if($restoration){'restoration_sha256'}else{'release_sha256'}
+$schemaPrefix=if($restoration){'cre-code-restoration'}elseif($maintenance){'cre-runtime-maintenance'}else{'cre-code'}
 $releaseFile=ConvertTo-CreHandoffPath $ReleasePath
 $releaseBytes=[IO.File]::ReadAllBytes($releaseFile)
 $releaseText=[Text.UTF8Encoding]::new($false,$true).GetString($releaseBytes)
 if((Get-CreHandoffHash $releaseText) -cne $ReleaseSha) { throw 'Release input changed' }
 $release=Read-CreHandoffJson $releaseText
-if($release.schema -cne $(if($restoration){'cre-code-restoration-v1'}else{'cre-code-release-v1'})) { throw 'Input selector/schema differs' }
+if($release.schema -cne $(if($restoration){'cre-code-restoration-v1'}elseif($maintenance){'cre-runtime-maintenance-v1'}else{'cre-code-release-v1'})) { throw 'Input selector/schema differs' }
 if($restoration -and $Mode -in @('Hold','Repin')) {throw 'Restoration cannot hold/repin/register tasks'}
+if($maintenance -and $Mode -eq 'Restore') {throw 'Maintenance cannot enable or restore tasks'}
 $actualSourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
 if((ConvertTo-CreHandoffPath $actualSourceRoot) -cne (ConvertTo-CreHandoffPath $release.roots.tooling)) { throw 'Invoked native source root differs from declared tooling' }
 if($Mode -eq 'Preview') {
     $preview=[ordered]@{preview_only=$true;execution=$false}
     $preview[$digestField]=$ReleaseSha
-    $preview[$(if($restoration){'code'}else{'selected'})]=if($restoration){$release.code}else{$release.selected}
+    $preview[$(if($restoration){'code'}else{'selected'})]=if($restoration){$release.code}elseif($maintenance){$release.new}else{$release.selected}
     $preview|ConvertTo-Json -Depth 5
     return
 }
@@ -45,7 +52,7 @@ function ConvertTo-CreWslPath([string]$Path) {
     return '/mnt/'+$native.Substring(0,1).ToLowerInvariant()+'/'+$native.Substring(3)
 }
 $control=(ConvertTo-CreWslPath $release.roots.tooling)+'/scripts/firecrawl-ops/cre_collector/cre_code_handoff.py'
-$selector=if($restoration){'--restoration-packet'}else{'--release'}
+$selector=if($restoration){'--restoration-packet'}elseif($maintenance){'--maintenance-packet'}else{'--release'}
 $common=@('-d',[string]$release.wsl.distro,'-u',[string]$release.wsl.user,'--exec','python3','-B',$control,$selector,(ConvertTo-CreWslPath $releaseFile))
 function Assert-Input {
     if((Get-CreHandoffHash ([IO.File]::ReadAllText($releaseFile))) -cne $ReleaseSha) { throw 'Release changed at native boundary' }
@@ -53,13 +60,13 @@ function Assert-Input {
 function Assert-LeaseOwner {
     Assert-Input
     if($OwnerPid -le 0) { throw 'Exact live maintenance owner required' }
-    $ownedInputs=if($restoration){@('--output',(ConvertTo-CreWslPath $Output),'--observation',(ConvertTo-CreWslPath $Observation),'--authorization',(ConvertTo-CreWslPath $Authorization))}else{@()}
+    $ownedInputs=if($restoration -or $maintenance){@('--output',(ConvertTo-CreWslPath $Output),'--observation',(ConvertTo-CreWslPath $Observation),'--authorization',(ConvertTo-CreWslPath $Authorization))}else{@()}
     & wsl.exe @common --assert-owned-pid $OwnerPid @ownedInputs
     if($LASTEXITCODE -ne 0) { throw 'Canonical ownership not proven' }
 }
 function Assert-Owner {
     Assert-LeaseOwner
-    $authorizationOutput=if($restoration){@('--output',(ConvertTo-CreWslPath $Output))}else{@()}
+    $authorizationOutput=if($restoration -or $maintenance){@('--output',(ConvertTo-CreWslPath $Output))}else{@()}
     & wsl.exe @common --check-authorization --observation (ConvertTo-CreWslPath $Observation) --authorization (ConvertTo-CreWslPath $Authorization) @authorizationOutput
     if($LASTEXITCODE -ne 0) { throw 'Immutable current authorization refused' }
 }
@@ -74,7 +81,7 @@ if($Mode -eq 'Apply') {
     try {
         $result=[CreWindowsCapture.Capture]::Run('wsl.exe',([string[]]($common+@('--apply','--observation',(ConvertTo-CreWslPath $Observation),'--authorization',(ConvertTo-CreWslPath $Authorization),'--output',(ConvertTo-CreWslPath $Output)))),($outputRoot+'.stdout.raw'),($outputRoot+'.stderr.raw'),$null)
         if($result.Failed -or $result.NativeExitCode -ne 0 -or -not $result.Stdout.Eof -or -not $result.Stderr.Eof -or $result.Stdout.Truncated -or $result.Stderr.Truncated) { throw 'Native foreground exit/drain uncertain' }
-        $completion=[ordered]@{schema=$(if($restoration){'cre-code-restoration-native-completion-v1'}else{'cre-code-native-completion-v1'});operation_output=$outputRoot;capture=$result;
+        $completion=[ordered]@{schema=($schemaPrefix+'-native-completion-v1');operation_output=$outputRoot;capture=$result;
             authorization_sha256=(Get-CreHandoffHash ([IO.File]::ReadAllText((ConvertTo-CreHandoffPath $Authorization))));
             stdout_sha256=(Get-FileHash -LiteralPath ($outputRoot+'.stdout.raw') -Algorithm SHA256).Hash.ToLowerInvariant();
             stderr_sha256=(Get-FileHash -LiteralPath ($outputRoot+'.stderr.raw') -Algorithm SHA256).Hash.ToLowerInvariant()}
@@ -82,11 +89,13 @@ if($Mode -eq 'Apply') {
         Save-CreHandoffExclusive ($outputRoot+'.native.json') ($completion|ConvertTo-Json -Depth 10)
     } catch {
         $original=$_
-        if(-not $restoration) {
+        # Maintenance already requires a held fleet. Its Python owner handles
+        # cleanup while the lease is proven; this outer capture has no owner.
+        if(-not $restoration -and -not $maintenance) {
             try {$null=Invoke-CreHandoffFailureHold $release $outputRoot $ReleaseSha $Authorization 'outer-failure-hold.json'} catch {Write-Warning ('Failure hold uncertain: '+$_.Exception.Message)}
         }
         try {
-            $failure=@{schema=$(if($restoration){'cre-code-restoration-outer-failure-v1'}else{'cre-code-outer-failure-v1'});
+            $failure=@{schema=($schemaPrefix+'-outer-failure-v1');
                 original_error_type=$original.Exception.GetType().FullName;original_error=$original.Exception.Message;
                 operation_output=$outputRoot;commit_and_recovery_state='unknown; independent readback required'}
             $failure[$digestField]=$ReleaseSha
@@ -105,7 +114,7 @@ if($Mode -eq 'FailureHold') {
 if($Mode -in @('Hold','Repin','Restore','Verify')) { Assert-Owner }
 # Reject actual changed-path case/reparse drift, accepting equivalent separators.
 $native=ConvertTo-CreHandoffPath $release.roots.native
-foreach($relative in $(if($restoration){@()}else{$release.allowed_paths})) {
+foreach($relative in $(if($restoration){@()}elseif($maintenance){$release.native_change.allowed_paths}else{$release.allowed_paths})) {
     $current=$native
     foreach($part in ($relative -split '/')) {
         if(Test-Path -LiteralPath $current -PathType Container) {
@@ -118,7 +127,7 @@ foreach($relative in $(if($restoration){@()}else{$release.allowed_paths})) {
 }
 $operation=$null
 if($Mode -eq 'Hold' -or ($restoration -and $Mode -eq 'Restore')) {
-    $operation=[ordered]@{schema=$(if($restoration){'cre-code-restoration-mutation-v1'}else{'cre-code-mutation-v1'});
+    $operation=[ordered]@{schema=($schemaPrefix+'-mutation-v1');
         authorization_sha256=(Get-CreHandoffHash ([IO.File]::ReadAllText((ConvertTo-CreHandoffPath $Authorization))));
         operation_output=$outputRoot;tooling=$release.tooling;fleet=@($release.task_baseline);entered_at=[DateTime]::UtcNow.ToString('o')}
     $operation[$digestField]=$ReleaseSha

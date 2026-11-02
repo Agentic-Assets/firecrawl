@@ -332,3 +332,39 @@ an uncertain writer. Exact host paths belong in the context root's ignored `loca
 A code pin can select earlier code; it cannot undo database writes. Treat data repair or
 reversal as a separate reviewed database operation with its own exact-generation evidence and
 approval. Do not describe code rollback as database rollback.
+
+## Held-fleet runtime maintenance
+
+The `--maintenance-packet` selector in `cre_code_handoff.py`, exposed through
+`Invoke-CreCodeHandoff.ps1 -MaintenancePath ... -MaintenanceSha ...`, handles a
+reviewed dependency and image update while the complete three-task fleet is
+already held. It records separate old identities and changed-object scopes for
+the native launcher and Linux runtime; they need not start at the same commit.
+Both advance through ordinary Git ancestry to one selected, tested release.
+
+Prepare and review [source-bound image and configuration evidence](cre-maintenance-image-evidence.md)
+before observation and short-lived authorization. The owned Apply operation
+checks the held task definitions, updates the two checkouts, installs only the
+reviewed collector dependency scope, verifies installed dependencies, and
+recreates only the selected source-built services in the existing native
+Compose project. Credentials, database volumes, resource limits, model routing
+and unrelated services retain their existing contracts. A configuration
+difference refuses the operation; a prepared image alone grants no permission
+to recreate a container.
+
+Apply leaves all tasks disabled. A distinct Postreadback operation must join
+the settled foreground exit, released owner, selected checkouts, full container
+configuration and task definitions before its transition can be consumed by
+the existing restoration procedure. Restoration separately preserves the
+original desired task states and the reviewed missed-trigger policy. An
+uncertain operation must be reconciled; never replay its output directory or
+clear its recovery state manually.
+
+This route admits the retained failed handoff and its already-held fleet. It
+does not yet provide a general dependency/image updater for an enabled fleet.
+The ordinary code-only handoff remains appropriate only when its unchanged
+dependency and container checks pass. For subsequent merged changes, select
+and verify the new release, then use the applicable reviewed handoff under a
+settled task hold. A checkout's code pin is the deployed version, not proof
+that a newer remote main has been delivered. Never pull or rebuild underneath
+an active collection merely to make that pin appear current.
