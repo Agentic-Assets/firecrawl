@@ -8,11 +8,10 @@ acquisition store from `019` belongs in `cre_source_evidence`.
 Apply via `000_run_all.sql` in dependency order:
 `001`→`002`→`003`→`004`→`007`→`008`→`009`→`010`→`011`→`012`→`013`→`014`→`006`→`005`.
 Migrations `015` through `021` are excluded from the generic runner. `021`
-(AGENTIC-5129) is the only definition of `v_cre_market_summary`: its price legs
-read GetCREdata's `credeals.v_cre_listing_structure_current`, so it runs after
-GetCREdata's listing-structure migrations (and their price plausibility
-backfill), psql only with its approval variables, and `005` no longer creates
-the view. `015` is a legacy-only
+(AGENTIC-5129) is the only definition of `v_cre_market_summary`: its legs
+read GetCREdata's structure view and leg gate, so it runs after GetCREdata's
+listing-structure migrations and the lsc-2026.11.1 backfill (its guard checks
+both), psql only with its approval variables; `005` no longer creates it. `015` is a legacy-only
 index rebuild and requires both schema-owner approval and the explicit psql
 variable `CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1`.
 For private evidence, read `../cre_collector/source_evidence/AGENTS.md` and

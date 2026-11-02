@@ -1,15 +1,21 @@
 """Native PostgreSQL contract for 021_cre_market_summary_structure_gate.sql (AGENTIC-5129).
 
 Starts a throwaway local cluster (no network, no Docker), loads minimal
-stand-ins for ``credeals.cre_listings`` and GetCREdata's
-``credeals.v_cre_listing_structure_current``, the live pre-021 view and the
-shape of EQUIRE's ``credeals.get_cre_market_summary(jsonb)`` (RETURNS SETOF the
-view, ``RETURN QUERY SELECT m.*``), then applies 021, its rollback and 021
-again. Skips when no local PostgreSQL server binaries are installed.
+stand-ins for ``credeals.cre_listings``, GetCREdata's
+``credeals.v_cre_listing_structure_current`` and refresh function, the live
+GetCREdata leg gate ``cre_listing_market_evidence_exclusion_v1`` (verbatim copy
+in ``fixtures/``), the live pre-021 view and the shape of EQUIRE's
+``credeals.get_cre_market_summary(jsonb)`` (RETURNS SETOF the view,
+``RETURN QUERY SELECT m.*``), then applies 021, its rollback and 021 again.
+Skips when no local PostgreSQL server binaries are installed, and fails instead
+when FIRECRAWL_REQUIRE_PG=1. On macOS put the PostgreSQL 17 server first on PATH
+(``PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH``): Homebrew's default
+``initdb`` comes from libpq, which has no server.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -27,6 +33,8 @@ READBACK = SQL_DIR / "021_cre_market_summary_structure_gate_readback.sql"
 ROLLBACK = SQL_DIR / "021_cre_market_summary_structure_gate_rollback.sql"
 VIEWS = SQL_DIR / "005_cre_views.sql"
 RUNNER = SQL_DIR / "000_run_all.sql"
+LEG_GATE = Path(__file__).resolve().parent / "fixtures" / "live_cre_listing_market_evidence_exclusion_v1.sql"
+LEG_GATE_LIVE_MD5 = "a7e0b5a8ac36e8bdc513845b7348fcab"
 APPROVAL = {
     "CRE_MARKET_SUMMARY_APPROVE": "1",
     "CRE_MARKET_SUMMARY_OPERATOR": "cayman",
@@ -35,10 +43,21 @@ APPROVAL = {
 }
 ROLLBACK_APPROVAL = {**APPROVAL, "CRE_MARKET_SUMMARY_CONFIRM": "ROLLBACK 021_cre_market_summary_structure_gate"}
 
-BOOTSTRAP = """
+ROLES = """
 do $$ begin
     create role anon nologin; create role authenticated nologin; create role service_role nologin;
 end $$;
+"""
+
+
+def _leg_gate_definition() -> str:
+    text = LEG_GATE.read_text(encoding="utf-8")
+    body = "\n".join(line for line in text.splitlines(keepends=False) if not line.startswith("-- "))
+    return body.strip().removesuffix(";").strip()
+
+
+def _schema(refresh_version: str = "lsc-2026.11.1") -> str:
+    return f"""
 create schema credeals;
 grant usage on schema credeals to service_role;
 create table credeals.cre_listings (
@@ -49,9 +68,24 @@ create table credeals.cre_listings (
     size_sf numeric, occupancy_rate numeric, scraped_at timestamptz default now());
 -- Stand-in for GetCREdata's view: one current row per classified listing.
 create table credeals.v_cre_listing_structure_current (
-    listing_id uuid primary key, is_property_price boolean not null, psf_allowed boolean not null,
-    cap_rate_allowed boolean not null, size_basis text not null);
+    listing_id uuid primary key, classifier_version text not null, review_state text not null,
+    interest_kind text not null, asset_scope text not null, price_basis text not null, size_basis text not null,
+    structure_tags text[] not null, structure_method jsonb not null,
+    is_property_price boolean not null, psf_allowed boolean not null);
 grant select on credeals.cre_listings, credeals.v_cre_listing_structure_current to service_role;
+-- Stand-in for GetCREdata's refresh: 021 reads only its classifier version constant.
+create function credeals.refresh_cre_listing_structure_classifications(
+    p_dry_run boolean default false, p_trigger text default 'manual', p_max_rows integer default null)
+returns jsonb language plpgsql as $fn$
+declare
+    c_classifier_version constant text := '{refresh_version}';
+begin
+    return jsonb_build_object('classifier_version', c_classifier_version);
+end;
+$fn$;
+{_leg_gate_definition()};
+grant execute on function credeals.cre_listing_market_evidence_exclusion_v1(text, text, text, text, text, text, text[], text, text)
+    to service_role;
 -- The live definition read on 2026-11-02 (pg_get_viewdef), before 021.
 create view credeals.v_cre_market_summary with (security_invoker = true) as
 select city, state, property_type,
@@ -89,42 +123,81 @@ def _row(city, state, ptype, tx="sale", price=None, size=None, cap=None, stored_
             "sale_price_per_sf": stored_psf, "structure": structure}
 
 
-PRICE = {"is_property_price": True, "psf_allowed": True, "cap_rate_allowed": True, "size_basis": "building_area"}
-NO_PSF = {**PRICE, "psf_allowed": False}
-WITHHELD = {"is_property_price": False, "psf_allowed": False, "cap_rate_allowed": False, "size_basis": "building_area"}
-LAND = {**PRICE, "size_basis": "land_area"}
+# Structure rows as GetCREdata classifies them (gates consistent with the bases).
+PRICE = {"classifier_version": "lsc-2026.11.1", "review_state": "auto_accepted", "interest_kind": "unstated",
+         "asset_scope": "unstated", "price_basis": "property_price", "size_basis": "building_area", "structure_tags": [],
+         "structure_method": {"price_basis": "no_signal", "size_basis": "no_signal"},
+         "is_property_price": True, "psf_allowed": True}
+NO_SIZE_BASIS = {**PRICE, "size_basis": "unresolved", "psf_allowed": False,
+                 "structure_method": {"price_basis": "no_signal", "size_basis": "rule"}}
+PLACEHOLDER = {**PRICE, "price_basis": "not_applicable", "structure_tags": ["price_withheld"], "is_property_price": False,
+               "psf_allowed": False, "structure_method": {"price_basis": "rule", "size_basis": "no_signal"}}
+NO_PSF = {**PRICE, "size_basis": "not_applicable", "psf_allowed": False}
+UNPRICED = {**PRICE, "price_basis": "not_applicable", "is_property_price": False, "psf_allowed": False}
+LEASED_FEE = {**PRICE, "interest_kind": "leased_fee", "size_basis": "tenant_improvement_area", "psf_allowed": False,
+              "structure_method": {"price_basis": "rule", "size_basis": "rule"}}
+CONDO_UNIT = {**PRICE, "asset_scope": "unit_within_property", "size_basis": "unit_area",
+              "structure_method": {"price_basis": "no_signal", "size_basis": "rule"}}
+LAND = {**PRICE, "size_basis": "land_area", "structure_method": {"price_basis": "no_signal", "size_basis": "source_declared"}}
+REVIEWED_ON_PRIOR = {**PRICE, "classifier_version": "lsc-2026.11.0", "review_state": "reviewed_confirmed"}
 
 ROWS = [
-    # Washington DC "other": the $9.9e37 placeholder (withheld by GetCREdata lsc-2026.11.1),
-    # one banded ratio ($78.43), one ratio outside the band, a priced row with no size,
-    # an unclassified sale row and a lease row.
-    _row("Washington", "DC", "other", price=9.9e37, size=1, stored_psf=9.9e37, structure=WITHHELD),
+    # Washington DC "other" (the live D-8 anchor): the $9.9e37 placeholder, one banded ratio
+    # ($78.43), one ratio outside the band, an unpriced listing's cap rate (counts), a leased-fee
+    # cap rate (excluded), an unclassified sale row and a lease row.
+    _row("Washington", "DC", "other", price=9.9e37, size=1, stored_psf=9.9e37, structure=PLACEHOLDER),
     _row("Washington", "DC", "other", price=1000000, size=12750, cap=0.05, structure=PRICE),
     _row("Washington", "DC", "other", price=5000000, size=100, cap=0.07, structure=PRICE),
-    _row("Washington", "DC", "other", price=2000000, cap=0.50, structure={**PRICE, "cap_rate_allowed": False}),
+    _row("Washington", "DC", "other", cap=0.06, structure=UNPRICED),
+    _row("Washington", "DC", "other", price=2000000, size=1000, cap=0.50, structure=LEASED_FEE),
     _row("Washington", "DC", "other", price=3000000, size=1000, cap=0.09),
     _row("Washington", "DC", "other", tx="lease", size=5000),
     # Islandia NY industrial: one psf_allowed ratio far outside the band, a stored junk ratio.
     _row("Islandia", "NY", "industrial", price=98000000000, size=1858, stored_psf=52742048, structure=PRICE),
-    # Band edges are inclusive: $5 and $3,000 count, $4.99 and $3,000.01 do not; psf_allowed false never counts.
-    # Three banded ratios ($5, $100, $3,000) so the median differs from the mean.
+    # Band edges are inclusive: $5 and $3,000 count, $4.99 and $3,000.01 do not; psf_allowed false never
+    # counts, even where the leg gate admits the row. Exactly three banded ratios ($5, $100, $3,000):
+    # the floor publishes, and median <> mean.
     _row("Austin", "TX", "office", price=50000, size=10000, structure=PRICE),
     _row("Austin", "TX", "office", price=30000000, size=10000, structure=PRICE),
     _row("Austin", "TX", "office", price=1000000, size=10000, structure=PRICE),
     _row("Austin", "TX", "office", price=49900, size=10000, structure=PRICE),
     _row("Austin", "TX", "office", price=30000100, size=10000, structure=PRICE),
-    _row("Austin", "TX", "office", price=1000000, size=1000, structure=NO_PSF),
+    _row("Austin", "TX", "office", price=1000000, size=1000, structure=NO_SIZE_BASIS),
+    _row("Austin", "TX", "office", price=2000000, size=10000, structure=NO_PSF),
+    # Below the floor: two banded ratios and two cap rates publish n and no figure.
+    _row("Boise", "ID", "office", price=1000000, size=10000, cap=0.06, structure=PRICE),
+    _row("Boise", "ID", "office", price=2000000, size=10000, cap=0.07, structure=PRICE),
+    # The leg gate: a condo unit's ratio and a leased-fee cap rate are excluded, the fee-simple rows count.
+    _row("Denver", "CO", "industrial", price=1000000, size=10000, cap=0.05, structure=PRICE),
+    _row("Denver", "CO", "industrial", price=2000000, size=10000, cap=0.06, structure=PRICE),
+    _row("Denver", "CO", "industrial", price=3000000, size=10000, cap=0.07, structure=PRICE),
+    _row("Denver", "CO", "industrial", price=10000000, size=10000, structure=CONDO_UNIT),
+    _row("Denver", "CO", "industrial", price=4000000, size=10000, cap=0.20, structure=LEASED_FEE),
+    # The size leg: the median ignores a 635M SF outlier, and an unresolved size basis is out.
+    _row("Austin", "TX", "retail", tx="lease", size=5000),
+    _row("Austin", "TX", "retail", price=3000000, size=6000, structure=PRICE),
+    _row("Austin", "TX", "retail", price=2000000, size=7000, structure=PRICE),
+    _row("Austin", "TX", "retail", price=2074285, size=635279040, structure=PRICE),
+    _row("Austin", "TX", "retail", price=1500000, size=9999999, structure=NO_SIZE_BASIS),
     # Land band: property_type land, or a land_area size basis on another type.
     _row("Mesa", "AZ", "land", price=100000, size=1000000, structure=LAND),
+    _row("Mesa", "AZ", "land", price=500000, size=1000000, structure=LAND),
+    _row("Mesa", "AZ", "land", price=1000000000, size=1000000, structure=LAND),
     _row("Mesa", "AZ", "land", price=50000, size=1000000, structure=LAND),
+    _row("Mesa", "AZ", "land", price=1000010000, size=1000000, structure=LAND),
     _row("Mesa", "AZ", "retail", price=4000, size=4000, structure=LAND),
+    _row("Mesa", "AZ", "retail", price=8000, size=4000, structure=LAND),
+    _row("Mesa", "AZ", "retail", price=12000, size=4000, structure=LAND),
     _row("Mesa", "AZ", "retail", price=8000000, size=4000, structure=LAND),
-    # On-market predicate: under_contract counts; sold and deleted rows do not.
-    _row("Tulsa", "OK", "retail", price=1000000, size=10000, structure=PRICE),
+    # On-market predicate: under_contract and pending count; sold and deleted rows do not.
+    # A reviewed row left on the prior classifier version does not block the D-8 guard.
+    _row("Tulsa", "OK", "retail", price=1000000, size=10000, structure=REVIEWED_ON_PRIOR),
     _row("Tulsa", "OK", "retail", price=3000000, size=10000, status="under_contract", structure=PRICE),
+    _row("Tulsa", "OK", "retail", price=2000000, size=10000, status="pending", structure=PRICE),
     _row("Tulsa", "OK", "retail", price=9000000, size=10000, status="sold", structure=PRICE),
     _row("Tulsa", "OK", "retail", price=9000000, size=10000, deleted=True, structure=PRICE),
 ]
+MARKETS = 9
 
 COLUMNS_BEFORE = [
     ("city", "text"), ("state", "character(2)"), ("property_type", "text"), ("listing_count", "bigint"),
@@ -132,6 +205,8 @@ COLUMNS_BEFORE = [
     ("avg_price_per_sf", "numeric"), ("median_cap_rate", "numeric"), ("avg_size_sf", "numeric"),
     ("avg_occupancy_rate", "numeric"), ("last_scraped_at", "timestamp with time zone"),
 ]
+COLUMNS_APPENDED = [("median_price_per_sf", "numeric"), ("price_per_sf_n", "bigint"), ("cap_rate_n", "bigint"),
+                    ("median_size_sf", "numeric"), ("size_sf_n", "bigint")]
 
 
 def _has_local_postgres_server() -> bool:
@@ -140,13 +215,23 @@ def _has_local_postgres_server() -> bool:
                 and (Path(initdb).resolve().parent / "postgres").is_file())
 
 
+_NO_SERVER = ("local PostgreSQL server binaries are not installed "
+              "(put /opt/homebrew/opt/postgresql@17/bin first on PATH; libpq's initdb has no server)")
+if os.environ.get("FIRECRAWL_REQUIRE_PG") == "1" and not _has_local_postgres_server():
+    raise RuntimeError(f"FIRECRAWL_REQUIRE_PG=1 but {_NO_SERVER}")
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
 
 
-@unittest.skipUnless(_has_local_postgres_server(), "local PostgreSQL server binaries are not installed")
+def _num(value):
+    return None if value is None else float(value)
+
+
+@unittest.skipUnless(_has_local_postgres_server(), _NO_SERVER)
 class MarketSummaryStructureGateTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -158,7 +243,8 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
         subprocess.run(["pg_ctl", "-D", str(cls.base / "data"), "-w", "-l", str(cls.base / "log"), "-o",
                         f"-c listen_addresses='' -k {cls.base} -p {cls.env['PGPORT']}", "start"],
                        check=True, capture_output=True, env=cls.env)
-        cls.psql(BOOTSTRAP)
+        cls.psql(ROLES)
+        cls.psql(_schema())
         cls._load()
 
     @classmethod
@@ -181,13 +267,13 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
         return result
 
     @classmethod
-    def value(cls, sql: str):
-        out = cls.psql(sql).stdout.strip()
+    def value(cls, sql: str, database: str = "postgres"):
+        out = cls.psql(sql, database=database).stdout.strip()
         return json.loads(out) if out else None
 
     @classmethod
-    def _load(cls) -> None:
-        rows = json.dumps(ROWS)
+    def _load(cls, rows: list[dict] | None = None, database: str = "postgres") -> None:
+        rows = json.dumps(ROWS if rows is None else rows)
         cls.psql(f"""
             insert into credeals.cre_listings (id, city, state, property_type, transaction_type, status, deleted_at,
                                                sale_price_usd, size_sf, cap_rate, sale_price_per_sf)
@@ -196,11 +282,13 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
                    (r->>'size_sf')::numeric, (r->>'cap_rate')::numeric, (r->>'sale_price_per_sf')::numeric
               from jsonb_array_elements($fx${rows}$fx$::jsonb) r;
             insert into credeals.v_cre_listing_structure_current
-            select (r->>'id')::uuid, (s->>'is_property_price')::boolean, (s->>'psf_allowed')::boolean,
-                   (s->>'cap_rate_allowed')::boolean, s->>'size_basis'
+            select (r->>'id')::uuid, s->>'classifier_version', s->>'review_state', s->>'interest_kind',
+                   s->>'asset_scope', s->>'price_basis', s->>'size_basis',
+                   array(select jsonb_array_elements_text(s->'structure_tags')), s->'structure_method',
+                   (s->>'is_property_price')::boolean, (s->>'psf_allowed')::boolean
               from jsonb_array_elements($fx${rows}$fx$::jsonb) r cross join lateral (select r->'structure' as s) x
              where jsonb_typeof(r->'structure') = 'object';
-        """)
+        """, database=database)
 
     def _apply(self, path: Path = MIGRATION, variables: dict | None = None) -> None:
         self.psql(file=path, variables=APPROVAL if variables is None else variables)
@@ -230,34 +318,49 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
                   f"\\i {MIGRATION}\n"
                   "select row_to_json(r) from credeals.get_cre_market_summary('{\"city\": \"Washington\"}'::jsonb) r;\n")
         out = self.psql(script, variables=APPROVAL).stdout.strip().splitlines()
-        self.assertEqual(out[0], "6")
+        self.assertEqual(out[0], str(MARKETS))
         rpc_row = json.loads(out[-1])
-        self.assertEqual(list(rpc_row), [name for name, _ in COLUMNS_BEFORE] + ["median_price_per_sf"])
-        self.assertEqual(self._columns(), COLUMNS_BEFORE + [("median_price_per_sf", "numeric")])
+        self.assertEqual(list(rpc_row), [name for name, _ in COLUMNS_BEFORE + COLUMNS_APPENDED])
+        self.assertEqual(self._columns(), COLUMNS_BEFORE + COLUMNS_APPENDED)
         self._apply()  # re-apply is idempotent
-        self.assertEqual(self._columns(), COLUMNS_BEFORE + [("median_price_per_sf", "numeric")])
+        self.assertEqual(self._columns(), COLUMNS_BEFORE + COLUMNS_APPENDED)
 
-    def test_03_price_legs_read_the_structure_gates(self):
+    def test_03_price_legs_are_the_producer_market_evidence(self):
         dc = self._market("Washington", "other")
-        self.assertEqual((dc["listing_count"], dc["for_sale_count"], dc["for_lease_count"]), (6, 5, 1))
+        self.assertEqual((dc["listing_count"], dc["for_sale_count"], dc["for_lease_count"]), (7, 6, 1))
         self.assertEqual(float(dc["avg_price"]), 2666667)  # 1M, 5M, 2M: no placeholder, no unclassified row
-        self.assertEqual(float(dc["avg_price_per_sf"]), 78.43)
-        self.assertEqual(float(dc["median_price_per_sf"]), 78.43)
-        self.assertEqual(float(dc["median_cap_rate"]), 0.06)  # 0.05 and 0.07; 0.50 is not cap_rate_allowed
+        # One banded ratio: n is published, the figure is not.
+        self.assertEqual((dc["price_per_sf_n"], dc["avg_price_per_sf"], dc["median_price_per_sf"]), (1, None, None))
+        # 0.05, 0.07 and the unpriced listing's 0.06 count; the leased fee 0.50 and the unclassified 0.09 do not.
+        self.assertEqual((dc["cap_rate_n"], _num(dc["median_cap_rate"])), (3, 0.06))
         islandia = self._market("Islandia", "industrial")
-        self.assertIsNone(islandia["avg_price_per_sf"])
-        self.assertIsNone(islandia["median_price_per_sf"])
+        self.assertEqual((islandia["price_per_sf_n"], islandia["median_price_per_sf"]), (0, None))
+        self.assertIsNone(islandia["avg_price"])  # one property price is below the floor
         austin = self._market("Austin", "office")
-        self.assertEqual(float(austin["avg_price_per_sf"]), 1035)  # $5, $100 and $3,000 only
-        self.assertEqual(float(austin["median_price_per_sf"]), 100)
+        self.assertEqual(austin["price_per_sf_n"], 3)  # $5, $100 and $3,000 only
+        self.assertEqual((_num(austin["avg_price_per_sf"]), _num(austin["median_price_per_sf"])), (1035, 100))
+        boise = self._market("Boise", "office")
+        self.assertEqual((boise["price_per_sf_n"], boise["cap_rate_n"]), (2, 2))
+        self.assertEqual((boise["avg_price_per_sf"], boise["median_price_per_sf"], boise["median_cap_rate"]),
+                         (None, None, None))
+        denver = self._market("Denver", "industrial")
+        self.assertEqual((denver["price_per_sf_n"], _num(denver["median_price_per_sf"])), (3, 200))  # no condo unit
+        self.assertEqual((denver["cap_rate_n"], _num(denver["median_cap_rate"])), (3, 0.06))  # no leased fee
         land = self._market("Mesa", "land")
-        self.assertEqual(float(land["avg_price_per_sf"]), 0.10)  # $0.05 is below the land band
+        self.assertEqual((land["price_per_sf_n"], _num(land["median_price_per_sf"])), (3, 0.50))  # $0.05 and $1,000.01 out
         retail_on_land = self._market("Mesa", "retail")
-        # A land_area basis takes the land band on any type: $1/SF counts, $2,000/SF does not.
-        self.assertEqual(float(retail_on_land["avg_price_per_sf"]), 1)
+        # A land_area basis takes the land band on any type: $1, $2 and $3/SF count, $2,000/SF does not.
+        self.assertEqual((retail_on_land["price_per_sf_n"], _num(retail_on_land["median_price_per_sf"])), (3, 2))
         tulsa = self._market("Tulsa", "retail")
-        self.assertEqual(tulsa["listing_count"], 2)
-        self.assertEqual(float(tulsa["median_price_per_sf"]), 200)
+        self.assertEqual(tulsa["listing_count"], 3)
+        self.assertEqual((tulsa["price_per_sf_n"], _num(tulsa["median_price_per_sf"])), (3, 200))
+
+    def test_03b_size_leg_median_ignores_outliers(self):
+        retail = self._market("Austin", "retail")
+        self.assertEqual(retail["size_sf_n"], 4)  # the lease row counts; the unresolved size basis does not
+        self.assertEqual(_num(retail["median_size_sf"]), 6500)
+        self.assertGreater(_num(retail["avg_size_sf"]), 100000000)  # the legacy mean keeps the outlier
+        self.assertEqual(self._market("Boise", "office")["median_size_sf"], None)  # n = 2
 
     def test_04_access_and_readback(self):
         grants = self.value("""select jsonb_build_object(
@@ -267,22 +370,30 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
             'invoker', (select 'security_invoker=true' = any(reloptions) from pg_class
                          where oid = 'credeals.v_cre_market_summary'::regclass));""")
         self.assertEqual(grants, {"anon": False, "authenticated": False, "service_role": True, "invoker": True})
+        self.assertEqual(self.value("set role service_role; select count(*) from credeals.v_cre_market_summary;"), MARKETS)
         readback = self.value(READBACK.read_text(encoding="utf-8"))
-        self.assertTrue(readback["reads_structure"])
-        self.assertEqual(readback["psf_outside_band"], 0)
+        self.assertTrue(readback["reads_structure"] and readback["reads_leg_gate"] and readback["rpc_has_n_columns"])
+        self.assertEqual(readback["medians_below_floor"], 0)
+        self.assertEqual(readback["n_mismatch"], {"price_per_sf": 0, "cap_rate": 0, "size_sf": 0})
         self.assertEqual(readback["rpc_rows"], readback["markets"])
-        self.assertEqual(float(readback["dc_other"]["median_price_per_sf"]), 78.43)
-        self.assertIsNone(readback["islandia_industrial"]["avg_price_per_sf"])
+        self.assertGreater(readback["ratios_outside_band"], 0)
+        self.assertEqual(readback["psf_allowed_but_gated"], 1)  # the condo unit
+        self.assertIsNone(readback["anchors"]["Washington DC other"]["median_price_per_sf"])
+        self.assertEqual(readback["anchors"]["Islandia NY industrial"]["price_per_sf_n"], 0)
+        self.assertEqual(_num(readback["anchors"]["Austin TX retail"]["median_size_sf"]), 6500)
 
     def test_05_rollback_restores_the_prior_values_and_reapply_restores_the_gate(self):
         self._apply(ROLLBACK, ROLLBACK_APPROVAL)
+        self.assertEqual(self._columns(), COLUMNS_BEFORE + COLUMNS_APPENDED)
         dc = self._market("Washington", "other")
         self.assertGreater(float(dc["avg_price"]), 1e36)
-        self.assertIsNone(dc["median_price_per_sf"])
+        for name, _ in COLUMNS_APPENDED:
+            self.assertIsNone(dc[name], name)
         self.assertEqual(float(self._market("Islandia", "industrial")["avg_price_per_sf"]), 52742048)
-        self.assertEqual(self.value("select count(*) from credeals.get_cre_market_summary('{}'::jsonb);"), 6)
+        self.assertEqual(self.value("select count(*) from credeals.get_cre_market_summary('{}'::jsonb);"), MARKETS)
+        self.assertEqual(self._market("Tulsa", "retail")["listing_count"], 1)  # the prior status = 'active' predicate
         self._apply()
-        self.assertEqual(float(self._market("Washington", "other")["median_price_per_sf"]), 78.43)
+        self.assertEqual(self._market("Washington", "other")["cap_rate_n"], 3)
 
     def test_06_refuses_without_the_structure_view(self):
         self.psql("create database bare;")
@@ -290,6 +401,46 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
         result = self.psql(file=MIGRATION, variables=APPROVAL, check=False, database="bare")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("021 needs credeals.v_cre_listing_structure_current", result.stderr)
+
+    def test_07_refuses_before_d8_is_applied_and_backfilled(self):
+        self.psql("create database pre_d8;")
+        self.psql(_schema(refresh_version="lsc-2026.11.0"), database="pre_d8")
+        result = self.psql(file=MIGRATION, variables=APPROVAL, check=False, database="pre_d8")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("the refresh does not name lsc-2026.11.1", result.stderr)
+
+        self.psql("create database mid_backfill;")
+        self.psql(_schema(), database="mid_backfill")
+        pending = {**PRICE, "classifier_version": "lsc-2026.11.0"}
+        self._load([_row("Tulsa", "OK", "retail", price=1000000, size=10000, structure=pending)], database="mid_backfill")
+        result = self.psql(file=MIGRATION, variables=APPROVAL, check=False, database="mid_backfill")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unreviewed current rows remain on an earlier classifier version", result.stderr)
+        self.assertEqual(self.value("select count(*) from pg_attribute where attrelid = "
+                                    "'credeals.v_cre_market_summary'::regclass and attname = 'price_per_sf_n';",
+                                    database="mid_backfill"), 0)
+
+    def test_08_readback_flags_a_figure_published_below_the_floor(self):
+        # A stand-in view with one market per leg publishing a figure from 2 values.
+        self.psql("create database below_floor;")
+        self.psql(_schema(), database="below_floor")
+        self.psql("""
+            drop function credeals.get_cre_market_summary(jsonb);
+            drop view credeals.v_cre_market_summary;
+            create view credeals.v_cre_market_summary with (security_invoker = true) as
+            select v.city, 'TX'::character(2) as state, 'office'::text as property_type, 2::bigint as listing_count,
+                   2::bigint as for_sale_count, 0::bigint as for_lease_count, null::numeric as avg_price,
+                   null::numeric as avg_price_per_sf, v.median_cap_rate, null::numeric as avg_size_sf,
+                   null::numeric as avg_occupancy_rate, now() as last_scraped_at, v.median_price_per_sf,
+                   2::bigint as price_per_sf_n, 2::bigint as cap_rate_n, v.median_size_sf, 2::bigint as size_sf_n
+              from (values ('A', 100::numeric, null::numeric, null::numeric), ('B', null, 0.06, null),
+                           ('C', null, null, 5000)) v(city, median_price_per_sf, median_cap_rate, median_size_sf);
+            create function credeals.get_cre_market_summary(filters jsonb)
+            returns setof credeals.v_cre_market_summary language sql stable as
+            $fn$ select m.* from credeals.v_cre_market_summary m $fn$;
+        """, database="below_floor")
+        readback = self.value(READBACK.read_text(encoding="utf-8"), database="below_floor")
+        self.assertEqual(readback["medians_below_floor"], 3)
 
 
 class MarketSummaryHomeTest(unittest.TestCase):
@@ -302,6 +453,10 @@ class MarketSummaryHomeTest(unittest.TestCase):
         self.assertEqual(len(re.findall(r"create or replace view credeals\.v_cre_market_summary", migration, re.IGNORECASE)), 1)
         view = migration[migration.index("CREATE OR REPLACE VIEW"):migration.index("GROUP BY")]
         self.assertNotIn("sale_price_per_sf", view)  # the stored ratio is never read
+
+    def test_leg_gate_fixture_is_the_live_definition(self):
+        # md5(pg_get_functiondef(...)) on the live project; its output ends with a newline.
+        self.assertEqual(hashlib.md5((_leg_gate_definition() + "\n").encode("utf-8")).hexdigest(), LEG_GATE_LIVE_MD5)
 
 
 if __name__ == "__main__":
