@@ -35,8 +35,9 @@ query them from server-side code or a deliberate API layer.
   - cap rate (`median_cap_rate`, `cap_rate_n`): where the leg gate admits it
     for `'cap_rate'` (no leased fee, condo unit or portfolio rows; an unpriced
     listing's stated cap rate counts);
-  - size (`median_size_sf`, `size_sf_n`): `size_sf` whose size basis is not
-    unresolved;
+  - size (`median_size_sf`, `size_sf_n`): `size_sf` of for-sale listings
+    (`sale`, `sale_or_lease`) on a `building_area`, `portfolio_total_area` or
+    `land_area` basis, so lease available space never mixes in;
   - `avg_price`: property prices only.
   Every average and median is null below 3 values; the `_n` columns say how
   many listings stand behind each figure. The five appended columns come last.

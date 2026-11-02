@@ -19,7 +19,9 @@
 --   cap_rate leg      cap_rate where the same gate admits it for 'cap_rate'
 --                     (AGENTIC-5127: it excludes leased fee, condo units and
 --                     portfolios and keeps an unpriced listing's stated cap rate)
---   size leg          size_sf where the size basis is not unresolved
+--   size leg          size_sf of sale-side listings (sale, sale_or_lease) whose size
+--                     basis is building_area, portfolio_total_area or land_area, so
+--                     lease available space and unit or tenant areas never mix in
 --   avg_price         sale price where is_property_price
 --
 -- Every average and median is null below 3 values, the floor GetCREdata's
@@ -37,8 +39,7 @@
 -- flags (listing-price-per-sf-min-usd and siblings); a flag change does not reach
 -- this view. A row is land when its property_type is land or its size basis is
 -- land_area, as in EQUIRE. A listing with no structure row (not yet classified,
--- or lease-only) adds to the counts, the size leg and occupancy, never to a price
--- leg. avg_size_sf and avg_occupancy_rate are unchanged legacy columns; EQUIRE
+-- or lease-only) adds to the counts and occupancy, never to a price or size leg. avg_size_sf and avg_occupancy_rate are unchanged legacy columns; EQUIRE
 -- reads median_size_sf.
 --
 -- Deviation from the D-20 wording ("cap_rate_allowed"): the cap leg uses the
@@ -163,7 +164,9 @@ WITH legs AS (
                              s.interest_kind, s.asset_scope, s.price_basis, s.size_basis, s.structure_tags,
                              s.structure_method->>'price_basis', s.structure_method->>'size_basis') IS NULL
                 THEN l.cap_rate END AS cap_rate,
-           CASE WHEN l.size_sf > 0 AND s.size_basis IS DISTINCT FROM 'unresolved' THEN l.size_sf END AS market_size_sf
+           CASE WHEN l.size_sf > 0 AND l.transaction_type IN ('sale', 'sale_or_lease')
+                     AND s.size_basis IN ('building_area', 'portfolio_total_area', 'land_area')
+                THEN l.size_sf END AS market_size_sf
       FROM credeals.cre_listings l
       LEFT JOIN credeals.v_cre_listing_structure_current s ON s.listing_id = l.id
      WHERE l.deleted_at IS NULL
@@ -206,7 +209,7 @@ COMMENT ON COLUMN credeals.v_cre_market_summary.avg_size_sf IS 'Legacy: mean of 
 COMMENT ON COLUMN credeals.v_cre_market_summary.median_price_per_sf IS 'Median of the price_per_sf leg; null when price_per_sf_n is below 3. Appended by 021 (AGENTIC-5129).';
 COMMENT ON COLUMN credeals.v_cre_market_summary.price_per_sf_n IS 'Listings in the price_per_sf leg (published at every n). Appended by 021.';
 COMMENT ON COLUMN credeals.v_cre_market_summary.cap_rate_n IS 'Listings in the cap_rate leg (published at every n). Appended by 021.';
-COMMENT ON COLUMN credeals.v_cre_market_summary.median_size_sf IS 'Median size_sf of listings whose size basis is not unresolved (lease listings, which have no structure row, included); null when size_sf_n is below 3. Appended by 021.';
+COMMENT ON COLUMN credeals.v_cre_market_summary.median_size_sf IS 'Median size_sf of for-sale listings (sale, sale_or_lease) on a building_area, portfolio_total_area or land_area basis; lease available space, unit and tenant areas are left out. Null when size_sf_n is below 3. Appended by 021.';
 COMMENT ON COLUMN credeals.v_cre_market_summary.size_sf_n IS 'Listings in the size leg (published at every n). Appended by 021.';
 
 REVOKE ALL ON credeals.v_cre_market_summary FROM PUBLIC;

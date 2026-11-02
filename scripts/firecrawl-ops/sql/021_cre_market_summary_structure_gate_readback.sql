@@ -11,10 +11,14 @@
 --   medians_below_floor  0 (no average or median published below 3 values)
 --   n_mismatch           0 for each leg: the view's n equals an independent count
 --                        from the base rows (leg gate, psf_allowed and band for
---                        $/SF; leg gate for cap rate; size basis for size)
+--                        $/SF; leg gate for cap rate; for-sale building, portfolio
+--                        or land area for size), every market compared, including
+--                        those with a null property type
 --   max_avg_price        under 1,000,000,000 (D-8 removed the placeholders)
 --   anchors              as recorded on the pull request; DC "other" and Islandia
---                        NY industrial have no $/SF median (n 1 and 0)
+--                        NY industrial have no $/SF median (n 1 and 0), and after
+--                        D-8 DC "other" has cap_rate_n 2 and no cap median (its
+--                        low-ratio listing c1f700b1 leaves the cap leg)
 -- Informational: ratios_outside_band and psf_allowed_but_gated count the rows
 -- the band and the leg gate keep out. Before apply the n columns are absent, so
 -- the n checks report null and the anchors show the old values.
@@ -34,7 +38,8 @@ with base as (
                and credeals.cre_listing_market_evidence_exclusion_v1('cap_rate', l.transaction_type,
                        s.interest_kind, s.asset_scope, s.price_basis, s.size_basis, s.structure_tags,
                        s.structure_method->>'price_basis', s.structure_method->>'size_basis') is null as cap_eligible,
-           l.size_sf > 0 and s.size_basis is distinct from 'unresolved' as size_eligible
+           l.size_sf > 0 and l.transaction_type in ('sale', 'sale_or_lease')
+               and s.size_basis in ('building_area', 'portfolio_total_area', 'land_area') as size_eligible
       from credeals.cre_listings l
       left join credeals.v_cre_listing_structure_current s on s.listing_id = l.id
      where l.deleted_at is null
@@ -82,7 +87,8 @@ select jsonb_build_object(
                      'cap_rate', count(*) filter (where (p.j->>'cap_rate_n')::bigint is distinct from e.cap_rate_n),
                      'size_sf', count(*) filter (where (p.j->>'size_sf_n')::bigint is distinct from e.size_sf_n)) end
                    from published p
-                   join expected e using (city, state, property_type)),
+                   join expected e on e.city = p.city and e.state = p.state
+                                  and e.property_type is not distinct from p.property_type),
   'ratios_outside_band', (select sum(ratios_outside_band) from expected),
   'psf_allowed_but_gated', (select sum(psf_allowed_but_gated) from expected),
   'max_avg_price', (select max((j->>'avg_price')::numeric)::text from published),

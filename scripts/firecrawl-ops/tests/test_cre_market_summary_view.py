@@ -173,12 +173,20 @@ ROWS = [
     _row("Denver", "CO", "industrial", price=3000000, size=10000, cap=0.07, structure=PRICE),
     _row("Denver", "CO", "industrial", price=10000000, size=10000, structure=CONDO_UNIT),
     _row("Denver", "CO", "industrial", price=4000000, size=10000, cap=0.20, structure=LEASED_FEE),
-    # The size leg: the median ignores a 635M SF outlier, and an unresolved size basis is out.
+    # The size leg is for-sale building, portfolio or land area only: lease available space, a
+    # tenant improvement area and an unresolved size basis are out, a sale_or_lease row counts,
+    # and the median ignores a 635M SF outlier.
     _row("Austin", "TX", "retail", tx="lease", size=5000),
+    # A lease listing that still carries a structure row (it moved from sale to lease) is out too.
+    _row("Austin", "TX", "retail", tx="lease", size=5500, structure=PRICE),
     _row("Austin", "TX", "retail", price=3000000, size=6000, structure=PRICE),
     _row("Austin", "TX", "retail", price=2000000, size=7000, structure=PRICE),
+    _row("Austin", "TX", "retail", tx="sale_or_lease", price=3000000, size=8000, structure=PRICE),
     _row("Austin", "TX", "retail", price=2074285, size=635279040, structure=PRICE),
     _row("Austin", "TX", "retail", price=1500000, size=9999999, structure=NO_SIZE_BASIS),
+    _row("Austin", "TX", "retail", price=4000000, size=9000, structure=LEASED_FEE),
+    # A market with no property type: the readback must still recount it.
+    _row("Reno", "NV", None, price=1000000, size=10000, cap=0.05, structure=PRICE),
     # Land band: property_type land, or a land_area size basis on another type.
     _row("Mesa", "AZ", "land", price=100000, size=1000000, structure=LAND),
     _row("Mesa", "AZ", "land", price=500000, size=1000000, structure=LAND),
@@ -197,7 +205,7 @@ ROWS = [
     _row("Tulsa", "OK", "retail", price=9000000, size=10000, status="sold", structure=PRICE),
     _row("Tulsa", "OK", "retail", price=9000000, size=10000, deleted=True, structure=PRICE),
 ]
-MARKETS = 9
+MARKETS = 10
 
 COLUMNS_BEFORE = [
     ("city", "text"), ("state", "character(2)"), ("property_type", "text"), ("listing_count", "bigint"),
@@ -357,9 +365,9 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
 
     def test_03b_size_leg_median_ignores_outliers(self):
         retail = self._market("Austin", "retail")
-        self.assertEqual(retail["size_sf_n"], 4)  # the lease row counts; the unresolved size basis does not
-        self.assertEqual(_num(retail["median_size_sf"]), 6500)
-        self.assertGreater(_num(retail["avg_size_sf"]), 100000000)  # the legacy mean keeps the outlier
+        self.assertEqual(retail["size_sf_n"], 4)  # 6,000, 7,000, 8,000 and the outlier; no lease or tenant area
+        self.assertEqual(_num(retail["median_size_sf"]), 7500)
+        self.assertGreater(_num(retail["avg_size_sf"]), 50000000)  # the legacy mean keeps the outlier
         self.assertEqual(self._market("Boise", "office")["median_size_sf"], None)  # n = 2
 
     def test_04_access_and_readback(self):
@@ -380,7 +388,7 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
         self.assertEqual(readback["psf_allowed_but_gated"], 1)  # the condo unit
         self.assertIsNone(readback["anchors"]["Washington DC other"]["median_price_per_sf"])
         self.assertEqual(readback["anchors"]["Islandia NY industrial"]["price_per_sf_n"], 0)
-        self.assertEqual(_num(readback["anchors"]["Austin TX retail"]["median_size_sf"]), 6500)
+        self.assertEqual(_num(readback["anchors"]["Austin TX retail"]["median_size_sf"]), 7500)
 
     def test_05_rollback_restores_the_prior_values_and_reapply_restores_the_gate(self):
         self._apply(ROLLBACK, ROLLBACK_APPROVAL)
@@ -420,27 +428,35 @@ class MarketSummaryStructureGateTest(unittest.TestCase):
                                     "'credeals.v_cre_market_summary'::regclass and attname = 'price_per_sf_n';",
                                     database="mid_backfill"), 0)
 
-    def test_08_readback_flags_a_figure_published_below_the_floor(self):
-        # A stand-in view with one market per leg publishing a figure from 2 values.
+    def test_08_readback_flags_a_figure_below_the_floor_and_a_wrong_count_on_an_untyped_market(self):
+        # A stand-in view: one market per leg publishing a figure from 2 values, and a market with no
+        # property type whose $/SF count (2) disagrees with its three base rows.
         self.psql("create database below_floor;")
         self.psql(_schema(), database="below_floor")
+        self._load([_row("D", "TX", None, price=1000000, size=10000, structure=PRICE) for _ in range(3)],
+                   database="below_floor")
         self.psql("""
             drop function credeals.get_cre_market_summary(jsonb);
             drop view credeals.v_cre_market_summary;
             create view credeals.v_cre_market_summary with (security_invoker = true) as
-            select v.city, 'TX'::character(2) as state, 'office'::text as property_type, 2::bigint as listing_count,
+            select v.city, 'TX'::character(2) as state, v.property_type, 2::bigint as listing_count,
                    2::bigint as for_sale_count, 0::bigint as for_lease_count, null::numeric as avg_price,
                    null::numeric as avg_price_per_sf, v.median_cap_rate, null::numeric as avg_size_sf,
                    null::numeric as avg_occupancy_rate, now() as last_scraped_at, v.median_price_per_sf,
-                   2::bigint as price_per_sf_n, 2::bigint as cap_rate_n, v.median_size_sf, 2::bigint as size_sf_n
-              from (values ('A', 100::numeric, null::numeric, null::numeric), ('B', null, 0.06, null),
-                           ('C', null, null, 5000)) v(city, median_price_per_sf, median_cap_rate, median_size_sf);
+                   v.price_per_sf_n, v.cap_rate_n, v.median_size_sf, v.size_sf_n
+              from (values ('A', 'office', 100::numeric, 2::bigint, null::numeric, 2::bigint, null::numeric, 2::bigint),
+                           ('B', 'office', null, 2, 0.06, 2, null, 2),
+                           ('C', 'office', null, 2, null, 2, 5000, 2),
+                           ('D', null, null, 2, null, 0, null, 3))
+                   v(city, property_type, median_price_per_sf, price_per_sf_n, median_cap_rate, cap_rate_n,
+                     median_size_sf, size_sf_n);
             create function credeals.get_cre_market_summary(filters jsonb)
             returns setof credeals.v_cre_market_summary language sql stable as
             $fn$ select m.* from credeals.v_cre_market_summary m $fn$;
         """, database="below_floor")
         readback = self.value(READBACK.read_text(encoding="utf-8"), database="below_floor")
         self.assertEqual(readback["medians_below_floor"], 3)
+        self.assertEqual(readback["n_mismatch"], {"price_per_sf": 1, "cap_rate": 0, "size_sf": 0})
 
 
 class MarketSummaryHomeTest(unittest.TestCase):
