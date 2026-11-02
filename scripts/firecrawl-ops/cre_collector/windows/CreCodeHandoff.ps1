@@ -2,6 +2,7 @@
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'CreTaskContract.ps1')
 . (Join-Path $PSScriptRoot 'CreRestorationExecution.ps1')
+. (Join-Path $PSScriptRoot 'CreRuntimeMaintenance.ps1')
 
 function Read-CreHandoffJson([string]$Text) {
     $reader=Get-Command 'Microsoft.PowerShell.Utility\ConvertFrom-Json' -CommandType Cmdlet -ErrorAction Stop
@@ -129,7 +130,9 @@ function Get-CreHandoffAdmission($Release,[string]$Output,[string]$Stage='observ
     if(-not ('CreWindowsCapture.Capture' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'CreNativeCapture.cs') }
     $stdout=Join-Path $Output ($Stage+'-windows-admission.stdout.raw')
     $stderr=Join-Path $Output ($Stage+'-windows-admission.stderr.raw')
-    $expectedSha=if($Release.schema -ceq 'cre-code-restoration-v1'){$Release.code.sha}else{$Release.deployed.sha}
+    $expectedSha=if($Release.schema -ceq 'cre-runtime-maintenance-v1') {
+        if($Stage -in @('observe','hold')) {$Release.native_before.sha}else{$Release.new.sha}
+    } elseif($Release.schema -ceq 'cre-code-restoration-v1') {$Release.code.sha}else{$Release.deployed.sha}
     $result=[CreWindowsCapture.Capture]::RunReadOnly((ConvertTo-CreHandoffPath $Release.programs.powershell),
             ([string[]]@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'Invoke-CreGuardedTier.ps1'),'-CheckOnly','-ExpectedSha',$expectedSha)),
         $stdout,$stderr,15000)
@@ -162,6 +165,9 @@ function Get-CreHandoffNativeFrontends {
 }
 
 function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptblock]$AssertOwner,$Operation=$null,[string]$OperationOutput='') {
+    if($Release.schema -ceq 'cre-runtime-maintenance-v1') {
+        return Invoke-CreRuntimeMaintenanceTasks $Release $Mode $Output $AssertOwner $Operation $OperationOutput
+    }
     $restoration=$Release.schema -ceq 'cre-code-restoration-v1'
     $catchup=$restoration -and $Release.enable_boundary -ceq 'founder-approved-catchup-v1'
     $executionSample=$catchup -and $Mode -in @('Verify','Postreadback')
@@ -269,13 +275,15 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     $marker=Read-CreHandoffJson ([IO.File]::ReadAllText((ConvertTo-CreHandoffPath $markerPath)))
     $authPath=ConvertTo-CreHandoffPath $Authorization
     $restoration=$Release.schema -ceq 'cre-code-restoration-v1'
-    if($restoration) {
-        if(Test-Path -LiteralPath (Join-Path $Output 'release-start.json')) {throw 'Restoration release started; failure hold forbidden'}
-        if(-not $AssertOwner) {throw 'Current restoration authority assertion required'}
+    $maintenance=$Release.schema -ceq 'cre-runtime-maintenance-v1'
+    $schemaPrefix=if($restoration){'cre-code-restoration'}elseif($maintenance){'cre-runtime-maintenance'}else{'cre-code'}
+    if(($restoration -or $maintenance) -and (Test-Path -LiteralPath (Join-Path $Output 'release-start.json'))) {throw 'Authority release started; failure hold forbidden'}
+    if($restoration -or $maintenance) {
+        if(-not $AssertOwner) {throw 'Current maintenance or restoration authority assertion required'}
         & $AssertOwner
     }
     $digest=if($restoration){$marker.restoration_sha256}else{$marker.release_sha256}
-    if($marker.schema -cne $(if($restoration){'cre-code-restoration-mutation-v1'}else{'cre-code-mutation-v1'}) -or $digest -cne $ReleaseSha -or
+    if($marker.schema -cne ($schemaPrefix+'-mutation-v1') -or $digest -cne $ReleaseSha -or
        $marker.authorization_sha256 -cne (Get-CreHandoffHash ([IO.File]::ReadAllText($authPath))) -or
        $marker.operation_output -cne (ConvertTo-CreHandoffPath $Output) -or
        $marker.tooling.sha -cne $Release.tooling.sha -or $marker.tooling.tree -cne $Release.tooling.tree) { throw 'Failure hold operation/source binding differs' }
@@ -288,8 +296,8 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     $attempts=@(foreach($row in $rows) {
         $record=[ordered]@{key=$row.key;task_path=$row.task_path;task_name=$row.task_name;disable_attempted=$false;disabled=$false;state=$null;error=$null}
         try {
-            if($restoration) {
-                if(Test-Path -LiteralPath (Join-Path $Output 'release-start.json')) {throw 'Restoration release started; failure hold forbidden'}
+            if(($restoration -or $maintenance) -and (Test-Path -LiteralPath (Join-Path $Output 'release-start.json'))) {throw 'Authority release started; failure hold forbidden'}
+            if($restoration -or $maintenance) {
                 & $AssertOwner
             }
             $record.disable_attempted=$true
@@ -303,7 +311,7 @@ function Invoke-CreHandoffFailureHold($Release,[string]$Output,[string]$ReleaseS
     })
     $frontends=$null;$visibilityError=$null
     try {$frontends=@(Get-CreHandoffNativeFrontends)} catch {$visibilityError=$_.Exception.GetType().FullName}
-    $receipt=[ordered]@{schema=$(if($restoration){'cre-code-restoration-failure-hold-v1'}else{'cre-code-failure-hold-v1'});attempted=$true;tasks=$attempts;does_not_stop_running_owner=$true;
+    $receipt=[ordered]@{schema=($schemaPrefix+'-failure-hold-v1');attempted=$true;tasks=$attempts;does_not_stop_running_owner=$true;
         concurrent_native_frontends=$frontends;visibility_error=$visibilityError;future_hold_stability='not asserted while another frontend/owner may remain';
         recovery_state='not asserted; inspect canonical authority';observed_at=[DateTime]::UtcNow.ToString('o')}
     $receipt[$(if($restoration){'restoration_sha256'}else{'release_sha256'})]=$ReleaseSha

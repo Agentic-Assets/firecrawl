@@ -172,6 +172,8 @@ def restoration_history_inputs(packet):
     """Only the finite failed-attempt/host/task subset, never historical QA."""
     failed = packet["failed_handoff"]
     roles = {"runtime_snapshot", *(row["xml"] for row in packet["task_baseline"])}
+    if "maintenance_transition" in packet:
+        roles.add(packet["maintenance_transition"])
     roles.update(failed[key] for key in (
         "release", "authorization", "observation", "mutation", "held_ready", "commit_ready",
         "failure", "outer_failure", "settlement_seal", "settlement_report", "native_git",
@@ -235,7 +237,8 @@ def validate_reconciliation(receipt, old, new, read, *, retain=None):
         retain.update(pinned.original_payloads)
         retain.update({pinned.inputs[role]["path"]: raw for role, raw in pinned.original.items()})
     source = pinned.obj(packet["failed_handoff"]["release"])
-    require(source["deployed"] == old and packet["code"] == source["selected"] == new
+    require(source["deployed"] == old and packet["code"] == new
+            and ("maintenance_transition" in packet or source["selected"] == new)
             and receipt.get("original_failures") == original_failures(source), "reconciliation lost original failed provenance")
     mutation = json_bytes(payload(receipt["mutation"]))
     ready_raw, terminal_raw, native_raw = (payload(receipt[field]) for field in ("ready", "terminal", "native_completion"))
@@ -308,7 +311,8 @@ def validate_reconciliation(receipt, old, new, read, *, retain=None):
                 and observed[key]["xml_sha256"] == sha(final)
                 and xml_enabled(final) is originals[key]["enabled"]
                 and enabled_xml_contract(final, originals[key]["enabled"])
-                == enabled_xml_contract(pinned.raw(failed_xml[key]["final"]), originals[key]["enabled"]),
+                == enabled_xml_contract(pinned.raw(unique(packet["task_baseline"], "key", TASKS)[key]["xml"]),
+                                        originals[key]["enabled"]),
                 "reconciled complete XML differs beyond original pins/Enabled")
         prior = {field: originals[key][field] for field in TUPLE_FIELDS}
         after = {field: observed[key][field] for field in (*TUPLE_FIELDS, "missed_runs")}

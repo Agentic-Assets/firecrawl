@@ -61,6 +61,10 @@ def load_release(path):
     evidence = Evidence(release, read_file)
     if release.get("schema") == "cre-code-restoration-v1":
         validate_restoration(release, evidence)
+    elif release.get("schema") == "cre-runtime-maintenance-v1":
+        from cre_runtime_maintenance import validate_maintenance_release
+
+        validate_maintenance_release(release, evidence)
     else:
         validate_release(release, evidence)
     release["roots"] = role_paths(release)
@@ -173,7 +177,25 @@ def _clear_authority(checkpoint, lock, *, released=None, independent=False):
         os.close(fd)
 
 
-def assert_owned(checkpoint, lock, expected_pid, *, restoration_inputs=None):
+def validate_owner_command(command, script, *, restoration_inputs=None, maintenance_inputs=None):
+    require(str(script).encode() in command and b"--apply" in command, "foreign maintenance command")
+    selectors = (command.count(b"--release"), command.count(b"--restoration-packet"),
+                 command.count(b"--maintenance-packet"))
+    require(selectors in {(1, 0, 0), (0, 1, 0), (0, 0, 1)}, "maintenance input selector differs")
+    if restoration_inputs is not None or maintenance_inputs is not None:
+        require(not (restoration_inputs is not None and maintenance_inputs is not None), "ambiguous owner scope")
+        expected = restoration_inputs if restoration_inputs is not None else maintenance_inputs
+        require(selectors == ((0, 1, 0) if restoration_inputs is not None else (0, 0, 1)),
+                "maintenance owner command scope differs")
+        for flag, value in expected.items():
+            encoded_flag = flag.encode()
+            require(command.count(encoded_flag) == 1, "owner input missing/duplicate")
+            index = command.index(encoded_flag)
+            require(index + 1 < len(command) and canonical_path(command[index + 1].decode()) == canonical_path(value),
+                    "owner belongs to another operation")
+
+
+def assert_owned(checkpoint, lock, expected_pid, *, restoration_inputs=None, maintenance_inputs=None):
     """Narrow foreign observer using the existing owner/authority readers."""
     from cre_posix import fcntl
     directory = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -198,20 +220,8 @@ def assert_owned(checkpoint, lock, expected_pid, *, restoration_inputs=None):
             fcntl.flock(fd, fcntl.LOCK_UN)
             raise HandoffError("authority is not held")
         command = Path("/proc", str(expected_pid), "cmdline").read_bytes().split(b"\0")
-        require(str(Path(__file__).resolve()).encode() in command and b"--apply" in command,
-                "foreign maintenance command")
-        require((command.count(b"--release"), command.count(b"--restoration-packet")) in {(1, 0), (0, 1)},
-                "maintenance input selector differs")
-        if restoration_inputs is not None:
-            require(command.count(b"--restoration-packet") == 1 and b"--release" not in command,
-                    "restoration owner command scope differs")
-            for flag, value in restoration_inputs.items():
-                encoded_flag = flag.encode()
-                require(command.count(encoded_flag) == 1, "restoration owner input missing/duplicate")
-                index = command.index(encoded_flag)
-                require(index + 1 < len(command)
-                        and canonical_path(command[index + 1].decode()) == canonical_path(value),
-                        "restoration owner belongs to another operation")
+        validate_owner_command(command, Path(__file__).resolve(), restoration_inputs=restoration_inputs,
+                               maintenance_inputs=maintenance_inputs)
         require(checkpoint.SharedLock._authority_fields(fd) == fields
                 and checkpoint.SharedLock._owned_pid(directory) == expected_pid, "ownership changed")
     finally:
@@ -275,7 +285,8 @@ class Foreground:
             root = local_path(self.release["roots"]["runtime"])
             require(local_path(effective_cwd) == root / "scripts/firecrawl-ops/cre_collector", "unexpected effective command cwd")
             command_git = Git(self.release["programs"]["native_git"])
-            identity = self.release["selected"]
+            identity = (self.release["new"] if self.release.get("schema") == "cre-runtime-maintenance-v1"
+                        else self.release["selected"])
             command_git.clean(root, identity, tracking=identity["sha"])
         log = self.output / f"{self.counter:02d}-{name}.log"
         require(not log.exists(), "command output replay")
@@ -312,11 +323,13 @@ class Foreground:
 
     def native(self, mode, release_path, release_sha, observation=None, authorization=None, *, operation=None):
         script = Path(__file__).resolve().parent / "windows/Invoke-CreCodeHandoff.ps1"
+        maintenance = self.release.get("schema") == "cre-runtime-maintenance-v1"
+        restoration = self.release.get("schema") == "cre-code-restoration-v1"
         argv = [str(local_path(self.release["programs"]["powershell"])), "-NoProfile", "-NonInteractive",
                 "-File", windows_path(script), "-Mode", mode,
-                "-RestorationPath" if self.release.get("schema") == "cre-code-restoration-v1" else "-ReleasePath",
+                "-MaintenancePath" if maintenance else "-RestorationPath" if restoration else "-ReleasePath",
                 windows_path(local_path(release_path)),
-                "-RestorationSha" if self.release.get("schema") == "cre-code-restoration-v1" else "-ReleaseSha", release_sha,
+                "-MaintenanceSha" if maintenance else "-RestorationSha" if restoration else "-ReleaseSha", release_sha,
                 "-Output", windows_path(self.output), "-OwnerPid", str(os.getpid())]
         if observation:
             argv += ["-Observation", windows_path(local_path(observation))]
@@ -732,6 +745,7 @@ def main(argv=None):
     input_kind = parser.add_mutually_exclusive_group(required=True)
     input_kind.add_argument("--release")
     input_kind.add_argument("--restoration-packet")
+    input_kind.add_argument("--maintenance-packet")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--observe", action="store_true")
     mode.add_argument("--authorize", action="store_true")
@@ -749,16 +763,33 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.restoration_packet:
         args.release = args.restoration_packet
+    if args.maintenance_packet:
+        args.release = args.maintenance_packet
     raw, release, evidence = load_release(args.release)
     restoration = release.get("schema") == "cre-code-restoration-v1"
+    maintenance = release.get("schema") == "cre-runtime-maintenance-v1"
     require(restoration is bool(args.restoration_packet), "explicit input selector/schema differs")
+    require(maintenance is bool(args.maintenance_packet), "explicit maintenance selector/schema differs")
     if not any((args.observe, args.authorize, args.apply, args.postreadback, args.assert_owned_pid, args.check_authorization)):
         print(json.dumps({"preview_only": True, "execution": False,
-                          "code" if restoration else "selected": release["code"] if restoration else release["selected"],
+                          "code" if restoration else "selected": release["code"] if restoration else release["new"] if maintenance else release["selected"],
                           "restoration_sha256" if restoration else "release_sha256": sha(raw)}))
         return 0
     if args.check_authorization:
         require(args.observation and args.authorization, "explicit admission inputs required")
+        if maintenance:
+            from cre_runtime_maintenance import validate_maintenance_authorization
+
+            require(args.output, "maintenance operation output required")
+            observed_raw = read_file(args.observation)
+            authorization_raw = read_file(args.authorization)
+            validate_maintenance_authorization(raw, release, evidence, observed_raw,
+                                               json_bytes(authorization_raw), now(),
+                                               output=args.output, review_reader=read_file)
+            require(read_file(args.release) == raw and read_file(args.observation) == observed_raw
+                    and read_file(args.authorization) == authorization_raw,
+                    "maintenance authorization boundary inputs changed")
+            return 0
         validator = validate_restoration_authorization if restoration else validate_authorization
         validator(raw, release, evidence, read_file(args.observation),
                   json_bytes(read_file(args.authorization)), now(), review_reader=read_file)
@@ -770,13 +801,24 @@ def main(argv=None):
     if args.authorize:
         require(all((args.observation, args.authorization, args.review, args.reviewer, args.approval_ref, args.output)),
                 "explicit observation/output/review/reviewer/approval reference required")
+        if maintenance:
+            from cre_runtime_maintenance import authorize_maintenance
+
+            authorize_maintenance(args, raw, release, evidence)
+            return 0
         authorize(args, raw, release, evidence)
         return 0
     git = Git(release["programs"]["native_git"])
     modules = runtime_modules(release, git)
     if args.assert_owned_pid:
         lock = modules[0].canonical_shared_lock_dir(local_path(release["roots"]["runtime"]))
-        if restoration:
+        if maintenance:
+            require(args.output and args.authorization and args.observation, "maintenance owner operation inputs required")
+            assert_owned(modules[0], lock, args.assert_owned_pid, maintenance_inputs={
+                "--maintenance-packet": args.release, "--output": args.output,
+                "--authorization": args.authorization, "--observation": args.observation,
+            })
+        elif restoration:
             require(args.output and args.authorization and args.observation, "restoration owner operation inputs required")
             assert_owned(modules[0], lock, args.assert_owned_pid, restoration_inputs={
                 "--restoration-packet": args.release, "--output": args.output,
@@ -786,6 +828,23 @@ def main(argv=None):
             assert_owned(modules[0], lock, args.assert_owned_pid)
         return 0
     require(args.output, "exclusive output directory required")
+    if maintenance and args.observe:
+        from cre_runtime_maintenance import observe_maintenance
+
+        observe_maintenance(args, raw, release, evidence, git, modules)
+        return 0
+    if maintenance and args.postreadback:
+        from cre_runtime_maintenance import postreadback_maintenance
+
+        postreadback_maintenance(args, raw, release, evidence, git, modules)
+        return 0
+    if maintenance and args.apply:
+        from cre_runtime_maintenance import apply_maintenance
+
+        require(args.observation and args.authorization, "explicit maintenance admission required")
+        apply_maintenance(args, raw, release, evidence, git, modules)
+        return 0
+    require(not maintenance, "maintenance operation is not implemented")
     if args.apply:
         require(args.observation and args.authorization, "explicit admission required")
         if restoration:

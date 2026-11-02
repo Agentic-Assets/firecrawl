@@ -147,10 +147,12 @@ namespace CreWindowsCapture {
         public static bool BadEof;
         public static string MutationMarkerPath;
         public static string MutationMarkerJson;
+        public static string ReleaseStartPath;
         public static CaptureResult Run(string exe,string[] args,string output,string error,string prefix) {
             if(exe!="wsl.exe")throw new Exception("Unexpected executable");
             File.WriteAllText(output,"mocked native adapter only");File.WriteAllText(error,"");
             if(!String.IsNullOrEmpty(MutationMarkerPath)) { Directory.CreateDirectory(Path.GetDirectoryName(MutationMarkerPath));File.WriteAllText(MutationMarkerPath,MutationMarkerJson); }
+            if(!String.IsNullOrEmpty(ReleaseStartPath)) { File.WriteAllText(ReleaseStartPath,"{}"); }
             if(ThrowAfterStart)throw new Exception("injected post-start capture exception");
             CaptureResult result=new CaptureResult();result.Stdout.Eof=!BadEof;return result;
         }
@@ -268,6 +270,61 @@ namespace CreWindowsCapture {
     Refuses {& $frontdoor -Mode Hold -OwnerPid 123 -ReleasePath $frontdoorRelease -ReleaseSha $releaseHash -Output $receiptFailure -Observation $path -Authorization $authPath} 'Native receipt failure after function return must propagate' 'native-hold.json'
     Assert-Fixture (Test-Path -LiteralPath (Join-Path $receiptFailure 'mutation-start.json')) 'Mutation provenance must survive native receipt failure'
     Assert-Fixture (@($fixture.fleet.Values|Where-Object {$_.enabled}).Count -eq 0) 'Native receipt failure must leave exact fleet held for enclosing Linux cleanup'
+    # The maintenance selector uses the same actual native capture boundary;
+    # its mocked Linux child never starts WSL or contacts Task Scheduler.
+    $maintenance=Read-CreHandoffJson $wire
+    $maintenance.schema='cre-runtime-maintenance-v1'
+    $maintenance|Add-Member -NotePropertyName old -NotePropertyValue @{sha=$old} -Force
+    $maintenance|Add-Member -NotePropertyName new -NotePropertyValue @{sha=$new} -Force
+    $maintenance|Add-Member -NotePropertyName native_before -NotePropertyValue @{sha=$new} -Force
+    foreach($row in $maintenance.task_baseline) {
+        $row.enabled=$false
+        $heldXml=Set-CreHandoffEnabledXml $xml $false
+        $heldPath=Join-Path $root ($row.key+'-maintenance-baseline.xml')
+        [IO.File]::WriteAllText($heldPath,$heldXml,[Text.UTF8Encoding]::new($false))
+        $pin=@($maintenance.inputs|Where-Object {$_.role -ceq $row.xml})[0]
+        $pin.path=$heldPath;$pin.sha256=Get-CreHandoffHash $heldXml;$pin.bytes=([Text.UTF8Encoding]::new($false).GetByteCount($heldXml))
+        $fixture.fleet[$row.task_name].xml=$heldXml;$fixture.fleet[$row.task_name].enabled=$false;$fixture.fleet[$row.task_name].state='Disabled'
+    }
+    $maintenance.PSObject.Properties.Remove('allowed_paths')
+    $maintenance|Add-Member -NotePropertyName native_change -NotePropertyValue @{allowed_paths=@('scripts/firecrawl-ops/cre_collector/fixture.py')}
+    $maintenanceWire=$maintenance|ConvertTo-Json -Depth 15
+    $maintenancePath=Join-Path $root 'maintenance-packet.json'
+    [IO.File]::WriteAllText($maintenancePath,$maintenanceWire,[Text.UTF8Encoding]::new($false))
+    $maintenanceHash=Get-CreHandoffHash $maintenanceWire
+    function New-Object {param($ComObject);if($ComObject -ceq 'Schedule.Service'){throw 'Fixture maintenance COM boundary reached'};throw 'Unexpected object construction in fixture'}
+    $maintenanceObserve=Join-Path $root 'maintenance-schema-observe';[void][IO.Directory]::CreateDirectory($maintenanceObserve)
+    Refuses {& $frontdoor -Mode Observe -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceObserve} 'Schema-shaped maintenance Observe must reach the mocked host boundary' 'Fixture maintenance COM boundary reached'
+    $maintenanceSuccess=Join-Path $root 'maintenance-native-complete'
+    & $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceSuccess -Observation $path -Authorization $authPath
+    $maintenanceCompletion=Read-CreHandoffJson ([IO.File]::ReadAllText($maintenanceSuccess+'.native.json'))
+    Assert-Fixture ($maintenanceCompletion.schema -ceq 'cre-runtime-maintenance-native-completion-v1' -and $maintenanceCompletion.release_sha256 -ceq $maintenanceHash) 'Maintenance capture must bind its distinct schema and exact packet'
+    $maintenanceEof=Join-Path $root 'maintenance-native-eof'
+    $maintenanceMarker=@{schema='cre-runtime-maintenance-mutation-v1';release_sha256=$maintenanceHash;authorization_sha256=(Get-CreHandoffHash '{}');operation_output=(ConvertTo-CreHandoffPath $maintenanceEof);tooling=$maintenance.tooling;fleet=@($maintenance.task_baseline)}
+    [CreWindowsCapture.Capture]::MutationMarkerPath=Join-Path $maintenanceEof 'mutation-start.json'
+    [CreWindowsCapture.Capture]::MutationMarkerJson=$maintenanceMarker|ConvertTo-Json -Depth 15
+    [CreWindowsCapture.Capture]::BadEof=$true
+    $beforeMaintenanceFailure=$fixture.disableCalls
+    Refuses {& $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceEof -Observation $path -Authorization $authPath} 'Maintenance EOF uncertainty must refuse' 'Native foreground exit/drain uncertain'
+    Assert-Fixture ($fixture.disableCalls -eq $beforeMaintenanceFailure) 'Maintenance native EOF without current authority must not mutate tasks'
+    Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $maintenanceEof 'outer-failure-hold.json'))) 'Maintenance outer capture failure must retain uncertainty without an ownerless hold'
+    Refuses {Invoke-CreHandoffFailureHold $maintenance $maintenanceEof $maintenanceHash $authPath} 'Maintenance cleanup without current authority must refuse' 'authority assertion required'
+    $ownedMaintenanceCleanup=Invoke-CreHandoffFailureHold $maintenance $maintenanceEof $maintenanceHash $authPath -AssertOwner {$fixture.owners++}
+    Assert-Fixture ($fixture.disableCalls -eq $beforeMaintenanceFailure+3 -and $ownedMaintenanceCleanup.schema -ceq 'cre-runtime-maintenance-failure-hold-v1') 'Current owned maintenance cleanup must retain its scoped hold and distinct provenance'
+    $maintenanceReleased=Join-Path $root 'maintenance-native-released-eof'
+    $maintenanceMarker.operation_output=ConvertTo-CreHandoffPath $maintenanceReleased
+    [CreWindowsCapture.Capture]::MutationMarkerPath=Join-Path $maintenanceReleased 'mutation-start.json'
+    [CreWindowsCapture.Capture]::MutationMarkerJson=$maintenanceMarker|ConvertTo-Json -Depth 15
+    [CreWindowsCapture.Capture]::ReleaseStartPath=Join-Path $maintenanceReleased 'release-start.json'
+    $beforeReleasedFailure=$fixture.disableCalls
+    Refuses {& $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceReleased -Observation $path -Authorization $authPath} 'Maintenance post-release EOF must preserve its original error' 'Native foreground exit/drain uncertain'
+    Assert-Fixture ($fixture.disableCalls -eq $beforeReleasedFailure) 'Maintenance post-release EOF must not mutate tasks after authority release begins'
+    Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $maintenanceReleased 'outer-failure-hold.json'))) 'Maintenance post-release EOF must publish only its failure receipt'
+    Refuses {Invoke-CreHandoffFailureHold $maintenance $maintenanceReleased $maintenanceHash $authPath} 'Direct maintenance cleanup must refuse after release starts' 'release started; failure hold forbidden'
+    [CreWindowsCapture.Capture]::BadEof=$false
+    [CreWindowsCapture.Capture]::MutationMarkerPath=''
+    [CreWindowsCapture.Capture]::ReleaseStartPath=''
+    Refuses {& $frontdoor -Mode Restore -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output (Join-Path $root 'forbidden-enable')} 'Maintenance must never enter restoration' 'Maintenance cannot enable'
 } finally {
     # Only the exclusively created fixture directory is removed.
     if([IO.Path]::GetFullPath($root).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase)) {Remove-Item -LiteralPath $root -Recurse -Force}
