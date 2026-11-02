@@ -1351,9 +1351,15 @@ def _run_psql_script(psql, db_url, script, *, variables=None):
             script_path.unlink(missing_ok=True)
 
 
+# Backslashes in string literals (the document boilerplate regexes in child_counts) are literal
+# only with standard_conforming_strings on, so every read-only validation transaction pins it.
+PIN_STRING_LITERALS = "SET LOCAL standard_conforming_strings = on;"
+
+
 def run_query(psql, db_url, sql):
     wrapped = (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+        f"{PIN_STRING_LITERALS}\n"
         f"{sql}\n"
         "ROLLBACK;\n"
     )
@@ -1592,6 +1598,7 @@ def _build_query_batch_script(queries):
     statements = [
         r"\o :CRE_VALIDATION_RESULTS",
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;",
+        PIN_STRING_LITERALS,
     ]
     for ordinal, (name, sql) in enumerate(queries.items()):
         frame_id = _query_frame_id(ordinal, name)

@@ -661,6 +661,37 @@ def test_run_query_wraps_sql_in_repeatable_read_only_transaction(monkeypatch):
     assert not captured["script_path"].exists()
 
 
+PIN = "SET LOCAL standard_conforming_strings = on;"
+
+
+def test_run_query_pins_standard_conforming_strings_right_after_begin(monkeypatch):
+    """child_counts carries backslash regexes; both wrappers must make them literal."""
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["script"] = Path(argv[argv.index("-f") + 1]).read_text()
+        return _FakeProc(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    run_query("psql", "postgres://SENTINEL", QUERIES["child_counts"])
+    script = captured["script"]
+    begin = "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+    assert script.startswith(begin + PIN + "\n")
+    assert script.count(PIN) == 1
+    assert script.index(PIN) < script.index("SELECT")
+
+
+def test_query_batch_pins_standard_conforming_strings_right_after_begin():
+    script = cre_validate._build_query_batch_script(
+        {"first": "SELECT 1;", "child_counts": QUERIES["child_counts"]}
+    )
+    begin = "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+    assert begin + PIN + "\n" in script
+    assert script.count(PIN) == 1
+    assert script.index(PIN) < script.index("SELECT 1;")
+    assert script.index(PIN) < script.index(QUERIES["child_counts"])
+
+
 def test_run_query_sql_content_inside_wrapper(monkeypatch):
     """The original SQL appears between BEGIN READ ONLY and ROLLBACK."""
     captured = {}

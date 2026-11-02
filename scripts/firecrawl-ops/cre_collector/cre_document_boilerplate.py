@@ -15,9 +15,18 @@ This is the host-scoped subset of the collector rule list; the any-host shapes (
 would not belong in a count exclusion. Hosts and path patterns are the strings in
 ``tests/fixtures/document_boilerplate_rules.json``, which ``lib/document-boilerplate.ts``,
 this module and ``tests/run_document_boilerplate_guard_postgres_contract.py`` are all tested
-against. Stored URLs are already canonical, so the SQL matches the host and the path plus
-query of the stored URL; the percent-decoding spellings that the TypeScript filter also
-resolves cannot occur there.
+against.
+
+The SQL reads the URL as stored: a case-insensitive scheme, the lower-cased host (any trailing
+dots allowed) and the raw path plus query, with no other normalization. It is not the
+TypeScript filter, which normalizes first (repeated slashes, ``;params``, percent-encoded or
+backslash separators, dot segments, a trailing slash, userinfo). So it matches a few shapes
+the TypeScript keeps (an index URL such as ``/services/``, a dot segment under a denied prefix)
+and misses spellings only the TypeScript resolves. The fixture's ``spellings`` record the
+expected verdict of each side for every such URL, so any divergence is explicit and tested
+on the TypeScript, Python and PostgreSQL sides. The corpus checked for AGENTIC-5143 holds only
+lowercase ``https://``, single-slash, prefix-plus-file URLs for these hosts, which both sides
+read the same way.
 
 Pure and stdlib-only, so ``cre_ingest`` and ``cre_validate`` can both import it.
 """
@@ -51,9 +60,11 @@ DOCUMENT_BOILERPLATE_RULES: Tuple[BoilerplateRule, ...] = (
     BoilerplateRule("transwestern_aetna_transparency", ("health1.aetna.com",), ()),
 )
 
-# The stored URL's host (without userinfo or port) and its path plus query (no fragment).
-URL_HOST_RE = r"^https?://(?:[^/?#@]*@)?([^/?#:]*)"
-URL_PATH_RE = r"^https?://[^/?#]*([^#]*)"
+# Host (after any userinfo, before the port) and path plus query (no fragment) of the URL as stored.
+# The scheme is matched case-insensitively with character classes, which mean the same in
+# Python ``re`` and in PostgreSQL ARE (no embedded flag needed).
+URL_HOST_RE = r"^[hH][tT][tT][pP][sS]?://(?:[^/?#@]*@)?([^/?#:]*)"
+URL_PATH_RE = r"^[hH][tT][tT][pP][sS]?://[^/?#]*([^#]*)"
 
 
 def host_regex(rule: BoilerplateRule) -> str:
@@ -86,7 +97,8 @@ def matches_boilerplate_url(url: str) -> bool:
 def document_boilerplate_sql(url_expr: str) -> str:
     """A NULL-safe boolean SQL expression: true when ``url_expr`` is a host-scoped boilerplate URL.
 
-    Emitted inside ``set standard_conforming_strings = on`` SQL, so backslashes are literal.
+    Emitted only inside transactions that ``SET LOCAL standard_conforming_strings = on``
+    (``cre_ingest.build_sql`` and both ``cre_validate`` read-only wrappers), so backslashes are literal.
     """
     host = f"lower(substring({url_expr} from {sql_literal(URL_HOST_RE)}))"
     path = f"substring({url_expr} from {sql_literal(URL_PATH_RE)})"

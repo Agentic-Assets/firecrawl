@@ -172,7 +172,7 @@ and resolve confirmed findings before shipping.
 | `source_evidence/` | Private append-only capture planning, admitted append and text search; no canonical listing, lifecycle, normalized fact or OM-fact writes |
 | `document_text/` | Pinned local AnyDoc adapter with explicit extraction/OCR-needed/failure artifacts; no automatic download or hosted upload |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
-| `cre_document_boilerplate.py` | Host-scoped site-boilerplate rules as one SQL predicate; `cre_ingest.py` and `cre_validate.py` leave matching documents out of the child-loss `documents` count. Mirrors `lib/document-boilerplate.ts` through `tests/fixtures/document_boilerplate_rules.json`; PG17 proof in `tests/run_document_boilerplate_guard_postgres_contract.py` |
+| `cre_document_boilerplate.py` | Host-scoped site-boilerplate rules as one SQL predicate; `cre_ingest.py` and `cre_validate.py` leave matching documents out of the child-loss `documents` count. Mirrors `lib/document-boilerplate.ts` through `tests/fixtures/document_boilerplate_rules.json` (which records where the two read a URL differently: the SQL does not normalize); PG17 proof in `tests/run_document_boilerplate_guard_postgres_contract.py` |
 | `cre_image_transition_log.py` | Shared stable-file/hash mechanics for post-commit image receipts; no source qualification policy |
 | `cre_colliers_image_transition.py` | Existing Colliers-main seven-field-bound image receipt and source-specific qualification |
 | `cre_transwestern_image_roles.py` | Validate Transwestern raw role evidence against final staged images |

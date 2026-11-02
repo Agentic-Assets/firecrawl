@@ -58,6 +58,25 @@ def test_predicate_does_not_match_kept_urls(url):
     assert not boilerplate.matches_boilerplate_url(url), url
 
 
+@pytest.mark.parametrize("entry", FIXTURE["spellings"], ids=lambda entry: entry["url"])
+def test_predicate_gives_the_sql_verdict_the_fixture_records_for_each_spelling(entry):
+    """The SQL reads the URL as stored; where it differs from the TypeScript filter, the fixture says so."""
+    assert boilerplate.matches_boilerplate_url(entry["url"]) is entry["sql"], entry["url"]
+
+
+def test_every_divergent_spelling_is_tagged_and_both_directions_are_recorded():
+    divergent = [entry for entry in FIXTURE["spellings"] if entry["ts"] != entry["sql"]]
+    assert divergent and all(entry.get("why") for entry in divergent)
+    assert any(entry["sql"] and not entry["ts"] for entry in divergent), "SQL matches more than TypeScript"
+    assert any(entry["ts"] and not entry["sql"] for entry in divergent), "TypeScript matches more than SQL"
+
+
+def test_scheme_match_is_case_insensitive():
+    assert boilerplate.matches_boilerplate_url("HTTPS://transwestern.com/Upload/TREC/x.pdf")
+    assert boilerplate.matches_boilerplate_url("HtTp://www.jll.com/en-us/services/financing/debt-advisory")
+    assert not boilerplate.matches_boilerplate_url("ftp://transwestern.com/Upload/TREC/x.pdf")
+
+
 def test_generated_sql_embeds_the_same_strings_the_emulation_uses():
     sql = boilerplate.document_boilerplate_sql("d.url")
     assert boilerplate.sql_literal(boilerplate.URL_HOST_RE) in sql

@@ -217,7 +217,8 @@ def main():
         sql(schema)
 
         # 1. The SQL predicate itself, in PostgreSQL, against the shared fixture and the Python emulation.
-        urls = [*fixture["denied"], *fixture["kept"], *fixture["tsOnlyDenied"]]
+        spellings = {entry["url"]: entry["sql"] for entry in fixture["spellings"]}
+        urls = [*fixture["denied"], *fixture["kept"], *spellings]
         values = ",".join(f"({ingest.sql_lit(url)})" for url in urls)
         evaluated = dict(line.rsplit("|", 1) for line in sql(
             f"SELECT u.url || '|' || ({boilerplate.document_boilerplate_sql('u.url')})::text FROM (VALUES {values}) AS u(url);"
@@ -227,13 +228,16 @@ def main():
             assert evaluated[url] == "true", ("denied URL not matched by PostgreSQL", url)
         for url in fixture["kept"]:
             assert evaluated[url] == "false", ("kept URL matched by PostgreSQL", url)
+        for url, expected in spellings.items():
+            assert (evaluated[url] == "true") is expected, ("PostgreSQL verdict differs from the fixture's sql verdict", url)
         for url in urls:
             assert (evaluated[url] == "true") == boilerplate.matches_boilerplate_url(url), ("PostgreSQL and Python disagree", url)
         null_row = sql(f"SELECT ({boilerplate.document_boilerplate_sql('NULL::text')})::text;").stdout.strip()
         assert null_row == "false"
         checks.append({"case": "predicate_in_postgresql_matches_fixture_and_python",
                        "denied": len(fixture["denied"]), "kept": len(fixture["kept"]),
-                       "ts_only_spellings_compared_with_python": len(fixture["tsOnlyDenied"]),
+                       "spellings_with_recorded_sql_verdict": len(spellings),
+                       "spellings_where_sql_and_ts_differ": sum(1 for entry in fixture["spellings"] if entry["ts"] != entry["sql"]),
                        "null_url_is_false": True})
 
         # 2. The writer, with the exclusion on and off.

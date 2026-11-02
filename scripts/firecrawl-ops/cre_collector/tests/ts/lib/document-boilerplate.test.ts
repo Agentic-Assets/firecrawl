@@ -133,7 +133,7 @@ const parity = JSON.parse(
   rules: Array<{ name: string; origin: string; hosts: string[]; pathPatterns: string[] }>;
   denied: string[];
   kept: string[];
-  tsOnlyDenied: string[];
+  spellings: Array<{ url: string; ts: boolean; sql: boolean; why?: string }>;
 };
 
 test("the rule list is exactly the parity fixture's rules, in order", () => {
@@ -156,7 +156,17 @@ test("the parity fixture stamps the GetCREdata commit and names which rows are m
   assert.ok(parity.rules.every((rule) => rule.origin === "getcredata" || rule.origin === "collector"));
 });
 
-test("the parity fixture's URLs match the rule list: denied and spelled-differently URLs are boilerplate, kept URLs are not", () => {
-  for (const url of [...parity.denied, ...parity.tsOnlyDenied]) assert.equal(isBoilerplateDocumentUrl(url), true, url);
+test("the parity fixture's URLs match the rule list: denied URLs are boilerplate, kept URLs are not", () => {
+  for (const url of parity.denied) assert.equal(isBoilerplateDocumentUrl(url), true, url);
   for (const url of parity.kept) assert.equal(isBoilerplateDocumentUrl(url), false, url);
+});
+
+// The SQL predicate reads the URL as stored; this filter normalizes first. Each fixture spelling
+// carries both verdicts, so a divergence between the two is explicit and tested on both sides
+// (the SQL verdict is asserted in tests/test_document_boilerplate_parity.py and on PostgreSQL).
+test("the parity fixture's spellings get the TypeScript verdict the fixture records", () => {
+  for (const { url, ts } of parity.spellings) assert.equal(isBoilerplateDocumentUrl(url), ts, url);
+  const divergent = parity.spellings.filter((entry) => entry.ts !== entry.sql);
+  assert.ok(divergent.length > 0 && divergent.every((entry) => entry.why), "every divergence is tagged");
+  assert.ok(parity.spellings.some((entry) => entry.ts && entry.sql), "agreeing spellings are recorded too");
 });
