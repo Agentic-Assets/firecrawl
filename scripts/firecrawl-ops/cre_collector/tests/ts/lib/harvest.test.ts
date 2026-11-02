@@ -469,3 +469,56 @@ for (const ingress of ["structured images", "rawHtml fallback", "extraImages"] a
     assert.equal(out.media[0]?.url, "https://vimeo.com/824804225");
   });
 }
+
+// ---------------------------------------------------------------------------
+// AGENTIC-5143: site boilerplate never becomes a document, whichever input path
+// carries it, and is dropped rather than demoted to a link. Real documents on the
+// same page and the same hosts are kept.
+// ---------------------------------------------------------------------------
+
+const BOILERPLATE_LINKS = [
+  "https://transwestern.com/Upload/TREC/TREC-H-A-SA.pdf",
+  "https://transwestern.com/Upload/TREC/CN%201-2.pdf",
+  "https://transwestern.com/Upload/TREC/TREC-FW-D.pdf",
+  "https://transwestern.com/service/structured-finance",
+  "https://www.jll.com/en-us/services/financing/debt-advisory",
+];
+const REAL_DOCS = [
+  "https://i.transwestern.com/00000000-0000-4000-8000-000000000000/offering-memorandum.pdf",
+  "https://cdn.jll.com/assets/marketing-brochure.pdf",
+  "https://transwestern.com/property/sample-property/flyer.pdf",
+];
+
+test("boilerplate page links are dropped from documents and not demoted to links; real documents kept", () => {
+  const out = harvestDetail(doc({ links: [...BOILERPLATE_LINKS, ...REAL_DOCS] }));
+  assert.deepEqual(out.documents.map((d) => d.url).sort(), [...REAL_DOCS].sort());
+  assert.deepEqual(out.links, []);
+});
+
+test("boilerplate arriving through the structured attributes path is dropped", () => {
+  const attributes: AttrBlock[] = [
+    { selector: "a", attribute: "href", values: [...BOILERPLATE_LINKS, ...REAL_DOCS] },
+  ];
+  const out = harvestDetail(doc({ attributes }));
+  assert.deepEqual(out.documents.map((d) => d.url).sort(), [...REAL_DOCS].sort());
+  assert.deepEqual(out.links, []);
+});
+
+test("boilerplate promoted through ctx.extraDocs (bare string or typed item) is dropped", () => {
+  const typed: DocItem[] = BOILERPLATE_LINKS.map((url) => ({ url, title: "Notice", docType: "financials" }));
+  const out = harvestDetail(doc({}), { extraDocs: [...BOILERPLATE_LINKS, ...typed, ...REAL_DOCS] });
+  assert.deepEqual(out.documents.map((d) => d.url).sort(), [...REAL_DOCS].sort());
+});
+
+test("a relative boilerplate path resolves against baseUrl before the rule applies", () => {
+  const out = harvestDetail(doc({ links: ["/Upload/TREC/TREC-H-A-SA.pdf", "/flyers/sample.pdf"] }), {
+    baseUrl: "https://transwestern.com/property/sample-property",
+  });
+  assert.deepEqual(out.documents.map((d) => d.url), ["https://transwestern.com/flyers/sample.pdf"]);
+});
+
+test("the same boilerplate path on an unlisted host is not touched", () => {
+  const url = "https://example-broker.test/Upload/TREC/TREC-H-A-SA.pdf";
+  const out = harvestDetail(doc({ links: [url] }));
+  assert.deepEqual(out.documents.map((d) => d.url), [url]);
+});

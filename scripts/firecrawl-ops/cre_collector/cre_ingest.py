@@ -58,6 +58,7 @@ import cre_parse
 import cre_geo
 import cre_avison_price_visibility as avison_prices
 import cre_avison_lease_facts as avison_leases
+from cre_document_boilerplate import document_boilerplate_sql
 from cre_artifact_scope import require_canonical_artifact
 from source_fields import rcm as rcm_fields
 from source_fields.sql import RESERVED_KEY, build_field_updates
@@ -4011,6 +4012,9 @@ def build_sql(
     staged_source_key_sql = source_key_sql("s", "b")
     buildout_source_keys_sql = ", ".join(f"'{key}'" for key in sorted(BUILDOUT_SOURCE_KEYS))
     live_source_key_sql = source_key_sql("l", "b")
+    # Site boilerplate documents (AGENTIC-5143) do not count toward the child-loss guard on
+    # either side, so removing them is not read as a parser collapse of real documents.
+    boilerplate_document_sql = document_boilerplate_sql("d.url")
     if image_transition_binding is not None:
         from cre_colliers_image_transition import valid_binding
         if not colliers_first_party_transition or not valid_binding(image_transition_binding):
@@ -4453,6 +4457,7 @@ UNION ALL
 SELECT a.listing_id, a.source_key, 'documents'::text, count(d.id)::bigint
 FROM _active_child_scope_before a
 LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+  AND NOT {boilerplate_document_sql}
 GROUP BY a.listing_id, a.source_key
 UNION ALL
 SELECT a.listing_id, a.source_key, 'images'::text, count(i.id)::bigint
@@ -6250,6 +6255,7 @@ UNION ALL
 SELECT a.source_key, 'documents', count(d.id)
 FROM _retained_child_scope_after a
 LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.listing_id
+  AND NOT {boilerplate_document_sql}
 GROUP BY a.source_key
 UNION ALL
 SELECT a.source_key, 'images', count(i.id)
