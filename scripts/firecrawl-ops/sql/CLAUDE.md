@@ -7,7 +7,11 @@ The listing objects belong in `credeals`; the separately governed private
 acquisition store from `019` belongs in `cre_source_evidence`.
 Apply via `000_run_all.sql` in dependency order:
 `001`→`002`→`003`→`004`→`007`→`008`→`009`→`010`→`011`→`012`→`013`→`014`→`006`→`005`.
-Migrations `015` through `020` are excluded from the generic runner. `015` is a legacy-only
+Migrations `015` through `021` are excluded from the generic runner. `021`
+(AGENTIC-5129) is the only definition of `v_cre_market_summary`: its legs
+read GetCREdata's structure view and leg gate, so it runs after GetCREdata's
+listing-structure migrations and the lsc-2026.11.1 backfill (its guard checks
+both), psql only with its approval variables; `005` no longer creates it. `015` is a legacy-only
 index rebuild and requires both schema-owner approval and the explicit psql
 variable `CRE_APPROVE_OM_FACTS_KEY_ALIGNMENT=1`.
 For private evidence, read `../cre_collector/source_evidence/AGENTS.md` and
@@ -81,7 +85,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 Set `DATABASE_URL` from `~/.pgpass` or a local secrets source. For migrations
 in the generic runner, alternatives are the Supabase SQL editor (paste in order) or
 MCP `apply_migration` per file (`project_id = fhqycqubkkrdgzswccwd`). Migrations
-`015` through `020` are psql-only because their approval variables must fail closed.
+`015` through `021` are psql-only because their approval variables must fail closed.
 
 ## Naming Patterns
 
