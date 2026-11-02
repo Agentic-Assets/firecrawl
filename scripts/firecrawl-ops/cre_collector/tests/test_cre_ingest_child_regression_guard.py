@@ -136,6 +136,53 @@ def test_build_sql_excludes_legitimately_retired_parents_from_child_guard():
     assert sql.count("FROM _retained_child_scope_after a") == 6
 
 
+BEFORE_SNAPSHOT = "CREATE TEMP TABLE _child_counts_by_listing_before"
+AFTER_SNAPSHOT = "INSERT INTO _child_counts_after\nSELECT"
+
+
+def _child_count_branch(sql, snapshot_from, child_type):
+    """The SELECT of the pre- or post-commit child snapshot that counts ``child_type``."""
+    start = sql.index(f"'{child_type}'", sql.index(snapshot_from))
+    end = sql.index("GROUP BY a.", start)
+    return sql[sql.rindex("SELECT a.", 0, start) : end]
+
+
+def test_build_sql_excludes_site_boilerplate_documents_from_both_guard_snapshots():
+    """AGENTIC-5143: removing boilerplate rows must not read as a collapse of real documents."""
+    from cre_document_boilerplate import document_boilerplate_sql
+
+    sql = ingest.build_sql([], [], SCRAPED_AT, set())
+    predicate = document_boilerplate_sql("d.url")
+
+    before = _child_count_branch(sql, BEFORE_SNAPSHOT, "documents")
+    after = _child_count_branch(sql, AFTER_SNAPSHOT, "documents")
+
+    assert f"AND NOT {predicate}" in before
+    assert f"AND NOT {predicate}" in after
+    assert "FROM _active_child_scope_before a" in before
+    assert "FROM _retained_child_scope_after a" in after
+    # Exactly the two documents joins carry it; no other child type or table is filtered.
+    assert sql.count("AND NOT COALESCE(") == 2
+    for snapshot, other in (
+        (BEFORE_SNAPSHOT, "images"),
+        (BEFORE_SNAPSHOT, "contacts"),
+        (AFTER_SNAPSHOT, "images"),
+        (AFTER_SNAPSHOT, "contacts"),
+    ):
+        assert "AND NOT COALESCE(" not in _child_count_branch(sql, snapshot, other)
+
+
+def test_boilerplate_predicate_is_host_scoped_and_null_safe():
+    from cre_document_boilerplate import DOCUMENT_BOILERPLATE_RULES, document_boilerplate_sql
+
+    predicate = document_boilerplate_sql("d.url")
+
+    assert all(rule.hosts for rule in DOCUMENT_BOILERPLATE_RULES)
+    assert "transwestern" in predicate and "health1" in predicate
+    # A guard exclusion that matched any host would hide a parser collapse on every source.
+    assert predicate.startswith("COALESCE(") and predicate.endswith(", false)")
+
+
 def test_build_sql_counts_all_checkpoint_child_types_and_guards_optional_tables():
     sql = ingest.build_sql([], [], SCRAPED_AT, set())
 

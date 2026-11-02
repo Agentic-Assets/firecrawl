@@ -4,6 +4,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   DOCUMENT_BOILERPLATE_RULES,
   isBoilerplateDocumentUrl,
@@ -47,25 +48,6 @@ test("collector-only footer shapes stay excluded (privacy policy, Aetna benefits
   );
 });
 
-test("a bare site root or same-page anchor is a page, not a document, on any host", () => {
-  for (const url of [
-    "https://transwestern.com/#property-downloads",
-    "https://www.jll.com/",
-    "https://example-broker.test",
-    "https://example-broker.test/#downloads",
-  ]) {
-    assert.equal(matchDocumentBoilerplate(url)?.name, "site_root_page", url);
-  }
-  // A root URL with a query string, or any real path, is not caught by the root rule.
-  for (const url of [
-    "https://example-broker.test/?file=offering-memorandum.pdf",
-    "https://example-broker.test/om.pdf",
-    "https://transwestern.com/property/sample-property#property-downloads",
-  ]) {
-    assert.equal(isBoilerplateDocumentUrl(url), false, url);
-  }
-});
-
 test("real listing documents and brochures are kept", () => {
   const kept = [
     // Transwestern: per-listing GUID store, property-path flyer, other Upload folder
@@ -77,6 +59,10 @@ test("real listing documents and brochures are kept", () => {
     "https://property.jll.com/listings/example/brochure",
     "https://cdn.jll.com/assets/offering-memorandum.pdf",
     "https://www.jll.com/en-us/property/example/brochure.pdf",
+    // Site roots and fragments are not boilerplate: Transwestern microsites are real collateral
+    "http://conexuscolorado.com/",
+    "https://www.2000westloop.com/",
+    "https://transwestern.com/property/sample-property#property-downloads",
     // Other hosts never match, even with a boilerplate-shaped path
     "https://example-broker.test/Upload/TREC/TREC-H-A-SA.pdf",
     "https://example-broker.test/services/financing/debt-advisory",
@@ -102,6 +88,16 @@ test("alternate spellings of a denied path are still denied", () => {
     "https://transwestern.com/%2e%2e/service/structured-finance", // encoded dot segments
     "https://transwestern.com/Upload/TREC/x.pdf?download=1#page=2", // query and fragment
     "https://WWW.JLL.COM/EN-US/Services/Financing/Debt-Advisory",
+    // Encoded separators survive WHATWG URL parsing, so only normalizedPath resolves them.
+    "https://transwestern.com/foo%2F..%2FUpload/TREC/x.pdf", // encoded slash + dot segment
+    "https://transwestern.com/Upload%5CTREC%5Cx.pdf", // encoded backslashes
+    // One bad escape must not stop the other escapes from decoding (Python unquote is lenient).
+    "https://transwestern.com/%55pload/TREC/x%ZZ.pdf",
+    "https://transwestern.com/%55pload/TREC/Notice%E9.pdf", // Latin-1 byte, not UTF-8
+    "https://transwestern.com/foo%E9%2F..%2FUpload/TREC/x.pdf", // bad escape in the same run as a good one
+    // Every trailing host dot is stripped, like rstrip(".") in host_rules.py.
+    "https://transwestern.com../Upload/TREC/x.pdf",
+    "https://www.jll.com.../en-us/services/financing/debt-advisory",
   ];
   for (const url of spellings) assert.equal(isBoilerplateDocumentUrl(url), true, url);
 });
@@ -124,4 +120,43 @@ test("the rule list is well formed: unique names, lowercase hosts, case-insensit
     for (const host of rule.hosts ?? []) assert.equal(host, host.toLowerCase(), rule.name);
     for (const pattern of rule.pathPatterns) assert.ok(pattern.flags.includes("i"), `${rule.name} ${pattern}`);
   }
+});
+
+// The shared parity fixture is also read by tests/test_document_boilerplate_parity.py (the Python
+// predicate used by the child-loss guards) and by the PostgreSQL contract, so the three
+// implementations cannot drift apart, and it records the GetCREdata commit the two mirrored rows
+// were checked against.
+const parity = JSON.parse(
+  readFileSync(new URL("../../fixtures/document_boilerplate_rules.json", import.meta.url), "utf8"),
+) as {
+  producer: { commit: string; blob: string; checked_on_origin_main: string; mirrored_rows: string[] };
+  rules: Array<{ name: string; origin: string; hosts: string[]; pathPatterns: string[] }>;
+  denied: string[];
+  kept: string[];
+  tsOnlyDenied: string[];
+};
+
+test("the rule list is exactly the parity fixture's rules, in order", () => {
+  assert.deepEqual(
+    DOCUMENT_BOILERPLATE_RULES.map(({ name, hosts, pathPatterns }) => ({
+      name,
+      hosts: [...hosts],
+      pathPatterns: pathPatterns.map((pattern) => pattern.source),
+    })),
+    parity.rules.map(({ name, hosts, pathPatterns }) => ({ name, hosts, pathPatterns })),
+  );
+});
+
+test("the parity fixture stamps the GetCREdata commit and names which rows are mirrored", () => {
+  for (const sha of [parity.producer.commit, parity.producer.blob, parity.producer.checked_on_origin_main]) {
+    assert.match(sha, /^[0-9a-f]{40}$/);
+  }
+  const mirrored = parity.rules.filter((rule) => rule.origin === "getcredata").map((rule) => rule.name);
+  assert.deepEqual(mirrored, parity.producer.mirrored_rows);
+  assert.ok(parity.rules.every((rule) => rule.origin === "getcredata" || rule.origin === "collector"));
+});
+
+test("the parity fixture's URLs match the rule list: denied and spelled-differently URLs are boilerplate, kept URLs are not", () => {
+  for (const url of [...parity.denied, ...parity.tsOnlyDenied]) assert.equal(isBoilerplateDocumentUrl(url), true, url);
+  for (const url of parity.kept) assert.equal(isBoilerplateDocumentUrl(url), false, url);
 });

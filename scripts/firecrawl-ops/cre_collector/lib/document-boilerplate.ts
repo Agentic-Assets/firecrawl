@@ -5,13 +5,20 @@
 // otherwise classify as a document and attach to every listing on the site.
 //
 // Pure: no network, no argv/config import (harvest.ts must stay import-safe). To teach the
-// collector a new boilerplate shape, add one DocumentBoilerplateRule row below.
+// collector a new boilerplate shape, add one DocumentBoilerplateRule row below, mirror it in
+// cre_document_boilerplate.py and tests/fixtures/document_boilerplate_rules.json (the shared
+// parity fixture both implementations are tested against), and add a denied URL there.
 //
 // Consistency contract with the producer-side rule, GetCREdata documents/host_rules.py
-// (rows `transwestern_boilerplate` and `jll_services_boilerplate`): the same host
-// matching (exact host or any subdomain) and the same path patterns, evaluated against
-// the path as a server reads it (see normalizedPath). Rows marked "collector-only" are
-// shapes this collector already excluded before W8; GetCREdata does not list them.
+// (rows `transwestern_boilerplate` and `jll_services_boilerplate`): the same host matching
+// (exact host or any subdomain, trailing dots stripped) and the same path patterns,
+// evaluated against the path as a server reads it (see normalizedPath). The fixture records
+// the GetCREdata commit and blob the two mirrored rows were checked against. Rows marked
+// "collector-only" are shapes this collector already excluded before W8; GetCREdata does
+// not list them.
+//
+// Scope: this filter applies to the output of harvestDetail(). Adapters that build
+// `documents` or `brochures` without harvestDetail are not covered (see lib/AGENTS.md).
 //
 // Not covered here: the plan's generic guard (a canonical URL attached to 25 or more
 // listings whose doc_type is not `om`). It needs corpus-wide counts, so it stays a
@@ -20,8 +27,8 @@
 export interface DocumentBoilerplateRule {
   /** Stable identifier for logs and tests. */
   name: string;
-  /** Lowercase hosts; a rule applies to the exact host or any subdomain of it. Omitted = any host. */
-  hosts?: readonly string[];
+  /** Lowercase hosts; a rule applies to the exact host or any subdomain of it. */
+  hosts: readonly string[];
   /** Case-insensitive patterns tested against the normalized path plus the query string
    *  (`/path?x=1`, no fragment). Empty = every path. */
   pathPatterns: readonly RegExp[];
@@ -56,16 +63,25 @@ export const DOCUMENT_BOILERPLATE_RULES: readonly DocumentBoilerplateRule[] = [
     pathPatterns: [],
     reason: "Transwestern footer link to an Aetna benefits site",
   },
-  {
-    // collector-only, any host: a bare site root is a web page, not a file. Seen live on
-    // Transwestern, where the "Download flyer" button's same-page `#property-downloads`
-    // anchor was resolved against the site host and attached as `https://transwestern.com/#...`.
-    // A root URL that carries a query string (`/?file=...`) is left alone.
-    name: "site_root_page",
-    pathPatterns: [/^\/$/i],
-    reason: "site root or same-page anchor, not a file",
-  },
 ];
+
+function decodeEscape(escapes: string): string {
+  try {
+    return decodeURIComponent(escapes);
+  } catch {
+    return escapes;
+  }
+}
+
+/** Decode %XX escapes like Python's `unquote`, leniently: a run of escapes that is not valid
+ *  UTF-8 is retried escape by escape, and an escape that still fails stays as written, so one
+ *  bad escape never stops the rest of the path from being decoded. */
+function decodeEscapeRuns(value: string): string {
+  return value.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    const whole = decodeEscape(run);
+    return whole !== run ? whole : run.replace(/%[0-9a-f]{2}/gi, decodeEscape);
+  });
+}
 
 /** Resolve a path the way a server reads it: percent-decoded (re-decoded for double
  *  encoding), `;params` dropped, backslashes as slashes, repeated slashes collapsed and
@@ -73,12 +89,7 @@ export const DOCUMENT_BOILERPLATE_RULES: readonly DocumentBoilerplateRule[] = [
 function normalizedPath(pathname: string): string {
   let raw = pathname || "/";
   for (let i = 0; i < 3; i += 1) {
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(raw);
-    } catch {
-      break; // malformed escape: match what we have
-    }
+    const decoded = decodeEscapeRuns(raw);
     if (decoded === raw) break;
     raw = decoded;
   }
@@ -104,10 +115,10 @@ export function matchDocumentBoilerplate(url: string): DocumentBoilerplateRule |
   } catch {
     return null;
   }
-  const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  const host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
   const target = normalizedPath(parsed.pathname) + parsed.search;
   for (const rule of DOCUMENT_BOILERPLATE_RULES) {
-    if (rule.hosts && !rule.hosts.some((ruleHost) => hostMatches(host, ruleHost))) continue;
+    if (!rule.hosts.some((ruleHost) => hostMatches(host, ruleHost))) continue;
     if (rule.pathPatterns.length === 0 || rule.pathPatterns.some((pattern) => pattern.test(target))) {
       return rule;
     }

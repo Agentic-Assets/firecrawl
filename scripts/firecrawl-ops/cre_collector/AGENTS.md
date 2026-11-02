@@ -172,6 +172,7 @@ and resolve confirmed findings before shipping.
 | `source_evidence/` | Private append-only capture planning, admitted append and text search; no canonical listing, lifecycle, normalized fact or OM-fact writes |
 | `document_text/` | Pinned local AnyDoc adapter with explicit extraction/OCR-needed/failure artifacts; no automatic download or hosted upload |
 | `cre_ingest.py` | Collector JSON → `credeals` upsert (stdlib + psql) |
+| `cre_document_boilerplate.py` | Host-scoped site-boilerplate rules as one SQL predicate; `cre_ingest.py` and `cre_validate.py` leave matching documents out of the child-loss `documents` count. Mirrors `lib/document-boilerplate.ts` through `tests/fixtures/document_boilerplate_rules.json`; PG17 proof in `tests/run_document_boilerplate_guard_postgres_contract.py` |
 | `cre_image_transition_log.py` | Shared stable-file/hash mechanics for post-commit image receipts; no source qualification policy |
 | `cre_colliers_image_transition.py` | Existing Colliers-main seven-field-bound image receipt and source-specific qualification |
 | `cre_transwestern_image_roles.py` | Validate Transwestern raw role evidence against final staged images |
@@ -564,7 +565,10 @@ and must not preserve children after a detail failure. The precommit child
 guard compares only the same pre-existing parents that remain active, so
 legitimate mark-missing retirement is not mistaken for physical child loss;
 less than 70% retained for a child type with a baseline of at least 10 aborts
-the transaction.
+the transaction. The `documents` count leaves out host-scoped site boilerplate
+(`cre_document_boilerplate.py`, AGENTIC-5143) on both sides of that guard and in
+`cre_validate.py` `child_counts`, so the collector dropping those rows reads as
+cleanup and not as a parser collapse; the post-commit comparison stays symmetric.
 
 Use the checkpoint runner's generation-exact database readback as the write
 admission proof. `cre_refresh_report.py --since <run-start>` is the broader

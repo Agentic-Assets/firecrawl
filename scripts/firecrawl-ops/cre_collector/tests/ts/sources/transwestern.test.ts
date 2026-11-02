@@ -529,12 +529,14 @@ test("Transwestern real source mapper excludes basemap tiles while preserving pr
 // AGENTIC-5143 (W8): every Transwestern listing page links the same footer notices. They
 // must not become listing documents (they were 8,027 rows on 2,003 listings), whether the
 // page reaches them as an attachment-table anchor or as a plain page link. The page's own
-// "Download flyer" button is a same-page `#property-downloads` anchor that the native
-// extractor resolved against the site host (`https://transwestern.com/#property-downloads`).
+// "Download flyer" button is a same-page `#property-downloads` anchor: the native extractor
+// skips it rather than resolve it against the site host. A property microsite root linked
+// from the attachment table is real collateral and stays.
 test("Transwestern attaches no TREC notice, service page, privacy policy, benefits link or same-page anchor as a document", async () => {
   const original = firecrawl.scrape;
   const flyer = "https://transwestern.com/property/flyer.pdf";
   const guidOm = "https://i.transwestern.com/00000000-0000-4000-8000-000000000000/offering-memorandum.pdf";
+  const micrositeRoot = "https://www.2000westloop.com/";
   const noticesAndPages = [
     "https://transwestern.com/Upload/TREC/TREC-H-A-SA.pdf",
     "https://transwestern.com/Upload/TREC/CN%201-2.pdf",
@@ -554,13 +556,14 @@ test("Transwestern attaches no TREC notice, service page, privacy policy, benefi
     <a class="download-flyer-btn" href="#property-downloads">Download flyer</a>
     <table id="tblAttachments"><tr><td><a href="${flyer}">Property flyer</a></td>
       <td><a href="${guidOm}">Offering memorandum</a></td>
+      <td><a href="${micrositeRoot}">Property website</a></td>
       ${attachmentTableBoilerplate.map((url) => `<td><a href="${url}">Footer</a></td>`).join("")}</tr></table>
     <footer>${noticesAndPages.map((url) => `<a href="${url}">Notice</a>`).join("")}</footer></main>`;
   (firecrawl as any).scrape = async (url: string) => {
     if (url.includes("/properties?")) return { rawHtml: JSON.stringify([feedRow]) };
     return {
       rawHtml, markdown: "Sample Property\nCurrent property overview",
-      links: [flyer, guidOm, ...noticesAndPages, ...attachmentTableBoilerplate], images: [],
+      links: [flyer, guidOm, micrositeRoot, ...noticesAndPages, ...attachmentTableBoilerplate], images: [],
     };
   };
   try {
@@ -570,7 +573,7 @@ test("Transwestern attaches no TREC notice, service page, privacy policy, benefi
     assert.equal(listing.detailError, undefined);
     assert.deepEqual(
       listing.documents.map((item: { url: string }) => item.url).sort(),
-      [flyer, guidOm].sort(),
+      [flyer, guidOm, micrositeRoot].sort(),
     );
     // Dropped, not demoted: the notices and service page do not reappear as links.
     const linkUrls = (listing.links ?? []).map((item: { url: string }) => item.url);

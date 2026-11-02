@@ -14,8 +14,11 @@
 //   * NEVER throws: every field access is guarded; malformed/garbage input
 //     yields empty arrays, not an exception.
 //   * Dedups EVERY output array by url (case-insensitive normalized key).
-//   * Site-wide boilerplate (lib/document-boilerplate.ts rules: TREC notices, service
-//     pages) never becomes a document, from any input path, and is not demoted to a link.
+//   * harvestDetail() output never carries host-scoped site boilerplate (lib/document-boilerplate.ts
+//     rules: Transwestern TREC notices and service pages, JLL services pages) as a document, from any
+//     of its input paths, and a dropped URL is not demoted to a link. This covers harvestDetail's
+//     result only: the `brochures` channel (cre_ingest.py to_row turns it into documents unchecked)
+//     and adapters that never call harvestDetail are not filtered here.
 //   * Images keep ALL gallery urls (never truncate); only obvious noise is
 //     dropped (google map tiles, data:/svg URIs, recaptcha/analytics assets).
 //   * ctx.extra* (promoted stranded raw_data fields) merge LAST so a source's
@@ -508,8 +511,8 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
     media.set(key, prev ? mergeMedia(prev, m) : m);
   };
 
-  // The one sink for documents: first write wins, and site boilerplate is dropped here so
-  // no input path (page link, attribute, typed or bare ctx.extraDocs) can attach it.
+  // The one sink for harvestDetail's documents: first write wins, and site boilerplate is dropped
+  // here so no harvestDetail input path (page link, attribute, typed or bare ctx.extraDocs) can attach it.
   const addDocument = (item: DocItem) => {
     if (isBoilerplateDocumentUrl(item.url)) return;
     const key = urlKey(item.url);

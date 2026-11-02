@@ -59,6 +59,17 @@ def test_child_quality_queries_cover_media_and_links():
     assert "SELECT 'links'" in QUERIES["orphans"]
 
 
+def test_child_counts_documents_branch_excludes_boilerplate_like_the_precommit_guard():
+    """AGENTIC-5143: the post-commit comparison must stay symmetric with the precommit guard."""
+    from cre_document_boilerplate import document_boilerplate_sql
+
+    sql = QUERIES["child_counts"]
+    documents = sql[sql.index("'documents'") : sql.index("'images'")]
+
+    assert f"AND NOT {document_boilerplate_sql('d.url')}" in documents
+    assert sql.count("AND NOT COALESCE(") == 1
+
+
 def test_enrichment_queue_health_is_redaction_safe_and_classified():
     sql = QUERIES["enrichment_queue_health"]
     assert "source_key" in sql

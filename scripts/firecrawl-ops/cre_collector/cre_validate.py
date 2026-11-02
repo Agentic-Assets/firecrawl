@@ -28,6 +28,7 @@ from cre_ingest import (
     psql_connection_env,
     source_key_sql,
 )
+from cre_document_boilerplate import document_boilerplate_sql
 from cre_source_policy import load_source_policy
 import cre_geo
 
@@ -1055,6 +1056,7 @@ child_rows AS (
   UNION ALL
   SELECT a.source_key, 'documents', count(d.id)
   FROM active a LEFT JOIN credeals.cre_listing_documents d ON d.listing_id = a.id
+    AND NOT {document_boilerplate_sql("d.url")}
   GROUP BY a.source_key
   UNION ALL
   SELECT a.source_key, 'images', count(i.id)

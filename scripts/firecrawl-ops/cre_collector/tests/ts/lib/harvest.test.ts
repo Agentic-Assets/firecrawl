@@ -517,12 +517,6 @@ test("a relative boilerplate path resolves against baseUrl before the rule appli
   assert.deepEqual(out.documents.map((d) => d.url), ["https://transwestern.com/flyers/sample.pdf"]);
 });
 
-test("a bare site root or same-page anchor is dropped from documents, including when promoted", () => {
-  const roots = ["https://transwestern.com/#property-downloads", "https://www.jll.com/"];
-  const out = harvestDetail(doc({ links: roots }), { extraDocs: [...roots, ...REAL_DOCS] });
-  assert.deepEqual(out.documents.map((d) => d.url).sort(), [...REAL_DOCS].sort());
-});
-
 test("the same boilerplate path on an unlisted host is not touched", () => {
   const url = "https://example-broker.test/Upload/TREC/TREC-H-A-SA.pdf";
   const out = harvestDetail(doc({ links: [url] }));

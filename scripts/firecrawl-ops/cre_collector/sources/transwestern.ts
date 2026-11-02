@@ -172,7 +172,11 @@ function extractTranswesternDocuments(doc: ScrapedDoc, $: cheerio.CheerioAPI): a
   const candidates: string[] = [];
   $('#tblAttachments a[href], a.download-att-btn[href], a.download-flyer-btn[href], a[href$=".pdf"], a[href*=".pdf"], a[href*="twurls.com"]').each(
     (_, el) => {
-      const u = canonicalTranswesternUrl($(el).attr("href") ?? null);
+      const href = $(el).attr("href") ?? null;
+      // A same-page anchor (the "Download flyer" button's `#property-downloads`) points into
+      // this page, not at a file; resolving it against the site host would attach the home page.
+      if (href?.trim().startsWith("#")) return;
+      const u = canonicalTranswesternUrl(href);
       if (u) candidates.push(u);
     }
   );
