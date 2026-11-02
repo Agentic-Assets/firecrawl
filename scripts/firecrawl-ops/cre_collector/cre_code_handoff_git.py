@@ -114,12 +114,14 @@ class Git:
                 result[path.decode()] = {"mode": mode, "type": kind, "oid": oid}
         return result
 
-    def paths(self, repo, release, *, allowed_dependency_paths=()):
+    def paths(self, repo, release, *, allowed_dependency_paths=(), object_repo=None,
+              allow_ignored_absent=False):
         old, new = release["deployed"]["sha"], release["selected"]["sha"]
-        paths = self.command(repo, "diff", "--no-renames", "--name-only", "-z", old, new)
+        source = repo if object_repo is None else object_repo
+        paths = self.command(source, "diff", "--no-renames", "--name-only", "-z", old, new)
         require(paths == b"".join(p.encode() + b"\0" for p in release["allowed_paths"]),
                 "exact changed-path NUL order differs")
-        before, after = self.entries(repo, old), self.entries(repo, new)
+        before, after = self.entries(source, old), self.entries(source, new)
         dependency_names = {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "requirements.txt", "pyproject.toml", "uv.lock"}
         changed_dependencies = {path for path in set(before) | set(after)
                                 if Path(path).name in dependency_names and before.get(path) != after.get(path)}
@@ -135,8 +137,11 @@ class Git:
             for entry in (before.get(raw), after.get(raw)):
                 require(entry is None or (entry["mode"] in {"100644", "100755"} and entry["type"] == "blob"),
                         "changed object not regular")
-            require(not self.command(repo, "check-ignore", "--no-index", "--stdin", "-z",
-                                     input_bytes=raw.encode() + b"\0", allowed=(0, 1)),
+            ignored = self.command(repo, "check-ignore", "--no-index", "--stdin", "-z",
+                                   input_bytes=raw.encode() + b"\0", allowed=(0, 1))
+            leaf = local_path(repo) / path
+            require(not ignored or (allow_ignored_absent and before.get(raw) is None
+                    and after.get(raw) is not None and not leaf.exists() and not leaf.is_symlink()),
                     "ignored changed path")
             current = local_path(repo)
             for index, part in enumerate(path.parts):
@@ -158,14 +163,14 @@ class Git:
                             "untracked/nonregular/hardlinked leaf collision")
 
     def fast_forward(self, repo, release, bundle):
-        self._fast_forward(repo, release, bundle, ())
+        self._fast_forward(repo, release, bundle, (), False)
 
     def maintenance_fast_forward(self, repo, release, bundle, *, allowed_dependency_paths):
         """Advance only with the exact reviewed dependency path set; caller owns admission."""
         require(isinstance(allowed_dependency_paths, list), "explicit changed dependency paths required")
-        self._fast_forward(repo, release, bundle, allowed_dependency_paths)
+        self._fast_forward(repo, release, bundle, allowed_dependency_paths, True)
 
-    def _fast_forward(self, repo, release, bundle, allowed_dependency_paths):
+    def _fast_forward(self, repo, release, bundle, allowed_dependency_paths, allow_ignored_absent):
         self.clean(repo, release["deployed"])
         new, old = release["selected"], release["deployed"]
         wire_bundle = windows_path(bundle) if str(local_path(repo)).startswith("/mnt/") else str(local_path(bundle))
@@ -176,7 +181,8 @@ class Git:
         witness = self.text(repo, "rev-parse", "refs/remotes/origin/main")
         self.command(repo, "merge-base", "--is-ancestor", old["sha"], witness)
         self.command(repo, "merge-base", "--is-ancestor", witness, new["sha"])
-        self.paths(repo, release, allowed_dependency_paths=allowed_dependency_paths)
+        self.paths(repo, release, allowed_dependency_paths=allowed_dependency_paths,
+                   allow_ignored_absent=allow_ignored_absent)
         self.hooks(repo)
         self.command(repo, "update-ref", "refs/remotes/origin/main", new["sha"], witness)
         self.command(repo, "merge", "--ff-only", "--no-overwrite-ignore", new["sha"])

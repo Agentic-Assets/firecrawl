@@ -263,6 +263,11 @@ def maintenance_readiness(packet, modules, git, *, selected=False, owned=False):
     git.maintenance_ancestry(packet["roots"]["development"], packet["old"], packet["native_before"], packet["new"])
     git.clean(packet["roots"]["native"], native)
     git.clean(packet["roots"]["runtime"], runtime)
+    if not selected:
+        for role in ("native", "runtime"):
+            scope = packet[role + "_change"]
+            git.paths(packet["roots"][role], scope, object_repo=packet["roots"]["development"],
+                      allowed_dependency_paths=scope["changed_dependency_paths"], allow_ignored_absent=True)
     lock = checkpoint.canonical_shared_lock_dir(local_path(packet["roots"]["runtime"]))
     if owned:
         assert_owned(checkpoint, lock, os.getpid())
@@ -285,10 +290,10 @@ def observe_maintenance(args, raw, packet, evidence, git, modules):
 
     output = local_path(args.output)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    observation = maintenance_readiness(packet, modules, git)
     runner = Foreground(packet, modules[0], output)
     runner.native("Observe", args.release, sha(raw))
     native = json_bytes(read_file(output / "native-observation.json"))
-    observation = maintenance_readiness(packet, modules, git)
     observation.update(schema="cre-runtime-maintenance-observation-v1", observed_at=native["observed_at"],
                        qualified_at=now().isoformat(), tasks=native["tasks"],
                        windows_resources=native["windows_resources"], release_sha256=sha(raw))
