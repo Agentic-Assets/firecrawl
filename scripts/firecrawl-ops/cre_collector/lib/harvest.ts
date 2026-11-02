@@ -14,6 +14,8 @@
 //   * NEVER throws: every field access is guarded; malformed/garbage input
 //     yields empty arrays, not an exception.
 //   * Dedups EVERY output array by url (case-insensitive normalized key).
+//   * Site-wide boilerplate (lib/document-boilerplate.ts rules: TREC notices, service
+//     pages) never becomes a document, from any input path, and is not demoted to a link.
 //   * Images keep ALL gallery urls (never truncate); only obvious noise is
 //     dropped (google map tiles, data:/svg URIs, recaptcha/analytics assets).
 //   * ctx.extra* (promoted stranded raw_data fields) merge LAST so a source's
@@ -28,6 +30,7 @@
 //   5. rawHtml regex   (iframe/video-source/data-video-url) ONLY when
 //                       doc.attributes is undefined (fork omitted the format)
 
+import { isBoilerplateDocumentUrl } from "./document-boilerplate.js";
 import { clean } from "./util.js";
 import type { AttrBlock, DocItem, LinkItem, MediaItem, ScrapedDoc } from "../types.js";
 
@@ -505,6 +508,14 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
     media.set(key, prev ? mergeMedia(prev, m) : m);
   };
 
+  // The one sink for documents: first write wins, and site boilerplate is dropped here so
+  // no input path (page link, attribute, typed or bare ctx.extraDocs) can attach it.
+  const addDocument = (item: DocItem) => {
+    if (isBoilerplateDocumentUrl(item.url)) return;
+    const key = urlKey(item.url);
+    if (!documents.has(key)) documents.set(key, item);
+  };
+
   // Route a single (url, title?) candidate through media -> document -> link, in
   // that precedence (a video url is media, not a link; a pdf is a document).
   // embedUrl is set only when the value came from an iframe/embed-style selector.
@@ -518,7 +529,7 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
     }
     const doc2 = classifyDocument(u, opts.title);
     if (doc2) {
-      if (!documents.has(urlKey(doc2.url))) documents.set(urlKey(doc2.url), doc2);
+      addDocument(doc2);
       return;
     }
     const ln = classifyLink(u, null);
@@ -602,13 +613,10 @@ export function harvestDetail(doc: ScrapedDoc, ctx: HarvestCtx = {}): HarvestRes
       // documentary keyword/extension (the source asserted it is a doc), as the
       // default-typed 'other'. classifyDoc would otherwise reject a keyword-less,
       // extension-less url.
-      if (u) {
-        const dd = classifyDocument(u) ?? { url: u, title: null, docType: "other" as const };
-        if (!documents.has(urlKey(dd.url))) documents.set(urlKey(dd.url), dd);
-      }
+      if (u) addDocument(classifyDocument(u) ?? { url: u, title: null, docType: "other" as const });
     } else {
       const dd = normDoc(raw, baseUrl);
-      if (dd && !documents.has(urlKey(dd.url))) documents.set(urlKey(dd.url), dd);
+      if (dd) addDocument(dd);
     }
   }
   for (const raw of ctx?.extraLinks ?? []) {

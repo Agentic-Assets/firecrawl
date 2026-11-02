@@ -182,9 +182,10 @@ function extractTranswesternDocuments(doc: ScrapedDoc, $: cheerio.CheerioAPI): a
       if (u) candidates.push(u);
     }
   }
-  return dedupeStrings(candidates)
-    .filter((url) => !/\/Upload\/TREC\/|\/privacy-policy(?:\?|$)|health1\.aetna\.com/i.test(url))
-    .map((url) => ({ name: titleFromFilename(url), url }));
+  // Footer notices and service pages (TREC PDFs, privacy policy, /service/ pages) are not
+  // dropped here: harvestDetail() re-harvests the same links from doc.links, so the one
+  // filter is the shared lib/document-boilerplate.ts rule list, applied in its document sink.
+  return dedupeStrings(candidates).map((url) => ({ name: titleFromFilename(url), url }));
 }
 
 function extractTranswesternPhotos($: cheerio.CheerioAPI, feedImage: string | null): string[] {
