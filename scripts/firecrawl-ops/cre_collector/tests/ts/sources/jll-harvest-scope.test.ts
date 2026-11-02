@@ -42,6 +42,19 @@ test("JLL actual enrichment excludes recommendation children and tile images wit
   assert.equal(row.jllDetail.scrape.rawHtmlLength, doc.rawHtml.length);
 });
 
+// AGENTIC-5143 (W8): the JLL corporate services page linked from every detail page was
+// attached to 944 listings as a "financials" document.
+test("JLL enrichment attaches no jll.com services page as a document and keeps a real brochure", async t => {
+  const debtAdvisory = "https://www.jll.com/en-us/services/financing/debt-advisory"; // was typed `financials`
+  const services = [debtAdvisory, "https://www.jll.com/services/capital-markets"];
+  const brochure = "https://cdn.jll.com/assets/offering-memorandum.pdf";
+  const body = `<img src="${target}">${[...services, brochure].map(href => `<a href="${href}">Link</a>`).join("")}`;
+  const {row} = await enrich(t, body, [target], [...services, brochure]);
+  assert.deepEqual((row.documents ?? []).map((item:any) => item.url), [brochure]);
+  // The page that used to be classified as a document is dropped, not demoted to a link.
+  assert(!row.links?.some((link:any) => link.url === debtAdvisory));
+});
+
 function project(body: string, images: string[] = [], links: string[] = [], native: string[] = []) {
   const doc = {rawHtml: body, markdown:"Airport is 7.2 miles away.", images, links,
     attributes:[{selector:"a",attribute:"href",values:links}]};

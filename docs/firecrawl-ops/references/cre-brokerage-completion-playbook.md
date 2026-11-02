@@ -210,8 +210,14 @@ Document unresolved mapping/display gaps on the existing parent or scoped issue.
 
 Capture document/media URLs through the existing harvester and child contracts;
 do not count a thumbnail, preview image or unrelated listing asset as a document
-or additional evidence of richness. Deduplicate by evidenced asset identity
-without collapsing distinct documents, units or offerings. Keep original URL
+or additional evidence of richness. Site-wide chrome that every listing page links
+(regulatory notices, service pages) is not a listing document; add its host and path
+shape to `lib/document-boilerplate.ts` (and `cre_document_boilerplate.py`, with the
+fixture) rather than filtering inside one adapter. That list filters `harvestDetail()`
+output only; an adapter that emits `brochures` or skips the harvester must filter
+its own channel.
+Deduplicate by evidenced asset identity without collapsing distinct documents,
+units or offerings. Keep original URL
 and role provenance where supported. The [dated media capture handoff](../../../scripts/firecrawl-ops/cre_collector/HANDOFF_MEDIA_CAPTURE_2026-06-15.md)
 records the existing mechanisms and historical implementation evidence.
 

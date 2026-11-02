@@ -1,0 +1,108 @@
+{
+  "schema": "document-boilerplate-parity/v1",
+  "ticket": "AGENTIC-5143",
+  "note": "Shared by tests/ts/lib/document-boilerplate.test.ts (lib/document-boilerplate.ts), tests/test_document_boilerplate_parity.py (cre_document_boilerplate.py) and tests/run_document_boilerplate_guard_postgres_contract.py (the SQL predicate on a real PostgreSQL). Change a rule in all three implementations and here together. Path patterns are written in JavaScript RegExp.source form and are used verbatim by the Python and PostgreSQL implementations. `denied` and `kept` URLs get the same verdict from the TypeScript filter and the SQL predicate. `spellings` records each side's expected verdict (`ts`, `sql`) for URL spellings the two read differently or alike: the SQL matches the URL as stored (case-insensitive scheme, lower-cased host, raw path and query, no other normalization), the TypeScript normalizes first. `why` tags the divergences: ts-normalizes = only the TypeScript resolves it (repeated slash, ;params, percent-encoded or backslash separator, dot segment); index-url = a trailing-slash index URL the SQL matches on the raw path and the TypeScript drops the slash from first; dot-segment-under-denied-prefix = the SQL matches the raw prefix, the TypeScript resolves the dot segment first; userinfo-second-at = the SQL reads the host up to the next @, the TypeScript URL parser takes the last @.",
+  "producer": {
+    "repo": "Agentic-Assets/GetCREdata",
+    "file": "documents/host_rules.py",
+    "commit": "804d080819fed7e1e6c7eae161e574b2da7a8fec",
+    "blob": "510969455f2c404a666ec2f7cffb1b25ec521461",
+    "checked_on_origin_main": "942678f896df745b3dec4a176328cff81350e359",
+    "checked_on": "2026-11-02",
+    "mirrored_rows": ["transwestern_boilerplate", "jll_services_boilerplate"]
+  },
+  "rules": [
+    {
+      "name": "transwestern_boilerplate",
+      "origin": "getcredata",
+      "hosts": ["transwestern.com"],
+      "pathPatterns": ["^\\/Upload\\/TREC\\/", "^\\/service\\/", "^\\/services\\/"]
+    },
+    {
+      "name": "jll_services_boilerplate",
+      "origin": "getcredata",
+      "hosts": ["jll.com"],
+      "pathPatterns": ["^\\/(?:[a-z]{2}(?:-[a-z]{2})?\\/)?services?\\/"]
+    },
+    {
+      "name": "transwestern_privacy_policy",
+      "origin": "collector",
+      "hosts": ["transwestern.com"],
+      "pathPatterns": ["(?:^|\\/)privacy-policy\\/?(?:\\?|$)"]
+    },
+    {
+      "name": "transwestern_aetna_transparency",
+      "origin": "collector",
+      "hosts": ["health1.aetna.com"],
+      "pathPatterns": []
+    }
+  ],
+  "denied": [
+    "https://transwestern.com/Upload/TREC/TREC-H-A-SA.pdf",
+    "https://transwestern.com/Upload/TREC/CN%201-2.pdf",
+    "https://transwestern.com/Upload/TREC/TREC-FW-D.pdf",
+    "https://transwestern.com/service/structured-finance",
+    "https://www.transwestern.com/services/capital-markets",
+    "http://transwestern.com:8080/service/structured-finance",
+    "https://transwestern.com/Upload/TREC/x.pdf?download=1",
+    "https://www.jll.com/en-us/services/financing/debt-advisory",
+    "https://www.jll.com/services/financing/debt-advisory",
+    "https://www.jll.com/en/service/debt-advisory/",
+    "https://transwestern.com/privacy-policy",
+    "https://transwestern.com/en/privacy-policy/",
+    "https://transwestern.com/privacy-policy?lang=en",
+    "https://health1.aetna.com/app/public/#/one/machine-readable-transparency-in-coverage"
+  ],
+  "kept": [
+    "https://i.transwestern.com/00000000-0000-4000-8000-000000000000/a.pdf",
+    "https://transwestern.com/property/sample-property/flyer.pdf",
+    "https://www.transwestern.com/Upload/Property/offering-memorandum.pdf",
+    "https://transwestern.com/serviceability/om.pdf",
+    "https://transwestern.com/privacy-policy-archive.pdf",
+    "https://transwestern.com/Upload/TREC",
+    "https://s3.amazonaws.com/transwestern-property/Flyers/c08b507f-5580-e411-9e76-00155d0a272c.pdf",
+    "https://property.jll.com/listings/example/brochure",
+    "https://cdn.jll.com/assets/offering-memorandum.pdf",
+    "https://www.jll.com/en-us/property/example/brochure.pdf",
+    "https://invest.jll.com/us/en/listings/industrial-logistics/idv-sealy-anserra",
+    "https://example-broker.test/Upload/TREC/TREC-H-A-SA.pdf",
+    "https://example-broker.test/services/financing/debt-advisory",
+    "https://res.cloudinary.com/example/image/upload/v1/om.pdf",
+    "https://notjll.com/services/financing/debt-advisory",
+    "https://jll.com.example.test/services/financing/debt-advisory",
+    "https://nottranswestern.com/service/structured-finance",
+    "https://health1.aetna.com.example.test/app/public/",
+    "http://conexuscolorado.com/",
+    "https://www.2000westloop.com/",
+    "https://transwestern.com/property/sample-property#property-downloads"
+  ],
+  "spellings": [
+    {"url": "https://TRANSWESTERN.COM/upload/trec/x.pdf", "ts": true, "sql": true},
+    {"url": "https://transwestern.com./Upload/TREC/x.pdf", "ts": true, "sql": true},
+    {"url": "https://transwestern.com//Upload//TREC/x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/foo/../Upload/TREC/x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/%55pload/%54REC/x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/%2555pload/TREC/x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/Upload;v=1/TREC/x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/Upload\\TREC\\x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/%2e%2e/service/structured-finance", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/Upload/TREC/x.pdf?download=1#page=2", "ts": true, "sql": true},
+    {"url": "https://WWW.JLL.COM/EN-US/Services/Financing/Debt-Advisory", "ts": true, "sql": true},
+    {"url": "https://transwestern.com/foo%2F..%2FUpload/TREC/x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/Upload%5CTREC%5Cx.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/%55pload/TREC/x%ZZ.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/%55pload/TREC/Notice%E9.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com/foo%E9%2F..%2FUpload/TREC/x.pdf", "ts": true, "sql": false, "why": "ts-normalizes"},
+    {"url": "https://transwestern.com../Upload/TREC/x.pdf", "ts": true, "sql": true},
+    {"url": "https://www.jll.com.../en-us/services/financing/debt-advisory", "ts": true, "sql": true},
+    {"url": "HTTPS://transwestern.com/Upload/TREC/x.pdf", "ts": true, "sql": true},
+    {"url": "HtTp://www.jll.com/en-us/services/financing/debt-advisory", "ts": true, "sql": true},
+    {"url": "https://transwestern.com/services/", "ts": false, "sql": true, "why": "index-url"},
+    {"url": "https://transwestern.com/service/", "ts": false, "sql": true, "why": "index-url"},
+    {"url": "https://transwestern.com/Upload/TREC/", "ts": false, "sql": true, "why": "index-url"},
+    {"url": "https://www.jll.com/en-us/services/", "ts": false, "sql": true, "why": "index-url"},
+    {"url": "https://transwestern.com/services/../property/sample-property/flyer.pdf", "ts": false, "sql": true, "why": "dot-segment-under-denied-prefix"},
+    {"url": "https://transwestern.com/services/%2E%2E/property/sample-property/flyer.pdf", "ts": false, "sql": true, "why": "dot-segment-under-denied-prefix"},
+    {"url": "https://a@b@transwestern.com/Upload/TREC/x.pdf", "ts": true, "sql": false, "why": "userinfo-second-at"}
+  ]
+}

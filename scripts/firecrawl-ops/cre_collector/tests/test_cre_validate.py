@@ -59,6 +59,17 @@ def test_child_quality_queries_cover_media_and_links():
     assert "SELECT 'links'" in QUERIES["orphans"]
 
 
+def test_child_counts_documents_branch_excludes_boilerplate_like_the_precommit_guard():
+    """AGENTIC-5143: the post-commit comparison must stay symmetric with the precommit guard."""
+    from cre_document_boilerplate import document_boilerplate_sql
+
+    sql = QUERIES["child_counts"]
+    documents = sql[sql.index("'documents'") : sql.index("'images'")]
+
+    assert f"AND NOT {document_boilerplate_sql('d.url')}" in documents
+    assert sql.count("AND NOT COALESCE(") == 1
+
+
 def test_enrichment_queue_health_is_redaction_safe_and_classified():
     sql = QUERIES["enrichment_queue_health"]
     assert "source_key" in sql
@@ -648,6 +659,37 @@ def test_run_query_wraps_sql_in_repeatable_read_only_transaction(monkeypatch):
     assert "input" not in captured["kwargs"]
     assert "stdin" not in captured["kwargs"]
     assert not captured["script_path"].exists()
+
+
+PIN = "SET LOCAL standard_conforming_strings = on;"
+
+
+def test_run_query_pins_standard_conforming_strings_right_after_begin(monkeypatch):
+    """child_counts carries backslash regexes; both wrappers must make them literal."""
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["script"] = Path(argv[argv.index("-f") + 1]).read_text()
+        return _FakeProc(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cre_validate.subprocess, "run", fake_run)
+    run_query("psql", "postgres://SENTINEL", QUERIES["child_counts"])
+    script = captured["script"]
+    begin = "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+    assert script.startswith(begin + PIN + "\n")
+    assert script.count(PIN) == 1
+    assert script.index(PIN) < script.index("SELECT")
+
+
+def test_query_batch_pins_standard_conforming_strings_right_after_begin():
+    script = cre_validate._build_query_batch_script(
+        {"first": "SELECT 1;", "child_counts": QUERIES["child_counts"]}
+    )
+    begin = "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n"
+    assert begin + PIN + "\n" in script
+    assert script.count(PIN) == 1
+    assert script.index(PIN) < script.index("SELECT 1;")
+    assert script.index(PIN) < script.index(QUERIES["child_counts"])
 
 
 def test_run_query_sql_content_inside_wrapper(monkeypatch):
