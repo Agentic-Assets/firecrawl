@@ -24,7 +24,12 @@ query them from server-side code or a deliberate API layer.
 - `v_cre_active_for_sale` / `v_cre_active_for_lease` -- active listings with
   brokerage name and primary contact inlined.
 - `v_cre_market_summary` -- per (city, state, property_type) counts, avg
-  price/PSF/size, median cap rate, avg occupancy.
+  size and occupancy over every listing, and price legs gated by GetCREdata's
+  listing-structure view: avg price where `is_property_price`, avg and median
+  price/SF (`median_price_per_sf`, appended last) from price over `size_sf`
+  where `psf_allowed` and inside the band (non-land $5 to $3,000, land $0.10 to
+  $1,000), median cap rate where `cap_rate_allowed`
+  (`sql/021_cre_market_summary_structure_gate.sql`, AGENTIC-5129).
 - `v_cre_recent_changes` -- rolling 7-day `cre_listing_events` feed with listing
   title, `source_url`, and `brokerage_slug` inlined (operator/prospecting-ops
   freshness read).
@@ -70,7 +75,7 @@ SELECT * FROM v_cre_listings_full WHERE id = $1;
 inventory deepest and at what cap rate?
 
 ```sql
-SELECT city, state, listing_count, avg_price_per_sf, median_cap_rate, avg_size_sf
+SELECT city, state, listing_count, median_price_per_sf, median_cap_rate, avg_size_sf
 FROM   v_cre_market_summary
 WHERE  property_type = 'industrial' AND for_sale_count > 0
 ORDER BY listing_count DESC

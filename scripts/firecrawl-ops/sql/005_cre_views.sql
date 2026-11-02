@@ -215,34 +215,11 @@ ALTER VIEW credeals.v_cre_active_for_lease SET (security_invoker = true);
 
 -- ===========================================================================
 -- VIEW: v_cre_market_summary
--- Aggregate market intelligence by (city, state, property_type). Feeds the
--- MarketStrategistAgent and cross-deal comp context.
--- median cap rate via percentile_cont; price/size averages over priced rows.
+-- Defined only in 021_cre_market_summary_structure_gate.sql (AGENTIC-5129): its
+-- price legs read GetCREdata's credeals.v_cre_listing_structure_current, which
+-- does not exist yet when 005 runs on a fresh database. Re-running 005 leaves
+-- the view as 021 set it.
 -- ===========================================================================
-CREATE OR REPLACE VIEW credeals.v_cre_market_summary AS
-SELECT
-    l.city,
-    l.state,
-    l.property_type,
-    count(*)                                                              AS listing_count,
-    count(*) FILTER (WHERE l.transaction_type IN ('sale', 'sale_or_lease')) AS for_sale_count,
-    count(*) FILTER (WHERE l.transaction_type IN ('lease', 'sale_or_lease')) AS for_lease_count,
-    round(avg(l.sale_price_usd)   FILTER (WHERE l.sale_price_usd   IS NOT NULL))      AS avg_price,
-    round(avg(l.sale_price_per_sf) FILTER (WHERE l.sale_price_per_sf IS NOT NULL), 2) AS avg_price_per_sf,
-    round(percentile_cont(0.5) WITHIN GROUP (ORDER BY l.cap_rate)
-          FILTER (WHERE l.cap_rate IS NOT NULL)::numeric, 4)              AS median_cap_rate,
-    round(avg(l.size_sf) FILTER (WHERE l.size_sf IS NOT NULL))            AS avg_size_sf,
-    round(avg(l.occupancy_rate) FILTER (WHERE l.occupancy_rate IS NOT NULL), 4) AS avg_occupancy_rate,
-    max(l.scraped_at)                                                     AS last_scraped_at
-FROM credeals.cre_listings l
-WHERE l.deleted_at IS NULL
-  AND l.status IN ('active', 'under_contract', 'pending')
-  AND l.city IS NOT NULL
-  AND l.state IS NOT NULL
-GROUP BY l.city, l.state, l.property_type;
-
-COMMENT ON VIEW credeals.v_cre_market_summary IS 'Per-(city,state,property_type) aggregates over on-market listings (active/under_contract/pending): counts, avg price/PSF/size, median cap rate, avg occupancy. MarketStrategistAgent input.';
-ALTER VIEW credeals.v_cre_market_summary SET (security_invoker = true);
 
 -- ===========================================================================
 -- FUNCTION: search_cre_listings(...)
@@ -389,7 +366,6 @@ REVOKE SELECT ON
     credeals.v_cre_listings_full,
     credeals.v_cre_active_for_sale,
     credeals.v_cre_active_for_lease,
-    credeals.v_cre_market_summary,
     credeals.v_cre_recent_changes
 FROM PUBLIC;
 
@@ -398,15 +374,13 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
         REVOKE SELECT ON
             credeals.v_cre_listings_full, credeals.v_cre_active_for_sale,
-            credeals.v_cre_active_for_lease, credeals.v_cre_market_summary,
-            credeals.v_cre_recent_changes
+            credeals.v_cre_active_for_lease, credeals.v_cre_recent_changes
         FROM anon;
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
         REVOKE SELECT ON
             credeals.v_cre_listings_full, credeals.v_cre_active_for_sale,
-            credeals.v_cre_active_for_lease, credeals.v_cre_market_summary,
-            credeals.v_cre_recent_changes
+            credeals.v_cre_active_for_lease, credeals.v_cre_recent_changes
         FROM authenticated;
     END IF;
 END
