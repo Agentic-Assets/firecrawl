@@ -107,10 +107,10 @@ def test_readiness_checks_both_roots_before_lock():
 
     packet = {
         "roots": {"development": "/dev", "native": "/native", "runtime": "/runtime"},
-        "old": {"sha": "old"},
-        "native_before": {"sha": "native"},
-        "new": {"sha": "new"},
-        "development": {"sha": "dev"},
+        "old": {"sha": "a" * 40, "tree": "b" * 40},
+        "native_before": {"sha": "c" * 40, "tree": "d" * 40},
+        "new": {"sha": "e" * 40, "tree": "f" * 40},
+        "development": {"sha": "e" * 40, "tree": "f" * 40},
         "native_change": {"changed_dependency_paths": []},
         "runtime_change": {"changed_dependency_paths": ["package.json"]},
     }

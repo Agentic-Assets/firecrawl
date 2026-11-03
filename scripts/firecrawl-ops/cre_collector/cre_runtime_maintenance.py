@@ -126,8 +126,19 @@ def validate_maintenance_release(packet, evidence):
                "scripts/firecrawl-ops/cre_collector/document_text/package-lock.json"}
     dependency_names = {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
                         "requirements.txt", "pyproject.toml", "uv.lock"}
+    from cre_runtime_maintenance_continuation import (
+        runtime_before,
+        validate_continuation,
+    )
+
+    if runtime_before(packet) != packet["old"] or "continuation" in packet:
+        from cre_code_handoff_git import Git
+
+        validate_continuation(packet, evidence, Git(packet["programs"]["native_git"]),
+                              packet["roots"]["development"], live=False)
+
     scopes = {}
-    for key, before in (("runtime", packet["old"]), ("native", packet["native_before"])):
+    for key, before in (("runtime", runtime_before(packet)), ("native", packet["native_before"])):
         scope = packet.get(key + "_change")
         require(isinstance(scope, dict) and scope.get("deployed") == before and scope.get("selected") == packet["new"],
                 "per-root maintenance identities differ")
@@ -174,8 +185,10 @@ def validate_maintenance_release(packet, evidence):
 def validate_maintenance_observation(packet, evidence, observation, current, *, selected=False, owned=False,
                                      selected_snapshot=None):
     """Qualify a fresh host and held fleet at a specific maintenance boundary."""
+    from cre_runtime_maintenance_continuation import runtime_before
+
     expected_native = packet["new"] if selected else packet["native_before"]
-    expected_runtime = packet["new"] if selected else packet["old"]
+    expected_runtime = packet["new"] if selected else runtime_before(packet)
     require(observation.get("schema") == "cre-runtime-maintenance-observation-v1"
             and observation.get("native") == expected_native and observation.get("runtime") == expected_runtime,
             "maintenance checkout identity differs")
@@ -255,12 +268,14 @@ def maintenance_readiness(packet, modules, git, *, selected=False, owned=False):
     """Observe the exact two checkout identities and existing canonical owner."""
     from cre_code_handoff import assert_owned, lock_clear, visible_linux_frontends
     from cre_code_handoff_host import observe_host
+    from cre_runtime_maintenance_continuation import runtime_before
 
     checkpoint, memory, client, idle = modules
     native = packet["new"] if selected else packet["native_before"]
-    runtime = packet["new"] if selected else packet["old"]
+    runtime = packet["new"] if selected else runtime_before(packet)
     git.clean(packet["roots"]["development"], packet["development"], tracking=packet["development"]["sha"])
     git.maintenance_ancestry(packet["roots"]["development"], packet["old"], packet["native_before"], packet["new"])
+    git.maintenance_ancestry(packet["roots"]["development"], packet["old"], runtime_before(packet), packet["new"])
     git.clean(packet["roots"]["native"], native)
     git.clean(packet["roots"]["runtime"], runtime)
     if not selected:
@@ -284,12 +299,30 @@ def maintenance_readiness(packet, modules, git, *, selected=False, owned=False):
     return host
 
 
+def recheck_continuation_stack(packet, evidence, git):
+    """Reobserve the reviewed stack in a private Linux directory before mutation."""
+    import tempfile
+    from pathlib import Path
+
+    from cre_runtime_maintenance_continuation import (
+        runtime_before,
+        validate_continuation,
+    )
+
+    if "continuation" not in packet or runtime_before(packet) == packet["old"]:
+        return
+    with tempfile.TemporaryDirectory(prefix="cre-current-stack-", dir="/tmp") as directory:
+        validate_continuation(packet, evidence, git, packet["roots"]["development"],
+                              live=True, output=Path(directory) / "capture")
+
+
 def observe_maintenance(args, raw, packet, evidence, git, modules):
     """Publish one fresh read-only observation; no runtime or task mutations."""
     from cre_code_handoff import Foreground, now, write_new
 
     output = local_path(args.output)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    recheck_continuation_stack(packet, evidence, git)
     observation = maintenance_readiness(packet, modules, git)
     runner = Foreground(packet, modules[0], output)
     runner.native("Observe", args.release, sha(raw))
@@ -449,6 +482,7 @@ def apply_maintenance(args, raw, packet, evidence, git, modules):
     if packet["expected_images"]:
         validate_prepared_images(packet, evidence, git)
     git.development(dict(packet, selected=packet["new"]))
+    recheck_continuation_stack(packet, evidence, git)
     maintenance_readiness(packet, modules, git)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     if packet["expected_images"]:

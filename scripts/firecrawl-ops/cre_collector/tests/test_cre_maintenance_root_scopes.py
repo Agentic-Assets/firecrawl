@@ -14,6 +14,16 @@ restoration_case = admission.restoration_case
 maintenance_case = admission.maintenance_case
 
 
+def test_legacy_release_refuses_ignored_continuation(maintenance_case):
+    from cre_runtime_maintenance import validate_maintenance_release
+
+    packet, _, inputs, _, _ = maintenance_case
+    packet["install_scope"] = []
+    packet["continuation"] = {}
+    with pytest.raises(HandoffError, match="legacy maintenance"):
+        validate_maintenance_release(packet, inputs.evidence(packet))
+
+
 @pytest.mark.parametrize("change", [None, "wrong_native", "wrong_nul"])
 def test_reviewed_release_binds_distinct_native_and_runtime_scopes(maintenance_case, change, monkeypatch):
     import cre_runtime_maintenance as maintenance

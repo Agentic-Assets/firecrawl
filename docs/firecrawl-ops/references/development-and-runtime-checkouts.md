@@ -368,3 +368,37 @@ and verify the new release, then use the applicable reviewed handoff under a
 settled task hold. A checkout's code pin is the deployed version, not proof
 that a newer remote main has been delivered. Never pull or rebuild underneath
 an active collection merely to make that pin appear current.
+
+## Qualified continuation after a stopped maintenance
+
+A stopped maintenance can leave newer checkouts and images with older task
+pins. Keep the original failed operation and its partial outcome immutable.
+The runtime-before identity describes the current Linux checkout; the original
+failed-handoff identity still describes its history and the held task pins.
+A separately reviewed continuation must authenticate those distinct states.
+
+When historical container differences cannot be reconstructed from retained
+aggregate hashes, do not claim that the old configuration was preserved or
+that the stopped operation succeeded. Qualify the current stack against its
+approved Compose model and authenticated image source instead. That review
+must cover effective security, privileges, commands, environment, ports,
+mounts, networks, resource limits and restart settings, and state any remaining
+historical uncertainty. Current volume identity and historical continuity are
+different claims. Unknown current critical controls refuse admission.
+
+A continuation that changes only operations code can retain the running
+images when their exact IDs and source provenance match the new release's
+unchanged application build inputs, Compose inputs and dependencies. It must
+bind the failed operation, actual governed owner-recovery receipt and reviewed
+current-stack qualification, then verify the same five container identities,
+epochs and complete normalized configurations before and after its owned
+code-and-pin update. It still requires installed-dependency checks, genuine
+foreground settlement, independent readback and separate restoration gates.
+
+Retain the exact active image overlay as a runtime-owned artifact. Every
+approved recreation must use the bound base file, native override and active
+image overlay. Record the overlay path/hash and running image IDs; preserve
+that active input during scratch cleanup.
+Any future image update must authenticate the previous file chain and replace
+its image overlay deliberately. This held-fleet continuation does not establish
+a general updater for enabled schedules.
