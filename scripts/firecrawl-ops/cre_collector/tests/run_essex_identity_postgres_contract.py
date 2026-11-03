@@ -70,7 +70,7 @@ def main():
         docker('info', '--format', '{{.ID}}')
     try:
         result = docker('create', '--pull', 'never', '--name', name, '--label', 'com.agenticassets.fixture-token=' + token,
-                        '--network', 'bridge', '--publish', '127.0.0.1::5432', '--cpus', '0.5',
+                        '--network', 'none', '--cpus', '0.5',
                         '--memory', '512m', '--memory-swap', '512m', '--pids-limit', '96',
                         '--tmpfs', '/var/lib/postgresql/data:rw,nosuid,size=128m',
                         '--env', 'POSTGRES_HOST_AUTH_METHOD=trust', IMAGE)
@@ -81,7 +81,7 @@ def main():
         details = json.loads(docker('inspect', container).stdout)[0]
         limits = details['HostConfig']
         if (details['Image'] != IMAGE or limits['NanoCpus'] != 500000000 or limits['Memory'] != 512 * 1024 * 1024
-                or limits['PidsLimit'] != 96 or limits['NetworkMode'] != 'bridge'):
+                or limits['PidsLimit'] != 96 or limits['NetworkMode'] != 'none'):
             raise RuntimeError('fixture image or resource limits differ')
         for _ in range(60):
             if docker('exec', container, 'pg_isready', '-U', 'postgres', check=False).returncode == 0:
@@ -89,37 +89,40 @@ def main():
             time.sleep(0.5)
         else:
             raise RuntimeError('fixture PostgreSQL readiness timed out')
-        port = docker('port', container, '5432/tcp').stdout.strip()
-        if not re.fullmatch(r'127\.0\.0\.1:[0-9]+', port):
-            raise RuntimeError('fixture did not publish only loopback')
-        port_number = port.rsplit(':', 1)[1]
+        if details['NetworkSettings']['Ports']:
+            raise RuntimeError('fixture unexpectedly published ports')
         (proof / 'container.json').write_text(json.dumps({
             'id': container, 'name': name, 'fixture_token': token, 'image': IMAGE,
-            'published_loopback': port, 'cpus': 0.5, 'memory_bytes': 512 * 1024 * 1024,
+            'network': 'none', 'cpus': 0.5, 'memory_bytes': 512 * 1024 * 1024,
             'pids_limit': 96,
         }, indent=2) + '\n')
         def sql(text, *, check=True):
-            return call(['/usr/bin/psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-h', '127.0.0.1',
-                         '-p', port_number, '-U', 'postgres', '-d', 'postgres'], data=text, check=check)
+            return call(['docker', 'exec', '-i', container, 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1',
+                         '-U', 'postgres', '-d', 'postgres'], data=text, check=check)
         for _ in range(60):
             probe = sql('SELECT 1;', check=False)
             if probe.returncode == 0 and probe.stdout.strip() == '1':
                 break
             time.sleep(0.5)
         else:
-            raise RuntimeError('loopback fixture PostgreSQL readiness timed out')
+            raise RuntimeError('isolated fixture PostgreSQL readiness timed out')
         version = int(sql('SHOW server_version_num;').stdout.strip())
         if not 170000 <= version < 180000:
             raise RuntimeError('fixture server is not PostgreSQL 17')
         sql('CREATE SCHEMA credeals; CREATE TABLE credeals.cre_listings '
-            '(brokerage_id integer, external_id text, source_url text, raw_data jsonb, deleted_at timestamptz);')
+            '(brokerage_id integer, external_id text, source_url text, raw_data jsonb, deleted_at timestamptz, '+
+            "status text DEFAULT 'active', title text DEFAULT 'Title', address text DEFAULT 'Address', city text DEFAULT 'City', "+
+            "state text DEFAULT 'IL', transaction_type text DEFAULT 'sale', description text DEFAULT 'Description', id serial); "+
+            "CREATE TABLE credeals.cre_brokerages (id integer, slug text); INSERT INTO credeals.cre_brokerages VALUES (1, 'essex-realty'); "
+            'CREATE TABLE credeals.cre_source_index (brokerage_id integer, external_id text, source_key text, url text, '+
+            'observation_present boolean, soft_deleted boolean, id serial);')
         candidate_url = BASE + 'properties/foo/'
-        stage = ('CREATE TEMP TABLE _src (brokerage_id integer, external_id text, source_url text, raw_data jsonb);\n'
-                 'INSERT INTO _src VALUES (1, ' + literal('properties/foo') + ', ' + literal(candidate_url) + ', '
+        stage = ("CREATE TEMP TABLE _src (brokerage_id integer, external_id text, source_url text, raw_data jsonb, title text DEFAULT 'Title', address text DEFAULT 'Address', city text DEFAULT 'City', state text DEFAULT 'IL', transaction_type text DEFAULT 'sale', description text DEFAULT 'Description');\n"
+                 'INSERT INTO _src (brokerage_id, external_id, source_url, raw_data) VALUES (1, ' + literal('properties/foo') + ', ' + literal(candidate_url) + ', '
                  + literal(json.dumps(page(candidate_url, '101'))) + '::jsonb);\n')
         generated = cre_ingest.build_sql([], [], '2026-01-01T00:00:00Z', [])
         start = generated.index('-- Essex keeps historical literal property-path keys.')
-        end = generated.index('-- DAUM keeps historical literal property-path keys.', start)
+        end = generated.index('-- (H4a) Capture prior watched values', start)
         guard = generated[start:end]
         incoming = identity.incoming_claims_sql().strip().rstrip(';')
         invalid = identity.invalid_incoming_sql().strip().rstrip(';')
@@ -150,20 +153,20 @@ def main():
 
         def history(external, url, ids=(), *, deleted=False, invalid=False, brokerage=1):
             value = literal(json.dumps(page(url, *ids, invalid=invalid))) + '::jsonb'
-            sql('INSERT INTO credeals.cre_listings VALUES (' + str(brokerage) + ', ' + literal(external) + ', '
+            sql('INSERT INTO credeals.cre_listings (brokerage_id, external_id, source_url, raw_data, deleted_at) VALUES (' + str(brokerage) + ', ' + literal(external) + ', '
                 + literal(url) + ', ' + value + ', ' + ("'2026-01-01'" if deleted else 'NULL') + ');')
         other_url = BASE + 'properties/bar/'
         cases = [
             ('same URL, different key', 'properties/bar', candidate_url, (), True, False, 1, 1),
             ('same key, different URL', 'properties/foo', other_url, (), False, False, 1, 1),
             ('same native, other identity', 'properties/bar', other_url, ('101',), False, False, 1, 1),
-            ('same identity, different native', 'properties/foo', candidate_url, ('102',), False, False, 1, 1),
+            ('same identity, different native without index', 'properties/foo', candidate_url, ('102',), False, False, 1, 1),
             ('multiple historical natives', 'properties/foo', candidate_url, ('101', '102'), False, False, 1, 1),
             ('malformed historical native', 'properties/foo', candidate_url, ('101',), False, True, 1, 1),
             ('unknown historical native', 'properties/foo', candidate_url, (), False, False, 1, 0),
             ('different brokerage', 'properties/bar', candidate_url, ('101',), True, False, 2, 0),
         ]
-        lines = [f'PASS PostgreSQL {version}, pinned image, loopback-only dynamic port and resource limits']
+        lines = [f'PASS PostgreSQL {version}, pinned image, network-none and resource limits']
         for label, external, url, ids, deleted, invalid, brokerage, expected in cases:
             sql('TRUNCATE credeals.cre_listings;')
             history(external, url, ids, deleted=deleted, invalid=invalid, brokerage=brokerage)
@@ -172,8 +175,95 @@ def main():
                 raise AssertionError(f'{label}: expected {expected}, got {actual}')
             lines.append(f'PASS {label}: {actual}')
         sql('TRUNCATE credeals.cre_listings;')
+        history('properties/foo', candidate_url, ('102',))
+        sql("INSERT INTO credeals.cre_source_index (brokerage_id, external_id, source_key, url, observation_present, soft_deleted) VALUES (1, 'properties/foo', 'essex-realty', "
+            + literal(candidate_url) + ", true, false);")
+        if inspect_count() != 0:
+            raise AssertionError('matching active republished identity should pass')
+        lines.append('PASS matching active republished identity')
+        projected = [{'slug': 'essex-realty', 'external_id': 'properties/foo', 'source_url': candidate_url,
+                      'raw_data': page(candidate_url, '101'), 'title': 'Title', 'address': 'Address',
+                      'city': 'City', 'state': 'IL', 'transaction_type': 'sale', 'description': 'Description'}]
+        result = sql('BEGIN TRANSACTION READ ONLY;\n' + identity.probe_sql(projected) + ';\nROLLBACK;')
+        if result.stdout.strip() != '1|1|1|1|0|0':
+            raise AssertionError('actual preseal query did not agree with generated guard')
+        lines.append('PASS actual preseal query and transaction guard agree')
+        sql("INSERT INTO credeals.cre_source_index (brokerage_id, external_id, source_key, url, observation_present, soft_deleted) VALUES (1, 'properties/foo', 'essex-realty', "
+            + literal(candidate_url) + ", true, false);")
+        if inspect_count() != 1:
+            raise AssertionError('duplicate matching index rows must hold')
+        sql('DELETE FROM credeals.cre_source_index WHERE ctid IN '
+            '(SELECT ctid FROM credeals.cre_source_index LIMIT 1);')
+        lines.append('PASS duplicate matching source-index witnesses hold')
+        sql("INSERT INTO credeals.cre_source_index (brokerage_id, external_id, source_key, url, observation_present, soft_deleted) VALUES (1, 'properties/foo', 'other', "
+            + literal(candidate_url) + ", false, true);")
+        if inspect_count() != 1:
+            raise AssertionError('mixed source-index witnesses must hold')
+        sql("DELETE FROM credeals.cre_source_index WHERE source_key='other';")
+        lines.append('PASS mixed duplicate source-index witnesses hold')
+        for label, mutation in [
+            ('changed description', "description='other'"), ('missing address', 'address=NULL'),
+            ('inactive', "status='inactive'"), ('deleted', "deleted_at='2026-01-01'"),
+            ('terminal status', "status='sold'"),
+        ]:
+            sql("UPDATE credeals.cre_listings SET status='active', deleted_at=NULL, address='Address', "
+                "description='Description'; UPDATE credeals.cre_listings SET " + mutation + ';')
+            if inspect_count() != 1:
+                raise AssertionError(label + ' must hold')
+            lines.append('PASS ' + label + ' holds')
+        sql("UPDATE credeals.cre_listings SET status='active', deleted_at=NULL, address='Address', description='Description';")
+        if inspect_count() != 0:
+            raise AssertionError('transition race precheck must clear')
+        sql("UPDATE credeals.cre_listings SET deleted_at='2026-01-01'; "
+            "CREATE TABLE credeals.fixture_child (value text); INSERT INTO credeals.fixture_child VALUES ('before');")
+        final = sql("BEGIN; UPDATE credeals.fixture_child SET value='changed';\n" + stage + guard +
+                    "\nUPDATE credeals.fixture_child SET value='replaced'; COMMIT;", check=False)
+        if final.returncode == 0 or 'Essex identity contradiction in historical rows' not in final.stderr:
+            raise AssertionError('post-lock guard did not refuse changed row')
+        if sql('SELECT value FROM credeals.fixture_child;').stdout.strip() != 'before':
+            raise AssertionError('guard failure did not roll back earlier DML')
+        lines.append('PASS active precheck then deleted row: generated guard rolls back prior DML and children')
+        # Hold the listing row in another transaction until the generated lock path waits.
+        sql("UPDATE credeals.cre_listings SET deleted_at=NULL; UPDATE credeals.fixture_child SET value='before';")
+        if inspect_count() != 0:
+            raise AssertionError('concurrent transition precheck must clear')
+        lock_start = generated.index('CREATE TEMP TABLE _present_source_locks')
+        lock_end = generated.index('-- Essex keeps historical literal property-path keys.', lock_start)
+        locks = generated[lock_start:lock_end]
+        blocker = subprocess.Popen(
+            ['docker', 'exec', '-i', container, 'stdbuf', '-oL', 'psql', '-X', '-qAt',
+             '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=ENV,
+        )
+        try:
+            blocker.stdin.write("BEGIN; UPDATE credeals.cre_listings SET deleted_at='2026-01-01';\n"
+                                "\\echo LOCKED\nSELECT pg_sleep(3); COMMIT;\n")
+            blocker.stdin.flush()
+            if blocker.stdout.readline().strip() != 'LOCKED':
+                raise AssertionError('concurrent fixture did not lock listing')
+            start_wait = time.monotonic()
+            concurrent = sql("BEGIN; UPDATE credeals.fixture_child SET value='changed';\n" + stage + locks + guard +
+                             "\nUPDATE credeals.fixture_child SET value='replaced'; COMMIT;", check=False)
+            elapsed = time.monotonic() - start_wait
+            if elapsed < 1 or concurrent.returncode == 0 or 'Essex identity contradiction in historical rows' not in concurrent.stderr:
+                raise AssertionError('generated locks did not wait and recheck concurrent committed change')
+            if sql('SELECT value FROM credeals.fixture_child;').stdout.strip() != 'before':
+                raise AssertionError('concurrent guard failure did not roll back child sentinel')
+            lines.append('PASS generated locks wait for concurrent commit; guard refuses and rolls back child DML')
+        finally:
+            blocker.stdin.close()
+            try:
+                blocker.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                blocker.kill()
+                blocker.wait(timeout=10)
+                raise
+            if blocker.returncode:
+                raise AssertionError('concurrent fixture transaction failed')
+        sql('TRUNCATE credeals.cre_source_index;')
+        sql('TRUNCATE credeals.cre_listings;')
         null_claim = literal(json.dumps({'sourceKey': 'essex-realty', 'essexWordpressPage': None}))
-        sql('INSERT INTO credeals.cre_listings VALUES (1, ' + literal('properties/foo') + ', '
+        sql('INSERT INTO credeals.cre_listings (brokerage_id, external_id, source_url, raw_data, deleted_at) VALUES (1, ' + literal('properties/foo') + ', '
             + literal(candidate_url) + ', ' + null_claim + '::jsonb, NULL);')
         if inspect_count() != 0:
             raise AssertionError('null historical claim must remain unknown')

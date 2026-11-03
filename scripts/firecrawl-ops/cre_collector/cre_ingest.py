@@ -4696,46 +4696,6 @@ BEGIN
     END IF;
 END $$;
 
--- Essex keeps historical literal property-path keys. Refuse contradictory
--- staged/historical associations before DML, including soft-deleted parents.
--- Only typed WordPress page claims are comparable. Old currentPropertyId variables
--- remain observed metadata; missing old page IDs are unknown, never inferred.
-DO $$
-DECLARE
-    conflicting_rows bigint;
-BEGIN
-    CREATE TEMP TABLE _essex_identity_claims ON COMMIT DROP AS
-    """ + incoming_claims_sql() + """;
-
-    SELECT count(*) INTO conflicting_rows
-    FROM (""" + invalid_incoming_sql() + """) AS invalid_claims;
-    IF conflicting_rows > 0 THEN
-      RAISE EXCEPTION 'Essex identity contradiction in incoming URL/path/native claims; refusing mutation';
-    END IF;
-
-    CREATE TEMP TABLE _essex_historical_identity_claims ON COMMIT DROP AS
-    """ + historical_claims_sql() + """;
-
-    SELECT count(*) INTO conflicting_rows
-    FROM (""" + historical_conflicts_sql() + """) AS historical_conflicts;
-    IF conflicting_rows > 0 THEN
-      RAISE EXCEPTION 'Essex identity contradiction in historical rows; refusing mutation';
-    END IF;
-
-    SELECT count(*) INTO conflicting_rows
-    FROM _essex_identity_claims s
-    JOIN _essex_identity_claims other ON other.brokerage_id = s.brokerage_id
-    WHERE (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
-       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
-       OR (other.native_ids[1] = s.native_ids[1]
-           AND (other.source_url IS DISTINCT FROM s.source_url OR other.external_id IS DISTINCT FROM s.external_id))
-       OR ((other.source_url = s.source_url OR other.external_id = s.external_id)
-           AND other.native_ids[1] IS DISTINCT FROM s.native_ids[1]);
-    IF conflicting_rows > 0 THEN
-      RAISE EXCEPTION 'Essex identity contradiction within incoming cohort; refusing mutation';
-    END IF;
-END $$;
-
 -- DAUM keeps historical literal property-path keys. Refuse contradictory
 -- staged/historical associations before DML, including soft-deleted parents.
 -- Only explicitly preserved positive WordPress IDs are comparable. Missing old
@@ -4825,6 +4785,47 @@ FROM credeals.cre_listings t
 JOIN _src s ON s.brokerage_id = t.brokerage_id AND s.external_id = t.external_id
 ORDER BY t.id
 FOR UPDATE OF t;
+
+-- Essex keeps historical literal property-path keys. Refuse contradictory
+-- staged/historical associations before DML, including soft-deleted parents.
+-- Only typed WordPress page claims are comparable. Old currentPropertyId variables
+-- remain observed metadata; missing old page IDs are unknown, never inferred.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    CREATE TEMP TABLE _essex_identity_claims ON COMMIT DROP AS
+    """ + incoming_claims_sql() + """;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM (""" + invalid_incoming_sql() + """) AS invalid_claims;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction in incoming URL/path/native claims; refusing mutation';
+    END IF;
+
+    CREATE TEMP TABLE _essex_historical_identity_claims ON COMMIT DROP AS
+    """ + historical_claims_sql() + """;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM (""" + historical_conflicts_sql() + """) AS historical_conflicts;
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction in historical rows; refusing mutation';
+    END IF;
+
+    SELECT count(*) INTO conflicting_rows
+    FROM _essex_identity_claims s
+    JOIN _essex_identity_claims other ON other.brokerage_id = s.brokerage_id
+    WHERE (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
+       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
+       OR (other.native_ids[1] = s.native_ids[1]
+           AND (other.source_url IS DISTINCT FROM s.source_url OR other.external_id IS DISTINCT FROM s.external_id))
+       OR ((other.source_url = s.source_url OR other.external_id = s.external_id)
+           AND other.native_ids[1] IS DISTINCT FROM s.native_ids[1]);
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION 'Essex identity contradiction within incoming cohort; refusing mutation';
+    END IF;
+END $$;
+
 
 {daum_subset_guard}-- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
 -- BEFORE the upsert mutates them, so history and presence snapshots cannot be

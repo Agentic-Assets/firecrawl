@@ -9,6 +9,7 @@ from pathlib import Path
 
 def incoming_claims_sql():
     return """SELECT s.brokerage_id, s.external_id, s.source_url,
+           s.title, s.address, s.city, s.state, s.transaction_type, s.description,
            ARRAY(SELECT DISTINCT CASE
                    WHEN jsonb_typeof(n.value) = 'object'
                     AND n.value->>'type' = 'wordpress_properties_post'
@@ -36,6 +37,12 @@ def invalid_incoming_sql():
 
 def historical_claims_sql():
     return """SELECT t.brokerage_id, t.external_id, t.source_url,
+           t.status, t.deleted_at, t.title, t.address, t.city, t.state, t.transaction_type, t.description,
+           (SELECT count(*) = 1 AND bool_and(
+                     (i.source_key = 'essex-realty' AND i.url = t.source_url
+                      AND i.observation_present IS TRUE AND i.soft_deleted IS FALSE) IS TRUE)
+                   FROM credeals.cre_source_index i
+                   WHERE i.brokerage_id = t.brokerage_id AND i.external_id = t.external_id) AS source_present,
            ARRAY(SELECT DISTINCT CASE
                    WHEN jsonb_typeof(n.value) = 'object'
                     AND n.value->>'type' = 'wordpress_properties_post'
@@ -61,7 +68,20 @@ def historical_conflicts_sql():
            AND (t.source_url IS DISTINCT FROM s.source_url OR t.external_id IS DISTINCT FROM s.external_id))
        OR ((t.source_url = s.source_url OR t.external_id = s.external_id)
            AND cardinality(t.native_ids) > 0
-           AND (cardinality(t.native_ids) <> 1 OR t.native_ids[1] IS DISTINCT FROM s.native_ids[1]))"""
+           AND (cardinality(t.native_ids) <> 1
+                OR CASE WHEN t.native_ids[1] ~ '^[1-9][0-9]{0,15}$'
+                        THEN t.native_ids[1]::numeric > 9007199254740991
+                        ELSE true END
+                OR (t.native_ids[1] IS DISTINCT FROM s.native_ids[1] AND NOT (
+                     t.status = 'active' AND t.deleted_at IS NULL AND t.source_present
+                     AND s.title IS NOT NULL AND btrim(s.title) <> '' AND s.title = t.title
+                     AND s.address IS NOT NULL AND btrim(s.address) <> '' AND s.address = t.address
+                     AND s.city IS NOT NULL AND btrim(s.city) <> '' AND s.city = t.city
+                     AND s.state IS NOT NULL AND btrim(s.state) <> '' AND s.state = t.state
+                     AND s.transaction_type IS NOT NULL AND btrim(s.transaction_type) <> ''
+                     AND s.transaction_type = t.transaction_type
+                     AND s.description IS NOT NULL AND btrim(s.description) <> '' AND s.description = t.description
+                   ) IS TRUE)))"""
 
 
 def stage_essex_identity(artifact):
@@ -85,7 +105,7 @@ def stage_essex_identity(artifact):
         if key in keys:
             raise ValueError("duplicate Essex staging identity")
         keys.add(key)
-        result.append({name: row[name] for name in ("slug", "external_id", "source_url", "raw_data")})
+        result.append({name: row[name] for name in ("slug", "external_id", "source_url", "raw_data", "title", "address", "city", "state", "transaction_type", "description")})
     return result
 
 
@@ -118,7 +138,8 @@ def probe_sql(rows):
     return f"""SET LOCAL statement_timeout = '30s';
 WITH _stage AS (
   SELECT * FROM jsonb_to_recordset({sql_lit(encoded)}::jsonb)
-    AS s(slug text, external_id text, source_url text, raw_data jsonb)
+    AS s(slug text, external_id text, source_url text, raw_data jsonb,
+         title text, address text, city text, state text, transaction_type text, description text)
 ), _src AS (
   SELECT b.id AS brokerage_id, s.* FROM _stage s JOIN credeals.cre_brokerages b ON b.slug = s.slug
 ), _essex_identity_claims AS ({incoming_claims_sql()}),
