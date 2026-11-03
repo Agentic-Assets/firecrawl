@@ -2,6 +2,7 @@
 
 import json
 from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -43,10 +44,14 @@ def test_failure_receipt_only_holds_mutated_fleet_before_release_start(tmp_path,
 
 @pytest.mark.parametrize("fault", ["clear", "clear-report", "exit", "lock-clear", "terminal"])
 def test_release_failures_preserve_original_and_never_rehold_tasks(tmp_path, monkeypatch, fault):
+    current = datetime.now(UTC)
     observed, auth, output = tmp_path / "observation", tmp_path / "authorization", tmp_path / "operation"
-    observed.write_bytes(b"observation")
-    auth.write_bytes(b"{}")
-    args = SimpleNamespace(release="/synthetic/release", observation=str(observed), authorization=str(auth), output=str(output))
+    release = tmp_path / "release"
+    release.write_bytes(b"{}")
+    observed.write_text(json.dumps({"observed_at": current.isoformat(), "qualified_at": current.isoformat()}))
+    auth.write_text(json.dumps({"authorized_at": current.isoformat(),
+                               "expires_at": (current + timedelta(seconds=299)).isoformat()}))
+    args = SimpleNamespace(release=str(release), observation=str(observed), authorization=str(auth), output=str(output))
     packet = {"new": {"sha": "a" * 40, "tree": "b" * 40}, "roots": {"runtime": str(tmp_path)}, "expected_images": {}}
     calls = []
 
@@ -59,6 +64,7 @@ def test_release_failures_preserve_original_and_never_rehold_tasks(tmp_path, mon
 
     checkpoint = SimpleNamespace(canonical_shared_lock_dir=lambda _: tmp_path / "lock",
                                  SharedLock=lambda *args, **kwargs: Lease())
+    monkeypatch.setattr(operation, "now", lambda: current)
     for name in ("validate_maintenance_release", "validate_maintenance_authorization", "validate_prepared_images",
                  "maintenance_readiness", "validate_maintenance_ready", "validate_operation_paths",
                  "validate_current_projection"):
@@ -79,7 +85,7 @@ def test_release_failures_preserve_original_and_never_rehold_tasks(tmp_path, mon
     evidence = SimpleNamespace(recheck=lambda: None)
     git = SimpleNamespace(development=lambda _: None)
     with pytest.raises(RuntimeError, match="clear" if fault == "clear-report" else fault):
-        maintenance.apply_maintenance(args, b"release", packet, evidence, git, (checkpoint, None, None, None))
+        maintenance.apply_maintenance(args, b"{}", packet, evidence, git, (checkpoint, None, None, None))
     if fault == "clear-report":
         assert calls == [] and not (output / "terminal.json").exists()
         return

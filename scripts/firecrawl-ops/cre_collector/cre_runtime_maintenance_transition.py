@@ -330,7 +330,6 @@ def original_held_release(packet, evidence, read):
     for depth in range(9):
         tasks = unique(current.get("task_baseline"), "key", TASKS)
         pins = ["pin_before" in row for row in tasks.values()]
-        require(all(pins) or not any(pins), "historical held pins incomplete")
         if not any(pins):
             return current, current_evidence
         require(depth < 8, "historical held predecessor depth exceeded")

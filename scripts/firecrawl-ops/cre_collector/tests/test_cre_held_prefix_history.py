@@ -23,7 +23,8 @@ def test_historical_task_walk_uses_sealed_original_xml_without_synthesizing():
     mid = {"schema": "cre-runtime-maintenance-v1", "old": old,
            "task_baseline": [{"key": key, "pin_before": "c" * 40} for key in TASKS],
            "continuation": {"failed_release": "leaf"}, "inputs": [ref("leaf", "/leaf.json", leaf)]}
-    packet = {"old": old, "continuation": {"failed_release": "mid"}, "inputs": [ref("mid", "/mid.json", mid)]}
+    packet = {"old": old, "task_baseline": [{"key": key, "pin_before": "c" * 40} for key in TASKS],
+              "continuation": {"failed_release": "mid"}, "inputs": [ref("mid", "/mid.json", mid)]}
     evidence = Evidence(packet, data.__getitem__)
     original, rows = historical_held_tasks(packet, evidence, data.__getitem__)
     assert original.raw(rows["interra"]["xml"]) == b"original interra"
