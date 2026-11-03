@@ -15,6 +15,11 @@ param(
     [string]$Output,
     [string]$Observation,
     [string]$Authorization,
+    [switch]$FiniteReviewed,
+    [string]$ObservationOutput,
+    [string]$Review,
+    [string]$Reviewer,
+    [string]$ApprovalRef,
     [string]$OperationOutput,
     [int]$OwnerPid=0
 )
@@ -35,6 +40,22 @@ $release=Read-CreHandoffJson $releaseText
 if($release.schema -cne $(if($restoration){'cre-code-restoration-v1'}elseif($maintenance){'cre-runtime-maintenance-v1'}else{'cre-code-release-v1'})) { throw 'Input selector/schema differs' }
 if($restoration -and $Mode -in @('Hold','Repin')) {throw 'Restoration cannot hold/repin/register tasks'}
 if($maintenance -and $Mode -eq 'Restore') {throw 'Maintenance cannot enable or restore tasks'}
+$finiteParameters=@('ObservationOutput','Review','Reviewer','ApprovalRef')
+if($FiniteReviewed) {
+    if($Mode -cne 'Apply' -or -not ($maintenance -or $restoration)) {throw 'Finite admission requires maintenance or restoration Apply'}
+    if(-not $ObservationOutput -or -not $Observation -or -not $Authorization -or -not $Review -or
+       [string]::IsNullOrWhiteSpace($Reviewer) -or [string]::IsNullOrWhiteSpace($ApprovalRef)) {
+        throw 'Finite admission requires exact observation, authorization and review inputs'
+    }
+    if((ConvertTo-CreHandoffPath $Observation) -cne (ConvertTo-CreHandoffPath (Join-Path $ObservationOutput 'observation.json'))) {
+        throw 'Finite observation path differs from output directory'
+    }
+    foreach($fresh in @($ObservationOutput,$Observation,$Authorization)) {
+        if(Test-Path -LiteralPath (ConvertTo-CreHandoffPath $fresh)) {throw 'Finite admission output already exists'}
+    }
+} elseif(@($finiteParameters|Where-Object {$PSBoundParameters.ContainsKey($_)}).Count -gt 0) {
+    throw 'Finite admission arguments require FiniteReviewed'
+}
 $actualSourceRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
 if((ConvertTo-CreHandoffPath $actualSourceRoot) -cne (ConvertTo-CreHandoffPath $release.roots.tooling)) { throw 'Invoked native source root differs from declared tooling' }
 if($Mode -eq 'Preview') {
@@ -85,7 +106,11 @@ if($Mode -eq 'Apply') {
     # The Linux procedure creates its own exclusive operation directory. Native
     # streams are siblings so no pre-created output can masquerade as a retry.
     try {
-        $result=[CreWindowsCapture.Capture]::Run('wsl.exe',([string[]]($common+@('--apply','--observation',(ConvertTo-CreWslPath $Observation),'--authorization',(ConvertTo-CreWslPath $Authorization),'--output',(ConvertTo-CreWslPath $Output)))),($outputRoot+'.stdout.raw'),($outputRoot+'.stderr.raw'),$null)
+        $applyArgs=@('--apply')
+        if($FiniteReviewed) {$applyArgs+=@('--finite-reviewed','--observation-output',(ConvertTo-CreWslPath $ObservationOutput))}
+        $applyArgs+=@('--observation',(ConvertTo-CreWslPath $Observation),'--authorization',(ConvertTo-CreWslPath $Authorization),'--output',(ConvertTo-CreWslPath $Output))
+        if($FiniteReviewed) {$applyArgs+=@('--review',(ConvertTo-CreWslPath $Review),'--reviewer',$Reviewer,'--approval-ref',$ApprovalRef)}
+        $result=[CreWindowsCapture.Capture]::Run('wsl.exe',([string[]]($common+$applyArgs)),($outputRoot+'.stdout.raw'),($outputRoot+'.stderr.raw'),$null)
         if($result.Failed -or $result.NativeExitCode -ne 0 -or -not $result.Stdout.Eof -or -not $result.Stderr.Eof -or $result.Stdout.Truncated -or $result.Stderr.Truncated) { throw 'Native foreground exit/drain uncertain' }
         $completion=[ordered]@{schema=($schemaPrefix+'-native-completion-v1');operation_output=$outputRoot;capture=$result;
             authorization_sha256=(Get-CreHandoffHash ([IO.File]::ReadAllText((ConvertTo-CreHandoffPath $Authorization))));

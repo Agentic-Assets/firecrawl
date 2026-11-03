@@ -70,10 +70,12 @@ def load_release(path):
     else:
         validate_release(release, evidence)
     release["roots"] = role_paths(release)
-    if release.get("schema") == "cre-runtime-maintenance-v1":
+    if release.get("schema") in {"cre-runtime-maintenance-v1", "cre-code-restoration-v1"}:
         from cre_maintenance_validation_context import LoadedMaintenance
 
-        evidence._loaded_maintenance = LoadedMaintenance(raw, release, evidence)
+        evidence._loaded_finite = LoadedMaintenance(raw, release, evidence)
+        if release.get("schema") == "cre-runtime-maintenance-v1":
+            evidence._loaded_maintenance = evidence._loaded_finite
     return raw, release, evidence
 
 
@@ -188,6 +190,21 @@ def validate_owner_command(command, script, *, restoration_inputs=None, maintena
     selectors = (command.count(b"--release"), command.count(b"--restoration-packet"),
                  command.count(b"--maintenance-packet"))
     require(selectors in {(1, 0, 0), (0, 1, 0), (0, 0, 1)}, "maintenance input selector differs")
+    if b"--finite-reviewed" in command:
+        require(command.count(b"--finite-reviewed") == 1 and command.count(b"--apply") == 1
+                and selectors in {(0, 1, 0), (0, 0, 1)}, "finite owner mode differs")
+        options = {b"--apply", b"--finite-reviewed", b"--observation-output", b"--observation",
+                   b"--authorization", b"--output", b"--review", b"--reviewer", b"--approval-ref",
+                   b"--restoration-packet" if selectors == (0, 1, 0) else b"--maintenance-packet"}
+        supplied = [item for item in command[command.index(str(script).encode()) + 1:] if item.startswith(b"--")]
+        require(set(supplied) == options and len(supplied) == len(options), "finite owner arguments differ")
+        def value(flag):
+            index = command.index(flag)
+            require(index + 1 < len(command), "finite owner argument missing")
+            return command[index + 1].decode()
+        require(canonical_path(value(b"--observation")) ==
+                canonical_path(value(b"--observation-output").rstrip("/") + "/observation.json"),
+                "finite owner observation differs")
     if restoration_inputs is not None or maintenance_inputs is not None:
         require(not (restoration_inputs is not None and maintenance_inputs is not None), "ambiguous owner scope")
         expected = restoration_inputs if restoration_inputs is not None else maintenance_inputs
@@ -533,7 +550,7 @@ def preserved(release):
     return result
 
 
-def authorize(args, release_raw, release, evidence):
+def authorize(args, release_raw, release, evidence, *, finite=None):
     observation_raw = read_file(args.observation)
     review_raw = read_file(args.review)
     current = now()
@@ -550,7 +567,15 @@ def authorize(args, release_raw, release, evidence):
     if restoration:
         authorization.update(schema="cre-code-restoration-authorization-v1", scope="restore-held-task-states",
                              restoration_sha256=authorization.pop("release_sha256"))
-        restoration_enable_boundary(release, evidence)
+        if finite is None:
+            restoration_enable_boundary(release, evidence)
+        else:
+            from cre_code_restoration_evidence import validate_enable_context
+            from cre_finite_handoff import FiniteProof
+
+            require(type(finite) is FiniteProof, "finite qualification differs")
+            finite.recheck(release_raw, release, evidence)
+            validate_enable_context(release, evidence, finite.enable, now)
     require(not local_path(args.output).exists(), "operation output already exists")
     # Two distinct checks around publication; original bytes remain the oracle.
     validate(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
@@ -559,6 +584,8 @@ def authorize(args, release_raw, release, evidence):
     validate(release_raw, release, evidence, observation_raw, authorization, now(), review_reader=read_file)
     require(read_file(args.release) == release_raw and read_file(args.observation) == observation_raw,
             "publication inputs changed")
+    if restoration:
+        check_boundary_times(observation_raw, json.dumps(authorization).encode())
     # link is exclusive (rename could overwrite); failed pending publication is never resumed.
     os.link(temporary, args.authorization, follow_symlinks=False)
     temporary.unlink()
@@ -754,7 +781,7 @@ def restoration_capture(packet, evidence, args, git, modules, output, *, packet_
     return observation
 
 
-def apply_restoration(args, packet_raw, packet, evidence, git, modules):
+def apply_restoration(args, packet_raw, packet, evidence, git, modules, *, finite=None):
     checkpoint = modules[0]
     observed_raw, authorization_raw = read_file(args.observation), read_file(args.authorization)
     authorization = json_bytes(authorization_raw)
@@ -767,8 +794,19 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
                 and read_file(args.authorization) == authorization_raw, "restoration immutable input changed")
         validate_restoration_authorization(packet_raw, packet, evidence, observed_raw, authorization,
                                            now(), review_reader=read_file)
-        restoration_enable_boundary(packet, evidence)
+        if finite is None:
+            restoration_enable_boundary(packet, evidence)
+        else:
+            from cre_code_restoration_evidence import validate_enable_context
 
+            validate_enable_context(packet, evidence, finite.enable, now)
+        check_boundary_times(observed_raw, authorization_raw)
+
+    if finite is not None:
+        from cre_finite_handoff import FiniteProof
+
+        require(type(finite) is FiniteProof, "finite qualification differs")
+        finite.recheck(packet_raw, packet, evidence)
     admitted()  # Unsupported catch-up admission must refuse before any mutation/lease.
     from cre_code_restoration_evidence import (
         prepare_enable_context,
@@ -776,8 +814,8 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
     )
     from cre_maintenance_validation_context import RecordingGit
 
-    history_git = RecordingGit(packet["programs"]["native_git"])
-    enable_context = prepare_enable_context(packet, evidence, now, git=history_git)
+    history_git = finite.replay if finite is not None else RecordingGit(packet["programs"]["native_git"])
+    enable_context = finite.enable if finite is not None else prepare_enable_context(packet, evidence, now, git=history_git)
 
     def boundary_admitted():
         require(read_file(args.release) == packet_raw and read_file(args.observation) == observed_raw
@@ -785,6 +823,7 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
         validate_restoration_authorization(packet_raw, packet, evidence, observed_raw, authorization,
                                            now(), review_reader=read_file)
         validate_enable_context(packet, evidence, enable_context, now)
+        check_boundary_times(observed_raw, authorization_raw)
     git.clean(packet["roots"]["development"], packet["development"], tracking=packet["development"]["sha"])
     git.command(packet["roots"]["development"], "merge-base", "--is-ancestor", packet["code"]["sha"], packet["development"]["sha"])
     readiness(packet, *modules, git, evidence=evidence)
@@ -942,6 +981,8 @@ def main(argv=None):
     parser.add_argument("--reviewer")
     parser.add_argument("--approval-ref")
     parser.add_argument("--operation")
+    parser.add_argument("--finite-reviewed", action="store_true")
+    parser.add_argument("--observation-output")
     args = parser.parse_args(argv)
     if args.restoration_packet:
         args.release = args.restoration_packet
@@ -951,6 +992,8 @@ def main(argv=None):
         boundary_client(args)
         return 0
     require(args.boundary_mode is None, "boundary mode requires owner boundary")
+    require(not args.finite_reviewed or args.apply, "finite handoff requires apply")
+    require(args.finite_reviewed or args.observation_output is None, "observation output requires finite handoff")
     raw, release, evidence = load_release(args.release)
     restoration = release.get("schema") == "cre-code-restoration-v1"
     maintenance = release.get("schema") == "cre-runtime-maintenance-v1"
@@ -1032,6 +1075,22 @@ def main(argv=None):
             assert_owned(modules[0], lock, args.assert_owned_pid)
         return 0
     require(args.output, "exclusive output directory required")
+    if args.finite_reviewed:
+        from cre_finite_handoff import run_finite
+
+        require((maintenance or restoration) and all((args.observation_output, args.observation,
+                args.authorization, args.review, args.reviewer, args.approval_ref)),
+                "finite handoff requires explicit reviewed admission inputs")
+        finite_command = [sys.executable.encode(), str(Path(__file__).resolve()).encode(),
+                          *(value.encode() for value in (sys.argv[1:] if argv is None else argv))]
+        finite_inputs = {"--maintenance-packet" if maintenance else "--restoration-packet": args.release,
+                         "--observation": args.observation, "--authorization": args.authorization,
+                         "--output": args.output}
+        validate_owner_command(finite_command, Path(__file__).resolve(),
+                               maintenance_inputs=finite_inputs if maintenance else None,
+                               restoration_inputs=finite_inputs if restoration else None)
+        run_finite(args, raw, release, evidence, git, modules)
+        return 0
     if maintenance and args.observe:
         from cre_runtime_maintenance import observe_maintenance
 

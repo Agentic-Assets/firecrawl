@@ -27,7 +27,7 @@ from cre_code_handoff_git import Git
 from cre_maintenance_validation_context import LoadedMaintenance
 
 
-def test_hold_only_failure_through_owned_successor_and_restoration(continued_ready_case, tmp_path, monkeypatch):  # noqa: F811
+def build_hold_successor(continued_ready_case, tmp_path, monkeypatch):  # noqa: F811
     case, prior, _ = build_partial_successor(continued_ready_case, tmp_path, monkeypatch, False)
     before = copy.deepcopy(case.before)
     before_time = case.now
@@ -106,5 +106,10 @@ def test_hold_only_failure_through_owned_successor_and_restoration(continued_rea
     case.built.refs["current_stack"] = {key: model_row[key] for key in ("path", "sha256", "bytes")}
     monkeypatch.setattr(cre_current_stack, "capture_current_stack", lambda *_args, **_kwargs: case.built.refs["current_stack"])
     case.evidence._loaded_maintenance = LoadedMaintenance(case.release_raw, packet, evidence)
+    return case
+
+
+def test_hold_only_failure_through_owned_successor_and_restoration(continued_ready_case, tmp_path, monkeypatch):  # noqa: F811
+    case = build_hold_successor(continued_ready_case, tmp_path, monkeypatch)
     run_actual_apply_steps(case, tmp_path, monkeypatch, False, with_ipc=True)
     assert_produced_transition_and_restoration(case, tmp_path)
