@@ -181,9 +181,18 @@ function Get-CreHandoffNativeFrontends {
     if($cursor -gt 0 -and $index -ge 12) {throw 'Native ancestry visibility bound exceeded'}
     $ownVisible=$false;$frontends=@()
     foreach($process in @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'" -Property ProcessId,Name,CommandLine,CreationDate -ErrorAction Stop)) {
-        if($null -eq $process.ProcessId -or $null -eq $process.Name -or $null -eq $process.CommandLine) {throw 'Native PowerShell visibility missing'}
+        if($null -eq $process.ProcessId -or $null -eq $process.Name) {throw 'Native PowerShell visibility missing'}
         $id=[long]0
         if(-not [long]::TryParse([string]$process.ProcessId,[ref]$id) -or $id -le 0 -or $id -gt [int]::MaxValue) {throw 'Native PowerShell PID invalid'}
+        if([string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
+            # WMI can retain a just-exited process in the host snapshot while
+            # its command line has already disappeared or is blank. Ignore only if a new
+            # exact-PID lookup confirms there is no process at that PID now.
+            # A live process, including a reused PID, remains unclassifiable.
+            $live=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+$id) -Property ProcessId,CreationDate -ErrorAction Stop)
+            if($live.Count -ne 0) {throw 'Native PowerShell visibility missing'}
+            continue
+        }
         $matchingAncestor=$ancestors.ContainsKey([int]$id) -and $process.CreationDate -is [DateTime] -and
                           $process.CreationDate.ToUniversalTime().Ticks -eq $ancestors[[int]$id]
         if($id -eq $PID -and $matchingAncestor) {$ownVisible=$true}
