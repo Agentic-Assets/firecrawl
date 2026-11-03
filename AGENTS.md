@@ -79,6 +79,16 @@ guide's routine operation procedure; historical maintenance packets and full
 source while eligible sources continue, preserving local writer exclusion, data
 ownership and unresolved-write protections.
 
+Design for the pipeline to keep making useful progress with the simplest
+maintainable supported path. When individual records are incomplete or invalid,
+isolate them and process valid peers when the source has enough evidence to do
+so safely; report the result as partial and leave held records unchanged. Do
+not invent missing data, treat a partial result as complete, or retire records
+based on absence from a partial result. Avoid adding manual approvals,
+historical prerequisites or operator switches to routine operation without a
+concrete need. Implement and verify any missing partial path before relying on
+it; guidance alone does not change runtime behavior.
+
 ## Env files (which is which)
 
 - **`./.env`** — **primary when present.** This is the root file Docker Compose reads. It is gitignored and optional for non-AI local calls. Never commit it.
