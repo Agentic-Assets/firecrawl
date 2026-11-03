@@ -22,6 +22,7 @@ export type CollectorScrapeOpts = ScrapeOpts & {
   allowEmptyBody?: boolean;
   singleAttempt?: boolean;
   quietErrors?: boolean;
+  onNonJson?: (attempt: number, status: number | null) => void;
 };
 
 const DEFAULT_SCRAPE_MAX_ATTEMPTS = 3;
@@ -309,6 +310,14 @@ export async function scrapeJsonWithObservation(
     const response = await scrapeRawWithObservation(url, opts);
     const parsed = parseJsonBody(response.rawHtml);
     if (parsed !== null) return { data: parsed, response };
+    if (opts.onNonJson) {
+      try {
+        const metadata = response.metadata;
+        const status = metadata && typeof metadata === "object" && "statusCode" in metadata
+          ? (metadata as { statusCode: unknown }).statusCode : null;
+        opts.onNonJson(attempt, typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : null);
+      } catch { /* Diagnostic failures must not alter collection. */ }
+    }
     if (attempt >= attempts) break;
     console.error(`non-JSON body from ${url} (attempt ${attempt}); backing off`);
     const delayMs = backoffMs * attempt;

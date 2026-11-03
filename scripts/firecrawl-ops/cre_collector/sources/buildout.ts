@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import { Marked } from "marked";
 import { brokerRef } from "../lib/broker.js";
+import { allBuildoutFeeds } from "./buildout-feeds/index.js";
 import { CONCURRENCY } from "../lib/config.js";
 import { parseJsonBody, scrapeDoc, scrapeJson } from "../lib/scrape.js";
 import { BuildoutCurrentInventoryProof, BuildoutInventoryProofPage, SourceResult, Tx } from "../types.js";
@@ -512,6 +513,10 @@ export async function fetchBuildoutInventoryPage(
     timeout: 60000,
     jsonAttempts: opts.jsonAttempts,
     jsonBackoffMs: opts.jsonBackoffMs,
+    onNonJson: (attempt: number, status: number | null) => {
+      const feed = allBuildoutFeeds.find((item) => item.pluginKey === pluginKey)?.feedKey ?? "unknown";
+      console.error(`  ${feed}: Firecrawl non-JSON page ${page} attempt ${attempt} status ${status ?? "unknown"}`);
+    },
     ...(requireFreshDetails() ? { maxAge: 0 } : {}),
   });
   requireBuildoutJsonValue(data);
