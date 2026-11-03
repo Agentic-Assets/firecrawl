@@ -157,7 +157,7 @@ def validate_maintenance_git_witness(packet, git, history_git, history_repo):
         validate_maintenance_tracking_history(history_git, history_repo, old, git[key]["before"]["tracking"], packet["new"])
 
 
-def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw, release_path, git=None):
+def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw, release_path, git=None, finite=None):
     """Authenticate the still-owned, held-fleet ready boundary from retained bytes."""
     import re
 
@@ -174,6 +174,12 @@ def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw,
     from cre_runtime_maintenance_images import qualify_image_transition
     from cre_runtime_maintenance_steps import compose_argv
 
+    if finite is not None:
+        from cre_finite_handoff import FiniteProof
+
+        require(type(finite) is FiniteProof, 'finite ready qualification differs')
+        finite.recheck_ready(release_raw, packet, evidence)
+
     def raw(field):
         return retained_reference(ready[field], evidence)
 
@@ -186,10 +192,11 @@ def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw,
             and ready.get("release_sha256") == sha(release_raw)
             and ready.get("old") == packet["old"] and ready.get("new") == packet["new"]
             and ready.get("recovery_required_at_publication") is True, "maintenance ready release differs")
-    if git is None:
-        validate_maintenance_release(packet, evidence)
-    else:
-        validate_maintenance_release(packet, evidence, git=git)
+    if finite is None:
+        if git is None:
+            validate_maintenance_release(packet, evidence)
+        else:
+            validate_maintenance_release(packet, evidence, git=git)
     history_git = git if git is not None else Git(packet["programs"]["native_git"])
     history_repo = packet["roots"]["development"]
     history_git.maintenance_ancestry(history_repo, packet["old"], packet["native_before"], packet["new"])

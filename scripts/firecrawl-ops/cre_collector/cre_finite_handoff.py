@@ -12,12 +12,13 @@ _QUALIFIED = object()
 class FiniteProof:
     """Private in-memory qualified facts; every use rereads their inputs."""
 
-    def __init__(self, raw, packet, evidence, replay, enable, *, _token=None):
+    def __init__(self, raw, packet, evidence, replay, enable, *, ready=None, _token=None):
         from cre_maintenance_validation_context import EvidenceSeal
 
         require(_token is _QUALIFIED, "finite context must follow full qualification")
         self.raw, self.packet, self.evidence = raw, packet, evidence
         self.seal, self.replay, self.enable = EvidenceSeal(packet, evidence), replay, enable
+        self.ready = ready
 
     def extend(self, raw, packet, evidence, allowed):
         from cre_maintenance_validation_context import EvidenceSeal
@@ -41,6 +42,30 @@ class FiniteProof:
         self.seal.recheck(packet, evidence)
         if self.replay is not None:
             self.replay.recheck()
+
+    def recheck_ready(self, raw, packet, evidence):
+        from cre_maintenance_validation_context import ReadyReleaseProof
+
+        require(type(self.ready) is ReadyReleaseProof, 'finite ready qualification missing')
+        self.ready.recheck(raw, packet, evidence, current_seal=self.seal)
+
+    def extend_ready_xml(self, raw, packet, evidence, ready, output):
+        """Admit only the three already validated Verify XML observations."""
+        from cre_code_handoff_evidence import TASKS, unique
+
+        rows = unique(ready['readiness']['tasks'], 'key', TASKS)
+        allowed = set()
+        for key, row in rows.items():
+            ref = row['xml_reference']
+            path = ref['path']
+            require(canonical_path(str(local_path(path))) == canonical_path(str(local_path(output) / (key + '-observed.xml'))),
+                    'finite ready final XML path differs')
+            data = read_file(path)
+            require(ref['bytes'] == len(data) and ref['sha256'] == sha(data)
+                    and evidence.original_payloads.get(path) == data,
+                    'finite ready final XML changed')
+            allowed.add(path)
+        self.extend(raw, packet, evidence, allowed)
 
 
 def prepare_finite(args, raw, packet, evidence, git, modules):
@@ -67,6 +92,9 @@ def prepare_finite(args, raw, packet, evidence, git, modules):
         recheck_continuation_stack(packet, evidence, git, raw=raw)
         replay = qualify_stack_replay(packet, evidence) if "continuation" in packet else None
         maintenance_readiness(packet, modules, git)
+        from cre_maintenance_validation_context import qualify_ready_release
+
+        ready = qualify_ready_release(raw, packet, evidence)
         enable = None
     else:
         from cre_code_handoff import now, readiness
@@ -76,8 +104,9 @@ def prepare_finite(args, raw, packet, evidence, git, modules):
         enable = prepare_enable_context(packet, evidence, now, git=replay)
         git.clean(packet["roots"]["development"], packet["development"], tracking=packet["development"]["sha"])
         readiness(packet, *modules, git, evidence=evidence)
+        ready = None
     evidence.recheck()
-    return FiniteProof(raw, packet, evidence, replay, enable, _token=_QUALIFIED)
+    return FiniteProof(raw, packet, evidence, replay, enable, ready=ready, _token=_QUALIFIED)
 
 
 def observe_finite(args, raw, packet, evidence, git, modules, _prepared):
