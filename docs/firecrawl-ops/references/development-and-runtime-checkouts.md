@@ -20,14 +20,46 @@ active Compose overlay and unaffected image pins. Do not pull blindly under an
 active writer or run an unattended pull. No Mac change is needed for this
 Windows procedure.
 
+For an operations-code-only or documentation-only change, the foreground
+source-only updater accepts an exact reviewed current `origin/main` SHA from the
+clean Windows development checkout, run as the configured Ubuntu user. Fetch
+and review that SHA first; the command does not fetch the remote:
+
+
+```sh
+python3 -B scripts/firecrawl-ops/cre_collector/cre_reviewed_update.py --selected-sha <full-reviewed-sha>
+```
+
+It checks the current task definitions, holds their existing flags under the
+shared writer lock, advances the native and WSL checkouts, repins, and restores
+the original flags. It refuses image, Compose, or dependency input changes
+before holding tasks; those updates still need the reviewed image/dependency
+procedure. It reports existing image provenance as unknown and records bounded
+service-health observations; a temporary unavailable service does not by
+itself keep tasks disabled. The collector's own preflight remains responsible
+for checking service health before collection. A failed native step is reconciled under the same owner only when it reports a
+bound completion receipt and the actual checkout and task states match the
+captured old or selected definitions. A settled hold failure restores the old
+flags; a settled partial repin or restore can complete the selected pins and
+original flags without stopping a successor. A successful selected-state
+reconciliation returns `reconciled_after` identifying the failed stage; the
+update is complete and does not need a retry. Uncertain task or Git steps retain
+the lock fence; inspect the printed phase and output directory before recovery. If the owner has died, follow
+[the known-settled dead-owner procedure](../../../scripts/firecrawl-ops/cre_collector/LOCK_AUTHORITY_RECOVERY.md#explicit-recovery-of-a-known-settled-dead-owner):
+it requires three bound evidence files for the operation outcome, remote-work
+settlement, and descendant settlement. That procedure clears only the owner
+fence; it does not restore task definitions or flags. Inspect and separately
+restore the actual task state before enabling schedules; there is no automatic
+recovery for an uncertain post-advance step. Never blindly rerun or remove the
+authority files.
+
 The detailed packet, historical lineage and 900-second catch-up rules below
 belong to the legacy guarded recovery or handoff paths that implement them;
 they are not a general requirement for a settled current-state resume. Those
 existing commands continue to enforce their own checks until changed. Their
 forensic records remain available when an actual uncertain operation needs them.
 A saved task definition may still be used to check today's task settings without
-adopting its historical admission requirements. The routine update above is an
-operator procedure, not a claim that a general automated updater exists.
+adopting its historical admission requirements. The source-only command above does not implement the general image or dependency updater.
 
 The CRE collector is one shared pipeline. A development branch, Windows launcher checkout, Linux
 runtime checkout, and temporary test clone have different jobs; they are not separate pipeline
