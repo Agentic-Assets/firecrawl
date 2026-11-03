@@ -3472,8 +3472,6 @@ def merge_rows(a, b):
         "city",
         "state",
         "zip",
-        "lat",
-        "lng",
         "size_sf",
         "lot_size_sf",
         "year_built",
@@ -3526,6 +3524,14 @@ def merge_rows(a, b):
     ):
         if a[k] is None and b[k] is not None:
             a[k] = b[k]
+    # Coordinates are one observation: never assemble a point from two passes.
+    # A complete incoming pair beats an incomplete first pass; otherwise retain
+    # the first available observation, including a single available component.
+    if ((a["lat"] is None or a["lng"] is None)
+            and b["lat"] is not None and b["lng"] is not None):
+        a["lat"], a["lng"] = b["lat"], b["lng"]
+    elif a["lat"] is None and a["lng"] is None:
+        a["lat"], a["lng"] = b["lat"], b["lng"]
     # Geo is derived, not merged: re-derive from the merged location fields so
     # the bundle follows ZIP-over-lat/lng precedence and the state guard on the
     # fullest inputs either pass supplied.
@@ -4962,8 +4968,14 @@ WITH ins AS (
         city              = COALESCE(EXCLUDED.city, t.city),
         state             = COALESCE(EXCLUDED.state, t.state),
         zip               = COALESCE(EXCLUDED.zip, t.zip),
-        lat               = COALESCE(EXCLUDED.lat, t.lat),
-        lng               = COALESCE(EXCLUDED.lng, t.lng),
+        -- Treat coordinates as a single observation; retain partial values
+        -- only if no prior component exists, never mix observations.
+        lat               = CASE WHEN (EXCLUDED.lat IS NOT NULL AND EXCLUDED.lng IS NOT NULL)
+                                      OR (t.lat IS NULL AND t.lng IS NULL)
+                                 THEN EXCLUDED.lat ELSE t.lat END,
+        lng               = CASE WHEN (EXCLUDED.lat IS NOT NULL AND EXCLUDED.lng IS NOT NULL)
+                                      OR (t.lat IS NULL AND t.lng IS NULL)
+                                 THEN EXCLUDED.lng ELSE t.lng END,
         size_sf           = CASE
                               WHEN {colliers_transition_row_sql} THEN EXCLUDED.size_sf
                               WHEN t.size_sf > 1000000000 THEN EXCLUDED.size_sf
