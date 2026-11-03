@@ -148,20 +148,51 @@ function Get-CreHandoffAdmission($Release,[string]$Output,[string]$Stage='observ
 }
 
 function Get-CreHandoffNativeFrontends {
-    # Inspect only the two native PowerShell hosts. Never return command lines.
-    $ancestors=[Collections.Generic.HashSet[int]]::new();$cursor=$PID
-    for($index=0;$index -lt 12 -and $cursor -gt 0;$index++) {
-        if(-not $ancestors.Add([int]$cursor)) { throw 'Native ancestry cycle' }
-        $process=Get-CimInstance Win32_Process -Filter ('ProcessId='+$cursor) -ErrorAction Stop
-        if(-not $process) { break };$cursor=[int]$process.ParentProcessId
+    # One fresh metadata-only graph; only the second query reads PowerShell command lines.
+    $graph=@{}
+    foreach($process in @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)) {
+        if($null -eq $process.ProcessId -or $null -eq $process.ParentProcessId) {throw 'Native ancestry metadata missing'}
+        $id=[long]0;$parent=[long]0
+        if(-not [long]::TryParse([string]$process.ProcessId,[ref]$id) -or -not [long]::TryParse([string]$process.ParentProcessId,[ref]$parent) -or
+           $id -lt 0 -or $id -gt [int]::MaxValue -or $parent -lt 0 -or $parent -gt [int]::MaxValue) {throw 'Native ancestry PID invalid'}
+        if($graph.ContainsKey([int]$id)) {throw 'Native ancestry duplicate PID'}
+        $graph[[int]$id]=$process
     }
-    if($cursor -gt 0 -and $index -ge 12) { throw 'Native ancestry visibility bound exceeded' }
-    return @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'" -ErrorAction Stop |
-        Where-Object {
-            -not $ancestors.Contains([int]$_.ProcessId) -and
-            ($_.CommandLine -like '*Invoke-CreGuardedTier.ps1*' -or $_.CommandLine -like '*Invoke-CreCodeHandoff.ps1*' -or
-             $_.CommandLine -like '*deploy-windows.ps1*' -or $_.CommandLine -like '*finalize-tasks.ps1*')
-        } | ForEach-Object {[ordered]@{pid=[int]$_.ProcessId;name=[string]$_.Name}})
+    $ancestors=@{};$cursor=[int]$PID;$childBirth=$null
+    for($index=0;$index -lt 12 -and $cursor -gt 0;$index++) {
+        if($ancestors.ContainsKey($cursor)) {throw 'Native ancestry cycle'}
+        if(-not $graph.ContainsKey($cursor)) {
+            if($index -eq 0) {throw 'Native own process missing'}
+            break
+        }
+        $process=$graph[$cursor]
+        if($process.CreationDate -isnot [DateTime] -or $process.CreationDate -eq [DateTime]::MinValue) {
+            if($index -eq 0) {throw 'Native own creation time missing'}
+            break
+        }
+        $birth=$process.CreationDate.ToUniversalTime().Ticks
+        if($birth -le [DateTime]::MinValue.Ticks -or $birth -gt [DateTime]::UtcNow.Ticks) {
+            if($index -eq 0) {throw 'Native own creation time invalid'}
+            break
+        }
+        if($null -ne $childBirth -and $birth -ge $childBirth) {break}
+        $ancestors[$cursor]=$birth;$childBirth=$birth;$cursor=[int]$process.ParentProcessId
+    }
+    if($cursor -gt 0 -and $index -ge 12) {throw 'Native ancestry visibility bound exceeded'}
+    $ownVisible=$false;$frontends=@()
+    foreach($process in @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'" -Property ProcessId,Name,CommandLine,CreationDate -ErrorAction Stop)) {
+        if($null -eq $process.ProcessId -or $null -eq $process.Name -or $null -eq $process.CommandLine) {throw 'Native PowerShell visibility missing'}
+        $id=[long]0
+        if(-not [long]::TryParse([string]$process.ProcessId,[ref]$id) -or $id -le 0 -or $id -gt [int]::MaxValue) {throw 'Native PowerShell PID invalid'}
+        $matchingAncestor=$ancestors.ContainsKey([int]$id) -and $process.CreationDate -is [DateTime] -and
+                          $process.CreationDate.ToUniversalTime().Ticks -eq $ancestors[[int]$id]
+        if($id -eq $PID -and $matchingAncestor) {$ownVisible=$true}
+        if(-not $matchingAncestor -and ($process.CommandLine -like '*Invoke-CreGuardedTier.ps1*' -or
+           $process.CommandLine -like '*Invoke-CreCodeHandoff.ps1*' -or $process.CommandLine -like '*deploy-windows.ps1*' -or
+           $process.CommandLine -like '*finalize-tasks.ps1*')) {$frontends+=@([ordered]@{pid=[int]$id;name=[string]$process.Name})}
+    }
+    if(-not $ownVisible) {throw 'Native own PowerShell visibility differs'}
+    return $frontends
 }
 
 function Invoke-CreHandoffTasks($Release,[string]$Mode,[string]$Output,[scriptblock]$AssertOwner,$Operation=$null,[string]$OperationOutput='') {

@@ -46,14 +46,66 @@ $explicitHardTerminate=$xml.Replace('<Settings>','<Settings><AllowHardTerminate>
 Assert-Fixture ((Get-CreTaskContract $xml) -ceq (Get-CreTaskContract $explicitHardTerminate)) 'Omitted AllowHardTerminate must equal documented true default'
 Assert-Fixture ((Get-CreTaskContract $xml) -cne (Get-CreTaskContract ($explicitHardTerminate.Replace('<AllowHardTerminate>true</AllowHardTerminate>','<AllowHardTerminate>false</AllowHardTerminate>')))) 'Explicit false AllowHardTerminate must remain different'
 Set-Item Function:Get-CimInstance -Value ({
-    param($ClassName,$Filter,$ErrorAction)
-    if($Filter -like 'ProcessId=*') {return [pscustomobject]@{ProcessId=$PID;ParentProcessId=0}}
-    $own=[pscustomobject]@{ProcessId=$PID;Name='pwsh.exe';CommandLine='Invoke-CreCodeHandoff.ps1 -Mode Apply'}
-    if($fixture.foreignFrontend) {return @($own,[pscustomobject]@{ProcessId=987654;Name='pwsh.exe';CommandLine='Invoke-CreGuardedTier.ps1 private-value'})}
-    return @($own)
+    param($ClassName,$Filter,$Property,$ErrorAction)
+    if(-not $Filter) {
+        $fixture.graphCalls++
+        if(($Property -join ',') -cne 'ProcessId,ParentProcessId,CreationDate') {throw 'Graph must not query command lines'}
+        return $fixture.graph
+    }
+    if($Filter -cne "Name='pwsh.exe' OR Name='powershell.exe'") {throw 'Only PowerShell command lines may be queried'}
+    $fixture.hostCalls++
+    return $fixture.hosts
 }.GetNewClosure())
+$birth=[DateTime]::SpecifyKind([DateTime]'2026-01-01T00:00:10',[DateTimeKind]::Utc)
+$own=[pscustomobject]@{ProcessId=$PID;ParentProcessId=0;CreationDate=$birth}
+$selfHost=[pscustomobject]@{ProcessId=$PID;Name='pwsh.exe';CreationDate=$birth;CommandLine='Invoke-CreCodeHandoff.ps1 -Mode Apply'}
+$foreign=[pscustomobject]@{ProcessId=987654;Name='pwsh.exe';CreationDate=$birth;CommandLine='Invoke-CreGuardedTier.ps1 private-value'}
+$fixture.graph=@($own);$fixture.hosts=@($selfHost,$foreign);$fixture.graphCalls=0;$fixture.hostCalls=0
 $frontends=@(Get-CreHandoffNativeFrontends)
 Assert-Fixture ($frontends.Count -eq 1 -and $frontends[0].pid -eq 987654 -and $frontends[0].Keys.Count -eq 2) 'Native observer must exclude own ancestry and retain PID/name only'
+$fixture.hosts=@($selfHost)
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 0) 'Current ancestor must be excluded'
+$fixture.hosts=@([pscustomobject]@{ProcessId=$PID;Name='pwsh.exe';CreationDate=$birth.AddSeconds(1);CommandLine='Invoke-CreCodeHandoff.ps1'})
+Refuses {Get-CreHandoffNativeFrontends} 'Reused own PID in filtered snapshot must not be excluded'
+$fixture.hosts=@($selfHost);$fixture.graph=@()
+Refuses {Get-CreHandoffNativeFrontends} 'Missing own process must refuse'
+$fixture.graph=@($own,$own)
+Refuses {Get-CreHandoffNativeFrontends} 'Duplicate graph PID must refuse'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=0;CreationDate=$null})
+Refuses {Get-CreHandoffNativeFrontends} 'Missing ancestor creation time must refuse'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=0;CreationDate=[DateTime]::MinValue})
+Refuses {Get-CreHandoffNativeFrontends} 'Sentinel own creation time must refuse'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=0;CreationDate=[DateTime]::UtcNow.AddDays(1)})
+Refuses {Get-CreHandoffNativeFrontends} 'Future own creation time must refuse'
+$parent=987653
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=$parent;CreationDate=$birth},[pscustomobject]@{ProcessId=$parent;ParentProcessId=0;CreationDate=$birth.AddSeconds(-1)})
+$fixture.hosts=@($selfHost,[pscustomobject]@{ProcessId=$parent;Name='pwsh.exe';CreationDate=$birth;CommandLine='Invoke-CreGuardedTier.ps1'})
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1) 'Reused parent PID in filtered snapshot must remain visible'
+$fixture.hosts=@($selfHost)
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=$parent;CreationDate=$birth},[pscustomobject]@{ProcessId=$parent;ParentProcessId=0;CreationDate=$birth.AddSeconds(1)})
+$fixture.hosts=@($selfHost,[pscustomobject]@{ProcessId=$parent;Name='pwsh.exe';CreationDate=$birth.AddSeconds(1);CommandLine='Invoke-CreGuardedTier.ps1'})
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1) 'Younger reused parent must remain visible'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=$parent;CreationDate=$birth},[pscustomobject]@{ProcessId=$parent;ParentProcessId=0;CreationDate=$birth})
+$fixture.hosts=@($selfHost,[pscustomobject]@{ProcessId=$parent;Name='pwsh.exe';CreationDate=$birth;CommandLine='Invoke-CreGuardedTier.ps1'})
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1) 'Equal-birth parent identity must remain visible'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=$parent;CreationDate=$birth})
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1) 'Missing parent must remain visible in second query'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=$parent;CreationDate=$birth},[pscustomobject]@{ProcessId=$parent;ParentProcessId=0;CreationDate=$null})
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1) 'Unknown parent birth must remain visible in second query'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=$parent;CreationDate=$birth},[pscustomobject]@{ProcessId=$parent;ParentProcessId=0;CreationDate=[DateTime]::MinValue})
+$fixture.hosts=@($selfHost,[pscustomobject]@{ProcessId=$parent;Name='pwsh.exe';CreationDate=[DateTime]::MinValue;CommandLine='Invoke-CreGuardedTier.ps1'})
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1) 'Sentinel parent birth must remain visible in second query'
+$fixture.hosts=@($selfHost)
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=$parent;CreationDate=$birth},[pscustomobject]@{ProcessId=$parent;ParentProcessId=$PID;CreationDate=$birth.AddSeconds(-1)})
+Refuses {Get-CreHandoffNativeFrontends} 'Ancestry cycle must refuse'
+$fixture.graph=@([pscustomobject]@{ProcessId=$PID;ParentProcessId=987600;CreationDate=$birth})
+for($i=0;$i -lt 12;$i++) {$fixture.graph+=@([pscustomobject]@{ProcessId=(987600+$i);ParentProcessId=(987601+$i);CreationDate=$birth.AddSeconds(-1-$i)})}
+Refuses {Get-CreHandoffNativeFrontends} 'Ancestry exceeding 12 processes must refuse'
+$fixture.graph=@($own);$fixture.hosts=@($selfHost)
+$before=$fixture.graphCalls
+$null=@(Get-CreHandoffNativeFrontends);$fixture.hosts=@($selfHost,$foreign)
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 1 -and $fixture.graphCalls -eq ($before+2)) 'Each call must observe fresh graph and hosts'
+$fixture.hosts=@($selfHost)
 $fixture.foreignFrontend=$false
 $root=Join-Path ([IO.Path]::GetTempPath()) ('cre-handoff-fixture-'+[Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
