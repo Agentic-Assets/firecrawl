@@ -245,7 +245,6 @@ function Assert-CreReviewedFleetRows($Release,$Snapshot=$null) {
 function Assert-CreReviewedSnapshot($Release,$Snapshot,[string]$OldSha,[string]$NewSha) {
     Assert-CreReviewedFleetRows $Release $Snapshot
     $rows=@($Release.task_baseline);$saved=@($Snapshot)
-    if($rows.Count -ne 3 -or $saved.Count -ne 3 -or @($rows.key|Select-Object -Unique).Count -ne 3 -or @($saved.key|Select-Object -Unique).Count -ne 3) {throw 'Incomplete or duplicate task fleet'}
     foreach($row in $rows) {
         $matches=@($saved|Where-Object {$_.key -ceq $row.key})
         if($matches.Count -ne 1) {throw 'Task snapshot identity missing'}
@@ -314,7 +313,6 @@ function Get-CreReviewedTaskSnapshot($Release,[string]$OldSha,[string]$NewSha) {
     Assert-CreReviewedFleetRows $Release
     Assert-CreMaintenanceIdle $Release
     $rows=@($Release.task_baseline)
-    if($rows.Count -ne 3 -or @($rows.key|Select-Object -Unique).Count -ne 3) {throw 'Incomplete or duplicate task fleet'}
     $saved=@(foreach($row in $rows) {
         $xml=Export-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop
         $record=Get-CreReviewedTaskReadback $row $xml

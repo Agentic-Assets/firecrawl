@@ -38,9 +38,8 @@ DEPENDENCY_FILES = {
 def classify_paths(paths):
     """Conservatively identify image contexts and unsupported host dependencies.
 
-    The caller must compare each serving image source to selected, not merely
-    the checkout SHA. Rebuild an ambiguous image from selected. Compare both
-    checkout revisions separately and inspect Compose configuration changes.
+    Compare both checkout revisions separately. The source-only updater
+    refuses image, Compose, and unsupported dependency changes.
     """
     if not isinstance(paths, (list, tuple)):
         raise TypeError("changed paths must be a list or tuple")
