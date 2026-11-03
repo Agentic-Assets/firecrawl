@@ -63,7 +63,7 @@ def compute(action: str, arguments: dict, response: Path) -> dict:
         claims_metadata = None
         manifest = arguments["manifest"]
         source = arguments["source"]
-        if arguments["phase"] == "aggregate" and refresh.current_inventory.is_verified_subset(manifest["config"], source):
+        if arguments["phase"] == "aggregate" and refresh.verified_subset_candidate(manifest, source):
             source_report = refresh._load_json(Path(arguments["run_dir"]) / manifest["sources"][source]["gate"]["path"])
             attempt_id = manifest["sources"][source]["subset_ingest_attempt_id"]
             claims_path = response.with_suffix(".subset-claims.json")

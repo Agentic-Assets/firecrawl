@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import cre_ingest as ingest  # noqa: E402 - explicit standalone collector root
 
+if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--pyramid"):
+    raise ValueError("usage: run_daum_subset_postgres_contract.py NEW_PROOF_DIR [--pyramid]")
+pyramid_mode = len(sys.argv) == 3
 out = Path(sys.argv[1]).resolve()
 out.mkdir(mode=0o700)
 cluster = Path(tempfile.mkdtemp(prefix="daum-subset-owned-pg-"))
@@ -288,7 +291,7 @@ try:
         "v2_held_missing_index",
         "v2_held_native_collision",
     ]
-    for i, case in enumerate(cases):
+    for i, case in enumerate([] if pyramid_mode else cases):
         db = "fixture_" + str(i)
         sql("CREATE DATABASE " + db + ";")
         sql(schema, db)
@@ -601,6 +604,92 @@ try:
                 checks[-1]["held_missing_index_remains_absent"] = True
         sql("DROP DATABASE " + db + ";")
         sql("CHECKPOINT;")
+
+    if pyramid_mode:
+        # Exercise the complete production SQL generator with synthetic Pyramid data.
+        def pyramid_row(index, *, fresh=False):
+            key = f"listings/fixture-{index}"
+            url = f"https://www.pyramidbrokerage.com/{key}/"
+            tx = "lease" if index % 2 else "sale"
+            marker = "fresh" if fresh else "before"
+            return ingest.to_row({
+                "sourceKey": "pyramid-brokerage", "id": key, "url": url, "canonicalUrl": url,
+                "name": marker, "city": "Albany", "state": "NY", "assetType": "Industrial",
+                "transactionMode": tx, "transactionType": tx.title(),
+                "wordpressRecord": {"id": index, "link": url, "status": "publish", "type": "pbc-listings"},
+                "photos": [f"https://example.test/{marker}-photo.jpg"], "brokerIds": [0],
+                "documents": [{"url": f"https://example.test/{marker}-doc.pdf", "docType": "brochure"}],
+                "media": [{"url": f"https://example.test/{marker}-tour", "mediaType": "video"}],
+                "links": [{"url": f"https://example.test/{marker}-site", "linkType": "other"}],
+            }, {0: {"name": marker + " broker", "email": marker + "@example.invalid"}},
+                "2026-10-16T00:00:00Z")
+
+        pyramid_members = [{"native_id": index, "external_id": f"listings/fixture-{index}",
+            "source_url": f"https://www.pyramidbrokerage.com/listings/fixture-{index}/",
+            "transaction": "lease" if index % 2 else "sale", "emitted": index <= 100}
+            for index in range(1, 103)]
+        member_digest = hashlib.sha256(json.dumps(pyramid_members, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        pyramid_claims = {"schema": "pyramid-verified-subset-v1", "attempt_id": "e" * 32,
+            "binding": {"scope": "pyramid_verified_subset_v1", "artifact_sha256": "a" * 64,
+                "inventory_count": 102, "emitted_count": 100, "held_count": 2,
+                "members_sha256": member_digest}, "members": pyramid_members}
+        def pyramid_sql(rows, subset=False):
+            return ingest.build_sql(rows, [{"slug": "pyramid-brokerage", "discovered": len(rows),
+                "saved": len(rows), "errors": 0, "notes": "synthetic fixture"}],
+                "2026-10-16T00:00:00Z", set(),
+                pyramid_verified_subset_claims=pyramid_claims if subset else None)
+        held_ids = "('listings/fixture-101','listings/fixture-102')"
+        for number, case in enumerate(("success", "deleted_emitted", "held_collision")):
+            db = "pyramid_fixture_" + str(number)
+            sql("CREATE DATABASE " + db + ";")
+            sql(schema, db)
+            seed = pyramid_sql([pyramid_row(i) for i in range(1, 103)])
+            assert "\nCOMMIT;\n" in seed
+            sql(seed, db)
+            if case == "deleted_emitted":
+                sql("UPDATE credeals.cre_listings SET deleted_at=now(),status='inactive' WHERE external_id='listings/fixture-1';", db)
+            if case == "held_collision":
+                sql("UPDATE credeals.cre_source_index SET url='https://www.pyramidbrokerage.com/listings/wrong/' WHERE external_id='listings/fixture-101';", db)
+            tables = sql("SELECT tablename FROM pg_tables WHERE schemaname='credeals' ORDER BY tablename;", db).stdout.splitlines()
+            def all_tables():
+                parts = ["SELECT '" + table + "' name,md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'[]')) hash FROM credeals." + table + " t" for table in tables]
+                return json.loads(sql("SELECT jsonb_object_agg(name,hash)::text FROM (" + " UNION ALL ".join(parts) + ")s;", db).stdout)
+            def held_snapshot():
+                parts = ["SELECT 'parents' name,jsonb_agg(to_jsonb(t) ORDER BY t.id)::text value FROM credeals.cre_listings t WHERE external_id IN " + held_ids,
+                         "SELECT 'index' name,jsonb_agg(to_jsonb(t) ORDER BY t.id)::text value FROM credeals.cre_source_index t WHERE external_id IN " + held_ids]
+                for table in ("cre_listing_images", "cre_listing_contacts", "cre_listing_documents", "cre_listing_media", "cre_listing_links"):
+                    parts.append("SELECT '" + table + "' name,jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text value FROM credeals." + table +
+                        " t JOIN credeals.cre_listings l ON l.id=t.listing_id WHERE l.external_id IN " + held_ids)
+                return sql("SELECT jsonb_object_agg(name,value)::text FROM (" + " UNION ALL ".join(parts) + ")s;", db).stdout.strip()
+            before = all_tables()
+            held_before = held_snapshot()
+            held_contents = json.loads(held_before)
+            for key in ("parents", "index", "cre_listing_images", "cre_listing_contacts",
+                        "cre_listing_documents", "cre_listing_media", "cre_listing_links"):
+                assert len(json.loads(held_contents[key])) == 2, (case, key, held_contents[key])
+            lifecycle_query = "SELECT jsonb_agg(jsonb_build_array(l.external_id,l.status,l.deleted_at,si.soft_deleted,si.observation_present,si.presence_generation,si.presence_changed_at) ORDER BY l.external_id)::text FROM credeals.cre_listings l JOIN credeals.cre_source_index si USING(brokerage_id,external_id) WHERE l.external_id NOT IN " + held_ids + ";"
+            lifecycle_before = sql(lifecycle_query, db).stdout
+            text = pyramid_sql([pyramid_row(i, fresh=True) for i in range(1, 101)], subset=True)
+            assert "\nCOMMIT;\n" in text
+            (out / ("pyramid-" + case + ".sql")).write_text(text)
+            result = sql(text, db, check=False)
+            after = all_tables()
+            if case == "success":
+                assert result.returncode == 0, result.stderr
+                assert held_snapshot() == held_before
+                assert sql(lifecycle_query, db).stdout == lifecycle_before
+                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE title='fresh';", db).stdout.strip() == "100"
+                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id IN " + held_ids + " AND title='before';", db).stdout.strip() == "2"
+                checks.append({"case": "pyramid_" + case, "committed": True,
+                    "emitted_updated": 100, "held_parent_five_children_index_unchanged": True,
+                    "emitted_lifecycle_unchanged": True})
+            else:
+                assert result.returncode != 0 and "Pyramid" in result.stderr, (case, result.stderr)
+                assert before == after, case + " changed tables despite refusal"
+                checks.append({"case": "pyramid_" + case, "refused": True, "all_tables_unchanged": True})
+            sql("DROP DATABASE " + db + ";")
+            sql("CHECKPOINT;")
 
     print(json.dumps({"checks": checks, "cluster": str(cluster), "settled": True}))
 finally:

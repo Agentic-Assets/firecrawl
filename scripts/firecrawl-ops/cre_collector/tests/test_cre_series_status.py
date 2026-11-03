@@ -810,3 +810,15 @@ def test_pipeline_render_never_credits_invalid_child_evidence(tmp_path, drift):
         assert "0/2 qualified by audit/readback (0.0%)" in rendered
     assert snapshot["complete"] == 0
     assert snapshot["status"] == "running"
+
+
+def test_partial_subset_counts_are_visible_and_malformed_counts_are_ignored(tmp_path):
+    path = _manifest(tmp_path / "2026-09-13T120000Z")
+    manifest = status.load_manifest(path)
+    manifest["sources"]["jll"] = {"state": "qualified_partial_subset",
+        "subset_counts": {"inventory": 102, "emitted": 100, "held": 2}}
+    snapshot = status.build_snapshot(manifest, path)
+    assert snapshot["partial_subset_counts"] == [{"source": "jll", "inventory": 102, "emitted": 100, "held": 2}]
+    assert "100 refreshed, 2 held (inventory 102)" in status.render(snapshot, color=False)
+    manifest["sources"]["jll"]["subset_counts"]["held"] = -1
+    assert status.build_snapshot(manifest, path)["partial_subset_counts"] == []

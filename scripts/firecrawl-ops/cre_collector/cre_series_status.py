@@ -499,6 +499,16 @@ def build_snapshot(
         "total": total,
         "complete": complete,
         "qualified_partial_subsets": qualified_partial_subsets,
+        "partial_subset_counts": [
+            {"source": name, **value["subset_counts"]}
+            for name, value in sources.items()
+            if isinstance(value, Mapping) and value.get("state") == "qualified_partial_subset"
+            and isinstance(value.get("subset_counts"), Mapping)
+            and set(value["subset_counts"]) == {"inventory", "emitted", "held"}
+            and all(type(value["subset_counts"][key]) is int and value["subset_counts"][key] >= 0
+                    for key in ("inventory", "emitted", "held"))
+            and value["subset_counts"]["inventory"] == value["subset_counts"]["emitted"] + value["subset_counts"]["held"]
+        ],
         "handled": handled,
         "failed": failed,
         "running": counts["running"],
@@ -577,6 +587,8 @@ def render(snapshot: Mapping[str, Any], *, color: bool) -> str:
             f"    Failed/interrupted {snapshot['failed']}"
         ),
     ])
+    for item in snapshot.get("partial_subset_counts", []):
+        lines.append(f"Partial source         {_safe_text(item['source'])}: {item['emitted']} refreshed, {item['held']} held (inventory {item['inventory']})")
     if pipeline:
         lines.append(f"Collection workers     {pipeline['source_workers']}")
         lines.append("Pipeline stages        " + " / ".join(

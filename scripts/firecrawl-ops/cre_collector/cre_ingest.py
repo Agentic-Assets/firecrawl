@@ -3935,6 +3935,7 @@ def build_sql(
     matthews_targeted_targets=None,
     image_transition_binding=None,
     daum_verified_subset_claims=None,
+    pyramid_verified_subset_claims=None,
     transwestern_image_transition_binding=None,
 ):
     from cre_essex_identity import (
@@ -3975,6 +3976,13 @@ def build_sql(
             raise ValueError("DAUM subset cannot change lifecycle or inventory-only scope")
         from cre_daum_subset_sql import guard_sql
         daum_subset_guard = guard_sql(daum_verified_subset_claims)
+    pyramid_subset_guard = ""
+    if pyramid_verified_subset_claims is not None:
+        if targeted or daum_verified_subset_claims is not None or mark_missing_slugs or inventory_only_rows or inventory_only_scopes:
+            raise ValueError("Pyramid subset cannot change lifecycle or inventory-only scope")
+        from cre_pyramid_subset_sql import guard_sql
+        pyramid_subset_guard = guard_sql(pyramid_verified_subset_claims, mark_missing=False,
+                                         status_activation=False, inventory_only=False)
     finished_at = finished_at or started_at
     if artifact_run_key is None:
         identity_payload = json.dumps(
@@ -3990,7 +3998,7 @@ def build_sql(
     if transwestern_image_transition_binding is not None:
         if (not isinstance(transwestern_image_transition_binding, dict)
                 or colliers_first_party_transition or image_transition_binding is not None
-                or targeted or daum_verified_subset_claims is not None
+                or targeted or daum_verified_subset_claims is not None or pyramid_verified_subset_claims is not None
                 or mark_missing_slugs or inventory_only_rows or inventory_only_scopes
                 or transwestern_image_transition_binding.get("artifact_run_key") != artifact_run_key):
             raise ValueError("invalid Transwestern image transition scope")
@@ -4827,7 +4835,7 @@ BEGIN
 END $$;
 
 
-{daum_subset_guard}-- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
+{daum_subset_guard}{pyramid_subset_guard}-- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
 -- BEFORE the upsert mutates them, so history and presence snapshots cannot be
 -- stale relative to a concurrent retirement.
 CREATE TEMP TABLE _prior_vals ON COMMIT DROP AS
@@ -5327,6 +5335,7 @@ END $$;
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
+        .replace("{pyramid_subset_guard}", pyramid_subset_guard)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
         .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
         .replace("{targeted_guard}", targeted_guard)
@@ -6868,7 +6877,7 @@ def transwestern_checkpoint_binding(args, data, original_bytes, artifact_run_key
     if (len(args.inputs) != 1 or not args.checkpoint_ingest_attempt
             or not args.expected_db_target_sha256 or not args.require_strict_freshness
             or args.mark_missing or _status_activation_enabled(args.activate_status)
-            or args.daum_verified_subset_claims or args.matthews_targeted_claims):
+            or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims or args.matthews_targeted_claims):
         raise ValueError("unbound Transwestern image transition")
     validate_strict_artifact_freshness(data, require_strict_freshness=True)
     scope = strict_full_source_scope(data, "transwestern")
@@ -6910,6 +6919,7 @@ def main():
     )
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument("--daum-verified-subset-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
@@ -6973,7 +6983,7 @@ def main():
 
     daum_subset_claims = None
     if args.daum_verified_subset_claims:
-        if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims
+        if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims or args.pyramid_verified_subset_claims
                 or _status_activation_enabled(args.activate_status)
                 or not args.require_strict_freshness or not args.expected_db_target_sha256
                 or not args.checkpoint_ingest_attempt):
@@ -6996,10 +7006,34 @@ def main():
             current_git_dirty=dirty,
             expected_database_target_sha256=args.expected_db_target_sha256,
             attempt_id=args.checkpoint_ingest_attempt)
+    pyramid_subset_claims = None
+    if args.pyramid_verified_subset_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims
+                or args.daum_verified_subset_claims or _status_activation_enabled(args.activate_status)
+                or not args.require_strict_freshness or not args.expected_db_target_sha256
+                or not args.checkpoint_ingest_attempt):
+            sys.exit("refusing unbound Pyramid subset ingest")
+        from pathlib import Path
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+        from cre_pyramid_current_inventory import ingest_subset_context
+        from cre_checkpoint_refresh import git_identity
+        claim_path = Path(args.pyramid_verified_subset_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=64 * 1024 * 1024)
+            envelope = json.loads(raw)
+        finally:
+            os.close(directory)
+        code_sha, dirty = git_identity()
+        pyramid_subset_claims = ingest_subset_context(
+            Path(args.inputs[0]), envelope, current_code_sha=code_sha, current_git_dirty=dirty,
+            expected_database_target_sha256=args.expected_db_target_sha256,
+            attempt_id=args.checkpoint_ingest_attempt)
     targeted_claims, targeted_targets = None, None
     if args.matthews_targeted_claims:
         if (len(args.inputs) != 1 or args.mark_missing or args.activate_status
-            or _status_activation_enabled(args.activate_status)
+            or args.pyramid_verified_subset_claims or _status_activation_enabled(args.activate_status)
             or not args.expected_db_target_sha256):
             sys.exit("refusing unbound targeted Matthews ingest")
         from pathlib import Path
@@ -7034,6 +7068,14 @@ def main():
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "
                 "sole production OM extraction writer"
             )
+        is_pyramid_subset = any(
+            isinstance(entry, dict) and isinstance(entry.get("currentInventoryProof"), dict)
+            and entry["currentInventoryProof"].get("schema") == "pyramid-verified-subset-v1"
+            for entry in data.get("sources", []))
+        if is_pyramid_subset != (pyramid_subset_claims is not None):
+            sys.exit("refusing Pyramid subset without its guarded claims")
+        if pyramid_subset_claims is not None and hashlib.sha256(image_transition_input).hexdigest() != pyramid_subset_claims["binding"]["artifact_sha256"]:
+            sys.exit("Pyramid subset artifact changed after gate revalidation")
         is_daum_subset = any(
             isinstance(entry, dict) and isinstance(entry.get("currentInventoryProof"), dict)
             and entry["currentInventoryProof"].get("schema") in {"daum-verified-subset-v1", "daum-verified-subset-v2"}
@@ -7373,6 +7415,7 @@ def main():
         matthews_targeted_targets=targeted_targets,
         image_transition_binding=image_transition_binding,
         daum_verified_subset_claims=daum_subset_claims,
+        pyramid_verified_subset_claims=pyramid_subset_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
     )
 

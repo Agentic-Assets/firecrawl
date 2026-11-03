@@ -5,7 +5,7 @@ import * as cheerio from "cheerio";
 import { createHash } from "node:crypto";
 import { brokerRef } from "../lib/broker.js";
 import { CONCURRENCY } from "../lib/config.js";
-import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshPropertyDetails } from "../lib/freshness.js";
+import { detailObservation, refreshGenerationId, refreshStartedAt, requireFreshDetails, requireFreshPropertyDetails } from "../lib/freshness.js";
 import { dedupeStrings, stripHtmlText, titleFromFilename } from "../lib/html.js";
 import { PyramidCurrentInventoryProof, PyramidInventoryPass, SourceResult, Tx } from "../types.js";
 import { parseMoney, parseSizeText } from "../lib/parse.js";
@@ -641,7 +641,8 @@ export function mapPyramidListing(
   inventoryObservedAt: string,
   detail?: PyramidDetail,
   detailObservedAt?: string,
-  inventoryPage?: PyramidInventoryPageBinding
+  inventoryPage?: PyramidInventoryPageBinding,
+  emitBrokers = true
 ): any {
   const id = Number(row?.id);
   if (pyramidTransaction(row) !== tx) {
@@ -652,7 +653,7 @@ export function mapPyramidListing(
   const description =
     detail?.description ?? clean(stripHtmlText(String(row?.content?.rendered ?? "")));
   const priceText = detail?.facts?.Price ?? null;
-  const brokers = (detail?.contacts ?? [])
+  const brokers = (emitBrokers ? detail?.contacts ?? [] : [])
     .map((contact) =>
       brokerRef({
         name: contact.name,
@@ -742,7 +743,8 @@ export async function srcPyramidBrokerage(
   const generationId = refreshGenerationId();
   const generationStartedAt = refreshStartedAt();
   const proofEnabled = !monitor && !Number.isFinite(max) && Boolean(generationId && generationStartedAt);
-  const key = proofEnabled ? JSON.stringify([generationId, generationStartedAt]) : null;
+  const subset = proofEnabled && requireFreshDetails();
+  const key = proofEnabled ? JSON.stringify([generationId, generationStartedAt, subset]) : null;
   const access: PyramidAccess = {};
   let snapshot: PyramidSnapshot;
   if (key) {
@@ -780,6 +782,7 @@ export async function srcPyramidBrokerage(
   }
 
   const details: PyramidCurrentInventoryProof["details"] = [];
+  const held: NonNullable<PyramidCurrentInventoryProof["held"]> = [];
   let listings: any[];
   try {
     listings = await pmap(selected, Math.min(CONCURRENCY, 4), async (row) => {
@@ -791,17 +794,29 @@ export async function srcPyramidBrokerage(
     const detail = parsePyramidDetail(html, Number(row.id));
     if (proofEnabled && detail.canonicalUrl !== url) throw new Error("Pyramid detail canonical URL disagrees with inventory");
     const page = proofEnabled ? snapshot.passes[1].pages.find((page) => page[6].includes(Number(row.id))) : undefined;
+    const missingCity = pyramidEmbeddedTerms(row, "city").length === 0;
     const mapped = mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt,
-      page ? [page[0], page[2], page[3]] : undefined);
+      page ? [page[0], page[2], page[3]] : undefined, !(subset && missingCity));
     if (proofEnabled) {
       const missing = (["state", "city", "assetType"] as const)
         .filter((field) => typeof mapped[field] !== "string" || !mapped[field].trim());
-      if (missing.length) {
+      if (missing.length && !(subset && missing.length === 1 && missing[0] === "city")) {
         throw new Error(`Pyramid strict proof lacks named location/property taxonomy for post ${Number(row.id)}: ${missing.join(", ")}`);
       }
       const digest = textSha256(html);
       mapped.wordpressRecord.detailResponseSha256 = digest;
       details.push([Number(row.id), detail.canonicalUrl!, observedAt, digest]);
+      if (subset && missingCity) {
+        const { id, url, canonicalUrl, transactionType, inventoryObservedAt, detailObservedAt,
+          freshnessProvenance, wordpressRecord, detailFacts, detailTransactionFacts, transactionEvidence,
+          state, city, assetType } = mapped;
+        held.push({ postId: Number(row.id), reason: "missing_city", listing: {
+          id, url, canonicalUrl, transactionMode: tx, transactionType, inventoryObservedAt, detailObservedAt,
+          freshnessProvenance, wordpressRecord, detailFacts, detailTransactionFacts, transactionEvidence,
+          state, city, assetType,
+        } });
+        return null;
+      }
     }
     return mapped;
     });
@@ -814,15 +829,16 @@ export async function srcPyramidBrokerage(
     sourceUrl: PYRAMID_LISTINGS_PAGE,
     method: "exact WordPress REST inventory plus bounded direct detail HTML",
     totalAvailable: eligible.length,
-    truncated,
-    listings,
+    truncated: truncated || (subset && held.length > 0),
+    listings: listings.filter(Boolean),
     ...(proofEnabled ? { currentInventoryProof: {
-      schema: "pyramid-strict-detail-v1" as const, sourceKey: "pyramid-brokerage" as const,
+      schema: held.length ? "pyramid-verified-subset-v1" as const : "pyramid-strict-detail-v1" as const, sourceKey: "pyramid-brokerage" as const,
       transaction: tx, generationId: generationId!, generationStartedAt: generationStartedAt!,
       total: snapshot.total, totalPages: snapshot.totalPages, observedAt: snapshot.observedAt,
       passes: snapshot.passes,
       cohort: snapshot.rows.map((row) => [Number(row.id), pyramidAbsoluteUrl(row.link)!, pyramidListingKey(row.link), pyramidTransaction(row)] as [number, string, string, Tx]),
       details: details.sort((a, b) => a[0] - b[0]),
+      ...(held.length ? { held: held.sort((a, b) => a.postId - b.postId) } : {}),
     } } : {}),
     note:
       `exact ${snapshot.total}-record/${snapshot.totalPages}-page WordPress snapshot; ` +

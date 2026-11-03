@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from pathlib import Path
 
 import cre_inventory_generation as generation
@@ -182,3 +183,11 @@ def test_missing_readback_fingerprint_cannot_publish(tmp_path):
         assert "cbre has no complete inventory fingerprint readback" in str(exc)
     else:  # pragma: no cover - safety assertion
         raise AssertionError("receipt published without a fingerprint readback")
+
+
+def test_partial_pyramid_series_never_publishes_complete_generation(tmp_path):
+    manifest = _complete_series(tmp_path)
+    manifest["status"] = "qualified_partial_subset"
+    manifest["sources"]["pyramid-brokerage"]["state"] = "qualified_partial_subset"
+    with pytest.raises(generation.InventoryGenerationNotReady):
+        generation.build_inventory_generation_receipt(tmp_path, manifest)

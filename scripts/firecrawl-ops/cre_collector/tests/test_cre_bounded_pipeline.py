@@ -45,6 +45,8 @@ def run_schedule(
     terminal_code=None,
     failure_once=None,
     deterministic_clock=False,
+    pyramid_partial=False,
+    pyramid_admitted=False,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -56,6 +58,8 @@ def run_schedule(
         page_cap=400,
         concurrency=1,
         source_workers=workers,
+        pipeline=pyramid_partial or pyramid_admitted,
+        admit_current_inventory_sources=("pyramid-brokerage",) if pyramid_partial or pyramid_admitted else (),
     )
     for relative in retained_paths:
         path = run_dir / relative
@@ -148,6 +152,9 @@ def run_schedule(
             raise refresh.ArtifactValidationError("ordinary invalid artifact")
         checkpoint = owner["sources"][source]
         checkpoint["artifact"] = {"path": f"sources/{source}.tmp", "sha256": "b" * 64}
+        if pyramid_partial and source == "pyramid-brokerage":
+            checkpoint["artifact"]["pyramid_subset"] = True
+            checkpoint["gate"] = {"current_inventory_proof": {"inventory_count": 102, "emitted_count": 100, "held_count": 2}}
         checkpoint["state"] = "validated"
         return True
 
@@ -648,3 +655,23 @@ def test_pipeline_terminal_source_refusal_does_not_retry_or_block_peer(
     assert manifest["sources"][source]["artifact"] is None
     assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
     assert all(source not in unit["sources"] for unit in manifest["pipeline"]["units"])
+
+
+def test_scheduled_pipeline_marks_pyramid_subset_partial_and_verifies_sibling(tmp_path, monkeypatch):
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("pyramid-brokerage", "hanley"), pyramid_partial=True)
+    assert failures == []
+    assert manifest["pipeline"]["status"] == "partial"
+    pyramid = manifest["pipeline"]["source_results"]["pyramid-brokerage"]
+    assert pyramid["state"] == "verified" and pyramid["partial"] is True
+    assert (pyramid["emitted_count"], pyramid["held_count"]) == (100, 2)
+    assert pyramid["whole_source_coverage"] is False
+    assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
+    assert any(event[0] == "db_end" and "hanley" in event[1] for event in events)
+
+
+def test_scheduled_pipeline_complete_pyramid_does_not_become_partial(tmp_path, monkeypatch):
+    manifest, _, failures = run_schedule(tmp_path, monkeypatch, 2,
+        sources=("pyramid-brokerage", "hanley"), pyramid_admitted=True)
+    assert failures == [] and manifest["pipeline"]["status"] == "complete"
+    assert manifest["pipeline"]["source_results"]["pyramid-brokerage"].get("partial") is not True
