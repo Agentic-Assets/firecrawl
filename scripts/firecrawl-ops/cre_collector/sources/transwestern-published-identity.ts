@@ -15,28 +15,37 @@ export interface TranswesternPublishedIdentityProof {
   verifiedAt: string;
 }
 
-async function boundedOfficialGet(url: string, limit: number, signal: AbortSignal): Promise<string> {
+async function boundedOfficialGet(url: string, limit: number, signal: AbortSignal, role: "sitemap" | "property"): Promise<string> {
   const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
-  const response = await fetch(url, { signal: requestSignal, redirect: "error", cache: "no-store" });
-  if (!response.ok || response.url !== url || !response.body) {
-    throw new Error("Transwestern published identity response unavailable");
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
+  let phase: "request" | "body" = "request";
   try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.byteLength;
-      if (size > limit) throw new Error("Transwestern published identity response exceeds its bound");
-      chunks.push(chunk.value);
+    const response = await fetch(url, { signal: requestSignal, redirect: "error", cache: "no-store" });
+    if (!response.ok || response.url !== url || !response.body) {
+      throw new Error("Transwestern published identity response unavailable");
     }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    phase = "body";
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > limit) throw new Error("Transwestern published identity response exceeds its bound");
+        chunks.push(chunk.value);
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } catch (error) {
+    const type = error instanceof TypeError ? "TypeError" :
+      error instanceof DOMException && error.name === "TimeoutError" ? "TimeoutError" : "Error";
+    console.error(`  transwestern: published identity ${role} ${phase} failed (${type})`);
+    throw error;
   }
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 export async function proveTranswesternPublishedIdentity(
@@ -50,8 +59,8 @@ export async function proveTranswesternPublishedIdentity(
   const generationId = refreshGenerationId();
   const signal = AbortSignal.timeout(20000);
   const sitemapUrl = "https://transwestern.com/sitemap.xml";
-  const url = transwesternPublishedPlaceholderUrl(await boundedOfficialGet(sitemapUrl, 2 * 1024 * 1024, signal));
-  const rawHtml = await boundedOfficialGet(url, 1024 * 1024, signal);
+  const url = transwesternPublishedPlaceholderUrl(await boundedOfficialGet(sitemapUrl, 2 * 1024 * 1024, signal, "sitemap"));
+  const rawHtml = await boundedOfficialGet(url, 1024 * 1024, signal, "property");
   if (!isUsable({ rawHtml, markdown: "", links: [] }, row) || !transwesternPrimaryIdentityMatches(rawHtml, row)) {
     throw new Error("Transwestern published property did not match the complete feed identity");
   }

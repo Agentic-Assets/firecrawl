@@ -763,8 +763,10 @@ export async function srcPyramidBrokerage(
     const mapped = mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt,
       page ? [page[0], page[2], page[3]] : undefined);
     if (proofEnabled) {
-      if (![mapped.state, mapped.city, mapped.assetType].every((value) => typeof value === "string" && value.trim())) {
-        throw new Error("Pyramid strict proof lacks named location/property taxonomy");
+      const missing = (["state", "city", "assetType"] as const)
+        .filter((field) => typeof mapped[field] !== "string" || !mapped[field].trim());
+      if (missing.length) {
+        throw new Error(`Pyramid strict proof lacks named location/property taxonomy for post ${Number(row.id)}: ${missing.join(", ")}`);
       }
       const digest = textSha256(html);
       mapped.wordpressRecord.detailResponseSha256 = digest;

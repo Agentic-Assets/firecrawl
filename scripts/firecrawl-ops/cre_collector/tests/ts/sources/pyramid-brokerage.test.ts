@@ -578,6 +578,37 @@ test("Pyramid proof cache is immutable, generation-local and never used for moni
   assert.equal(inventory, 12);
 });
 
+test("strict taxonomy refusal identifies the post and missing fields without source values", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const oldGeneration = process.env.CRE_REFRESH_GENERATION;
+  const oldStarted = process.env.CRE_REFRESH_STARTED_AT;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION; else process.env.CRE_REFRESH_GENERATION = oldGeneration;
+    if (oldStarted === undefined) delete process.env.CRE_REFRESH_STARTED_AT; else process.env.CRE_REFRESH_STARTED_AT = oldStarted;
+  });
+  process.env.CRE_REFRESH_GENERATION = "taxonomy-diagnostic-test";
+  process.env.CRE_REFRESH_STARTED_AT = new Date(Date.now() - 1000).toISOString();
+  const record = row(101, PYRAMID_LEASE_TERM_ID);
+  record._embedded["wp:term"] = record._embedded["wp:term"].filter((group) => !["city", "state", "property-use"].includes(group[0].taxonomy));
+  globalThis.fetch = async (input) => {
+    if (new URL(String(input)).pathname.startsWith("/wp-json/")) {
+      return Response.json([record], { headers: { "X-WP-Total": "1", "X-WP-TotalPages": "1" } });
+    }
+    return new Response(detailHtml.replace('class="value">Sale<', 'class="value">Lease<')
+      .replace('<li><span class="name">Major Use:</span><span class="value">Industrial</span></li>', '')
+      .replace("<head>", `<head><link rel="canonical" href="${record.link}">`));
+  };
+  await assert.rejects(srcPyramidBrokerage("lease", Infinity, false), (error: Error) => {
+    assert.match(error.message, /101/);
+    assert.match(error.message, /state/);
+    assert.match(error.message, /city/);
+    assert.match(error.message, /assetType/);
+    assert.doesNotMatch(error.message, /Industrial|https?:|Main Warehouse/);
+    return true;
+  });
+});
+
 
 test("Pyramid classifies only known exact transaction facts without defaulting to sale", () => {
   for (const value of ["Sale", " sale ", "SALE", "\tSale\n"]) assert.equal(pyramidDetailTransaction(value, 119152), "sale");
