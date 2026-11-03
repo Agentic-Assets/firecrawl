@@ -144,7 +144,13 @@ receipts bind that typed page ID separately from the raw variable; old evidence
 is not reinterpreted. Duplicate page IDs or output paths fail closed; a changed
 path never authorizes a rekey. Canonical detail and lifecycle checks remain
 required. Missing historical typed page IDs remain unknown; path/URL
-contradictions still refuse. This rule does not admit first-seen writes or
+contradictions still refuse. A changed WordPress page ID on the same exact
+path is admitted only for an active, non-deleted existing row with one matching
+present source-index record and exact nonblank title, address, city, state,
+transaction type and description. The shared guard rechecks after lifecycle row
+locks; other identity contradictions still refuse. This establishes continuity
+of the literal-path record, not proof against a silent relisting at that path.
+This rule does not admit first-seen writes or
 authorize closed/missing lifecycle updates.
 Current Essex inventory includes on-market and under-contract properties only;
 the closed archive reconciles coverage but never inflates current counts. With

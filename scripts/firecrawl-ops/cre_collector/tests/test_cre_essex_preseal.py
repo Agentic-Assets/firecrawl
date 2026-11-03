@@ -161,3 +161,29 @@ def test_admitted_essex_gate_routes_to_identity_before_sealing(tmp_path, monkeyp
     assert pipeline.preseal_source_gate(tmp_path, manifest, "essex-realty", None) is False
     assert seen == [(tmp_path, manifest, source, None, report,
                      hashlib.sha256(report.read_bytes()).hexdigest(), gate)]
+
+
+def test_essex_guard_is_recomputed_after_lifecycle_locks():
+    import cre_ingest
+
+    sql = cre_ingest.build_sql([], [], "2026-01-01T00:00:00Z", [])
+    source_lock = sql.index("FOR UPDATE OF si;")
+    listing_lock = sql.index("FOR UPDATE OF t;", source_lock)
+    essex = sql.index("CREATE TEMP TABLE _essex_identity_claims", listing_lock)
+    historical = sql.index("CREATE TEMP TABLE _essex_historical_identity_claims", essex)
+    assert source_lock < listing_lock < essex < historical < sql.index("ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL", historical)
+
+
+def test_essex_probe_binds_identity_evidence_to_staging():
+    from cre_essex_identity import projection_digest, stage_essex_identity
+
+    value = artifact()
+    row = value["listings"][0]
+    row.update(name="Example", street="1 Main St", city="Chicago", state="IL",
+               transactionType="sale", description="A building")
+    staged = stage_essex_identity(value)
+    assert staged[0]["title"] == "Example"
+    assert staged[0]["address"] == "1 Main St"
+    before = projection_digest(staged)
+    row["description"] = "Different building"
+    assert projection_digest(stage_essex_identity(value)) != before
