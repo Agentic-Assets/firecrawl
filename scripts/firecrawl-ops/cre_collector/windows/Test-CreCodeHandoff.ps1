@@ -292,9 +292,29 @@ namespace CreWindowsCapture {
     $maintenancePath=Join-Path $root 'maintenance-packet.json'
     [IO.File]::WriteAllText($maintenancePath,$maintenanceWire,[Text.UTF8Encoding]::new($false))
     $maintenanceHash=Get-CreHandoffHash $maintenanceWire
-    function New-Object {param($ComObject);if($ComObject -ceq 'Schedule.Service'){throw 'Fixture maintenance COM boundary reached'};throw 'Unexpected object construction in fixture'}
+    $fixture.comCalls=0;$fixture.wslCalls=@();$fixture.wslExit=0
+    function New-Object {param($ComObject);if($ComObject -ceq 'Schedule.Service'){$fixture.comCalls++;throw 'Fixture maintenance COM boundary reached'};throw 'Unexpected object construction in fixture'}
+    function wsl.exe {$fixture.wslCalls+=,@($args);$global:LASTEXITCODE=$fixture.wslExit}
     $maintenanceObserve=Join-Path $root 'maintenance-schema-observe';[void][IO.Directory]::CreateDirectory($maintenanceObserve)
     Refuses {& $frontdoor -Mode Observe -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceObserve} 'Schema-shaped maintenance Observe must reach the mocked host boundary' 'Fixture maintenance COM boundary reached'
+    # The actual maintenance Hold frontdoor must join ownership and immutable
+    # authorization in one WSL call before touching the Scheduler boundary.
+    $fixture.wslCalls=@();$fixture.comCalls=0
+    $maintenanceHold=Join-Path $root 'maintenance-combined-hold';[void][IO.Directory]::CreateDirectory($maintenanceHold)
+    Refuses {& $frontdoor -Mode Hold -OwnerPid 123 -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceHold -Observation $path -Authorization $authPath} 'Admitted combined selector reaches mocked COM' 'Fixture maintenance COM boundary reached'
+    $call=@($fixture.wslCalls[0])
+    function Fixture-WslPath([string]$InputPath) {$native=ConvertTo-CreHandoffPath $InputPath;return '/mnt/'+$native.Substring(0,1).ToLowerInvariant()+'/'+$native.Substring(3)}
+    $expected=@('-d','fixture','-u','fixture','--exec','python3','-B',((Fixture-WslPath $sourceRoot)+'/scripts/firecrawl-ops/cre_collector/cre_code_handoff.py'),
+        '--maintenance-packet',(Fixture-WslPath $maintenancePath),'--assert-maintenance-owner-pid','123',
+        '--observation',(Fixture-WslPath $path),'--authorization',(Fixture-WslPath $authPath),'--output',(Fixture-WslPath $maintenanceHold))
+    Assert-Fixture ($fixture.wslCalls.Count -eq 1 -and ($call -join "`n") -ceq ($expected -join "`n")) 'Maintenance Hold must pass every exact binding in one combined owner/authorization child'
+    Assert-Fixture ($fixture.comCalls -eq 1) 'Successful combined admission must reach the mocked Scheduler boundary'
+    $fixture.wslCalls=@();$fixture.comCalls=0;$fixture.wslExit=1
+    $refusedHold=Join-Path $root 'maintenance-combined-refused';[void][IO.Directory]::CreateDirectory($refusedHold)
+    $beforeRefused=$fixture.disableCalls
+    Refuses {& $frontdoor -Mode Hold -OwnerPid 123 -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $refusedHold -Observation $path -Authorization $authPath} 'Refused combined selector must stop before task access' 'Canonical ownership or immutable current authorization refused'
+    Assert-Fixture ($fixture.wslCalls.Count -eq 1 -and $fixture.comCalls -eq 0 -and $fixture.disableCalls -eq $beforeRefused -and -not (Test-Path -LiteralPath (Join-Path $refusedHold 'mutation-start.json'))) 'Refused combined admission must not touch Scheduler or publish mutation'
+    $fixture.wslExit=0
     $maintenanceSuccess=Join-Path $root 'maintenance-native-complete'
     & $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceSuccess -Observation $path -Authorization $authPath
     $maintenanceCompletion=Read-CreHandoffJson ([IO.File]::ReadAllText($maintenanceSuccess+'.native.json'))

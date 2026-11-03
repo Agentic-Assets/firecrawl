@@ -25,9 +25,7 @@ qualified_ready_case = chain.qualified_ready_case
 scheduler_principal_in_synthetic_xml = chain.scheduler_principal_in_synthetic_xml
 
 
-@pytest.mark.parametrize("with_images", [False, True])
-def test_actual_apply_steps_and_ready_validator_join(qualified_ready_case, tmp_path, monkeypatch, with_images):
-    case = qualified_ready_case
+def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images):
     case.output.rmdir()
     container_state = {"recreated": False}
     if with_images:
@@ -92,8 +90,12 @@ def test_actual_apply_steps_and_ready_validator_join(qualified_ready_case, tmp_p
     monkeypatch.setattr(git_module, "local_path", local)
     monkeypatch.setattr(steps, "local_path", local)
     monkeypatch.setattr(operation, "local_path", local)
-    monkeypatch.setattr(operation, "windows_path", lambda value: "C:/synthetic/" + Path(str(value)).name)
-    monkeypatch.setattr(steps, "windows_path", lambda value: "C:/synthetic/" + Path(str(value)).name)
+    if "continuation" in case.packet:
+        native_path = lambda value: str(value)
+    else:
+        native_path = lambda value: "C:/synthetic/" + Path(str(value)).name
+    monkeypatch.setattr(operation, "windows_path", native_path)
+    monkeypatch.setattr(steps, "windows_path", native_path)
     monkeypatch.setattr(operation, "now", lambda: case.now)
     monkeypatch.setattr(steps, "now", lambda: case.now)
     monkeypatch.setattr(cre_refresh_pipeline, "command_poll_hook", lambda _poll: nullcontext())
@@ -132,13 +134,17 @@ def test_actual_apply_steps_and_ready_validator_join(qualified_ready_case, tmp_p
         host["containers"] = [dict(row) for row in case.before["containers"]]
         if with_images and selected:
             host["containers"][1].update(id="new-api", image=case.packet["expected_images"]["api"], started_at="new-epoch")
-        return dict(host, native=case.new if selected else case.old, runtime=case.new if selected else case.old,
+        before_identity = getattr(case, "before_identity", case.old)
+        return dict(host, native=case.new if selected else before_identity, runtime=case.new if selected else before_identity,
                     ownership={"phase": "owned-maintenance" if owned else "released-clear",
                                "verified": True, "recovery_required": owned})
     monkeypatch.setattr(maintenance, "maintenance_readiness", readiness)
-    states = {str(local(case.packet["roots"][key])): case.old for key in ("native", "runtime")}
+    before_identity = getattr(case, "before_identity", case.old)
+    states = {str(local(case.packet["roots"][key])): before_identity for key in ("native", "runtime")}
     class Git:
         def development(self, *_args): pass
+        def maintenance_ancestry(self, *_args): pass
+        def entries(self, root, commit): return git_module.Git("unused").entries(root, commit)
         def clean(self, root, identity, **_kwargs): assert states[str(local(root))] == identity
         def maintenance_fast_forward(self, root, _scope, _bundle, **_kwargs): states[str(local(root))] = case.new
         def text(self, root, *args):
@@ -205,3 +211,8 @@ def test_actual_apply_steps_and_ready_validator_join(qualified_ready_case, tmp_p
     maintenance.apply_maintenance(args, case.release_raw, case.packet, case.evidence, Git(), (checkpoint, None, None, None))
     assert json.loads((case.output / "maintenance-ready.json").read_bytes())["recovery_required_at_publication"] is True
     assert json.loads((case.output / "terminal.json").read_bytes())["status"] == "committed"
+
+
+@pytest.mark.parametrize("with_images", [False, True])
+def test_actual_apply_steps_and_ready_validator_join(qualified_ready_case, tmp_path, monkeypatch, with_images):
+    run_actual_apply_steps(qualified_ready_case, tmp_path, monkeypatch, with_images)

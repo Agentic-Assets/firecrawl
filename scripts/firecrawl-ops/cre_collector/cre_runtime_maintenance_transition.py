@@ -139,6 +139,20 @@ def validate_maintenance_execution(packet, evidence, observation, *, hold_at, mu
             <= clock(execution["finished_at"]), "Scheduler history does not span maintenance")
 
 
+def validate_maintenance_git_witness(packet, git, history_git, history_repo):
+    """Check each actual pre-update root while retaining A's task identity."""
+    from cre_runtime_maintenance_continuation import runtime_before
+
+    require(git.get("schema") == "cre-runtime-maintenance-git-v1", "maintenance Git observation missing")
+    for key, old in (("native", packet["native_before"]), ("runtime", runtime_before(packet))):
+        for phase, wanted in (("before", old), ("after", packet["new"])):
+            row = git[key][phase]
+            require(canonical_path(row.get("root")) == canonical_path(packet["roots"][key])
+                    and {field: row.get(field) for field in ("sha", "tree")} == wanted and row.get("status") == ""
+                    and (phase != "after" or row.get("tracking") == wanted["sha"]), "maintenance Git identity differs")
+        validate_maintenance_tracking_history(history_git, history_repo, old, git[key]["before"]["tracking"], packet["new"])
+
+
 def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw, release_path):
     """Authenticate the still-owned, held-fleet ready boundary from retained bytes."""
     import re
@@ -152,6 +166,7 @@ def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw,
         validate_maintenance_observation,
         validate_maintenance_release,
     )
+    from cre_runtime_maintenance_continuation import runtime_before
     from cre_runtime_maintenance_images import qualify_image_transition
     from cre_runtime_maintenance_steps import compose_argv
 
@@ -171,6 +186,8 @@ def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw,
     history_git = Git(packet["programs"]["native_git"])
     history_repo = packet["roots"]["development"]
     history_git.maintenance_ancestry(history_repo, packet["old"], packet["native_before"], packet["new"])
+    if runtime_before(packet) != packet["old"]:
+        history_git.maintenance_ancestry(history_repo, packet["old"], runtime_before(packet), packet["new"])
     for scope in (packet["native_change"], packet["runtime_change"]):
         validate_maintenance_git_history(history_git, history_repo, scope)
     mutation_raw, authorization_raw = raw("mutation"), raw("authorization")
@@ -250,14 +267,7 @@ def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw,
             for field in ("memory", "nano_cpus", "cpu_quota", "cpu_period")) for name in initial),
             "maintenance container names/resource caps differ")
     git = json_bytes(raw("git_observation"))
-    require(git.get("schema") == "cre-runtime-maintenance-git-v1", "maintenance Git observation missing")
-    for key, old in (("native", packet["native_before"]), ("runtime", packet["old"])):
-        for phase, wanted in (("before", old), ("after", packet["new"])):
-            row = git[key][phase]
-            require(canonical_path(row.get("root")) == canonical_path(packet["roots"][key])
-                    and {field: row.get(field) for field in ("sha", "tree")} == wanted and row.get("status") == ""
-                    and (phase != "after" or row.get("tracking") == wanted["sha"]), "maintenance Git identity differs")
-        validate_maintenance_tracking_history(history_git, history_repo, old, git[key]["before"]["tracking"], packet["new"])
+    validate_maintenance_git_witness(packet, git, history_git, history_repo)
     expected_files = {"package.json", "package-lock.json", "node_modules/.package-lock.json"}
     deps = ready.get("dependencies_after")
     require(isinstance(deps, dict) and set(deps) == expected_files

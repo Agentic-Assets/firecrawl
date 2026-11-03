@@ -18,6 +18,7 @@ from cre_code_handoff_evidence import (
     Evidence,
     HandoffError,
     canonical_path,
+    clock,
     json_bytes,
     require,
     role_paths,
@@ -752,6 +753,7 @@ def main(argv=None):
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--postreadback", action="store_true")
     mode.add_argument("--assert-owned-pid", type=int)
+    mode.add_argument("--assert-maintenance-owner-pid", type=int)
     mode.add_argument("--check-authorization", action="store_true")
     parser.add_argument("--observation")
     parser.add_argument("--authorization")
@@ -770,12 +772,16 @@ def main(argv=None):
     maintenance = release.get("schema") == "cre-runtime-maintenance-v1"
     require(restoration is bool(args.restoration_packet), "explicit input selector/schema differs")
     require(maintenance is bool(args.maintenance_packet), "explicit maintenance selector/schema differs")
-    if not any((args.observe, args.authorize, args.apply, args.postreadback, args.assert_owned_pid, args.check_authorization)):
+    if not any((args.observe, args.authorize, args.apply, args.postreadback, args.assert_owned_pid,
+                args.assert_maintenance_owner_pid is not None, args.check_authorization)):
         print(json.dumps({"preview_only": True, "execution": False,
                           "code" if restoration else "selected": release["code"] if restoration else release["new"] if maintenance else release["selected"],
                           "restoration_sha256" if restoration else "release_sha256": sha(raw)}))
         return 0
-    if args.check_authorization:
+    if args.check_authorization or args.assert_maintenance_owner_pid is not None:
+        if args.assert_maintenance_owner_pid is not None:
+            require(maintenance and args.assert_maintenance_owner_pid > 0,
+                    "combined owner boundary requires maintenance and a positive PID")
         require(args.observation and args.authorization, "explicit admission inputs required")
         if maintenance:
             from cre_runtime_maintenance import validate_maintenance_authorization
@@ -789,6 +795,20 @@ def main(argv=None):
             require(read_file(args.release) == raw and read_file(args.observation) == observed_raw
                     and read_file(args.authorization) == authorization_raw,
                     "maintenance authorization boundary inputs changed")
+            if args.assert_maintenance_owner_pid is not None:
+                git = Git(release["programs"]["native_git"])
+                modules = runtime_modules(release, git)
+                evidence.recheck()
+                require(read_file(args.release) == raw and read_file(args.observation) == observed_raw
+                        and read_file(args.authorization) == authorization_raw,
+                        "maintenance authorization boundary inputs changed")
+                require(now() < clock(json_bytes(authorization_raw)["expires_at"]),
+                        "maintenance authorization expired before owner check")
+                lock = modules[0].canonical_shared_lock_dir(local_path(release["roots"]["runtime"]))
+                assert_owned(modules[0], lock, args.assert_maintenance_owner_pid, maintenance_inputs={
+                    "--maintenance-packet": args.release, "--output": args.output,
+                    "--authorization": args.authorization, "--observation": args.observation,
+                })
             return 0
         validator = validate_restoration_authorization if restoration else validate_authorization
         validator(raw, release, evidence, read_file(args.observation),
