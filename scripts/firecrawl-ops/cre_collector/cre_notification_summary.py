@@ -115,31 +115,34 @@ def _pipeline_admissions(config, selected_sources):
 def _subset_summary_fields(child, source, count):
     """Partial accounting is source-scoped and never grants complete-source credit."""
     from cre_current_inventory_admission import is_verified_subset, admission_configuration
-    if not is_verified_subset(child["config"], source):
+    from cre_checkpoint_series import pyramid_partial_child
+    pyramid = source == "pyramid-brokerage" and pyramid_partial_child(child)
+    if not pyramid and not is_verified_subset(child["config"], source):
         return {}
     checkpoint = child["sources"][source]
     gate = checkpoint["gate"]
     binding = gate["current_inventory_proof"]
     selected = admission_configuration(child["config"], source)
-    scope = selected["admission_scope"]
+    scope = "pyramid_verified_subset_v1" if pyramid else selected["admission_scope"]
     v2 = scope == "daum_verified_subset_v2"
     require(gate.get("verdict") == "ok_additive_verified_subset"
             and gate.get("raw_verdict") == "first_seen"
             and gate.get("admission_scope") == scope)
-    require(binding.get("schema") == ("daum-verified-subset-v2" if v2 else "daum-verified-subset-v1")
+    require(binding.get("schema") == ("pyramid-verified-subset-v1" if pyramid else "daum-verified-subset-v2" if v2 else "daum-verified-subset-v1")
             and binding.get("scope") == scope
             and binding.get("whole_source_coverage") is False
             and binding.get("generation_id") == child["run_id"]
             and binding.get("collector_git_sha") == child["collector_git_sha"]
             and binding.get("artifact_sha256") == checkpoint["artifact"]["sha256"]
             and binding.get("database_target_sha256") == child["preflight"]["database_target"].get("value")
-            and binding.get("source_policy_sha256") == current_inventory.subset_configuration()["source_policy_sha256"])
+            and binding.get("source_policy_sha256") == (current_inventory.configuration(source) if pyramid else current_inventory.subset_configuration())["source_policy_sha256"])
     if v2:
         require(binding.get("subset_policy") == selected["subset_policy"])
     for key in ("inventory_count", "emitted_count", "held_count"):
         require(type(binding.get(key)) is int and binding[key] >= 0)
     require(binding["inventory_count"] == binding["emitted_count"] + binding["held_count"]
-            and binding["emitted_count"] == count and count >= 100
+            and binding["emitted_count"] == count and count >= (1 if pyramid else 100)
+            and (not pyramid or binding["inventory_count"] >= 100)
             and binding.get("staged_count") == count)
     lease_coverage = "unknown" if binding["held_count"] else "proved"
     require(binding.get("whole_lease_coverage") == lease_coverage)
@@ -380,7 +383,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             owner.get("control_directory_identity") == safe._identity(os.fstat(private))
         )
         require(
-            control.get("status") == ("qualified_partial_subset" if current_inventory.is_verified_subset(config) and parent.get("status") == "qualified_partial_subset" else "complete")
+            control.get("status") == ("qualified_partial_subset" if parent.get("status") == "qualified_partial_subset" else "complete")
             and control.get("local_settlement") == "confirmed"
         )
         started, finished = control["started_unix_ms"], control["finished_unix_ms"]
@@ -400,7 +403,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         selected_source = parent["sources"][source]
         require(
             set(parent["sources"]) == {source}
-            and selected_source.get("state") == ("qualified_partial_subset" if current_inventory.is_verified_subset(config, source) else "complete")
+            and selected_source.get("state") == ("qualified_partial_subset" if parent.get("status") == "qualified_partial_subset" else "complete")
         )
         attempt = selected_source["attempts"][-1]
         require(type(attempt.get("rc")) is int and attempt["rc"] == 0)
@@ -737,8 +740,7 @@ def verified_pipeline_summary(
         require(
             (interrupted or control.get("status") == (
                 "failed" if parent.get("status") == "failed" else
-                "qualified_partial_subset" if current_inventory.is_verified_subset(config)
-                and parent.get("status") == "qualified_partial_subset" else "complete"
+                "qualified_partial_subset" if parent.get("status") == "qualified_partial_subset" else "complete"
             ))
             and control.get("local_settlement") == "confirmed"
         )
@@ -962,7 +964,8 @@ def verified_pipeline_summary(
                 continue
             require(state == "verified")
             require(
-                interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if current_inventory.is_verified_subset(child["config"], source) else "complete")
+                interrupted or (parent_entry.get("state") == ("qualified_partial_subset" if (current_inventory.is_verified_subset(child["config"], source)
+                    or (source == "pyramid-brokerage" and __import__("cre_checkpoint_series").pyramid_partial_child(child))) else "complete")
                 and parent_entry.get("pipeline_result") == result
                 and parent_entry.get("checkpoint_status") == child.get("status"))
             )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -28,6 +29,10 @@ from cre_source_policy import load_source_policy
 
 SOURCE = "pyramid-brokerage"
 SCHEMA = "pyramid-strict-detail-v1"
+SUBSET_SCHEMA = "pyramid-verified-subset-v1"
+SUBSET_SCOPE = "pyramid_verified_subset_v1"
+SUBSET_VERDICT = "ok_additive_verified_subset"
+SUBSET_REASON = "verified Pyramid subset admitted; whole source remains partial"
 HOST = "www.pyramidbrokerage.com"
 ENDPOINT = f"https://{HOST}/wp-json/wp/v2/pbc-listings"
 REASON = (
@@ -124,6 +129,36 @@ def _transaction_evidence(listing, tx, url, post, pages):
         )
 
 
+def subset_source_scope(data):
+    """Structural partition only; full source/aggregate admission remains mandatory."""
+    require(isinstance(data, dict))
+    meta = data.get("runMeta")
+    require(isinstance(meta, dict) and meta.get("mode") == "full"
+            and meta.get("transactions") == ["sale", "lease"]
+            and meta.get("maxItemsPerSource") is None)
+    require(_time(meta.get("startedAt")) <= _time(meta.get("finishedAt")))
+    entries, listings = data.get("sources"), data.get("listings")
+    require(isinstance(entries, list) and len(entries) == 2 and isinstance(listings, list)
+            and type(data.get("totalListings")) is int and data["totalListings"] == len(listings))
+    require(all(isinstance(e, dict) and e.get("sourceKey") == SOURCE for e in entries))
+    require(sorted(e.get("transaction") for e in entries) == ["lease", "sale"])
+    for entry in entries:
+        proof = entry.get("currentInventoryProof")
+        require(isinstance(proof, dict) and proof.get("schema") in (SCHEMA, SUBSET_SCHEMA))
+        held = proof.get("held", [])
+        require(isinstance(held, list) and (proof["schema"] == SUBSET_SCHEMA) == bool(held))
+        require(entry.get("supported") is True and entry.get("error") is None
+                and entry.get("truncated") is bool(held)
+                and type(entry.get("listingsCollected")) is int
+                and type(entry.get("totalAvailableOnSource")) is int)
+        require(all(isinstance(row, dict) and row.get("sourceKey") == SOURCE
+                    and row.get("transactionMode") in ("sale", "lease") for row in listings))
+        require(sum(row["transactionMode"] == entry["transaction"] for row in listings)
+                == entry["listingsCollected"])
+    require(any(e["currentInventoryProof"].get("held") for e in entries))
+    return {"entries": entries, "listings": listings}
+
+
 def admit(
     artifact_path: Path,
     manifest: dict,
@@ -180,7 +215,9 @@ def admit(
     digest = hashlib.sha256(raw).hexdigest()
     require(digest == info["sha256"] and len(raw) == info["bytes"])
     artifact = json.loads(raw)
-    scope = strict_full_source_scope(artifact, SOURCE)
+    partial = any((entry.get("currentInventoryProof") or {}).get("schema") == SUBSET_SCHEMA
+                  for entry in artifact.get("sources", []) if isinstance(entry, dict))
+    scope = subset_source_scope(artifact) if partial else strict_full_source_scope(artifact, SOURCE)
     require(
         len(artifact["sources"]) == 2
         and len(artifact["listings"]) == len(scope["listings"])
@@ -199,18 +236,19 @@ def admit(
     entries = {entry["transaction"]: entry for entry in artifact["sources"]}
     proofs = [entries[tx]["currentInventoryProof"] for tx in ("sale", "lease")]
     proof = proofs[0]
+    excluded = {"transaction", "details", "schema", "held"} if partial else {"transaction", "details"}
     for tx, item in zip(("sale", "lease"), proofs):
         require(isinstance(item, dict))
         require(
-            item.get("schema") == SCHEMA
+            item.get("schema") in ((SCHEMA, SUBSET_SCHEMA) if partial else (SCHEMA,))
             and item.get("sourceKey") == SOURCE
             and item.get("transaction") == tx
             and item.get("generationId") == manifest["run_id"]
             and _time(item.get("generationStartedAt")) == start
         )
         require(
-            {k: v for k, v in item.items() if k not in {"transaction", "details"}}
-            == {k: v for k, v in proof.items() if k not in {"transaction", "details"}}
+            {k: v for k, v in item.items() if k not in excluded}
+            == {k: v for k, v in proof.items() if k not in excluded}
         )
     total, total_pages, cohort = proof["total"], proof["totalPages"], proof["cohort"]
     require(
@@ -276,6 +314,7 @@ def admit(
             times.append(clock)
         previous_end = max(times)
     details = {}
+    excluded = {"transaction", "details", "schema", "held"} if partial else {"transaction", "details"}
     for tx, item in zip(("sale", "lease"), proofs):
         members = item["details"]
         require(isinstance(members, list))
@@ -290,16 +329,43 @@ def admit(
         count = sum(member[2] == tx for member in native.values())
         require(
             len(members) == count
-            and entries[tx]["listingsCollected"] == count
+            and entries[tx]["listingsCollected"] == count - len(item.get("held", []))
             and entries[tx]["totalAvailableOnSource"] == count
         )
     require(set(details) == set(native))
     listings = scope["listings"]
-    require(len(listings) == total)
+    held = {}
+    if partial:
+        excluded = {"transaction", "details", "schema", "held"} if partial else {"transaction", "details"}
+    for tx, item in zip(("sale", "lease"), proofs):
+            for record in item.get("held", []):
+                require(isinstance(record, dict) and set(record) == {"postId", "reason", "listing"})
+                post, listing = record["postId"], record["listing"]
+                require(record["reason"] == "missing_city" and type(post) is int
+                        and post in native and post not in held and isinstance(listing, dict))
+                url, key, expected_tx = native[post]
+                canonical, clock, body_hash = details[post]
+                require(expected_tx == tx and listing.get("id") == key and listing.get("url") == url
+                        and listing.get("canonicalUrl") == canonical and listing.get("transactionMode") == tx
+                        and listing.get("transactionType") == tx.title()
+                        and not str(listing.get("city") or "").strip()
+                        and all(isinstance(listing.get(k), str) and listing[k].strip() for k in ("state", "assetType"))
+                        and listing.get("inventoryObservedAt") == proof["observedAt"]
+                        and listing.get("detailObservedAt") == clock
+                        and listing["wordpressRecord"].get("detailResponseSha256") == body_hash)
+                provenance = listing.get("freshnessProvenance") or {}
+                require(provenance.get("generationId") == manifest["run_id"]
+                        and provenance.get("detailScope") == "detail_page"
+                        and provenance.get("cacheDisposition") == "live"
+                        and provenance.get("method") == "pyramid_direct_detail_html"
+                        and provenance.get("identityMethod") == "literal_owned_listing_path+wordpress_post_id")
+                _transaction_evidence(listing, tx, url, post, passes[1]["pages"])
+                held[post] = (url, key, tx)
+    require(len(listings) == total - len(held))
     staged, emitted = {}, set()
     for listing in listings:
         post = listing["wordpressRecord"]["id"]
-        require(type(post) is int and post in native and post not in emitted)
+        require(type(post) is int and post in native and post not in emitted and post not in held)
         emitted.add(post)
         url, key, tx = native[post]
         canonical, clock, body_hash = details[post]
@@ -343,13 +409,14 @@ def admit(
             and key not in staged
         )
         staged[key] = [key, transformed["transaction_type"], post, url]
-    require(len(staged) == total and len(staged) >= DEFAULT_FLOOR)
+    require(len(staged) == total - len(held) and len(staged) > 0
+            and emitted | set(held) == set(native))
     current, errors, sources, _, rejects = count_artifacts([str(artifact_path)], True)
     require(
         sources == {SOURCE}
-        and not any(errors.values())
+        and (errors.get(SOURCE) == "source pass truncated" if partial else not any(errors.values()))
         and rejects == 0
-        and current.get(SOURCE) == total
+        and current.get(SOURCE) == total - len(held)
     )
     validate_report_scope(report, manifest, SOURCE, artifact_path)
     summary, gate = report["summary"], report["per_source"][SOURCE]
@@ -360,23 +427,28 @@ def admit(
         and summary.get("baseline_updated") is False
         and summary.get("baseline_update_sources") == []
     )
-    rechecking = phase == "aggregate" and gate.get("verdict") == VERDICT
+    verdict = SUBSET_VERDICT if partial else VERDICT
+    reason = SUBSET_REASON if partial else REASON
+    admission_scope = SUBSET_SCOPE if partial else SCOPE
+    raw_reason = ("no baseline row; cannot gate (first sight); a source pass also errored this run"
+                  if partial else "no baseline row; cannot gate (first sight)")
+    rechecking = gate.get("verdict") == verdict and (phase == "aggregate" or partial)
     require(
         (gate.get("raw_verdict") if rechecking else gate.get("verdict")) == "first_seen"
         and (gate.get("raw_reason") if rechecking else gate.get("reason"))
-        == "no baseline row; cannot gate (first sight)"
+        == raw_reason
         and gate.get("baseline_median") is None
         and gate.get("mark_missing_safe") is False
     )
     require(
         type(gate.get("current_active")) is int
-        and gate["current_active"] == total
+        and gate["current_active"] == total - len(held)
         and type(gate.get("effective_floor")) is int
         and gate["effective_floor"] == DEFAULT_FLOOR
     )
     binding = {
-        "schema": SCHEMA,
-        "scope": SCOPE,
+        "schema": SUBSET_SCHEMA if partial else SCHEMA,
+        "scope": SUBSET_SCOPE if partial else SCOPE,
         "artifact_sha256": digest,
         "collector_git_sha": current_code_sha,
         "database_target_sha256": target["value"],
@@ -387,10 +459,16 @@ def admit(
         "pages_sha256": _sha(passes),
         "cohort_sha256": _sha(cohort),
         "detail_receipts_sha256": _sha([item["details"] for item in proofs]),
-        "emitted_count": total,
+        "emitted_count": total - len(held),
         "staged_count": len(staged),
         "staged_identities_sha256": _sha([staged[k] for k in sorted(staged)]),
     }
+    if partial:
+        members = [{"native_id": post, "source_url": url, "external_id": key,
+                    "transaction": tx, "emitted": post not in held}
+                   for post, (url, key, tx) in native.items()]
+        binding.update(inventory_count=total, held_count=len(held), held_sha256=_sha(held),
+                       members_sha256=_sha(members), whole_source_coverage=False, whole_lease_coverage="unknown")
     if phase == "aggregate":
         require(
             manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
@@ -399,26 +477,55 @@ def admit(
     if rechecking:
         require(
             gate.get("current_inventory_proof") == binding
-            and gate.get("admission_scope") == SCOPE
-            and gate.get("reason") == REASON
+            and gate.get("admission_scope") == admission_scope
+            and gate.get("reason") == reason
         )
     gate.update(
         raw_verdict="first_seen",
-        raw_reason="no baseline row; cannot gate (first sight)",
-        verdict=VERDICT,
-        reason=REASON,
+        raw_reason=raw_reason,
+        verdict=verdict,
+        reason=reason,
         mark_missing_safe=False,
-        admission_scope=SCOPE,
+        admission_scope=admission_scope,
         current_inventory_proof=binding,
     )
     report["scope"] = {
-        "kind": SCOPE,
+        "kind": admission_scope,
         "transactions": ["sale", "lease"],
         "whole_source_coverage": False,
     }
     summary.update(mark_missing_safe_sources=[], mark_missing_safe_brokerages=[])
     manifest["scope"].update(
-        kind="collector_registry_additive_current_inventory",
+        kind="collector_registry_verified_subset" if partial else "collector_registry_additive_current_inventory",
         whole_source_coverage=False,
     )
     return binding
+
+
+def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_git_dirty,
+                          expected_database_target_sha256, attempt_id):
+    """Reprove both gates and the exact partition at the ingest boundary."""
+    require(isinstance(envelope, dict) and set(envelope) ==
+            {"manifest", "source_report", "aggregate_report", "binding", "attempt_id"})
+    require(isinstance(attempt_id, str) and re.fullmatch(r"[a-f0-9]{32}", attempt_id)
+            and envelope["attempt_id"] == attempt_id)
+    manifest = copy.deepcopy(envelope["manifest"])
+    require(manifest["preflight"]["database_target"] ==
+            {"algorithm": "sha256", "value": expected_database_target_sha256})
+    binding = envelope["binding"]
+    require(isinstance(binding, dict) and binding.get("scope") == SUBSET_SCOPE)
+    for phase, key in (("source", "source_report"), ("aggregate", "aggregate_report")):
+        report = copy.deepcopy(envelope[key])
+        require(report["per_source"][SOURCE].get("current_inventory_proof") == binding)
+        require(admit(Path(artifact_path), manifest, report, current_code_sha=current_code_sha,
+                      current_git_dirty=current_git_dirty, phase=phase) == binding)
+    raw = Path(artifact_path).read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == binding["artifact_sha256"])
+    entries = json.loads(raw)["sources"]
+    proof = entries[0]["currentInventoryProof"]
+    held = {item["postId"] for entry in entries
+            for item in entry["currentInventoryProof"].get("held", [])}
+    return {"schema": SUBSET_SCHEMA, "binding": binding, "attempt_id": attempt_id,
+            "members": [{"native_id": row[0], "source_url": row[1], "external_id": row[2],
+                         "transaction": row[3], "emitted": row[0] not in held}
+                        for row in proof["cohort"]]}

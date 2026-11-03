@@ -242,6 +242,41 @@ def series_config(
     return config
 
 
+def pyramid_partial_child(child: Mapping[str, Any]) -> bool:
+    """Recognize only a bound, explicitly partial Pyramid child result."""
+    from cre_checkpoint_refresh import pyramid_subset_authorized
+    try:
+        source = (child.get("sources") or {}).get("pyramid-brokerage") or {}
+        artifact = source.get("artifact") or {}
+        gate = source.get("gate") or {}
+        binding = gate.get("current_inventory_proof") or {}
+        return (pyramid_subset_authorized(child["config"], "pyramid-brokerage")
+                and artifact.get("pyramid_subset") is True
+                and gate.get("verdict") == "ok_additive_verified_subset"
+                and gate.get("mark_missing_safe") is False
+                and binding.get("schema") == "pyramid-verified-subset-v1"
+                and binding.get("scope") == "pyramid_verified_subset_v1"
+                and binding.get("whole_source_coverage") is False
+                and binding.get("artifact_sha256") == artifact.get("sha256")
+                and binding.get("generation_id") == child.get("run_id")
+                and binding.get("collector_git_sha") == child.get("collector_git_sha")
+                and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
+                and type(binding.get("held_count")) is int and binding["held_count"] > 0
+                and type(binding.get("emitted_count")) is int and binding["emitted_count"] > 0
+                and type(artifact.get("staged_unique")) is int
+                and artifact["staged_unique"] == binding["emitted_count"]
+                and type(binding.get("inventory_count")) is int and binding["inventory_count"] >= 100
+                and binding["inventory_count"] == binding["held_count"] + binding["emitted_count"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def pyramid_subset_counts(child: Mapping[str, Any]) -> dict[str, int]:
+    binding = child["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]
+    return {"inventory": binding["inventory_count"], "emitted": binding["emitted_count"],
+            "held": binding["held_count"]}
+
+
 def current_subset(config: Mapping[str, Any]) -> bool:
     import cre_current_inventory_admission as current_inventory
     return current_inventory.is_verified_subset(config)
@@ -1077,6 +1112,12 @@ def _child_succeeded(
             and aggregate.get("baseline_advisory_holds") == ["savills"]
             and aggregate.get("mark_missing_safe_brokerages") == []
         )
+    if pyramid_partial_child(child_manifest):
+        scope = child_manifest.get("scope")
+        return (child_manifest.get("status") == "qualified_partial_subset"
+                and isinstance(scope, Mapping) and scope.get("kind") == "collector_registry_verified_subset"
+                and scope.get("whole_source_coverage") is False
+                and _exact_json_equal(child_manifest.get("config"), _expected_child_config("pyramid-brokerage", config)))
     if current_subset(config):
         scope = child_manifest.get("scope")
         return (
@@ -1124,7 +1165,7 @@ def _reconciled_state(
         return "failed_global"
     status = child_manifest.get("status")
     if _child_succeeded(child_manifest, config or {}):
-        return "qualified_partial_subset" if current_subset(config or {}) else "complete"
+        return "qualified_partial_subset" if current_subset(config or {}) or pyramid_partial_child(child_manifest) else "complete"
     if status == RESOURCE_GUARD_STATUS:
         return "resource_guard_interrupted"
     if status == "interrupted":
@@ -1247,6 +1288,8 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
         checkpoint["checkpoint_run"] = str(path.parent.relative_to(series_dir))
         checkpoint["checkpoint_status"] = child.get("status")
         checkpoint["state"] = _reconciled_state(child, manifest["config"])
+        if checkpoint["state"] == "qualified_partial_subset" and pyramid_partial_child(child):
+            checkpoint["subset_counts"] = pyramid_subset_counts(child)
         checkpoint["error"] = child.get("error")
         attempts[-1]["finished_at"] = child.get("finished_at") or utc_now()
         save_manifest(series_dir, manifest)
@@ -1818,7 +1861,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if current_subset(manifest["config"]) and key == "daum-commercial" else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -1832,6 +1875,10 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
             checkpoint_status=child["status"],
             error=child.get("error"),
         )
+        if row["state"] in {"complete", "qualified_partial_subset"}:
+            row["pipeline_result"] = child["pipeline"]["source_results"][key]
+            if key == "pyramid-brokerage" and pyramid_partial_child(child):
+                row["subset_counts"] = pyramid_subset_counts(child)
         row["attempts"][-1]["finished_at"] = child["finished_at"]
     save_manifest(series_dir, manifest)
 
@@ -2093,12 +2140,17 @@ def pipeline_source_qualified(
         for key in members:
             checkpoint = child["sources"][key]
             proof = results[key]
-            if current_subset(child.get("config") or {}) and key == "daum-commercial":
+            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)):
                 if (proof.get("qualification") != "qualified_partial_subset"
                     or proof.get("partial") is not True
                     or proof.get("whole_source_coverage") is not False
-                    or child.get("scope", {}).get("kind") != "collector_registry_verified_subset"):
+                    or (key == "daum-commercial" and child.get("scope", {}).get("kind") != "collector_registry_verified_subset")):
                     return False
+                if key == "pyramid-brokerage":
+                    binding = checkpoint["gate"]["current_inventory_proof"]
+                    if (proof.get("emitted_count") != binding["emitted_count"]
+                            or proof.get("held_count") != binding["held_count"]):
+                        return False
             elif proof.get("partial") is True:
                 return False
             artifact = checkpoint["artifact"]
@@ -2153,7 +2205,7 @@ def run_pipeline_series(
     root.mkdir(parents=True, exist_ok=True)
     logs = series_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    if current_subset(config) and all(
+    if any(manifest["sources"][key].get("state") == "qualified_partial_subset" for key in sources) and all(
         manifest["sources"][key].get("state") in {"complete", "qualified_partial_subset"}
         for key in sources
     ):
@@ -2172,11 +2224,13 @@ def run_pipeline_series(
         if (child.get("status") != "qualified_partial_subset"
             or _pipeline_has_unresolved(child, config) or document_incomplete(child, config) or any(
             not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
-                parent_started_at=manifest["started_at"],parent_finished_at=manifest["finished_at"],
+                parent_started_at=manifest["started_at"],parent_finished_at=utc_now(),
                 unit_cache=cache,parent_attempts=manifest["sources"][key]["attempts"])
             for key in sources
         )):
             raise SeriesError("handled subset evidence no longer qualifies")
+        manifest.update(status="qualified_partial_subset", finished_at=utc_now(), error=None)
+        save_manifest(series_dir, manifest)
         return 0
     prior_runs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
     resume = None
@@ -2310,8 +2364,12 @@ def run_pipeline_series(
                 parent_started_at=manifest["started_at"], parent_finished_at=utc_now(), unit_cache=unit_cache,
                 parent_attempts=row["attempts"]):
             qualified.add(key)
-            row.update(state="qualified_partial_subset" if current_subset(config) and key == "daum-commercial" else "complete", error=None)
+            row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
+            if key == "pyramid-brokerage" and pyramid_partial_child(child):
+                binding = child["sources"][key]["gate"]["current_inventory_proof"]
+                row["subset_counts"] = {"inventory": binding["inventory_count"],
+                                        "emitted": binding["emitted_count"], "held": binding["held_count"]}
         else:
             state = child.get("sources", {}).get(key, {}).get("state")
             if state in {
@@ -2340,7 +2398,7 @@ def run_pipeline_series(
         row["checkpoint_status"] = child.get("status")
     success = rc == 0 and len(qualified) == len(sources)
     manifest.update(
-        status=("qualified_partial_subset" if current_subset(config) else "complete") if success else "failed",
+        status=("qualified_partial_subset" if current_subset(config) or any(row.get("state") == "qualified_partial_subset" for row in manifest["sources"].values()) else "complete") if success else "failed",
         finished_at=utc_now(),
         error=None
         if success
@@ -2660,7 +2718,11 @@ def run_series(
                 save_manifest(series_dir, manifest)
                 return 1
             if rc == 0 and _child_succeeded(child_manifest, config):
-                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) else "complete"
+                checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) else "complete"
+                if pyramid_partial_child(child_manifest):
+                    binding = child_manifest["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]
+                    checkpoint["subset_counts"] = {"inventory": binding["inventory_count"],
+                                                   "emitted": binding["emitted_count"], "held": binding["held_count"]}
                 save_manifest(series_dir, manifest)
                 break
             if rc == 75 or child_manifest.get("status") == RESOURCE_GUARD_STATUS:
@@ -2736,7 +2798,7 @@ def run_series(
         if checkpoint["state"] == "failed_source"
     ]
     manifest["status"] = (
-        "complete_with_source_failures" if failed_sources else ("qualified_partial_subset" if current_subset(config) else "complete")
+        "complete_with_source_failures" if failed_sources else ("qualified_partial_subset" if current_subset(config) or any(row.get("state") == "qualified_partial_subset" for row in manifest["sources"].values()) else "complete")
     )
     manifest["error"] = (
         "source-local failures: " + ", ".join(failed_sources)

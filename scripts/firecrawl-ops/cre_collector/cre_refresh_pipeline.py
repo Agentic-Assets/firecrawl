@@ -340,6 +340,7 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
                 "daum_verified_subset": refresh.current_inventory.is_verified_subset(
                     manifest["config"], source
                 ),
+                "pyramid_subset_allowed": refresh.pyramid_subset_authorized(manifest["config"], source),
             },
         },
     )
@@ -1162,10 +1163,12 @@ def run_bounded_pipeline(
                             "generation_id": manifest["run_id"],
                             "artifact_sha256": checkpoint["artifact"]["sha256"],
                         }
-                        if refresh.current_inventory.is_verified_subset(manifest["config"], source):
+                        if refresh.verified_subset_candidate(manifest, source):
+                            binding = checkpoint.get("gate", {}).get("current_inventory_proof", {})
                             state["source_results"][source].update(
                                 qualification="qualified_partial_subset", partial=True,
                                 whole_source_coverage=False,
+                                emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
                     sealed = ()
                     state["active_unit"] = None
@@ -1182,7 +1185,9 @@ def run_bounded_pipeline(
             for source in selected
             if state["source_results"].get(source, {}).get("state") != "verified"
         ]
-        state["status"] = "partial" if failures else "complete"
+        state["status"] = "partial" if failures or any(
+            item.get("partial") is True for item in state["source_results"].values()
+        ) else "complete"
         refresh.save_manifest(run_dir, manifest)
         return failures
     except BaseException as exc:

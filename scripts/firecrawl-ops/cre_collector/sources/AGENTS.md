@@ -510,6 +510,15 @@ ambiguous values and disagreement with inventory taxonomy fail with post ID and
 bounded raw fact. Do not guess from descriptions or default unfamiliar labels
 to sale; validate observed labels without loosening ownership or detail proof.
 
+When a full strict current-inventory run observes a missing city on an otherwise
+fresh, identity- and tenure-validated detail, Pyramid retains that record as a
+missing-city hold and emits verified peers through its partial admission. The
+complete inventory of at least 100 and every fresh detail are still required;
+the emitted verified subset may contain fewer than 100 but must be nonempty. The result is
+explicitly partial, never authorizes mark-missing or a complete-source watermark,
+and leaves held parents, source-index rows and children untouched. Do not infer
+city from the property name, region, proximity prose or another source.
+
 Pyramid strict first-seen proof requires full/uncapped sale+lease. A
 successful immutable complete snapshot may be reused only within the exact
 nonempty generation+start; monitor, capped and standalone calls do not populate

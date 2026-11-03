@@ -339,7 +339,7 @@ function Get-CreBrokerageName {
 }
 
 function Test-CreDaumSubsetSummary {
-    param($Summary)
+    param($Summary, [string]$SourceKey)
     try {
         if ($Summary.measurement -isnot [string] -or $Summary.qualification -isnot [string] -or
             $Summary.whole_lease_coverage -isnot [string] -or $Summary.measurement -cne 'generation_exact_verified_subset' -or
@@ -350,7 +350,9 @@ function Test-CreDaumSubsetSummary {
             if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
                 $Summary.$field -lt 0 -or $Summary.$field -gt 500000) { return $false }
         }
-        if ($Summary.emitted_count -lt 100 -or $Summary.emitted_count -ne $Summary.verified_listings -or
+        $minimumEmitted = if ($SourceKey -ceq "pyramid-brokerage") { 1 } else { 100 }
+        if (($SourceKey -ceq "pyramid-brokerage" -and $Summary.inventory_count -lt 100) -or
+            $Summary.emitted_count -lt $minimumEmitted -or $Summary.emitted_count -ne $Summary.verified_listings -or
             $Summary.inventory_count -ne ($Summary.emitted_count + $Summary.held_count)) { return $false }
         $leaseCoverage = if ($Summary.held_count -gt 0) { 'unknown' } else { 'proved' }
         if ($Summary.whole_lease_coverage -cne $leaseCoverage) { return $false }
@@ -370,6 +372,8 @@ function Get-CreVerifiedSummary {
         [ValidateRange(50,12000)][int]$ReadDeadlineMilliseconds = 12000)
     $pipelineMode = [bool](Get-Variable -Name Pipeline -ValueOnly -ErrorAction SilentlyContinue)
     $subsetRequested = [bool](Get-Variable -Name AdmitDaumVerifiedSubset -ValueOnly -ErrorAction SilentlyContinue)
+    $admissionVariable = Get-Variable -Name selectedAdmissionKeys -ErrorAction SilentlyContinue
+    $pyramidAdmitted = $null -ne $admissionVariable -and $admissionVariable.Value -ccontains "pyramid-brokerage"
     $notificationSource = Get-Variable -Name selectedSourceArgument -ValueOnly -ErrorAction SilentlyContinue
     if (-not $notificationSource) { $notificationSource = $Source }
 
@@ -420,10 +424,11 @@ function Get-CreVerifiedSummary {
                     $null -ne $entry.PSObject.Properties['held_count'] -or $null -ne $entry.PSObject.Properties['emitted_count'] -or
                     $null -ne $entry.PSObject.Properties['qualification'] -or
                     ($null -ne $entry.PSObject.Properties['measurement'] -and $entry.measurement -ceq 'generation_exact_verified_subset')
-                $expectsSubset = $subsetRequested -and $entry.source_key -ceq 'daum-commercial'
+                $expectsSubset = ($subsetRequested -and $entry.source_key -ceq 'daum-commercial') -or
+                    ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted)
                 if ($subsetMarked -ne $expectsSubset) { return $null }
                 if ($expectsSubset) {
-                    if (-not (Test-CreDaumSubsetSummary $entry)) { return $null }
+                    if (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
                     $subsetKeys += $entry.source_key
                 }
                 $inventoryProperty = $entry.PSObject.Properties['verified_inventory_only']
@@ -470,9 +475,12 @@ function Get-CreVerifiedSummary {
     $subsetMarked = $null -ne $summary.PSObject.Properties['partial'] -or
         $null -ne $summary.PSObject.Properties['held_count'] -or $null -ne $summary.PSObject.Properties['emitted_count'] -or
         $null -ne $summary.PSObject.Properties['qualification'] -or $summary.measurement -ceq 'generation_exact_verified_subset'
-    if ($subsetMarked -ne $subsetRequested) { return $null }
-    if ($subsetRequested -and ($notificationSource -cne 'daum-commercial' -or -not (Test-CreDaumSubsetSummary $summary))) { return $null }
-    $expectedMeasurement = if ($subsetRequested) { 'generation_exact_verified_subset' } else { 'generation_exact_current_inventory' }
+    $pyramidSubset = $subsetMarked -and $notificationSource -ceq 'pyramid-brokerage' -and $pyramidAdmitted
+    $expectsSubset = $subsetRequested -or $pyramidSubset
+    if ($subsetMarked -ne $expectsSubset) { return $null }
+    if ($expectsSubset -and (-not (Test-CreDaumSubsetSummary $summary $notificationSource) -or
+        ($subsetRequested -and $notificationSource -cne 'daum-commercial'))) { return $null }
+    $expectedMeasurement = if ($expectsSubset) { 'generation_exact_verified_subset' } else { 'generation_exact_current_inventory' }
     if (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
         $summary.schema_version -ne 1 -or $summary.verified -isnot [bool] -or -not $summary.verified -or
         $summary.source -cne $notificationSource -or $summary.measurement -cne $expectedMeasurement -or

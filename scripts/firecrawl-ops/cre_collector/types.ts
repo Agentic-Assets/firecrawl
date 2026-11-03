@@ -276,7 +276,7 @@ export type PyramidInventoryPass = {
   pages: Array<[number, string, string, string, number, number, number[]]>;
 };
 export type PyramidCurrentInventoryProof = {
-  schema: "pyramid-strict-detail-v1";
+  schema: "pyramid-strict-detail-v1" | "pyramid-verified-subset-v1";
   sourceKey: "pyramid-brokerage";
   transaction: Tx;
   generationId: string;
@@ -289,6 +289,7 @@ export type PyramidCurrentInventoryProof = {
   cohort: Array<[number, string, string, Tx]>;
   // post, validated canonical URL, detail observation, decoded body SHA256
   details: Array<[number, string, string, string]>;
+  held?: Array<{ postId: number; reason: "missing_city"; listing: any }>;
 };
 
 export type EssexArchiveProof = {

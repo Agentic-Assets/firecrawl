@@ -2802,6 +2802,20 @@ def compute_staged_stats(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def pyramid_subset_authorized(config: Mapping[str, Any], source: str) -> bool:
+    return (source == "pyramid-brokerage"
+            and current_inventory.admission_configuration(config, source) == current_inventory.configuration(source))
+
+
+def pyramid_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return (pyramid_subset_authorized(manifest["config"], source)
+            and (manifest["sources"].get(source, {}).get("artifact") or {}).get("pyramid_subset") is True)
+
+
+def verified_subset_candidate(manifest: Mapping[str, Any], source: str) -> bool:
+    return current_inventory.is_verified_subset(manifest["config"], source) or pyramid_subset_candidate(manifest, source)
+
+
 def validate_source_artifact(
     path: Path,
     expected_source: str,
@@ -2814,6 +2828,7 @@ def validate_source_artifact(
     max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
     now: datetime | None = None,
     daum_verified_subset: bool = False,
+    pyramid_subset_allowed: bool = False,
 ) -> dict[str, Any]:
     if not artifact_compute_enabled():
         return _validate_source_artifact_local(
@@ -2824,6 +2839,7 @@ def validate_source_artifact(
             expected_transactions=expected_transactions,
             max_observation_age_hours=max_observation_age_hours, now=now,
             daum_verified_subset=daum_verified_subset,
+            pyramid_subset_allowed=pyramid_subset_allowed,
         )
     def timestamp(value):
         return value.isoformat() if isinstance(value, datetime) else value
@@ -2838,6 +2854,7 @@ def validate_source_artifact(
             "max_observation_age_hours": max_observation_age_hours,
             "now": timestamp(now),
             "daum_verified_subset": daum_verified_subset,
+            "pyramid_subset_allowed": pyramid_subset_allowed,
         },
     })
 
@@ -2854,6 +2871,7 @@ def _validate_source_artifact_local(
     max_observation_age_hours: float = DEFAULT_MAX_OBSERVATION_AGE_HOURS,
     now: datetime | None = None,
     daum_verified_subset: bool = False,
+    pyramid_subset_allowed: bool = False,
 ) -> dict[str, Any]:
     if expected_source not in SOURCE_KEYS:
         raise ArtifactValidationError(f"unknown expected source: {expected_source}")
@@ -2876,6 +2894,20 @@ def _validate_source_artifact_local(
             raise ArtifactValidationError(
                 "DAUM subset structural evidence refused"
             ) from exc
+    pyramid_partial = False
+    if expected_source == "pyramid-brokerage":
+        from cre_pyramid_current_inventory import SUBSET_SCHEMA, subset_source_scope
+        pyramid_partial = any(isinstance(entry, dict)
+            and isinstance(entry.get("currentInventoryProof"), dict)
+            and entry["currentInventoryProof"].get("schema") == SUBSET_SCHEMA
+            for entry in (data.get("sources") if isinstance(data.get("sources"), list) else []))
+        if pyramid_partial:
+            if not pyramid_subset_allowed:
+                raise ArtifactValidationError("Pyramid subset lacks current-inventory admission")
+            try:
+                subset_source_scope(data)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ArtifactValidationError("Pyramid subset structural evidence refused") from exc
     run_meta = data.get("runMeta")
     if not isinstance(run_meta, dict):
         raise ArtifactValidationError("runMeta must be an object")
@@ -3036,11 +3068,11 @@ def _validate_source_artifact_local(
         if entry.get("error"):
             raise ArtifactValidationError(f"{expected_source}/{tx} reported an error")
         truncated = entry.get("truncated")
-        if truncated is True and not daum_verified_subset:
+        if truncated is True and not (daum_verified_subset or pyramid_partial):
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} reported truncated=true"
             )
-        if truncated is not False and not daum_verified_subset:
+        if truncated is not False and not (daum_verified_subset or pyramid_partial):
             raise ArtifactValidationError(
                 f"{expected_source}/{tx} is missing explicit truncated=false"
             )
@@ -3339,6 +3371,7 @@ def _validate_source_artifact_local(
         "observation_cutoff_at": observation_cutoff.isoformat(),
         "strict_freshness": strict_freshness,
         "property_detail_freshness": property_detail_freshness,
+        **({"pyramid_subset": True} if pyramid_partial else {}),
         "freshness_generation_id": generation_id,
         "freshness_generation_started_at": (
             generation_started.isoformat() if generation_started is not None else None
@@ -4007,6 +4040,7 @@ def _finalize_cohort_collection(
             daum_verified_subset=current_inventory.is_verified_subset(
                 manifest["config"], item.source
             ),
+            pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], item.source),
         )
     except ArtifactValidationError as exc:
         item.attempt["error"] = str(exc)
@@ -4610,6 +4644,7 @@ def _checkpoint_artifact_valid(
     *,
     transactions: Sequence[str] = TRANSACTIONS,
     daum_verified_subset: bool = False,
+    pyramid_subset_allowed: bool = False,
 ) -> tuple[Path, dict[str, Any]] | None:
     artifact_info = checkpoint.get("artifact")
     if not isinstance(artifact_info, dict):
@@ -4640,6 +4675,7 @@ def _checkpoint_artifact_valid(
             ),
             expected_transactions=transactions,
             daum_verified_subset=daum_verified_subset,
+            pyramid_subset_allowed=pyramid_subset_allowed,
         )
     except ArtifactValidationError:
         return None
@@ -4662,6 +4698,7 @@ def _manifest_checkpoint_artifact_valid(
             source,
             manifest["started_at"],
             daum_verified_subset=current_inventory.is_verified_subset(manifest["config"], source),
+            pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
     return _checkpoint_artifact_valid(
         run_dir,
@@ -4990,6 +5027,7 @@ def collect_source(
                 daum_verified_subset=current_inventory.is_verified_subset(
                     manifest["config"], source
                 ),
+                pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
             )
         except ArtifactValidationError as exc:
             refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
@@ -5037,9 +5075,7 @@ def subset_gate_can_admit(info: Mapping[str, Any]) -> bool:
 def gate_verdict_is_admitted(
     manifest: Mapping[str, Any], verdict: Any, *, source: str | None = None
 ) -> bool:
-    if source is not None and current_inventory.is_verified_subset(
-        manifest["config"], source
-    ):
+    if source is not None and verified_subset_candidate(manifest, source):
         return verdict == current_inventory.DAUM_SUBSET_VERDICT
     transactions = tuple(manifest["config"]["transactions"])
     if transactions != TRANSACTIONS:
@@ -5057,7 +5093,7 @@ def _admit_current_inventory(
     run_dir, manifest, report, artifact, phase, *, source=None, local=False
 ):
     source = source or manifest["config"]["current_inventory_admission"]["source_key"]
-    subset = current_inventory.is_verified_subset(manifest["config"], source)
+    subset = verified_subset_candidate(manifest, source)
     if subset and phase == "aggregate":
         manifest["sources"][source].setdefault("subset_ingest_attempt_id", secrets.token_hex(16))
     if not local and (artifact_compute_enabled() or subset):
@@ -5079,8 +5115,9 @@ def _admit_current_inventory(
         if subset and phase == "aggregate":
             claims = response.get("subset_claims")
             if not isinstance(claims, dict) or sha256_file(Path(claims["path"])) != claims["sha256"]:
-                raise GlobalStageError("DAUM subset claims evidence changed")
-            manifest["sources"][source]["daum_verified_subset_claims"] = claims
+                raise GlobalStageError("verified subset claims evidence changed")
+            key = "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
+            manifest["sources"][source][key] = claims
         manifest["scope"].update(scope)
         report.clear()
         report.update(_load_json(evidence))
@@ -5097,6 +5134,7 @@ def _admit_current_inventory(
             daum_verified_subset=current_inventory.is_verified_subset(
                 manifest["config"], source
             ),
+            pyramid_subset_allowed=pyramid_subset_authorized(manifest["config"], source),
         )
         git_sha, git_dirty = git_identity()
         return current_inventory.admit(
@@ -5244,19 +5282,20 @@ def gate_source(
 
 
 def subset_ingest_arguments(run_dir, manifest, source):
-    if not current_inventory.is_verified_subset(manifest["config"], source):
+    if not verified_subset_candidate(manifest, source):
         return []
     checkpoint = manifest["sources"][source]
-    claims = checkpoint.get("daum_verified_subset_claims")
+    pyramid = pyramid_subset_candidate(manifest, source)
+    claims = checkpoint.get("pyramid_verified_subset_claims" if pyramid else "daum_verified_subset_claims")
     if not isinstance(claims, dict):
-        raise GlobalStageError("DAUM subset requires both sealed gate claims")
+        raise GlobalStageError("verified subset requires both sealed gate claims")
     path = Path(claims["path"])
     if not path.is_relative_to(run_dir) or path.is_symlink() or sha256_file(path) != claims["sha256"]:
-        raise GlobalStageError("DAUM subset claims changed")
+        raise GlobalStageError("verified subset claims changed")
     attempt = checkpoint.get("subset_ingest_attempt_id")
     if claims.get("attempt_id") != attempt:
-        raise GlobalStageError("DAUM subset attempt changed")
-    return ["--daum-verified-subset-claims", str(path),
+        raise GlobalStageError("verified subset attempt changed")
+    return ["--pyramid-verified-subset-claims" if pyramid else "--daum-verified-subset-claims", str(path),
             "--checkpoint-ingest-attempt", attempt,
             "--expected-db-target-sha256", manifest_database_target_sha256(manifest)]
 
@@ -5268,7 +5307,8 @@ def dry_run_source(
     artifact: Path,
 ) -> bool:
     checkpoint = manifest["sources"][source]
-    if current_inventory.is_verified_subset(manifest["config"], source) and not checkpoint.get("daum_verified_subset_claims"):
+    claim_key = "pyramid_verified_subset_claims" if pyramid_subset_candidate(manifest, source) else "daum_verified_subset_claims"
+    if verified_subset_candidate(manifest, source) and not checkpoint.get(claim_key):
         checkpoint["dry_run"] = {"deferred_until": "sealed_subset_aggregate"}
         save_manifest(run_dir, manifest)
         return True
@@ -5319,10 +5359,10 @@ def ingest_source(
         require_strict_freshness=source in STRICT_FRESHNESS_SOURCE_KEYS,
         expected_db_target_sha256=manifest_database_target_sha256(manifest),
     )
-    subset = current_inventory.is_verified_subset(manifest["config"], source)
+    subset = verified_subset_candidate(manifest, source)
     if subset:
         if checkpoint.get("state") != "dry_run_passed" and not dry_run_source(run_dir, manifest, source, artifact):
-            raise GlobalStageError("DAUM subset sealed dryrun failed")
+            raise GlobalStageError("verified subset sealed dryrun failed")
         argv.extend(subset_ingest_arguments(run_dir, manifest, source))
     attempt_id = checkpoint["subset_ingest_attempt_id"] if subset else secrets.token_hex(16)
     if source == "colliers-main":
@@ -5796,7 +5836,7 @@ def run_aggregate_gate(
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
         **(
-            {"admission_scope": current_inventory.admission_configuration(manifest["config"], "daum-commercial")["admission_scope"] if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
+            {"admission_scope": "pyramid_verified_subset_v1" if pyramid_subset_candidate(manifest, "pyramid-brokerage") else current_inventory.admission_configuration(manifest["config"], "daum-commercial")["admission_scope"] if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
             if manifest["config"].get("current_inventory_admission")
             else {}
         ),
@@ -5808,9 +5848,9 @@ def run_aggregate_gate(
             + ", ".join(non_ok_sources)
         )
     for source, artifact in zip(selected, artifacts):
-        if current_inventory.is_verified_subset(manifest["config"], source):
+        if verified_subset_candidate(manifest, source):
             if not dry_run_source(run_dir, manifest, source, artifact):
-                raise GlobalStageError("DAUM subset sealed dryrun failed")
+                raise GlobalStageError("verified subset sealed dryrun failed")
     return manifest["aggregate_gate"]
 
 
@@ -7913,8 +7953,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
             )
-            if current_inventory.is_verified_subset(manifest["config"]):
+            if any(verified_subset_candidate(manifest, source) for source in manifest["config"]["sources"]):
                 manifest["status"] = current_inventory.DAUM_SUBSET_STATUS
+                manifest["scope"].update(kind="collector_registry_verified_subset", whole_source_coverage=False)
             manifest["finished_at"] = utc_now()
             manifest["resource_stop"] = None
             manifest["error"] = None

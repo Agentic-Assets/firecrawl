@@ -794,3 +794,36 @@ test("Pyramid detail denial stops queued details and sibling retry", async () =>
     globalThis.fetch = original;
   }
 });
+
+
+test("Pyramid current inventory partitions missing-city details without fabricating locality", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const keys = ["CRE_REFRESH_GENERATION", "CRE_REFRESH_STARTED_AT", "CRE_REQUIRE_FRESH_DETAILS"] as const;
+  const prior = keys.map(key => process.env[key]);
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    keys.forEach((key, i) => { if (prior[i] === undefined) delete process.env[key]; else process.env[key] = prior[i]; });
+  });
+  process.env.CRE_REFRESH_GENERATION = "pyramid-city-hold-test";
+  process.env.CRE_REFRESH_STARTED_AT = new Date(Date.now() - 1000).toISOString();
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
+  const records = [row(101, PYRAMID_SALE_TERM_ID), row(102, PYRAMID_SALE_TERM_ID)];
+  records[1]._embedded["wp:term"] = records[1]._embedded["wp:term"].filter(group => group[0].taxonomy !== "city");
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.startsWith("/wp-json/")) return Response.json(records,
+      { headers: { "X-WP-Total": "2", "X-WP-TotalPages": "1" } });
+    const id = Number(url.pathname.match(/property-(\d+)/)?.[1]);
+    return new Response(detailHtml.replaceAll("101", String(id)).replace("<head>",
+      `<head><link rel="canonical" href="${records[id - 101].link}">`));
+  };
+  const result = await srcPyramidBrokerage("sale", Infinity, false);
+  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings[0].wordpressRecord.id, 101);
+  assert.equal(result.truncated, true);
+  const proof = result.currentInventoryProof as any;
+  assert.equal(proof.schema, "pyramid-verified-subset-v1");
+  assert.deepEqual(proof.held.map((entry: any) => [entry.postId, entry.reason, entry.listing.city]), [[102, "missing_city", undefined]]);
+  assert.deepEqual(proof.details.map((entry: any) => entry[0]), [101, 102]);
+  assert.equal(proof.held[0].listing.wordpressRecord.id, 102);
+});

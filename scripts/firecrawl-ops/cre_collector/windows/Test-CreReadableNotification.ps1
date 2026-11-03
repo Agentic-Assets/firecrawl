@@ -357,6 +357,38 @@ foreach ($bad in @('complete','partition','duplicate','string-partition','low-fl
     $AdmitDaumVerifiedSubset = $true
 }
 
+# Pyramid uses its existing current-inventory admission for an automatic partial.
+$AdmitDaumVerifiedSubset = $false
+$selectedAdmissionKeys = @('pyramid-brokerage')
+$Source = 'pyramid-brokerage'; $selectedSourceArgument = $Source; $Pipeline = $false
+$pyramid = New-DaumSubsetSummary
+$pyramid.source = $Source
+$pyramid.inventory_count = 102; $pyramid.emitted_count = 99; $pyramid.held_count = 3; $pyramid.verified_listings = 99
+$pyramid.transaction_breakdown = [ordered]@{sale=99;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}
+Save-Summary $pyramid
+$pyramidRead = Get-CreVerifiedSummary (New-Record) 'pyramid-subset'
+$pyramidText = Get-CreNotificationText (New-Record) 'Terminal' 0 $pyramidRead
+Assert-Cre ($null -ne $pyramidRead -and $pyramidText.Contains('3 held') -and $pyramidText.Contains('whole brokerage incomplete')) 'Admitted Pyramid partial reports held records without claiming completion.'
+$selectedAdmissionKeys = @()
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'pyramid-no-admission')) 'Pyramid partial requires its existing admission.'
+$selectedAdmissionKeys = @('pyramid-brokerage'); $Pipeline = $true
+$selectedSourceKeys = @('pyramid-brokerage','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
+$pyramidRow = New-DaumSubsetSummary; $pyramidRow.source_key = 'pyramid-brokerage'
+$pyramidRow.inventory_count = 102; $pyramidRow.emitted_count = 99; $pyramidRow.held_count = 3; $pyramidRow.verified_listings = 99
+$pyramidRow.transaction_breakdown = [ordered]@{sale=99;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}
+$mixedPyramid = New-Summary
+$mixedPyramid['selected_source_keys'] = $selectedSourceKeys
+$mixedPyramid['per_source_summaries'] = @($pyramidRow, [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$mixedPyramid['qualified_subset_source_keys'] = @('pyramid-brokerage')
+$mixedPyramid['failed_source_keys'] = @(); $mixedPyramid['pending_source_keys'] = @(); $mixedPyramid['complete'] = $false
+Save-Summary $mixedPyramid
+$mixedPyramidRead = Get-CreVerifiedSummary (New-Record) 'pyramid-mixed'
+Assert-Cre ($null -ne $mixedPyramidRead -and (Get-CreNotificationText (New-Record) 'Terminal' 0 $mixedPyramidRead).Contains('*Complete brokerages:* 1 | *Qualified subsets:* 1')) 'Mixed Pyramid partial keeps healthy sibling complete and reports partial separately.'
+$selectedAdmissionKeys = @()
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'pyramid-mixed-no-admission')) 'Mixed Pyramid partial requires existing admission.'
+$Source = 'daum-commercial'; $AdmitDaumVerifiedSubset = $true
+$selectedSourceKeys = @('daum-commercial','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
+
 # Exercise the actual sender boundary; transport is an in-memory substitute.
 $helperHash=(Get-FileHash (Join-Path $PSScriptRoot 'CreWindowsNotification.cs') -Algorithm SHA256).Hash.ToLowerInvariant()
 Add-Type -TypeDefinition @"
