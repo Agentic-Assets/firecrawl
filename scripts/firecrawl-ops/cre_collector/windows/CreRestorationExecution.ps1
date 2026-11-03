@@ -100,12 +100,23 @@ function Get-CreRestorationExecution($Release,[string]$Origin,[string]$Output,$T
                 direct_wsl_creation_utc=$child.CreationDate.ToUniversalTime().ToString('o');scalar_argv=$scalars}
         }
     }
+    $taskSamples=@(foreach($task in $Tasks) {
+        $sample=[ordered]@{}
+        if($task -is [System.Collections.IDictionary]) {
+            foreach($key in $task.Keys) {if($key -cne 'xml_reference') {$sample[$key]=$task[$key]}}
+        } else {
+            foreach($property in $task.PSObject.Properties) {
+                if($property.Name -cne 'xml_reference') {$sample[$property.Name]=$property.Value}
+            }
+        }
+        $sample
+    })
     $record=[ordered]@{schema='cre-restoration-execution-v1';watermark=$watermark;
         watermark_reference=@{path=$watermarkPath.Replace('\','/');sha256=(Get-CreHandoffHash $watermarkRaw);bytes=([IO.File]::ReadAllBytes($watermarkPath)).Length};
         channel=$tip.LogName;computer=$tip.MachineName;upper_record_id=[long]$tip.RecordId;
         started_at=$started;finished_at=[DateTime]::UtcNow.ToString('o');events=$events;instances=$instances;principals=$principals;bridges=$bridges;
         observer_sid=$identity.User.Value;observer_is_admin=$observerAdmin;
-        tasks=$Tasks;scope='bounded Scheduler history only; source settlement unverified; delayed catch-up remains possible'}
+        tasks=$taskSamples;scope='bounded Scheduler history only; source settlement unverified; delayed catch-up remains possible'}
     $path=Join-Path $Output 'scheduler-observation.json'
     Save-CreHandoffExclusive $path ($record|ConvertTo-Json -Depth 18)
     return @{path=$path.Replace('\','/');sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant();bytes=([IO.File]::ReadAllBytes($path)).Length}

@@ -121,7 +121,7 @@ def produce_partial_failure(tmp_path, prior, prior_path, observation, authorizat
                  "computer": watermark["computer"], "upper_record_id": 100,
                  "started_at": (now + timedelta(seconds=13)).isoformat(), "finished_at": (now + timedelta(seconds=14)).isoformat(),
                  "events": [], "instances": [], "principals": principals, "observer_sid": principals[0]["sid"],
-                 "observer_is_admin": False, "tasks": [{key: value for key, value in task.items() if key != "xml_reference"} for task in tasks]}
+                 "observer_is_admin": False, "tasks": copy.deepcopy(tasks)}
     execution_path = write(audit / "scheduler-observation.json", execution)
     write(audit / "scheduler-execution-reference.json", ref(execution_path))
     containers = evidence.obj("container_config_before")

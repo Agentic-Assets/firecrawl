@@ -372,7 +372,7 @@ def validate_continuation_predecessor(packet, evidence, continuation):
                 "partial Scheduler readback precedes failure settlement")
         scheduler_observation = {"tasks": native["tasks"], "execution": execution_ref,
                                  "observed_at": execution["finished_at"]}
-        outcomes = restoration_execution(prior, prior_evidence, scheduler_observation)
+        outcomes = restoration_execution(prior, prior_evidence, scheduler_observation, legacy_task_references=True)
         require(all(row["state"] == "no-observed-execution" for row in outcomes.values()),
                 "scheduled execution crossed partial maintenance")
         fresh = None

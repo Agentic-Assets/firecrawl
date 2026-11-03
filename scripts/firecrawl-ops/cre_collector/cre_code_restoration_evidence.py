@@ -75,7 +75,7 @@ def canonical_restoration_principal(baseline_xml, principal, record):
     return frozenset(value.casefold() for value in aliases)
 
 
-def restoration_execution(packet, evidence, observation):
+def restoration_execution(packet, evidence, observation, *, legacy_task_references=False):
     """Authenticate bounded native history; never certify source settlement."""
     record = json_bytes(retained_reference(observation.get("execution"), evidence))
     watermark_raw = retained_reference(record.get("watermark_reference"), evidence)
@@ -91,8 +91,20 @@ def restoration_execution(packet, evidence, observation):
             and clock(lower["captured_at"]) <= clock(record["started_at"]) <= clock(record["finished_at"])
             <= clock(observation["observed_at"]), "restoration Scheduler interval differs")
     tasks = unique(observation["tasks"], "key", TASKS)
-    require(record.get("tasks") == [{field: value for field, value in row.items() if field != "xml_reference"}
-                                   for row in observation["tasks"]], "native execution/task samples differ")
+    require(type(legacy_task_references) is bool, "invalid legacy Scheduler sample mode")
+    samples = record.get("tasks")
+    expected = [{field: value for field, value in row.items() if field != "xml_reference"}
+                for row in observation["tasks"]]
+    if legacy_task_references:
+        require(isinstance(samples, list) and len(samples) == len(observation["tasks"]),
+                "legacy Scheduler task samples differ")
+        for sample, row in zip(samples, observation["tasks"], strict=True):
+            require(isinstance(sample, dict) and sample.get("xml_reference") == row.get("xml_reference")
+                    and isinstance(row.get("xml_reference"), dict), "legacy Scheduler XML reference differs")
+            raw_xml = retained_reference(row["xml_reference"], evidence)
+            require(sha(raw_xml) == row.get("xml_sha256"), "legacy Scheduler XML bytes differ")
+        samples = [{field: value for field, value in row.items() if field != "xml_reference"} for row in samples]
+    require(samples == expected, "native execution/task samples differ")
     principals = unique(record.get("principals"), "key", TASKS)
     paths = {row["task_path"] + row["task_name"]: key for key, row in tasks.items()}
     baselines = unique(packet["task_baseline"], "key", TASKS)

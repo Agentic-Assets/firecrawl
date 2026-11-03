@@ -107,7 +107,7 @@ def partial_predecessor_case(predecessor_case, tmp_path, request):
                  "started_at": (start + timedelta(seconds=8)).isoformat(), "finished_at": (start + timedelta(seconds=9)).isoformat(),
                  "events": [], "instances": [], "principals": [{"key": key, "user_id": SID, "sid": SID,
                     "aliases": [SID, SID, "HOST\\fixture"]} for key in TASKS], "observer_sid": SID, "observer_is_admin": False,
-                 "tasks": [{k: v for k, v in row.items() if k != "xml_reference"} for row in tasks]}
+                 "tasks": copy.deepcopy(tasks)}
     execution_path = write(audit / "scheduler-observation.json", execution)
     write(audit / "scheduler-execution-reference.json", ref(execution_path))
     containers = [{"service": name, "id": name} for name in ("api", "rabbitmq", "redis", "nuq-postgres", "playwright-service")]
