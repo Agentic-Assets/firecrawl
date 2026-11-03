@@ -4,6 +4,7 @@ These objects do not authorize a mutation. They retain validated immutable
 facts so every boundary can reread their bytes and repeat live Git checks.
 """
 import json
+import re
 
 from cre_code_handoff_evidence import canonical_path, json_bytes, require, sha
 from cre_code_handoff_git import Git
@@ -117,3 +118,94 @@ def qualify_stack_replay(packet, evidence):
     validate_current_stack(packet, evidence, receipt, git=git)
     evidence.recheck()
     return git
+
+
+_READY_QUALIFIED = object()
+
+
+class ReadyRecordingGit(RecordingGit):
+    """Record only commit-addressed object queries against the reviewed repository."""
+
+    def __init__(self, native_git, repo):
+        super().__init__(native_git)
+        self.repo = self._repo_key(repo)
+
+    @staticmethod
+    def _repo_key(repo):
+        value = canonical_path(str(repo))
+        return value.casefold() if len(value) >= 3 and value[1:3] == ':/' else value
+
+    def command(self, repo, *args, input_bytes=None, allowed=(0,)):
+        from cre_code_handoff_evidence import safe_relative
+
+        require(self._repo_key(repo) == self.repo, 'ready witness repository differs')
+        valid = False
+        path = None
+        if len(args) == 2 and args[0] == 'rev-parse':
+            valid = re.fullmatch(r'[0-9a-f]{40}\^\{tree\}', args[1]) is not None
+            if not valid and re.fullmatch(r'[0-9a-f]{40}:.+', args[1]):
+                valid, path = True, args[1][41:]
+        elif len(args) == 2 and args[0] == 'show' and re.fullmatch(r'[0-9a-f]{40}:.+', args[1]):
+            valid, path = True, args[1][41:]
+        elif len(args) in (4, 6) and args[:3] == ('ls-tree', '-rz', '--full-tree'):
+            valid = re.fullmatch(r'[0-9a-f]{40}', args[3]) is not None
+            if len(args) == 6:
+                valid, path = valid and args[4] == '--', args[5]
+        elif len(args) == 4 and args[:2] == ('merge-base', '--is-ancestor'):
+            valid = all(re.fullmatch(r'[0-9a-f]{40}', value) for value in args[2:])
+        require(valid, 'ready witness must address immutable objects')
+        if path is not None:
+            safe_relative(path)
+        return super().command(repo, *args, input_bytes=input_bytes, allowed=allowed)
+
+    def record_archive(self, repo, identity, service, expected):
+        require(self._repo_key(repo) == self.repo, 'ready archive repository differs')
+        return super().record_archive(repo, identity, service, expected)
+
+
+class ReadyReleaseProof:
+    """Bind a pre-observation full release qualification to its Git witnesses."""
+
+    def __init__(self, raw, packet, evidence, git, *, _token=None):
+        require(_token is _READY_QUALIFIED and type(git) is ReadyRecordingGit,
+                'ready release must be fully qualified')
+        self.raw = raw
+        self.packet = packet
+        self.evidence = evidence
+        self.seal = EvidenceSeal(packet, evidence)
+        self.git = git
+        self.native_git = git.native_git
+        self.repo = git.repo
+        self.witnesses = tuple(git._witnesses.items())
+        self.archives = tuple(git._archives.items())
+
+    def recheck(self, raw, packet, evidence, *, current_seal=None):
+        require(raw == self.raw and packet is self.packet and evidence is self.evidence,
+                'ready qualification identity differs')
+        require(type(self.git) is ReadyRecordingGit and self.git.native_git == self.native_git
+                and self.git.repo == self.repo
+                and tuple(self.git._witnesses.items()) == self.witnesses
+                and tuple(self.git._archives.items()) == self.archives,
+                'ready Git witness changed')
+        require(_canonical(packet) == self.seal.packet and _canonical(evidence.inputs) == self.seal.inputs
+                and evidence.original == self.seal.original
+                and all(evidence.original_payloads.get(path) == value for path, value in self.seal.payloads.items()),
+                'ready qualification closure differs')
+        seal = self.seal if current_seal is None else current_seal
+        require(type(seal) is EvidenceSeal, 'ready evidence seal differs')
+        seal.recheck(packet, evidence)
+        self.git.recheck()
+        require(tuple(self.git._witnesses.items()) == self.witnesses
+                and tuple(self.git._archives.items()) == self.archives,
+                'ready Git witness changed during replay')
+        seal.unchanged(packet, evidence)
+
+
+def qualify_ready_release(raw, packet, evidence):
+    """Fully validate retained release before fresh observation and record Git checks."""
+    from cre_runtime_maintenance import validate_maintenance_release
+
+    git = ReadyRecordingGit(packet['programs']['native_git'], packet['roots']['development'])
+    validate_maintenance_release(packet, evidence, git=git)
+    evidence.recheck()
+    return ReadyReleaseProof(raw, packet, evidence, git, _token=_READY_QUALIFIED)

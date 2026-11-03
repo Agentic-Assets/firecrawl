@@ -78,7 +78,7 @@ def validate_maintenance_ready(*args, **kwargs):
     return validate(*args, **kwargs)
 
 
-def validate_historical_admission(packet, evidence):
+def validate_historical_admission(packet, evidence, *, git=None):
     """Qualify the original failed handoff without rewriting its evidence."""
     require(packet.get("schema") == "cre-runtime-maintenance-v1"
             and packet.get("scope") == "held-runtime-maintenance", "unknown maintenance scope")
@@ -108,7 +108,10 @@ def validate_historical_admission(packet, evidence):
     rows = [dict(row, role="runtime_snapshot") if row["role"] == "historical_runtime_snapshot" else row
             for row in historical_source["inputs"] if row["role"] != "runtime_snapshot"]
     historical_evidence = Evidence({"inputs": rows}, evidence.read)
-    validate_restoration(historical, historical_evidence, historical=True)
+    if git is None:
+        validate_restoration(historical, historical_evidence, historical=True)
+    else:
+        validate_restoration(historical, historical_evidence, historical=True, git=git)
     if historical_inputs is not evidence:
         historical_inputs.recheck()
         for role, value in historical_inputs.original.items():
@@ -119,7 +122,10 @@ def validate_historical_admission(packet, evidence):
 def validate_maintenance_release(packet, evidence, *, git=None):
     """Qualify retained A, the selected QA, and the closed maintenance scope."""
     require(packet.get("install_scope") in ([], ["collector"]), "unsupported dependency install scope")
-    validate_historical_admission(packet, evidence)
+    if git is None:
+        validate_historical_admission(packet, evidence)
+    else:
+        validate_historical_admission(packet, evidence, git=git)
     build_source = packet.get("build_source")
     require(isinstance(build_source, dict) and set(build_source) == {"root", "identity"}
             and build_source.get("identity") == packet["new"], "build source identity differs")
@@ -576,9 +582,15 @@ def apply_maintenance(args, raw, packet, evidence, git, modules, *, finite=None)
                                     extra_check=boundary_check, admitted_rechecks_evidence=True) as boundary:
                     ready = run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, output,
                                                   admitted, boundary=boundary)
+                if finite is not None:
+                    finite.extend_ready_xml(raw, packet, evidence, ready, output)
                 ready["owned_authority"] = owned_authority(checkpoint, lease)
                 evidence.recheck()
-                validate_maintenance_ready(packet, evidence, ready, now(), release_raw=raw, release_path=args.release)
+                if finite is None:
+                    validate_maintenance_ready(packet, evidence, ready, now(), release_raw=raw, release_path=args.release)
+                else:
+                    validate_maintenance_ready(packet, evidence, ready, now(), release_raw=raw,
+                                               release_path=args.release, finite=finite)
                 write_new(output / "maintenance-ready.json", ready)
                 admitted()
                 write_new(output / "release-start.json", {"schema": "cre-runtime-maintenance-release-start-v1",

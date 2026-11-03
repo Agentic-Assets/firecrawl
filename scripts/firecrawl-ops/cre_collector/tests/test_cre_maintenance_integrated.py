@@ -238,7 +238,9 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc
         if mode == "Verify":
             tasks = []
             for row in case.packet["task_baseline"]:
-                file = case.output / (row["key"] + "-final.xml")
+                final = case.output / (row["key"] + "-final.xml")
+                file = case.output / (row["key"] + "-observed.xml")
+                file.write_bytes(final.read_bytes())
                 before_pin = row.get("pin_before", case.old["sha"])
                 actions = [{k: v.replace(before_pin, case.new["sha"]) for k, v in item.items()} for item in row["actions"]]
                 tasks.append(dict(row, state="Disabled", actions=actions, xml_sha256=sha(file.read_bytes()), xml_reference=ref(file)))
