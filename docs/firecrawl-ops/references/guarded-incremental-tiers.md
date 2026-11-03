@@ -2,6 +2,23 @@ Governed by [AGENTIC-3752](https://linear.app/agenticassets/issue/AGENTIC-3752),
 
 # Guarded incremental CRE trials
 
+## Operational priority
+
+Keep the supported Windows pipeline running from current, healthy state. Check
+for an active local owner, target and service health, and unresolved write
+outcomes before dispatch. A source-local failure or denial should hold or skip
+that source while eligible sources continue on a supported runner; report the
+partial outcome. A global target, ownership, integrity or unknown-write problem
+still stops the affected write. The full 51-source acceptance program is not a
+prerequisite for routine operation. No Mac readback is required to resume this
+Windows pipeline, and its setup remains unchanged.
+
+Saved incident packets and the 900-second rule are specific to the legacy
+held-task recovery path, not a standing condition for ordinary resume. Existing
+commands still enforce their implemented checks; this guidance does not bypass
+them. For routine reviewed code updates, follow the current-state procedure in
+[Development and Runtime Checkouts](development-and-runtime-checkouts.md).
+
 The Windows desktop uses Docker Desktop with the existing WSL2 backend and an
 ext4 Ubuntu checkout. `cre_guarded_tier.py` adds a foreground trial entrypoint
 for explicit-source inventory observation and small enrichment batches. It
@@ -72,14 +89,13 @@ CRE_ENV_FILE="$HOME/.config/cre/equire.env" bash cre_status.sh --scheduler exter
 External mode does not discover the Windows task's explicit Linux environment
 file. It still checks legacy monitor/enrich/weekly artifacts: retain stale or
 missing-marker warnings, but do not treat them alone as a failed current Windows
-Task Scheduler/checkpoint-series refresh. Reconcile the configured task and source
-scope, same-operation launcher/checkpoint/validation/readback receipts,
-owner/recovery state and applicable queue gates. Never launch legacy tiers just
-to clear these warnings. Before a trial, also check current sole-writer evidence,
-the exact pushed commit and the source's current admission contract. Refresh
-remote tracking refs explicitly before a run. The entrypoint requires a clean
-checkout, exact expected SHA and a matching local `origin` tracking tip; it
-does not fetch, pull or prove current remote state itself.
+Task Scheduler/checkpoint-series refresh. Check the current configured task,
+source scope, local owner/recovery state and applicable queue gates. Consult
+prior receipts when needed to resolve an actual uncertain operation; never launch
+legacy tiers merely to clear their warnings. The current entrypoint requires a
+clean checkout, expected SHA and matching local `origin` tracking tip; it does
+not fetch or pull. For a reviewed update, select the merged commit first and
+update tracking and runtime at an idle boundary.
 
 From PowerShell, sample Windows without starting WSL or writing files:
 

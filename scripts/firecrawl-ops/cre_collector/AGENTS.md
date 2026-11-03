@@ -2,6 +2,19 @@ READ ~/AGENTS.md FIRST (skip if missing).
 
 # AGENTS.md - cre_collector/
 
+## Current-state operation
+
+Prioritize an available, healthy pipeline. Resume from the current runtime and
+task state when the local owner is settled, target and services are healthy, and
+there is no unresolved write outcome. Preserve data ownership and never overlap
+local writers. Hold or skip an individual failed source and continue eligible
+siblings on a supported runner, reporting partial results. Full 51-source
+acceptance is separate from running the supported cohort. Windows operation does
+not depend on a Mac readback; leave the Mac setup unchanged. Historical packets
+and 900-second catch-up rules describe their specific legacy recovery path, not
+normal resume. Existing executable checks still apply until the maintained
+runner is simplified; do not misrepresent a documentation change as a bypass.
+
 > **ACTIVE production collector and ingest implementation.** The supervised
 > refresh and series entrypoints are `cre_checkpoint_refresh.py` and
 > `cre_checkpoint_series.py`; the Windows task wrapper and its acceptance gates
