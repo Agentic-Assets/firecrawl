@@ -4771,7 +4771,7 @@ END $$;
 -- canonical source-index-then-listing order; the unique identity constraints
 -- serialize new-row conflicts.
 -- Lock present source-index rows after the transaction-wide lifecycle lock.
-{targeted_queue}CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
+""" + targeted_queue + """CREATE TEMP TABLE _present_source_locks ON COMMIT DROP AS
 SELECT si.id
 FROM credeals.cre_source_index si
 JOIN _src s ON s.brokerage_id = si.brokerage_id AND s.external_id = si.external_id
@@ -5329,7 +5329,6 @@ END $$;
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
         .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
-        .replace("{targeted_queue}", targeted_queue)
         .replace("{targeted_guard}", targeted_guard)
         .replace("{targeted_status_allowed}", "  AND false\n" if targeted else "")
     )

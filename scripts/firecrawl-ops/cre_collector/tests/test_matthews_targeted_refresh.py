@@ -392,6 +392,9 @@ def test_targeted_sql_and_completion_keep_inventory_detail_clocks_distinct():
         set(),
         matthews_targeted_targets=targets,
     )
+    assert "{targeted_queue}" not in sql
+    assert sql.index("CREATE TEMP TABLE _matthews_targets") < sql.index("CREATE TEMP TABLE _present_source_locks")
+    assert "\nCOMMIT;\n" in sql
     assert (
         sql.index("_present_source_locks")
         < sql.index("_present_listing_locks")
