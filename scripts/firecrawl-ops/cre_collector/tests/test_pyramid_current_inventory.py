@@ -835,7 +835,7 @@ def test_partial_worker_seals_bound_claims(tmp_path, monkeypatch):
     produced = produce(fixture, total=102, missing_city_id=75)
     run, path, _artifact, manifest, source_report = setup(tmp_path, produced)
     source_report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
-    manifest["sources"][SOURCE]["artifact"]["pyramid_subset"] = True
+    manifest["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=101)
     monkeypatch.setattr(cp, "git_identity", lambda: (manifest["collector_git_sha"], False))
     cp._admit_current_inventory(run, manifest, source_report, path, "source", source=SOURCE, local=True)
     source_gate = run / "source-gate.json"
@@ -866,11 +866,14 @@ def test_partial_child_classification_is_bound_and_cannot_be_misreported(tmp_pat
     produced = produce(fixture, total=102, missing_city_id=75)
     _run, path, _artifact, manifest, report = setup(tmp_path, produced)
     report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
-    manifest["sources"][SOURCE]["artifact"]["pyramid_subset"] = True
+    manifest["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=101)
     binding = admit(path, manifest, report)
     manifest["sources"][SOURCE]["gate"] = {"verdict": "ok_additive_verified_subset",
         "mark_missing_safe": False, "current_inventory_proof": binding}
     assert series.pyramid_partial_child(manifest)
+    broken = copy.deepcopy(manifest)
+    broken["sources"][SOURCE]["artifact"]["staged_unique"] = 100
+    assert not series.pyramid_partial_child(broken)
     for change in ("held_count", "artifact_sha256", "generation_id", "collector_git_sha", "database_target_sha256"):
         broken = copy.deepcopy(manifest)
         broken["sources"][SOURCE]["gate"]["current_inventory_proof"][change] = 0 if change == "held_count" else "other"
@@ -912,7 +915,7 @@ def test_serial_child_requires_bound_partial_scope(tmp_path, monkeypatch):
     produced = produce(fixture, total=102, missing_city_id=75)
     _run, path, _artifact, manifest, report = setup(tmp_path, produced)
     report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
-    manifest["sources"][SOURCE]["artifact"]["pyramid_subset"] = True
+    manifest["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=101)
     binding = admit(path, manifest, report)
     manifest["sources"][SOURCE]["gate"] = {"verdict": "ok_additive_verified_subset",
         "mark_missing_safe": False, "current_inventory_proof": binding}
@@ -937,7 +940,7 @@ def test_serial_current_admission_runs_gates_claimed_ingest_and_partial_status(t
     produced = produce(fixture, total=102, missing_city_id=75)
     run, path, _artifact, manifest, raw_report = setup(tmp_path, produced)
     raw_report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
-    manifest["sources"][SOURCE]["artifact"]["pyramid_subset"] = True
+    manifest["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=101)
     monkeypatch.setattr(cp, "git_identity", lambda: (manifest["collector_git_sha"], False))
     counter = iter(range(100))
     def compute(_run, action, arguments):
@@ -983,7 +986,7 @@ def test_partial_notification_summary_is_scoped_and_honest(tmp_path):
     produced = produce(fixture, total=102, missing_city_id=75)
     _run, path, _artifact, manifest, report = setup(tmp_path, produced)
     report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
-    manifest["sources"][SOURCE]["artifact"]["pyramid_subset"] = True
+    manifest["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=101)
     binding = admit(path, manifest, report)
     manifest["sources"][SOURCE]["gate"] = {"verdict": "ok_additive_verified_subset", "raw_verdict": "first_seen",
         "admission_scope": "pyramid_verified_subset_v1", "mark_missing_safe": False, "current_inventory_proof": binding}
@@ -994,3 +997,76 @@ def test_partial_notification_summary_is_scoped_and_honest(tmp_path):
     assert notification._subset_summary_fields(manifest, "hanley", 0) == {}
     with pytest.raises(notification.SummaryUnavailable):
         notification._subset_summary_fields(manifest, SOURCE, 100)
+
+
+def test_partial_reconciliation_and_resume_preserves_counts_without_replay(tmp_path, monkeypatch):
+    import cre_checkpoint_series as series
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    produced = produce(fixture, total=102, missing_city_id=75)
+    run, path, _artifact, child, report = setup(tmp_path, produced)
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    child["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=101)
+    binding = admit(path, child, report)
+    child["sources"][SOURCE]["gate"] = {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False, "current_inventory_proof": binding}
+    child.update(status="qualified_partial_subset", finished_at=cp.utc_now(), error=None,
+                 scope={"kind": "collector_registry_verified_subset", "whole_source_coverage": False})
+    cfg = series.series_config(sources=[SOURCE], page_cap=400, concurrency=1, attempts_per_source=1,
+        max_resume_age_hours=24, max_host_cpu_percent=90, cpu_sustain_seconds=30,
+        cpu_sample_seconds=2, nice=15, admit_current_inventory_source=SOURCE)
+    child["config"] = series._expected_child_config(SOURCE, cfg)
+    parent_dir = tmp_path / "series"
+    parent_dir.mkdir()
+    parent = series.new_manifest(parent_dir, git_sha=child["collector_git_sha"], config=cfg)
+    parent["database_target"] = child["preflight"]["database_target"]
+    parent["started_at"] = child["started_at"]
+    checkpoint = parent["sources"][SOURCE]
+    checkpoint.update(state="running", checkpoint_run=f"runs/{child['run_id']}",
+                      attempts=[{"started_at": child["started_at"]}])
+    child_dir = parent_dir / checkpoint["checkpoint_run"]
+    child_dir.mkdir(parents=True)
+    (child_dir / "manifest.json").write_text(json.dumps(child))
+    series.reconcile_stale_running_sources(parent_dir, parent)
+    assert checkpoint["state"] == "qualified_partial_subset"
+    assert checkpoint["subset_counts"] == {"inventory": 102, "emitted": 101, "held": 1}
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not replay"))
+    assert series.run_series(parent_dir, parent, env_file=None, retry_failed=False) == 0
+    assert parent["status"] == "qualified_partial_subset"
+    assert len(checkpoint["attempts"]) == 1
+
+
+def test_pipeline_partial_reconciliation_and_resume_do_not_replay(tmp_path, monkeypatch):
+    import cre_checkpoint_series as series
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    produced = produce(fixture, total=102, missing_city_id=75)
+    _run, path, _artifact, child, report = setup(tmp_path, produced)
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    child["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=101)
+    binding = admit(path, child, report)
+    child["sources"][SOURCE]["gate"] = {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False, "current_inventory_proof": binding}
+    child.update(status="qualified_partial_subset", finished_at=cp.utc_now(), error=None)
+    cfg = series.series_config(sources=[SOURCE, "hanley"], page_cap=400, concurrency=1, attempts_per_source=1,
+        max_resume_age_hours=24, max_host_cpu_percent=90, cpu_sustain_seconds=30, cpu_sample_seconds=2,
+        nice=15, pipeline=True, admit_current_inventory_source=[SOURCE])
+    child["config"] = series._expected_child_config(",".join(cfg["sources"]), cfg)
+    child["pipeline"] = {"source_results": {SOURCE: {"partial": True}, "hanley": {"partial": False}}}
+    parent = series.new_manifest(tmp_path, git_sha=child["collector_git_sha"], config=cfg)
+    parent.update(started_at=child["started_at"], database_target=child["preflight"]["database_target"], status="interrupted")
+    for row in parent["sources"].values():
+        row.update(state="running", checkpoint_run=f"runs/{child['run_id']}", attempts=[{"started_at": child["started_at"]}])
+    monkeypatch.setattr(series, "_load_child_manifest", lambda *a, **kw: (tmp_path / "manifest.json", child))
+    # The bound report verifier is independently exercised in the pipeline suite.
+    monkeypatch.setattr(series, "pipeline_source_qualified", lambda *a, **kw: True)
+    monkeypatch.setattr(series, "_pipeline_has_unresolved", lambda *a: False)
+    monkeypatch.setattr(series, "document_incomplete", lambda *a: False)
+    series.reconcile_stale_running_sources(tmp_path, parent)
+    assert parent["sources"][SOURCE]["state"] == "qualified_partial_subset"
+    assert parent["sources"][SOURCE]["subset_counts"] == {"inventory": 102, "emitted": 101, "held": 1}
+    assert parent["sources"][SOURCE]["pipeline_result"] == {"partial": True}
+    assert parent["sources"]["hanley"]["state"] == "complete"
+    assert parent["sources"]["hanley"]["pipeline_result"] == {"partial": False}
+    monkeypatch.setattr(series.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not replay"))
+    assert series.run_pipeline_series(tmp_path, parent, env_file=None) == 0
+    assert parent["status"] == "qualified_partial_subset"
+    assert all(len(row["attempts"]) == 1 for row in parent["sources"].values())

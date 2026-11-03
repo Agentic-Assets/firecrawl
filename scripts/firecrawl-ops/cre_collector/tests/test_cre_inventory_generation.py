@@ -191,3 +191,19 @@ def test_partial_pyramid_series_never_publishes_complete_generation(tmp_path):
     manifest["sources"]["pyramid-brokerage"]["state"] = "qualified_partial_subset"
     with pytest.raises(generation.InventoryGenerationNotReady):
         generation.build_inventory_generation_receipt(tmp_path, manifest)
+
+
+@pytest.mark.parametrize("marker", ["status", "scope", "artifact", "gate"])
+def test_complete_parent_cannot_publish_child_with_partial_evidence(tmp_path, marker):
+    manifest = _complete_series(tmp_path)
+    path = tmp_path / "runs" / "pyramid-brokerage" / "manifest.json"
+    child = json.loads(path.read_text())
+    if marker == "status": child["status"] = "qualified_partial_subset"
+    elif marker == "scope": child["scope"]["kind"] = "collector_registry_verified_subset"
+    elif marker == "artifact": child["sources"]["pyramid-brokerage"]["artifact"]["pyramid_subset"] = True
+    else: child["sources"]["pyramid-brokerage"]["gate"] = {"verdict": "ok_additive_verified_subset"}
+    path.write_text(json.dumps(child))
+    with pytest.raises(generation.InventoryGenerationNotReady, match="partial child evidence"):
+        generation._child_fingerprint(tmp_path, manifest["sources"]["pyramid-brokerage"], "pyramid-brokerage")
+    with pytest.raises(generation.InventoryGenerationNotReady):
+        generation.build_inventory_generation_receipt(tmp_path, manifest)

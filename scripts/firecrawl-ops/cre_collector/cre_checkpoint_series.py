@@ -263,10 +263,18 @@ def pyramid_partial_child(child: Mapping[str, Any]) -> bool:
                 and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
                 and type(binding.get("held_count")) is int and binding["held_count"] > 0
                 and type(binding.get("emitted_count")) is int and binding["emitted_count"] >= 100
+                and type(artifact.get("staged_unique")) is int
+                and artifact["staged_unique"] == binding["emitted_count"]
                 and type(binding.get("inventory_count")) is int
                 and binding["inventory_count"] == binding["held_count"] + binding["emitted_count"])
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def pyramid_subset_counts(child: Mapping[str, Any]) -> dict[str, int]:
+    binding = child["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]
+    return {"inventory": binding["inventory_count"], "emitted": binding["emitted_count"],
+            "held": binding["held_count"]}
 
 
 def current_subset(config: Mapping[str, Any]) -> bool:
@@ -1280,6 +1288,8 @@ def reconcile_stale_running_sources(series_dir: Path, manifest: dict[str, Any]) 
         checkpoint["checkpoint_run"] = str(path.parent.relative_to(series_dir))
         checkpoint["checkpoint_status"] = child.get("status")
         checkpoint["state"] = _reconciled_state(child, manifest["config"])
+        if checkpoint["state"] == "qualified_partial_subset" and pyramid_partial_child(child):
+            checkpoint["subset_counts"] = pyramid_subset_counts(child)
         checkpoint["error"] = child.get("error")
         attempts[-1]["finished_at"] = child.get("finished_at") or utc_now()
         save_manifest(series_dir, manifest)
@@ -1851,7 +1861,7 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
     for key in sources:
         row = manifest["sources"][key]
         row.update(
-            state=("qualified_partial_subset" if current_subset(manifest["config"]) and key == "daum-commercial" else "complete")
+            state=("qualified_partial_subset" if (current_subset(manifest["config"]) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) else "complete")
             if pipeline_source_qualified(
                 child,
                 key,
@@ -1865,6 +1875,10 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
             checkpoint_status=child["status"],
             error=child.get("error"),
         )
+        if row["state"] in {"complete", "qualified_partial_subset"}:
+            row["pipeline_result"] = child["pipeline"]["source_results"][key]
+            if key == "pyramid-brokerage" and pyramid_partial_child(child):
+                row["subset_counts"] = pyramid_subset_counts(child)
         row["attempts"][-1]["finished_at"] = child["finished_at"]
     save_manifest(series_dir, manifest)
 
@@ -2191,7 +2205,7 @@ def run_pipeline_series(
     root.mkdir(parents=True, exist_ok=True)
     logs = series_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    if current_subset(config) and all(
+    if any(manifest["sources"][key].get("state") == "qualified_partial_subset" for key in sources) and all(
         manifest["sources"][key].get("state") in {"complete", "qualified_partial_subset"}
         for key in sources
     ):
@@ -2210,11 +2224,13 @@ def run_pipeline_series(
         if (child.get("status") != "qualified_partial_subset"
             or _pipeline_has_unresolved(child, config) or document_incomplete(child, config) or any(
             not pipeline_source_qualified(child, key, run_dir=series_dir/relative,
-                parent_started_at=manifest["started_at"],parent_finished_at=manifest["finished_at"],
+                parent_started_at=manifest["started_at"],parent_finished_at=utc_now(),
                 unit_cache=cache,parent_attempts=manifest["sources"][key]["attempts"])
             for key in sources
         )):
             raise SeriesError("handled subset evidence no longer qualifies")
+        manifest.update(status="qualified_partial_subset", finished_at=utc_now(), error=None)
+        save_manifest(series_dir, manifest)
         return 0
     prior_runs = {manifest["sources"][key].get("checkpoint_run") for key in sources}
     resume = None
