@@ -50,6 +50,11 @@ def make_source(tmp_path):
     module = root / 'scripts/firecrawl-ops/cre_collector/cre_current_stack.py'
     module.parent.mkdir(parents=True)
     shutil.copyfile(source, module)
+    windows = module.parent / 'windows'
+    windows.mkdir()
+    for name in ('CreCodeHandoff.ps1', 'CreTaskContract.ps1', 'CreRestorationExecution.ps1',
+                 'CreRuntimeMaintenance.ps1', 'CreNativeCapture.cs'):
+        (windows / name).write_text('synthetic committed helper: ' + name + '\n', encoding='utf-8')
     for path in SERVICES.values():
         dockerfile = root / path / 'Dockerfile'
         dockerfile.parent.mkdir(parents=True)

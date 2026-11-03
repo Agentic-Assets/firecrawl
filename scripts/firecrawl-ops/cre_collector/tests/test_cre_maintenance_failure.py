@@ -1,6 +1,7 @@
 """A failure receipt preserves the original error and bounds native cleanup."""
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -63,6 +64,7 @@ def test_release_failures_preserve_original_and_never_rehold_tasks(tmp_path, mon
                  "validate_current_projection"):
         monkeypatch.setattr(maintenance, name, lambda *args, **kwargs: None, raising=False)
     monkeypatch.setattr(maintenance, "run_maintenance_steps", lambda *args, **kwargs: {}, raising=False)
+    monkeypatch.setattr(operation, "owned_boundary", lambda *_args, **_kwargs: nullcontext(None))
     monkeypatch.setattr(operation, "owned_authority", lambda *args: {"synthetic": "owned"})
     monkeypatch.setattr(operation, "released_authority", lambda *args: ([1, "token", "generation", False], [1, 2]))
     monkeypatch.setattr(operation, "lock_clear", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("lock-clear"))

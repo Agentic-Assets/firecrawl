@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,8 @@ import cre_runtime_maintenance_steps as steps
 import cre_runtime_maintenance_transition as transition
 from cre_code_handoff_evidence import sha
 
+ORIGINAL_POLL_HOOK = cre_refresh_pipeline.command_poll_hook
+
 admitted = chain.admitted
 complete_case = chain.complete_case
 lineage_case = chain.lineage_case
@@ -25,7 +29,7 @@ qualified_ready_case = chain.qualified_ready_case
 scheduler_principal_in_synthetic_xml = chain.scheduler_principal_in_synthetic_xml
 
 
-def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images):
+def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc=False):
     case.output.rmdir()
     container_state = {"recreated": False}
     if with_images:
@@ -98,7 +102,10 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images):
     monkeypatch.setattr(steps, "windows_path", native_path)
     monkeypatch.setattr(operation, "now", lambda: case.now)
     monkeypatch.setattr(steps, "now", lambda: case.now)
-    monkeypatch.setattr(cre_refresh_pipeline, "command_poll_hook", lambda _poll: nullcontext())
+    if not with_ipc:
+        monkeypatch.setattr(cre_refresh_pipeline, "command_poll_hook", lambda _poll: nullcontext())
+    else:
+        monkeypatch.setattr(cre_refresh_pipeline, "command_poll_hook", ORIGINAL_POLL_HOOK)
     monkeypatch.setattr(git_module.Git, "maintenance_ancestry", lambda *_args: None)
     monkeypatch.setattr(transition, "validate_maintenance_git_history", lambda *args: None)
     monkeypatch.setattr(transition, "validate_maintenance_dependency_history", lambda *args: None)
@@ -120,6 +127,28 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images):
     monkeypatch.setattr(steps, "installed_dependencies", lambda *_args: dependencies)
     monkeypatch.setattr(steps, "assert_owned", lambda *_args: None)
     monkeypatch.setattr(operation, "assert_owned", lambda *_args, **_kwargs: None)
+    if not with_ipc:
+        # The legacy fixture uses synthetic relative role paths.
+        monkeypatch.setattr(operation, "owned_boundary", lambda *_args, **_kwargs: nullcontext(None))
+    else:
+        import cre_runtime_maintenance_build as build
+
+        real_boundary = operation.owned_boundary
+        def boundary(*args, **kwargs):
+            value = real_boundary(*args, **kwargs)
+            check = value.check
+            def counted(mode):
+                check(mode)
+                container_state.setdefault("ipc_modes", []).append(mode)
+            value.check = counted
+            container_state["boundary"] = value
+            return value
+        monkeypatch.setattr(operation, "owned_boundary", boundary)
+        monkeypatch.setattr(operation, "runtime_modules", lambda *_args: None)
+        monkeypatch.setattr(operation, "boundary_executables", lambda *_args: ())
+        monkeypatch.setattr(operation, "verify_boundary_peer", lambda *_args: True)
+        monkeypatch.setattr(build, "verify_native_docker", lambda *_args: None)
+        monkeypatch.setattr(build, "verify_native_compose", lambda *_args: None)
     monkeypatch.setattr(operation, "owned_authority", lambda *_args: {
         "pid": os.getpid(), "token": "a" * 32, "generation": "b" * 32, "recovery_required": True,
         "authority_identity": [1, 2], "directory_identity": [1, 3]})
@@ -164,6 +193,17 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images):
         if "-Mode" not in argv:
             return 0
         mode = argv[argv.index("-Mode") + 1]
+        if with_ipc:
+            boundary = container_state["boundary"]
+            count = {"Hold": 3, "Repin": 5, "Verify": 2}[mode]
+            program = ("from cre_owned_handoff_boundary import request_boundary;import json,sys;"
+                       "b=json.loads(sys.argv[3]);"
+                       "[request_boundary(sys.argv[1],int(sys.argv[2]),b,sys.argv[4],lambda:None,lambda:None) "
+                       "for _ in range(int(sys.argv[5]))]")
+            child = subprocess.Popen([sys.executable, "-c", program, str(boundary.path), str(os.getpid()),
+                                      json.dumps(boundary.binding), mode, str(count)])
+            if cre_refresh_pipeline.wait_with_poll_hook(child) != 0:
+                return 1
         if mode == "Hold":
             for row in case.packet["task_baseline"]:
                 (case.output / (row["key"] + "-before.xml")).write_bytes(original_inputs[case.path(row["xml"])])
@@ -177,13 +217,15 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images):
                 "tooling": case.packet["tooling"], "fleet": case.packet["task_baseline"], "entered_at": case.now.isoformat()}))
         if mode == "Repin":
             for row in case.packet["task_baseline"]:
-                raw = original_inputs[case.path(row["xml"])].replace(case.old["sha"].encode(), case.new["sha"].encode())
+                before_pin = row.get("pin_before", case.old["sha"])
+                raw = original_inputs[case.path(row["xml"])].replace(before_pin.encode(), case.new["sha"].encode())
                 (case.output / (row["key"] + "-final.xml")).write_bytes(raw)
         if mode == "Verify":
             tasks = []
             for row in case.packet["task_baseline"]:
                 file = case.output / (row["key"] + "-final.xml")
-                actions = [{k: v.replace(case.old["sha"], case.new["sha"]) for k, v in item.items()} for item in row["actions"]]
+                before_pin = row.get("pin_before", case.old["sha"])
+                actions = [{k: v.replace(before_pin, case.new["sha"]) for k, v in item.items()} for item in row["actions"]]
                 tasks.append(dict(row, state="Disabled", actions=actions, xml_sha256=sha(file.read_bytes()), xml_reference=ref(file)))
             watermark = case.output / "scheduler-watermark.json"
             lower = json.loads(watermark.read_bytes())
@@ -206,9 +248,12 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images):
     checkpoint = SimpleNamespace(SharedLock=lambda *_args, **_kwargs: Lease(),
                                  canonical_shared_lock_dir=lambda *_args: tmp_path / "lock",
                                  safe_process_env=dict, run_command=command, COLLECTOR_DIR=collector)
-    args = SimpleNamespace(release=str(case.release), observation=str(case.observation),
+    args = SimpleNamespace(release=str(case.release), maintenance_packet=str(case.release), restoration_packet=None,
+                           observation=str(case.observation),
                            authorization=str(case.authorization), output=str(case.output))
     maintenance.apply_maintenance(args, case.release_raw, case.packet, case.evidence, Git(), (checkpoint, None, None, None))
+    if with_ipc:
+        assert container_state["ipc_modes"] == ["Hold"] * 3 + ["Repin"] * 5 + ["Verify"] * 2
     assert json.loads((case.output / "maintenance-ready.json").read_bytes())["recovery_required_at_publication"] is True
     assert json.loads((case.output / "terminal.json").read_bytes())["status"] == "committed"
 

@@ -1,7 +1,9 @@
 """Finite failed-handoff restoration admission and execution evidence."""
 
+import json
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from itertools import pairwise
 
 from cre_code_handoff_advancement import EVENTS, instance
@@ -406,13 +408,13 @@ def validate_restoration(packet, evidence, *, historical=False):
                     "restoration held XML differs")
         else:
             maintained = transition["tasks"][key]
-            require(maintained["before_xml"] == held
+            require(maintained.get("historical_before_xml", maintained["before_xml"]) == held
                     and maintained["final_xml"] == maintained["independent_xml"] == current_xml,
                     "maintenance held XML differs")
             validate_xml_transition(held, current_xml, historical_code["sha"], packet["code"]["sha"])
             prior_actions = [{name: value.replace(source["deployed"]["sha"], historical_code["sha"])
                               for name, value in action.items()} for action in old["actions"]]
-            prior = maintained["before_tuple"]
+            prior = maintained.get("historical_before_tuple", maintained["before_tuple"])
             require(prior.get("enabled") is False and prior.get("actions") == prior_actions
                     and all(prior.get(field) == old.get(field) for field in
                             ("task_path", "task_name", "last_task_result", "last_run_utc")),
@@ -537,8 +539,19 @@ def validate_restoration_authorization(packet_raw, packet, evidence, observation
     evidence.recheck()
 
 
-def validate_restoration_enable_boundary(packet, evidence, current):
-    """Finite policy admission; a missed count is never a queue certificate."""
+@dataclass(frozen=True)
+class EnableContext:
+    packet_digest: str
+    source: bytes
+    audit: bytes
+
+
+def _context_bytes(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def prepare_enable_context(packet, evidence, current):
+    """Validate the full lineage once and retain only its immutable facts."""
     mode = packet.get("enable_boundary")
     require(mode in {"zero-missed-no-crossed-trigger-v1", "founder-approved-catchup-v1"},
             "restoration catch-up admission unsupported; bounded absence cannot authorize Enable")
@@ -548,8 +561,19 @@ def validate_restoration_enable_boundary(packet, evidence, current):
     else:
         failed_code = packet["code"]
     source, _, _, audit = validate_failed_handoff(packet, evidence, failed_code=failed_code)
-    require(clock(audit["current_windows_observed_at"]) <= current
-            and clock(audit["current_linux_observed_at"]) <= current, "restoration audit is from the future")
+    context = EnableContext(sha(_context_bytes(packet)), _context_bytes(source), _context_bytes(audit))
+    validate_enable_context(packet, evidence, context, current)
+    return context
+
+
+def validate_enable_context(packet, evidence, context, current):
+    """Recheck frozen inputs and time-sensitive admission at every boundary."""
+    require(isinstance(context, EnableContext) and context.packet_digest == sha(_context_bytes(packet)),
+            "restoration enable packet changed")
+    source, audit = json_bytes(context.source), json_bytes(context.audit)
+    mode = packet.get("enable_boundary")
+    require(mode in {"zero-missed-no-crossed-trigger-v1", "founder-approved-catchup-v1"},
+            "restoration catch-up admission unsupported; bounded absence cannot authorize Enable")
     original = unique(source["task_baseline"], "key", TASKS)
     audited = unique(audit["tasks"], "key", TASKS)
     if mode == "founder-approved-catchup-v1":
@@ -573,7 +597,16 @@ def validate_restoration_enable_boundary(packet, evidence, current):
                     and type(audited[key].get("missed_runs")) is int and audited[key]["missed_runs"] == 0
                     and row["next_run_utc"] == audited[key]["next_run_utc"] == original[key]["next_run_utc"],
                     "restoration catch-up admission unsupported: missed or crossed trigger")
+    evidence.recheck()
+    current = current() if callable(current) else current
+    require(clock(audit["current_windows_observed_at"]) <= current
+            and clock(audit["current_linux_observed_at"]) <= current, "restoration audit is from the future")
+    for row in packet["task_baseline"]:
         if row["desired_enabled"]:
             require((clock(row["next_run_utc"]) - current).total_seconds() >= 900,
                     "original next trigger crossed or inside restoration margin")
-    evidence.recheck()
+
+
+def validate_restoration_enable_boundary(packet, evidence, current):
+    """Finite policy admission; a missed count is never a queue certificate."""
+    prepare_enable_context(packet, evidence, current)

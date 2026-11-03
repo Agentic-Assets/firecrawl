@@ -58,7 +58,7 @@ def compose_argv(packet, evidence):
             "up", "-d", "--no-deps", "--no-build", "--pull", "never", *sorted(packet["expected_images"])]
 
 
-def run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, output, admitted):
+def run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, output, admitted, boundary=None):
     """Update the selected code/dependencies/images; leave tasks held and owner intact."""
     from cre_runtime_maintenance import (
         maintenance_readiness,
@@ -67,7 +67,7 @@ def run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, outpu
 
     output = Path(output)
     checkpoint = modules[0]
-    runner = Foreground(packet, checkpoint, output, lock)
+    runner = Foreground(packet, checkpoint, output, lock, boundary)
     commands = []
     def docker(argv):
         verify_native_docker(packet)

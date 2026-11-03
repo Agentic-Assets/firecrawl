@@ -30,6 +30,10 @@ def test_actual_continued_apply_uses_real_stack_and_retained_predecessor(continu
     monkeypatch.setattr(cre_current_stack, "capture_current_stack",
                         lambda *args, **kwargs: case.built.refs["current_stack"])
     run_actual_apply_steps(case, tmp_path, monkeypatch, False)
+    assert_produced_transition_and_restoration(case, tmp_path)
+
+
+def assert_produced_transition_and_restoration(case, tmp_path):
     ready_path = case.output / "maintenance-ready.json"
     ready = json.loads(ready_path.read_bytes())
     terminal = json.loads((case.output / "terminal.json").read_bytes())

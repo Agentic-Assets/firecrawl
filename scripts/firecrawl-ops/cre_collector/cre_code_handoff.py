@@ -8,6 +8,7 @@ Run maintained tooling from a separate reviewed clean checkout, never a capsule.
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -230,6 +231,128 @@ def assert_owned(checkpoint, lock, expected_pid, *, restoration_inputs=None, mai
         os.close(directory)
 
 
+def verify_boundary_peer(pid, uid, request):
+    """Bind a socket request to the exact supported local boundary client."""
+    require(uid == os.geteuid() and pid > 0, "boundary client UID differs")
+    require(Path("/proc", str(pid), "exe").resolve(strict=True) == Path("/proc/self/exe").resolve(strict=True),
+            "boundary client interpreter differs")
+    raw = Path("/proc", str(pid), "cmdline").read_bytes()
+    require(len(raw) <= 16384, "boundary client command too large")
+    command = [value.decode("utf-8") for value in raw.split(b"\0") if value]
+    require(len(command) == 15 and Path(command[0]).name in {"python3", "python"}
+            and command[1] == "-B" and canonical_path(command[2]) == canonical_path(str(Path(__file__).resolve()))
+            and command[3] == request["selector"]
+            and command[5] == "--assert-owner-boundary-pid" and command[6] == str(os.getpid())
+            and command[7] == "--boundary-mode" and command[8] == request["mode"]
+            and command[9] == "--observation" and command[11] == "--authorization"
+            and command[13] == "--output", "boundary client command differs")
+    for index, name in ((4, "release"), (10, "observation"), (12, "authorization"), (14, "output")):
+        require(canonical_path(command[index]) == canonical_path(request[name]), "boundary client path differs")
+    return True
+
+
+def boundary_binding(args, release_raw, observation_raw, authorization_raw):
+    return {"selector": "--maintenance-packet" if args.maintenance_packet else "--restoration-packet",
+            "release": canonical_path(args.release), "output": canonical_path(args.output),
+            "observation": canonical_path(args.observation), "authorization": canonical_path(args.authorization),
+            "release_sha256": sha(release_raw), "observation_sha256": sha(observation_raw),
+            "authorization_sha256": sha(authorization_raw)}
+
+
+def check_boundary_times(observed_raw, authorization_raw):
+    observation, authorization = json_bytes(observed_raw), json_bytes(authorization_raw)
+    current = now()
+    observed, qualified = clock(observation["observed_at"]), clock(observation["qualified_at"])
+    start, end = clock(authorization["authorized_at"]), clock(authorization["expires_at"])
+    require(observed <= qualified <= current and 0 <= (current - observed).total_seconds() < 300
+            and start <= current < end and 0 < (end - start).total_seconds() <= 300,
+            "owner boundary authorization or observation expired")
+
+
+def boundary_executables(packet):
+    """Recheck the executables already selected for this owned operation."""
+    linux_git = shutil.which("git")
+    require(linux_git is not None, "Linux Git executable missing")
+    paths = [local_path(packet["programs"][key]) for key in ("native_git", "powershell")]
+    paths.extend((Path(linux_git), Path(sys.executable)))
+    return tuple((str(path.resolve(strict=True)), sha(read_file(path.resolve(strict=True)))) for path in paths)
+
+
+def boundary_client(args):
+    """Ask the live owner; never cold-load or trust a cached approval."""
+    from cre_owned_handoff_boundary import endpoint_for, request_boundary
+
+    require(bool(args.maintenance_packet) != bool(args.restoration_packet)
+            and args.assert_owner_boundary_pid > 0 and args.boundary_mode in {"Hold", "Repin", "Verify", "Restore"}
+            and args.release and args.output and args.observation and args.authorization,
+            "exact owner boundary inputs required")
+    raw, observed_raw, auth_raw = (read_file(path) for path in (args.release, args.observation, args.authorization))
+    packet = json_bytes(raw)
+    expected_schema = "cre-runtime-maintenance-v1" if args.maintenance_packet else "cre-code-restoration-v1"
+    require(packet.get("schema") == expected_schema, "owner boundary selector differs")
+    binding = boundary_binding(args, raw, observed_raw, auth_raw)
+    modules = runtime_modules(packet, Git(packet["programs"]["native_git"]))
+    lock = modules[0].canonical_shared_lock_dir(local_path(packet["roots"]["runtime"]))
+    inputs = {binding["selector"]: args.release, "--output": args.output,
+              "--observation": args.observation, "--authorization": args.authorization}
+
+    def owner():
+        assert_owned(modules[0], lock, args.assert_owner_boundary_pid,
+                     maintenance_inputs=inputs if args.maintenance_packet else None,
+                     restoration_inputs=inputs if args.restoration_packet else None)
+
+    def fresh():
+        require(all(read_file(path) == value for path, value in
+                    ((args.release, raw), (args.observation, observed_raw), (args.authorization, auth_raw))),
+                "owner boundary input changed")
+        check_boundary_times(observed_raw, auth_raw)
+
+    request_boundary(endpoint_for(args.assert_owner_boundary_pid), args.assert_owner_boundary_pid,
+                     binding, args.boundary_mode, owner, fresh,
+                     lambda: check_boundary_times(observed_raw, auth_raw))
+
+
+def owned_boundary(args, raw, packet, evidence, git, checkpoint, lock, admitted, *, extra_check=None):
+    """Keep the fully validated evidence in its lease owner for native checks."""
+    from cre_owned_handoff_boundary import OwnerBoundary
+
+    observed_raw, auth_raw = read_file(args.observation), read_file(args.authorization)
+    binding = boundary_binding(args, raw, observed_raw, auth_raw)
+    packet_bytes = json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
+    executables = boundary_executables(packet)
+    original = dict(evidence.original)
+    payloads = dict(evidence.original_payloads)
+    seen = {}
+    for path, value in [(evidence.inputs[role]["path"], data) for role, data in original.items()] + list(payloads.items()):
+        key = canonical_path(path)
+        if len(key) >= 3 and key[1:3] == ":/":
+            key = key.casefold()
+        require(key not in seen or seen[key] == value, "conflicting evidence path aliases")
+        seen[key] = value
+    inputs = {binding["selector"]: args.release, "--output": args.output,
+              "--observation": args.observation, "--authorization": args.authorization}
+
+    def check(mode):
+        require(json.dumps(packet, sort_keys=True, separators=(",", ":")).encode() == packet_bytes
+                and evidence.original == original and evidence.original_payloads == payloads,
+                "validated owner evidence changed")
+        evidence.recheck()
+        require(boundary_executables(packet) == executables, "owned executable changed")
+        runtime_modules(packet, git)
+        if extra_check is not None:
+            extra_check(mode)
+        admitted()
+        require(evidence.original == original and evidence.original_payloads == payloads,
+                "owner evidence closure changed")
+        require(read_file(args.release) == raw and read_file(args.observation) == observed_raw
+                and read_file(args.authorization) == auth_raw, "owner boundary input changed")
+        assert_owned(checkpoint, lock, os.getpid(),
+                     maintenance_inputs=inputs if args.maintenance_packet else None,
+                     restoration_inputs=inputs if args.restoration_packet else None)
+        check_boundary_times(observed_raw, auth_raw)
+    return OwnerBoundary(binding, check, verify_boundary_peer)
+
+
 def visible_linux_frontends(proc=Path("/proc"), *, pid=None):
     """Current-UID /proc role scan; return PID/role only, never command lines."""
     ancestors = set()
@@ -272,8 +395,9 @@ def visible_linux_frontends(proc=Path("/proc"), *, pid=None):
 
 
 class Foreground:
-    def __init__(self, release, checkpoint, output, lock=None):
+    def __init__(self, release, checkpoint, output, lock=None, boundary=None):
         self.release, self.checkpoint, self.output, self.lock = release, checkpoint, output, lock
+        self.boundary = boundary
         self.counter = 0
 
     def run(self, name, argv, seconds=180, *, effective_cwd=None):
@@ -292,19 +416,32 @@ class Foreground:
         log = self.output / f"{self.counter:02d}-{name}.log"
         require(not log.exists(), "command output replay")
         started, monotonic = now(), time.monotonic()
+        if self.boundary is not None:
+            self.boundary.command_deadline = monotonic + seconds
 
         def poll():
             require(time.monotonic() - monotonic < seconds, "owned command deadline expired")
             if self.lock is not None:
                 assert_owned(self.checkpoint, self.lock, os.getpid())
+            if self.boundary is not None:
+                self.boundary.poll()
 
         poll()
         environment = self.checkpoint.safe_process_env()
         if self.release.get("runtime_env_file"):
             environment.update(CRE_ENV_FILE=str(local_path(self.release["runtime_env_file"])),
                                FIRECRAWL_API_URL="http://127.0.0.1:3002")
-        with command_poll_hook(poll):
-            rc = self.checkpoint.run_command(argv, log, env=environment)
+        try:
+            with command_poll_hook(poll):
+                rc = self.checkpoint.run_command(argv, log, env=environment)
+        finally:
+            if self.boundary is not None:
+                from cre_owned_handoff_boundary import deactivate_preserving_error
+
+                try:
+                    deactivate_preserving_error(self.boundary)
+                finally:
+                    self.boundary.command_deadline = None
         poll()
         if command_git is not None:
             command_git.clean(root, identity, tracking=identity["sha"])
@@ -338,7 +475,15 @@ class Foreground:
             argv += ["-Authorization", windows_path(local_path(authorization))]
         if operation:
             argv += ["-OperationOutput", windows_path(local_path(operation))]
-        self.run("native-" + mode.lower(), argv)
+        if self.boundary is not None:
+            self.boundary.activate(mode)
+        try:
+            self.run("native-" + mode.lower(), argv)
+        finally:
+            if self.boundary is not None:
+                from cre_owned_handoff_boundary import deactivate_preserving_error
+
+                deactivate_preserving_error(self.boundary)
 
 
 def readiness(release, checkpoint, memory_type, client, idle, git, *, selected=False, owned=False, evidence=None):
@@ -619,6 +764,19 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
         restoration_enable_boundary(packet, evidence)
 
     admitted()  # Unsupported catch-up admission must refuse before any mutation/lease.
+    from cre_code_restoration_evidence import (
+        prepare_enable_context,
+        validate_enable_context,
+    )
+
+    enable_context = prepare_enable_context(packet, evidence, now)
+
+    def boundary_admitted():
+        require(read_file(args.release) == packet_raw and read_file(args.observation) == observed_raw
+                and read_file(args.authorization) == authorization_raw, "restoration immutable input changed")
+        validate_restoration_authorization(packet_raw, packet, evidence, observed_raw, authorization,
+                                           now(), review_reader=read_file)
+        validate_enable_context(packet, evidence, enable_context, now)
     git.clean(packet["roots"]["development"], packet["development"], tracking=packet["development"]["sha"])
     git.command(packet["roots"]["development"], "merge-base", "--is-ancestor", packet["code"]["sha"], packet["development"]["sha"])
     readiness(packet, *modules, git, evidence=evidence)
@@ -632,11 +790,28 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
     try:
         with checkpoint.SharedLock(lock, recovery_required=True) as lease:
             try:
-                runner = Foreground(packet, checkpoint, output, lock)
                 admitted()
                 readiness(packet, *modules, git, owned=True, evidence=evidence)
-                runner.native("Restore", args.release, sha(packet_raw), args.observation, args.authorization)
-                runner.native("Verify", args.release, sha(packet_raw), args.observation, args.authorization)
+                def boundary_check(_mode):
+                    if "maintenance_transition" in packet:
+                        from cre_runtime_maintenance_transition import (
+                            validate_maintenance_transition,
+                        )
+
+                        validate_maintenance_transition(evidence.obj(packet["maintenance_transition"]), evidence.read,
+                                                        retain=evidence.original_payloads)
+                    for key in ("native", "runtime"):
+                        git.clean(packet["roots"][key], packet["code"])
+                    git.clean(packet["roots"]["development"], packet["development"],
+                              tracking=packet["development"]["sha"])
+                    git.command(packet["roots"]["development"], "merge-base", "--is-ancestor",
+                                packet["code"]["sha"], packet["development"]["sha"])
+
+                with owned_boundary(args, packet_raw, packet, evidence, git, checkpoint, lock,
+                                    boundary_admitted, extra_check=boundary_check) as boundary:
+                    runner = Foreground(packet, checkpoint, output, lock, boundary)
+                    runner.native("Restore", args.release, sha(packet_raw), args.observation, args.authorization)
+                    runner.native("Verify", args.release, sha(packet_raw), args.observation, args.authorization)
                 final = restoration_capture(packet, evidence, args, git, modules, output, packet_raw=packet_raw, final=True, owned=True)
                 require(preserved(packet) == baseline and installed_dependencies(collector) == dependencies,
                         "restoration changed preserved environment/dependencies")
@@ -754,7 +929,9 @@ def main(argv=None):
     mode.add_argument("--postreadback", action="store_true")
     mode.add_argument("--assert-owned-pid", type=int)
     mode.add_argument("--assert-maintenance-owner-pid", type=int)
+    mode.add_argument("--assert-owner-boundary-pid", type=int)
     mode.add_argument("--check-authorization", action="store_true")
+    parser.add_argument("--boundary-mode")
     parser.add_argument("--observation")
     parser.add_argument("--authorization")
     parser.add_argument("--output")
@@ -767,6 +944,10 @@ def main(argv=None):
         args.release = args.restoration_packet
     if args.maintenance_packet:
         args.release = args.maintenance_packet
+    if args.assert_owner_boundary_pid is not None:
+        boundary_client(args)
+        return 0
+    require(args.boundary_mode is None, "boundary mode requires owner boundary")
     raw, release, evidence = load_release(args.release)
     restoration = release.get("schema") == "cre-code-restoration-v1"
     maintenance = release.get("schema") == "cre-runtime-maintenance-v1"
