@@ -3776,3 +3776,12 @@ def test_merge_dual_raw_data_when_payloads_differ():
     b = _row({"sourceKey": "cbre", "url": "https://cbre.com/h", "id": "1", "city": "B"})
     m = ci.merge_rows(a, b)
     assert set(m["raw_data"].keys()) == {"primary", "secondary_pass"}
+
+
+def test_full_ingest_sql_renders_lifecycle_queue_placeholder():
+    sql = ci.build_sql([], [], _SCRAPED_AT, set())
+    assert "{targeted_queue}" not in sql
+    assert "CREATE TEMP TABLE _matthews_targets" not in sql
+    assert sql.index("CREATE TEMP TABLE _present_source_locks") < sql.index("CREATE TEMP TABLE _present_listing_locks")
+    assert sql.index("CREATE TEMP TABLE _present_listing_locks") < sql.index("CREATE TEMP TABLE _essex_identity_claims")
+    assert "\nCOMMIT;\n" in sql

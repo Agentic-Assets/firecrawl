@@ -11,6 +11,8 @@ are separate supported test boundaries.
 
 **Observe-only SQL invariant:** `build_write_sql` (`cre_monitor.py`) and `build_baseline_sql` (`cre_gate.py`) must never assign `cre_listings.status` or `cre_listings.deleted_at`. Tests grep generated SQL (non-comment lines) to enforce this. `cre_ingest.py` mark-missing SQL is out of scope here.
 
+Changes to `cre_ingest.build_sql` must exercise at least one complete generated ingest transaction on disposable PostgreSQL, in addition to focused guard-extraction tests.
+
 **Re-implementation rule:** Do not duplicate production logic in assertions. Exception: `test_enum_key_invariant.py` defines `monitor_enum_key()` as the explicit contract mirror for enumeration id vs `to_row().external_id`.
 
 For offline collector subprocesses, prove that the injected transport is used
