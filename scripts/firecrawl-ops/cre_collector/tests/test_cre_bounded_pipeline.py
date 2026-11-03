@@ -133,6 +133,8 @@ def run_schedule(
             checkpoint["state"] = "collect_failed"
             if terminal_code:
                 checkpoint["terminal_collection_failure"] = {"code": terminal_code}
+                if item.source == "pyramid-brokerage":
+                    checkpoint["terminal_collection_failure"]["http_status"] = 403
             return False
         return True
 
@@ -626,6 +628,7 @@ def test_zero_pending_queue_still_refuses_low_disk(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("source,code,attempts", [
+    ("pyramid-brokerage", refresh.PYRAMID_DENIED_FAILURE_CODE, 1),
     ("colliers-main", "COLLIERS_MAIN_BOOTSTRAP_HTTP_403", 1),
     ("avison-young", refresh.AVISON_YOUNG_TERMINAL_FAILURE_CODE, 1),
     ("colliers-main", refresh.AVISON_YOUNG_TERMINAL_FAILURE_CODE, 3),

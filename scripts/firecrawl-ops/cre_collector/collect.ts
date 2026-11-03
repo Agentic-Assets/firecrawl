@@ -11,7 +11,7 @@ import {
   isExclusiveAvisonYoungTerminal404Failure,
   srcAvisonYoung,
 } from "./sources/avison-young.js";
-import { brokers } from "./lib/broker.js";
+import { brokerIndex, brokers } from "./lib/broker.js";
 import {
   BUILDOUT_SOURCE_INVENTORY_OPTS,
   srcBuildout,
@@ -41,7 +41,7 @@ import { srcMarcusMillichap } from "./sources/marcus-millichap.js";
 import { srcMatthews, validateMatthewsTargetedRefresh } from "./sources/matthews.js";
 import { srcNaiGlobal } from "./sources/nai-global.js";
 import { srcNewmark } from "./sources/newmark.js";
-import { srcPyramidBrokerage } from "./sources/pyramid-brokerage.js";
+import { srcPyramidBrokerage, PyramidAccessDenied, PYRAMID_DENIED_EXIT } from "./sources/pyramid-brokerage.js";
 import { srcSavills } from "./sources/savills.js";
 import { srcSrs } from "./sources/srs.js";
 import { preserveSrsRaw } from "./sources/pure/srs-raw-retention.js";
@@ -80,6 +80,9 @@ const requestedSources: SourceKey[] =
   sourceArg === "all"
     ? [...SOURCE_KEYS]
     : (sourceArg.split(",").map((s) => s.trim()) as SourceKey[]);
+if (new Set(requestedSources).size !== requestedSources.length) {
+  throw new Error("duplicate source keys are not allowed");
+}
 for (const s of requestedSources) {
   if (!SOURCE_KEYS.includes(s)) {
     console.error(`unknown source '${s}'. Valid: all, ${SOURCE_KEYS.join(", ")}`);
@@ -202,6 +205,12 @@ async function main() {
       sources.push({ sourceKey: key, supported: false, note: UNSUPPORTED[key] });
       continue;
     }
+    const pyramidStart = key === "pyramid-brokerage" ? {
+      listingCount: listings.length,
+      sourceCount: sources.length,
+      brokers: brokers.map(broker => ({ ...broker })),
+      brokerIndex: new Map(brokerIndex),
+    } : null;
     for (const tx of TRANSACTIONS) {
       console.error(
         `collecting ${key}/${tx} (max ${Number.isFinite(MAX_ITEMS) ? MAX_ITEMS : "unlimited"})...`
@@ -247,6 +256,22 @@ async function main() {
         });
       } catch (err) {
         recordSourceCompleted(key, tx, { outcome: "failed" });
+        if (key === "pyramid-brokerage" && err instanceof PyramidAccessDenied) {
+          if (pyramidStart) {
+            listings.splice(pyramidStart.listingCount);
+            sources.splice(pyramidStart.sourceCount);
+            brokers.splice(0, brokers.length, ...pyramidStart.brokers);
+            brokerIndex.clear();
+            for (const [brokerKey, index] of pyramidStart.brokerIndex) brokerIndex.set(brokerKey, index);
+          }
+          sources.push({ sourceKey: key, transaction: tx, supported: true, error: `HTTP ${err.status} access denied` });
+          console.error(`  ${key}/${tx} FAILED: HTTP ${err.status} access denied`);
+          if (requestedSources.length === 1) {
+            process.exitCode = PYRAMID_DENIED_EXIT[err.status];
+            return;
+          }
+          break;
+        }
         if (err instanceof NativeEvidenceTerminalError) {
           sources.push({ sourceKey: key, transaction: tx, supported: true, error: "native_capture_failed" });
           console.error(`  ${key}/${tx} FAILED: native_capture_failed`);
