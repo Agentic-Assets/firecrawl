@@ -218,7 +218,7 @@ def make_reconciliation(packet, packet_path, operation, independent, read):
     return receipt
 
 
-def validate_reconciliation(receipt, old, new, read, *, retain=None):
+def validate_reconciliation(receipt, old, new, read, *, retain=None, git=None):
     require(receipt.get("schema") == "cre-code-reconciled-failure-v1"
             and receipt.get("old") == old and receipt.get("new") == new
             and receipt.get("failed_predecessor_remains_failed") is True, "reconciled failure identity differs")
@@ -232,7 +232,10 @@ def validate_reconciliation(receipt, old, new, read, *, retain=None):
     packet_raw = payload(receipt["restoration_packet"])
     packet = json_bytes(packet_raw)
     pinned = Evidence({"inputs": restoration_history_inputs(packet)}, read)
-    validate_restoration(packet, pinned, historical=True)
+    if git is None:
+        validate_restoration(packet, pinned, historical=True)
+    else:
+        validate_restoration(packet, pinned, historical=True, git=git)
     if retain is not None:
         retain.update(pinned.original_payloads)
         retain.update({pinned.inputs[role]["path"]: raw for role, raw in pinned.original.items()})

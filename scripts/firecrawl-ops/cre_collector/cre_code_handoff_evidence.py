@@ -180,7 +180,7 @@ class Evidence:
             require(self.read(path) == raw, "QA manifest payload changed before publication")
 
 
-def validate_release(release, evidence):
+def validate_release(release, evidence, *, git=None):
     require(release.get("schema") == "cre-code-release-v1", "unknown release schema")
     for role in ("deployed", "selected", "development", "tooling"):
         identity(release.get(role))
@@ -216,7 +216,10 @@ def validate_release(release, evidence):
     unique(evidence.obj("runtime_snapshot").get("containers"), "id")
     unique(release.get("task_baseline"), "key", TASKS)
     validate_qa(release, evidence)
-    validate_lineage(release, evidence)
+    if git is None:
+        validate_lineage(release, evidence)
+    else:
+        validate_lineage(release, evidence, git=git)
 
 
 def validate_qa(release, evidence):
@@ -321,7 +324,7 @@ def validate_owned_qa(release, evidence, *, expected_tree=None):
     validate_qa_review(release, evidence, final)
 
 
-def validate_lineage(release, evidence):
+def validate_lineage(release, evidence, *, git=None):
     baseline = unique(release["task_baseline"], "key", TASKS)
     latest_tasks = None
     for key, row in baseline.items():
@@ -339,8 +342,10 @@ def validate_lineage(release, evidence):
                 if readback.get("schema") == "cre-code-reconciled-failure-v1":
                     from cre_code_handoff_transition import validate_reconciliation
 
-                    reconciled = validate_reconciliation(readback, edge["old"], edge["new"], evidence.read,
-                                                         retain=evidence.original_payloads)
+                    kwargs = {"retain": evidence.original_payloads}
+                    if git is not None:
+                        kwargs["git"] = git
+                    reconciled = validate_reconciliation(readback, edge["old"], edge["new"], evidence.read, **kwargs)
                     before, after = reconciled[key]["before_tuple"], reconciled[key]["after_tuple"]
                     require(all(before[field] == after[field] == row[field]
                                 for field in ("last_task_result", "last_run_utc")),
@@ -402,7 +407,10 @@ def validate_lineage(release, evidence):
 
                 reconciliation = readback["schema"] == "cre-code-reconciled-failure-v1"
                 validator = validate_reconciliation if reconciliation else validate_transition
-                maintained = validator(readback, current, following, evidence.read, retain=evidence.original_payloads)
+                kwargs = {"retain": evidence.original_payloads}
+                if reconciliation and git is not None:
+                    kwargs["git"] = git
+                maintained = validator(readback, current, following, evidence.read, **kwargs)
                 provenance = unique(readback.get("original_failures"), "key")
                 require(key in provenance and provenance[key].get("operation") == failure["operation"]
                         and provenance[key].get("terminal_sha256") == evidence.inputs[failure["terminal"]]["sha256"],

@@ -19,7 +19,7 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def produce_partial_failure(tmp_path, prior, prior_path, observation, authorization, output, evidence, now, monkeypatch):
+def produce_partial_failure(tmp_path, prior, prior_path, observation, authorization, output, evidence, now, monkeypatch, *, owner_salt=b""):
     """Generate retained failure bytes; process, Git and scheduler are test doubles."""
     output.mkdir()
     audit = tmp_path / "partial-audit"
@@ -128,7 +128,7 @@ def produce_partial_failure(tmp_path, prior, prior_path, observation, authorizat
     for path in (output / "containers-before.json", output / "containers-after.json", audit / "containers-after.json"):
         write(path, containers)
 
-    authority, pid, lease = b"synthetic partial authority", b"synthetic partial pid", b"synthetic partial lease"
+    authority, pid, lease = b"synthetic partial authority" + owner_salt, b"synthetic partial pid", b"synthetic partial lease"
     daily = Path(prior["roots"]["runtime"]) / "scripts/firecrawl-ops/cre_collector/out/daily"
     expected = {"schema": "cre-known-settled-owner-v1", "lock_path": str(daily / ".cre.lock"),
                 "directory_identity": [2, 3], "owner_pid": os.getpid(), "generation": "synthetic",

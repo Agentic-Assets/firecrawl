@@ -297,8 +297,21 @@ def test_authorize_publishes_one_bound_input_and_refuses_replay(maintenance_case
 
     packet, evidence, inputs, _, path = maintenance_case
     evidence.read = lambda value: inputs.data[value] if value in inputs.data else Path(value).read_bytes()
+    for role, row in evidence.inputs.items():
+        actual = tmp_path / ("input-" + role)
+        actual.write_bytes(evidence.original[role])
+        inputs.data[str(actual)] = evidence.original[role]
+        row["path"] = str(actual)
+    for original_path, payload in list(evidence.original_payloads.items()):
+        if not original_path.startswith(("/", "C:/")):
+            actual = tmp_path / ("payload-" + handoff_fixtures.sha(original_path.encode()))
+            actual.write_bytes(payload)
+            del evidence.original_payloads[original_path]
+            evidence.original_payloads[str(actual)] = payload
     now = restoration_fixtures.NOW
     raw = json.dumps(packet).encode()
+    release = tmp_path / "release.json"
+    release.write_bytes(raw)
     observation = handoff_fixtures.host_observation()
     observation.update(schema="cre-runtime-maintenance-observation-v1", native=packet["native_before"],
                        runtime=packet["old"], observed_at=now.isoformat(), qualified_at=now.isoformat(),
@@ -318,7 +331,7 @@ def test_authorize_publishes_one_bound_input_and_refuses_replay(maintenance_case
     output, auth = tmp_path / "operation", tmp_path / "authorization.json"
     monkeypatch.setattr(operation, "load_release", lambda _: (raw, packet, evidence))
     monkeypatch.setattr(operation, "now", lambda: now)
-    argv = ["--maintenance-packet", "/packet", "--authorize", "--observation", str(observed),
+    argv = ["--maintenance-packet", str(release), "--authorize", "--observation", str(observed),
             "--authorization", str(auth), "--review", str(review), "--reviewer", "independent",
             "--approval-ref", "AGENTIC-test", "--output", str(output)]
     assert operation.main(argv) == 0

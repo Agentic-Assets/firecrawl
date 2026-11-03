@@ -46,8 +46,7 @@ def admitted(tmp_path, monkeypatch):
     return release, evidence, observation, inputs
 
 
-@pytest.mark.parametrize("crossed", [False, True], ids=["unchanged", "qualified-crossed"])
-def test_partial_failure_joins_real_prior_and_successor_admission(continued_ready_case, tmp_path, monkeypatch, crossed):
+def build_partial_successor(continued_ready_case, tmp_path, monkeypatch, crossed):
     import cre_runtime_maintenance as maintenance
 
     case = continued_ready_case
@@ -244,11 +243,22 @@ def test_partial_failure_joins_real_prior_and_successor_admission(continued_read
     case.authorization = tmp_path / "successor-authorization.json"
     case.authorization.write_bytes(continued.handoff.encoded(authorization))
     case.built.refs["current_stack"] = {key: model_row[key] for key in ("path", "sha256", "bytes")}
-    from test_cre_continued_apply import assert_produced_transition_and_restoration
-
     import cre_current_stack
 
     monkeypatch.setattr(cre_current_stack, "capture_current_stack", lambda *_args, **_kwargs: case.built.refs["current_stack"])
+    from cre_maintenance_validation_context import LoadedMaintenance
+
+    case.evidence._loaded_maintenance = LoadedMaintenance(case.release_raw, case.packet, case.evidence)
+    return case, packet, crossed
+
+
+@pytest.mark.parametrize("crossed", [False, True], ids=["unchanged", "qualified-crossed"])
+def test_partial_failure_joins_real_prior_and_successor_admission(continued_ready_case, tmp_path, monkeypatch, crossed):
+    from test_cre_continued_apply import assert_produced_transition_and_restoration
+
+    import cre_runtime_maintenance as maintenance
+
+    case, packet, crossed = build_partial_successor(continued_ready_case, tmp_path, monkeypatch, crossed)
     run_actual_apply_steps(case, tmp_path, monkeypatch, False, with_ipc=True)
     assert_produced_transition_and_restoration(case, tmp_path)
     if crossed:

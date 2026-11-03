@@ -18,7 +18,9 @@ def test_failed_dependency_install_keeps_recovery_and_original_error(tmp_path, m
     authorization = tmp_path / "authorization.json"
     observation.write_text("{}")
     authorization.write_text(json.dumps({"operation_output": str(tmp_path / "operation")}))
-    args = SimpleNamespace(release="/packet", observation=str(observation), authorization=str(authorization),
+    release = tmp_path / "release.json"
+    release.write_bytes(b"{}")
+    args = SimpleNamespace(release=str(release), observation=str(observation), authorization=str(authorization),
                            output=str(tmp_path / "operation"))
     packet = {"roots": {"native": "C:/native", "runtime": "/runtime"}, "old": {"sha": "a" * 40, "tree": "b" * 40},
               "new": {"sha": "c" * 40, "tree": "d" * 40}, "native_before": {"sha": "c" * 40, "tree": "d" * 40},
@@ -40,6 +42,7 @@ def test_failed_dependency_install_keeps_recovery_and_original_error(tmp_path, m
         raise RuntimeError("synthetic npm failure")
     monkeypatch.setattr(maintenance, "validate_maintenance_release", lambda *_: None)
     monkeypatch.setattr(maintenance, "validate_maintenance_authorization", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(operation, "check_boundary_times", lambda *_args: None)
     monkeypatch.setattr(maintenance, "validate_prepared_images", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr(maintenance, "validate_operation_paths", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr(maintenance, "validate_current_projection", lambda *_args, **_kwargs: None, raising=False)
@@ -65,12 +68,15 @@ def test_projection_refusal_happens_before_lease_or_runtime_steps(tmp_path, monk
     observation, authorization = tmp_path / "observation", tmp_path / "authorization"
     observation.write_text("{}")
     authorization.write_text("{}")
-    args = SimpleNamespace(release="/packet", observation=str(observation), authorization=str(authorization),
+    release = tmp_path / "release.json"
+    release.write_bytes(b"{}")
+    args = SimpleNamespace(release=str(release), observation=str(observation), authorization=str(authorization),
                            output=str(tmp_path / "operation"))
     packet = {"roots": {"runtime": "/runtime"}, "new": {"sha": "c" * 40, "tree": "d" * 40},
               "expected_images": {"api": "sha256:" + "9" * 64}}
     monkeypatch.setattr(maintenance, "validate_maintenance_release", lambda *_: None)
     monkeypatch.setattr(maintenance, "validate_maintenance_authorization", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(operation, "check_boundary_times", lambda *_args: None)
     monkeypatch.setattr(maintenance, "validate_prepared_images", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(maintenance, "validate_operation_paths", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr(maintenance, "maintenance_readiness", lambda *_args, **_kwargs: {})

@@ -1,7 +1,9 @@
 """Continuation uses actual checkout ancestry and unchanged image inputs."""
 
 import importlib
+import json
 import sys
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -54,18 +56,25 @@ def test_continuation_calls_reviewed_stack_validator_and_live_boundary(monkeypat
 
 
 def test_fresh_stack_drift_refuses_before_lease(tmp_path, monkeypatch):
+    import cre_code_handoff as operation
+
+    current = datetime.now(UTC)
+    release = tmp_path / "release"
     observation = tmp_path / "observation"
     authorization = tmp_path / "authorization"
-    observation.write_text("{}")
-    authorization.write_text("{}")
-    args = SimpleNamespace(observation=str(observation), authorization=str(authorization),
+    release.write_bytes(b"{}")
+    observation.write_text(json.dumps({"observed_at": current.isoformat(), "qualified_at": current.isoformat()}))
+    authorization.write_text(json.dumps({"authorized_at": current.isoformat(),
+                                         "expires_at": (current + timedelta(seconds=299)).isoformat()}))
+    args = SimpleNamespace(release=str(release), observation=str(observation), authorization=str(authorization),
                            output=str(tmp_path / "operation"))
     packet = {"new": {}, "expected_images": {}}
     monkeypatch.setattr(maintenance, "validate_maintenance_release", lambda *_: None)
     monkeypatch.setattr(maintenance, "validate_maintenance_authorization", lambda *_, **__: None)
     monkeypatch.setattr(maintenance, "validate_operation_paths", lambda *_: None)
+    monkeypatch.setattr(operation, "now", lambda: current)
     monkeypatch.setattr(maintenance, "maintenance_readiness", lambda *_: pytest.fail("readiness reached"))
-    def refuse(*_):
+    def refuse(*_, **_kwargs):
         raise HandoffError("stack drift")
     monkeypatch.setattr(maintenance, "recheck_continuation_stack", refuse)
     checkpoint = SimpleNamespace(SharedLock=lambda *_, **__: pytest.fail("lease acquired"))
