@@ -332,7 +332,7 @@ def transition_case(ready_payload_case, tmp_path):
         "operation_output": str(output), "ready_sha256": sha(ready_path.read_bytes()),
         "owned_authority": ready["owned_authority"], "started_at": (now + timedelta(seconds=24)).isoformat()})
     owner = ready["owned_authority"]
-    released = [[owner["pid"], owner["token"], owner["generation"], False], owner["authority_identity"]]
+    released = [[owner["pid"], owner["token"], "z" * 43, False], owner["authority_identity"]]
     terminal = write(output / "terminal.json", {"schema": "cre-runtime-maintenance-terminal-v1", "status": "committed",
         "release_sha256": sha(case.release_raw), "authorization_sha256": sha(case.authorization.read_bytes()),
         "operation_output": str(output), "ready_sha256": sha(ready_path.read_bytes()),
@@ -381,7 +381,7 @@ def test_transition_accepts_equivalent_windows_and_wsl_root_names(transition_cas
     validate_maintenance_transition(transition, case.evidence.read)
 
 
-@pytest.mark.parametrize("change", ["failure", "release_start", "terminal", "native_eof", "independent", "xml", "replayed_terminal"])
+@pytest.mark.parametrize("change", ["failure", "release_start", "terminal", "native_eof", "independent", "independent_false_type", "independent_inode_type", "chronology", "xml", "replayed_terminal"])
 def test_transition_refuses_forged_or_incomplete_real_boundary(transition_case, change):
     from cre_code_handoff_evidence import HandoffError, json_bytes
     from cre_runtime_maintenance_transition import validate_maintenance_transition
@@ -405,13 +405,17 @@ def test_transition_refuses_forged_or_incomplete_real_boundary(transition_case, 
         ref["path"] = str(copied)
     else:
         field = {"release_start": "release_start", "terminal": "terminal", "native_eof": "native_completion",
-                 "independent": "independent_observation"}[change]
+                 "independent": "independent_observation", "independent_false_type": "independent_observation",
+                 "independent_inode_type": "independent_observation", "chronology": "independent_observation"}[change]
         ref = transition[field]
         path = Path(ref["path"])
         value = json_bytes(path.read_bytes())
         if change == "release_start": value["owned_authority"]["pid"] += 1
         elif change == "terminal": value["status"] = "failed"
         elif change == "native_eof": value["capture"]["Stdout"]["Eof"] = False
+        elif change == "independent_false_type": value["released_authority"][0][3] = 0
+        elif change == "independent_inode_type": value["released_authority"][1][0] = bool(value["released_authority"][1][0])
+        elif change == "chronology": value["observed_at"] = (case.now + timedelta(seconds=1)).isoformat()
         else: value["released_authority"][0][0] += 1
         raw = handoff.encoded(value)
         path.write_bytes(raw)

@@ -152,7 +152,7 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc
     monkeypatch.setattr(operation, "owned_authority", lambda *_args: {
         "pid": os.getpid(), "token": "a" * 32, "generation": "b" * 32, "recovery_required": True,
         "authority_identity": [1, 2], "directory_identity": [1, 3]})
-    monkeypatch.setattr(operation, "released_authority", lambda *_args: ([os.getpid(), "a" * 32, "b" * 32, False], [1, 2]))
+    monkeypatch.setattr(operation, "released_authority", lambda *_args: ([os.getpid(), "a" * 32, "c" * 43, False], [1, 2]))
     monkeypatch.setattr(operation, "lock_clear", lambda *_args, **_kwargs: None)
     if with_images:
         import cre_runtime_maintenance_build

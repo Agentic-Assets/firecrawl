@@ -1,5 +1,6 @@
 """Build and validate retained maintenance operation evidence."""
 
+import re
 from itertools import pairwise
 
 from cre_code_handoff_evidence import (
@@ -12,6 +13,22 @@ from cre_code_handoff_evidence import (
     sha,
     unique,
 )
+
+
+def validate_released_authority(owned, released):
+    """Join the cleared, rotated authority to the original owned lease."""
+    require(isinstance(released, list) and len(released) == 2
+            and isinstance(released[0], list) and len(released[0]) == 4
+            and released[0][0] == owned["pid"] and type(released[0][0]) is int
+            and released[0][1] == owned["token"]
+            and isinstance(released[0][2], str)
+            and re.fullmatch(r"[A-Za-z0-9_-]{43}", released[0][2]) is not None
+            and released[0][2] != owned["generation"] and released[0][3] is False
+            and released[1] == owned["authority_identity"]
+            and isinstance(released[1], list) and len(released[1]) == 2
+            and all(type(part) is int and part >= 0 for part in released[1]),
+            "maintenance release/authority not settled")
+
 
 TUPLE_FIELDS = ("task_path", "task_name", "enabled", "last_task_result", "last_run_utc", "next_run_utc", "actions")
 
@@ -433,12 +450,13 @@ def validate_maintenance_transition(receipt, read, *, retain=None, git=None):
         require(row.get("release_sha256") == digest and row.get("authorization_sha256") == auth_digest
                 and canonical_path(row.get("operation_output")) == operation, "maintenance operation attempts differ")
     owned = ready["owned_authority"]
-    released = [[owned["pid"], owned["token"], owned["generation"], False], owned["authority_identity"]]
+    released = terminal.get("released_authority")
+    validate_released_authority(owned, released)
     require(start.get("schema") == "cre-runtime-maintenance-release-start-v1"
             and start.get("ready_sha256") == sha(ready_raw) and start.get("owned_authority") == owned
             and terminal.get("schema") == "cre-runtime-maintenance-terminal-v1" and terminal.get("status") == "committed"
             and terminal.get("ready_sha256") == sha(ready_raw) and terminal.get("release_start_sha256") == sha(start_raw)
-            and terminal.get("canonical_lease_released") is True and terminal.get("released_authority") == released,
+            and terminal.get("canonical_lease_released") is True,
             "maintenance release/authority not settled")
     capture = native.get("capture", {})
     require(native.get("schema") == "cre-runtime-maintenance-native-completion-v1"
@@ -449,6 +467,7 @@ def validate_maintenance_transition(receipt, read, *, retain=None, git=None):
             and native.get("stdout_sha256") == sha(payload(receipt["native_stdout"]))
             and native.get("stderr_sha256") == sha(payload(receipt["native_stderr"])), "maintenance native completion uncertain")
     observation = json_bytes(payload(receipt["independent_observation"]))
+    validate_released_authority(owned, observation.get("released_authority"))
     require(observation.get("release_sha256") == digest and observation.get("terminal_sha256") == sha(terminal_raw)
             and observation.get("native_completion_sha256") == sha(native_raw)
             and canonical_path(observation.get("operation_output")) == operation
