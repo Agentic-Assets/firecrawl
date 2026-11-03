@@ -125,7 +125,8 @@ def closed_pipeline(tmp_path, monkeypatch, request):
                 "producer_sha": argv[argv.index("--producer") + 1],
                 "database_target_sha256": argv[argv.index("--target-sha256") + 1],
                 "staged_count": len(rows), "staged_sha256": projection_digest(rows),
-                "conflicts": 2, "verdict": "hold",
+                "conflicts": mutations.get("identity_conflicts", 2),
+                "verdict": "hold" if mutations.get("identity_conflicts", 2) else "clear",
             }
             Path(argv[argv.index("--out") + 1]).write_text(json.dumps(report))
             events.append(("identity", "essex-realty"))
@@ -227,7 +228,7 @@ def closed_pipeline(tmp_path, monkeypatch, request):
     )
     monkeypatch.setattr(refresh, "run_command", command)
 
-    def run(*, attempts=1):
+    def run(*, attempts=1, workers=1):
         return pipeline.run_bounded_pipeline(
             root,
             manifest,
@@ -236,7 +237,7 @@ def closed_pipeline(tmp_path, monkeypatch, request):
             concurrency=1,
             attempts_this_run=attempts,
             env_file=None,
-            source_workers=1,
+            source_workers=workers,
         )
 
     return SimpleNamespace(
@@ -264,6 +265,17 @@ def test_essex_history_hold_keeps_healthy_sibling_running(closed_pipeline, monke
     assert ("write", "svn") in case.events
     assert case.manifest["sources"]["svn"]["readback"]["ok"] is True
     assert case.manifest["pipeline"]["units"][0]["state"] == "verified"
+
+
+@pytest.mark.parametrize("closed_pipeline", [("essex-realty", "svn")], indirect=True)
+def test_essex_clear_runs_one_identity_probe_and_continues(closed_pipeline, monkeypatch):
+    case = closed_pipeline
+    case.mutations["identity_conflicts"] = 0
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _env: {"value": TARGET})
+    assert case.run() == []
+    assert case.events.count(("identity", "essex-realty")) == 1
+    assert ("write", "essex-realty") in case.events
+    assert ("write", "svn") in case.events
 
 
 @pytest.mark.parametrize("closed_pipeline", [("essex-realty", "svn")], indirect=True)
@@ -496,10 +508,48 @@ def test_report_change_after_preseal_digest_stops_every_lane(
     assert not any(event[0] == "write" for event in case.events)
 
 
-def test_preseal_pass_then_sealed_gate_refusal_still_stops_globally(closed_pipeline):
+@pytest.mark.parametrize(("verdict", "expected"), [("hold", "gate_blocked"), ("first_seen", "baseline_seed_required")])
+def test_hold_during_sibling_preparation_skips_source_before_sealing(closed_pipeline, monkeypatch, verdict, expected):
+    case = closed_pipeline
+    case.gates["cbre"] = ["ok"]
+    real_prepare = pipeline.prepare_candidate
+
+    def prepare(run_dir, manifest, source):
+        result = real_prepare(run_dir, manifest, source)
+        case.events.append(("prepared", source))
+        if source == "svn":
+            case.gates["cbre"] = [verdict]
+        return result
+
+    monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
+    assert case.run(workers=2) == ["cbre"]
+    assert case.events.index(("prepared", "svn")) < case.events.index(("gate", "cbre"))
+    assert case.manifest["sources"]["cbre"]["state"] == expected
+    assert ("write", "cbre") not in case.events
+    assert ("write", "svn") in case.events
+    assert case.manifest["sources"]["svn"]["readback"]["ok"] is True
+    units = case.manifest["pipeline"]["units"]
+    assert len(units) == 1 and units[0]["sources"] == ["svn"]
+    assert case.events.count(("gate", "cbre")) == 1
+
+
+def test_later_aggregate_hold_still_stops_before_any_write(closed_pipeline):
     case = closed_pipeline
     case.gates["cbre"] = ["ok", "hold"]
-    with pytest.raises(refresh.GlobalStageError, match="sealed source gate refused"):
+    with pytest.raises(refresh.RefreshError, match="aggregate coverage gate"):
+        case.run()
+    assert not any(event[0] == "write" for event in case.events)
+
+
+def test_malformed_final_gate_refusal_remains_global_before_any_write(closed_pipeline):
+    case = closed_pipeline
+    case.gates["cbre"] = ["hold"]
+
+    def corrupt(report):
+        report["per_source"]["cbre"]["reason"] = None
+
+    case.mutations["gate_report"] = corrupt
+    with pytest.raises(refresh.GlobalStageError, match="unrecognized pre-seal source gate refusal"):
         case.run()
     assert not any(event[0] == "write" for event in case.events)
 

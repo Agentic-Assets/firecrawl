@@ -748,11 +748,6 @@ def run_database_unit(
     for source in sources:
         checkpoint = manifest["sources"][source]
         artifact = run_dir / checkpoint["artifact"]["path"]
-        refresh.gate_source(run_dir, manifest, source, artifact, env_file)
-        if not refresh.gate_verdict_is_admitted(
-            manifest, (checkpoint.get("gate") or {}).get("verdict"), source=source
-        ):
-            raise refresh.GlobalStageError(f"sealed source gate refused: {source}")
         if not refresh.dry_run_source(run_dir, manifest, source, artifact):
             raise refresh.GlobalStageError(f"sealed source dryrun failed: {source}")
     unit["aggregate_gate"] = dict(
@@ -1080,7 +1075,7 @@ def run_bounded_pipeline(
                         )
                     counts()
                     refresh.save_manifest(run_dir, manifest)
-                    qualified = []
+                    prepared = []
                     for source in preparing:
                         try:
                             if not prepare_candidate(run_dir, manifest, source):
@@ -1106,6 +1101,11 @@ def run_bounded_pipeline(
                             )
                             retry_or_fail(source, "artifact validation failed")
                             continue
+                        prepared.append(source)
+                    # Check each prepared source once at the final pre-seal
+                    # boundary, before any member can enter a database unit.
+                    qualified = []
+                    for source in prepared:
                         if preseal_source_gate(run_dir, manifest, source, env_file):
                             qualified.append(source)
                         else:
