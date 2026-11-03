@@ -34,7 +34,7 @@ def binding_input(tmp_path, monkeypatch):
         inputs=[str(path)], checkpoint_ingest_attempt="c" * 32,
         checkpoint_collector_git_sha="d" * 40, expected_db_target_sha256="b" * 64,
         require_strict_freshness=True, mark_missing=False, activate_status=False,
-        daum_verified_subset_claims=None, matthews_targeted_claims=None,
+        daum_verified_subset_claims=None, pyramid_verified_subset_claims=None, matthews_targeted_claims=None,
     )
     monkeypatch.setattr(refresh, "git_identity", lambda: ("d" * 40, False))
     key, _ = ingest.artifact_run_identity_from_digests([hashlib.sha256(raw).hexdigest()])
@@ -51,7 +51,7 @@ def test_canonical_binding_uses_actual_artifact_generation_and_clean_code(tmp_pa
 
 @pytest.mark.parametrize("mutation", [
     "dirty", "code", "changed_bytes", "run_key", "mixed", "truncated", "capped",
-    "missing_detail", "sale_only", "activate", "mark_missing", "wrong_attempt",
+    "missing_detail", "sale_only", "activate", "mark_missing", "wrong_attempt", "pyramid_claims",
 ])
 def test_canonical_binding_rejects_unqualified_input(tmp_path, monkeypatch, mutation):
     args, data, raw, key = binding_input(tmp_path, monkeypatch)
@@ -79,6 +79,8 @@ def test_canonical_binding_rejects_unqualified_input(tmp_path, monkeypatch, muta
         args.mark_missing = True
     elif mutation == "wrong_attempt":
         args.checkpoint_ingest_attempt = "wrong"
+    elif mutation == "pyramid_claims":
+        args.pyramid_verified_subset_claims = "/private/pyramid-claims.json"
     with pytest.raises(ValueError):
         ingest.transwestern_checkpoint_binding(args, data, raw, key)
 
