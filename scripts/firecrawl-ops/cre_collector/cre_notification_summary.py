@@ -123,12 +123,14 @@ def _subset_summary_fields(child, source, count):
     gate = checkpoint["gate"]
     binding = gate["current_inventory_proof"]
     selected = admission_configuration(child["config"], source)
-    scope = "pyramid_verified_subset_v1" if pyramid else selected["admission_scope"]
+    scope = binding.get("scope") if pyramid else selected["admission_scope"]
+    if pyramid:
+        require(scope in ("pyramid_verified_subset_v1", "pyramid_incomplete_v2"))
     v2 = scope == "daum_verified_subset_v2"
     require(gate.get("verdict") == "ok_additive_verified_subset"
             and gate.get("raw_verdict") == "first_seen"
             and gate.get("admission_scope") == scope)
-    require(binding.get("schema") == ("pyramid-verified-subset-v1" if pyramid else "daum-verified-subset-v2" if v2 else "daum-verified-subset-v1")
+    require(binding.get("schema") == ("pyramid-incomplete-v2" if pyramid and scope == "pyramid_incomplete_v2" else "pyramid-verified-subset-v1" if pyramid else "daum-verified-subset-v2" if v2 else "daum-verified-subset-v1")
             and binding.get("scope") == scope
             and binding.get("whole_source_coverage") is False
             and binding.get("generation_id") == child["run_id"]
@@ -144,13 +146,46 @@ def _subset_summary_fields(child, source, count):
             and binding["emitted_count"] == count and count >= (1 if pyramid else 100)
             and (not pyramid or binding["inventory_count"] >= 100)
             and binding.get("staged_count") == count)
-    lease_coverage = "unknown" if binding["held_count"] else "proved"
+    if pyramid and scope == "pyramid_incomplete_v2":
+        require(type(binding.get("incomplete_count")) is int and 0 <= binding["incomplete_count"] <= count
+                and type(binding.get("transition_count")) is int and 0 <= binding["transition_count"] <= count
+                and binding["incomplete_count"] + binding["held_count"] + binding["transition_count"] > 0)
+    if pyramid and scope == "pyramid_incomplete_v2":
+        missing = binding.get("missing_field_counts")
+        require(isinstance(missing, dict) and set(missing) == {"state", "city", "assetType"}
+                and all(type(value) is int and 0 <= value <= binding["incomplete_count"] for value in missing.values())
+                and sum(missing.values()) >= binding["incomplete_count"])
+    lease_coverage = "unknown" if binding["held_count"] or (pyramid and (binding.get("incomplete_count") or binding.get("transition_count"))) else "proved"
     require(binding.get("whole_lease_coverage") == lease_coverage)
     return {"measurement": "generation_exact_verified_subset",
             "qualification": "qualified_partial_subset", "partial": True,
             "whole_source_coverage": False,
             **{key: binding[key] for key in ("inventory_count", "emitted_count", "held_count")},
-            "whole_lease_coverage": lease_coverage}
+            "whole_lease_coverage": lease_coverage,
+            **({"incomplete_count": binding["incomplete_count"], "transition_count": binding["transition_count"],
+                "missing_field_counts": binding["missing_field_counts"]} if pyramid and "incomplete_count" in binding else {})}
+
+
+def _pyramid_emitted_breakdown(child, source, count):
+    from cre_checkpoint_series import pyramid_partial_child
+
+    if source != "pyramid-brokerage" or not pyramid_partial_child(child):
+        return None
+    binding = child["sources"][source]["gate"]["current_inventory_proof"]
+    if binding.get("schema") != "pyramid-incomplete-v2":
+        return None
+    value = binding.get("emitted_transactions")
+    require(isinstance(value, dict) and set(value) == {"sale", "lease", "both"})
+    sale, lease, both = value["sale"], value["lease"], value["both"]
+    require(all(type(x) is int and 0 <= x <= count for x in (sale, lease, both))
+            and both <= min(sale, lease) and sale + lease - both == count)
+    return {**value, "measurement": "current_staged_inventory_transaction_types"}
+
+
+def _artifact_expected_count(child, source, count):
+    if _pyramid_emitted_breakdown(child, source, count) is not None:
+        return count + child["sources"][source]["gate"]["current_inventory_proof"]["held_count"]
+    return count
 
 
 def timestamp(value):
@@ -505,7 +540,7 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
             readback.get("ok") is True
             and readback.get("latest_inventory_batch_active") == count
         )
-        require(artifact.get("staged_unique") == count)
+        require(artifact.get("staged_unique") == _artifact_expected_count(child, source, count))
         require(artifact.get("rejected_by_ingest") == 0)
         require(
             isinstance(readback.get("generation_id"), str)
@@ -519,7 +554,11 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         breakdown_basis = "none"
         breakdown_reason = "staging_stats_absent"
         staged_stats = artifact.get("transaction_breakdown")
-        if staged_stats is not None:
+        if _pyramid_emitted_breakdown(child, source, count) is not None:
+            transaction_breakdown = _pyramid_emitted_breakdown(child, source, count)
+            breakdown_basis = "bound_emitted_partition"
+            breakdown_reason = None
+        elif staged_stats is not None:
             try:
                 transaction_breakdown = _staged_transaction_breakdown(
                     artifact, source, count, run_id
@@ -1037,7 +1076,7 @@ def verified_pipeline_summary(
                 and readback.get("latest_inventory_batch_active") == count
                 and readback.get("generation_id") == run_id
                 and artifact.get("path") == f"sources/{source}.json"
-                and artifact.get("staged_unique") == count
+                and artifact.get("staged_unique") == _artifact_expected_count(child, source, count)
                 and artifact.get("rejected_by_ingest") == 0
             )
             inventory_only = _verified_inventory_only(
@@ -1061,7 +1100,11 @@ def verified_pipeline_summary(
             breakdown_basis = "none"
             breakdown_reason = "staging_stats_absent"
             staged_stats = artifact.get("transaction_breakdown")
-            if staged_stats is not None:
+            if _pyramid_emitted_breakdown(child, source, count) is not None:
+                breakdown = _pyramid_emitted_breakdown(child, source, count)
+                breakdown_basis = "bound_emitted_partition"
+                breakdown_reason = None
+            elif staged_stats is not None:
                 try:
                     breakdown = _staged_transaction_breakdown(
                         artifact, source, count, run_id

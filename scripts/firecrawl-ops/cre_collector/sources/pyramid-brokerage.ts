@@ -43,6 +43,7 @@ export type PyramidDetail = {
   postId: number;
   canonicalUrl: string | null;
   street: string | null;
+  mapQueries: string[];
   facts: Record<string, string>;
   transactionFacts: string[];
   description: string | null;
@@ -458,21 +459,26 @@ function pyramidFactMap($: cheerio.CheerioAPI): Record<string, string> {
   return facts;
 }
 
-function pyramidPropertyStreet($: cheerio.CheerioAPI): string | null {
-  const addresses = new Set<string>();
+function pyramidMapQueries($: cheerio.CheerioAPI): string[] {
+  const queries = new Set<string>();
   $("#content .listings-map iframe[src]").each((_, element) => {
     try {
       const url = new URL($(element).attr("src") ?? "");
       if (url.origin !== "https://www.google.com" || url.pathname !== "/maps/embed/v1/place"
           || url.username || url.password || url.port || url.hash || url.searchParams.getAll("q").length !== 1) return;
-      const address = url.searchParams.get("q")?.trim();
-      if (address && !/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(address)) addresses.add(address);
+      const query = url.searchParams.get("q")?.trim();
+      if (query) queries.add(query);
     } catch {
       // An absent/unsupported map does not authorize inferred geography.
     }
   });
-  if (addresses.size > 1) throw new Error("Pyramid detail has conflicting property map addresses");
-  return [...addresses][0] ?? null;
+  return [...queries];
+}
+
+function pyramidPropertyStreet(queries: string[]): string | null {
+  const addresses = queries.filter((query) => !/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(query));
+  if (addresses.length > 1) throw new Error("Pyramid detail has conflicting property map addresses");
+  return addresses[0] ?? null;
 }
 
 export function parsePyramidDetail(html: string, expectedPostId?: number): PyramidDetail {
@@ -554,7 +560,8 @@ export function parsePyramidDetail(html: string, expectedPostId?: number): Pyram
     })
     .get()
     .filter((contact) => contact.name || contact.email);
-  return { postId, canonicalUrl: pyramidAbsoluteUrl($('link[rel="canonical"]').attr("href")), street: pyramidPropertyStreet($), facts, transactionFacts, description, brochures, photos, contacts };
+  const mapQueries = pyramidMapQueries($);
+  return { postId, canonicalUrl: pyramidAbsoluteUrl($('link[rel="canonical"]').attr("href")), street: pyramidPropertyStreet(mapQueries), mapQueries, facts, transactionFacts, description, brochures, photos, contacts };
 }
 
 function pyramidShortlinkPostId(value: unknown): number | null {
@@ -679,6 +686,7 @@ export function mapPyramidListing(
       pyramidEmbeddedTerms(row, "property-use").join(", "),
     description,
     street: detail?.street,
+    mapQueryEvidence: detail?.mapQueries.length ? { values: detail.mapQueries, method: "property_map_embed_query" } : undefined,
     state: pyramidEmbeddedTerms(row, "state")[0],
     city: pyramidEmbeddedTerms(row, "city")[0],
     county: pyramidEmbeddedTerms(row, "county")[0],
@@ -782,7 +790,7 @@ export async function srcPyramidBrokerage(
   }
 
   const details: PyramidCurrentInventoryProof["details"] = [];
-  const held: NonNullable<PyramidCurrentInventoryProof["held"]> = [];
+  const incomplete: NonNullable<PyramidCurrentInventoryProof["incomplete"]> = [];
   let listings: any[];
   try {
     listings = await pmap(selected, Math.min(CONCURRENCY, 4), async (row) => {
@@ -794,28 +802,22 @@ export async function srcPyramidBrokerage(
     const detail = parsePyramidDetail(html, Number(row.id));
     if (proofEnabled && detail.canonicalUrl !== url) throw new Error("Pyramid detail canonical URL disagrees with inventory");
     const page = proofEnabled ? snapshot.passes[1].pages.find((page) => page[6].includes(Number(row.id))) : undefined;
-    const missingCity = pyramidEmbeddedTerms(row, "city").length === 0;
     const mapped = mapPyramidListing(row, tx, snapshot.observedAt, detail, observedAt,
-      page ? [page[0], page[2], page[3]] : undefined, !(subset && missingCity));
+      page ? [page[0], page[2], page[3]] : undefined, true);
     if (proofEnabled) {
       const missing = (["state", "city", "assetType"] as const)
         .filter((field) => typeof mapped[field] !== "string" || !mapped[field].trim());
-      if (missing.length && !(subset && missing.length === 1 && missing[0] === "city")) {
+      if (missing.length && !subset) {
         throw new Error(`Pyramid strict proof lacks named location/property taxonomy for post ${Number(row.id)}: ${missing.join(", ")}`);
       }
       const digest = textSha256(html);
       mapped.wordpressRecord.detailResponseSha256 = digest;
       details.push([Number(row.id), detail.canonicalUrl!, observedAt, digest]);
-      if (subset && missingCity) {
-        const { id, url, canonicalUrl, transactionType, inventoryObservedAt, detailObservedAt,
-          freshnessProvenance, wordpressRecord, detailFacts, detailTransactionFacts, transactionEvidence,
-          state, city, assetType } = mapped;
-        held.push({ postId: Number(row.id), reason: "missing_city", listing: {
-          id, url, canonicalUrl, transactionMode: tx, transactionType, inventoryObservedAt, detailObservedAt,
-          freshnessProvenance, wordpressRecord, detailFacts, detailTransactionFacts, transactionEvidence,
-          state, city, assetType,
-        } });
-        return null;
+      if (subset && missing.length) {
+        mapped.preserveChildCollections = true;
+        mapped.detailObservedWithChildPreservation = true;
+        mapped.missingFieldEvidence = { fields: missing, method: "source_detail_and_taxonomy" };
+        incomplete.push({ postId: Number(row.id), missingFields: missing });
       }
     }
     return mapped;
@@ -829,16 +831,16 @@ export async function srcPyramidBrokerage(
     sourceUrl: PYRAMID_LISTINGS_PAGE,
     method: "exact WordPress REST inventory plus bounded direct detail HTML",
     totalAvailable: eligible.length,
-    truncated: truncated || (subset && held.length > 0),
+    truncated: truncated || (subset && incomplete.length > 0),
     listings: listings.filter(Boolean),
     ...(proofEnabled ? { currentInventoryProof: {
-      schema: held.length ? "pyramid-verified-subset-v1" as const : "pyramid-strict-detail-v1" as const, sourceKey: "pyramid-brokerage" as const,
+      schema: incomplete.length ? "pyramid-incomplete-v2" as const : "pyramid-strict-detail-v1" as const, sourceKey: "pyramid-brokerage" as const,
       transaction: tx, generationId: generationId!, generationStartedAt: generationStartedAt!,
       total: snapshot.total, totalPages: snapshot.totalPages, observedAt: snapshot.observedAt,
       passes: snapshot.passes,
       cohort: snapshot.rows.map((row) => [Number(row.id), pyramidAbsoluteUrl(row.link)!, pyramidListingKey(row.link), pyramidTransaction(row)] as [number, string, string, Tx]),
       details: details.sort((a, b) => a[0] - b[0]),
-      ...(held.length ? { held: held.sort((a, b) => a.postId - b.postId) } : {}),
+      ...(incomplete.length ? { incomplete: incomplete.sort((a, b) => a.postId - b.postId) } : {}),
     } } : {}),
     note:
       `exact ${snapshot.total}-record/${snapshot.totalPages}-page WordPress snapshot; ` +

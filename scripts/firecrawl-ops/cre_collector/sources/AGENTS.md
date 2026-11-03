@@ -510,14 +510,20 @@ ambiguous values and disagreement with inventory taxonomy fail with post ID and
 bounded raw fact. Do not guess from descriptions or default unfamiliar labels
 to sale; validate observed labels without loosening ownership or detail proof.
 
-When a full strict current-inventory run observes a missing city on an otherwise
-fresh, identity- and tenure-validated detail, Pyramid retains that record as a
-missing-city hold and emits verified peers through its partial admission. The
-complete inventory of at least 100 and every fresh detail are still required;
-the emitted verified subset may contain fewer than 100 but must be nonempty. The result is
-explicitly partial, never authorizes mark-missing or a complete-source watermark,
-and leaves held parents, source-index rows and children untouched. Do not infer
-city from the property name, region, proximity prose or another source.
+When a full strict current-inventory run observes missing state, city or property
+type on an otherwise fresh, identity- and tenure-validated detail, Pyramid emits
+the complete mapped record with per-field missing evidence and preserves existing
+children and non-null values. The complete inventory of at least 100 and every fresh detail are still
+required. A source-bound pre-seal read-only identity classification isolates
+uncertain identities; the transaction rechecks emitted identities after its
+lifecycle and row locks. Held parents, source-index rows and children remain
+untouched. Changes or new conflicts after classification fail the transaction.
+The result is partial whenever records are incomplete, identities are held or
+native IDs transition; it grants no lifecycle or complete-source watermark.
+Retain literal property-map queries as source evidence, but do not promote a
+map query or geocoder result into city or coordinates. Source-backed enrichment
+requires its own unambiguous evidence and provenance; never infer locality from
+property name, region or proximity prose.
 
 Pyramid strict first-seen proof requires full/uncapped sale+lease. A
 successful immutable complete snapshot may be reused only within the exact

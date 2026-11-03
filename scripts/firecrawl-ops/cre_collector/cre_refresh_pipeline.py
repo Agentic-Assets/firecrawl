@@ -1170,6 +1170,12 @@ def run_bounded_pipeline(
                                 whole_source_coverage=False,
                                 emitted_count=binding.get("emitted_count"), held_count=binding.get("held_count"),
                             )
+                            if binding.get("schema") == "pyramid-incomplete-v2":
+                                state["source_results"][source].update(
+                                    incomplete_count=binding.get("incomplete_count"),
+                                    transition_count=binding.get("transition_count"),
+                                    missing_field_counts=binding.get("missing_field_counts"),
+                                )
                     sealed = ()
                     state["active_unit"] = None
                     counts()

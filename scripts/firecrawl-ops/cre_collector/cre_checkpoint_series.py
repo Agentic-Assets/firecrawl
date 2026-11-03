@@ -254,17 +254,27 @@ def pyramid_partial_child(child: Mapping[str, Any]) -> bool:
                 and artifact.get("pyramid_subset") is True
                 and gate.get("verdict") == "ok_additive_verified_subset"
                 and gate.get("mark_missing_safe") is False
-                and binding.get("schema") == "pyramid-verified-subset-v1"
-                and binding.get("scope") == "pyramid_verified_subset_v1"
+                and (binding.get("schema"), binding.get("scope")) in {
+                    ("pyramid-verified-subset-v1", "pyramid_verified_subset_v1"),
+                    ("pyramid-incomplete-v2", "pyramid_incomplete_v2")}
+                and (binding.get("schema") != "pyramid-incomplete-v2" or
+                     (type(binding.get("incomplete_count")) is int and binding["incomplete_count"] >= 0
+                      and type(binding.get("transition_count")) is int and binding["transition_count"] >= 0
+                      and isinstance(binding.get("missing_field_counts"), dict)
+                      and set(binding["missing_field_counts"]) == {"state", "city", "assetType"}
+                      and all(type(value) is int and 0 <= value <= binding["incomplete_count"]
+                              for value in binding["missing_field_counts"].values())
+                      and sum(binding["missing_field_counts"].values()) >= binding["incomplete_count"]))
                 and binding.get("whole_source_coverage") is False
                 and binding.get("artifact_sha256") == artifact.get("sha256")
                 and binding.get("generation_id") == child.get("run_id")
                 and binding.get("collector_git_sha") == child.get("collector_git_sha")
                 and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
-                and type(binding.get("held_count")) is int and binding["held_count"] > 0
+                and type(binding.get("held_count")) is int and binding["held_count"] >= 0
+                and (binding["held_count"] > 0 or binding.get("incomplete_count", 0) > 0 or binding.get("transition_count", 0) > 0)
                 and type(binding.get("emitted_count")) is int and binding["emitted_count"] > 0
                 and type(artifact.get("staged_unique")) is int
-                and artifact["staged_unique"] == binding["emitted_count"]
+                and artifact["staged_unique"] == binding["emitted_count"] + (binding["held_count"] if binding.get("schema") == "pyramid-incomplete-v2" else 0)
                 and type(binding.get("inventory_count")) is int and binding["inventory_count"] >= 100
                 and binding["inventory_count"] == binding["held_count"] + binding["emitted_count"])
     except (KeyError, TypeError, ValueError):
@@ -274,7 +284,11 @@ def pyramid_partial_child(child: Mapping[str, Any]) -> bool:
 def pyramid_subset_counts(child: Mapping[str, Any]) -> dict[str, int]:
     binding = child["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]
     return {"inventory": binding["inventory_count"], "emitted": binding["emitted_count"],
-            "held": binding["held_count"]}
+            "held": binding["held_count"],
+            **({"incomplete": binding["incomplete_count"], "transitions": binding["transition_count"],
+                "missing_state": binding["missing_field_counts"]["state"],
+                "missing_city": binding["missing_field_counts"]["city"],
+                "missing_asset_type": binding["missing_field_counts"]["assetType"]} if "incomplete_count" in binding else {})}
 
 
 def current_subset(config: Mapping[str, Any]) -> bool:
@@ -1884,12 +1898,23 @@ def reconcile_pipeline_series(series_dir: Path, manifest: dict) -> None:
 
 
 def _pipeline_member_report_matches(
-    report: dict, checkpoint: dict, source: str, run_id: str
+    report: dict, checkpoint: dict, source: str, run_id: str, *, allow_pyramid_v2: bool = False
 ) -> bool:
     """Cross-bind saved exact readback fields to the hashed full query output."""
     artifact = checkpoint["artifact"]
     readback = checkpoint["readback"]
     staged = artifact["staged_unique"]
+    binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+    if source == "pyramid-brokerage" and binding.get("schema") == "pyramid-incomplete-v2":
+        if not allow_pyramid_v2:
+            return False
+        emitted, held = binding.get("emitted_count"), binding.get("held_count")
+        if (type(staged) is not int or type(emitted) is not int or type(held) is not int
+                or emitted <= 0 or held < 0 or staged != emitted + held
+                or binding.get("inventory_count") != staged
+                or binding.get("artifact_sha256") != artifact.get("sha256")):
+            return False
+        staged = emitted
     inventory_only = artifact.get("inventory_only", 0)
     if (
         type(staged) is not int
@@ -2140,7 +2165,14 @@ def pipeline_source_qualified(
         for key in members:
             checkpoint = child["sources"][key]
             proof = results[key]
-            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)):
+            binding = (checkpoint.get("gate") or {}).get("current_inventory_proof") or {}
+            pyramid_partial = key == "pyramid-brokerage" and pyramid_partial_child(child)
+            if (key == "pyramid-brokerage"
+                    and (binding.get("schema") == "pyramid-incomplete-v2"
+                         or binding.get("scope") == "pyramid_incomplete_v2")
+                    and not pyramid_partial):
+                return False
+            if (current_subset(child.get("config") or {}) and key == "daum-commercial") or pyramid_partial:
                 if (proof.get("qualification") != "qualified_partial_subset"
                     or proof.get("partial") is not True
                     or proof.get("whole_source_coverage") is not False
@@ -2148,8 +2180,13 @@ def pipeline_source_qualified(
                     return False
                 if key == "pyramid-brokerage":
                     binding = checkpoint["gate"]["current_inventory_proof"]
-                    if (proof.get("emitted_count") != binding["emitted_count"]
-                            or proof.get("held_count") != binding["held_count"]):
+                    if any(not _exact_json_equal(proof.get(key), binding.get(key))
+                           for key in ("emitted_count", "held_count")):
+                        return False
+                    if binding.get("schema") == "pyramid-incomplete-v2" and any(
+                        not _exact_json_equal(proof.get(key), binding.get(key))
+                        for key in ("incomplete_count", "transition_count", "missing_field_counts")
+                    ):
                         return False
             elif proof.get("partial") is True:
                 return False
@@ -2168,7 +2205,9 @@ def pipeline_source_qualified(
                 or proof["validation_path"] != expected_path
                 or proof["validation_sha256"] != digest
                 or checkpoint["readback"]["ok"] is not True
-                or not _pipeline_member_report_matches(report, checkpoint, key, run_id)
+                or not _pipeline_member_report_matches(
+                    report, checkpoint, key, run_id, allow_pyramid_v2=pyramid_partial
+                )
                 or sum(
                     key in candidate.get("sources", [])
                     for candidate in units
@@ -2367,9 +2406,7 @@ def run_pipeline_series(
             row.update(state="qualified_partial_subset" if (current_subset(config) and key == "daum-commercial") or (key == "pyramid-brokerage" and pyramid_partial_child(child)) else "complete", error=None)
             row["pipeline_result"] = child["pipeline"]["source_results"][key]
             if key == "pyramid-brokerage" and pyramid_partial_child(child):
-                binding = child["sources"][key]["gate"]["current_inventory_proof"]
-                row["subset_counts"] = {"inventory": binding["inventory_count"],
-                                        "emitted": binding["emitted_count"], "held": binding["held_count"]}
+                row["subset_counts"] = pyramid_subset_counts(child)
         else:
             state = child.get("sources", {}).get(key, {}).get("state")
             if state in {
@@ -2720,9 +2757,7 @@ def run_series(
             if rc == 0 and _child_succeeded(child_manifest, config):
                 checkpoint["state"] = "qualified_partial_subset" if current_subset(config) or pyramid_partial_child(child_manifest) else "complete"
                 if pyramid_partial_child(child_manifest):
-                    binding = child_manifest["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]
-                    checkpoint["subset_counts"] = {"inventory": binding["inventory_count"],
-                                                   "emitted": binding["emitted_count"], "held": binding["held_count"]}
+                    checkpoint["subset_counts"] = pyramid_subset_counts(child_manifest)
                 save_manifest(series_dir, manifest)
                 break
             if rc == 75 or child_manifest.get("status") == RESOURCE_GUARD_STATUS:
