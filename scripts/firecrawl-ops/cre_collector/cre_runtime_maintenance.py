@@ -486,7 +486,7 @@ def record_maintenance_failure(args, raw, packet, checkpoint, output, classifica
               "failure_hold": hold, "recovery_retained": "not asserted; independent readback required"})
 
 
-def apply_maintenance(args, raw, packet, evidence, git, modules):
+def apply_maintenance(args, raw, packet, evidence, git, modules, *, finite=None):
     """Run one owned held-fleet operation; never enable a scheduled task."""
     from cre_code_handoff import (
         check_boundary_times,
@@ -514,20 +514,26 @@ def apply_maintenance(args, raw, packet, evidence, git, modules):
     from cre_maintenance_validation_context import LoadedMaintenance
 
     loaded = getattr(evidence, '_loaded_maintenance', None)
-    if isinstance(loaded, LoadedMaintenance):
+    if finite is not None:
+        from cre_finite_handoff import FiniteProof
+
+        require(type(finite) is FiniteProof, "finite qualification differs")
+        finite.recheck(raw, packet, evidence)
+    elif isinstance(loaded, LoadedMaintenance):
         loaded.unchanged(raw, packet, evidence)
     else:
         validate_maintenance_release(packet, evidence)
     admitted()
-    if isinstance(loaded, LoadedMaintenance):
+    if finite is None and isinstance(loaded, LoadedMaintenance):
         loaded.extend_after_admission(raw, packet, evidence, authorization)
     validate_operation_paths(packet, output)
     if packet["expected_images"]:
         validate_prepared_images(packet, evidence, git)
     git.development(dict(packet, selected=packet["new"]))
-    recheck_continuation_stack(packet, evidence, git, raw=raw)
-    stack_replay = None
-    if 'continuation' in packet:
+    stack_replay = finite.replay if finite is not None else None
+    if finite is None:
+        recheck_continuation_stack(packet, evidence, git, raw=raw)
+    if finite is None and 'continuation' in packet:
         from cre_maintenance_validation_context import qualify_stack_replay
 
         stack_replay = qualify_stack_replay(packet, evidence)

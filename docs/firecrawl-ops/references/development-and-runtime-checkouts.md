@@ -352,6 +352,22 @@ and unrelated services retain their existing contracts. A configuration
 difference refuses the operation; a prepared image alone grants no permission
 to recreate a container.
 
+For a reviewed maintenance or restoration packet, the native frontdoor also
+supports one finite foreground invocation. Supply `-Mode Apply` and
+`-FiniteReviewed` with the appropriate `-MaintenancePath/-MaintenanceSha` or
+`-RestorationPath/-RestorationSha`, plus `-ObservationOutput`, `-Observation`
+(the `observation.json` inside that new directory), `-Authorization`, `-Output`,
+`-Review`, `-Reviewer` and `-ApprovalRef`. The operation output, observation
+directory and authorization must be new and distinct. The same foreground
+process qualifies the retained evidence before taking its fresh observation,
+publishes the bound authorization, and then applies it under the existing
+lease and ownership checks. The observation and authorization remain subject
+to the same under-300-second limits and current boundary checks; this route
+does not extend them. Keep the original foreground invocation through exit and
+stream settlement. Do not replay its paths or infer success from prepared input.
+Maintenance leaves tasks disabled, and neither checkout nor runtime is updated
+while a collection writer is active.
+
 Apply leaves all tasks disabled. A distinct Postreadback operation must join
 the settled foreground exit, released owner, selected checkouts, full container
 configuration and task definitions before its transition can be consumed by

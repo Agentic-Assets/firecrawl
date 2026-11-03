@@ -29,7 +29,7 @@ qualified_ready_case = chain.qualified_ready_case
 scheduler_principal_in_synthetic_xml = chain.scheduler_principal_in_synthetic_xml
 
 
-def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc=False):
+def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc=False, drive=None):
     case.output.rmdir()
     container_state = {"recreated": False}
     if with_images:
@@ -198,7 +198,7 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc
         if "-Mode" not in argv:
             return 0
         mode = argv[argv.index("-Mode") + 1]
-        if with_ipc:
+        if with_ipc and mode != "Observe":
             boundary = container_state["boundary"]
             count = {"Hold": 3, "Repin": 5, "Verify": 2}[mode]
             program = ("from cre_owned_handoff_boundary import request_boundary;import json,sys;"
@@ -209,6 +209,16 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc
                                       json.dumps(boundary.binding), mode, str(count)])
             if cre_refresh_pipeline.wait_with_poll_hook(child) != 0:
                 return 1
+        if mode == "Observe":
+            output = Path(argv[argv.index("-Output") + 1])
+            tasks = []
+            for row in case.packet["task_baseline"]:
+                raw = original_inputs[case.path(row["xml"])]
+                path = output / (row["key"] + "-observed.xml")
+                path.write_bytes(raw)
+                tasks.append(dict(row, state="Disabled", xml_sha256=sha(raw), xml_reference=ref(path)))
+            (output / "native-observation.json").write_text(json.dumps({"observed_at": case.now.isoformat(),
+                "tasks": tasks, "windows_resources": case.before["windows_resources"]}))
         if mode == "Hold":
             for row in case.packet["task_baseline"]:
                 (case.output / (row["key"] + "-before.xml")).write_bytes(original_inputs[case.path(row["xml"])])
@@ -256,7 +266,10 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc
     args = SimpleNamespace(release=str(case.release), maintenance_packet=str(case.release), restoration_packet=None,
                            observation=str(case.observation),
                            authorization=str(case.authorization), output=str(case.output))
-    maintenance.apply_maintenance(args, case.release_raw, case.packet, case.evidence, Git(), (checkpoint, None, None, None))
+    if drive is None:
+        maintenance.apply_maintenance(args, case.release_raw, case.packet, case.evidence, Git(), (checkpoint, None, None, None))
+    else:
+        drive(args, Git(), (checkpoint, None, None, None))
     if with_ipc:
         assert container_state["ipc_modes"] == ["Hold"] * 3 + ["Repin"] * 5 + ["Verify"] * 2
     assert json.loads((case.output / "maintenance-ready.json").read_bytes())["recovery_required_at_publication"] is True

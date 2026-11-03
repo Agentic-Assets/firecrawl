@@ -145,11 +145,15 @@ namespace CreWindowsCapture {
     public static class Capture {
         public static bool ThrowAfterStart;
         public static bool BadEof;
+        public static string[] LastArgs;
+        public static string FiniteAuthPath;
         public static string MutationMarkerPath;
         public static string MutationMarkerJson;
         public static string ReleaseStartPath;
         public static CaptureResult Run(string exe,string[] args,string output,string error,string prefix) {
             if(exe!="wsl.exe")throw new Exception("Unexpected executable");
+            LastArgs=args;
+            if(!String.IsNullOrEmpty(FiniteAuthPath)) File.WriteAllText(FiniteAuthPath,"{}");
             File.WriteAllText(output,"mocked native adapter only");File.WriteAllText(error,"");
             if(!String.IsNullOrEmpty(MutationMarkerPath)) { Directory.CreateDirectory(Path.GetDirectoryName(MutationMarkerPath));File.WriteAllText(MutationMarkerPath,MutationMarkerJson); }
             if(!String.IsNullOrEmpty(ReleaseStartPath)) { File.WriteAllText(ReleaseStartPath,"{}"); }
@@ -348,6 +352,43 @@ namespace CreWindowsCapture {
     & $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceSuccess -Observation $path -Authorization $authPath
     $maintenanceCompletion=Read-CreHandoffJson ([IO.File]::ReadAllText($maintenanceSuccess+'.native.json'))
     Assert-Fixture ($maintenanceCompletion.schema -ceq 'cre-runtime-maintenance-native-completion-v1' -and $maintenanceCompletion.release_sha256 -ceq $maintenanceHash) 'Maintenance capture must bind its distinct schema and exact packet'
+    # Explicit one-process finite admission: synthetic child produces its authorization.
+    foreach($kind in @('maintenance','restoration')) {
+        $finiteOutput=Join-Path $root ('finite-'+$kind+'-operation')
+        $finiteObservationDir=Join-Path $root ('finite-'+$kind+'-observation')
+        $finiteObservation=Join-Path $finiteObservationDir 'observation.json'
+        $finiteAuth=Join-Path $root ('finite-'+$kind+'-authorization.json')
+        [CreWindowsCapture.Capture]::FiniteAuthPath=$finiteAuth
+        $selector=if($kind -ceq 'maintenance') {@{MaintenancePath=$maintenancePath;MaintenanceSha=$maintenanceHash}} else {@{RestorationPath=$restorationPath;RestorationSha=(Get-CreHandoffHash $restorationWire)}}
+        & $frontdoor -Mode Apply @selector -FiniteReviewed -ObservationOutput $finiteObservationDir -Observation $finiteObservation -Authorization $finiteAuth -Output $finiteOutput -Review $path -Reviewer 'fixture-reviewer' -ApprovalRef 'AGENTIC-fixture'
+        $expectedFinite=@('-d','fixture','-u','fixture','--exec','python3','-B',((Fixture-WslPath $sourceRoot)+'/scripts/firecrawl-ops/cre_collector/cre_code_handoff.py'),
+            $(if($kind -ceq 'maintenance'){'--maintenance-packet'}else{'--restoration-packet'}),$(if($kind -ceq 'maintenance'){Fixture-WslPath $maintenancePath}else{Fixture-WslPath $restorationPath}),
+            '--apply','--finite-reviewed','--observation-output',(Fixture-WslPath $finiteObservationDir),'--observation',(Fixture-WslPath $finiteObservation),
+            '--authorization',(Fixture-WslPath $finiteAuth),'--output',(Fixture-WslPath $finiteOutput),'--review',(Fixture-WslPath $path),
+            '--reviewer','fixture-reviewer','--approval-ref','AGENTIC-fixture')
+        Assert-Fixture ((@([CreWindowsCapture.Capture]::LastArgs) -join "`n") -ceq ($expectedFinite -join "`n")) 'Finite Apply must pass the exact reviewed one-process argument set'
+        $finiteReceipt=Read-CreHandoffJson ([IO.File]::ReadAllText($finiteOutput+'.native.json'))
+        Assert-Fixture ($finiteReceipt.authorization_sha256 -ceq (Get-CreHandoffHash '{}') -and $finiteReceipt.capture.Stdout.Eof -and $finiteReceipt.capture.Stderr.Eof) 'Finite completion must bind child-created authorization and both EOFs'
+        [CreWindowsCapture.Capture]::FiniteAuthPath=''
+    }
+    $finiteBad=Join-Path $root 'finite-bad-observation'
+    $finiteBadAuth=Join-Path $root 'finite-bad-authorization.json'
+    $finiteBadOutput=Join-Path $root 'finite-bad-output'
+    Refuses {& $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -FiniteReviewed -ObservationOutput $finiteBad -Observation (Join-Path $root 'foreign-observation.json') -Authorization $finiteBadAuth -Output $finiteBadOutput -Review $path -Reviewer 'fixture-reviewer' -ApprovalRef 'AGENTIC-fixture'} 'Finite observation path mismatch must refuse' 'Finite observation path differs'
+    Assert-Fixture (-not (Test-Path -LiteralPath ($finiteBadOutput+'.stdout.raw'))) 'Finite admission refusal must precede native child capture'
+    Refuses {& $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -ObservationOutput $finiteBad -Observation $path -Authorization $authPath -Output $finiteBadOutput} 'Finite-only arguments without selector must refuse' 'Finite admission arguments require FiniteReviewed'
+    foreach($kind in @('maintenance','restoration')) {
+        $finiteEof=Join-Path $root ('finite-'+$kind+'-bad-eof')
+        $finiteEofObs=Join-Path $root ('finite-'+$kind+'-bad-eof-observation')
+        $finiteEofAuth=Join-Path $root ('finite-'+$kind+'-bad-eof-auth.json')
+        [CreWindowsCapture.Capture]::FiniteAuthPath=$finiteEofAuth
+        [CreWindowsCapture.Capture]::BadEof=$true
+        $selector=if($kind -ceq 'maintenance') {@{MaintenancePath=$maintenancePath;MaintenanceSha=$maintenanceHash}} else {@{RestorationPath=$restorationPath;RestorationSha=(Get-CreHandoffHash $restorationWire)}}
+        $beforeFiniteFailure=$fixture.disableCalls
+        Refuses {& $frontdoor -Mode Apply @selector -FiniteReviewed -ObservationOutput $finiteEofObs -Observation (Join-Path $finiteEofObs 'observation.json') -Authorization $finiteEofAuth -Output $finiteEof -Review $path -Reviewer 'fixture-reviewer' -ApprovalRef 'AGENTIC-fixture'} 'Finite Apply incomplete EOF must refuse' 'Native foreground exit/drain uncertain'
+        Assert-Fixture (-not (Test-Path -LiteralPath ($finiteEof+'.native.json')) -and (Test-Path -LiteralPath ($finiteEof+'.outer-failure.json')) -and $fixture.disableCalls -eq $beforeFiniteFailure) 'Finite EOF failure must preserve failure without ownerless task mutation'
+        [CreWindowsCapture.Capture]::FiniteAuthPath='';[CreWindowsCapture.Capture]::BadEof=$false
+    }
     $maintenanceEof=Join-Path $root 'maintenance-native-eof'
     $maintenanceMarker=@{schema='cre-runtime-maintenance-mutation-v1';release_sha256=$maintenanceHash;authorization_sha256=(Get-CreHandoffHash '{}');operation_output=(ConvertTo-CreHandoffPath $maintenanceEof);tooling=$maintenance.tooling;fleet=@($maintenance.task_baseline)}
     [CreWindowsCapture.Capture]::MutationMarkerPath=Join-Path $maintenanceEof 'mutation-start.json'
