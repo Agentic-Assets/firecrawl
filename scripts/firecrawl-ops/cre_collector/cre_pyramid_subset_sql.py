@@ -55,10 +55,42 @@ FROM jsonb_to_recordset({payload}::jsonb)
 JOIN credeals.cre_brokerages b ON b.slug = 'pyramid-brokerage';
 CREATE TEMP TABLE _pyramid_subset_history ON COMMIT DROP AS
 SELECT t.brokerage_id, t.external_id, t.source_url, t.status, t.deleted_at,
+       t.title, t.address, t.city, t.state, t.transaction_type, t.description,
        ARRAY(SELECT DISTINCT n.value #>> '{{}}'
              FROM jsonb_path_query(t.raw_data, '$.**.wordpressRecord.id') n(value)) AS native_ids
 FROM credeals.cre_listings t
 WHERE t.brokerage_id IN (SELECT brokerage_id FROM _pyramid_subset_members);
+-- Only emitted, exactly matched active parents and current source-index rows
+-- can transition. This table also selects additive child preservation.
+INSERT INTO _pyramid_native_transitions (brokerage_id, external_id)
+SELECT m.brokerage_id, m.external_id
+FROM _pyramid_subset_members m
+JOIN _src s USING (brokerage_id, external_id)
+JOIN _pyramid_subset_history t USING (brokerage_id, external_id)
+WHERE m.emitted AND t.source_url = m.source_url
+  AND cardinality(t.native_ids) = 1
+  AND CASE WHEN t.native_ids[1] ~ '^[1-9][0-9]{{0,15}}$'
+           THEN t.native_ids[1]::numeric <= 9007199254740991 ELSE false END
+  AND t.native_ids[1] <> m.native_id::text
+  AND NOT EXISTS (SELECT 1 FROM _pyramid_subset_history h
+                  WHERE h.brokerage_id = m.brokerage_id
+                    AND h.external_id IS DISTINCT FROM m.external_id
+                    AND t.native_ids[1] = ANY(h.native_ids))
+  AND t.status::text = 'active' AND t.deleted_at IS NULL
+  AND (SELECT count(*) FROM _pyramid_subset_history h
+       WHERE h.brokerage_id = m.brokerage_id AND h.external_id = m.external_id) = 1
+  AND (SELECT count(*) = 1 AND bool_and(
+         (i.source_key = 'pyramid-brokerage' AND i.url = m.source_url
+          AND i.observation_present IS TRUE AND i.soft_deleted IS FALSE) IS TRUE)
+       FROM credeals.cre_source_index i
+       WHERE i.brokerage_id = m.brokerage_id AND i.external_id = m.external_id)
+  AND s.title IS NOT NULL AND btrim(s.title) <> '' AND s.title = t.title
+  AND s.address IS NOT NULL AND btrim(s.address) <> '' AND s.address = t.address
+  AND s.city IS NOT NULL AND btrim(s.city) <> '' AND s.city = t.city
+  AND s.state IS NOT NULL AND btrim(s.state) <> '' AND s.state = t.state
+  AND s.transaction_type IS NOT NULL AND btrim(s.transaction_type) <> ''
+  AND s.transaction_type = t.transaction_type
+  AND s.description IS NOT NULL AND btrim(s.description) <> '' AND s.description = t.description;
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM credeals.cre_source_baseline WHERE source_key='pyramid-brokerage') THEN
@@ -100,7 +132,9 @@ BEGIN
            AND (t.source_url IS DISTINCT FROM s.source_url OR t.external_id IS DISTINCT FROM s.external_id))
        OR (t.source_url = s.source_url AND t.external_id = s.external_id
            AND EXISTS (SELECT 1 FROM unnest(t.native_ids) n(value)
-                       WHERE n.value IS DISTINCT FROM s.native_id::text))
+                       WHERE n.value IS DISTINCT FROM s.native_id::text)
+           AND NOT EXISTS (SELECT 1 FROM _pyramid_native_transitions x
+                           WHERE x.brokerage_id = s.brokerage_id AND x.external_id = s.external_id))
   ) OR EXISTS (
     SELECT 1 FROM _pyramid_subset_members s
     JOIN credeals.cre_source_index si ON si.brokerage_id = s.brokerage_id

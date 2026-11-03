@@ -4841,7 +4841,25 @@ BEGIN
 END $$;
 
 
-{daum_subset_guard}{pyramid_subset_guard}-- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
+CREATE TEMP TABLE _pyramid_native_transitions (
+  brokerage_id uuid NOT NULL, external_id text NOT NULL,
+  PRIMARY KEY (brokerage_id, external_id)
+) ON COMMIT DROP;
+{daum_subset_guard}{pyramid_subset_guard}-- Carry the transition's additive policy into subsequent refreshes. A later
+-- native ID match alone cannot establish continuity for the older children.
+UPDATE _src s SET raw_data = s.raw_data || jsonb_build_object(
+  'pyramidNativeTransitionPreserve', true,
+  'pyramidTransitionPrior', COALESCE(t.raw_data->'pyramidTransitionPrior', to_jsonb(t.raw_data::text)),
+  'preserveChildCollections', true,
+  'detailObservedWithChildPreservation', true)
+FROM credeals.cre_listings t
+WHERE t.brokerage_id = s.brokerage_id AND t.external_id = s.external_id
+  AND t.source_url = s.source_url
+  AND s.raw_data->>'sourceKey' = 'pyramid-brokerage'
+  AND (t.raw_data->'pyramidNativeTransitionPreserve' = 'true'::jsonb
+       OR EXISTS (SELECT 1 FROM _pyramid_native_transitions x
+                  WHERE x.brokerage_id = s.brokerage_id AND x.external_id = s.external_id));
+-- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
 -- BEFORE the upsert mutates them, so history and presence snapshots cannot be
 -- stale relative to a concurrent retirement.
 CREATE TEMP TABLE _prior_vals ON COMMIT DROP AS

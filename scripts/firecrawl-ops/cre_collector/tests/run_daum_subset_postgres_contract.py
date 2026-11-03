@@ -607,17 +607,18 @@ try:
 
     if pyramid_mode:
         # Exercise the complete production SQL generator with synthetic Pyramid data.
-        def pyramid_row(index, *, fresh=False):
+        def pyramid_row(index, *, fresh=False, transition=False):
             key = f"listings/fixture-{index}"
             url = f"https://www.pyramidbrokerage.com/{key}/"
             tx = "lease" if index % 2 else "sale"
             marker = "fresh" if fresh else "before"
             return ingest.to_row({
                 "sourceKey": "pyramid-brokerage", "id": key, "url": url, "canonicalUrl": url,
-                "name": marker, "city": "Albany", "state": "NY", "assetType": "Industrial",
+                "name": "Stable title" if transition else marker, "street": "1 Main Street",
+                "city": "Albany", "state": "NY", "description": "Stable description", "assetType": "Industrial",
                 "transactionMode": tx, "transactionType": tx.title(),
                 "wordpressRecord": {"id": index, "link": url, "status": "publish", "type": "pbc-listings"},
-                "photos": [f"https://example.test/{marker}-photo.jpg"], "brokerIds": [0],
+                "photos": [f"https://example.test/{marker}-photo.jpg"] + ([f"https://example.test/{marker}-photo-2.jpg"] if index == 3 else []), "brokerIds": [0],
                 "documents": [{"url": f"https://example.test/{marker}-doc.pdf", "docType": "brochure"}],
                 "media": [{"url": f"https://example.test/{marker}-tour", "mediaType": "video"}],
                 "links": [{"url": f"https://example.test/{marker}-site", "linkType": "other"}],
@@ -640,17 +641,38 @@ try:
                 "2026-10-16T00:00:00Z", set(),
                 pyramid_verified_subset_claims=pyramid_claims if subset else None)
         held_ids = "('listings/fixture-100','listings/fixture-101','listings/fixture-102')"
-        for number, case in enumerate(("success", "deleted_emitted", "held_collision")):
+        for number, case in enumerate(("success", "deleted_emitted", "held_collision", "transition", "transition_mismatch", "transition_ambiguous", "transition_inactive", "transition_held", "transition_no_index", "transition_cross_path", "transition_old_collision", "transition_malformed", "transition_missing_fact")):
             db = "pyramid_fixture_" + str(number)
             sql("CREATE DATABASE " + db + ";")
             sql(schema, db)
-            seed = pyramid_sql([pyramid_row(i) for i in range(1, 103)])
+            seed = pyramid_sql([pyramid_row(i, transition=i <= 3) for i in range(1, 103)])
             assert "\nCOMMIT;\n" in seed
             sql(seed, db)
             if case == "deleted_emitted":
                 sql("UPDATE credeals.cre_listings SET deleted_at=now(),status='inactive' WHERE external_id='listings/fixture-1';", db)
             if case == "held_collision":
                 sql("UPDATE credeals.cre_source_index SET url='https://www.pyramidbrokerage.com/listings/wrong/' WHERE external_id='listings/fixture-101';", db)
+            if case.startswith("transition"):
+                # Historical IDs differ, but exact path and all six facts agree.
+                sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', to_jsonb(900 + split_part(external_id, '-', 2)::int)) WHERE external_id IN ('listings/fixture-1','listings/fixture-2','listings/fixture-3');", db)
+            if case == "transition_missing_fact":
+                sql("UPDATE credeals.cre_listings SET address=NULL WHERE external_id='listings/fixture-1';", db)
+            if case == "transition_mismatch":
+                sql("UPDATE credeals.cre_listings SET description='Different' WHERE external_id='listings/fixture-1';", db)
+            if case == "transition_ambiguous":
+                sql("UPDATE credeals.cre_listings SET raw_data=raw_data || jsonb_build_object('history',jsonb_build_object('wordpressRecord',jsonb_build_object('id',902))) WHERE external_id='listings/fixture-1';", db)
+            if case == "transition_inactive":
+                sql("UPDATE credeals.cre_listings SET status='inactive' WHERE external_id='listings/fixture-1';", db)
+            if case == "transition_no_index":
+                sql("DELETE FROM credeals.cre_source_index WHERE external_id='listings/fixture-1';", db)
+            if case == "transition_cross_path":
+                sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', '1'::jsonb) WHERE external_id='listings/fixture-4';", db)
+            if case == "transition_old_collision":
+                sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', '901'::jsonb) WHERE external_id='listings/fixture-4';", db)
+            if case == "transition_malformed":
+                sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', to_jsonb('bad'::text)) WHERE external_id='listings/fixture-1';", db)
+            if case == "transition_held":
+                sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', '999'::jsonb) WHERE external_id='listings/fixture-101';", db)
             tables = sql("SELECT tablename FROM pg_tables WHERE schemaname='credeals' ORDER BY tablename;", db).stdout.splitlines()
             def all_tables():
                 parts = ["SELECT '" + table + "' name,md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'[]')) hash FROM credeals." + table + " t" for table in tables]
@@ -670,17 +692,37 @@ try:
                 assert len(json.loads(held_contents[key])) == 3, (case, key, held_contents[key])
             lifecycle_query = "SELECT jsonb_agg(jsonb_build_array(l.external_id,l.status,l.deleted_at,si.soft_deleted,si.observation_present,si.presence_generation,si.presence_changed_at) ORDER BY l.external_id)::text FROM credeals.cre_listings l JOIN credeals.cre_source_index si USING(brokerage_id,external_id) WHERE l.external_id NOT IN " + held_ids + ";"
             lifecycle_before = sql(lifecycle_query, db).stdout
-            text = pyramid_sql([pyramid_row(i, fresh=True) for i in range(1, 100)], subset=True)
+            text = pyramid_sql([pyramid_row(i, fresh=True, transition=case.startswith("transition") and i <= 3) for i in range(1, 100)], subset=True)
             assert "\nCOMMIT;\n" in text
             (out / ("pyramid-" + case + ".sql")).write_text(text)
             result = sql(text, db, check=False)
             after = all_tables()
-            if case == "success":
+            if case in {"success", "transition"}:
                 assert result.returncode == 0, result.stderr
                 assert held_snapshot() == held_before
                 assert sql(lifecycle_query, db).stdout == lifecycle_before
-                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE title='fresh';", db).stdout.strip() == "99"
+                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE title='fresh';", db).stdout.strip() == ("96" if case == "transition" else "99")
+                if case == "transition":
+                    for table in ("cre_listing_images", "cre_listing_contacts", "cre_listing_documents", "cre_listing_media", "cre_listing_links"):
+                        count = sql("SELECT count(*) FROM credeals." + table + " c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id IN ('listings/fixture-1','listings/fixture-2','listings/fixture-3');", db).stdout.strip()
+                        assert count == ("8" if table == "cre_listing_images" else "6"), (table, count)
                 assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id IN " + held_ids + " AND title='before';", db).stdout.strip() == "3"
+                if case == "transition":
+                    prior = sql("SELECT raw_data->>'pyramidTransitionPrior' FROM credeals.cre_listings WHERE external_id='listings/fixture-1';", db).stdout.strip()
+                    assert json.loads(prior)["wordpressRecord"]["id"] == 901
+                    # A later ordinary complete refresh must not erase old children.
+                    repeat = pyramid_sql([pyramid_row(i, fresh=True, transition=i <= 3)
+                                          for i in range(1, 103)])
+                    sql(repeat, db)
+                    for table in ("cre_listing_images", "cre_listing_contacts", "cre_listing_documents", "cre_listing_media", "cre_listing_links"):
+                        count = sql("SELECT count(*) FROM credeals." + table + " c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id IN ('listings/fixture-1','listings/fixture-2','listings/fixture-3');", db).stdout.strip()
+                        assert count == ("8" if table == "cre_listing_images" else "6"), (table, count)
+                    assert sql("SELECT raw_data->>'pyramidTransitionPrior' FROM credeals.cre_listings WHERE external_id='listings/fixture-1';", db).stdout.strip() == prior
+                    # A further native ID transition retains the original evidence.
+                    sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data, '{wordpressRecord,id}', '1001'::jsonb) WHERE external_id='listings/fixture-1';", db)
+                    sql(pyramid_sql([pyramid_row(i, fresh=True, transition=i <= 3) for i in range(1, 100)], subset=True), db)
+                    assert sql("SELECT raw_data->>'pyramidTransitionPrior' FROM credeals.cre_listings WHERE external_id='listings/fixture-1';", db).stdout.strip() == prior
+                    assert sql("SELECT count(*) FROM credeals.cre_listing_images c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id IN ('listings/fixture-1','listings/fixture-2','listings/fixture-3');", db).stdout.strip() == "8"
                 checks.append({"case": "pyramid_" + case, "committed": True,
                     "emitted_updated": 99, "held_parent_five_children_index_unchanged": True,
                     "emitted_lifecycle_unchanged": True})
