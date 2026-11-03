@@ -31,6 +31,8 @@ SOURCE = "pyramid-brokerage"
 SCHEMA = "pyramid-strict-detail-v1"
 SUBSET_SCHEMA = "pyramid-verified-subset-v1"
 SUBSET_SCOPE = "pyramid_verified_subset_v1"
+INCOMPLETE_SCHEMA = "pyramid-incomplete-v2"
+INCOMPLETE_SCOPE = "pyramid_incomplete_v2"
 SUBSET_VERDICT = "ok_additive_verified_subset"
 SUBSET_REASON = "verified Pyramid subset admitted; whole source remains partial"
 HOST = "www.pyramidbrokerage.com"
@@ -129,7 +131,7 @@ def _transaction_evidence(listing, tx, url, post, pages):
         )
 
 
-def subset_source_scope(data):
+def subset_source_scope(data, *, identity_holds=False):
     """Structural partition only; full source/aggregate admission remains mandatory."""
     require(isinstance(data, dict))
     meta = data.get("runMeta")
@@ -144,18 +146,21 @@ def subset_source_scope(data):
     require(sorted(e.get("transaction") for e in entries) == ["lease", "sale"])
     for entry in entries:
         proof = entry.get("currentInventoryProof")
-        require(isinstance(proof, dict) and proof.get("schema") in (SCHEMA, SUBSET_SCHEMA))
+        require(isinstance(proof, dict) and proof.get("schema") in (SCHEMA, SUBSET_SCHEMA, INCOMPLETE_SCHEMA))
         held = proof.get("held", [])
-        require(isinstance(held, list) and (proof["schema"] == SUBSET_SCHEMA) == bool(held))
+        incomplete = proof.get("incomplete", [])
+        require(isinstance(held, list) and isinstance(incomplete, list)
+                and (proof["schema"] == SUBSET_SCHEMA) == bool(held)
+                and (proof["schema"] == INCOMPLETE_SCHEMA) == bool(incomplete))
         require(entry.get("supported") is True and entry.get("error") is None
-                and entry.get("truncated") is bool(held)
+                and entry.get("truncated") is bool(held or incomplete)
                 and type(entry.get("listingsCollected")) is int
                 and type(entry.get("totalAvailableOnSource")) is int)
         require(all(isinstance(row, dict) and row.get("sourceKey") == SOURCE
                     and row.get("transactionMode") in ("sale", "lease") for row in listings))
         require(sum(row["transactionMode"] == entry["transaction"] for row in listings)
                 == entry["listingsCollected"])
-    require(any(e["currentInventoryProof"].get("held") for e in entries))
+    require(identity_holds or any(e["currentInventoryProof"].get("held") or e["currentInventoryProof"].get("incomplete") for e in entries))
     return {"entries": entries, "listings": listings}
 
 
@@ -215,14 +220,32 @@ def admit(
     digest = hashlib.sha256(raw).hexdigest()
     require(digest == info["sha256"] and len(raw) == info["bytes"])
     artifact = json.loads(raw)
-    partial = any((entry.get("currentInventoryProof") or {}).get("schema") == SUBSET_SCHEMA
+    identity_probe = manifest["sources"][SOURCE].get("pyramid_identity_probe")
+    identity_held = identity_probe.get("held", []) if isinstance(identity_probe, dict) else []
+    identity_transitions = identity_probe.get("transitions", []) if isinstance(identity_probe, dict) else []
+    if identity_probe is not None:
+        from cre_pyramid_identity_probe import projection_digest, stage
+        require(identity_probe.get("schema") == "pyramid-identity-probe-v1"
+                and identity_probe.get("artifact_sha256") == digest
+                and identity_probe.get("generation_id") == manifest["run_id"]
+                and identity_probe.get("producer_sha") == current_code_sha
+                and identity_probe.get("database_target_sha256") == target["value"]
+                and identity_probe.get("staged_sha256") == projection_digest(stage(artifact))
+                and isinstance(identity_held, list) and identity_held == sorted(set(identity_held))
+                and isinstance(identity_transitions, list) and identity_transitions == sorted(set(identity_transitions)))
+    incomplete_mode = bool(identity_held or identity_transitions) or any((entry.get("currentInventoryProof") or {}).get("schema") == INCOMPLETE_SCHEMA
+                          for entry in artifact.get("sources", []) if isinstance(entry, dict))
+    partial = incomplete_mode or any((entry.get("currentInventoryProof") or {}).get("schema") == SUBSET_SCHEMA
                   for entry in artifact.get("sources", []) if isinstance(entry, dict))
-    scope = subset_source_scope(artifact) if partial else strict_full_source_scope(artifact, SOURCE)
+    scope = subset_source_scope(artifact, identity_holds=bool(identity_held or identity_transitions)) if partial else strict_full_source_scope(artifact, SOURCE)
     require(
         len(artifact["sources"]) == 2
         and len(artifact["listings"]) == len(scope["listings"])
     )
-    validate_strict_artifact_freshness(artifact, require_strict_freshness=True)
+    incomplete_ids = frozenset(item["postId"] for entry in artifact["sources"]
+                               for item in entry["currentInventoryProof"].get("incomplete", [])) if incomplete_mode else frozenset()
+    validate_strict_artifact_freshness(artifact, require_strict_freshness=True,
+                                       pyramid_incomplete_ids=incomplete_ids)
     meta = artifact["runMeta"]
     start = _time(manifest["started_at"])
     fresh = meta["freshness"]
@@ -236,11 +259,11 @@ def admit(
     entries = {entry["transaction"]: entry for entry in artifact["sources"]}
     proofs = [entries[tx]["currentInventoryProof"] for tx in ("sale", "lease")]
     proof = proofs[0]
-    excluded = {"transaction", "details", "schema", "held"} if partial else {"transaction", "details"}
+    excluded = {"transaction", "details", "schema", "held", "incomplete"} if partial else {"transaction", "details"}
     for tx, item in zip(("sale", "lease"), proofs):
         require(isinstance(item, dict))
         require(
-            item.get("schema") in ((SCHEMA, SUBSET_SCHEMA) if partial else (SCHEMA,))
+            item.get("schema") in ((SCHEMA, INCOMPLETE_SCHEMA) if incomplete_mode else (SCHEMA, SUBSET_SCHEMA) if partial else (SCHEMA,))
             and item.get("sourceKey") == SOURCE
             and item.get("transaction") == tx
             and item.get("generationId") == manifest["run_id"]
@@ -314,7 +337,7 @@ def admit(
             times.append(clock)
         previous_end = max(times)
     details = {}
-    excluded = {"transaction", "details", "schema", "held"} if partial else {"transaction", "details"}
+    excluded = {"transaction", "details", "schema", "held", "incomplete"} if partial else {"transaction", "details"}
     for tx, item in zip(("sale", "lease"), proofs):
         members = item["details"]
         require(isinstance(members, list))
@@ -335,8 +358,19 @@ def admit(
     require(set(details) == set(native))
     listings = scope["listings"]
     held = {}
+    incomplete = {}
+    if incomplete_mode:
+        for tx, item in zip(("sale", "lease"), proofs):
+            for record in item.get("incomplete", []):
+                require(isinstance(record, dict) and set(record) == {"postId", "missingFields"})
+                post, fields = record["postId"], record["missingFields"]
+                require(type(post) is int and post in native and post not in incomplete and native[post][2] == tx
+                        and isinstance(fields, list) and fields
+                        and fields == [field for field in ("state", "city", "assetType") if field in fields])
+                incomplete[post] = fields
+        require(incomplete or identity_held or identity_transitions)
     if partial:
-        excluded = {"transaction", "details", "schema", "held"} if partial else {"transaction", "details"}
+        excluded = {"transaction", "details", "schema", "held", "incomplete"} if partial else {"transaction", "details"}
     for tx, item in zip(("sale", "lease"), proofs):
             for record in item.get("held", []):
                 require(isinstance(record, dict) and set(record) == {"postId", "reason", "listing"})
@@ -361,11 +395,14 @@ def admit(
                         and provenance.get("identityMethod") == "literal_owned_listing_path+wordpress_post_id")
                 _transaction_evidence(listing, tx, url, post, passes[1]["pages"])
                 held[post] = (url, key, tx)
-    require(len(listings) == total - len(held))
+    if incomplete_mode:
+        require(not held and (set(identity_held) | set(identity_transitions)) <= {key for _url, key, _tx in native.values()})
+        held = {post: values for post, values in native.items() if values[1] in identity_held}
+    require(len(listings) == (total if incomplete_mode else total - len(held)))
     staged, emitted = {}, set()
     for listing in listings:
         post = listing["wordpressRecord"]["id"]
-        require(type(post) is int and post in native and post not in emitted and post not in held)
+        require(type(post) is int and post in native and post not in emitted and (incomplete_mode or post not in held))
         emitted.add(post)
         url, key, tx = native[post]
         canonical, clock, body_hash = details[post]
@@ -381,14 +418,17 @@ def admit(
             and listing.get("detailObservedAt") == clock
             and listing["wordpressRecord"].get("detailResponseSha256") == body_hash
         )
+        missing_fields = [field for field in ("state", "city", "assetType")
+                          if not isinstance(listing.get(field), str) or not listing[field].strip()]
+        if post in incomplete:
+            require(missing_fields == incomplete[post]
+                    and listing.get("missingFieldEvidence") == {"fields": missing_fields, "method": "source_detail_and_taxonomy"}
+                    and listing.get("preserveChildCollections") is True
+                    and listing.get("detailObservedWithChildPreservation") is True)
+        else:
+            require(not missing_fields)
         require(
-            all(
-                isinstance(listing.get(k), str) and listing[k].strip()
-                for k in ("state", "city", "assetType")
-            )
-        )
-        require(
-            not listing.get("preserveChildCollections")
+            (post in incomplete or not listing.get("preserveChildCollections"))
             and not listing.get("detailError")
             and listing.get("inventoryOnly") is None
         )
@@ -408,15 +448,16 @@ def admit(
             and transformed["external_id"] == key
             and key not in staged
         )
-        staged[key] = [key, transformed["transaction_type"], post, url]
+        if post not in held:
+            staged[key] = [key, transformed["transaction_type"], post, url]
     require(len(staged) == total - len(held) and len(staged) > 0
             and emitted | set(held) == set(native))
     current, errors, sources, _, rejects = count_artifacts([str(artifact_path)], True)
     require(
         sources == {SOURCE}
-        and (errors.get(SOURCE) == "source pass truncated" if partial else not any(errors.values()))
+        and (errors.get(SOURCE) == "source pass truncated" if any(e.get("truncated") for e in entries.values()) else not any(errors.values()))
         and rejects == 0
-        and current.get(SOURCE) == total - len(held)
+        and current.get(SOURCE) == (total if incomplete_mode else total - len(held))
     )
     validate_report_scope(report, manifest, SOURCE, artifact_path)
     summary, gate = report["summary"], report["per_source"][SOURCE]
@@ -429,9 +470,9 @@ def admit(
     )
     verdict = SUBSET_VERDICT if partial else VERDICT
     reason = SUBSET_REASON if partial else REASON
-    admission_scope = SUBSET_SCOPE if partial else SCOPE
+    admission_scope = INCOMPLETE_SCOPE if incomplete_mode else SUBSET_SCOPE if partial else SCOPE
     raw_reason = ("no baseline row; cannot gate (first sight); a source pass also errored this run"
-                  if partial else "no baseline row; cannot gate (first sight)")
+                  if any(e.get("truncated") for e in entries.values()) else "no baseline row; cannot gate (first sight)")
     rechecking = gate.get("verdict") == verdict and (phase == "aggregate" or partial)
     require(
         (gate.get("raw_verdict") if rechecking else gate.get("verdict")) == "first_seen"
@@ -442,13 +483,13 @@ def admit(
     )
     require(
         type(gate.get("current_active")) is int
-        and gate["current_active"] == total - len(held)
+        and gate["current_active"] == (total if incomplete_mode else total - len(held))
         and type(gate.get("effective_floor")) is int
         and gate["effective_floor"] == DEFAULT_FLOOR
     )
     binding = {
-        "schema": SUBSET_SCHEMA if partial else SCHEMA,
-        "scope": SUBSET_SCOPE if partial else SCOPE,
+        "schema": INCOMPLETE_SCHEMA if incomplete_mode else SUBSET_SCHEMA if partial else SCHEMA,
+        "scope": admission_scope,
         "artifact_sha256": digest,
         "collector_git_sha": current_code_sha,
         "database_target_sha256": target["value"],
@@ -465,18 +506,32 @@ def admit(
     }
     if partial:
         members = [{"native_id": post, "source_url": url, "external_id": key,
-                    "transaction": tx, "emitted": post not in held}
+                    "transaction": tx, "emitted": post not in held,
+                    **({"incomplete": post in incomplete and post not in held,
+                        "transition": key in identity_transitions and post not in held,
+                        "missing_fields": incomplete.get(post, []) if post not in held else []} if incomplete_mode else {})}
                    for post, (url, key, tx) in native.items()]
         binding.update(inventory_count=total, held_count=len(held), held_sha256=_sha(held),
                        members_sha256=_sha(members), whole_source_coverage=False, whole_lease_coverage="unknown")
+        if incomplete_mode:
+            binding.update(incomplete_count=len(set(incomplete) - set(held)), incomplete_sha256=_sha(incomplete),
+                           identity_probe_sha256=_sha(identity_probe) if identity_probe else None,
+                           transition_count=len(set(identity_transitions) - set(identity_held)),
+                           missing_field_counts={field: sum(field in fields for post, fields in incomplete.items() if post not in held)
+                                                 for field in ("state", "city", "assetType")},
+                           emitted_transactions={
+                               "sale": sum(row[1] in ("sale", "sale_or_lease") for row in staged.values()),
+                               "lease": sum(row[1] in ("lease", "sale_or_lease") for row in staged.values()),
+                               "both": sum(row[1] == "sale_or_lease" for row in staged.values()),
+                           })
     if phase == "aggregate":
         require(
-            manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof")
-            == binding
+            _sha(manifest["sources"][SOURCE].get("gate", {}).get("current_inventory_proof"))
+            == _sha(binding)
         )
     if rechecking:
         require(
-            gate.get("current_inventory_proof") == binding
+            _sha(gate.get("current_inventory_proof")) == _sha(binding)
             and gate.get("admission_scope") == admission_scope
             and gate.get("reason") == reason
         )
@@ -513,19 +568,30 @@ def ingest_subset_context(artifact_path, envelope, *, current_code_sha, current_
     require(manifest["preflight"]["database_target"] ==
             {"algorithm": "sha256", "value": expected_database_target_sha256})
     binding = envelope["binding"]
-    require(isinstance(binding, dict) and binding.get("scope") == SUBSET_SCOPE)
+    require(isinstance(binding, dict) and binding.get("scope") in (SUBSET_SCOPE, INCOMPLETE_SCOPE))
     for phase, key in (("source", "source_report"), ("aggregate", "aggregate_report")):
         report = copy.deepcopy(envelope[key])
-        require(report["per_source"][SOURCE].get("current_inventory_proof") == binding)
-        require(admit(Path(artifact_path), manifest, report, current_code_sha=current_code_sha,
-                      current_git_dirty=current_git_dirty, phase=phase) == binding)
+        require(_sha(report["per_source"][SOURCE].get("current_inventory_proof")) == _sha(binding))
+        require(_sha(admit(Path(artifact_path), manifest, report, current_code_sha=current_code_sha,
+                           current_git_dirty=current_git_dirty, phase=phase)) == _sha(binding))
     raw = Path(artifact_path).read_bytes()
     require(hashlib.sha256(raw).hexdigest() == binding["artifact_sha256"])
     entries = json.loads(raw)["sources"]
     proof = entries[0]["currentInventoryProof"]
     held = {item["postId"] for entry in entries
             for item in entry["currentInventoryProof"].get("held", [])}
-    return {"schema": SUBSET_SCHEMA, "binding": binding, "attempt_id": attempt_id,
+    probe = manifest["sources"][SOURCE].get("pyramid_identity_probe") or {}
+    identity_held = set(probe.get("held", []))
+    identity_transitions = set(probe.get("transitions", []))
+    held.update(row[0] for row in proof["cohort"] if row[2] in identity_held)
+    incomplete = {item["postId"]: item["missingFields"] for entry in entries
+                  for item in entry["currentInventoryProof"].get("incomplete", [])}
+    is_incomplete = binding["scope"] == INCOMPLETE_SCOPE
+    return {"schema": INCOMPLETE_SCHEMA if is_incomplete else SUBSET_SCHEMA,
+            "binding": binding, "attempt_id": attempt_id,
             "members": [{"native_id": row[0], "source_url": row[1], "external_id": row[2],
-                         "transaction": row[3], "emitted": row[0] not in held}
+                         "transaction": row[3], "emitted": row[0] not in held,
+                         **({"incomplete": row[0] in incomplete and row[0] not in held,
+                             "transition": row[2] in identity_transitions and row[0] not in held,
+                             "missing_fields": incomplete.get(row[0], []) if row[0] not in held else []} if is_incomplete else {})}
                         for row in proof["cohort"]]}

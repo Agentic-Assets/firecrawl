@@ -479,7 +479,11 @@ test("Pyramid retains the literal property map address and scoped CDN photos", (
   const officeOnly = parsePyramidDetail(publishedPropertyHtml.replace('class="listings-map"', 'class="office-map"'), 101);
   assert.equal(mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", officeOnly).street, undefined);
   const coordinateQuery = parsePyramidDetail(publishedPropertyHtml.replace("100%20Main%20St%2C%20Albany%2C%20NY", "42.1,-73.2"), 101);
-  assert.equal(mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", coordinateQuery).street, undefined);
+  const coordinateMapped = mapPyramidListing(row(101, PYRAMID_SALE_TERM_ID), "sale", "2026-07-30T18:00:00Z", coordinateQuery);
+  assert.equal(coordinateMapped.street, undefined);
+  assert.deepEqual(coordinateMapped.mapQueryEvidence, { values: ["42.1,-73.2"], method: "property_map_embed_query" });
+  assert.equal(coordinateMapped.latitude, undefined);
+  assert.equal(coordinateMapped.longitude, undefined);
   const logoOnly = parsePyramidDetail(detailHtml.replace(/<div class="property-gallery">.*?<\/div>/, "").replace("/listing.jpg", "/footer-logo.jpg"), 101);
   assert.deepEqual(logoOnly.photos, []);
 });
@@ -578,16 +582,19 @@ test("Pyramid proof cache is immutable, generation-local and never used for moni
   assert.equal(inventory, 12);
 });
 
-test("strict taxonomy refusal identifies the post and missing fields without source values", async (t) => {
+test("missing taxonomy retains the record and explicitly identifies absent fields", async (t) => {
   const originalFetch = globalThis.fetch;
   const oldGeneration = process.env.CRE_REFRESH_GENERATION;
   const oldStarted = process.env.CRE_REFRESH_STARTED_AT;
+  const oldStrict = process.env.CRE_REQUIRE_FRESH_DETAILS;
   t.after(() => {
     globalThis.fetch = originalFetch;
     if (oldGeneration === undefined) delete process.env.CRE_REFRESH_GENERATION; else process.env.CRE_REFRESH_GENERATION = oldGeneration;
     if (oldStarted === undefined) delete process.env.CRE_REFRESH_STARTED_AT; else process.env.CRE_REFRESH_STARTED_AT = oldStarted;
+    if (oldStrict === undefined) delete process.env.CRE_REQUIRE_FRESH_DETAILS; else process.env.CRE_REQUIRE_FRESH_DETAILS = oldStrict;
   });
   process.env.CRE_REFRESH_GENERATION = "taxonomy-diagnostic-test";
+  process.env.CRE_REQUIRE_FRESH_DETAILS = "1";
   process.env.CRE_REFRESH_STARTED_AT = new Date(Date.now() - 1000).toISOString();
   const record = row(101, PYRAMID_LEASE_TERM_ID);
   record._embedded["wp:term"] = record._embedded["wp:term"].filter((group) => !["city", "state", "property-use"].includes(group[0].taxonomy));
@@ -599,14 +606,12 @@ test("strict taxonomy refusal identifies the post and missing fields without sou
       .replace('<li><span class="name">Major Use:</span><span class="value">Industrial</span></li>', '')
       .replace("<head>", `<head><link rel="canonical" href="${record.link}">`));
   };
-  await assert.rejects(srcPyramidBrokerage("lease", Infinity, false), (error: Error) => {
-    assert.match(error.message, /101/);
-    assert.match(error.message, /state/);
-    assert.match(error.message, /city/);
-    assert.match(error.message, /assetType/);
-    assert.doesNotMatch(error.message, /Industrial|https?:|Main Warehouse/);
-    return true;
-  });
+  const result = await srcPyramidBrokerage("lease", Infinity, false);
+  assert.equal(result.listings.length, 1);
+  assert.deepEqual(result.listings[0].missingFieldEvidence,
+    { fields: ["state", "city", "assetType"], method: "source_detail_and_taxonomy" });
+  assert.deepEqual((result.currentInventoryProof as any).incomplete,
+    [{ postId: 101, missingFields: ["state", "city", "assetType"] }]);
 });
 
 
@@ -818,12 +823,17 @@ test("Pyramid current inventory partitions missing-city details without fabricat
       `<head><link rel="canonical" href="${records[id - 101].link}">`));
   };
   const result = await srcPyramidBrokerage("sale", Infinity, false);
-  assert.equal(result.listings.length, 1);
+  assert.equal(result.listings.length, 2);
   assert.equal(result.listings[0].wordpressRecord.id, 101);
+  const incomplete = result.listings.find((listing: any) => listing.wordpressRecord.id === 102)!;
+  assert.equal(incomplete.city, undefined);
+  assert.equal(incomplete.preserveChildCollections, true);
+  assert.equal(incomplete.detailObservedWithChildPreservation, true);
+  assert.deepEqual(incomplete.missingFieldEvidence, { fields: ["city"], method: "source_detail_and_taxonomy" });
+  assert.ok(incomplete.name && incomplete.description && incomplete.photos.length);
   assert.equal(result.truncated, true);
   const proof = result.currentInventoryProof as any;
-  assert.equal(proof.schema, "pyramid-verified-subset-v1");
-  assert.deepEqual(proof.held.map((entry: any) => [entry.postId, entry.reason, entry.listing.city]), [[102, "missing_city", undefined]]);
+  assert.equal(proof.schema, "pyramid-incomplete-v2");
+  assert.deepEqual(proof.incomplete, [{ postId: 102, missingFields: ["city"] }]);
   assert.deepEqual(proof.details.map((entry: any) => entry[0]), [101, 102]);
-  assert.equal(proof.held[0].listing.wordpressRecord.id, 102);
 });

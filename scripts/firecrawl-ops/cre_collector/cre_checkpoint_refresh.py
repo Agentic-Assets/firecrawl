@@ -2895,17 +2895,20 @@ def _validate_source_artifact_local(
                 "DAUM subset structural evidence refused"
             ) from exc
     pyramid_partial = False
+    pyramid_incomplete_ids = set()
     if expected_source == "pyramid-brokerage":
-        from cre_pyramid_current_inventory import SUBSET_SCHEMA, subset_source_scope
+        from cre_pyramid_current_inventory import INCOMPLETE_SCHEMA, SUBSET_SCHEMA, subset_source_scope
         pyramid_partial = any(isinstance(entry, dict)
             and isinstance(entry.get("currentInventoryProof"), dict)
-            and entry["currentInventoryProof"].get("schema") == SUBSET_SCHEMA
+            and entry["currentInventoryProof"].get("schema") in (SUBSET_SCHEMA, INCOMPLETE_SCHEMA)
             for entry in (data.get("sources") if isinstance(data.get("sources"), list) else []))
         if pyramid_partial:
             if not pyramid_subset_allowed:
                 raise ArtifactValidationError("Pyramid subset lacks current-inventory admission")
             try:
                 subset_source_scope(data)
+                pyramid_incomplete_ids = {item["postId"] for entry in data["sources"]
+                    for item in entry["currentInventoryProof"].get("incomplete", [])}
             except (KeyError, TypeError, ValueError) as exc:
                 raise ArtifactValidationError("Pyramid subset structural evidence refused") from exc
     run_meta = data.get("runMeta")
@@ -3108,7 +3111,8 @@ def _validate_source_artifact_local(
                 )
             child_preservation_rows = metrics.get("childPreservationRows")
             if property_detail_freshness:
-                if child_preservation_rows not in {0, canonical_count}:
+                incomplete_rows = len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial else 0
+                if child_preservation_rows not in ({0, canonical_count, incomplete_rows} if pyramid_partial else {0, canonical_count}):
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} has partial child-preservation coverage"
                     )
@@ -3128,7 +3132,7 @@ def _validate_source_artifact_local(
                     raise ArtifactValidationError(
                         f"{expected_source}/{tx} must preserve every child collection"
                     )
-            elif child_preservation_rows != 0:
+            elif child_preservation_rows != (len((entry.get("currentInventoryProof") or {}).get("incomplete", [])) if pyramid_partial else 0):
                 raise ArtifactValidationError(
                     f"{expected_source}/{tx} must not preserve child collections"
                 )
@@ -3291,7 +3295,11 @@ def _validate_source_artifact_local(
                         raise ArtifactValidationError(
                             f"listings[{index}] must preserve child collections"
                         )
-                elif preserves_children:
+                elif preserves_children and not (
+                    (listing.get("wordpressRecord") or {}).get("id") in pyramid_incomplete_ids
+                    and listing.get("detailObservedWithChildPreservation") is True
+                    and bool((listing.get("missingFieldEvidence") or {}).get("fields"))
+                ):
                     raise ArtifactValidationError(
                         f"listings[{index}] must not preserve child collections"
                     )
@@ -5185,6 +5193,16 @@ def gate_source(
         result = _load_json(gate_path)
         per_source = result["per_source"][source]
         if current_inventory.admission_configuration(manifest["config"], source):
+            if source == "pyramid-brokerage":
+                from cre_pyramid_identity_probe import run_probe
+                try:
+                    probe = run_probe(artifact, checkpoint["artifact"]["sha256"], manifest["run_id"],
+                                      manifest["collector_git_sha"], manifest_database_target_sha256(manifest), env_file)
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError, SystemExit) as exc:
+                    raise GlobalStageError("Pyramid identity classification failed") from exc
+                checkpoint["pyramid_identity_probe"] = probe
+                if probe["held"] or probe["transitions"]:
+                    checkpoint["artifact"]["pyramid_subset"] = True
             _admit_current_inventory(run_dir, manifest, result, artifact, "source", source=source)
             per_source = result["per_source"][source]
             atomic_write_json(gate_path, result)
@@ -5836,7 +5854,7 @@ def run_aggregate_gate(
         ),
         "transaction_scope": list(manifest["config"]["transactions"]),
         **(
-            {"admission_scope": "pyramid_verified_subset_v1" if pyramid_subset_candidate(manifest, "pyramid-brokerage") else current_inventory.admission_configuration(manifest["config"], "daum-commercial")["admission_scope"] if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
+            {"admission_scope": manifest["sources"]["pyramid-brokerage"]["gate"]["current_inventory_proof"]["scope"] if pyramid_subset_candidate(manifest, "pyramid-brokerage") else current_inventory.admission_configuration(manifest["config"], "daum-commercial")["admission_scope"] if current_inventory.is_verified_subset(manifest["config"]) else current_inventory.SCOPE}
             if manifest["config"].get("current_inventory_admission")
             else {}
         ),
@@ -6213,6 +6231,10 @@ def verify_validation_readback(
         artifact = checkpoint.get("artifact") or {}
         try:
             staged = int(artifact["staged_unique"])
+            if source == "pyramid-brokerage" and pyramid_subset_candidate(manifest, source):
+                binding = checkpoint["gate"]["current_inventory_proof"]
+                if binding.get("schema") == "pyramid-incomplete-v2":
+                    staged = int(binding["emitted_count"])
         except (KeyError, TypeError, ValueError, ArtifactValidationError):
             checkpoint["readback"] = {
                 "ok": False,

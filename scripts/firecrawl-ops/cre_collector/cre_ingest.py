@@ -1845,6 +1845,7 @@ def validate_strict_artifact_freshness(
     *,
     require_strict_freshness=False,
     now=None,
+    pyramid_incomplete_ids=frozenset(),
 ):
     """Reject a strict refresh artifact whose rows do not prove observation time.
 
@@ -2015,7 +2016,12 @@ def validate_strict_artifact_freshness(
                 raise ValueError(
                     f"strict freshness listings[{index}] must preserve child collections"
                 )
-        elif preserves_children:
+        elif preserves_children and not (
+            source_key == "pyramid-brokerage"
+            and (listing.get("wordpressRecord") or {}).get("id") in pyramid_incomplete_ids
+            and listing.get("detailObservedWithChildPreservation") is True
+            and bool((listing.get("missingFieldEvidence") or {}).get("fields"))
+        ):
             raise ValueError(
                 f"strict freshness listings[{index}] must not preserve child collections"
             )
@@ -3989,6 +3995,9 @@ def build_sql(
         from cre_pyramid_subset_sql import guard_sql
         pyramid_subset_guard = guard_sql(pyramid_verified_subset_claims, mark_missing=False,
                                          status_activation=False, inventory_only=False)
+    else:
+        from cre_pyramid_subset_sql import unclassified_complete_guard_sql
+        pyramid_subset_guard = unclassified_complete_guard_sql()
     finished_at = finished_at or started_at
     if artifact_run_key is None:
         identity_payload = json.dumps(
@@ -4661,55 +4670,6 @@ BEGIN
     END IF;
 END $$;
 
--- Pyramid preserves historical literal path identities. Inspect the actual
--- staged cohort and every historical parent, including soft-deleted rows,
--- before an upsert can overwrite a contradictory URL or create a duplicate.
--- Literal comparisons deliberately do not invent aliases or repair old keys.
-DO $$
-DECLARE
-    conflicting_rows bigint;
-BEGIN
-    WITH incoming_pyramid AS MATERIALIZED (
-      SELECT s.brokerage_id, s.external_id, s.source_url
-      FROM _src s
-      WHERE jsonb_path_exists(
-        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
-      )
-    )
-    SELECT count(*) INTO conflicting_rows
-    FROM incoming_pyramid s
-    JOIN credeals.cre_listings t
-      ON t.brokerage_id = s.brokerage_id
-     AND (
-       (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
-       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
-     );
-    IF conflicting_rows > 0 THEN
-      RAISE EXCEPTION
-        'Pyramid identity contradiction in % historical row(s); refusing mutation',
-        conflicting_rows;
-    END IF;
-    WITH incoming_pyramid AS MATERIALIZED (
-      SELECT s.brokerage_id, s.external_id, s.source_url
-      FROM _src s
-      WHERE jsonb_path_exists(
-        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
-      )
-    )
-    SELECT count(*) INTO conflicting_rows
-    FROM incoming_pyramid s
-    JOIN incoming_pyramid other
-      ON other.brokerage_id = s.brokerage_id
-     AND (
-       (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
-       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
-     );
-    IF conflicting_rows > 0 THEN
-      RAISE EXCEPTION
-        'Pyramid identity contradiction within incoming cohort; refusing mutation';
-    END IF;
-END $$;
-
 -- DAUM keeps historical literal property-path keys. Refuse contradictory
 -- staged/historical associations before DML, including soft-deleted parents.
 -- Only explicitly preserved positive WordPress IDs are comparable. Missing old
@@ -4845,7 +4805,56 @@ CREATE TEMP TABLE _pyramid_native_transitions (
   brokerage_id uuid NOT NULL, external_id text NOT NULL,
   PRIMARY KEY (brokerage_id, external_id)
 ) ON COMMIT DROP;
-{daum_subset_guard}{pyramid_subset_guard}-- Carry the transition's additive policy into subsequent refreshes. A later
+{daum_subset_guard}{pyramid_subset_guard}-- Pyramid preserves historical literal path identities. Inspect the actual
+-- staged cohort and every historical parent, including soft-deleted rows,
+-- before an upsert can overwrite a contradictory URL or create a duplicate.
+-- Literal comparisons deliberately do not invent aliases or repair old keys.
+DO $$
+DECLARE
+    conflicting_rows bigint;
+BEGIN
+    WITH incoming_pyramid AS MATERIALIZED (
+      SELECT s.brokerage_id, s.external_id, s.source_url
+      FROM _src s
+      WHERE jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
+      )
+    )
+    SELECT count(*) INTO conflicting_rows
+    FROM incoming_pyramid s
+    JOIN credeals.cre_listings t
+      ON t.brokerage_id = s.brokerage_id
+     AND (
+       (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
+       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
+     );
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Pyramid identity contradiction in % historical row(s); refusing mutation',
+        conflicting_rows;
+    END IF;
+    WITH incoming_pyramid AS MATERIALIZED (
+      SELECT s.brokerage_id, s.external_id, s.source_url
+      FROM _src s
+      WHERE jsonb_path_exists(
+        s.raw_data, '$.**.sourceKey ? (@ == "pyramid-brokerage")'
+      )
+    )
+    SELECT count(*) INTO conflicting_rows
+    FROM incoming_pyramid s
+    JOIN incoming_pyramid other
+      ON other.brokerage_id = s.brokerage_id
+     AND (
+       (other.source_url = s.source_url AND other.external_id IS DISTINCT FROM s.external_id)
+       OR (other.external_id = s.external_id AND other.source_url IS DISTINCT FROM s.source_url)
+     );
+    IF conflicting_rows > 0 THEN
+      RAISE EXCEPTION
+        'Pyramid identity contradiction within incoming cohort; refusing mutation';
+    END IF;
+END $$;
+
+-- Carry the transition's additive policy into subsequent refreshes. A later
 -- native ID match alone cannot establish continuity for the older children.
 UPDATE _src s SET raw_data = s.raw_data || jsonb_build_object(
   'pyramidNativeTransitionPreserve', true,
@@ -4857,6 +4866,8 @@ WHERE t.brokerage_id = s.brokerage_id AND t.external_id = s.external_id
   AND t.source_url = s.source_url
   AND s.raw_data->>'sourceKey' = 'pyramid-brokerage'
   AND (t.raw_data->'pyramidNativeTransitionPreserve' = 'true'::jsonb
+       OR (s.raw_data#>>'{missingFieldEvidence,method}' = 'source_detail_and_taxonomy'
+           AND s.raw_data->'preserveChildCollections' = 'true'::jsonb)
        OR EXISTS (SELECT 1 FROM _pyramid_native_transitions x
                   WHERE x.brokerage_id = s.brokerage_id AND x.external_id = s.external_id));
 -- (H4a) Capture prior watched values AFTER both lifecycle rows are locked but
@@ -7100,7 +7111,7 @@ def main():
             )
         is_pyramid_subset = any(
             isinstance(entry, dict) and isinstance(entry.get("currentInventoryProof"), dict)
-            and entry["currentInventoryProof"].get("schema") == "pyramid-verified-subset-v1"
+            and entry["currentInventoryProof"].get("schema") in ("pyramid-verified-subset-v1", "pyramid-incomplete-v2")
             for entry in data.get("sources", []))
         if is_pyramid_subset != (pyramid_subset_claims is not None):
             sys.exit("refusing Pyramid subset without its guarded claims")
@@ -7130,6 +7141,10 @@ def main():
             validate_strict_artifact_freshness(
                 data,
                 require_strict_freshness=args.require_strict_freshness,
+                pyramid_incomplete_ids=frozenset(
+                    m["native_id"] for m in (pyramid_subset_claims or {}).get("members", [])
+                    if m.get("incomplete") is True
+                ),
             )
         except ValueError as exc:
             sys.exit(f"refusing strict freshness artifact: {exc}")

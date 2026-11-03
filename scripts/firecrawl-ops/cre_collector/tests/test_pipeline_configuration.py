@@ -1,5 +1,6 @@
 """Portable opt-in settings, one owner forwarding and exact member results."""
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -604,7 +605,8 @@ def test_absent_required_inventory_clock_key_refused(tmp_path, missing_from):
     assert not series.pipeline_source_qualified(child, "cbre", **qualification_context(run))
 
 
-def test_pyramid_partial_recovery_revalidates_real_bound_report_without_replay(tmp_path, monkeypatch):
+@pytest.mark.parametrize("v2", [False, True])
+def test_pyramid_partial_recovery_revalidates_real_bound_report_without_replay(tmp_path, monkeypatch, v2):
     source = "pyramid-brokerage"
     settings = config(pipeline=True, sources=[source], admit_current_inventory_source=[source])
     manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=settings)
@@ -620,9 +622,17 @@ def test_pyramid_partial_recovery_revalidates_real_bound_report_without_replay(t
             "whole_source_coverage": False, "artifact_sha256": "a" * 64, "generation_id": RUN_ID,
             "collector_git_sha": "a" * 40, "database_target_sha256": "b" * 64,
             "inventory_count": 102, "emitted_count": 99, "held_count": 3}}
+    if v2:
+        saved["artifact"]["staged_unique"] = 102
+        saved["gate"]["current_inventory_proof"].update(
+            schema="pyramid-incomplete-v2", scope="pyramid_incomplete_v2", incomplete_count=2,
+            transition_count=1, missing_field_counts={"state": 0, "city": 2, "assetType": 0})
     child["sources"][source] = saved
     result = child["pipeline"]["source_results"].pop("cbre")
     result.update(qualification="qualified_partial_subset", partial=True, whole_source_coverage=False, emitted_count=99, held_count=3)
+    if v2:
+        result.update(incomplete_count=2, transition_count=1,
+                      missing_field_counts={"state": 0, "city": 2, "assetType": 0})
     child["pipeline"]["source_results"][source] = result
     unit = child["pipeline"]["units"][0]
     unit["sources"] = [source]
@@ -643,10 +653,61 @@ def test_pyramid_partial_recovery_revalidates_real_bound_report_without_replay(t
     monkeypatch.setattr(series.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not replay"))
     series.reconcile_stale_running_sources(tmp_path, manifest)
     assert row["state"] == "qualified_partial_subset"
-    assert row["subset_counts"] == {"inventory": 102, "emitted": 99, "held": 3}
+    expected_counts = {"inventory": 102, "emitted": 99, "held": 3}
+    if v2:
+        expected_counts.update(incomplete=2, transitions=1, missing_state=0, missing_city=2, missing_asset_type=0)
+    assert row["subset_counts"] == expected_counts
     assert row["pipeline_result"] == result
+    if v2:
+        changed = copy.deepcopy(child)
+        changed["pipeline"]["source_results"][source]["incomplete_count"] = 1
+        assert not series.pipeline_source_qualified(changed, source, **qualification_context(run))
+        for partial in (None, False):
+            changed = copy.deepcopy(child)
+            changed["sources"][source]["gate"]["current_inventory_proof"]["incomplete_count"] = -1
+            if partial is None:
+                changed["pipeline"]["source_results"][source].pop("partial")
+            else:
+                changed["pipeline"]["source_results"][source]["partial"] = False
+            assert not series.pipeline_source_qualified(changed, source, **qualification_context(run))
+        for field in ("transition_count", "missing_field_counts"):
+            changed = copy.deepcopy(child)
+            result_copy = changed["pipeline"]["source_results"][source]
+            if field == "transition_count":
+                result_copy[field] = True
+            else:
+                result_copy[field]["state"] = False
+            assert not series.pipeline_source_qualified(changed, source, **qualification_context(run))
+        unauthorized = copy.deepcopy(child)
+        unauthorized["config"].pop("current_inventory_admission", None)
+        unauthorized["config"].pop("current_inventory_admissions", None)
+        unauthorized["pipeline"]["source_results"][source]["partial"] = False
+        assert not series.pipeline_source_qualified(unauthorized, source, **qualification_context(run))
     assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 0
     assert manifest["status"] == "qualified_partial_subset" and len(row["attempts"]) == 1
     report_path.write_bytes(raw + b" ")
     with pytest.raises(series.SeriesError, match="no longer qualifies"):
         series.run_pipeline_series(tmp_path, manifest, env_file=None)
+
+
+def test_pyramid_v2_pipeline_readback_binds_emitted_not_held_artifact_rows(tmp_path):
+    run = tmp_path / "run"; run.mkdir()
+    child = qualified_child(run)
+    checkpoint = child["sources"]["cbre"]
+    checkpoint["artifact"].update(staged_unique=102)
+    checkpoint["gate"] = {"current_inventory_proof": {
+        "schema": "pyramid-incomplete-v2", "artifact_sha256": "a" * 64,
+        "inventory_count": 102, "emitted_count": 101, "held_count": 1}}
+    checkpoint["readback"].update(expected_staged_unique=101, latest_inventory_batch_active=101)
+    checkpoint["readback"]["inventory_fingerprint"].update(sourceId="pyramid-brokerage", rowCount=101)
+    report = json.loads((run / "pipeline/unit-0001/validation.json").read_text())
+    report["queries"]["freshness_generations"][0].update(source_key="pyramid-brokerage", active="101", persisted_inventory_observed="101")
+    report["queries"]["inventory_generation_fingerprints"][0].update(source_key="pyramid-brokerage", row_count="101")
+    assert not series._pipeline_member_report_matches(report, checkpoint, "pyramid-brokerage", RUN_ID)
+    assert series._pipeline_member_report_matches(report, checkpoint, "pyramid-brokerage", RUN_ID, allow_pyramid_v2=True)
+    bad = copy.deepcopy(checkpoint)
+    bad["gate"]["current_inventory_proof"]["held_count"] = 0
+    assert not series._pipeline_member_report_matches(report, bad, "pyramid-brokerage", RUN_ID, allow_pyramid_v2=True)
+    bad = copy.deepcopy(checkpoint)
+    bad["gate"]["current_inventory_proof"]["artifact_sha256"] = "b" * 64
+    assert not series._pipeline_member_report_matches(report, bad, "pyramid-brokerage", RUN_ID, allow_pyramid_v2=True)

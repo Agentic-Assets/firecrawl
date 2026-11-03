@@ -41,6 +41,8 @@ def produce(
     expected_error=None,
     start=None,
     missing_city_id=None,
+    legacy_subset=True,
+    missing_fields_by_id=None,
 ):
     start = start or (datetime.now(UTC) - timedelta(seconds=2)).isoformat()
     run_id = "2026-10-15T172001Z-123456abcdef"
@@ -64,6 +66,13 @@ process.on("exit",()=>console.error(`OFFLINE_COUNTS ${inventory} ${details}`));"
             for post in missing_ids
         )
         transport = transport.replace("globalThis.fetch=async(input)=>", omit_city + "globalThis.fetch=async(input)=>")
+    if missing_fields_by_id:
+        taxonomy = {"city": "city", "state": "state", "assetType": "property-use"}
+        omit = "".join(
+            f"rows[{post - 1}]._embedded['wp:term'] = rows[{post - 1}]._embedded['wp:term'].filter(g => !{json.dumps([taxonomy[f] for f in fields])}.includes(g[0].taxonomy));\n"
+            for post, fields in missing_fields_by_id.items()
+        )
+        transport = transport.replace("globalThis.fetch=async(input)=>", omit + "globalThis.fetch=async(input)=>")
     if lease_html is not None:
         transport = transport.replace(
             "details++;return new Response(",
@@ -131,7 +140,33 @@ globalThis.fetch=async(input,options)=>{
         assert not path.exists()
         return None, child.stderr, start, run_id
     assert child.returncode == 0, child.stderr
-    return json.loads(path.read_text()), child.stderr, start, run_id
+    artifact = json.loads(path.read_text())
+    if missing_city_id is not None and legacy_subset:
+        # Preserve historical v1 admission regressions using a synthetic v1
+        # projection of the v2 fixture, not as a claim about current producer output.
+        by_post = {r["wordpressRecord"]["id"]: r for r in artifact["listings"]}
+        held_posts = set()
+        keys = ("id", "url", "canonicalUrl", "transactionMode", "transactionType",
+                "inventoryObservedAt", "detailObservedAt", "freshnessProvenance",
+                "wordpressRecord", "detailFacts", "detailTransactionFacts", "transactionEvidence",
+                "state", "city", "assetType")
+        for entry in artifact["sources"]:
+            proof = entry["currentInventoryProof"]
+            incomplete = proof.pop("incomplete", [])
+            if not incomplete:
+                continue
+            proof["schema"] = "pyramid-verified-subset-v1"
+            proof["held"] = [{"postId": item["postId"], "reason": "missing_city",
+                              "listing": {k: by_post[item["postId"]][k] for k in keys if k in by_post[item["postId"]]}}
+                             for item in incomplete]
+            held_posts.update(item["postId"] for item in incomplete)
+            entry["listingsCollected"] -= len(incomplete)
+            for name in ("listings", "inventoryObserved", "detailObserved", "childPreservationRows"):
+                entry["freshness"][name] -= len(incomplete)
+        artifact["listings"] = [r for r in artifact["listings"] if r["wordpressRecord"]["id"] not in held_posts]
+        artifact["totalListings"] = len(artifact["listings"])
+        path.write_text(json.dumps(artifact))
+    return artifact, child.stderr, start, run_id
 
 
 def setup(tmp_path, produced):
@@ -214,6 +249,18 @@ def test_actual_collect_shares_complete_inventory_and_all_strict_details(produce
     )
 
 
+def mock_clear_pyramid_probe(monkeypatch):
+    import cre_pyramid_identity_probe as identity
+
+    def probe(path, digest, generation, producer, target, _env):
+        artifact = json.loads(Path(path).read_text())
+        return {"schema": "pyramid-identity-probe-v1", "artifact_sha256": digest,
+                "generation_id": generation, "producer_sha": producer,
+                "database_target_sha256": target, "staged_sha256": identity.projection_digest(identity.stage(artifact)),
+                "held": [], "transitions": []}
+    monkeypatch.setattr(identity, "run_probe", probe)
+
+
 def test_source_aggregate_and_real_worker_compact_binding(
     tmp_path, produced, monkeypatch
 ):
@@ -260,6 +307,7 @@ def test_source_aggregate_and_real_worker_compact_binding(
         return 0
 
     monkeypatch.setattr(cp, "run_command", command)
+    mock_clear_pyramid_probe(monkeypatch)
     cp.gate_source(run, manifest, SOURCE, path, None)
     cp.run_aggregate_gate(run, manifest, None)
     assert manifest["aggregate_gate"]["non_ok_sources"] == []
@@ -776,7 +824,7 @@ def test_pre_anchor_step_cannot_repair_a_different_process_generation(tmp_path):
         admit(path, manifest, report)
 
 
-def test_partial_producer_preserves_complete_cohort_and_is_fail_closed_until_integrated(tmp_path):
+def test_legacy_subset_projection_preserves_complete_cohort(tmp_path):
     from cre_pyramid_current_inventory import subset_source_scope
 
     artifact, _stderr, _start, _run_id = produce(tmp_path, total=102, missing_city_id=75)
@@ -967,6 +1015,7 @@ def test_serial_current_admission_runs_gates_claimed_ingest_and_partial_status(t
             (sql_dir / "ingest.sql").write_text("synthetic SQL; no database connection")
         return 0
     monkeypatch.setattr(cp, "run_command", command)
+    mock_clear_pyramid_probe(monkeypatch)
     cp.gate_source(run, manifest, SOURCE, path, None)
     assert manifest["sources"][SOURCE]["gate"]["verdict"] == "ok_additive_verified_subset"
     assert cp.dry_run_source(run, manifest, SOURCE, path)
@@ -1092,18 +1141,19 @@ def test_partial_99_emitted_proves_admission_recovery_and_notification(tmp_path)
     assert notification._subset_summary_fields(child, SOURCE, 99)["held_count"] == 3
 
 
-def test_partial_refuses_under_floor_total_and_zero_emitted(tmp_path):
-    for total, held in [(99, [75]), (100, list(range(1, 101)))]:
+def test_incomplete_source_still_requires_inventory_floor_but_can_emit_all_incomplete(tmp_path):
+    for total in (99, 100):
         fixture = tmp_path / f"fixture-{total}"; fixture.mkdir()
-        if len(held) == total:
-            produce(fixture, total=total, missing_city_id=held, expected_error="no listings collected from any source")
-            continue
-        produced = produce(fixture, total=total, missing_city_id=held)
+        produced = produce(fixture, total=total, missing_city_id=list(range(1, total + 1)), legacy_subset=False)
         admission_dir = tmp_path / f"admission-{total}"; admission_dir.mkdir()
         _run, path, _artifact, child, report = setup(admission_dir, produced)
         report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
-        with pytest.raises((ValueError, KeyError)):
-            admit(path, child, report)
+        if total < 100:
+            with pytest.raises((ValueError, KeyError)):
+                admit(path, child, report)
+        else:
+            binding = admit(path, child, report)
+            assert (binding["emitted_count"], binding["incomplete_count"], binding["held_count"]) == (100, 100, 0)
 
 
 def test_partial_accepts_one_verified_record_in_complete_floor_inventory(tmp_path):
@@ -1114,3 +1164,240 @@ def test_partial_accepts_one_verified_record_in_complete_floor_inventory(tmp_pat
     report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
     binding = admit(path, child, report)
     assert (binding["inventory_count"], binding["emitted_count"], binding["held_count"]) == (100, 1, 99)
+
+
+def test_incomplete_city_records_are_emitted_and_bound(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    produced = produce(fixture, total=102, missing_city_id=[74, 75], legacy_subset=False)
+    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    assert artifact["totalListings"] == 102
+    incomplete = [row for row in artifact["listings"] if not row.get("city")]
+    assert len(incomplete) == 2
+    assert all(row.get("missingFieldEvidence") == {"fields": ["city"], "method": "source_detail_and_taxonomy"} for row in incomplete)
+    assert all(row.get("preserveChildCollections") is True for row in incomplete)
+    stats = cp.validate_source_artifact(path, SOURCE, produced[2], expected_generation_id=produced[3],
+                                        expected_generation_started_at=produced[2], require_strict_freshness=True,
+                                        pyramid_subset_allowed=True)
+    assert stats["staged_unique"] == 102
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    binding = admit(path, manifest, report)
+    assert (binding["emitted_count"], binding["incomplete_count"], binding["held_count"]) == (102, 2, 0)
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": copy.deepcopy(binding)}
+    assert admit(path, manifest, report, "aggregate") == binding
+    from cre_pyramid_current_inventory import ingest_subset_context
+    from cre_pyramid_subset_sql import guard_sql
+    envelope = {"manifest": manifest, "source_report": copy.deepcopy(report),
+                "aggregate_report": copy.deepcopy(report), "binding": binding, "attempt_id": "a" * 32}
+    claims = ingest_subset_context(path, envelope, current_code_sha=manifest["collector_git_sha"],
+        current_git_dirty=False, expected_database_target_sha256=TARGET, attempt_id="a" * 32)
+    assert sum(m["incomplete"] for m in claims["members"]) == 2
+    assert "source_detail_and_taxonomy" in guard_sql(claims, mark_missing=False,
+                                                        status_activation=False, inventory_only=False)
+    for field in ("transition_count", "missing_field_counts"):
+        bad_claims = copy.deepcopy(claims)
+        if field == "transition_count":
+            bad_claims["binding"][field] = False
+        else:
+            bad_claims["binding"][field]["state"] = False
+        with pytest.raises(ValueError):
+            guard_sql(bad_claims, mark_missing=False, status_activation=False, inventory_only=False)
+    altered = copy.deepcopy(envelope)
+    altered["binding"]["transition_count"] = False
+    with pytest.raises(ValueError):
+        ingest_subset_context(path, altered, current_code_sha=manifest["collector_git_sha"],
+            current_git_dirty=False, expected_database_target_sha256=TARGET, attempt_id="a" * 32)
+
+
+@pytest.mark.parametrize("mutation", ["city", "provenance", "unbound", "preservation"])
+def test_incomplete_city_refuses_forged_evidence(tmp_path, mutation):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    produced = produce(fixture, total=102, missing_city_id=75, legacy_subset=False)
+    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    row = next(row for row in artifact["listings"] if row["wordpressRecord"]["id"] == 75)
+    if mutation == "city": row["city"] = "Guessed"
+    if mutation == "provenance": row["missingFieldEvidence"] = {"fields": ["city"], "method": "geocoded"}
+    if mutation == "unbound": artifact["sources"][1]["currentInventoryProof"]["incomplete"][0]["postId"] = 76
+    if mutation == "preservation": row["preserveChildCollections"] = False
+    refresh(path, artifact, manifest)
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    with pytest.raises((ValueError, KeyError, TypeError)):
+        admit(path, manifest, report)
+
+
+def test_identity_probe_holds_only_ambiguous_member_and_binds_both_gates(tmp_path):
+    from cre_pyramid_identity_probe import projection_digest, stage
+    from cre_pyramid_current_inventory import ingest_subset_context
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    produced = produce(fixture, total=102, missing_city_id=[74, 75], legacy_subset=False)
+    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    held_key = artifact["listings"][0]["id"]
+    manifest["sources"][SOURCE]["pyramid_identity_probe"] = {
+        "schema": "pyramid-identity-probe-v1", "artifact_sha256": cp.sha256_file(path),
+        "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+        "database_target_sha256": TARGET, "staged_sha256": projection_digest(stage(artifact)), "held": [held_key], "transitions": []}
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    binding = admit(path, manifest, report)
+    assert (binding["inventory_count"], binding["emitted_count"], binding["held_count"], binding["incomplete_count"]) == (102, 101, 1, 2)
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": copy.deepcopy(binding)}
+    assert admit(path, manifest, report, "aggregate") == binding
+    envelope = {"manifest": manifest, "source_report": copy.deepcopy(report),
+                "aggregate_report": copy.deepcopy(report), "binding": binding, "attempt_id": "a" * 32}
+    claims = ingest_subset_context(path, envelope, current_code_sha=manifest["collector_git_sha"],
+        current_git_dirty=False, expected_database_target_sha256=TARGET, attempt_id="a" * 32)
+    assert [m["external_id"] for m in claims["members"] if not m["emitted"]] == [held_key]
+    import cre_checkpoint_series as series
+    import cre_notification_summary as notification
+    checkpoint = manifest["sources"][SOURCE]
+    checkpoint["artifact"].update(pyramid_subset=True, staged_unique=102)
+    checkpoint["gate"].update(verdict="ok_additive_verified_subset", raw_verdict="first_seen",
+                              admission_scope="pyramid_incomplete_v2", mark_missing_safe=False)
+    assert series.pyramid_partial_child(manifest)
+    assert series.pyramid_subset_counts(manifest) == {"inventory": 102, "emitted": 101, "held": 1, "incomplete": 2, "transitions": 0,
+            "missing_state": 0, "missing_city": 2, "missing_asset_type": 0}
+    summary = notification._subset_summary_fields(manifest, SOURCE, 101)
+    assert (summary["emitted_count"], summary["held_count"], summary["incomplete_count"]) == (101, 1, 2)
+    breakdown = notification._pyramid_emitted_breakdown(manifest, SOURCE, 101)
+    assert breakdown["sale"] + breakdown["lease"] - breakdown["both"] == 101
+    altered = copy.deepcopy(envelope)
+    altered["manifest"]["sources"][SOURCE]["pyramid_identity_probe"]["held"] = []
+    with pytest.raises((ValueError, KeyError, TypeError)):
+        ingest_subset_context(path, altered, current_code_sha=manifest["collector_git_sha"],
+            current_git_dirty=False, expected_database_target_sha256=TARGET, attempt_id="a" * 32)
+
+
+def test_complete_inventory_with_identity_hold_becomes_bound_partial(tmp_path, produced):
+    from cre_pyramid_identity_probe import projection_digest, stage
+    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    held_key = artifact["listings"][0]["id"]
+    manifest["sources"][SOURCE]["pyramid_identity_probe"] = {
+        "schema": "pyramid-identity-probe-v1", "artifact_sha256": cp.sha256_file(path),
+        "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+        "database_target_sha256": TARGET, "staged_sha256": projection_digest(stage(artifact)), "held": [held_key], "transitions": []}
+    binding = admit(path, manifest, report)
+    assert (binding["schema"], binding["emitted_count"], binding["held_count"], binding["incomplete_count"]) == ("pyramid-incomplete-v2", 99, 1, 0)
+    assert binding["whole_source_coverage"] is False
+
+
+def test_gate_source_runs_bound_identity_probe_before_admission(tmp_path, produced, monkeypatch):
+    import cre_pyramid_identity_probe as identity
+    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    held_key = artifact["listings"][0]["id"]
+    probe = {"schema": "pyramid-identity-probe-v1", "artifact_sha256": cp.sha256_file(path),
+             "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+             "database_target_sha256": TARGET, "staged_sha256": identity.projection_digest(identity.stage(artifact)),
+             "held": [held_key], "transitions": []}
+    monkeypatch.setattr(identity, "run_probe", lambda *args: probe)
+    monkeypatch.setattr(cp, "git_identity", lambda: (manifest["collector_git_sha"], False))
+    monkeypatch.setattr(cp, "run_command", lambda *args, **kwargs: 0)
+    (run / "gates").mkdir()
+    (run / "gates" / f"{SOURCE}.json").write_text(json.dumps(report))
+    original = cp._admit_current_inventory
+    monkeypatch.setattr(cp, "_admit_current_inventory", lambda *a, **kw: original(*a, **kw, local=True))
+    cp.gate_source(run, manifest, SOURCE, path, None)
+    checkpoint = manifest["sources"][SOURCE]
+    assert checkpoint["pyramid_identity_probe"] == probe
+    assert checkpoint["artifact"]["pyramid_subset"] is True
+    assert checkpoint["gate"]["current_inventory_proof"]["held_count"] == 1
+
+
+def test_complete_inventory_with_native_transition_remains_partial_and_preserves(tmp_path, produced):
+    from cre_pyramid_identity_probe import projection_digest, stage
+    from cre_pyramid_current_inventory import ingest_subset_context
+    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    changed_key = artifact["listings"][0]["id"]
+    manifest["sources"][SOURCE]["pyramid_identity_probe"] = {
+        "schema": "pyramid-identity-probe-v1", "artifact_sha256": cp.sha256_file(path),
+        "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+        "database_target_sha256": TARGET, "staged_sha256": projection_digest(stage(artifact)),
+        "held": [], "transitions": [changed_key]}
+    binding = admit(path, manifest, report)
+    assert (binding["emitted_count"], binding["held_count"], binding["incomplete_count"], binding["transition_count"]) == (100, 0, 0, 1)
+    assert binding["whole_source_coverage"] is False
+    manifest["sources"][SOURCE]["gate"] = {"current_inventory_proof": copy.deepcopy(binding)}
+    assert admit(path, manifest, report, "aggregate") == binding
+    envelope = {"manifest": manifest, "source_report": copy.deepcopy(report), "aggregate_report": copy.deepcopy(report),
+                "binding": binding, "attempt_id": "a" * 32}
+    claims = ingest_subset_context(path, envelope, current_code_sha=manifest["collector_git_sha"],
+        current_git_dirty=False, expected_database_target_sha256=TARGET, attempt_id="a" * 32)
+    assert [m["external_id"] for m in claims["members"] if m["transition"]] == [changed_key]
+
+
+def test_v2_serial_gate_worker_and_ingest_keep_bound_partition(tmp_path, monkeypatch):
+    import cre_pyramid_identity_probe as identity
+    import cre_pipeline_artifact_worker as worker
+    fixture = tmp_path / "fixture"; fixture.mkdir()
+    produced = produce(fixture, total=102, missing_city_id=[74, 75], legacy_subset=False)
+    run, path, artifact, manifest, raw_report = setup(tmp_path, produced)
+    raw_report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    manifest["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=102)
+    held, transition = artifact["listings"][0]["id"], artifact["listings"][1]["id"]
+    probe = {"schema": "pyramid-identity-probe-v1", "artifact_sha256": cp.sha256_file(path),
+             "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+             "database_target_sha256": TARGET, "staged_sha256": identity.projection_digest(identity.stage(artifact)),
+             "held": [held], "transitions": [transition]}
+    monkeypatch.setattr(identity, "run_probe", lambda *args: probe)
+    monkeypatch.setattr(cp, "git_identity", lambda: (manifest["collector_git_sha"], False))
+    counter = iter(range(100))
+    monkeypatch.setattr(cp, "run_artifact_compute", lambda _run, action, arguments:
+                        worker.compute(action, arguments, run / f"v2-response-{next(counter)}.json"))
+    def command(argv, log, **_kwargs):
+        Path(log).parent.mkdir(parents=True, exist_ok=True)
+        Path(log).write_text("offline fixture\n")
+        if "cre_gate.py" in argv:
+            Path(argv[argv.index("--out") + 1]).write_text(json.dumps(raw_report))
+            return 2
+        assert "cre_ingest.py" in argv and "--pyramid-verified-subset-claims" in argv
+        assert "--mark-missing" not in argv and "--activate-status" not in argv
+        if "--dry-run" in argv:
+            sql_dir = Path(argv[argv.index("--keep-artifacts") + 1]); sql_dir.mkdir(parents=True, exist_ok=True)
+            (sql_dir / "ingest.sql").write_text("offline fixture")
+        return 0
+    monkeypatch.setattr(cp, "run_command", command)
+    cp.gate_source(run, manifest, SOURCE, path, None)
+    cp.run_aggregate_gate(run, manifest, None)
+    assert manifest["aggregate_gate"]["admission_scope"] == "pyramid_incomplete_v2"
+    cp.ingest_source(run, manifest, SOURCE, path, None)
+    binding = manifest["sources"][SOURCE]["gate"]["current_inventory_proof"]
+    assert (binding["emitted_count"], binding["held_count"], binding["incomplete_count"], binding["transition_count"]) == (101, 1, 2, 1)
+    assert manifest["sources"][SOURCE]["ingest"]["mark_missing"] is False
+
+
+def test_identity_probe_binds_inputs_and_refuses_target_drift(tmp_path, produced, monkeypatch):
+    from types import SimpleNamespace
+    import cre_pyramid_identity_probe as identity
+    import cre_ingest
+    import cre_validate
+    run, path, artifact, manifest, _report = setup(tmp_path, produced)
+    monkeypatch.setattr(cp, "git_identity", lambda: (manifest["collector_git_sha"], False))
+    monkeypatch.setattr(cre_ingest, "load_db_url", lambda _env: ("postgresql://test.invalid/test", "fixture"))
+    monkeypatch.setattr(cre_ingest, "database_target_fingerprint_from_url", lambda _url: {"value": TARGET})
+    monkeypatch.setattr(cre_ingest, "find_psql", lambda: "fixture-psql")
+    held = artifact["listings"][0]["id"]
+    monkeypatch.setattr(cre_validate, "_run_psql_script", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout=f'staged\tjoined\theld\ttransitions\n100\t100\t["{held}"]\t[]\n'))
+    result = identity.run_probe(path, cp.sha256_file(path), manifest["run_id"], manifest["collector_git_sha"], TARGET, None)
+    assert result["held"] == [held] and result["transitions"] == []
+    calls = iter([{"value": TARGET}, {"value": "f" * 64}])
+    monkeypatch.setattr(cre_ingest, "database_target_fingerprint_from_url", lambda _url: next(calls))
+    with pytest.raises(ValueError, match="target changed"):
+        identity.run_probe(path, cp.sha256_file(path), manifest["run_id"], manifest["collector_git_sha"], TARGET, None)
+
+
+def test_missing_location_and_asset_fields_are_emitted_with_precise_counts(tmp_path):
+    fixture = tmp_path / "fixture"; fixture.mkdir()
+    produced = produce(fixture, total=102, legacy_subset=False,
+                       missing_fields_by_id={74: ["city", "state"], 75: ["assetType"],
+                                             76: ["city", "state", "assetType"]})
+    run, path, artifact, manifest, report = setup(tmp_path, produced)
+    assert len(artifact["listings"]) == 102
+    fields = {r["wordpressRecord"]["id"]: r["missingFieldEvidence"]["fields"]
+              for r in artifact["listings"] if "missingFieldEvidence" in r}
+    assert fields == {74: ["state", "city"], 75: ["assetType"], 76: ["state", "city", "assetType"]}
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    binding = admit(path, manifest, report)
+    assert binding["incomplete_count"] == 3
+    assert binding["missing_field_counts"] == {"state": 2, "city": 2, "assetType": 2}
+    assert binding["emitted_count"] == 102
