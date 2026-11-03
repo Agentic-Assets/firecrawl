@@ -70,6 +70,12 @@ Exactly bound standard `hold` and `first_seen` refusals become terminal
 sources continue. Their artifact and gate evidence remain in the checkpoint,
 outside sealed membership. Malformed, foreign, changed or unknown evidence,
 failed admission proof, and any refusal after sealing still stop all lanes.
+For Essex, a positive, bound historical identity conflict is also a pre-seal
+source hold; the checkpoint's `identity_preseal` records the validated verdict,
+conflict count and report reference. The in-transaction identity guard remains
+in place for changes after the check. Query failures, malformed or changed
+evidence, and failures after sealing remain global failures. See
+[AGENTIC-5215](https://linear.app/agenticassets/issue/AGENTIC-5215).
 This adds a baseline read, artifact/report hashes and code identity checks per
 candidate. The monolithic `cre_daily_update.sh` is a legacy backstop, not the proof path for a
 source-fresh detail sweep or a new Windows schedule. For explicit-source,

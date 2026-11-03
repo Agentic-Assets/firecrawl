@@ -3937,6 +3937,13 @@ def build_sql(
     daum_verified_subset_claims=None,
     transwestern_image_transition_binding=None,
 ):
+    from cre_essex_identity import (
+        historical_claims_sql,
+        historical_conflicts_sql,
+        incoming_claims_sql,
+        invalid_incoming_sql,
+    )
+
     # Defense in depth for direct callers of this builder. Normal ingestion
     # reaches here through to_row(), which never reads `omFacts`; no staging
     # column or writer exists for OM facts, so a manually constructed row's
@@ -4698,59 +4705,19 @@ DECLARE
     conflicting_rows bigint;
 BEGIN
     CREATE TEMP TABLE _essex_identity_claims ON COMMIT DROP AS
-    SELECT s.brokerage_id, s.external_id, s.source_url,
-           ARRAY(SELECT DISTINCT CASE
-                   WHEN jsonb_typeof(n.value) = 'object'
-                    AND n.value->>'type' = 'wordpress_properties_post'
-                    AND n.value->>'canonicalUrl' = s.source_url
-                    AND n.value - ARRAY['type','id','canonicalUrl']::text[] = '{}'::jsonb
-                   THEN n.value->>'id'
-                   ELSE '__invalid_wordpress_page_claim__' END
-                 FROM jsonb_path_query(s.raw_data, '$.**.essexWordpressPage') n(value)) AS native_ids
-    FROM _src s
-    WHERE jsonb_path_exists(s.raw_data, '$.**.sourceKey ? (@ == "essex-realty")');
+    """ + incoming_claims_sql() + """;
 
     SELECT count(*) INTO conflicting_rows
-    FROM _essex_identity_claims s
-    WHERE s.source_url IS NULL OR s.external_id IS NULL
-       OR s.source_url !~ '^https://essexrealtygroup[.]com/properties/[^/?#]+/$'
-       OR s.external_id IS DISTINCT FROM substr(
-           s.source_url, length('https://essexrealtygroup.com/') + 1,
-           length(s.source_url) - length('https://essexrealtygroup.com/') - 1)
-       OR cardinality(s.native_ids) <> 1
-       OR CASE WHEN s.native_ids[1] ~ '^[1-9][0-9]{0,15}$'
-               THEN s.native_ids[1]::numeric > 9007199254740991
-               ELSE true END;
+    FROM (""" + invalid_incoming_sql() + """) AS invalid_claims;
     IF conflicting_rows > 0 THEN
       RAISE EXCEPTION 'Essex identity contradiction in incoming URL/path/native claims; refusing mutation';
     END IF;
 
     CREATE TEMP TABLE _essex_historical_identity_claims ON COMMIT DROP AS
-    SELECT t.brokerage_id, t.external_id, t.source_url,
-           ARRAY(SELECT DISTINCT CASE
-                   WHEN jsonb_typeof(n.value) = 'object'
-                    AND n.value->>'type' = 'wordpress_properties_post'
-                    AND n.value->>'canonicalUrl' = t.source_url
-                    AND n.value - ARRAY['type','id','canonicalUrl']::text[] = '{}'::jsonb
-                   THEN n.value->>'id'
-                   ELSE '__invalid_wordpress_page_claim__' END
-                 FROM jsonb_path_query(t.raw_data, '$.**.essexWordpressPage') n(value)
-                 WHERE n.value <> 'null'::jsonb) AS native_ids
-    FROM credeals.cre_listings t
-    WHERE EXISTS (
-      SELECT 1 FROM _essex_identity_claims s WHERE s.brokerage_id = t.brokerage_id
-    );
+    """ + historical_claims_sql() + """;
 
     SELECT count(*) INTO conflicting_rows
-    FROM _essex_identity_claims s
-    JOIN _essex_historical_identity_claims t ON t.brokerage_id = s.brokerage_id
-    WHERE (t.source_url = s.source_url AND t.external_id IS DISTINCT FROM s.external_id)
-       OR (t.external_id = s.external_id AND t.source_url IS DISTINCT FROM s.source_url)
-       OR (s.native_ids[1] = ANY(t.native_ids)
-           AND (t.source_url IS DISTINCT FROM s.source_url OR t.external_id IS DISTINCT FROM s.external_id))
-       OR ((t.source_url = s.source_url OR t.external_id = s.external_id)
-           AND cardinality(t.native_ids) > 0
-           AND (cardinality(t.native_ids) <> 1 OR t.native_ids[1] IS DISTINCT FROM s.native_ids[1]));
+    FROM (""" + historical_conflicts_sql() + """) AS historical_conflicts;
     IF conflicting_rows > 0 THEN
       RAISE EXCEPTION 'Essex identity contradiction in historical rows; refusing mutation';
     END IF;

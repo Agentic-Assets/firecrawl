@@ -354,6 +354,103 @@ def prepare_candidate(run_dir: Path, manifest: dict, source: str) -> bool:
     return True
 
 
+def preseal_essex_identity(run_dir: Path, manifest: dict, artifact: Path, env_file,
+                           coverage_path: Path, coverage_digest: str, coverage_gate: dict) -> bool:
+    """Hold only a fully bound positive Essex history conflict before sealing."""
+    import hashlib
+    import sys
+
+    import cre_checkpoint_refresh as refresh
+    from cre_code_handoff_git import read_file
+    from cre_essex_identity import projection_digest, stage_essex_identity
+
+    source = "essex-realty"
+    checkpoint = manifest["sources"][source]
+    artifact_record = dict(checkpoint["artifact"])
+    binding = {"artifact_sha256": checkpoint["artifact"]["sha256"],
+               "generation_id": manifest["run_id"], "producer_sha": manifest["collector_git_sha"],
+               "database_target_sha256": refresh.manifest_database_target_sha256(manifest)}
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    raw = read_file(artifact)
+    if (manifest.get("collector_git_dirty") is not False or not binding["database_target_sha256"]
+            or refresh.git_identity() != (binding["producer_sha"], False)
+            or refresh.database_target_fingerprint(env_file).get("value") != binding["database_target_sha256"]
+            or type(checkpoint["artifact"].get("bytes")) is not int
+            or len(raw) != checkpoint["artifact"]["bytes"]
+            or refresh._relative_to_run(artifact, run_dir) != checkpoint["artifact"].get("path")
+            or refresh.sha256_file(artifact) != binding["artifact_sha256"]):
+        raise refresh.GlobalStageError("Essex pre-seal input identity changed")
+    try:
+        payload = json.loads(raw)
+        if (payload.get("runMeta") or {}).get("freshness", {}).get("generationId") != binding["generation_id"]:
+            raise ValueError("generation differs")
+        rows = stage_essex_identity(payload)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise refresh.GlobalStageError("Essex pre-seal staging invalid") from exc
+    report = run_dir / "gates" / "essex-realty-identity-preseal.json"
+    log = run_dir / "logs" / "essex-realty-identity-preseal.log"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    if report.exists() or report.is_symlink():
+        raise refresh.GlobalStageError("Essex pre-seal output already exists")
+    argv = [sys.executable, str(refresh.COLLECTOR_DIR / "cre_essex_identity.py"),
+            "--artifact", str(artifact), "--artifact-sha256", binding["artifact_sha256"],
+            "--generation", binding["generation_id"], "--producer", binding["producer_sha"],
+            "--target-sha256", binding["database_target_sha256"], "--out", str(report)]
+    if env_file:
+        argv.extend(["--env-file", str(env_file)])
+    rc = refresh.run_command(argv, log, env=refresh.safe_process_env())
+    if type(rc) is not int or rc != 0:
+        raise refresh.GlobalStageError("Essex pre-seal identity probe failed")
+    try:
+        def object_pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("duplicate report field")
+                result[key] = value
+            return result
+
+        result_raw = read_file(report)
+        log_raw = read_file(log)
+        result = json.loads(result_raw, object_pairs_hook=object_pairs)
+        expected = {"schema", "source", "artifact_sha256", "generation_id", "producer_sha",
+                    "database_target_sha256", "staged_count", "staged_sha256", "conflicts", "verdict"}
+        valid = (isinstance(result, dict) and set(result) == expected
+                 and result["schema"] == "cre-essex-preseal-identity-v1" and result["source"] == source
+                 and all(result[key] == value for key, value in binding.items())
+                 and type(result["staged_count"]) is int and result["staged_count"] == len(rows)
+                 and result["staged_sha256"] == projection_digest(rows)
+                 and type(result["conflicts"]) is int and result["conflicts"] >= 0
+                 and result["verdict"] == ("hold" if result["conflicts"] else "clear"))
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise refresh.GlobalStageError("Essex pre-seal identity report invalid") from exc
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    if (not valid or read_file(report) != result_raw or read_file(log) != log_raw or read_file(artifact) != raw
+            or refresh.git_identity() != (binding["producer_sha"], False)
+            or refresh.database_target_fingerprint(env_file).get("value") != binding["database_target_sha256"]
+            or manifest.get("collector_git_sha") != binding["producer_sha"]
+            or manifest.get("collector_git_dirty") is not False
+            or manifest["sources"].get(source) is not checkpoint
+            or checkpoint.get("artifact") != artifact_record
+            or checkpoint.get("gate") != coverage_gate
+            or refresh.sha256_file(coverage_path) != coverage_digest
+            or manifest["run_id"] != binding["generation_id"]
+            or refresh.manifest_database_target_sha256(manifest) != binding["database_target_sha256"]):
+        raise refresh.GlobalStageError("Essex pre-seal identity evidence changed")
+    checkpoint["identity_preseal"] = {"path": refresh._relative_to_run(report, run_dir),
+                                      "sha256": hashlib.sha256(result_raw).hexdigest(), "bytes": len(result_raw),
+                                      "log": refresh._relative_to_run(log, run_dir),
+                                      "log_sha256": hashlib.sha256(log_raw).hexdigest(), "log_bytes": len(log_raw),
+                                      "verdict": result["verdict"], "conflicts": result["conflicts"], **binding}
+    require_pipeline_owner(manifest, _OWNER_LEASE.get())
+    if result["conflicts"]:
+        checkpoint["state"] = "gate_blocked"
+        refresh.save_manifest(run_dir, manifest)
+        return False
+    refresh.save_manifest(run_dir, manifest)
+    return True
+
+
 def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) -> bool:
     """Retain a confirmed source hold before it can enter a database unit."""
     import cre_checkpoint_refresh as refresh
@@ -425,7 +522,8 @@ def preseal_source_gate(run_dir: Path, manifest: dict, source: str, env_file) ->
             f"pre-seal gate evidence changed or is invalid: {source}"
         )
     if refresh.gate_verdict_is_admitted(manifest, gate["verdict"], source=source):
-        return True
+        return (preseal_essex_identity(run_dir, manifest, artifact, env_file, path, digest, dict(gate))
+                if source == "essex-realty" else True)
     if (gate["verdict"], gate["rc"]) not in {
         ("hold", 2),
         ("first_seen", 0),

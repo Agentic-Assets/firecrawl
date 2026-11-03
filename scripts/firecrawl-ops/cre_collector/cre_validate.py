@@ -1292,7 +1292,7 @@ def require_full_validation_report(report):
             raise ValueError("full validation historical diagnostic is incomplete")
 
 
-def _run_psql_script(psql, db_url, script, *, variables=None):
+def _run_psql_script(psql, db_url, script, *, variables=None, timeout=None):
     """Run a closed SQL script without a parent-to-psql stdin pipe."""
     script_path = None
     try:
@@ -1345,6 +1345,7 @@ def _run_psql_script(psql, db_url, script, *, variables=None):
             text=True,
             capture_output=True,
             check=False,
+            **({"timeout": timeout} if timeout is not None else {}),
         )
     finally:
         if script_path is not None:
