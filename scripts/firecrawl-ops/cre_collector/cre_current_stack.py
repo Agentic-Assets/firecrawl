@@ -569,6 +569,38 @@ def capture_current_stack(prior_raw, prior, prior_evidence, output, *, tooling_i
     return {'path': str(output / 'current-stack-model.json'), 'sha256': sha(raw), 'bytes': len(raw)}
 
 
+def resolve_image_source(packet, evidence, git, repo):
+    """Follow bounded, authenticated no-image releases to the image producer."""
+    from cre_runtime_maintenance_continuation import validate_continuation_code
+
+    current, inputs, seen = packet, evidence, set()
+    for _ in range(8):
+        continuation = current.get('continuation')
+        require(isinstance(continuation, dict) and isinstance(continuation.get('failed_release'), str),
+                'image predecessor missing')
+        role = continuation['failed_release']
+        raw = inputs.raw(role)
+        digest = sha(raw)
+        require(digest not in seen, 'image predecessor cycle')
+        seen.add(digest)
+        prior = json_bytes(raw)
+        require(prior.get('schema') == 'cre-runtime-maintenance-v1', 'image predecessor schema differs')
+        previous = Evidence(prior, evidence.read)
+        if prior.get('expected_images'):
+            inputs.recheck()
+            evidence.original_payloads.update(inputs.original_payloads)
+            evidence.original_payloads.update({inputs.inputs[key]['path']: value for key, value in inputs.original.items()})
+            return raw, prior, previous
+        require(prior.get('expected_images') == {} and prior.get('image_tags') == {}
+                and prior.get('install_scope') == [], 'image predecessor has unreviewed scope')
+        validate_continuation_code(prior, git, repo)
+        inputs.recheck()
+        evidence.original_payloads.update(inputs.original_payloads)
+        evidence.original_payloads.update({inputs.inputs[key]['path']: value for key, value in inputs.original.items()})
+        current, inputs = prior, previous
+    require(False, 'image predecessor depth exceeded')
+
+
 def validate_current_stack(packet, evidence, receipt):
     """Validate retained commitments and an independent review, never live state.
 
@@ -582,8 +614,8 @@ def validate_current_stack(packet, evidence, receipt):
     model_raw = evidence.raw(role)
     require(json_bytes(model_raw) == receipt and receipt.get('schema') == 'cre-current-stack-model-v1',
             'current model bytes or schema differ')
-    prior_raw = evidence.raw(continuation['failed_release'])
-    prior = json_bytes(prior_raw)
+    git = Git(packet['programs']['native_git'])
+    prior_raw, prior, previous = resolve_image_source(packet, evidence, git, packet['roots']['development'])
     require(receipt.get('prior_release_sha256') == sha(prior_raw)
             and receipt.get('source_identity') == prior.get('new')
             and receipt.get('historical_volume_continuity') == 'unknown', 'current model provenance differs')
@@ -599,7 +631,6 @@ def validate_current_stack(packet, evidence, receipt):
             'current fleet identity incomplete')
     require(all(model['expected_images'].get(name) == image for name, image in prior['expected_images'].items()),
             'current selected images differ from prior build')
-    previous = Evidence(prior, evidence.read)
     old = unique(previous.obj('container_config_before'), 'service')
     require(model['external_before'] == {name: old[name] for name in CONTROLS}
             and all(snapshots[name] == old[name] for name in CONTROLS), 'external services changed')
@@ -621,7 +652,6 @@ def validate_current_stack(packet, evidence, receipt):
                 and all(type(value) is int for value in expected_caps)
                 and entry['resources']['expected_sha256'] == _hash(expected_caps),
                 'prior environment or resource commitment differs')
-    git = Git(packet['programs']['native_git'])
     validate_prepared_image_history(prior, previous, git, packet['roots']['development'])
     require(receipt.get('prepared_images_sha256') == sha(previous.raw('prepared_images')),
             'current image build evidence differs')
@@ -689,9 +719,8 @@ def validate_current_stack(packet, evidence, receipt):
 def validate_current_stack_live(packet, evidence, receipt, output):
     """Require a fresh independent observation to equal the reviewed model."""
     validate_current_stack(packet, evidence, receipt)
-    prior_raw = evidence.raw(packet['continuation']['failed_release'])
-    prior = json_bytes(prior_raw)
-    prior_evidence = Evidence(prior, evidence.read)
+    git = Git(packet['programs']['native_git'])
+    prior_raw, prior, prior_evidence = resolve_image_source(packet, evidence, git, packet['roots']['development'])
     fresh_ref = capture_current_stack(prior_raw, prior, prior_evidence, output, tooling_identity=packet['tooling'])
     require(json_bytes(read_file(fresh_ref['path'])) == receipt, 'fresh current stack differs from review')
     evidence.recheck()

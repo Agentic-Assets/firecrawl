@@ -191,7 +191,7 @@ def retained_case(current_inputs, monkeypatch):
     body=b'independent current model review'
     class MemoryEvidence:
         def __init__(self):
-            self.original_payloads={};self.inputs={'current_stack_review_body':{'path':'/fixture/review.txt'}}
+            self.original_payloads={};self.original={};self.inputs={'current_stack_review_body':{'path':'/fixture/review.txt'}}
             self.receipt=receipt
         def raw(self,role):
             data=json.dumps(self.receipt,sort_keys=True).encode()
@@ -200,8 +200,11 @@ def retained_case(current_inputs, monkeypatch):
                     'reviewer':'reviewer','approval_ref':'AGENTIC-3752','historical_volume_continuity':'unknown',
                     'dependency_metadata_reviewed':True,
                     'body':{'path':'/fixture/review.txt','sha256':sha(body),'bytes':len(body)}}
-            return {'current_stack':data,'current_stack_review':json.dumps(review).encode(),
-                    'current_stack_review_body':body,'failed_release':prior_raw}[role]
+            value = {'current_stack':data,'current_stack_review':json.dumps(review).encode(),
+                     'current_stack_review_body':body,'failed_release':prior_raw}[role]
+            self.inputs.setdefault(role, {'path':'/fixture/' + role})
+            self.original.setdefault(role, value)
+            return value
         def obj(self,role):
             return self.receipt['model']['reviewed_containers'] if role=='container_config_before' else json.loads(self.raw(role))
         def read(self,path): raise AssertionError(path)

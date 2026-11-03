@@ -21,7 +21,7 @@ def reference(path, read):
     return {"path": str(path), "sha256": sha(raw), "bytes": len(raw)}
 
 
-def validate_maintenance_command(row, argv, selected, cwd, read, *, retain=None):
+def validate_maintenance_command(row, argv, selected, cwd, read, *, retain=None, failed_repin=False):
     """Consume actual settled foreground receipt and its unchanged log bytes."""
     def payload(ref):
         require(isinstance(ref, dict) and set(ref) == {"path", "sha256", "bytes"}
@@ -33,10 +33,14 @@ def validate_maintenance_command(row, argv, selected, cwd, read, *, retain=None)
             retain[ref["path"]] = raw
         return raw
 
+    require(type(failed_repin) is bool and (not failed_repin or
+            (selected is None and cwd is None and argv.count("-Mode") == 1
+             and argv.index("-Mode") + 1 < len(argv) and argv[argv.index("-Mode") + 1] == "Repin")),
+            "unsupported command outcome")
     receipt = json_bytes(payload(row["receipt"]))
     log = payload(row["log"])
     require(receipt.get("producer") == "checkpoint-run-command-v1" and receipt.get("argv") == argv
-            and type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0
+            and type(receipt.get("exit_code")) is int and receipt["exit_code"] == (1 if failed_repin else 0)
             and receipt.get("local_settlement") == "confirmed" and receipt.get("log_closed") is True
             and receipt.get("command_log_sha256") == sha(log)
             and clock(receipt.get("started_at")) <= clock(receipt.get("finished_at")),
@@ -414,6 +418,11 @@ def validate_maintenance_transition(receipt, read, *, retain=None):
     validate_maintenance_execution(packet, evidence, observation, hold_at=clock(hold["started_at"]),
                                    mutation_at=clock(mutation["entered_at"]), terminal_at=clock(terminal["finished_at"]))
     originals = unique(packet["task_baseline"], "key", TASKS)
+    partial = any("pin_before" in row for row in originals.values())
+    if partial:
+        prior = evidence.obj(packet["continuation"]["failed_release"])
+        prior_evidence = Evidence(prior, read)
+        historic = unique(prior["task_baseline"], "key", TASKS)
     observed = unique(observation["tasks"], "key", TASKS)
     results = {}
     for key, row in unique(receipt.get("tasks"), "key", TASKS).items():
@@ -425,12 +434,19 @@ def validate_maintenance_transition(receipt, read, *, retain=None):
         require(before == evidence.raw(originals[key]["xml"]) and final == independent
                 and observed[key].get("xml_sha256") == sha(independent) and xml_enabled(before) is False
                 and xml_enabled(final) is False, "maintenance independent task XML differs")
-        validate_xml_transition(before, final, packet["old"]["sha"], packet["new"]["sha"])
+        validate_xml_transition(before, final, originals[key].get("pin_before", packet["old"]["sha"]), packet["new"]["sha"])
         prior = {field: originals[key][field] for field in TUPLE_FIELDS}
         after = {field: observed[key][field] for field in TUPLE_FIELDS}
         require(row["before_tuple"] == prior and row["after_tuple"] == after, "maintenance task tuple differs")
         results[key] = {"before_xml": before, "final_xml": final, "independent_xml": independent,
                         "before_tuple": prior, "after_tuple": after}
+        if partial:
+            results[key]["historical_before_xml"] = prior_evidence.raw(historic[key]["xml"])
+            results[key]["historical_before_tuple"] = {field: historic[key][field] for field in TUPLE_FIELDS}
+    if partial:
+        prior_evidence.recheck()
+        evidence.original_payloads.update({prior_evidence.inputs[role]["path"]: raw
+                                           for role, raw in prior_evidence.original.items()})
     evidence.recheck()
     if retain is not None:
         retain.update(evidence.original_payloads)

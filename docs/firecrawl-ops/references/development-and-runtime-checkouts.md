@@ -395,6 +395,27 @@ epochs and complete normalized configurations before and after its owned
 code-and-pin update. It still requires installed-dependency checks, genuine
 foreground settlement, independent readback and separate restoration gates.
 
+If a later owned continuation stops after registering only part of the fleet,
+retain that failed command and the exact per-task XML/readback. A successor
+must authenticate the failed operation and its separately governed recovery,
+then bind each actual `pin_before` before replacing that member's SHA. The
+original failed handoff and every intermediate failure remain separate facts.
+A subsequently crossed disabled trigger needs a new complete held-fleet
+observation and closed native capture, including its source and Scheduler
+interval; it cannot be inserted into the earlier audit. Counters alone prove
+neither execution nor an empty catch-up queue. Image provenance still resolves
+to the authenticated image-producing ancestor, even when the immediate failed
+operation did not build images.
+
+Native maintenance and restoration mutation checks ask the same live lease
+owner to recheck its complete, already validated evidence through a private
+ephemeral socket. This avoids reparsing the historical chain in a new process
+at every task boundary. Every request still rechecks immutable inputs, source
+and executable identity, current authorization and observation deadlines, and
+canonical ownership. There is no reusable approval or relaxed expiry. The
+owner endpoint closes when the operation ends; failure cleanup retains its
+separate owner-only check.
+
 Retain the exact active image overlay as a runtime-owned artifact. Every
 approved recreation must use the bound base file, native override and active
 image overlay. Record the overlay path/hash and running image IDs; preserve

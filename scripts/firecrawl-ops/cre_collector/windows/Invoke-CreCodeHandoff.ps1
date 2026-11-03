@@ -65,8 +65,9 @@ function Assert-LeaseOwner {
     if($LASTEXITCODE -ne 0) { throw 'Canonical ownership not proven' }
 }
 function Assert-Owner {
-    if($maintenance) {
-        & wsl.exe @common --assert-maintenance-owner-pid $OwnerPid --observation (ConvertTo-CreWslPath $Observation) --authorization (ConvertTo-CreWslPath $Authorization) --output (ConvertTo-CreWslPath $Output)
+    if($maintenance -or $restoration) {
+        Assert-Input
+        & wsl.exe @common --assert-owner-boundary-pid $OwnerPid --boundary-mode $Mode --observation (ConvertTo-CreWslPath $Observation) --authorization (ConvertTo-CreWslPath $Authorization) --output (ConvertTo-CreWslPath $Output)
         if($LASTEXITCODE -ne 0) { throw 'Canonical ownership or immutable current authorization refused' }
         return
     }

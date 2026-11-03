@@ -2,6 +2,7 @@
 
 import copy
 import sys
+from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -449,6 +450,7 @@ def test_actual_apply_frontdoor_supported_case_and_own_marker_failure_hold(resto
     monkeypatch.setattr(operation, "now", lambda: NOW)
     monkeypatch.setattr(operation, "Git", Git)
     monkeypatch.setattr(operation, "runtime_modules", lambda actual, git: (checkpoint, None, None, None))
+    monkeypatch.setattr(operation, "owned_boundary", lambda *_args, **_kwargs: nullcontext(None))
     monkeypatch.setattr(operation, "preserved", lambda actual: {"explicit-synthetic-preservation": "0" * 64})
     monkeypatch.setattr(operation, "installed_dependencies", lambda root: dict.fromkeys(
         ("package.json", "package-lock.json", "node_modules/.package-lock.json"), "0" * 64))

@@ -15,10 +15,21 @@ function Assert-CreMaintenanceIdle($Release) {
     if(@(Get-CreMaintenanceTaskInstances $Release).Count) {throw 'Scheduled instance exists during maintenance'}
 }
 
+function Get-CreMaintenanceBeforePin($Release,$Row) {
+    $pin=$Release.old.sha
+    if($Row -is [System.Collections.IDictionary]) {
+        if($Row.Contains('pin_before')) {$pin=$Row['pin_before']}
+    } elseif($null -ne $Row.PSObject.Properties['pin_before']) {
+        $pin=$Row.pin_before
+    }
+    if($pin -isnot [string] -or $pin -cnotmatch '^[0-9a-f]{40}$') {throw 'Invalid maintenance before pin'}
+    return $pin
+}
+
 function Get-CreMaintenanceTask($Release,$Row,[bool]$Selected) {
     if($Row.enabled -isnot [bool] -or $Row.enabled) {throw 'Maintenance baseline must be held'}
     $xml=Read-CreHandoffBaselineXml $Release $Row
-    if($Selected) {$xml=Pin-ReviewedXml $xml $Release.old.sha $Release.new.sha}
+    if($Selected) {$xml=Pin-ReviewedXml $xml (Get-CreMaintenanceBeforePin $Release $Row) $Release.new.sha}
     $record=Get-CreHandoffTask $Row $xml $true $true
     if($record.enabled -or $record.state -cne 'Disabled') {throw 'Maintenance requires exact held fleet'}
     return $record
@@ -50,7 +61,7 @@ function Invoke-CreRuntimeMaintenanceTasks($Release,[string]$Mode,[string]$Outpu
             & $AssertOwner
             Assert-CreMaintenanceIdle $Release
             $null=Get-CreMaintenanceTask $Release $row $false
-            $wanted=Pin-ReviewedXml (Read-CreHandoffBaselineXml $Release $row) $Release.old.sha $Release.new.sha
+            $wanted=Pin-ReviewedXml (Read-CreHandoffBaselineXml $Release $row) (Get-CreMaintenanceBeforePin $Release $row) $Release.new.sha
             $null=Register-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -Xml $wanted -Force -ErrorAction Stop
             $record=Get-CreMaintenanceTask $Release $row $true
             Save-CreHandoffExclusive (Join-Path $Output ($row.key+'-final.xml')) $record.xml

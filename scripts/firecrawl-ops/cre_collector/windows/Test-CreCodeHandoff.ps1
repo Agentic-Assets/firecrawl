@@ -305,7 +305,7 @@ namespace CreWindowsCapture {
     $call=@($fixture.wslCalls[0])
     function Fixture-WslPath([string]$InputPath) {$native=ConvertTo-CreHandoffPath $InputPath;return '/mnt/'+$native.Substring(0,1).ToLowerInvariant()+'/'+$native.Substring(3)}
     $expected=@('-d','fixture','-u','fixture','--exec','python3','-B',((Fixture-WslPath $sourceRoot)+'/scripts/firecrawl-ops/cre_collector/cre_code_handoff.py'),
-        '--maintenance-packet',(Fixture-WslPath $maintenancePath),'--assert-maintenance-owner-pid','123',
+        '--maintenance-packet',(Fixture-WslPath $maintenancePath),'--assert-owner-boundary-pid','123','--boundary-mode','Hold',
         '--observation',(Fixture-WslPath $path),'--authorization',(Fixture-WslPath $authPath),'--output',(Fixture-WslPath $maintenanceHold))
     Assert-Fixture ($fixture.wslCalls.Count -eq 1 -and ($call -join "`n") -ceq ($expected -join "`n")) 'Maintenance Hold must pass every exact binding in one combined owner/authorization child'
     Assert-Fixture ($fixture.comCalls -eq 1) 'Successful combined admission must reach the mocked Scheduler boundary'
@@ -315,6 +315,35 @@ namespace CreWindowsCapture {
     Refuses {& $frontdoor -Mode Hold -OwnerPid 123 -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $refusedHold -Observation $path -Authorization $authPath} 'Refused combined selector must stop before task access' 'Canonical ownership or immutable current authorization refused'
     Assert-Fixture ($fixture.wslCalls.Count -eq 1 -and $fixture.comCalls -eq 0 -and $fixture.disableCalls -eq $beforeRefused -and -not (Test-Path -LiteralPath (Join-Path $refusedHold 'mutation-start.json'))) 'Refused combined admission must not touch Scheduler or publish mutation'
     $fixture.wslExit=0
+    $restoration=Read-CreHandoffJson $maintenanceWire
+    $restoration.schema='cre-code-restoration-v1'
+    $restoration|Add-Member -NotePropertyName code -NotePropertyValue @{sha=$new} -Force
+    $restoration|Add-Member -NotePropertyName enable_boundary -NotePropertyValue 'zero-missed-no-crossed-trigger-v1' -Force
+    $restorationWire=$restoration|ConvertTo-Json -Depth 15
+    $restorationPath=Join-Path $root 'restoration-packet.json'
+    [IO.File]::WriteAllText($restorationPath,$restorationWire,[Text.UTF8Encoding]::new($false))
+    $restorationOutput=Join-Path $root 'restoration-boundary';[void][IO.Directory]::CreateDirectory($restorationOutput)
+    $fixture.wslCalls=@();$fixture.comCalls=0
+    function wsl.exe {$fixture.wslCalls+=,@($args);throw 'Fixture restoration owner boundary reached'}
+    Refuses {& $frontdoor -Mode Restore -OwnerPid 123 -RestorationPath $restorationPath -RestorationSha (Get-CreHandoffHash $restorationWire) -Output $restorationOutput -Observation $path -Authorization $authPath} 'Restoration reaches owner boundary' 'Fixture restoration owner boundary reached'
+    $restorationExpected=@('-d','fixture','-u','fixture','--exec','python3','-B',((Fixture-WslPath $sourceRoot)+'/scripts/firecrawl-ops/cre_collector/cre_code_handoff.py'),
+        '--restoration-packet',(Fixture-WslPath $restorationPath),'--assert-owner-boundary-pid','123','--boundary-mode','Restore',
+        '--observation',(Fixture-WslPath $path),'--authorization',(Fixture-WslPath $authPath),'--output',(Fixture-WslPath $restorationOutput))
+    Assert-Fixture ($fixture.wslCalls.Count -eq 1 -and (@($fixture.wslCalls[0]) -join "`n") -ceq ($restorationExpected -join "`n")) 'Restoration must pass exact boundary arguments before Scheduler access'
+    function wsl.exe {$fixture.wslCalls+=,@($args);$global:LASTEXITCODE=$fixture.wslExit}
+    $fixture.wslCalls=@();$fixture.comCalls=0;$fixture.wslExit=1
+    $restorationRefused=Join-Path $root 'restoration-boundary-refused';[void][IO.Directory]::CreateDirectory($restorationRefused)
+    Refuses {& $frontdoor -Mode Restore -OwnerPid 123 -RestorationPath $restorationPath -RestorationSha (Get-CreHandoffHash $restorationWire) -Output $restorationRefused -Observation $path -Authorization $authPath} 'Restoration refusal precedes Scheduler' 'Canonical ownership or immutable current authorization refused'
+    Assert-Fixture ($fixture.wslCalls.Count -eq 1 -and $fixture.comCalls -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $restorationRefused 'mutation-start.json'))) 'Restoration refusal must not touch Scheduler or publish mutation'
+    $fixture.wslExit=0
+    $cleanupSelector=Join-Path $root 'maintenance-owner-only-selector';[void][IO.Directory]::CreateDirectory($cleanupSelector)
+    [IO.File]::WriteAllText((Join-Path $cleanupSelector 'mutation-start.json'),'{}',[Text.UTF8Encoding]::new($false))
+    $fixture.wslCalls=@();$fixture.comCalls=0
+    try {& $frontdoor -Mode FailureHold -OwnerPid 123 -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $cleanupSelector -Observation $path -Authorization $authPath} catch {}
+    $cleanupExpected=@('-d','fixture','-u','fixture','--exec','python3','-B',((Fixture-WslPath $sourceRoot)+'/scripts/firecrawl-ops/cre_collector/cre_code_handoff.py'),
+        '--maintenance-packet',(Fixture-WslPath $maintenancePath),'--assert-owned-pid','123','--output',(Fixture-WslPath $cleanupSelector),
+        '--observation',(Fixture-WslPath $path),'--authorization',(Fixture-WslPath $authPath))
+    Assert-Fixture ($fixture.wslCalls.Count -eq 1 -and (@($fixture.wslCalls[0]) -join "`n") -ceq ($cleanupExpected -join "`n") -and $fixture.comCalls -eq 0) 'FailureHold must use owner-only admission before any task call'
     $maintenanceSuccess=Join-Path $root 'maintenance-native-complete'
     & $frontdoor -Mode Apply -MaintenancePath $maintenancePath -MaintenanceSha $maintenanceHash -Output $maintenanceSuccess -Observation $path -Authorization $authPath
     $maintenanceCompletion=Read-CreHandoffJson ([IO.File]::ReadAllText($maintenanceSuccess+'.native.json'))

@@ -96,15 +96,28 @@ def validate_historical_admission(packet, evidence):
     from cre_code_handoff_git import windows_path
 
     windows_path(programs["native_docker"])
-    historical = dict(packet, schema="cre-code-restoration-v1", scope="restore-held-task-states", code=old)
+    historical_source = packet
+    historical_inputs = evidence
+    if any("pin_before" in row for row in packet.get("task_baseline", [])):
+        continuation = packet.get("continuation")
+        require(isinstance(continuation, dict) and isinstance(continuation.get("failed_release"), str),
+                "mixed task pins require retained predecessor")
+        historical_source = evidence.obj(continuation["failed_release"])
+        require(historical_source.get("old") == old, "predecessor original identity differs")
+        historical_inputs = Evidence(historical_source, evidence.read)
+    historical = dict(historical_source, schema="cre-code-restoration-v1", scope="restore-held-task-states", code=old)
     historical["programs"] = {key: programs[key] for key in ("native_git", "powershell")}
     historical.pop("maintenance_transition", None)
-    original = evidence.inputs.get("historical_runtime_snapshot")
+    original = historical_inputs.inputs.get("historical_runtime_snapshot")
     require(original is not None, "original failed-A runtime snapshot missing")
     rows = [dict(row, role="runtime_snapshot") if row["role"] == "historical_runtime_snapshot" else row
-            for row in packet["inputs"] if row["role"] != "runtime_snapshot"]
+            for row in historical_source["inputs"] if row["role"] != "runtime_snapshot"]
     historical_evidence = Evidence({"inputs": rows}, evidence.read)
     validate_restoration(historical, historical_evidence, historical=True)
+    if historical_inputs is not evidence:
+        historical_inputs.recheck()
+        for role, value in historical_inputs.original.items():
+            evidence.original_payloads[historical_inputs.inputs[role]["path"]] = value
     evidence.original_payloads.update(historical_evidence.original_payloads)
 
 
@@ -195,6 +208,11 @@ def validate_maintenance_observation(packet, evidence, observation, current, *, 
     observed, qualified = clock(observation.get("observed_at")), clock(observation.get("qualified_at"))
     require(observed <= qualified <= current and 0 <= (current - observed).total_seconds() < 300,
             "maintenance observation expired/future")
+    continuation = packet.get("continuation", {})
+    if "fresh_held_observation" in continuation:
+        fresh = evidence.obj(continuation["fresh_held_observation"])
+        require(clock(fresh.get("observed_at")) <= observed,
+                "fresh held observation follows maintenance observation")
     require(observation.get("ownership") == {"phase": "owned-maintenance" if owned else "released-clear",
                                             "verified": True, "recovery_required": owned}
             and observation.get("resources_ok") is True and observation.get("queues_idle") is True,
@@ -225,8 +243,9 @@ def validate_maintenance_observation(packet, evidence, observation, current, *, 
             require(reference.get("bytes") == len(raw) and reference.get("sha256") == sha(raw)
                     and task.get("xml_sha256") == sha(raw) and xml_enabled(raw) is False,
                     "maintenance final XML binding differs")
-            validate_xml_transition(evidence.raw(baseline["xml"]), raw, packet["old"]["sha"], packet["new"]["sha"])
-            expected = [{name: value.replace(packet["old"]["sha"], packet["new"]["sha"])
+            before_pin = baseline.get("pin_before", packet["old"]["sha"])
+            validate_xml_transition(evidence.raw(baseline["xml"]), raw, before_pin, packet["new"]["sha"])
+            expected = [{name: value.replace(before_pin, packet["new"]["sha"])
                          for name, value in action.items()} for action in baseline["actions"]]
             require(task.get("actions") == expected, "maintenance final action differs")
             evidence.original_payloads[reference["path"]] = raw
@@ -461,6 +480,7 @@ def apply_maintenance(args, raw, packet, evidence, git, modules):
         lock_clear,
         now,
         owned_authority,
+        owned_boundary,
         released_authority,
         write_new,
     )
@@ -496,7 +516,34 @@ def apply_maintenance(args, raw, packet, evidence, git, modules):
         with checkpoint.SharedLock(lock, recovery_required=True) as lease:
             try:
                 admitted()
-                ready = run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, output, admitted)
+                def boundary_check(mode):
+                    from cre_runtime_maintenance_build import (
+                        verify_native_compose,
+                        verify_native_docker,
+                    )
+                    from cre_runtime_maintenance_continuation import (
+                        runtime_before,
+                        validate_continuation_code,
+                    )
+
+                    verify_native_docker(packet)
+                    if packet["expected_images"]:
+                        verify_native_compose(packet)
+                    git.development(dict(packet, selected=packet["new"]))
+                    for key in ("native", "runtime"):
+                        before = packet["native_before"] if key == "native" else runtime_before(packet)
+                        expected = before if mode == "Hold" else packet["new"]
+                        git.clean(packet["roots"][key], expected)
+                    if "continuation" in packet:
+                        from cre_current_stack import validate_current_stack
+
+                        validate_continuation_code(packet, git, packet["roots"]["development"])
+                        validate_current_stack(packet, evidence, evidence.obj(packet["continuation"]["current_stack"]))
+
+                with owned_boundary(args, raw, packet, evidence, git, checkpoint, lock, admitted,
+                                    extra_check=boundary_check) as boundary:
+                    ready = run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, output,
+                                                  admitted, boundary=boundary)
                 ready["owned_authority"] = owned_authority(checkpoint, lease)
                 evidence.recheck()
                 validate_maintenance_ready(packet, evidence, ready, now(), release_raw=raw, release_path=args.release)

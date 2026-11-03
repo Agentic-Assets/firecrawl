@@ -1,10 +1,12 @@
 """Synthetic host boundaries exercise actual owned-maintenance failure ordering."""
 
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
 
+import cre_code_handoff as operation
 import cre_runtime_maintenance as maintenance
 
 
@@ -43,6 +45,7 @@ def test_failed_dependency_install_keeps_recovery_and_original_error(tmp_path, m
     monkeypatch.setattr(maintenance, "validate_current_projection", lambda *_args, **_kwargs: None, raising=False)
     monkeypatch.setattr(maintenance, "maintenance_readiness", lambda *_args, **_kwargs: {}, raising=False)
     monkeypatch.setattr(maintenance, "run_maintenance_steps", fail_install, raising=False)
+    monkeypatch.setattr(operation, "owned_boundary", lambda *_args, **_kwargs: nullcontext(None))
     def report_failure(*_args, **_kwargs):
         if failure_report_raises:
             raise OSError("synthetic failure-report error")
