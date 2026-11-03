@@ -43,10 +43,12 @@ for the POSIX runner. CRE offline tests require a separate no-hardlinks clone;
 Linux verification does not prove native Windows or native Mac runtime parity.
 Separate Linux and native Mac offline regression proof is recorded on
 [AGENTIC-3753](https://linear.app/agenticassets/issue/AGENTIC-3753); it does not
-establish a live refresh or authorize a Mac writer. The Linux safety port
-merged after founder approval in PR108. Follow the separate production cutover
-gates; do not
-bypass guards, enable a scheduler or perform production writes for onboarding.
+establish a live refresh or authorize a Mac writer. For current Windows operation,
+follow the [current-state procedure](references/development-and-runtime-checkouts.md#routine-operation-and-updates):
+keep eligible sources running, report partial outcomes, and resolve an uncertain
+write before replay. A Mac readback or an old cutover packet is not a routine
+Windows restart prerequisite. Keep local writer exclusion and data ownership;
+onboarding alone does not authorize a new scheduler or production write.
 
 For CRE database transport failures, use
 [WSL Supabase connection troubleshooting](references/wsl-supabase-connection-troubleshooting.md).
