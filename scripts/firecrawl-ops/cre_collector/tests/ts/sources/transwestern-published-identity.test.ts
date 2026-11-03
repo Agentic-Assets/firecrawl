@@ -185,6 +185,37 @@ test("official proof fetch rejects transport failures, redirects and oversized b
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("placeholder proof logs the failing request phase without exception content and rethrows unchanged", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  try {
+    for (const [role, phase] of [["sitemap", "request"], ["sitemap", "body"], ["property", "request"], ["property", "body"]] as const) {
+      const failure = new TypeError("secret https://sensitive.invalid token");
+      const lines: string[] = [];
+      let calls = 0;
+      console.error = (...args) => { lines.push(args.map(String).join(" ")); };
+      globalThis.fetch = (async (input: any) => {
+        calls++;
+        const requested = String(input);
+        const currentRole = requested.endsWith("sitemap.xml") ? "sitemap" : "property";
+        if (role === currentRole && phase === "request") throw failure;
+        if (role === currentRole && phase === "body") {
+          const stream = new ReadableStream({ pull(controller) { controller.error(failure); } });
+          const result = new Response(stream);
+          Object.defineProperty(result, "url", { value: requested });
+          return result;
+        }
+        return response(currentRole === "sitemap" ? sitemap : html, requested);
+      }) as typeof fetch;
+      await assert.rejects(proveTranswesternPublishedIdentity(row, transwesternDetailPageIsUsable), (error: unknown) => error === failure);
+      assert.equal(calls, role === "sitemap" ? 1 : 2);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], new RegExp(`${role}.*${phase}.*TypeError`));
+      assert.doesNotMatch(lines[0], /secret|https?:|token/);
+    }
+  } finally { globalThis.fetch = originalFetch; console.error = originalError; }
+});
+
 test("native proof has a ten-second per-request deadline and shared twenty-second total", async () => {
   const originalFetch = globalThis.fetch;
   const originalTimeout = AbortSignal.timeout;
