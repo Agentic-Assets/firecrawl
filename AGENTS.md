@@ -73,6 +73,12 @@ The R2 listing document archive (bucket `cre-listing-documents` and the three `c
 For development, launcher, runtime, and isolated-test checkout roles—including exact-SHA
 handoff and database rollback limits, see [Development and runtime checkouts](docs/firecrawl-ops/references/development-and-runtime-checkouts.md).
 
+Keep the supported pipeline operating from healthy current state. Follow that
+guide's routine operation procedure; historical maintenance packets and full
+51-source acceptance are not normal restart prerequisites. Skip or hold a failed
+source while eligible sources continue, preserving local writer exclusion, data
+ownership and unresolved-write protections.
+
 ## Env files (which is which)
 
 - **`./.env`** — **primary when present.** This is the root file Docker Compose reads. It is gitignored and optional for non-AI local calls. Never commit it.

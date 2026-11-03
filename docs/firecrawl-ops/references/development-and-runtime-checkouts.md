@@ -2,6 +2,33 @@
 
 # Development and Runtime Checkouts
 
+## Routine operation and updates
+
+A healthy current Windows pipeline should run without reconstructing an old
+handoff packet, obtaining a Mac readback, or waiting for all 51 sources to be
+accepted. Establish the current local owner, task state, target and service
+health; avoid overlapping writers. Hold or skip an affected source and continue
+eligible sources where the runner supports it. An unknown write outcome remains
+fenced until its actual result is established; do not blindly replay it.
+
+For a routine reviewed update, select the intended merged main commit, wait for
+an idle local writer boundary, and fast-forward the native and WSL runtime
+checkouts. Install locked dependencies and rebuild only services whose actual
+build inputs changed. Update the affected task pins, verify the resulting code,
+dependencies and service health, then enable the intended tasks. Preserve the
+active Compose overlay and unaffected image pins. Do not pull blindly under an
+active writer or run an unattended pull. No Mac change is needed for this
+Windows procedure.
+
+The detailed packet, historical lineage and 900-second catch-up rules below
+belong to the legacy guarded recovery or handoff paths that implement them;
+they are not a general requirement for a settled current-state resume. Those
+existing commands continue to enforce their own checks until changed. Their
+forensic records remain available when an actual uncertain operation needs them.
+A saved task definition may still be used to check today's task settings without
+adopting its historical admission requirements. The routine update above is an
+operator procedure, not a claim that a general automated updater exists.
+
 The CRE collector is one shared pipeline. A development branch, Windows launcher checkout, Linux
 runtime checkout, and temporary test clone have different jobs; they are not separate pipeline
 implementations or independent writer authorities.

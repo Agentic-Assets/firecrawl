@@ -2,6 +2,17 @@ READ ~/AGENTS.md FIRST (skip if missing).
 
 # AGENTS.md - scripts/firecrawl-ops/
 
+## Operating priority
+
+Keep the Windows CRE pipeline running when its current target is healthy and no
+local writer or unresolved write outcome makes dispatch unsafe. A failed or
+unavailable source should be held or skipped while eligible sources continue on
+a supported runner; report a partial result honestly. Acceptance of all 51
+sources is a separate goal, not a prerequisite for normal operation. Windows
+resume does not require a Mac readback or a change to the Mac setup. Use saved
+incident packets only when needed to resolve that incident, not as a standing
+requirement for an otherwise settled current-state resume.
+
 Agent routing for this folder. This file stays compact; use `README.md` for
 the longer human guide and runbook.
 
