@@ -29,7 +29,7 @@ function Refuses([scriptblock]$Action,[string]$Message,[string]$ExpectedError) {
     Assert-Fixture ($null -ne $caught) $Message
     if($ExpectedError) {Assert-Fixture ($caught.Exception.Message.Contains($ExpectedError)) ($Message+'; unexpected error: '+$caught.Exception.Message)}
 }
-$fixture=@{fleet=@{};disableCalls=0;failDisableName='';foreignFrontend=$true;owners=0;root=$null}
+$fixture=@{fleet=@{};disableCalls=0;failDisableName='';foreignFrontend=$true;owners=0;root=$null;recheckError=$false}
 foreach($clockText in @('2001-02-03T04:05:06Z','2001-02-03T04:05:06.1234567+05:30')) {
     $clockWire=Read-CreHandoffJson ('{"clock":"'+$clockText+'","nested":[{"clock":"'+$clockText+'"}]}')
     Assert-Fixture ($clockWire.clock -is [string] -and $clockWire.clock -ceq $clockText -and $clockWire.nested[0].clock -is [string] -and $clockWire.nested[0].clock -ceq $clockText) 'JSON reader must retain exact ISO clock types and lexemes at every depth'
@@ -52,6 +52,11 @@ Set-Item Function:Get-CimInstance -Value ({
         if(($Property -join ',') -cne 'ProcessId,ParentProcessId,CreationDate') {throw 'Graph must not query command lines'}
         return $fixture.graph
     }
+    if($Filter -cmatch '^ProcessId=[0-9]+$') {
+        if($fixture.recheckError) {throw 'synthetic recheck failure'}
+        if(($Property -join ',') -cne 'ProcessId,CreationDate') {throw 'Recheck must not query command lines'}
+        return $fixture.recheck
+    }
     if($Filter -cne "Name='pwsh.exe' OR Name='powershell.exe'") {throw 'Only PowerShell command lines may be queried'}
     $fixture.hostCalls++
     return $fixture.hosts
@@ -63,6 +68,25 @@ $foreign=[pscustomobject]@{ProcessId=987654;Name='pwsh.exe';CreationDate=$birth;
 $fixture.graph=@($own);$fixture.hosts=@($selfHost,$foreign);$fixture.graphCalls=0;$fixture.hostCalls=0
 $frontends=@(Get-CreHandoffNativeFrontends)
 Assert-Fixture ($frontends.Count -eq 1 -and $frontends[0].pid -eq 987654 -and $frontends[0].Keys.Count -eq 2) 'Native observer must exclude own ancestry and retain PID/name only'
+$missingCommand=[pscustomobject]@{ProcessId=987655;Name='pwsh.exe';CreationDate=$birth;CommandLine=$null}
+$fixture.hosts=@($selfHost,$missingCommand);$fixture.recheck=@()
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 0) 'Vanished unclassifiable PowerShell process must not block'
+$fixture.recheck=@([pscustomobject]@{ProcessId=987655;CreationDate=$birth})
+Refuses {Get-CreHandoffNativeFrontends} 'Still-running unclassifiable process must refuse'
+$fixture.recheck=@([pscustomobject]@{ProcessId=987655;CreationDate=$birth.AddSeconds(1)})
+Refuses {Get-CreHandoffNativeFrontends} 'Reused PID at recheck must remain unclassifiable and refuse'
+$blankCommand=[pscustomobject]@{ProcessId=987655;Name='pwsh.exe';CreationDate=$birth;CommandLine=''}
+$fixture.hosts=@($selfHost,$blankCommand);$fixture.recheck=@()
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 0) 'Vanished blank-command-line process must not block'
+$fixture.recheck=@([pscustomobject]@{ProcessId=987655;CreationDate=$birth})
+Refuses {Get-CreHandoffNativeFrontends} 'Live empty-command-line process must refuse'
+$blankCommand.CommandLine='   '
+Refuses {Get-CreHandoffNativeFrontends} 'Live whitespace-command-line process must refuse'
+$fixture.recheck=@()
+Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 0) 'Vanished whitespace-command-line process must not block'
+$fixture.recheckError=$true
+Refuses {Get-CreHandoffNativeFrontends} 'Failed CIM recheck must refuse' 'synthetic recheck failure'
+$fixture.recheckError=$false
 $fixture.hosts=@($selfHost)
 Assert-Fixture (@(Get-CreHandoffNativeFrontends).Count -eq 0) 'Current ancestor must be excluded'
 $fixture.hosts=@([pscustomobject]@{ProcessId=$PID;Name='pwsh.exe';CreationDate=$birth.AddSeconds(1);CommandLine='Invoke-CreCodeHandoff.ps1'})
