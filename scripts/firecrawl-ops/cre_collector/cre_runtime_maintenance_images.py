@@ -106,11 +106,25 @@ def snapshot_container(inspect):
             "config_sha256": sha(json.dumps(stable, sort_keys=True, separators=(",", ":")).encode())}
 
 
+def _transition_fleet(before, after):
+    old, new = unique(before, "service"), unique(after, "service")
+    require(len(old) == 5 and set(old) == set(new), "container service fleet differs")
+    fields = {"service", "id", "image", "started_at", "config_sha256", "restart_policy", "status"}
+    for row in [*old.values(), *new.values()]:
+        require(set(row) == fields and row["status"] == "running"
+                and all(isinstance(row[field], str) and row[field] for field in fields)
+                and re.fullmatch(r"[0-9a-f]{64}", row["config_sha256"]),
+                "container observation malformed")
+    return old, new
+
+
 def qualify_image_transition(before, after, expected_images, *, expected_after_config=None):
     """Compare to old settings or a separately qualified expected after-config."""
-    old = unique(before, "service")
-    new = unique(after, "service")
-    require(len(old) == 5 and set(old) == set(new), "container service fleet differs")
+    old, new = _transition_fleet(before, after)
+    _qualify_replaced_images(old, new, expected_images, expected_after_config)
+
+
+def _qualify_replaced_images(old, new, expected_images, expected_after_config):
     require(isinstance(expected_images, dict) and expected_images
             and set(expected_images) <= {"api", "playwright-service", "nuq-postgres"}
             and set(expected_images) <= set(old), "unexpected image rebuild service")
@@ -119,14 +133,8 @@ def qualify_image_transition(before, after, expected_images, *, expected_after_c
     require(isinstance(expected_after_config, dict) and set(expected_after_config) <= set(expected_images)
             and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
                     for value in expected_after_config.values()), "invalid expected after-config bindings")
-    fields = {"service", "id", "image", "started_at", "config_sha256", "restart_policy", "status"}
     for name in old:
         previous, current = old[name], new[name]
-        for row in (previous, current):
-            require(set(row) == fields and row["status"] == "running"
-                    and all(isinstance(row[field], str) and row[field] for field in fields)
-                    and re.fullmatch(r"[0-9a-f]{64}", row["config_sha256"]),
-                    "container observation malformed")
         if name not in expected_images:
             require(previous == current, "unrelated container changed")
             continue
@@ -137,3 +145,30 @@ def qualify_image_transition(before, after, expected_images, *, expected_after_c
                 "container runtime configuration changed")
         require(current["id"] != previous["id"] and current["started_at"] != previous["started_at"],
                 "rebuilt container was not replaced")
+
+
+def qualify_current_image_transition(before, after, expected_images, *, expected_after_config=None):
+    """Separate byte-identical no-ops from services that actually need replacement."""
+    old, new = _transition_fleet(before, after)
+    require(set(old) == {"api", "playwright-service", "nuq-postgres", "redis", "rabbitmq"}
+            and isinstance(expected_images, dict) and expected_images
+            and set(expected_images) <= {"api", "playwright-service", "nuq-postgres"},
+            "image fleet or affected scope differs")
+    expected_config = {} if expected_after_config is None else expected_after_config
+    require(isinstance(expected_config, dict) and set(expected_config) <= set(expected_images),
+            "invalid expected after-config scope")
+    unchanged = set()
+    for name, image in expected_images.items():
+        require(isinstance(image, str) and image, "expected image identity missing")
+        if (old[name]["image"] == image
+                and expected_config.get(name, old[name]["config_sha256"]) == old[name]["config_sha256"]):
+            require(old[name] == new[name], "unchanged image or configuration drifted")
+            unchanged.add(name)
+    replaced = set(expected_images) - unchanged
+    if replaced:
+        _qualify_replaced_images(old, new, {name: expected_images[name] for name in replaced},
+                                 {name: expected_config[name] for name in replaced if name in expected_config})
+    else:
+        require(old == new and all(row.get("status") == "running" for row in old.values()),
+                "unchanged fleet drifted")
+    return {"unchanged": sorted(unchanged), "replaced": sorted(replaced)}
