@@ -357,7 +357,7 @@ def validate_failed_handoff(packet, evidence, *, failed_code=None):
     return source, mutation, ready, audit
 
 
-def validate_restoration(packet, evidence, *, historical=False):
+def validate_restoration(packet, evidence, *, historical=False, git=None):
     require(packet.get("schema") == "cre-code-restoration-v1"
             and packet.get("scope") == "restore-held-task-states", "unknown restoration packet/scope")
     for field in ("code", "development", "tooling"):
@@ -376,8 +376,12 @@ def validate_restoration(packet, evidence, *, historical=False):
     if "maintenance_transition" in packet:
         from cre_runtime_maintenance_transition import validate_maintenance_transition
 
-        transition = validate_maintenance_transition(evidence.obj(packet["maintenance_transition"]), evidence.read,
-                                                     retain=evidence.original_payloads)
+        if git is None:
+            transition = validate_maintenance_transition(evidence.obj(packet["maintenance_transition"]), evidence.read,
+                                                         retain=evidence.original_payloads)
+        else:
+            transition = validate_maintenance_transition(evidence.obj(packet["maintenance_transition"]), evidence.read,
+                                                         retain=evidence.original_payloads, git=git)
         historical_code = identity(transition["old"])
         require(transition["new"] == packet["code"]
                 and transition["failed_handoff_release_sha256"] == sha(evidence.raw(packet["failed_handoff"]["release"]))
@@ -562,13 +566,16 @@ def _context_bytes(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def prepare_enable_context(packet, evidence, current):
+def prepare_enable_context(packet, evidence, current, *, git=None):
     """Validate the full lineage once and retain only its immutable facts."""
     mode = packet.get("enable_boundary")
     require(mode in {"zero-missed-no-crossed-trigger-v1", "founder-approved-catchup-v1"},
             "restoration catch-up admission unsupported; bounded absence cannot authorize Enable")
     if "maintenance_transition" in packet:
-        validate_restoration(packet, evidence, historical=True)
+        if git is None:
+            validate_restoration(packet, evidence, historical=True)
+        else:
+            validate_restoration(packet, evidence, historical=True, git=git)
         failed_code = evidence.obj(packet["failed_handoff"]["release"])["selected"]
     else:
         failed_code = packet["code"]

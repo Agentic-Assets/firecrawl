@@ -157,7 +157,7 @@ def validate_maintenance_git_witness(packet, git, history_git, history_repo):
         validate_maintenance_tracking_history(history_git, history_repo, old, git[key]["before"]["tracking"], packet["new"])
 
 
-def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw, release_path):
+def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw, release_path, git=None):
     """Authenticate the still-owned, held-fleet ready boundary from retained bytes."""
     import re
 
@@ -186,8 +186,11 @@ def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw,
             and ready.get("release_sha256") == sha(release_raw)
             and ready.get("old") == packet["old"] and ready.get("new") == packet["new"]
             and ready.get("recovery_required_at_publication") is True, "maintenance ready release differs")
-    validate_maintenance_release(packet, evidence)
-    history_git = Git(packet["programs"]["native_git"])
+    if git is None:
+        validate_maintenance_release(packet, evidence)
+    else:
+        validate_maintenance_release(packet, evidence, git=git)
+    history_git = git if git is not None else Git(packet["programs"]["native_git"])
     history_repo = packet["roots"]["development"]
     history_git.maintenance_ancestry(history_repo, packet["old"], packet["native_before"], packet["new"])
     if runtime_before(packet) != packet["old"]:
@@ -252,7 +255,7 @@ def validate_maintenance_ready(packet, evidence, ready, current, *, release_raw,
         validate_maintenance_projection_review(packet, evidence, ready["projection"])
         qualify_image_transition(before, after, packet["expected_images"], expected_after_config=packet["expected_after_config"])
         from cre_runtime_maintenance_build import validate_prepared_image_history
-        validate_prepared_image_history(packet, evidence, Git(packet["programs"]["native_git"]), packet["roots"]["development"])
+        validate_prepared_image_history(packet, evidence, history_git, packet["roots"]["development"])
     else:
         require(before == after, "unchanged images/containers differ")
     selected_snapshot = json_bytes(raw("selected_snapshot"))
@@ -319,7 +322,44 @@ def make_maintenance_transition(release_path, operation, independent, read):
             "independent_observation": reference(independent / "observation.json", read), "tasks": rows}
 
 
-def validate_maintenance_transition(receipt, read, *, retain=None):
+def original_held_release(packet, evidence, read):
+    """Find the original no-pin held release, retaining every predecessor input."""
+    from cre_code_handoff_evidence import Evidence
+
+    current, current_evidence, seen = packet, evidence, set()
+    for depth in range(9):
+        tasks = unique(current.get("task_baseline"), "key", TASKS)
+        pins = ["pin_before" in row for row in tasks.values()]
+        require(all(pins) or not any(pins), "historical held pins incomplete")
+        if not any(pins):
+            return current, current_evidence
+        require(depth < 8, "historical held predecessor depth exceeded")
+        role = current.get("continuation", {}).get("failed_release")
+        require(isinstance(role, str), "historical held predecessor missing")
+        raw = current_evidence.raw(role)
+        digest = sha(raw)
+        require(digest not in seen, "historical held predecessor cycle")
+        seen.add(digest)
+        prior = json_bytes(raw)
+        require(prior.get("schema") == "cre-runtime-maintenance-v1" and prior.get("old") == packet["old"],
+                "historical held predecessor identity differs")
+        if current_evidence is not evidence:
+            current_evidence.recheck()
+            evidence.original_payloads.update(current_evidence.original_payloads)
+            evidence.original_payloads.update({current_evidence.inputs[key]["path"]: value
+                                               for key, value in current_evidence.original.items()})
+        current_evidence = Evidence(prior, read)
+        current = prior
+    require(False, "historical held predecessor depth exceeded")
+
+
+def historical_held_tasks(packet, evidence, read):
+    """Return the original held task rows after the bounded predecessor walk."""
+    release, original = original_held_release(packet, evidence, read)
+    return original, unique(release.get("task_baseline"), "key", TASKS)
+
+
+def validate_maintenance_transition(receipt, read, *, retain=None, git=None):
     """Join one genuine failed predecessor to an owned maintenance and independent readback."""
     from cre_code_handoff_evidence import (
         Evidence,
@@ -361,8 +401,12 @@ def validate_maintenance_transition(receipt, read, *, retain=None):
             and payload(receipt["authorization"]) == retained_reference(ready["authorization"], evidence)
             and payload(receipt["initial_observation"]) == retained_reference(ready["initial_observation"], evidence),
             "maintenance transition mixes admission inputs")
-    validate_maintenance_ready(packet, evidence, ready, clock(ready["readiness"]["qualified_at"]),
-                               release_raw=release_raw, release_path=receipt["release"]["path"])
+    if git is None:
+        validate_maintenance_ready(packet, evidence, ready, clock(ready["readiness"]["qualified_at"]),
+                                   release_raw=release_raw, release_path=receipt["release"]["path"])
+    else:
+        validate_maintenance_ready(packet, evidence, ready, clock(ready["readiness"]["qualified_at"]),
+                                   release_raw=release_raw, release_path=receipt["release"]["path"], git=git)
     mutation = json_bytes(payload(receipt["mutation"]))
     operation = canonical_path(ready["operation_output"])
     for field, suffix in (("mutation", "/mutation-start.json"), ("ready", "/maintenance-ready.json"),
@@ -420,9 +464,7 @@ def validate_maintenance_transition(receipt, read, *, retain=None):
     originals = unique(packet["task_baseline"], "key", TASKS)
     partial = any("pin_before" in row for row in originals.values())
     if partial:
-        prior = evidence.obj(packet["continuation"]["failed_release"])
-        prior_evidence = Evidence(prior, read)
-        historic = unique(prior["task_baseline"], "key", TASKS)
+        prior_evidence, historic = historical_held_tasks(packet, evidence, read)
     observed = unique(observation["tasks"], "key", TASKS)
     results = {}
     for key, row in unique(receipt.get("tasks"), "key", TASKS).items():

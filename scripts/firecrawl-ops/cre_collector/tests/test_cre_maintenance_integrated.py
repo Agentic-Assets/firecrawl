@@ -164,19 +164,24 @@ def run_actual_apply_steps(case, tmp_path, monkeypatch, with_images, *, with_ipc
         if with_images and selected:
             host["containers"][1].update(id="new-api", image=case.packet["expected_images"]["api"], started_at="new-epoch")
         before_identity = getattr(case, "before_identity", case.old)
-        return dict(host, native=case.new if selected else before_identity, runtime=case.new if selected else before_identity,
+        before = getattr(case, "before_identities", {"native": before_identity, "runtime": before_identity})
+        return dict(host, native=case.new if selected else before["native"], runtime=case.new if selected else before["runtime"],
                     ownership={"phase": "owned-maintenance" if owned else "released-clear",
                                "verified": True, "recovery_required": owned})
     monkeypatch.setattr(maintenance, "maintenance_readiness", readiness)
     before_identity = getattr(case, "before_identity", case.old)
-    states = {str(local(case.packet["roots"][key])): before_identity for key in ("native", "runtime")}
+    before = getattr(case, "before_identities", {"native": before_identity, "runtime": before_identity})
+    states = {str(local(case.packet["roots"][key])): before[key] for key in ("native", "runtime")}
     class Git:
         def development(self, *_args): pass
         def maintenance_ancestry(self, *_args): pass
         def entries(self, root, commit): return git_module.Git("unused").entries(root, commit)
+        def command(self, root, *args, **kwargs): return git_module.Git("unused").command(root, *args, **kwargs)
         def clean(self, root, identity, **_kwargs): assert states[str(local(root))] == identity
         def maintenance_fast_forward(self, root, _scope, _bundle, **_kwargs): states[str(local(root))] = case.new
         def text(self, root, *args):
+            if str(local(root)) not in states:
+                return git_module.Git("unused").text(root, *args)
             state = states[str(local(root))]
             if args[0] == "status": return ""
             return state["tree"] if args[-1] == "HEAD^{tree}" else state["sha"]

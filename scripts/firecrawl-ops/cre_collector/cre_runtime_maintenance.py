@@ -1,5 +1,6 @@
 """Guarded runtime maintenance admission and operation."""
 
+import json
 import os
 import re
 import sys
@@ -96,15 +97,9 @@ def validate_historical_admission(packet, evidence):
     from cre_code_handoff_git import windows_path
 
     windows_path(programs["native_docker"])
-    historical_source = packet
-    historical_inputs = evidence
-    if any("pin_before" in row for row in packet.get("task_baseline", [])):
-        continuation = packet.get("continuation")
-        require(isinstance(continuation, dict) and isinstance(continuation.get("failed_release"), str),
-                "mixed task pins require retained predecessor")
-        historical_source = evidence.obj(continuation["failed_release"])
-        require(historical_source.get("old") == old, "predecessor original identity differs")
-        historical_inputs = Evidence(historical_source, evidence.read)
+    from cre_runtime_maintenance_transition import original_held_release
+
+    historical_source, historical_inputs = original_held_release(packet, evidence, evidence.read)
     historical = dict(historical_source, schema="cre-code-restoration-v1", scope="restore-held-task-states", code=old)
     historical["programs"] = {key: programs[key] for key in ("native_git", "powershell")}
     historical.pop("maintenance_transition", None)
@@ -121,7 +116,7 @@ def validate_historical_admission(packet, evidence):
     evidence.original_payloads.update(historical_evidence.original_payloads)
 
 
-def validate_maintenance_release(packet, evidence):
+def validate_maintenance_release(packet, evidence, *, git=None):
     """Qualify retained A, the selected QA, and the closed maintenance scope."""
     require(packet.get("install_scope") in ([], ["collector"]), "unsupported dependency install scope")
     validate_historical_admission(packet, evidence)
@@ -147,7 +142,7 @@ def validate_maintenance_release(packet, evidence):
     if runtime_before(packet) != packet["old"] or "continuation" in packet:
         from cre_code_handoff_git import Git
 
-        validate_continuation(packet, evidence, Git(packet["programs"]["native_git"]),
+        validate_continuation(packet, evidence, git if git is not None else Git(packet["programs"]["native_git"]),
                               packet["roots"]["development"], live=False)
 
     scopes = {}
@@ -318,7 +313,7 @@ def maintenance_readiness(packet, modules, git, *, selected=False, owned=False):
     return host
 
 
-def recheck_continuation_stack(packet, evidence, git):
+def recheck_continuation_stack(packet, evidence, git, *, raw=None):
     """Reobserve the reviewed stack in a private Linux directory before mutation."""
     import tempfile
     from pathlib import Path
@@ -331,8 +326,23 @@ def recheck_continuation_stack(packet, evidence, git):
     if "continuation" not in packet or runtime_before(packet) == packet["old"]:
         return
     with tempfile.TemporaryDirectory(prefix="cre-current-stack-", dir="/tmp") as directory:
-        validate_continuation(packet, evidence, git, packet["roots"]["development"],
-                              live=True, output=Path(directory) / "capture")
+        from cre_maintenance_validation_context import LoadedMaintenance
+
+        loaded = getattr(evidence, "_loaded_maintenance", None)
+        if raw is None or not isinstance(loaded, LoadedMaintenance):
+            validate_continuation(packet, evidence, git, packet["roots"]["development"],
+                                  live=True, output=Path(directory) / "capture")
+            return
+        from cre_current_stack import capture_current_stack, resolve_image_source
+
+        loaded.unchanged(raw, packet, evidence)
+        receipt = evidence.obj(packet["continuation"]["current_stack"])
+        prior_raw, prior, previous = resolve_image_source(packet, evidence, git, packet["roots"]["development"])
+        fresh = capture_current_stack(prior_raw, prior, previous, Path(directory) / "capture",
+                                      tooling_identity=packet["tooling"])
+        require(json_bytes(read_file(fresh["path"])) == receipt, "fresh current stack differs from review")
+        evidence.recheck()
+        loaded.unchanged(raw, packet, evidence)
 
 
 def observe_maintenance(args, raw, packet, evidence, git, modules):
@@ -341,7 +351,7 @@ def observe_maintenance(args, raw, packet, evidence, git, modules):
 
     output = local_path(args.output)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
-    recheck_continuation_stack(packet, evidence, git)
+    recheck_continuation_stack(packet, evidence, git, raw=raw)
     observation = maintenance_readiness(packet, modules, git)
     runner = Foreground(packet, modules[0], output)
     runner.native("Observe", args.release, sha(raw))
@@ -434,7 +444,8 @@ def postreadback_maintenance(args, raw, packet, evidence, git, modules):
 
 def authorize_maintenance(args, raw, packet, evidence):
     """Publish a short-lived, single-output authorization after review."""
-    from cre_code_handoff import now, write_new
+    from cre_code_handoff import check_boundary_times, now, write_new
+    from cre_maintenance_validation_context import EvidenceSeal
 
     observed_raw, review_raw = read_file(args.observation), read_file(args.review)
     current = now()
@@ -446,11 +457,12 @@ def authorize_maintenance(args, raw, packet, evidence):
                                 "reviewer": args.reviewer, "approval_ref": args.approval_ref}}
     validate_maintenance_authorization(raw, packet, evidence, observed_raw, authorization, current,
                                        output=args.output, review_reader=read_file)
-    evidence.recheck()
-    require(read_file(args.observation) == observed_raw and read_file(args.review) == review_raw,
+    seal = EvidenceSeal(packet, evidence)
+    seal.recheck(packet, evidence)
+    require(read_file(args.release) == raw and read_file(args.observation) == observed_raw
+            and read_file(args.review) == review_raw,
             "maintenance publication inputs changed")
-    validate_maintenance_authorization(raw, packet, evidence, observed_raw, authorization, now(),
-                                       output=args.output, review_reader=read_file)
+    check_boundary_times(observed_raw, json.dumps(authorization).encode())
     write_new(local_path(args.authorization), authorization)
 
 
@@ -477,6 +489,7 @@ def record_maintenance_failure(args, raw, packet, checkpoint, output, classifica
 def apply_maintenance(args, raw, packet, evidence, git, modules):
     """Run one owned held-fleet operation; never enable a scheduled task."""
     from cre_code_handoff import (
+        check_boundary_times,
         lock_clear,
         now,
         owned_authority,
@@ -491,18 +504,33 @@ def apply_maintenance(args, raw, packet, evidence, git, modules):
     output = local_path(args.output)
 
     def admitted():
-        require(read_file(args.observation) == observed_raw and read_file(args.authorization) == authorization_raw,
+        require(read_file(args.release) == raw and read_file(args.observation) == observed_raw
+                and read_file(args.authorization) == authorization_raw,
                 "maintenance admission inputs changed")
         validate_maintenance_authorization(raw, packet, evidence, observed_raw, authorization, now(),
                                            output=output, review_reader=read_file)
+        check_boundary_times(observed_raw, authorization_raw)
 
-    validate_maintenance_release(packet, evidence)
+    from cre_maintenance_validation_context import LoadedMaintenance
+
+    loaded = getattr(evidence, '_loaded_maintenance', None)
+    if isinstance(loaded, LoadedMaintenance):
+        loaded.unchanged(raw, packet, evidence)
+    else:
+        validate_maintenance_release(packet, evidence)
     admitted()
+    if isinstance(loaded, LoadedMaintenance):
+        loaded.extend_after_admission(raw, packet, evidence, authorization)
     validate_operation_paths(packet, output)
     if packet["expected_images"]:
         validate_prepared_images(packet, evidence, git)
     git.development(dict(packet, selected=packet["new"]))
-    recheck_continuation_stack(packet, evidence, git)
+    recheck_continuation_stack(packet, evidence, git, raw=raw)
+    stack_replay = None
+    if 'continuation' in packet:
+        from cre_maintenance_validation_context import qualify_stack_replay
+
+        stack_replay = qualify_stack_replay(packet, evidence)
     maintenance_readiness(packet, modules, git)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     if packet["expected_images"]:
@@ -535,13 +563,11 @@ def apply_maintenance(args, raw, packet, evidence, git, modules):
                         expected = before if mode == "Hold" else packet["new"]
                         git.clean(packet["roots"][key], expected)
                     if "continuation" in packet:
-                        from cre_current_stack import validate_current_stack
-
                         validate_continuation_code(packet, git, packet["roots"]["development"])
-                        validate_current_stack(packet, evidence, evidence.obj(packet["continuation"]["current_stack"]))
+                        stack_replay.recheck()
 
                 with owned_boundary(args, raw, packet, evidence, git, checkpoint, lock, admitted,
-                                    extra_check=boundary_check) as boundary:
+                                    extra_check=boundary_check, admitted_rechecks_evidence=True) as boundary:
                     ready = run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, output,
                                                   admitted, boundary=boundary)
                 ready["owned_authority"] = owned_authority(checkpoint, lease)

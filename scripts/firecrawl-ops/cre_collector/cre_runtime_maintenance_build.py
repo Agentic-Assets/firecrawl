@@ -753,6 +753,8 @@ def _validate_prepared_images(packet, evidence, git, source_repo, *, live):
         archive = _source_archive(repo, selected, service)
         _verify_archive_tree(git, repo, selected, service, archive)
         require(row["archive_sha256"] == sha(archive), "prepared source archive differs")
+        if callable(getattr(git, "record_archive", None)):
+            git.record_archive(repo, selected, service, row["archive_sha256"])
         require(_payload(evidence, row["context"]) == _context_tar(archive, service),
                 "prepared Docker context differs from selected source")
         command = [str(local_path(packet["programs"]["native_docker"])), "--host", ENGINE,

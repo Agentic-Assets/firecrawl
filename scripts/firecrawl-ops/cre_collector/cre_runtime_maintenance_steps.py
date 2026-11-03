@@ -81,7 +81,6 @@ def run_maintenance_steps(args, raw, packet, evidence, git, modules, lock, outpu
         if packet["expected_images"]:
             verify_native_compose(packet)
         admitted()
-        evidence.recheck()
         assert_owned(checkpoint, lock, os.getpid())
 
     def recorded(name, action):

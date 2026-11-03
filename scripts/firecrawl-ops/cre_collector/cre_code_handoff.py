@@ -70,6 +70,10 @@ def load_release(path):
     else:
         validate_release(release, evidence)
     release["roots"] = role_paths(release)
+    if release.get("schema") == "cre-runtime-maintenance-v1":
+        from cre_maintenance_validation_context import LoadedMaintenance
+
+        evidence._loaded_maintenance = LoadedMaintenance(raw, release, evidence)
     return raw, release, evidence
 
 
@@ -312,7 +316,8 @@ def boundary_client(args):
                      lambda: check_boundary_times(observed_raw, auth_raw))
 
 
-def owned_boundary(args, raw, packet, evidence, git, checkpoint, lock, admitted, *, extra_check=None):
+def owned_boundary(args, raw, packet, evidence, git, checkpoint, lock, admitted, *, extra_check=None,
+                   admitted_rechecks_evidence=False):
     """Keep the fully validated evidence in its lease owner for native checks."""
     from cre_owned_handoff_boundary import OwnerBoundary
 
@@ -336,7 +341,8 @@ def owned_boundary(args, raw, packet, evidence, git, checkpoint, lock, admitted,
         require(json.dumps(packet, sort_keys=True, separators=(",", ":")).encode() == packet_bytes
                 and evidence.original == original and evidence.original_payloads == payloads,
                 "validated owner evidence changed")
-        evidence.recheck()
+        if not admitted_rechecks_evidence:
+            evidence.recheck()
         require(boundary_executables(packet) == executables, "owned executable changed")
         runtime_modules(packet, git)
         if extra_check is not None:
@@ -768,8 +774,10 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
         prepare_enable_context,
         validate_enable_context,
     )
+    from cre_maintenance_validation_context import RecordingGit
 
-    enable_context = prepare_enable_context(packet, evidence, now)
+    history_git = RecordingGit(packet["programs"]["native_git"])
+    enable_context = prepare_enable_context(packet, evidence, now, git=history_git)
 
     def boundary_admitted():
         require(read_file(args.release) == packet_raw and read_file(args.observation) == observed_raw
@@ -793,13 +801,7 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
                 admitted()
                 readiness(packet, *modules, git, owned=True, evidence=evidence)
                 def boundary_check(_mode):
-                    if "maintenance_transition" in packet:
-                        from cre_runtime_maintenance_transition import (
-                            validate_maintenance_transition,
-                        )
-
-                        validate_maintenance_transition(evidence.obj(packet["maintenance_transition"]), evidence.read,
-                                                        retain=evidence.original_payloads)
+                    history_git.recheck()
                     for key in ("native", "runtime"):
                         git.clean(packet["roots"][key], packet["code"])
                     git.clean(packet["roots"]["development"], packet["development"],
@@ -808,7 +810,8 @@ def apply_restoration(args, packet_raw, packet, evidence, git, modules):
                                 packet["code"]["sha"], packet["development"]["sha"])
 
                 with owned_boundary(args, packet_raw, packet, evidence, git, checkpoint, lock,
-                                    boundary_admitted, extra_check=boundary_check) as boundary:
+                                    boundary_admitted, extra_check=boundary_check,
+                                    admitted_rechecks_evidence=True) as boundary:
                     runner = Foreground(packet, checkpoint, output, lock, boundary)
                     runner.native("Restore", args.release, sha(packet_raw), args.observation, args.authorization)
                     runner.native("Verify", args.release, sha(packet_raw), args.observation, args.authorization)

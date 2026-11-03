@@ -601,7 +601,7 @@ def resolve_image_source(packet, evidence, git, repo):
     require(False, 'image predecessor depth exceeded')
 
 
-def validate_current_stack(packet, evidence, receipt):
+def validate_current_stack(packet, evidence, receipt, *, git=None):
     """Validate retained commitments and an independent review, never live state.
 
     Hash equality is evidence of equality to the approved commitment; it does
@@ -614,7 +614,7 @@ def validate_current_stack(packet, evidence, receipt):
     model_raw = evidence.raw(role)
     require(json_bytes(model_raw) == receipt and receipt.get('schema') == 'cre-current-stack-model-v1',
             'current model bytes or schema differ')
-    git = Git(packet['programs']['native_git'])
+    git = git if git is not None else Git(packet['programs']['native_git'])
     prior_raw, prior, previous = resolve_image_source(packet, evidence, git, packet['roots']['development'])
     require(receipt.get('prior_release_sha256') == sha(prior_raw)
             and receipt.get('source_identity') == prior.get('new')

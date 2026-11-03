@@ -170,18 +170,22 @@ def validate_continuation_code(packet, git, source_repo):
     """Prove the resumed checkout is an ancestor and image inputs are unchanged."""
     old, before, selected = identity(packet.get("old")), runtime_before(packet), identity(packet.get("new"))
     native = identity(packet.get("native_before"))
-    require(native == before, "continuation requires aligned pre-update checkouts")
+    kind = packet.get("continuation", {}).get("failure_kind")
+    require(native == before if kind is None else kind == "native-advanced-hold-only-v1" and native != before,
+            "continuation requires aligned checkouts or an authenticated held-prefix failure")
     git.maintenance_ancestry(source_repo, old, before, selected)
     git.maintenance_ancestry(source_repo, old, native, selected)
     require(packet.get("expected_images") == {} and packet.get("image_tags") == {}
             and packet.get("install_scope") == [], "continuation must not rebuild images or install dependencies")
-    previous, current = git.entries(source_repo, before["sha"]), git.entries(source_repo, selected["sha"])
-    changed = {path for path in previous.keys() | current.keys() if previous.get(path) != current.get(path)}
+    current = git.entries(source_repo, selected["sha"])
     manifests = {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
                  "requirements.txt", "pyproject.toml", "uv.lock"}
-    require(not any(not path.startswith(("scripts/firecrawl-ops/", "docs/firecrawl-ops/"))
-                    or PurePosixPath(path).name in manifests for path in changed),
-            "continuation changes image or dependency inputs")
+    for identity_before in (before, native):
+        previous = git.entries(source_repo, identity_before["sha"])
+        changed = {path for path in previous.keys() | current.keys() if previous.get(path) != current.get(path)}
+        require(not any(not path.startswith(("scripts/firecrawl-ops/", "docs/firecrawl-ops/"))
+                        or PurePosixPath(path).name in manifests for path in changed),
+                "continuation changes image or dependency inputs")
 
 
 def validate_continuation(packet, evidence, git, source_repo, *, live=False, output=None):
@@ -195,12 +199,27 @@ def validate_continuation(packet, evidence, git, source_repo, *, live=False, out
     fields = {"failed_release", "failed_operation", "failure_manifest", "recovery_completed",
               "recovery_prepared", "recovery_expected_state", "current_stack", "current_stack_review"}
     fresh_fields = {"fresh_held_observation", "fresh_held_capture", "fresh_held_program"}
-    require(isinstance(continuation, dict) and set(continuation) in (fields, fields | fresh_fields),
+    prefix_fields = fields | fresh_fields | {"failure_kind"}
+    require(isinstance(continuation, dict) and set(continuation) in (fields, fields | fresh_fields, prefix_fields),
             "complete continuation evidence required")
-    roles = [value for key, value in continuation.items() if key != "failed_operation"]
+    hold_only = "failure_kind" in continuation
+    require(not hold_only or continuation["failure_kind"] == "native-advanced-hold-only-v1",
+            "held-prefix failure kind differs")
+    roles = [value for key, value in continuation.items() if key not in {"failed_operation", "failure_kind"}]
     require(all(isinstance(role, str) and role in evidence.inputs for role in roles)
             and len(set(roles)) == len(roles), "continuation evidence roles differ")
-    validate_continuation_predecessor(packet, evidence, continuation)
+    if hold_only:
+        from cre_runtime_maintenance_prefix import validate_held_prefix
+
+        if git is None:
+            validate_held_prefix(packet, evidence, continuation)
+        else:
+            validate_held_prefix(packet, evidence, continuation, git=git)
+    else:
+        if git is None:
+            validate_continuation_predecessor(packet, evidence, continuation)
+        else:
+            validate_continuation_predecessor(packet, evidence, continuation, git=git)
     from cre_current_stack import validate_current_stack, validate_current_stack_live
 
     receipt = evidence.obj(continuation["current_stack"])
@@ -209,10 +228,13 @@ def validate_continuation(packet, evidence, git, source_repo, *, live=False, out
         validate_current_stack_live(packet, evidence, receipt, output)
     else:
         require(output is None, "retained current-stack validation has no output")
-        validate_current_stack(packet, evidence, receipt)
+        if git is None:
+            validate_current_stack(packet, evidence, receipt)
+        else:
+            validate_current_stack(packet, evidence, receipt, git=git)
 
 
-def validate_continuation_predecessor(packet, evidence, continuation):
+def validate_continuation_predecessor(packet, evidence, continuation, *, git=None):
     """Bind the original failed operation and the exact governed recovery."""
     operation = local_path(continuation["failed_operation"])
     require(operation.is_absolute(), "absolute failed operation path required")
@@ -339,7 +361,7 @@ def validate_continuation_predecessor(packet, evidence, continuation):
     require(log_path in observed and sha(observed[log_path]) == hold.get("command_log_sha256"),
             "failed operation hold log differs")
     _validate_failed_commands(packet, evidence, prior, prior_raw, operation, mutation, failure, owner,
-                              hold, observed, references, partial=partial)
+                              hold, observed, references, partial=partial, git=git)
     if partial:
         native_path = [path for path in observed if path.endswith("/native-observation.json")]
         require(len(native_path) == 1, "partial native readback missing")
@@ -382,7 +404,8 @@ def validate_continuation_predecessor(packet, evidence, continuation):
             capture = evidence.obj(capture_role)
             from cre_code_handoff_git import Git
 
-            validate_fresh_held_capture(packet, prior, evidence, fresh, capture, Git(packet["programs"]["native_git"]),
+            validate_fresh_held_capture(packet, prior, evidence, fresh, capture,
+                                        git if git is not None else Git(packet["programs"]["native_git"]),
                                         packet["roots"]["development"], evidence.inputs[capture_role]["path"])
             require(fresh.get("schema") == "cre-held-partial-maintenance-observation-v1"
                     and fresh.get("frontends") == [] and fresh.get("instances") == []
@@ -451,7 +474,7 @@ def validate_continuation_predecessor(packet, evidence, continuation):
 
 
 def _validate_failed_commands(packet, evidence, prior, prior_raw, operation, mutation, failure, owner,
-                              hold, observed, references, *, partial=False):
+                              hold, observed, references, *, partial=False, hold_only=False, git=None):
     """Verify the seven actual settled commands and the original authorization."""
     from cre_code_handoff_evidence import DEPENDENCY_CHECKS, Evidence, clock
     from cre_code_handoff_git import windows_path
@@ -475,7 +498,10 @@ def _validate_failed_commands(packet, evidence, prior, prior_raw, operation, mut
     require(sha(authorization_raw) == mutation.get("authorization_sha256"), "original authorization differs")
     evidence.original_payloads[original_authorization] = authorization_raw
     prior_evidence = Evidence(prior, evidence.read)
-    validate_maintenance_release(prior, prior_evidence)
+    if git is None:
+        validate_maintenance_release(prior, prior_evidence)
+    else:
+        validate_maintenance_release(prior, prior_evidence, git=git)
     validate_maintenance_authorization(prior_raw, prior, prior_evidence, observation_raw,
                                        json_bytes(authorization_raw), clock(mutation["entered_at"]),
                                        output=str(operation), review_reader=evidence.read)
@@ -495,15 +521,16 @@ def _validate_failed_commands(packet, evidence, prior, prior_raw, operation, mut
 
     collector = local_path(prior["roots"]["runtime"]) / "scripts/firecrawl-ops/cre_collector"
     expected = [("01-native-hold", native("Hold"), None, None)]
-    if not partial:
+    if not partial and not hold_only:
         expected.append(("02-npm-ci", ["bash", "-c", 'cd -- "$1" && exec npm ci --ignore-scripts',
                                         "cre-maintenance", str(collector)], prior["new"], str(collector)))
-    for index, (name, args) in enumerate(DEPENDENCY_CHECKS.items(), start=2 if partial else 3):
-        expected.append((f"{index:02d}-{name}", ["bash", "-c", 'cd -- "$1" && shift && exec "$@"',
-                                                   "cre-maintenance", str(collector), *args],
-                         prior["new"], str(collector)))
-    expected.append(("05-native-repin", native("Repin"), None, None) if partial else
-                    ("06-compose-up", compose_argv(prior, prior_evidence), None, None))
+    if not hold_only:
+        for index, (name, args) in enumerate(DEPENDENCY_CHECKS.items(), start=2 if partial else 3):
+            expected.append((f"{index:02d}-{name}", ["bash", "-c", 'cd -- "$1" && shift && exec "$@"',
+                                                       "cre-maintenance", str(collector), *args],
+                             prior["new"], str(collector)))
+        expected.append(("05-native-repin", native("Repin"), None, None) if partial else
+                        ("06-compose-up", compose_argv(prior, prior_evidence), None, None))
     expected.append(("01-native-failurehold", native("FailureHold"), None, None))
     receipts = []
     for name, argv, selected, cwd in expected:
@@ -529,7 +556,7 @@ def _validate_failed_commands(packet, evidence, prior, prior_raw, operation, mut
     outer = json_bytes(observed[outer_key])
     require(outer.get("schema") == "cre-runtime-maintenance-outer-failure-v1"
             and outer.get("release_sha256") == sha(prior_raw)
-            and (not partial or (outer.get("original_error") == "Native foreground exit/drain uncertain"
+            and (not (partial or hold_only) or (outer.get("original_error") == "Native foreground exit/drain uncertain"
                                  and outer.get("commit_and_recovery_state") == "unknown; independent readback required"))
             and canonical_path(outer.get("operation_output")) == canonical_path(str(operation)),
             "native outer failure differs")
