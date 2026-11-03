@@ -9,18 +9,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-import cre_checkpoint_refresh as refresh
-import cre_refresh_pipeline as pipeline
-from cre_validate import FULL_VALIDATION_PROFILE, QUERIES, VALIDATION_AUDIT_SCOPES
+import test_notification_summary as notification_tests
 from test_cre_checkpoint_refresh import (
     ATTEMPT,
     freshness_generation_row,
     lifecycle_schema_contract_validation,
     strict_artifact,
 )
-import test_notification_summary as notification_tests
 from test_notification_summary import pipeline_evidence, read_pipeline
+
+import cre_checkpoint_refresh as refresh
+import cre_refresh_pipeline as pipeline
+from cre_validate import FULL_VALIDATION_PROFILE, QUERIES, VALIDATION_AUDIT_SCOPES
 
 evidence = notification_tests.evidence
 
@@ -30,15 +30,16 @@ SOURCES = ("cbre", "svn")
 
 
 @pytest.fixture
-def closed_pipeline(tmp_path, monkeypatch):
+def closed_pipeline(tmp_path, monkeypatch, request):
     """Keep real artifact/gate/unit/audit/readback code; replace external commands."""
     root = tmp_path / "2026-07-29T120000Z"
     root.mkdir()
+    sources = getattr(request, "param", SOURCES)
     manifest = refresh.new_manifest(
         root,
         git_sha=SHA,
         git_dirty=False,
-        sources=SOURCES,
+        sources=sources,
         page_cap=400,
         concurrency=1,
         pipeline=True,
@@ -47,8 +48,10 @@ def closed_pipeline(tmp_path, monkeypatch):
     )
     manifest["started_at"] = ATTEMPT
     events = []
-    gates = {"cbre": ["hold"], "svn": ["ok"]}
-    gate_calls = {key: 0 for key in SOURCES}
+    gates = {key: ["ok"] for key in sources}
+    if "cbre" in gates:
+        gates["cbre"] = ["hold"]
+    gate_calls = {key: 0 for key in sources}
     mutations = {}
     commands = []
     real_command = refresh.run_command
@@ -62,6 +65,7 @@ def closed_pipeline(tmp_path, monkeypatch):
             json.dumps(
                 strict_artifact(
                     source,
+                    detail_scope="detail_page" if source == "essex-realty" else "authoritative_inventory_feed",
                     generation=run.name,
                     generation_started_at=ATTEMPT,
                 )
@@ -108,6 +112,24 @@ def closed_pipeline(tmp_path, monkeypatch):
         commands.append(list(argv))
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("closed command boundary\n")
+        if script == "cre_essex_identity.py":
+            from cre_essex_identity import projection_digest, stage_essex_identity
+
+            if mutations.get("identity_error"):
+                return 1
+            rows = stage_essex_identity(json.loads(Path(argv[argv.index("--artifact") + 1]).read_bytes()))
+            report = {
+                "schema": "cre-essex-preseal-identity-v1", "source": "essex-realty",
+                "artifact_sha256": argv[argv.index("--artifact-sha256") + 1],
+                "generation_id": argv[argv.index("--generation") + 1],
+                "producer_sha": argv[argv.index("--producer") + 1],
+                "database_target_sha256": argv[argv.index("--target-sha256") + 1],
+                "staged_count": len(rows), "staged_sha256": projection_digest(rows),
+                "conflicts": 2, "verdict": "hold",
+            }
+            Path(argv[argv.index("--out") + 1]).write_text(json.dumps(report))
+            events.append(("identity", "essex-realty"))
+            return 0
         if script == "cre_gate.py":
             assert argv[argv.index("--expected-db-target-sha256") + 1] == TARGET
             assert "--update-baseline" not in argv
@@ -209,7 +231,7 @@ def closed_pipeline(tmp_path, monkeypatch):
         return pipeline.run_bounded_pipeline(
             root,
             manifest,
-            SOURCES,
+            sources,
             page_cap=400,
             concurrency=1,
             attempts_this_run=attempts,
@@ -227,6 +249,32 @@ def closed_pipeline(tmp_path, monkeypatch):
         run=run,
         gate_calls=gate_calls,
     )
+
+
+@pytest.mark.parametrize("closed_pipeline", [("essex-realty", "svn")], indirect=True)
+def test_essex_history_hold_keeps_healthy_sibling_running(closed_pipeline, monkeypatch):
+    case = closed_pipeline
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _env: {"value": TARGET})
+    assert case.run(attempts=3) == ["essex-realty"]
+    assert case.manifest["sources"]["essex-realty"]["state"] == "gate_blocked"
+    assert case.events.count(("identity", "essex-realty")) == 1
+    assert case.events.count(("collect", "essex-realty")) == 1
+    assert ("write", "essex-realty") not in case.events
+    assert ("dryrun", "essex-realty") not in case.events
+    assert ("write", "svn") in case.events
+    assert case.manifest["sources"]["svn"]["readback"]["ok"] is True
+    assert case.manifest["pipeline"]["units"][0]["state"] == "verified"
+
+
+@pytest.mark.parametrize("closed_pipeline", [("essex-realty", "svn")], indirect=True)
+def test_essex_identity_query_error_is_global(closed_pipeline, monkeypatch):
+    case = closed_pipeline
+    monkeypatch.setattr(refresh, "database_target_fingerprint", lambda _env: {"value": TARGET})
+    case.mutations["identity_error"] = True
+    with pytest.raises(refresh.GlobalStageError, match="identity probe failed"):
+        case.run()
+    assert ("write", "essex-realty") not in case.events
+    assert case.manifest["sources"]["essex-realty"].get("state") != "gate_blocked"
 
 
 def test_preseal_hold_writes_nothing_while_other_unit_gets_full_audit_and_readback(
