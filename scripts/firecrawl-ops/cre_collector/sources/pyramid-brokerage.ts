@@ -146,12 +146,24 @@ async function pyramidBoundedResponseText(
   }
 }
 
+export const PYRAMID_DENIED_EXIT = { 401: 76, 403: 77 } as const;
+export class PyramidAccessDenied extends Error {
+  constructor(readonly status: 401 | 403) {
+    super(`Pyramid access denied: HTTP ${status}`);
+  }
+}
+type PyramidAccess = { denial?: PyramidAccessDenied };
+function checkAccess(access: PyramidAccess): void {
+  if (access.denial) throw access.denial;
+}
+
 export async function pyramidFetch(
   url: string,
   fetchImpl: FetchLike,
   timeoutMs = 30_000,
   attempts = 2,
-  maxBytes = PYRAMID_MAX_RESPONSE_BYTES
+  maxBytes = PYRAMID_MAX_RESPONSE_BYTES,
+  access: PyramidAccess = {}
 ): Promise<{ headers: Headers; body: string; status: number }> {
   const initialUrl = pyramidAbsoluteUrl(url);
   if (!initialUrl) throw new Error(`Pyramid refused unsafe URL ${url}`);
@@ -159,6 +171,7 @@ export async function pyramidFetch(
     ? "current_archive" : "detail";
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    checkAccess(access);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const telemetry = recordDirectProviderAttemptStarted(role, "pyramid-brokerage");
@@ -166,6 +179,7 @@ export async function pyramidFetch(
     try {
       let current = initialUrl;
       for (let redirect = 0; redirect <= 3; redirect++) {
+        checkAccess(access);
         const safeUrl = pyramidAbsoluteUrl(current);
         if (!safeUrl) throw new Error(`Pyramid refused unsafe redirect URL ${current}`);
         status = undefined;
@@ -175,6 +189,12 @@ export async function pyramidFetch(
           signal: controller.signal,
         });
         status = response.status;
+        if (status === 401 || status === 403) {
+          access.denial ??= new PyramidAccessDenied(status);
+          controller.abort();
+          throw access.denial;
+        }
+        checkAccess(access);
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
           if (!location) throw new Error(`Pyramid redirect ${response.status} lacks Location`);
@@ -193,6 +213,7 @@ export async function pyramidFetch(
       recordDirectProviderAttemptCompleted(telemetry, {
         outcome: "failed", status, error,
       });
+      checkAccess(access);
       lastError = error;
       if (attempt === attempts) break;
       await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
@@ -283,9 +304,9 @@ function textSha256(value: string): string {
 }
 
 async function fetchPyramidSnapshotPass(
-  fetchImpl: FetchLike = fetch, pass = 1
+  fetchImpl: FetchLike = fetch, pass = 1, access: PyramidAccess = {}
 ): Promise<PyramidSnapshot & { fingerprint: string }> {
-  const first = await pyramidFetch(pyramidInventoryUrl(1), fetchImpl);
+  const first = await pyramidFetch(pyramidInventoryUrl(1), fetchImpl, 30_000, 2, PYRAMID_MAX_RESPONSE_BYTES, access);
   const firstObservedAt = observationNow();
   publishPyramidPage(first.body, pyramidInventoryUrl(1), 1, pass, first.status, first.headers);
   const total = requiredPositiveHeader(first.headers, "X-WP-Total");
@@ -303,7 +324,7 @@ async function fetchPyramidSnapshotPass(
     Array.from({ length: Math.max(0, totalPages - 1) }, (_, index) => index + 2),
     Math.min(CONCURRENCY, 2),
     async (page) => {
-      const response = await pyramidFetch(pyramidInventoryUrl(page), fetchImpl);
+      const response = await pyramidFetch(pyramidInventoryUrl(page), fetchImpl, 30_000, 2, PYRAMID_MAX_RESPONSE_BYTES, access);
       publishPyramidPage(response.body, pyramidInventoryUrl(page), page, pass, response.status, response.headers);
       const pageTotal = requiredPositiveHeader(response.headers, "X-WP-Total");
       const pageCount = requiredPositiveHeader(response.headers, "X-WP-TotalPages");
@@ -345,14 +366,21 @@ async function fetchPyramidSnapshotPass(
 
 export async function fetchPyramidSnapshot(
   fetchImpl: FetchLike = fetch,
-  maxPasses = 3
+  maxPasses = 3,
+  access: PyramidAccess = {}
 ): Promise<PyramidSnapshot> {
   if (!Number.isInteger(maxPasses) || maxPasses < 2 || maxPasses > 5) {
     throw new Error("Pyramid convergence passes must be an integer from 2 to 5");
   }
   let previous: Awaited<ReturnType<typeof fetchPyramidSnapshotPass>> | null = null;
   for (let pass = 1; pass <= maxPasses; pass++) {
-    const current = await fetchPyramidSnapshotPass(fetchImpl, pass);
+    let current: Awaited<ReturnType<typeof fetchPyramidSnapshotPass>>;
+    try {
+      current = await fetchPyramidSnapshotPass(fetchImpl, pass, access);
+    } catch (error) {
+      checkAccess(access);
+      throw error;
+    }
     if (
       previous
       && current.total === previous.total
@@ -715,10 +743,11 @@ export async function srcPyramidBrokerage(
   const generationStartedAt = refreshStartedAt();
   const proofEnabled = !monitor && !Number.isFinite(max) && Boolean(generationId && generationStartedAt);
   const key = proofEnabled ? JSON.stringify([generationId, generationStartedAt]) : null;
+  const access: PyramidAccess = {};
   let snapshot: PyramidSnapshot;
   if (key) {
     if (generationSnapshot?.key !== key) {
-      generationSnapshot = { key, outcome: fetchPyramidSnapshot().then(
+      generationSnapshot = { key, outcome: fetchPyramidSnapshot(fetch, 3, access).then(
         (snapshot): PyramidSnapshotOutcome => {
           freezeSnapshot(snapshot);
           return { kind: "success", snapshot };
@@ -730,7 +759,7 @@ export async function srcPyramidBrokerage(
     if (outcome.kind === "failure") throw outcome.error;
     snapshot = outcome.snapshot;
   } else {
-    snapshot = await fetchPyramidSnapshot();
+    snapshot = await fetchPyramidSnapshot(fetch, 3, access);
   }
   const eligible = snapshot.rows.filter((row) => pyramidTransaction(row) === tx);
   const selected = eligible.slice(0, Math.min(max, eligible.length));
@@ -751,10 +780,12 @@ export async function srcPyramidBrokerage(
   }
 
   const details: PyramidCurrentInventoryProof["details"] = [];
-  const listings = await pmap(selected, Math.min(CONCURRENCY, 4), async (row) => {
+  let listings: any[];
+  try {
+    listings = await pmap(selected, Math.min(CONCURRENCY, 4), async (row) => {
     const url = pyramidAbsoluteUrl(row.link);
     if (!url) throw new Error(`Pyramid row ${row.id} has no valid detail URL`);
-    const response = await pyramidFetch(url, fetch);
+    const response = await pyramidFetch(url, fetch, 30_000, 2, PYRAMID_MAX_RESPONSE_BYTES, access);
     const html = response.body;
     const observedAt = observationNow();
     const detail = parsePyramidDetail(html, Number(row.id));
@@ -773,7 +804,11 @@ export async function srcPyramidBrokerage(
       details.push([Number(row.id), detail.canonicalUrl!, observedAt, digest]);
     }
     return mapped;
-  });
+    });
+  } catch (error) {
+    checkAccess(access);
+    throw error;
+  }
   return {
     company: "Cushman & Wakefield | Pyramid Brokerage Company",
     sourceUrl: PYRAMID_LISTINGS_PAGE,

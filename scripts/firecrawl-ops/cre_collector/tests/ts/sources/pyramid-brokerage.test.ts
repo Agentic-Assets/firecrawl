@@ -682,3 +682,115 @@ test("Pyramid sizes: building area only in size, available space apart, acreage 
   });
   assert.deepEqual(pyramidSizeFacts(undefined), {});
 });
+
+
+for (const status of [401, 403] as const) {
+  test(`Pyramid HTTP ${status} is terminal without a retry`, async () => {
+    let calls = 0;
+    await assert.rejects(pyramidFetch(PYRAMID_INVENTORY_URL, async () => {
+      calls++;
+      return new Response("denied", { status });
+    }), new RegExp(`HTTP ${status}`));
+    assert.equal(calls, 1);
+  });
+}
+
+test("Pyramid denial prevents queued pages and a sibling redirect", async () => {
+  const calls: number[] = [];
+  let release!: () => void;
+  const denied = new Promise<void>(resolve => { release = resolve; });
+  await assert.rejects(fetchPyramidSnapshot(async input => {
+    const page = Number(new URL(String(input)).searchParams.get("page"));
+    calls.push(page);
+    if (page === 1) return Response.json(Array.from({ length: 100 }, (_, i) => row(i + 1, PYRAMID_SALE_TERM_ID)),
+      { headers: { "X-WP-Total": "400", "X-WP-TotalPages": "4" } });
+    if (page === 2) { release(); return new Response("denied", { status: 403 }); }
+    if (page === 3) {
+      await denied;
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return new Response("", { status: 302, headers: { location: "/listings/redirect/" } });
+    }
+    throw new Error("queued page started after denial");
+  }, 2), /HTTP 403/);
+  assert.deepEqual(calls, [1, 2, 3]);
+});
+
+test("Pyramid denial wins against a sibling transient error and suppresses its retry", async () => {
+  const calls: number[] = [];
+  await assert.rejects(fetchPyramidSnapshot(async input => {
+    const page = Number(new URL(String(input)).searchParams.get("page"));
+    calls.push(page);
+    if (page === 1) return Response.json(Array.from({ length: 100 }, (_, i) => row(i + 1, PYRAMID_SALE_TERM_ID)),
+      { headers: { "X-WP-Total": "400", "X-WP-TotalPages": "4" } });
+    if (page === 2) throw new Error("transient sibling");
+    if (page === 3) { await new Promise(resolve => setTimeout(resolve, 10)); return new Response("denied", { status: 401 }); }
+    throw new Error("queued page started after denial");
+  }, 2), /HTTP 401/);
+  assert.deepEqual(calls, [1, 2, 3]);
+});
+
+test("Pyramid retains ordinary 5xx retry", async () => {
+  let calls = 0;
+  const result = await pyramidFetch(PYRAMID_INVENTORY_URL, async () => {
+    calls++;
+    return calls === 1 ? new Response("unavailable", { status: 503 }) : new Response("ok");
+  });
+  assert.equal(result.body, "ok");
+  assert.equal(calls, 2);
+});
+
+
+test("Pyramid refusal on a redirected response is not retried", async () => {
+  let calls = 0;
+  await assert.rejects(pyramidFetch(PYRAMID_INVENTORY_URL, async () => {
+    calls++;
+    return calls === 1 ? new Response("", { status: 302, headers: { location: "/listings/fixture/" } })
+      : new Response("denied", { status: 403 });
+  }), /HTTP 403/);
+  assert.equal(calls, 2);
+});
+
+test("Pyramid late denial dominates a sibling failure while pmap settles", async () => {
+  const calls: number[] = [];
+  await assert.rejects(fetchPyramidSnapshot(async input => {
+    const page = Number(new URL(String(input)).searchParams.get("page"));
+    calls.push(page);
+    if (page === 1) return Response.json(Array.from({ length: 100 }, (_, i) => row(i + 1, PYRAMID_SALE_TERM_ID)),
+      { headers: { "X-WP-Total": "400", "X-WP-TotalPages": "4" } });
+    if (page === 2) return new Response("unavailable", { status: 503 });
+    if (page === 3) { await new Promise(resolve => setTimeout(resolve, 650)); return new Response("denied", { status: 403 }); }
+    throw new Error("queued page started after failure");
+  }, 2), /HTTP 403/);
+  assert.deepEqual(calls, [1, 2, 3, 2]);
+});
+
+
+test("Pyramid detail denial stops queued details and sibling retry", async () => {
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    calls.push(url.pathname);
+    if (url.pathname === "/wp-json/wp/v2/pbc-listings") {
+      return Response.json([1, 2, 3, 4].map(id => row(id, PYRAMID_SALE_TERM_ID)),
+        { headers: { "X-WP-Total": "4", "X-WP-TotalPages": "1" } });
+    }
+    if (url.pathname === "/listings/property-1/") {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return new Response("denied", { status: 403 });
+    }
+    if (url.pathname === "/listings/property-2/") return new Response("temporary", { status: 503 });
+    if (url.pathname === "/listings/property-3/") {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return new Response("", { status: 302, headers: { location: "/listings/other/" } });
+    }
+    throw new Error("queued detail started after denial");
+  };
+  try {
+    await assert.rejects(srcPyramidBrokerage("sale", Infinity, false), /HTTP 403/);
+    assert.deepEqual(calls, ["/wp-json/wp/v2/pbc-listings", "/wp-json/wp/v2/pbc-listings",
+      "/listings/property-1/", "/listings/property-2/", "/listings/property-3/"]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

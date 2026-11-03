@@ -147,6 +147,9 @@ COHORT_SETTLED_FAILURE_EXIT = 80
 COHORT_SETTLED_INTERRUPT_EXIT = 81
 COHORT_SETTLED_AVISON_TERMINAL_404_EXIT = 82
 COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT = 83
+PYRAMID_DENIED_EXITS = {401: 76, 403: 77}
+COHORT_SETTLED_PYRAMID_DENIED_EXITS = {401: 84, 403: 85}
+PYRAMID_DENIED_FAILURE_CODE = "PYRAMID_HTTP_ACCESS_DENIED"
 COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE = 79
 COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE = "COLLIERS_MAIN_BOOTSTRAP_HTTP_403"
 AVISON_YOUNG_TERMINAL_404_EXIT_CODE = 78
@@ -155,6 +158,7 @@ COHORT_SETTLED_EXIT_CODES = frozenset(
     {
         0, COHORT_SETTLED_FAILURE_EXIT, COHORT_SETTLED_INTERRUPT_EXIT,
         COHORT_SETTLED_AVISON_TERMINAL_404_EXIT, COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT,
+        *COHORT_SETTLED_PYRAMID_DENIED_EXITS.values(),
     }
 )
 
@@ -3564,6 +3568,10 @@ def run_cohort_collection_worker(
     )
     if source == "avison-young" and rc == AVISON_YOUNG_TERMINAL_404_EXIT_CODE:
         return COHORT_SETTLED_AVISON_TERMINAL_404_EXIT
+    if source == "pyramid-brokerage":
+        for status, exit_code in PYRAMID_DENIED_EXITS.items():
+            if rc == exit_code:
+                return COHORT_SETTLED_PYRAMID_DENIED_EXITS[status]
     return rc
 
 
@@ -3931,6 +3939,11 @@ def _finalize_cohort_collection(
             terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
         elif item.source == "colliers-main" and rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT:
             terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
+        elif item.source == "pyramid-brokerage":
+            for status, exit_code in COHORT_SETTLED_PYRAMID_DENIED_EXITS.items():
+                if rc == exit_code:
+                    terminal = {"code": PYRAMID_DENIED_FAILURE_CODE, "http_status": status}
+                    break
         if terminal is not None:
             terminal["attempt_number"] = item.attempt["number"]
             item.attempt["terminal_failure"] = terminal
@@ -3938,6 +3951,8 @@ def _finalize_cohort_collection(
             item.attempt["error"] = (
                 "typed terminal required-detail HTTP 404; see private attempt log"
                 if item.source == "avison-young"
+                else "typed terminal Pyramid access denial; see private attempt log"
+                if item.source == "pyramid-brokerage"
                 else "typed terminal browser bootstrap HTTP 403; see private attempt log"
             )
         save_manifest(run_dir, manifest)
@@ -4780,6 +4795,8 @@ def has_terminal_collection_failure(source: str, checkpoint: Mapping[str, Any]) 
     return isinstance(terminal, Mapping) and (
         (source == "avison-young" and terminal.get("code") == AVISON_YOUNG_TERMINAL_FAILURE_CODE)
         or (source == "colliers-main" and terminal.get("code") == COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE)
+        or (source == "pyramid-brokerage" and terminal.get("code") == PYRAMID_DENIED_FAILURE_CODE
+            and terminal.get("http_status") in (401, 403))
     )
 
 
@@ -4930,6 +4947,11 @@ def collect_source(
                 terminal = {"code": AVISON_YOUNG_TERMINAL_FAILURE_CODE, "http_status": 404}
             elif source == "colliers-main" and rc == COLLIERS_MAIN_BOOTSTRAP_DENIED_EXIT_CODE:
                 terminal = {"code": COLLIERS_MAIN_BOOTSTRAP_FAILURE_CODE, "http_status": 403}
+            elif source == "pyramid-brokerage":
+                for status, exit_code in PYRAMID_DENIED_EXITS.items():
+                    if rc == exit_code:
+                        terminal = {"code": PYRAMID_DENIED_FAILURE_CODE, "http_status": status}
+                        break
             if terminal is not None:
                 terminal["attempt_number"] = attempt_number
                 attempt["terminal_failure"] = terminal
@@ -4937,6 +4959,8 @@ def collect_source(
                 attempt["error"] = (
                     "typed terminal required-detail HTTP 404; see private attempt log"
                     if source == "avison-young"
+                    else "typed terminal Pyramid access denial; see private attempt log"
+                    if source == "pyramid-brokerage"
                     else "typed terminal browser bootstrap HTTP 403; see private attempt log"
                 )
                 save_manifest(run_dir, manifest)
@@ -7432,6 +7456,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args._cohort_collect_source == "colliers-main"
                 and worker_rc == COHORT_SETTLED_COLLIERS_BOOTSTRAP_DENIED_EXIT
             ):
+                return worker_rc
+            if (args._cohort_collect_source == "pyramid-brokerage"
+                    and worker_rc in COHORT_SETTLED_PYRAMID_DENIED_EXITS.values()):
                 return worker_rc
             return 0 if worker_rc == 0 else COHORT_SETTLED_FAILURE_EXIT
         except KeyboardInterrupt as exc:
