@@ -310,7 +310,7 @@ $folder=[pscustomobject]@{registered=$registered}
 $folder | Add-Member ScriptMethod GetTask {param($Name) if($Name -cne 'Interra Refresh'){throw 'Wrong task'};return $this.registered}
 $folder | Add-Member ScriptMethod RegisterTask {param($Name,$Xml,$Flags,$Sid,$Password,$Logon,$Sddl) $fixture.comArgs=@($Name,$Xml,$Flags,$Sid,$Password,$Logon,$Sddl);return $null}
 $service=[pscustomobject]@{folder=$folder}
-$service | Add-Member ScriptMethod GetFolder {param($Path) if($Path -cne '\Agentic Assets\CRE\'){throw 'Wrong folder'};return $this.folder}
+$service | Add-Member ScriptMethod GetFolder {param($Path) if($Path -cne '\Agentic Assets\CRE'){throw 'Wrong COM folder'};return $this.folder}
 Invoke-CreReviewedTaskDefinitionUpdate $service $rows[0] '<task/>' $fixtureSid
 if($fixture.comArgs[0] -cne 'Interra Refresh' -or $fixture.comArgs[2] -ne 52 -or $fixture.comArgs[3] -cne $fixtureSid -or $null -ne $fixture.comArgs[4] -or $fixture.comArgs[5] -ne 3 -or $null -ne $fixture.comArgs[6]) {throw 'Task update must preserve ACL and suppress registration triggers'}
 if($fixture.securityCalls -ne 2) {throw 'Expected both current ACL observations'}

@@ -355,7 +355,8 @@ function Get-CreReviewedTaskSecurity($Task) {
 }
 
 function Invoke-CreReviewedTaskDefinitionUpdate($Service,$Row,[string]$Xml,[string]$Sid) {
-    $folder=$Service.GetFolder([string]$Row.task_path)
+    # ScheduledTasks uses a trailing separator; Schedule.Service does not.
+    $folder=$Service.GetFolder(([string]$Row.task_path).TrimEnd([char]'\'))
     $before=Get-CreReviewedTaskSecurity ($folder.GetTask([string]$Row.task_name))
     # UPDATE only, do not add/remove principal ACEs, and do not run registration
     # triggers. A null SDDL preserves the existing task descriptor on update.
