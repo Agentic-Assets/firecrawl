@@ -11,12 +11,12 @@ from cre_pyramid_subset_sql import guard_sql
 def claims():
     members = [{"native_id": n, "external_id": f"listings/property-{n}",
                 "source_url": f"https://www.pyramidbrokerage.com/listings/property-{n}/",
-                "transaction": "lease" if n % 2 else "sale", "emitted": n != 101}
-               for n in range(1, 102)]
+                "transaction": "lease" if n % 2 else "sale", "emitted": n <= 99}
+               for n in range(1, 103)]
     digest = hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {"schema": "pyramid-verified-subset-v1", "attempt_id": "a" * 32,
             "binding": {"scope": "pyramid_verified_subset_v1", "artifact_sha256": "b" * 64,
-                        "inventory_count": 101, "emitted_count": 100, "held_count": 1,
+                        "inventory_count": 102, "emitted_count": 99, "held_count": 3,
                         "members_sha256": digest}, "members": members}
 
 
@@ -56,3 +56,16 @@ def test_refuses_lifecycle_and_inventory_only_scope(flag):
     options[flag] = True
     with pytest.raises(ValueError):
         guard_sql(claims(), **options)
+
+
+def test_refuses_zero_emitted_or_under_floor_inventory():
+    for empty, under_floor in [(True, False), (False, True)]:
+        value = claims()
+        if empty:
+            for member in value["members"]: member["emitted"] = False
+        if under_floor: value["members"] = value["members"][:99]
+        value["binding"].update(inventory_count=len(value["members"]),
+            emitted_count=sum(m["emitted"] for m in value["members"]),
+            held_count=sum(not m["emitted"] for m in value["members"]),
+            members_sha256=hashlib.sha256(json.dumps(value["members"], sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+        with pytest.raises(ValueError): render(value)

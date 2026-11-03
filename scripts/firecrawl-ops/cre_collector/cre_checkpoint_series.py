@@ -262,10 +262,10 @@ def pyramid_partial_child(child: Mapping[str, Any]) -> bool:
                 and binding.get("collector_git_sha") == child.get("collector_git_sha")
                 and binding.get("database_target_sha256") == child["preflight"]["database_target"]["value"]
                 and type(binding.get("held_count")) is int and binding["held_count"] > 0
-                and type(binding.get("emitted_count")) is int and binding["emitted_count"] >= 100
+                and type(binding.get("emitted_count")) is int and binding["emitted_count"] > 0
                 and type(artifact.get("staged_unique")) is int
                 and artifact["staged_unique"] == binding["emitted_count"]
-                and type(binding.get("inventory_count")) is int
+                and type(binding.get("inventory_count")) is int and binding["inventory_count"] >= 100
                 and binding["inventory_count"] == binding["held_count"] + binding["emitted_count"])
     except (KeyError, TypeError, ValueError):
         return False

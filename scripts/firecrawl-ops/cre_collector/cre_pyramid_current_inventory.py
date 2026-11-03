@@ -409,7 +409,7 @@ def admit(
             and key not in staged
         )
         staged[key] = [key, transformed["transaction_type"], post, url]
-    require(len(staged) == total - len(held) and len(staged) >= DEFAULT_FLOOR
+    require(len(staged) == total - len(held) and len(staged) > 0
             and emitted | set(held) == set(native))
     current, errors, sources, _, rejects = count_artifacts([str(artifact_path)], True)
     require(

@@ -339,7 +339,7 @@ function Get-CreBrokerageName {
 }
 
 function Test-CreDaumSubsetSummary {
-    param($Summary)
+    param($Summary, [string]$SourceKey)
     try {
         if ($Summary.measurement -isnot [string] -or $Summary.qualification -isnot [string] -or
             $Summary.whole_lease_coverage -isnot [string] -or $Summary.measurement -cne 'generation_exact_verified_subset' -or
@@ -350,7 +350,9 @@ function Test-CreDaumSubsetSummary {
             if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
                 $Summary.$field -lt 0 -or $Summary.$field -gt 500000) { return $false }
         }
-        if ($Summary.emitted_count -lt 100 -or $Summary.emitted_count -ne $Summary.verified_listings -or
+        $minimumEmitted = if ($SourceKey -ceq "pyramid-brokerage") { 1 } else { 100 }
+        if (($SourceKey -ceq "pyramid-brokerage" -and $Summary.inventory_count -lt 100) -or
+            $Summary.emitted_count -lt $minimumEmitted -or $Summary.emitted_count -ne $Summary.verified_listings -or
             $Summary.inventory_count -ne ($Summary.emitted_count + $Summary.held_count)) { return $false }
         $leaseCoverage = if ($Summary.held_count -gt 0) { 'unknown' } else { 'proved' }
         if ($Summary.whole_lease_coverage -cne $leaseCoverage) { return $false }
@@ -426,7 +428,7 @@ function Get-CreVerifiedSummary {
                     ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted)
                 if ($subsetMarked -ne $expectsSubset) { return $null }
                 if ($expectsSubset) {
-                    if (-not (Test-CreDaumSubsetSummary $entry)) { return $null }
+                    if (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
                     $subsetKeys += $entry.source_key
                 }
                 $inventoryProperty = $entry.PSObject.Properties['verified_inventory_only']
@@ -476,7 +478,7 @@ function Get-CreVerifiedSummary {
     $pyramidSubset = $subsetMarked -and $notificationSource -ceq 'pyramid-brokerage' -and $pyramidAdmitted
     $expectsSubset = $subsetRequested -or $pyramidSubset
     if ($subsetMarked -ne $expectsSubset) { return $null }
-    if ($expectsSubset -and (-not (Test-CreDaumSubsetSummary $summary) -or
+    if ($expectsSubset -and (-not (Test-CreDaumSubsetSummary $summary $notificationSource) -or
         ($subsetRequested -and $notificationSource -cne 'daum-commercial'))) { return $null }
     $expectedMeasurement = if ($expectsSubset) { 'generation_exact_verified_subset' } else { 'generation_exact_current_inventory' }
     if (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or

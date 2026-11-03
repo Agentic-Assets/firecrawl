@@ -1050,8 +1050,8 @@ requires uncapped full sale+lease, a generation-local shared REST cohort from tw
 consecutive identical complete passes, and a fresh identity/transaction-matched
 detail response for every member. Source and aggregate gates recheck compact
 receipts, policy/code/target/artifact bindings, absent baseline and the normal
-source-wide unique floor100. A fresh, identity- and tenure-validated record with
-no source city is held automatically while verified peers may be ingested. The
+source-wide observed inventory floor of 100. A fresh, identity- and tenure-validated record with
+no source city is held automatically while any nonempty verified subset may be ingested. The
 result reports emitted and held counts as a qualified partial subset; held rows
 and children remain untouched and no complete-source watermark is advanced.
 Other missing or contradictory detail, identity, transport and tenure evidence

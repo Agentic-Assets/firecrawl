@@ -513,7 +513,8 @@ to sale; validate observed labels without loosening ownership or detail proof.
 When a full strict current-inventory run observes a missing city on an otherwise
 fresh, identity- and tenure-validated detail, Pyramid retains that record as a
 missing-city hold and emits verified peers through its partial admission. The
-complete inventory and every fresh detail are still required. The result is
+complete inventory of at least 100 and every fresh detail are still required;
+the emitted verified subset may contain fewer than 100 but must be nonempty. The result is
 explicitly partial, never authorizes mark-missing or a complete-source watermark,
 and leaves held parents, source-index rows and children untouched. Do not infer
 city from the property name, region, proximity prose or another source.

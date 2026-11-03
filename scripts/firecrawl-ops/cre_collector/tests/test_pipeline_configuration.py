@@ -612,26 +612,26 @@ def test_pyramid_partial_recovery_revalidates_real_bound_report_without_replay(t
     run = tmp_path / "runs" / RUN_ID
     child = qualified_child(run)
     saved = child["sources"].pop("cbre")
-    saved["artifact"].update(staged_unique=100, pyramid_subset=True)
-    saved["readback"].update(expected_staged_unique=100, latest_inventory_batch_active=100)
-    saved["readback"]["inventory_fingerprint"].update(sourceId=source, rowCount=100)
+    saved["artifact"].update(staged_unique=99, pyramid_subset=True)
+    saved["readback"].update(expected_staged_unique=99, latest_inventory_batch_active=99)
+    saved["readback"]["inventory_fingerprint"].update(sourceId=source, rowCount=99)
     saved["gate"] = {"verdict": "ok_additive_verified_subset", "mark_missing_safe": False,
         "current_inventory_proof": {"schema": "pyramid-verified-subset-v1", "scope": "pyramid_verified_subset_v1",
             "whole_source_coverage": False, "artifact_sha256": "a" * 64, "generation_id": RUN_ID,
             "collector_git_sha": "a" * 40, "database_target_sha256": "b" * 64,
-            "inventory_count": 102, "emitted_count": 100, "held_count": 2}}
+            "inventory_count": 102, "emitted_count": 99, "held_count": 3}}
     child["sources"][source] = saved
     result = child["pipeline"]["source_results"].pop("cbre")
-    result.update(qualification="qualified_partial_subset", partial=True, whole_source_coverage=False, emitted_count=100, held_count=2)
+    result.update(qualification="qualified_partial_subset", partial=True, whole_source_coverage=False, emitted_count=99, held_count=3)
     child["pipeline"]["source_results"][source] = result
     unit = child["pipeline"]["units"][0]
     unit["sources"] = [source]
     report_path = run / result["validation_path"]
     report = json.loads(report_path.read_text())
     for row in report["queries"]["freshness_generations"]:
-        row.update(source_key=source, active="100", persisted_inventory_observed="100")
+        row.update(source_key=source, active="99", persisted_inventory_observed="99")
     for row in report["queries"]["inventory_generation_fingerprints"]:
-        row.update(source_key=source, row_count="100")
+        row.update(source_key=source, row_count="99")
     raw = json.dumps(report).encode()
     report_path.write_bytes(raw)
     result["validation_sha256"] = unit["validation_sha256"] = hashlib.sha256(raw).hexdigest()
@@ -643,7 +643,7 @@ def test_pyramid_partial_recovery_revalidates_real_bound_report_without_replay(t
     monkeypatch.setattr(series.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not replay"))
     series.reconcile_stale_running_sources(tmp_path, manifest)
     assert row["state"] == "qualified_partial_subset"
-    assert row["subset_counts"] == {"inventory": 102, "emitted": 100, "held": 2}
+    assert row["subset_counts"] == {"inventory": 102, "emitted": 99, "held": 3}
     assert row["pipeline_result"] == result
     assert series.run_pipeline_series(tmp_path, manifest, env_file=None) == 0
     assert manifest["status"] == "qualified_partial_subset" and len(row["attempts"]) == 1

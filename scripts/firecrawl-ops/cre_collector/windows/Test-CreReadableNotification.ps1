@@ -363,15 +363,19 @@ $selectedAdmissionKeys = @('pyramid-brokerage')
 $Source = 'pyramid-brokerage'; $selectedSourceArgument = $Source; $Pipeline = $false
 $pyramid = New-DaumSubsetSummary
 $pyramid.source = $Source
+$pyramid.inventory_count = 102; $pyramid.emitted_count = 99; $pyramid.held_count = 3; $pyramid.verified_listings = 99
+$pyramid.transaction_breakdown = [ordered]@{sale=99;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}
 Save-Summary $pyramid
 $pyramidRead = Get-CreVerifiedSummary (New-Record) 'pyramid-subset'
 $pyramidText = Get-CreNotificationText (New-Record) 'Terminal' 0 $pyramidRead
-Assert-Cre ($null -ne $pyramidRead -and $pyramidText.Contains('2 held') -and $pyramidText.Contains('whole brokerage incomplete')) 'Admitted Pyramid partial reports held records without claiming completion.'
+Assert-Cre ($null -ne $pyramidRead -and $pyramidText.Contains('3 held') -and $pyramidText.Contains('whole brokerage incomplete')) 'Admitted Pyramid partial reports held records without claiming completion.'
 $selectedAdmissionKeys = @()
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'pyramid-no-admission')) 'Pyramid partial requires its existing admission.'
 $selectedAdmissionKeys = @('pyramid-brokerage'); $Pipeline = $true
 $selectedSourceKeys = @('pyramid-brokerage','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
 $pyramidRow = New-DaumSubsetSummary; $pyramidRow.source_key = 'pyramid-brokerage'
+$pyramidRow.inventory_count = 102; $pyramidRow.emitted_count = 99; $pyramidRow.held_count = 3; $pyramidRow.verified_listings = 99
+$pyramidRow.transaction_breakdown = [ordered]@{sale=99;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}
 $mixedPyramid = New-Summary
 $mixedPyramid['selected_source_keys'] = $selectedSourceKeys
 $mixedPyramid['per_source_summaries'] = @($pyramidRow, [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})

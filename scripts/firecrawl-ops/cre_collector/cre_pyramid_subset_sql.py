@@ -24,7 +24,7 @@ def guard_sql(claims, *, mark_missing, status_activation, inventory_only):
     require(re.fullmatch(r"[a-f0-9]{64}", binding.get("artifact_sha256", "")))
     members = claims.get("members")
     require(all(type(binding.get(key)) is int for key in ("inventory_count", "emitted_count", "held_count")))
-    require(isinstance(members, list) and len(members) == binding.get("inventory_count"))
+    require(isinstance(members, list) and len(members) == binding.get("inventory_count") and len(members) >= 100)
     ids, paths, urls = set(), set(), set()
     for member in members:
         require(isinstance(member, dict) and set(member) == {
@@ -40,7 +40,7 @@ def guard_sql(claims, *, mark_missing, status_activation, inventory_only):
         urls.add(member["source_url"])
     require([member["native_id"] for member in members] == sorted(ids))
     emitted = sum(member["emitted"] for member in members)
-    require(emitted >= 100 and emitted == binding.get("emitted_count"))
+    require(emitted > 0 and emitted == binding.get("emitted_count"))
     require(len(members) - emitted == binding.get("held_count") and binding["held_count"] > 0)
     digest = hashlib.sha256(json.dumps(members, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     require(digest == binding.get("members_sha256"))

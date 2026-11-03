@@ -58,9 +58,12 @@ process.on("exit",()=>console.error(`OFFLINE_COUNTS ${inventory} ${details}`));"
         f'Response.json(rows.slice((Number(url.searchParams.get("page"))-1)*100,Number(url.searchParams.get("page"))*100),{{headers:{{"X-WP-Total":"{total}","X-WP-TotalPages":"{(total + 99) // 100}"}}}})',
     )
     if missing_city_id is not None:
-        transport = transport.replace("globalThis.fetch=async(input)=>", (
-            f"rows[{missing_city_id - 1}]._embedded['wp:term'] = rows[{missing_city_id - 1}]._embedded['wp:term'].filter(g => g[0].taxonomy !== 'city');\n"
-            "globalThis.fetch=async(input)=>"))
+        missing_ids = missing_city_id if isinstance(missing_city_id, (list, tuple)) else [missing_city_id]
+        omit_city = "".join(
+            f"rows[{post - 1}]._embedded['wp:term'] = rows[{post - 1}]._embedded['wp:term'].filter(g => g[0].taxonomy !== 'city');\n"
+            for post in missing_ids
+        )
+        transport = transport.replace("globalThis.fetch=async(input)=>", omit_city + "globalThis.fetch=async(input)=>")
     if lease_html is not None:
         transport = transport.replace(
             "details++;return new Response(",
@@ -1070,3 +1073,44 @@ def test_pipeline_partial_reconciliation_and_resume_do_not_replay(tmp_path, monk
     assert series.run_pipeline_series(tmp_path, parent, env_file=None) == 0
     assert parent["status"] == "qualified_partial_subset"
     assert all(len(row["attempts"]) == 1 for row in parent["sources"].values())
+
+
+def test_partial_99_emitted_proves_admission_recovery_and_notification(tmp_path):
+    import cre_checkpoint_series as series
+    import cre_notification_summary as notification
+    fixture = tmp_path / "fixture"; fixture.mkdir()
+    produced = produce(fixture, total=102, missing_city_id=[75, 76, 77])
+    _run, path, _artifact, child, report = setup(tmp_path, produced)
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    binding = admit(path, child, report)
+    assert (binding["inventory_count"], binding["emitted_count"], binding["held_count"]) == (102, 99, 3)
+    child["sources"][SOURCE]["artifact"].update(pyramid_subset=True, staged_unique=99)
+    child["sources"][SOURCE]["gate"] = {"verdict": "ok_additive_verified_subset", "raw_verdict": "first_seen",
+        "admission_scope": "pyramid_verified_subset_v1", "mark_missing_safe": False, "current_inventory_proof": binding}
+    assert series.pyramid_partial_child(child)
+    assert series.pyramid_subset_counts(child) == {"inventory": 102, "emitted": 99, "held": 3}
+    assert notification._subset_summary_fields(child, SOURCE, 99)["held_count"] == 3
+
+
+def test_partial_refuses_under_floor_total_and_zero_emitted(tmp_path):
+    for total, held in [(99, [75]), (100, list(range(1, 101)))]:
+        fixture = tmp_path / f"fixture-{total}"; fixture.mkdir()
+        if len(held) == total:
+            produce(fixture, total=total, missing_city_id=held, expected_error="no listings collected from any source")
+            continue
+        produced = produce(fixture, total=total, missing_city_id=held)
+        admission_dir = tmp_path / f"admission-{total}"; admission_dir.mkdir()
+        _run, path, _artifact, child, report = setup(admission_dir, produced)
+        report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+        with pytest.raises((ValueError, KeyError)):
+            admit(path, child, report)
+
+
+def test_partial_accepts_one_verified_record_in_complete_floor_inventory(tmp_path):
+    fixture = tmp_path / "fixture"; fixture.mkdir()
+    produced = produce(fixture, total=100, missing_city_id=list(range(2, 101)))
+    admission_dir = tmp_path / "admission"; admission_dir.mkdir()
+    _run, path, _artifact, child, report = setup(admission_dir, produced)
+    report["per_source"][SOURCE]["reason"] += "; a source pass also errored this run"
+    binding = admit(path, child, report)
+    assert (binding["inventory_count"], binding["emitted_count"], binding["held_count"]) == (100, 1, 99)

@@ -626,20 +626,20 @@ try:
 
         pyramid_members = [{"native_id": index, "external_id": f"listings/fixture-{index}",
             "source_url": f"https://www.pyramidbrokerage.com/listings/fixture-{index}/",
-            "transaction": "lease" if index % 2 else "sale", "emitted": index <= 100}
+            "transaction": "lease" if index % 2 else "sale", "emitted": index <= 99}
             for index in range(1, 103)]
         member_digest = hashlib.sha256(json.dumps(pyramid_members, sort_keys=True,
             separators=(",", ":")).encode()).hexdigest()
         pyramid_claims = {"schema": "pyramid-verified-subset-v1", "attempt_id": "e" * 32,
             "binding": {"scope": "pyramid_verified_subset_v1", "artifact_sha256": "a" * 64,
-                "inventory_count": 102, "emitted_count": 100, "held_count": 2,
+                "inventory_count": 102, "emitted_count": 99, "held_count": 3,
                 "members_sha256": member_digest}, "members": pyramid_members}
         def pyramid_sql(rows, subset=False):
             return ingest.build_sql(rows, [{"slug": "pyramid-brokerage", "discovered": len(rows),
                 "saved": len(rows), "errors": 0, "notes": "synthetic fixture"}],
                 "2026-10-16T00:00:00Z", set(),
                 pyramid_verified_subset_claims=pyramid_claims if subset else None)
-        held_ids = "('listings/fixture-101','listings/fixture-102')"
+        held_ids = "('listings/fixture-100','listings/fixture-101','listings/fixture-102')"
         for number, case in enumerate(("success", "deleted_emitted", "held_collision")):
             db = "pyramid_fixture_" + str(number)
             sql("CREATE DATABASE " + db + ";")
@@ -667,10 +667,10 @@ try:
             held_contents = json.loads(held_before)
             for key in ("parents", "index", "cre_listing_images", "cre_listing_contacts",
                         "cre_listing_documents", "cre_listing_media", "cre_listing_links"):
-                assert len(json.loads(held_contents[key])) == 2, (case, key, held_contents[key])
+                assert len(json.loads(held_contents[key])) == 3, (case, key, held_contents[key])
             lifecycle_query = "SELECT jsonb_agg(jsonb_build_array(l.external_id,l.status,l.deleted_at,si.soft_deleted,si.observation_present,si.presence_generation,si.presence_changed_at) ORDER BY l.external_id)::text FROM credeals.cre_listings l JOIN credeals.cre_source_index si USING(brokerage_id,external_id) WHERE l.external_id NOT IN " + held_ids + ";"
             lifecycle_before = sql(lifecycle_query, db).stdout
-            text = pyramid_sql([pyramid_row(i, fresh=True) for i in range(1, 101)], subset=True)
+            text = pyramid_sql([pyramid_row(i, fresh=True) for i in range(1, 100)], subset=True)
             assert "\nCOMMIT;\n" in text
             (out / ("pyramid-" + case + ".sql")).write_text(text)
             result = sql(text, db, check=False)
@@ -679,10 +679,10 @@ try:
                 assert result.returncode == 0, result.stderr
                 assert held_snapshot() == held_before
                 assert sql(lifecycle_query, db).stdout == lifecycle_before
-                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE title='fresh';", db).stdout.strip() == "100"
-                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id IN " + held_ids + " AND title='before';", db).stdout.strip() == "2"
+                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE title='fresh';", db).stdout.strip() == "99"
+                assert sql("SELECT count(*) FROM credeals.cre_listings WHERE external_id IN " + held_ids + " AND title='before';", db).stdout.strip() == "3"
                 checks.append({"case": "pyramid_" + case, "committed": True,
-                    "emitted_updated": 100, "held_parent_five_children_index_unchanged": True,
+                    "emitted_updated": 99, "held_parent_five_children_index_unchanged": True,
                     "emitted_lifecycle_unchanged": True})
             else:
                 assert result.returncode != 0 and "Pyramid" in result.stderr, (case, result.stderr)
