@@ -511,6 +511,45 @@ export async function generateCompletions({
   let modelId =
     typeof currentModel === "string" ? currentModel : currentModel.modelId;
 
+  // A provider may charge for output that the SDK could not parse or
+  // validate. Record known usage before retry, salvage, or error propagation.
+  const recordFailedObjectUsage = (error: unknown, attemptModel: string) => {
+    if (!NoObjectGeneratedError.isInstance(error)) return;
+    const input = error.usage?.inputTokens;
+    const output = error.usage?.outputTokens;
+    if (
+      typeof input !== "number" ||
+      !Number.isFinite(input) ||
+      input < 0 ||
+      typeof output !== "number" ||
+      !Number.isFinite(output) ||
+      output < 0
+    ) {
+      logger.warn("Structured generation failed without complete token usage", {
+        model: attemptModel,
+        knownInputTokens:
+          typeof input === "number" && Number.isFinite(input) && input >= 0
+            ? input
+            : undefined,
+        knownOutputTokens:
+          typeof output === "number" && Number.isFinite(output) && output >= 0
+            ? output
+            : undefined,
+      });
+      return;
+    }
+    costTrackingOptions.costTracking.addCall({
+      type: "other",
+      metadata: {
+        ...costTrackingOptions.metadata,
+        gcDetails: "generateObject failed",
+      },
+      tokens: { input, output },
+      model: attemptModel,
+      cost: calculateCost(attemptModel, input, output),
+    });
+  };
+
   if (markdown === undefined) {
     throw new Error("document.markdown is undefined -- this is unexpected");
   }
@@ -885,6 +924,7 @@ export async function generateCompletions({
         ),
       });
     } catch (error) {
+      recordFailedObjectUsage(error, modelId);
       lastError = error as Error;
       if (
         error.message?.includes("Quota exceeded") ||
@@ -925,6 +965,7 @@ export async function generateCompletions({
             ),
           });
         } catch (retryError) {
+          recordFailedObjectUsage(retryError, modelId);
           lastError = retryError as Error;
           logger.error("Failed with fallback model", {
             originalError: lastError.message,
