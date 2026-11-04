@@ -16,10 +16,10 @@ def raw_data_case(*, enrichment):
 def test_svn_enrichment_policy_is_scoped_and_default_is_off():
     enabled = raw_data_case(enrichment=True)
     disabled = raw_data_case(enrichment=False)
-    assert "EXCLUDED.external_id IN ('synthetic')" in enabled
+    assert "(sb.slug, EXCLUDED.external_id) IN (('svn', 'synthetic'))" in enabled
     assert "WHEN FALSE\n" in disabled
     assert "EXCLUDED.raw_data - 'inventoryObservedAt' - 'latestInventoryObservation'" in enabled
-    assert "sb.slug='svn'" in enabled
+    assert "('svn', 'synthetic')" in enabled
     assert "t.raw_data ? 'inventoryObservedAt'" in enabled
     assert "t.raw_data ? 'latestInventoryObservation'" in enabled
     assert "EXCLUDED.raw_data\n" in enabled
@@ -45,7 +45,7 @@ def test_ingest_cli_passes_artifact_mode_to_real_generated_sql(tmp_path, mode, p
     sql = (out / "ingest.sql").read_text()
     branch = sql.split("raw_data          = ", 1)[1].split(",\n        source_lastmod", 1)[0]
     assert predicate in branch
-    assert "sb.slug='svn'" in branch
+    assert "(sb.slug, EXCLUDED.external_id) IN" in branch or "AND FALSE" in branch
 
 
 def test_multiple_inputs_bind_only_svn_enrichment_ids_and_merged_identity(tmp_path):
@@ -70,6 +70,6 @@ def test_multiple_inputs_bind_only_svn_enrichment_ids_and_merged_identity(tmp_pa
     assert result.returncode == 0, result.stderr
     sql = (out / "ingest.sql").read_text()
     branch = sql.split("raw_data          = ", 1)[1].split(",\n        source_lastmod", 1)[0]
-    assert "EXCLUDED.external_id IN ('other')" in branch
+    assert "(sb.slug, EXCLUDED.external_id) IN (('svn', 'other'))" in branch
     assert "'same'" not in branch
     assert "'inventory'" not in branch

@@ -11,7 +11,10 @@ import cre_ingest
 
 
 def run(*args, **kwargs):
-    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs).stdout.strip()
+    result = subprocess.run(args, capture_output=True, text=True, **kwargs)
+    if result.returncode:
+        raise RuntimeError(f"fixture command failed: {result.stderr}")
+    return result.stdout.strip()
 
 
 def lit(value):
@@ -31,9 +34,11 @@ def main():
     try:
         run("docker", "run", "-d", "--rm", "--name", name, "--network=none", "--cpus=0.5",
             "--memory=256m", "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
-        for _ in range(50):
-            if subprocess.run(["docker", "exec", name, "pg_isready", "-U", "postgres"],
-                              capture_output=True).returncode == 0:
+        for _ in range(100):
+            logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+            ready = subprocess.run(["docker", "exec", name, "pg_isready", "-U", "postgres"],
+                                   capture_output=True).returncode == 0
+            if ready and (logs.stdout + logs.stderr).count("database system is ready to accept connections") >= 2:
                 break
             time.sleep(.2)
         else:
@@ -45,7 +50,7 @@ def main():
         new = {"sourceKey": "svn", "markdown": "new detail"}
         def evaluate(enrichment, prior, incoming, brokerage=1):
             statement = (f"SELECT ({expression(enrichment)})::text FROM "
-                         f"(SELECT {lit(prior)} AS raw_data) t CROSS JOIN "
+                         f"(SELECT {lit(prior)} AS raw_data, {brokerage} AS brokerage_id) t CROSS JOIN "
                          f"(SELECT {lit(incoming)} AS raw_data, {brokerage} AS brokerage_id, 'synthetic'::text AS external_id, "
                          "'2026-11-04T00:00:00Z'::timestamptz AS scraped_at) excluded;")
             return json.loads(sql(statement))
