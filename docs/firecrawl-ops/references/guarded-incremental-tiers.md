@@ -521,6 +521,13 @@ current-inventory admission must name an exact selected, supported key in
 for its selected source. `Source = 'all'` never grants admissions. A schedule
 does not expand source eligibility or remove baseline and quality requirements.
 
+The installer can preview a separate `DAUM Verified Subset` series task with
+`Source = 'daum-commercial'` and `AdmitDaumVerifiedSubset = $true`. The name,
+singleton source and admission are bound together; other admissions and
+pipeline mode are refused. The reviewed updater discovers that exact optional
+task and checks its source, admission and pin when updating the existing fleet.
+The subset remains partial and does not establish whole-source coverage.
+
 The installer accepts explicit series-only `Concurrency = 1..6` and forwards
 it through the fixed action. If omitted, action bytes are unchanged and inherit
 concurrency **1**. It does not accept `AttemptsPerSource`; scheduled actions
