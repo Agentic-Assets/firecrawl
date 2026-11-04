@@ -73,3 +73,18 @@ def test_multiple_inputs_bind_only_svn_enrichment_ids_and_merged_identity(tmp_pa
     assert "(sb.slug, EXCLUDED.external_id) IN (('svn', 'other'))" in branch
     assert "'same'" not in branch
     assert "'inventory'" not in branch
+    index = sql.split("-- Canonical full ingest synchronizes", 1)[1].split("-- Children:", 1)[0]
+    assert index.count("s.external_id IN ('other')") == 2
+    assert "s.external_id IN ('same')" not in index
+    assert "s.external_id IN ('inventory')" not in index
+
+
+def test_svn_queue_without_tenure_omits_synthetic_sale():
+    import cre_enrich
+
+    items = cre_enrich.claim_rows_to_items([
+        {"source_key": "svn", "external_id": "x", "url": "https://example.test/x"},
+        {"source_key": "newmark", "external_id": "y", "url": "https://example.test/y"},
+    ])["items"]
+    assert "transaction" not in items[0]
+    assert items[1]["transaction"] == "sale"
