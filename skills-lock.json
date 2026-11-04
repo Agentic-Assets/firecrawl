@@ -7,6 +7,18 @@
       "skillPath": "skills/block-kit/SKILL.md",
       "computedHash": "812e43deb27d55a837d799f151f97ec3d39826313a998ac83052370180d49c65"
     },
+    "codebase-design": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/codebase-design/SKILL.md",
+      "computedHash": "aa11a96c08451f4ff86052d5da94004a8c97bb4ea41b2ac8a4300c189f66c89c"
+    },
+    "improve-codebase-architecture": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
+      "computedHash": "f768cb44209e0d30e3449b8f95ea3dc8293093f73cfe02127d530db43412cf76"
+    },
     "pytest-coverage": {
       "source": "github/awesome-copilot",
       "sourceType": "github",
