@@ -330,6 +330,14 @@ $fixture.tasks[$daum.key]=@{xml=$daumXml;enabled=$true}
 $daumRelease=@{roots=$release.roots;task_baseline=@($rows[0..2]);qualified_sources='interra-realty,newmark';supported_sources=@('interra-realty','newmark','daum-commercial');wsl=$release.wsl}
 $daumSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $daumRelease $old $new)
 if($daumSnapshot.Count -ne 4 -or $daumSnapshot[3].key -cne 'daum-subset') {throw 'DAUM task discovery failed'}
+$fixture.tasks[$daum.key].xml=$daumXml.Replace('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2" "-AttemptsPerSource" "1"')
+Assert-CreReviewedAction $daumRelease $daum $fixture.tasks[$daum.key].xml $old
+ $fixture.tasks[$daum.key].xml=$fixture.tasks[$daum.key].xml.Replace('"-AttemptsPerSource" "1"','"-AttemptsPerSource" "0"')
+try {Assert-CreReviewedAction $daumRelease $daum $fixture.tasks[$daum.key].xml $old;throw 'invalid DAUM attempt count accepted'} catch {if($_.Exception.Message -ceq 'invalid DAUM attempt count accepted'){throw}}
+foreach($invalidPolicy in @('unknown','tenure-and-empty-title-v2" "-DaumSubsetPolicy" "tenure-only-v1')) {
+ $fixture.tasks[$daum.key].xml=$daumXml.Replace('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "'+$invalidPolicy+'"')
+ try {$null=Get-CreReviewedTaskSnapshot $daumRelease $old $new;throw 'invalid DAUM policy accepted'} catch {if($_.Exception.Message -ceq 'invalid DAUM policy accepted'){throw}}
+}
 foreach($mutation in @(
   @('"-AdmitDaumVerifiedSubset"',''),
   @('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-AdmitDaumVerifiedSubset"'),
@@ -344,11 +352,17 @@ foreach($mutation in @(
 $fixture.tasks[$daum.key].xml=$daumXml
 $fixture.tasks['newmark'].xml=([string]$snapshot[1].xml).Replace('"-Source" "newmark"','"-Source" "newmark" "-AdmitDaumVerifiedSubset"')
 try {$null=Get-CreReviewedTaskSnapshot $daumRelease $old $new;throw 'DAUM admission on another task accepted'} catch {if($_.Exception.Message -ceq 'DAUM admission on another task accepted'){throw}}
+$fixture.tasks['newmark'].xml=([string]$snapshot[1].xml).Replace('"-Source" "newmark"','"-Source" "newmark" "-DaumSubsetPolicy" "tenure-and-empty-title-v2"')
+try {$null=Get-CreReviewedTaskSnapshot $daumRelease $old $new;throw 'DAUM policy on another task accepted'} catch {if($_.Exception.Message -ceq 'DAUM policy on another task accepted'){throw}}
 $fixture.tasks['newmark'].xml=[string]$snapshot[1].xml
+$fixture.tasks[$daum.key].xml=$daumXml.Replace('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2" "-AttemptsPerSource" "1"')
+$daumSnapshot=@(Get-CreReviewedTaskSnapshot $daumRelease $old $new)
 $daumDigest=Get-CreReviewedSnapshotDigest $daumRelease $daumSnapshot $old $new
 Invoke-CreReviewedTaskHold $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
 Invoke-CreReviewedTaskRepin $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
 if($fixture.tasks[$daum.key].xml -cnotmatch $new) {throw 'DAUM task not repinned'}
+if($fixture.tasks[$daum.key].xml -cnotmatch 'tenure-and-empty-title-v2') {throw 'DAUM subset policy lost during repin'}
+if($fixture.tasks[$daum.key].xml -cnotmatch 'AttemptsPerSource') {throw 'DAUM attempt count lost during repin'}
 Invoke-CreReviewedTaskRestore $daumRelease $daumSnapshot $old $new $daumDigest $assertOwner
 if(-not $fixture.tasks[$daum.key].enabled) {throw 'DAUM task enabled state not restored'}
 $fixture.tasks.Remove($daum.key);$rows=@($rows[0..2])

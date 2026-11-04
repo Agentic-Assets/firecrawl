@@ -85,6 +85,8 @@ function Assert-CreReviewedSeriesArguments($Release,[string[]]$Argv,[string]$Lau
     } elseif($tier -cne 'series' -or -not $seen.ContainsKey('-AcknowledgeDatabaseWrites') -or -not $parameters.ContainsKey('-WorkDeadlineSeconds')) {throw 'Series task acknowledgement or deadline missing'}
     $deadline=0
     if($tier -ceq 'series' -and (-not [int]::TryParse($parameters['-WorkDeadlineSeconds'],[ref]$deadline) -or $deadline -le 0)) {throw 'Series task deadline invalid'}
+    $attempts=0
+    if($parameters.ContainsKey('-AttemptsPerSource') -and (-not [int]::TryParse($parameters['-AttemptsPerSource'],[ref]$attempts) -or $attempts -le 0)) {throw 'Series task attempt count invalid'}
     $ranges=@($known['WorkDeadlineSeconds'].Attributes|Where-Object {$_ -is [Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ieq 'ValidateRange'})
     if($ranges.Count -gt 1) {throw 'Guarded launcher deadline metadata invalid'}
     if($ranges.Count -eq 1 -and $tier -ceq 'series') {
@@ -209,12 +211,13 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
     $single=@($argv|Where-Object {$_ -ieq '-Source'}).Count;$many=@($argv|Where-Object {$_ -ieq '-Sources'}).Count
     $daumFlag=@($argv|Where-Object {$_ -ieq '-AdmitDaumVerifiedSubset'}).Count
     if($Row.key -cne 'daum-subset' -and $daumFlag -ne 0) {throw 'DAUM subset admission on wrong task'}
+    if($Row.key -cne 'daum-subset' -and $currentArguments.seen.ContainsKey('-DaumSubsetPolicy')) {throw 'DAUM subset policy on wrong task'}
     if($Row.key -clike 'enrich:*') {
         $source=$Row.key.Substring(7)
         if($tier -cne 'enrich' -or $single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne $source -or $source -cnotin @($Release.supported_sources)) {throw 'Enrichment task source scope differs'}
     } elseif($tier -cne 'series') {throw 'Task tier differs'}
     elseif($Row.key -ceq 'daum-subset') {
-        $allowedDaum=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-AdmitDaumVerifiedSubset','-Concurrency','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
+        $allowedDaum=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-AdmitDaumVerifiedSubset','-DaumSubsetPolicy','-AttemptsPerSource','-Concurrency','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
         foreach($key in $currentArguments.seen.Keys) {if($key -inotIn $allowedDaum) {throw 'Unsupported DAUM subset task argument'}}
         if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne 'daum-commercial' -or
            $daumFlag -ne 1 -or @($argv|Where-Object {$_ -iin @('-Pipeline','-AdmitCurrentInventorySource','-AdmitCurrentInventorySources','-AdmitBaselineHoldAdditively')}).Count -ne 0) {throw 'DAUM subset task scope differs'}

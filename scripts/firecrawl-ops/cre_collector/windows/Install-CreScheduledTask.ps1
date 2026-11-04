@@ -18,6 +18,7 @@ param(
     [switch]$Pipeline,
     [ValidateRange(1, 4)][int]$SourceWorkers,
     [ValidateRange(1, 6)][int]$Concurrency = 1,
+    [ValidateRange(1, 2147483647)][int]$AttemptsPerSource,
     [ValidatePattern('^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$')][string]$AdmitCurrentInventorySources,
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{40}\z')][string]$ExpectedSha,
@@ -26,6 +27,7 @@ param(
     [ValidateRange(30, 86400)][int]$WorkDeadlineSeconds,
     [switch]$AcknowledgeDatabaseWrites,
     [switch]$AdmitDaumVerifiedSubset,
+    [ValidateSet('tenure-only-v1','tenure-and-empty-title-v2')][string]$DaumSubsetPolicy,
     [ValidateSet('interra-realty','faris-lee','fortis-net-lease','unique-properties','kiser-group','pinnacle-rea','cawley-chicago','bradford-allen','hudson-peters','gibson-commercial','leibsohn','nai-hiffman','nai-martens','bull-realty','tri-commercial','berger-commercial','nai-bergman','nai-isaac','trinity-partners','metro-commercial','33-realty','nai-hallmark','nai-plotkin','greysteel','nai-talcor','nai-dominion')][string]$AdmitCurrentInventorySource,
     [switch]$Apply,
     [string]$AlertWebhookFile,
@@ -48,6 +50,9 @@ if ($Sources -and ($Source -or -not $Pipeline -or $Tier -ne 'series')) {
 }
 if ($PSBoundParameters.ContainsKey('Concurrency') -and $Tier -ne 'series') {
     throw '-Concurrency requires series.'
+}
+if ($PSBoundParameters.ContainsKey('AttemptsPerSource') -and $Tier -ne 'series') {
+    throw '-AttemptsPerSource requires series.'
 }
 if ($Pipeline -and $Tier -ne 'series') { throw '-Pipeline requires series.' }
 if ($PSBoundParameters.ContainsKey('SourceWorkers') -and -not $Pipeline) {
@@ -96,6 +101,9 @@ if ($AdmitDaumVerifiedSubset -and ($Tier -cne 'series' -or $Source -cne 'daum-co
 }
 if ($TaskName -ceq 'DAUM Verified Subset' -and -not $AdmitDaumVerifiedSubset) {
     throw 'DAUM subset task requires its explicit admission.'
+}
+if ($PSBoundParameters.ContainsKey('DaumSubsetPolicy') -and -not $AdmitDaumVerifiedSubset) {
+    throw '-DaumSubsetPolicy requires DAUM subset admission.'
 }
 
 if ($ExpectedSha -cnotmatch '^[0-9a-f]{40}\z') { throw 'ExpectedSha must be a full lowercase commit SHA.' }
@@ -184,8 +192,10 @@ if ($AdmitCurrentInventorySources) { $arguments += @('-AdmitCurrentInventorySour
 if ($Tier -eq 'series') {
     $arguments += @('-WorkDeadlineSeconds',"$WorkDeadlineSeconds",'-AcknowledgeDatabaseWrites')
     if ($PSBoundParameters.ContainsKey('Concurrency')) { $arguments += @('-Concurrency',"$Concurrency") }
+    if ($PSBoundParameters.ContainsKey('AttemptsPerSource')) { $arguments += @('-AttemptsPerSource',"$AttemptsPerSource") }
     if ($AdmitCurrentInventorySource) { $arguments += @('-AdmitCurrentInventorySource',$AdmitCurrentInventorySource) }
     if ($AdmitDaumVerifiedSubset) { $arguments += '-AdmitDaumVerifiedSubset' }
+    if ($PSBoundParameters.ContainsKey('DaumSubsetPolicy')) { $arguments += @('-DaumSubsetPolicy',$DaumSubsetPolicy.ToLowerInvariant()) }
 } else {
     $arguments += @('-Batch',"$Batch",'-DeadlineSeconds',"$DeadlineSeconds")
     if ($Apply) { $arguments += '-Apply' }
