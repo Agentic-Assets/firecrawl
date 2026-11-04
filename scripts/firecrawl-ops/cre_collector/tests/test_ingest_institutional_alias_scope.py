@@ -26,3 +26,26 @@ def test_institutional_update_binds_canonical_source_brokerage(history_guard):
         r"ON b\.id = s\.brokerage_id\s+WHERE t\.brokerage_id = s\.brokerage_id",
         statement,
     )
+
+
+def test_institutional_comparison_includes_current_geo_and_provenance():
+    sql = cre_ingest.build_sql([], [], "2026-10-12T00:00:00Z", set())
+    start = sql.index("-- Phase-2 data-lift: write the new institutional columns")
+    block = sql[start:sql.index("END $$;", start)]
+    block = re.sub(r"(?m)^\s*--[^\n]*\n", "", block)
+    assignments = re.findall(
+        r"^        ([a-z_]+)\s*= (.*?)(?=,\n        [a-z_]+\s*=|\n    FROM)",
+        block, re.MULTILINE | re.DOTALL,
+    )
+    assert len(assignments) == 22
+    by_column = dict(assignments)
+    assert by_column["county"] == "COALESCE(t.county, s.county)"
+    for column in ("cbsa_code", "cbsa_name"):
+        assert "t.cbsa_code IS NULL AND t.cbsa_name IS NULL" in by_column[column]
+        assert f"THEN s.{column} ELSE t.{column}" in by_column[column]
+    assert by_column["geo_source"] == "COALESCE(t.geo_source, s.geo_source)"
+    assert "s.extra_facts - '_source_field_provenance'" in by_column["extra_facts"]
+    old = ",\n        ".join(f"t.{column}::text" for column, _ in assignments)
+    final = ",\n        ".join(f"({value})::text" for _, value in assignments)
+    assert f"ROW(\n        {old}\n      ) IS DISTINCT FROM ROW(\n        {final}\n      )" in block
+    assert "{jll_price_withheld_stage_sql}" not in block
