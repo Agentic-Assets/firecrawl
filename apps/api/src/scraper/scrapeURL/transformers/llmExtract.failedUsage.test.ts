@@ -128,7 +128,7 @@ describe("known failed structured generation usage", () => {
       "gpt-4.1-mini",
     ]);
   });
-  it("records retry-model output with the retry model price", async () => {
+  it("keeps ordinary retry-model accounting unchanged", async () => {
     config.MODEL_NAME_STRUCTURED_OUTPUT_FALLBACK = undefined;
     const primary = new MockLanguageModelV3({
       modelId: "gpt-4o-mini",
@@ -147,13 +147,8 @@ describe("known failed structured generation usage", () => {
     const opts = options(primary, cost);
     opts.retryModel = retry;
     await expect(generateCompletions(opts)).rejects.toThrow();
-    expect(cost.calls.map(x => [x.model, x.tokens, x.cost])).toEqual([
-      [
-        "gpt-4.1-mini",
-        { input: 12, output: 5 },
-        calculateCost("gpt-4.1-mini", 12, 5),
-      ],
-    ]);
+    expect(cost.calls).toEqual([]);
+    expect(retry.doGenerateCalls).toHaveLength(1);
   });
   it("does not fabricate missing token usage", async () => {
     const primary = new MockLanguageModelV3({
@@ -190,6 +185,57 @@ describe("known failed structured generation usage", () => {
         knownOutputTokens: undefined,
       },
     );
+  });
+  it("does not claim a zero price for an unpriced failed model", async () => {
+    const primary = model("deepseek/deepseek-v4-flash-0731", "{bad");
+    const cost = new CostTracking();
+    const opts = options(primary, cost);
+    opts.boundedStructuredOutput = true;
+    await expect(generateCompletions(opts)).rejects.toThrow();
+    expect(cost.calls).toHaveLength(0);
+    expect(opts.logger.warn).toHaveBeenCalledWith(
+      "Structured generation failed with unknown model price",
+      {
+        model: "deepseek/deepseek-v4-flash-0731",
+        knownInputTokens: 12,
+        knownOutputTokens: 5,
+      },
+    );
+  });
+  it("reports an unpriced failed fallback without inventing a cost", async () => {
+    const primary = model("gpt-4o-mini", "{bad");
+    const fallback = model("deepseek/deepseek-v4-pro-0813", "{bad");
+    fake.fallback = fallback;
+    const cost = new CostTracking();
+    const opts = options(primary, cost);
+    await expect(
+      generateSummaryCompletion(generateCompletions, opts),
+    ).rejects.toThrow();
+    expect(cost.calls.map(x => x.model)).toEqual(["gpt-4o-mini"]);
+    expect(cost.calls[0].metadata.gcCostBasis).toBe(
+      "local_model_rate_estimate",
+    );
+    expect(opts.logger.warn).toHaveBeenCalledWith(
+      "Structured generation failed with unknown model price",
+      {
+        model: "deepseek/deepseek-v4-pro-0813",
+        knownInputTokens: 12,
+        knownOutputTokens: 5,
+      },
+    );
+  });
+  it("does not pretend an unpriced primary is budget-accounted", async () => {
+    const primary = model("deepseek/deepseek-v4-flash-0731", "{bad");
+    const fallback = model("gpt-4.1-mini", '{"summary":"ok"}');
+    fake.fallback = fallback;
+    const cost = new CostTracking(0);
+    const opts = options(primary, cost);
+    await expect(
+      generateSummaryCompletion(generateCompletions, opts),
+    ).rejects.toBeInstanceOf(CostLimitExceededError);
+    expect(primary.doGenerateCalls).toHaveLength(1);
+    expect(fallback.doGenerateCalls).toHaveLength(1);
+    expect(cost.calls.map(x => x.model)).toEqual(["gpt-4.1-mini"]);
   });
   it("checks primary known cost before fallback", async () => {
     const primary = model("gpt-4o-mini", "{bad"),

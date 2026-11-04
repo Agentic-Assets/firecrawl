@@ -511,10 +511,10 @@ export async function generateCompletions({
   let modelId =
     typeof currentModel === "string" ? currentModel : currentModel.modelId;
 
-  // A provider may charge for output that the SDK could not parse or
-  // validate. Record known usage before retry, salvage, or error propagation.
+  // In bounded mode there is no internal repair. Record a failed output's
+  // complete usage only when its model has a known local price.
   const recordFailedObjectUsage = (error: unknown, attemptModel: string) => {
-    if (!NoObjectGeneratedError.isInstance(error)) return;
+    if (!boundedStructuredOutput || !NoObjectGeneratedError.isInstance(error)) return;
     const input = error.usage?.inputTokens;
     const output = error.usage?.outputTokens;
     if (
@@ -538,11 +538,23 @@ export async function generateCompletions({
       });
       return;
     }
+    if (
+      lookupModelCost(attemptModel) === undefined &&
+      !attemptModel.includes("gemini-2.5-pro")
+    ) {
+      logger.warn("Structured generation failed with unknown model price", {
+        model: attemptModel,
+        knownInputTokens: input,
+        knownOutputTokens: output,
+      });
+      return;
+    }
     costTrackingOptions.costTracking.addCall({
       type: "other",
       metadata: {
         ...costTrackingOptions.metadata,
         gcDetails: "generateObject failed",
+        gcCostBasis: "local_model_rate_estimate",
       },
       tokens: { input, output },
       model: attemptModel,
@@ -965,7 +977,6 @@ export async function generateCompletions({
             ),
           });
         } catch (retryError) {
-          recordFailedObjectUsage(retryError, modelId);
           lastError = retryError as Error;
           logger.error("Failed with fallback model", {
             originalError: lastError.message,
