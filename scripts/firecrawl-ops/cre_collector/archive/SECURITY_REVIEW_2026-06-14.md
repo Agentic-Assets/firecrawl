@@ -40,7 +40,7 @@ markdown, archived JSON/HTML capture artifacts, and test-run output, which were
 out of scope.
 
 - Python (shells out to `psql`, builds SQL):
-  `cre_ingest.py`, `cre_monitor.py`, `cre_gate.py`, `cre_validate.py`.
+  `../cre_ingest.py`, `../cre_monitor.py`, `../cre_gate.py`, `cre_validate.py`.
 - TypeScript (web scrapers): `collect.ts`, `types.ts`, `lib/*.ts`
   (`config`, `scrape`, `util`, `broker`, `html`), `sources/*.ts` (15 sources).
 - Shell: `cre_daily_update.sh`, `run_colliers_main_full.sh`,
@@ -167,15 +167,15 @@ and targets only anon and authenticated (never `service_role`).
 - Keep `subprocess.run` in argv list form, never `shell=True`, and never place
   the DB URL anywhere but a single argv element.
 - Database objects under `credeals` are service role only. Read
-  `archive/SUPABASE_SECURITY_NOTE_2026-06-12.md` and the advisor reports before
+  `SUPABASE_SECURITY_NOTE_2026-06-12.md` and the advisor reports before
   changing any grant, view privilege, or RLS setting.
 
 ## 8. References
 
-- Reviewed code: `cre_ingest.py`, `cre_monitor.py`, `cre_gate.py`,
+- Reviewed code: `../cre_ingest.py`, `../cre_monitor.py`, `../cre_gate.py`,
   `../cre_validate.py`, `../collect.ts`, `../lib/`, `../sources/`, `../../sql/`.
 - SQL authorization deep dives: `../../sql/advisor-reports/2026-06-13-cre-rls-enabled-no-policy.md`,
   `../../sql/advisor-reports/2026-06-13-cre-functions-and-grants.md`,
   `../../sql/advisor-reports/2026-06-13-cre-live-hardening.sql`.
-- Test contracts: `tests/CLAUDE.md`, `tests/test_ingest_status_activation.py`,
-  `tests/test_monitor_events.py`, `tests/test_gate.py`, `tests/test_monitor.py`.
+- Test contracts: `../tests/CLAUDE.md`, `../tests/test_ingest_status_activation.py`,
+  `../tests/test_monitor_events.py`, `../tests/test_gate.py`, `../tests/test_monitor.py`.
