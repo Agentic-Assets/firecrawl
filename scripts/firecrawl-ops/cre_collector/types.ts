@@ -418,6 +418,15 @@ export type SourceResult = {
   listings: any[];
   // Unqualified source observations, never canonical listing rows or coverage proof.
   retainedObservations?: readonly unknown[];
+  // Embedded provider error observations, not HTTP status, listing rows, or lifecycle decisions.
+  jllInvestorNotFoundObservations?: readonly {
+    searchId: string | null;
+    searchAlias: string | null;
+    sourceUrl: string | null;
+    inventoryObservedAt: string | null;
+    embeddedProviderErrorStatusCode: 404;
+    confirmation: "live_current_build_json_and_public_page";
+  }[];
   currentInventoryProof?: InterraCurrentInventoryProof | BuildoutCurrentInventoryProof | PyramidCurrentInventoryProof | EssexCurrentInventoryProof | DaumCurrentInventoryProof | DaumVerifiedSubsetInventoryProof | DaumEmptyTitleSubsetProof;
   note?: string;
   // Set true when this pass KNOWINGLY returned a partial enumeration (hit a
