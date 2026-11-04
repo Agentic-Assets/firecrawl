@@ -129,3 +129,60 @@ test("semantic failure waits for delayed sibling denial or Retry-After before de
     assert.equal(requests, 4, "no recovery pair follows a delayed stop signal");
   }
 });
+
+
+test("retains later pages after a settled provider hole without admitting the source", async t => {
+  const parsed: any[] = [], holes: any[] = [], calls: string[] = [];
+  let active = 0, peak = 0;
+  const prior = globalThis.fetch; t.after(() => { globalThis.fetch = prior; });
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    assert.ok(url.pathname.endsWith("GetListingsHtml") || url.pathname.endsWith("GetMapData"), "no detail request");
+    const start = Number(url.searchParams.get("Start")), size = Number(url.searchParams.get("PageSize"));
+    const list = url.pathname.endsWith("GetListingsHtml");
+    calls.push(`${start}:${size}:${list ? "list" : "map"}`);
+    active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 2));
+    active--;
+    if (start <= 101 && start + size > 101 && start !== 1)
+      return response({ success: false, error: list ? "Failure retrieving listing HTML." : "Failure retrieving map." });
+    return response(page(start, size, 203)[list ? "list" : "map"]);
+  }) as typeof fetch;
+  await assert.rejects(srcColliers("sale", 203, false,
+    (pageNo, start, cards, size) => parsed.push({ pageNo, start, size, cards }),
+    () => {}, (pageNo, start, size, reason) => holes.push({ pageNo, start, size, reason }),
+    () => true), /success=false/);
+  assert.ok(peak <= 2);
+  assert.deepEqual(holes.map(x => [x.start, x.size, x.reason]), [[101, 1, "provider_failure"]]);
+  assert.equal(parsed.reduce((sum, x) => sum + x.cards.length, 0), 202);
+  assert.ok(parsed.some(x => x.start === 201 && x.cards.length === 3));
+  assert.deepEqual(calls.slice(-2).sort(), ["201:3:list", "201:3:map"]);
+  assert.ok(parsed.every(x => x.cards.every((card: any) => card.inventoryOnly.reason === "detail_not_attempted")));
+  calls.length = 0;
+  await assert.rejects(srcColliers("sale", 203, false), /success=false/);
+  assert.equal(calls.length, 4, "without a private spool no recovery or tail requests run");
+});
+
+test("a tail denial or total drift stops immediately and records the unexamined range", async t => {
+  const holes: any[] = [], calls: string[] = [];
+  let mode: "denial" | "total" = "denial";
+  install(t, url => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start")), size = Number(url.searchParams.get("PageSize"));
+    const list = url.pathname.endsWith("GetListingsHtml"); calls.push(`${start}:${size}`);
+    if (start === 201) return mode === "denial" ? response({}, 403) : response(page(start, size, 304)[list ? "list" : "map"]);
+    if (start <= 101 && start + size > 101 && start !== 1)
+      return response({ success: false, error: list ? "Failure retrieving listing HTML." : "Failure retrieving map." });
+    return response(page(start, size, 303)[list ? "list" : "map"]);
+  });
+  for (mode of ["denial", "total"] as const) {
+    holes.length = 0; calls.length = 0;
+    await assert.rejects(srcColliers("sale", 303, false, () => {}, () => {},
+      (pageNo, start, size, reason) => holes.push({ pageNo, start, size, reason }), () => true),
+      mode === "denial" ? /success=false; recovery stopped:.*403/ : /success=false; recovery stopped:.*total changed/);
+    assert.ok(holes.some(x => x.start === 101 && x.size === 1 && x.reason === "provider_failure"));
+    assert.ok(holes.some(x => x.start === 201 && x.size === 103 && x.reason === "recovery_stopped"));
+    assert.ok(!calls.some(x => x.startsWith("301:")), "no page follows a stop signal");
+  }
+});

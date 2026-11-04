@@ -778,39 +778,49 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
       if (!(original instanceof ColliersPageFailure) || !onPage || !onResponses || !onHole || !captureWritable?.() ||
           !Number.isSafeInteger(total) || total === null || total < start) throw original;
       const rangeSize = Math.min(pageSize, total - start + 1);
+      const recordPage = onPage;
+      const isCaptureWritable = captureWritable;
+      const retainValidatedPair = (pageNo: number, offset: number, size: number, list: any, map: any, tail: boolean): void => {
+        const stage = tail ? "tail" : "recovery";
+        if (Number(list.total) !== total || (tail && map.total != null && Number(map.total) !== total)) throw new Error(`Colliers ${stage} total changed`);
+        if (totalAvail !== null && (Number(list.totalAvail) !== totalAvail || (tail && map.totalAvail != null && Number(map.totalAvail) !== totalAvail))) throw new Error(`Colliers ${stage} totalAvail changed`);
+        const html = String(list.html ?? "");
+        const count = cheerio.load(html)("li.item").length;
+        const groups = groupColliersMapLocations(Array.isArray(map?.projectLocations) ? map.projectLocations : []);
+        if (groups.length !== count || colliersAssertPageCount(list.numProjects, count, offset) !== size) throw new Error(`Colliers ${stage} page parity failed`);
+        if (groups.some(group => providerProjectIds.has(group.projectId))) throw new Error(`Colliers ${stage} repeated map ProjectId`);
+        const cards = parseColliersCards(html, groups, offset);
+        if (cards.length !== count) throw new Error(`Colliers ${stage} parsed-card parity failed`);
+        for (const group of groups) providerProjectIds.add(group.projectId);
+        recordPage(pageNo, offset, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")), size);
+        if (!isCaptureWritable()) throw new Error(`Colliers ${stage} capture failed`);
+      };
       const pending: Array<{ start: number; size: number }> = [];
       if (rangeSize > 1) {
         const left = Math.floor(rangeSize / 2);
         pending.push({ start, size: left }, { start: start + left, size: rangeSize - left });
       }
       let requests = 0;
+      let providerHole = false;
+      let budgetExhausted = false;
+      let tailAccounted = false;
       // Evidence only: this attempt remains failed and never enters detail or ingest.
       try {
         if (rangeSize === 1) {
           onHole(page, start, 1, "provider_failure");
+          providerHole = true;
           if (!captureWritable()) throw new Error("Colliers recovery capture failed");
         }
         while (pending.length) {
           const part = pending.shift()!;
-            if (requests >= COLLIERS_RECOVERY_MAX_PAIRS) { onHole(page, part.start, part.size, "budget_exhausted"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); continue; }
+            if (requests >= COLLIERS_RECOVERY_MAX_PAIRS) { budgetExhausted = true; onHole(page, part.start, part.size, "budget_exhausted"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); continue; }
             requests++;
             await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
             try {
               const [list, map] = await colliersFetchPagePair(
                 colliersListUrl(engineKey, part.start, part.size), colliersMapUrl(engineKey, part.start, part.size),
                 (attempt, responses) => { onResponses(page, part.start, attempt, responses, part.size); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }, 1);
-              if (Number(list.total) !== total) throw new Error("Colliers recovery total changed");
-              if (totalAvail !== null && Number(list.totalAvail) !== totalAvail) throw new Error("Colliers recovery totalAvail changed");
-              const html = String(list.html ?? "");
-              const count = cheerio.load(html)("li.item").length;
-              const groups = groupColliersMapLocations(Array.isArray(map?.projectLocations) ? map.projectLocations : []);
-              if (groups.length !== count || colliersAssertPageCount(list.numProjects, count, part.start) !== part.size) throw new Error("Colliers recovery page parity failed");
-              if (groups.some(group => providerProjectIds.has(group.projectId))) throw new Error("Colliers recovery repeated map ProjectId");
-              const cards = parseColliersCards(html, groups, part.start);
-              if (cards.length !== count) throw new Error("Colliers recovery parsed-card parity failed");
-              for (const group of groups) providerProjectIds.add(group.projectId);
-              onPage(page, part.start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")), part.size);
-              if (!captureWritable()) throw new Error("Colliers recovery capture failed");
+              retainValidatedPair(page, part.start, part.size, list, map, false);
             } catch (error) {
               if (!(error instanceof ColliersPageFailure)) {
                 if (captureWritable()) {
@@ -822,14 +832,60 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
                 }
                 throw error;
               }
-              if (part.size === 1) { onHole(page, part.start, part.size, "provider_failure"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }
+              if (part.size === 1) { providerHole = true; onHole(page, part.start, part.size, "provider_failure"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }
               else {
                 const left = Math.floor(part.size / 2);
                 pending.push({ start: part.start, size: left }, { start: part.start + left, size: part.size - left });
               }
             }
         }
+        // A settled provider hole does not make the remaining pages worthless.
+        // Keep the original source failure; only retain later, independently
+        // validated page pairs in the private attempt spool.
+        tailAccounted = true;
+        if (providerHole && !budgetExhausted) {
+          const last = Math.min(total, want);
+          let tailStart = start + rangeSize;
+          let tailPage = page + 1;
+          while (tailStart <= last && tailPage <= PAGE_CAP) {
+            const tailSize = Math.min(COLLIERS_PAGE_SIZE, last - tailStart + 1);
+            try {
+              await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
+              const [list, map] = await colliersFetchPagePair(
+                colliersListUrl(engineKey, tailStart, tailSize), colliersMapUrl(engineKey, tailStart, tailSize),
+                (attempt, responses) => { onResponses(tailPage, tailStart, attempt, responses, tailSize); if (!captureWritable()) throw new Error("Colliers tail capture failed"); }, 1);
+              retainValidatedPair(tailPage, tailStart, tailSize, list, map, true);
+            } catch (error) {
+              if (captureWritable()) {
+                if (error instanceof ColliersPageFailure) {
+                  onHole(tailPage, tailStart, tailSize, "provider_failure");
+                  tailStart += tailSize;
+                }
+                if (tailStart <= last && captureWritable()) onHole(tailPage, tailStart, last - tailStart + 1, "recovery_stopped");
+              }
+              throw error;
+            }
+            tailStart += tailSize;
+            tailPage++;
+          }
+          if (tailStart <= last) {
+            onHole(tailPage, tailStart, last - tailStart + 1, "recovery_stopped");
+            if (!captureWritable()) throw new Error("Colliers tail capture failed");
+          }
+        } else {
+          const tailStart = start + rangeSize;
+          const last = Math.min(total, want);
+          if (tailStart <= last) {
+            onHole(page + 1, tailStart, last - tailStart + 1, "recovery_stopped");
+            if (!captureWritable()) throw new Error("Colliers tail capture failed");
+          }
+        }
       } catch (error) {
+        const tailStart = start + rangeSize;
+        const last = Math.min(total, want);
+        if (!tailAccounted && tailStart <= last && captureWritable()) {
+          onHole(page + 1, tailStart, last - tailStart + 1, "recovery_stopped");
+        }
         const capture = captureWritable() ? "" : "; recovery capture failed and evidence is unverified";
         throw new Error(`${original.message}; recovery stopped: ${error instanceof Error ? error.message : "unknown error"}${capture}`);
       }
