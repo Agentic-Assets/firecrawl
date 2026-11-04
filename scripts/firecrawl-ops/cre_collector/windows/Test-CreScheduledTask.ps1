@@ -166,6 +166,27 @@ $daumArgs = @{ TaskName='DAUM Verified Subset'; Tier='series'; Source='daum-comm
 [xml]$daumDoc = (& $creInstaller @daumArgs) -join [Environment]::NewLine
 $daumAction = Get-CreXmlValue $daumDoc '/t:Task/t:Actions/t:Exec/t:Arguments'
 Assert-Cre ($daumAction.Contains('"-Source" "daum-commercial"') -and $daumAction.Contains('"-AdmitDaumVerifiedSubset"')) 'DAUM preview binds singleton source and subset admission.'
+Assert-Cre (-not $daumAction.Contains('"-DaumSubsetPolicy"') -and -not $daumAction.Contains('"-AttemptsPerSource"')) 'Omitted policy and attempt count must preserve launcher defaults.'
+$daumV2=$daumArgs.Clone(); $daumV2.DaumSubsetPolicy='tenure-and-empty-title-v2'; $daumV2.AttemptsPerSource=1
+[xml]$daumV2Doc = (& $creInstaller @daumV2) -join [Environment]::NewLine
+$daumV2Action = Get-CreXmlValue $daumV2Doc '/t:Task/t:Actions/t:Exec/t:Arguments'
+Assert-Cre ($daumV2Action.Contains('"-DaumSubsetPolicy" "tenure-and-empty-title-v2"')) 'DAUM preview must forward the selected subset policy.'
+Assert-Cre ($daumV2Action.Contains('"-AttemptsPerSource" "1"')) 'DAUM preview must forward the selected attempt count.'
+$daumV2.DaumSubsetPolicy='TENURE-AND-EMPTY-TITLE-V2'
+[xml]$daumCaseDoc = (& $creInstaller @daumV2) -join [Environment]::NewLine
+Assert-Cre ((Get-CreXmlValue $daumCaseDoc '/t:Task/t:Actions/t:Exec/t:Arguments').Contains('"-DaumSubsetPolicy" "tenure-and-empty-title-v2"')) 'DAUM policy must use the canonical spelling expected by the Linux runner.'
+$wrongPolicyScope=$creSeries.Clone();$wrongPolicyScope.DaumSubsetPolicy='tenure-and-empty-title-v2'
+$rejected=$false
+try { & $creInstaller @wrongPolicyScope | Out-Null } catch { $rejected=$true }
+Assert-Cre $rejected 'DAUM subset policy must not be accepted without DAUM subset admission.'
+$wrongAttempts=@{ TaskName='Enrichment - newmark'; Tier='enrich'; Source='newmark'; ExpectedSha=('a'*40); AttemptsPerSource=1 }
+$rejected=$false
+try { & $creInstaller @wrongAttempts | Out-Null } catch { $rejected=$true }
+Assert-Cre $rejected 'AttemptsPerSource is a series-only option.'
+$invalidAttempts=$daumArgs.Clone();$invalidAttempts.AttemptsPerSource=0
+$rejected=$false
+try { & $creInstaller @invalidAttempts | Out-Null } catch { $rejected=$true }
+Assert-Cre $rejected 'Attempt count must be positive.'
 foreach ($change in @(@{Source='newmark'}, @{TaskName='Other'}, @{AdmitDaumVerifiedSubset=$false}, @{Pipeline=$true}, @{AdmitCurrentInventorySource='interra-realty'})) {
     $badDaum=$daumArgs.Clone(); foreach ($key in $change.Keys) {$badDaum[$key]=$change[$key]}
     $before=$global:Cre4265Fixture.Calls.Count; $rejected=$false
