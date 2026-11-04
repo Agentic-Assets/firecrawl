@@ -729,9 +729,16 @@ def _expected_child_config(
             )
         except (KeyError, ValueError) as exc:
             raise TypeError("host memory guard policy is malformed") from exc
-        if not _exact_json_equal(dict(memory_policy), canonical):
+        historical = {
+            key: value for key, value in canonical.items()
+            if key not in {"continuity_gap_seconds", "max_sample_gap_seconds"}
+        }
+        if not (
+            _exact_json_equal(dict(memory_policy), canonical)
+            or _exact_json_equal(dict(memory_policy), historical)
+        ):
             raise TypeError("host memory guard policy is not canonical")
-        expected["host_memory_guard"] = canonical
+        expected["host_memory_guard"] = dict(memory_policy)
     return expected
 
 

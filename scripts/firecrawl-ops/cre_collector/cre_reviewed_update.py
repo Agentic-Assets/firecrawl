@@ -632,7 +632,8 @@ def run_source_update(
                     raise TimeoutError("native update step timed out")
 
             with command_poll_hook(poll):
-                rc = checkpoint.run_command(
+                # Maintenance logs are not collector performance evidence.
+                rc = checkpoint._run_logged_command(
                     argv, log, env=checkpoint.safe_process_env()
                 )
             owner()
@@ -685,6 +686,8 @@ def run_source_update(
             )
             snapshot = native_stage("Inspect", inspect_plan)
             release["qualified_sources"] = snapshot["qualified_sources"]
+            release["task_baseline"] = snapshot["task_baseline"]
+            release["reviewed_fleet"] = True
             active_plan = output / "active-plan.json"
             write_new(
                 active_plan,

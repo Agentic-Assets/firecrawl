@@ -359,7 +359,7 @@ def test_owned_dependency_command_binds_maintenance_selected_identity(tmp_path, 
     def command(_argv, log, *, env):
         log.write_text("synthetic dependency output")
         return 0
-    checkpoint = SimpleNamespace(run_command=command, safe_process_env=dict, COLLECTOR_DIR=collector)
+    checkpoint = SimpleNamespace(_run_logged_command=command, safe_process_env=dict, COLLECTOR_DIR=collector)
     runner = operation.Foreground(packet, checkpoint, tmp_path)
     receipt = runner.run("npm-ci", ["npm", "ci"], effective_cwd=collector)
     assert receipt["identity"] == selected and identities == [selected, selected]

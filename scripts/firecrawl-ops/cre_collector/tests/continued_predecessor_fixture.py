@@ -32,7 +32,7 @@ def produce_prior_failure(tmp_path, prior, prior_path, observation, authorizatio
     ticks = iter(now + timedelta(seconds=index) for index in range(30))
     monkeypatch.setattr(handoff, "now", lambda: next(ticks))
     checkpoint = SimpleNamespace(safe_process_env=dict,
-                                 run_command=lambda argv, log, env: (log.write_bytes(b"synthetic closed log\n") and 0))
+                                 _run_logged_command=lambda argv, log, env: (log.write_bytes(b"synthetic closed log\n") and 0))
     runner = handoff.Foreground(prior, checkpoint, output)
     prior_raw = prior_path.read_bytes()
     runner.native("Hold", prior_path, sha(prior_raw), observation, authorization)

@@ -74,9 +74,8 @@ function Set-CreHandoffEnabledXml([string]$Xml,[bool]$Enabled) {
     $node.InnerText=$Enabled.ToString().ToLowerInvariant(); return $doc.OuterXml
 }
 
-function Assert-CreHandoffFleet($Release) {
-    $expected=@('\Agentic Assets\CRE\Interra Refresh','\Agentic Assets\CRE\Newmark Refresh','\Agentic Assets\CRE\Qualified Brokerage Pipeline')
-    $relevant=@(foreach($task in @(Get-ScheduledTask -ErrorAction Stop)) {
+function Get-CreHandoffRelevantTasks($Release) {
+    return @(foreach($task in @(Get-ScheduledTask -ErrorAction Stop)) {
         $matches=$task.TaskPath -ceq '\Agentic Assets\CRE\'
         foreach($action in @($task.Actions)) {
             foreach($field in @('Execute','Arguments','WorkingDirectory')) {
@@ -91,7 +90,17 @@ function Assert-CreHandoffFleet($Release) {
         }
         if($matches) { $task.TaskPath+$task.TaskName }
     })
-    if($relevant.Count -ne 3 -or @($relevant|Select-Object -Unique).Count -ne 3) { throw 'Whole CRE fleet count/uniqueness differs' }
+}
+
+function Assert-CreHandoffFleet($Release) {
+    $expected=@('\Agentic Assets\CRE\Interra Refresh','\Agentic Assets\CRE\Newmark Refresh','\Agentic Assets\CRE\Qualified Brokerage Pipeline')
+    $reviewed=if($Release -is [System.Collections.IDictionary]) {$Release.Contains('reviewed_fleet')} else {$null -ne $Release.PSObject.Properties['reviewed_fleet']}
+    if($reviewed) {
+        Assert-CreReviewedFleetRowSet -Rows @($Release.task_baseline)
+        $expected=@($Release.task_baseline|ForEach-Object {[string]$_.task_path+[string]$_.task_name})
+    }
+    $relevant=@(Get-CreHandoffRelevantTasks $Release)
+    if($relevant.Count -ne $expected.Count -or @($relevant|Select-Object -Unique).Count -ne $expected.Count) { throw 'Whole CRE fleet count/uniqueness differs' }
     foreach($name in $expected) { if(@($relevant|Where-Object {$_ -ceq $name}).Count -ne 1) { throw 'Unexpected or missing CRE task' } }
 }
 

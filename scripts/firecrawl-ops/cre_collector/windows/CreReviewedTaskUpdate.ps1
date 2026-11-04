@@ -73,12 +73,21 @@ function Assert-CreReviewedSeriesArguments($Release,[string[]]$Argv,[string]$Lau
             $parameters[$key]=$Argv[$i]
         }
     }
-    if(-not $seen.ContainsKey('-AcknowledgeDatabaseWrites') -or -not $parameters.ContainsKey('-WorkDeadlineSeconds')) {throw 'Series task acknowledgement or deadline missing'}
+    $tier=Get-CreReviewedArgument $Argv '-Tier'
+    if($tier -ceq 'enrich') {
+        $allowed=@('-Tier','-Source','-ExpectedSha','-Batch','-DeadlineSeconds','-Apply','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
+        foreach($key in $seen.Keys) {if($key -inotIn $allowed) {throw 'Unsupported enrichment task argument'}}
+        if(-not $parameters.ContainsKey('-Batch') -or -not $parameters.ContainsKey('-DeadlineSeconds')) {throw 'Enrichment task batch or deadline missing'}
+        $batch=0;$incrementalDeadline=0
+        if(-not [int]::TryParse($parameters['-Batch'],[ref]$batch) -or $batch -lt 1 -or $batch -gt 50 -or
+           -not [int]::TryParse($parameters['-DeadlineSeconds'],[ref]$incrementalDeadline) -or $incrementalDeadline -lt 30 -or $incrementalDeadline -gt 14400) {throw 'Enrichment task bounds invalid'}
+        if($parameters['-Source'] -ceq 'matthews' -and $seen.ContainsKey('-Apply') -and $incrementalDeadline -gt 600) {throw 'Matthews enrichment deadline invalid'}
+    } elseif($tier -cne 'series' -or -not $seen.ContainsKey('-AcknowledgeDatabaseWrites') -or -not $parameters.ContainsKey('-WorkDeadlineSeconds')) {throw 'Series task acknowledgement or deadline missing'}
     $deadline=0
-    if(-not [int]::TryParse($parameters['-WorkDeadlineSeconds'],[ref]$deadline) -or $deadline -le 0) {throw 'Series task deadline invalid'}
+    if($tier -ceq 'series' -and (-not [int]::TryParse($parameters['-WorkDeadlineSeconds'],[ref]$deadline) -or $deadline -le 0)) {throw 'Series task deadline invalid'}
     $ranges=@($known['WorkDeadlineSeconds'].Attributes|Where-Object {$_ -is [Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ieq 'ValidateRange'})
     if($ranges.Count -gt 1) {throw 'Guarded launcher deadline metadata invalid'}
-    if($ranges.Count -eq 1) {
+    if($ranges.Count -eq 1 -and $tier -ceq 'series') {
         if($ranges[0].PositionalArguments.Count -ne 2) {throw 'Guarded launcher deadline bounds unavailable'}
         try {$minimum=[int]$ranges[0].PositionalArguments[0].SafeGetValue();$maximum=[int]$ranges[0].PositionalArguments[1].SafeGetValue()} catch {throw 'Guarded launcher deadline bounds are not constant'}
         if($deadline -lt $minimum -or $deadline -gt $maximum) {throw 'Series task deadline invalid'}
@@ -195,9 +204,14 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
     if(-not (Test-Path -LiteralPath $selectedLauncher -PathType Leaf)) {throw 'Selected guarded launcher unavailable'}
     $selectedArguments=Assert-CreReviewedSeriesArguments $Release $argv $selectedLauncher
     Assert-CreReviewedSelectedBinding $currentArguments $selectedArguments $selectedLauncher
-    if((Get-CreReviewedArgument $argv '-Tier') -cne 'series' -or (Get-CreReviewedArgument $argv '-ExpectedSha') -cne $OldSha) {throw 'Task tier or pin differs'}
+    $tier=Get-CreReviewedArgument $argv '-Tier'
+    if((Get-CreReviewedArgument $argv '-ExpectedSha') -cne $OldSha) {throw 'Task pin differs'}
     $single=@($argv|Where-Object {$_ -ieq '-Source'}).Count;$many=@($argv|Where-Object {$_ -ieq '-Sources'}).Count
-    if($Row.key -ceq 'qualified') {
+    if($Row.key -clike 'enrich:*') {
+        $source=$Row.key.Substring(7)
+        if($tier -cne 'enrich' -or $single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne $source -or $source -cnotin @($Release.supported_sources)) {throw 'Enrichment task source scope differs'}
+    } elseif($tier -cne 'series') {throw 'Task tier differs'}
+    elseif($Row.key -ceq 'qualified') {
         if($single -ne 0 -or $many -ne 1 -or -not $Release.qualified_sources -or
            (Get-CreReviewedArgument $argv '-Sources') -cne [string]$Release.qualified_sources -or
            @($argv|Where-Object {$_ -ieq '-Pipeline'}).Count -ne 1) {throw 'Qualified task source scope differs'}
@@ -231,10 +245,31 @@ function Assert-CreReviewedTaskContract($Baseline,[string]$Actual,[bool]$Enabled
 
 function Assert-CreReviewedFleetRowSet([object[]]$Rows) {
     $expected=@{interra='Interra Refresh';newmark='Newmark Refresh';qualified='Qualified Brokerage Pipeline'}
-    if($Rows.Count -ne 3 -or @($Rows.key|Select-Object -Unique).Count -ne 3) {throw 'Incomplete or duplicate task fleet'}
+    if($Rows.Count -lt 3 -or @($Rows.key|Select-Object -Unique).Count -ne $Rows.Count) {throw 'Incomplete or duplicate task fleet'}
     foreach($row in $Rows) {
-        if(-not $expected.ContainsKey([string]$row.key) -or $row.task_path -cne '\Agentic Assets\CRE\' -or $row.task_name -cne $expected[[string]$row.key]) {throw 'Unexpected task identity'}
+        $key=[string]$row.key
+        if($key -cmatch '^enrich:([a-z0-9]+(?:-[a-z0-9]+)*)$') {$name='Enrichment - '+$Matches[1]}
+        elseif($expected.ContainsKey($key)) {$name=$expected[$key]}
+        else {throw 'Unexpected task identity'}
+        if($row.task_path -cne '\Agentic Assets\CRE\' -or $row.task_name -cne $name) {throw 'Unexpected task identity'}
     }
+    foreach($key in $expected.Keys) {if(@($Rows|Where-Object {$_.key -ceq $key}).Count -ne 1) {throw 'Missing task identity'}}
+}
+
+function Add-CreReviewedOptionalTasks($Release) {
+    $rows=@($Release.task_baseline)
+    Assert-CreReviewedFleetRowSet $rows
+    if($rows.Count -ne 3) {throw 'Inspection must start from the standard fleet'}
+    foreach($identity in @(Get-CreHandoffRelevantTasks $Release)) {
+        if($identity -cmatch '^\\Agentic Assets\\CRE\\Enrichment - ([a-z0-9]+(?:-[a-z0-9]+)*)$') {
+            $source=$Matches[1]
+            if($source -cnotin @($Release.supported_sources)) {throw 'Unsupported enrichment source'}
+            $rows+=@{key='enrich:'+$source;task_path='\Agentic Assets\CRE\';task_name='Enrichment - '+$source}
+        }
+    }
+    Assert-CreReviewedFleetRowSet $rows
+    if($Release -is [System.Collections.IDictionary]) {$Release['task_baseline']=$rows;$Release['reviewed_fleet']=$true}
+    else {$Release.task_baseline=$rows;Add-Member -InputObject $Release -NotePropertyName reviewed_fleet -NotePropertyValue $true -Force}
 }
 
 function Assert-CreReviewedFleetRows($Release,$Snapshot=$null) {
@@ -245,6 +280,7 @@ function Assert-CreReviewedFleetRows($Release,$Snapshot=$null) {
 function Assert-CreReviewedSnapshot($Release,$Snapshot,[string]$OldSha,[string]$NewSha) {
     Assert-CreReviewedFleetRows $Release $Snapshot
     $rows=@($Release.task_baseline);$saved=@($Snapshot)
+    if($rows.Count -ne $saved.Count) {throw 'Task snapshot fleet differs'}
     foreach($row in $rows) {
         $matches=@($saved|Where-Object {$_.key -ceq $row.key})
         if($matches.Count -ne 1) {throw 'Task snapshot identity missing'}
@@ -286,6 +322,7 @@ function Get-CreReviewedCurrentTaskSnapshot($Release,[string]$OldSha,[string]$Ne
     # returned for preview and bound into the digest. No historical XML or
     # separate approval of an unchanged current source list is required.
     if($Release -isnot [System.Collections.IDictionary] -and $Release -isnot [pscustomobject]) {throw 'Current update release must be an object'}
+    Add-CreReviewedOptionalTasks $Release
     Assert-CreReviewedFleetRows $Release
     Assert-CreMaintenanceIdle $Release
     $qualified=@($Release.task_baseline|Where-Object {$_.key -ceq 'qualified'})[0]
@@ -412,6 +449,7 @@ function Invoke-CreReviewedTaskRestore($Release,$Snapshot,[string]$OldSha,[strin
     }
     foreach($row in @($Snapshot)) {
         & $AssertOwner
+        Assert-CreHandoffFleet $Release
         $pinned=if($OldSha -ceq $NewSha){[string]$row.xml}else{Pin-ReviewedXml ([string]$row.xml) $OldSha $NewSha}
         $held=Set-CreHandoffEnabledXml $pinned $false
         $record=Get-CreReviewedTaskReadback $row $held
@@ -499,6 +537,7 @@ function Complete-CreReviewedRestore($Release,$Snapshot,[string]$OldSha,[string]
     }
     foreach($row in @($Snapshot)) {
         & $AssertOwner
+        Assert-CreHandoffFleet $Release
         $current=Get-CreReviewedSettledTask $row $OldSha $NewSha $true
         if($current.pin -cne 'selected') {throw 'Task pin changed during restore'}
         if($row.enabled -and -not $current.record.enabled) {$null=Enable-ScheduledTask -TaskPath $row.task_path -TaskName $row.task_name -ErrorAction Stop}
@@ -511,9 +550,10 @@ function Invoke-CreReviewedTaskStage([string]$Stage,$Release,$Snapshot,[string]$
     & $AssertOwner
     if($Stage -ceq 'Inspect') {
         $saved=@(Get-CreReviewedCurrentTaskSnapshot $Release $OldSha $NewSha)
-        return @{snapshot=$saved;qualified_sources=$Release.qualified_sources;digest=(Get-CreReviewedSnapshotDigest $Release $saved $OldSha $NewSha)}
+        return @{snapshot=$saved;task_baseline=@($Release.task_baseline);qualified_sources=$Release.qualified_sources;digest=(Get-CreReviewedSnapshotDigest $Release $saved $OldSha $NewSha)}
     }
     Assert-CreReviewedSnapshotDigest $Release $Snapshot $OldSha $NewSha $Digest
+    Assert-CreHandoffFleet $Release
     switch($Stage) {
         'Hold' {Invoke-CreReviewedTaskHold $Release $Snapshot $OldSha $NewSha $Digest $AssertOwner}
         'Repin' {Invoke-CreReviewedTaskRepin $Release $Snapshot $OldSha $NewSha $Digest $AssertOwner}

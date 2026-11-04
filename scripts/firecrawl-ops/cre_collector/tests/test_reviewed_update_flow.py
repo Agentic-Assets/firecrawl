@@ -20,6 +20,7 @@ import pytest
     [
         "",
         "already_current",
+        "real_logged_native",
         "native_current",
         "runtime_current",
         "hold_noop",
@@ -46,7 +47,7 @@ import pytest
         "docker_unavailable",
     ],
 )
-def test_foreground_source_flow(tmp_path, monkeypatch, failure):
+def test_foreground_source_flow(tmp_path, monkeypatch, capsys, failure):
     if (
         failure == "hold_real_proxy_kill"
         and os.environ.get("CRE_TEST_NATIVE_INTEROP") != "1"
@@ -97,10 +98,10 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
     git(development, "commit", "-m", "after")
     selected = git(development, "rev-parse", "HEAD")
     git(development, "update-ref", "refs/remotes/origin/main", selected)
-    if failure in {"already_current", "native_current", "runtime_current"}:
+    if failure in {"already_current", "real_logged_native", "native_current", "runtime_current"}:
         advanced = (
             (native, runtime)
-            if failure == "already_current"
+            if failure in {"already_current", "real_logged_native"}
             else ((native,) if failure == "native_current" else (runtime,))
         )
         for root in advanced:
@@ -110,7 +111,7 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
 
     state = {
         "held": False,
-        "pin": selected if failure in {"already_current", "runtime_current"} else old,
+        "pin": selected if failure in {"already_current", "real_logged_native", "runtime_current"} else old,
         "successor": False,
         "calls": [],
         "held_checks": 0,
@@ -187,9 +188,26 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
                 return 1
             result = {
                 "qualified_sources": "interra-realty,newmark",
+                "task_baseline": data["release"]["task_baseline"]
+                + [
+                    {
+                        "key": "enrich:newmark",
+                        "task_path": "\\Agentic Assets\\CRE\\",
+                        "task_name": "Enrichment - newmark",
+                    }
+                ],
                 "snapshot": [],
                 "digest": "a" * 64,
             }
+        else:
+            assert data["release"]["reviewed_fleet"] is True
+            assert data["release"]["task_baseline"][-1] == {
+                "key": "enrich:newmark",
+                "task_path": "\\Agentic Assets\\CRE\\",
+                "task_name": "Enrichment - newmark",
+            }
+        if stage == "Inspect":
+            pass
         elif stage == "Hold":
             if failure == "hold_noop":
                 return completed_failure()
@@ -329,7 +347,8 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
     fake_probe.ReadOnlyLoopbackClient = Client
     monkeypatch.setitem(sys.modules, "firecrawl_operator_handoff", fake_probe)
     monkeypatch.setattr(subprocess, "run", fake_subprocess)
-    monkeypatch.setattr(checkpoint, "run_command", fake_native)
+    if failure != "real_logged_native":
+        monkeypatch.setattr(checkpoint, "_run_logged_command", fake_native)
     monkeypatch.setattr(handoff, "visible_linux_frontends", list)
     monkeypatch.setattr(update, "installed_dependencies", lambda root: {})
     monkeypatch.setattr(update, "windows_path", lambda value: str(value))
@@ -343,10 +362,35 @@ def test_foreground_source_flow(tmp_path, monkeypatch, failure):
         "powershell": Path("/usr/bin/true"),
         "docker": docker,
     }
-    if failure == "already_current":
+    if failure == "real_logged_native":
+        executable = tmp_path / "synthetic-native"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv\n"
+            "stage = args[args.index('-Stage') + 1]\n"
+            "plan = json.loads(Path(args[args.index('-Plan') + 1]).read_text())\n"
+            "fleet = plan['release']['task_baseline']\n"
+            "extra = {'key': 'enrich:newmark', 'task_path': chr(92) + 'Agentic Assets' + chr(92) + 'CRE' + chr(92), 'task_name': 'Enrichment - newmark'}\n"
+            "if stage != 'Inspect': assert fleet[-1] == extra and plan['release']['reviewed_fleet'] is True\n"
+            "result = {'qualified_sources': 'interra-realty,newmark', 'task_baseline': fleet + [extra], 'snapshot': [], 'digest': 'a' * 64} if stage == 'Inspect' else {'stage': stage, 'complete': True}\n"
+            "Path(args[args.index('-Output') + 1]).write_text(json.dumps(result))\n"
+            "print('synthetic native ' + stage)\n"
+        )
+        executable.chmod(0o755)
+        args["powershell"] = executable
+    if failure in {"already_current", "real_logged_native"}:
         result = update.run_source_update(selected, **args)
         assert result["selected"] == selected
-        assert state["calls"] == ["Inspect", "VerifyRestored"]
+        if failure == "real_logged_native":
+            logs = list((development / ".scratch").glob("reviewed-update-*/*.log"))
+            assert len(logs) == 2
+            assert all("synthetic native" in log.read_text() and "rc=0" in log.read_text() for log in logs)
+            assert not list((development / ".scratch").rglob("*.performance.jsonl"))
+            assert "CRE performance telemetry degraded" not in capsys.readouterr().err
+        else:
+            assert state["calls"] == ["Inspect", "VerifyRestored"]
         assert not state["held"] and not lock.exists()
     elif failure in {"native_current", "runtime_current"}:
         result = update.run_source_update(selected, **args)

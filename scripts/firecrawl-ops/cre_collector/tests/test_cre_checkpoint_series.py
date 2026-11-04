@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
+import json
 
 import cre_checkpoint_series as series
+import pytest
 
 
 def config(sources=("cbre", "jll")):
@@ -236,6 +237,34 @@ def test_reconcile_stale_running_source_binds_exact_interrupted_child(tmp_path):
     assert checkpoint["state"] == "interrupted"
     assert checkpoint["checkpoint_run"] == "runs/2026-08-11T000001Z"
     assert checkpoint["checkpoint_status"] == "interrupted"
+
+
+def test_historical_memory_policy_reconciles_but_cannot_resume(tmp_path):
+    current = config(("jll",))
+    manifest = series.new_manifest(tmp_path, git_sha="a" * 40, config=current)
+    historical = manifest["config"]["host_memory_guard"]
+    historical.pop("continuity_gap_seconds")
+    historical.pop("max_sample_gap_seconds")
+    checkpoint = manifest["sources"]["jll"]
+    checkpoint["state"] = "running"
+    checkpoint["attempts"] = [{"number": 1, "started_at": "2026-08-11T00:00:00+00:00"}]
+    child = tmp_path / "runs" / "2026-08-11T000001Z"
+    child.mkdir(parents=True)
+    child_manifest = {
+        "collector_git_sha": "a" * 40,
+        "run_id": child.name,
+        "started_at": "2026-08-11T00:00:01+00:00",
+        "finished_at": "2026-08-11T00:00:02+00:00",
+        "status": "interrupted",
+        "config": series._expected_child_config("jll", manifest["config"]),
+    }
+    (child / "manifest.json").write_text(json.dumps(child_manifest), encoding="utf-8")
+    series.reconcile_stale_running_sources(tmp_path, manifest)
+    assert checkpoint["state"] == "interrupted"
+    series.save_manifest(tmp_path, manifest)
+    with pytest.raises(series.SeriesError, match="configuration differs"):
+        series.load_resume_manifest(tmp_path / "manifest.json", git_sha="a" * 40,
+                                    config=config(("jll",)))
 
 
 def test_reconcile_stale_running_source_refuses_ambiguous_children(tmp_path):
