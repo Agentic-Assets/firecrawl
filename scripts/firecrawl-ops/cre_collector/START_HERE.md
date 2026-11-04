@@ -223,8 +223,8 @@ PSI, `MemAvailable`, swap totals, and unified cgroup v2 memory-controller
 evidence. A start
 requires normal pressure. Warning pressure sustained for 20 seconds or any
 critical sample stops the checkpoint through the same owned-process cleanup
-path. A fresh reading after a gap longer than 1.5 sample intervals resets the
-warning window; the missing interval is not treated as observed pressure. A gap
+path. A scheduling delay or journal write longer than 1.5 sample intervals resets
+the warning window; the missing interval is not treated as observed pressure. A gap
 longer than the greater of the warning sustain period or three sample intervals
 stops on telemetry failure, except that a fresh critical reading trips immediately.
 Missing, malformed, timed-out or stale pressure readings and failed required

@@ -114,6 +114,7 @@ class HostMemoryGuard:
     context_provider: Callable[[], Mapping[str, Any]] | None = None
     high_since: float | None = field(default=None, init=False)
     previous_observed: float | None = field(default=None, init=False)
+    previous_tick_finished: float | None = field(default=None, init=False)
     tripped: bool = field(default=False, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
@@ -127,7 +128,10 @@ class HostMemoryGuard:
     def config(self) -> dict[str, Any]:
         return memory_guard_config(self.sustain_seconds, self.sample_seconds)
 
-    def observe(self, pressure: int, *, observed_monotonic: float) -> str | None:
+    def observe(
+        self, pressure: int, *, observed_monotonic: float,
+        started_monotonic: float | None = None,
+    ) -> str | None:
         if type(pressure) is not int or pressure not in (
             PRESSURE_NORMAL,
             PRESSURE_WARNING,
@@ -139,8 +143,9 @@ class HostMemoryGuard:
             and observed_monotonic <= self.previous_observed
         ):
             raise MemoryTelemetryError("host memory pressure sample stale")
+        previous_observed = self.previous_observed
         gap = (
-            observed_monotonic - self.previous_observed
+            observed_monotonic - previous_observed
             if self.previous_observed is not None
             else None
         )
@@ -150,7 +155,22 @@ class HostMemoryGuard:
             return "host_memory_critical"
         if gap is not None and gap > max(self.sustain_seconds, self.sample_seconds * 3):
             raise MemoryTelemetryError("host memory pressure sample stale")
-        if gap is not None and gap > self.sample_seconds * 1.5:
+        # Exclude time spent reading and recording valid samples from the
+        # scheduler delay; still bound the total observation gap above.
+        continuity_gap = gap
+        if started_monotonic is not None and self.previous_tick_finished is not None:
+            continuity_gap = started_monotonic - self.previous_tick_finished
+            journal_duration = self.previous_tick_finished - previous_observed
+            if (
+                not math.isfinite(continuity_gap)
+                or continuity_gap < 0
+                or not math.isfinite(journal_duration)
+                or journal_duration < 0
+            ):
+                raise MemoryTelemetryError("host memory pressure sample stale")
+            if journal_duration > self.sample_seconds * 1.5:
+                self.high_since = None
+        if continuity_gap is not None and continuity_gap > self.sample_seconds * 1.5:
             # No evidence exists between observations; restart warning timing.
             self.high_since = None
         if pressure == PRESSURE_NORMAL:
@@ -266,7 +286,9 @@ class HostMemoryGuard:
             )
         if observed - started > min(1.0, self.sample_seconds):
             raise MemoryTelemetryError("host memory pressure read stale")
-        code = self.observe(pressure, observed_monotonic=observed)
+        code = self.observe(
+            pressure, observed_monotonic=observed, started_monotonic=started
+        )
         if linux_sample:
             self.linux_sample_evidence = self.linux_sampler.last_sample
         if admission and pressure != PRESSURE_NORMAL:
@@ -280,6 +302,7 @@ class HostMemoryGuard:
                 raise MemoryEvidenceError(
                     "host memory guard evidence unavailable"
                 ) from exc
+        self.previous_tick_finished = time.monotonic()
         return pressure
 
     def _record_failure(self, error: Exception) -> None:
