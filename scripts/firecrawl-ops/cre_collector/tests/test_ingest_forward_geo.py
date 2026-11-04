@@ -24,6 +24,7 @@ committed mini crosswalk fixture.
 """
 
 import csv
+import json
 import os
 from datetime import datetime, timezone
 
@@ -275,6 +276,54 @@ def test_canonical_county_needs_a_whole_word_prefix():
     assert cre_geo.canonical_source_county("St. Louis", "MO", city_rec) == "St. Louis city, MO"
     parish_rec = {"state": "LA", "county_name": "Orleans Parish"}
     assert cre_geo.canonical_source_county("Orleans", "LA", parish_rec) == "Orleans Parish, LA"
+
+
+# ---- Coordinate normalization ----------------------------------------------------
+
+
+@pytest.mark.parametrize("latitude,longitude", [(-90, -180), (90, 180), (0, 0)])
+def test_coordinate_bounds_are_inclusive(latitude, longitude):
+    row = _row(latitude=latitude, longitude=longitude)
+    assert (row["lat"], row["lng"]) == (latitude, longitude)
+    assert row["raw_data"]["latitude"] == latitude
+    assert row["raw_data"]["longitude"] == longitude
+
+
+@pytest.mark.parametrize("invalid", [True, False, float("nan"), float("inf"),
+                                     -float("inf"), 10**400, "32.7"])
+@pytest.mark.parametrize("field,other,staged", [
+    ("latitude", "longitude", "lat"), ("longitude", "latitude", "lng"),
+])
+def test_invalid_coordinate_is_not_staged_but_record_and_raw_value_remain(field, other, staged, invalid):
+    row = _row(**{field: invalid, other: 40.0})
+    assert row[staged] is None
+    assert row["lng" if staged == "lat" else "lat"] == 40.0
+    assert row["raw_data"][field] is invalid
+    assert row["external_id"] == "geo-1"
+
+
+@pytest.mark.parametrize("latitude,longitude", [(True, -80), ("32.7", -80), (-91, -80)])
+def test_invalid_coordinate_preserves_valid_json_in_generated_copy(latitude, longitude):
+    row = _row(latitude=latitude, longitude=longitude)
+    sql = ci.build_sql([row], [], _SCRAPED_AT, set())
+    start = sql.index("\n", sql.index("COPY _stage")) + 1
+    fields = sql[start:sql.index("\n\\.\n", start)].split("\t")
+    assert fields[ci.STAGE_COLS.index("lat")] == r"\N"
+    assert fields[ci.STAGE_COLS.index("lng")] == "-80"
+    raw = json.loads(fields[ci.STAGE_COLS.index("raw_data")])
+    assert raw["latitude"] == latitude
+    assert type(raw["latitude"]) is type(latitude)
+    assert raw["longitude"] == longitude
+
+
+@pytest.mark.parametrize("field,value,staged", [
+    ("latitude", -90.01, "lat"), ("latitude", 90.01, "lat"),
+    ("longitude", -180.01, "lng"), ("longitude", 180.01, "lng"),
+])
+def test_out_of_range_coordinate_is_not_staged(field, value, staged):
+    row = _row(**{field: value})
+    assert row[staged] is None
+    assert row["raw_data"][field] == value
 
 
 # ---- Coordinate guard ------------------------------------------------------------

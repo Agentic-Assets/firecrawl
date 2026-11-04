@@ -710,6 +710,13 @@ def num_or_none(v, lo=0, hi=None):
     return float(v)
 
 
+def coordinate_or_none(v, limit):
+    """Accept only finite numeric coordinates within inclusive geographic bounds."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if -limit <= v <= limit else None
+
+
 def iso_date_or_none(v):
     if not v or not isinstance(v, str):
         return None
@@ -3229,8 +3236,8 @@ def to_row(listing, brokers_by_idx, scraped_at, field_candidates=None, building_
         "zip": str(listing.get("postalCode"))[:12]
         if listing.get("postalCode")
         else None,
-        "lat": num_or_none(listing.get("latitude"), lo=-90, hi=90),
-        "lng": num_or_none(listing.get("longitude"), lo=-180, hi=180),
+        "lat": coordinate_or_none(listing.get("latitude"), 90),
+        "lng": coordinate_or_none(listing.get("longitude"), 180),
         "size_sf": size_sf,
         "lot_size_sf": lot_size_sf,
         "year_built": (
