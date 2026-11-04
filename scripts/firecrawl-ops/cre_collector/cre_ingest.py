@@ -3983,6 +3983,7 @@ def build_sql(
     pyramid_verified_subset_claims=None,
     transwestern_image_transition_binding=None,
     pyramid_guard_binding=None,
+    svn_enrichment_ids=(),
 ):
     from cre_essex_identity import (
         historical_claims_sql,
@@ -4096,6 +4097,13 @@ WHERE p.image_id IS NULL;
         }
         for jm in job_meta
     ]
+    svn_enrichment_ids = set(svn_enrichment_ids)
+    if any(not isinstance(value, str) or not value for value in svn_enrichment_ids):
+        raise ValueError("invalid SVN enrichment identity")
+    svn_enrichment_sql = (
+        "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(svn_enrichment_ids)) + ")"
+        if svn_enrichment_ids else "FALSE"
+    )
     lines = []
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
@@ -5253,6 +5261,21 @@ WITH ins AS (
                                           to_jsonb(EXCLUDED.scraped_at)
                                         )
                                       )
+                              WHEN {svn_enrichment_sql}
+                                AND jsonb_typeof(EXCLUDED.raw_data) = 'object'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                THEN (
+                                  (EXCLUDED.raw_data - 'inventoryObservedAt' - 'latestInventoryObservation')
+                                  || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    AND t.raw_data ? 'inventoryObservedAt'
+                                    THEN jsonb_build_object('inventoryObservedAt', t.raw_data->'inventoryObservedAt')
+                                    ELSE '{}'::jsonb END
+                                  || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    AND t.raw_data ? 'latestInventoryObservation'
+                                    THEN jsonb_build_object('latestInventoryObservation', t.raw_data->'latestInventoryObservation')
+                                    ELSE '{}'::jsonb END
+                                )
                               ELSE EXCLUDED.raw_data
                             END,
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
@@ -5425,7 +5448,8 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
+""".replace("{svn_enrichment_sql}", svn_enrichment_sql)
+        .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
@@ -7139,6 +7163,8 @@ def main():
     finished_at = None
     finished_at_by_slug = {}
     colliers_transition_inputs = []
+    svn_enrichment_ids = set()
+    svn_non_enrichment_ids = set()
 
     daum_subset_claims = None
     if args.daum_verified_subset_claims:
@@ -7389,6 +7415,11 @@ def main():
                 skipped_no_url += 1
                 continue
             key = (row["slug"], row["external_id"])
+            if row["slug"] == "svn":
+                if mode == "enrich":
+                    svn_enrichment_ids.add(row["external_id"])
+                else:
+                    svn_non_enrichment_ids.add(row["external_id"])
             if key in merged:
                 try:
                     validate_duplicate_identity_before_merge(merged[key], row)
@@ -7591,6 +7622,7 @@ def main():
         pyramid_verified_subset_claims=pyramid_subset_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
         pyramid_guard_binding=pyramid_guard_binding,
+        svn_enrichment_ids=svn_enrichment_ids - svn_non_enrichment_ids,
     )
 
     print(
