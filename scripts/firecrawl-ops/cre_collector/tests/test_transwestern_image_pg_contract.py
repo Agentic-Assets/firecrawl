@@ -43,7 +43,7 @@ class ProjectionContract(unittest.TestCase):
         if result.stdout.strip() != "none":
             raise RuntimeError("fixture container must have networking disabled")
 
-    def project(self, staged, prior, *, tamper="", expected_error=None):
+    def project(self, staged, prior, *, tamper="", expected_refusal=False):
         parts = build_parts([staged], binding())
         images = json.dumps(staged["images"]).replace("'", "''")
         raw_data = json.dumps(staged["raw_data"]).replace("'", "''")
@@ -77,9 +77,24 @@ ROLLBACK;
             ["docker", "exec", "-i", os.environ["TW_IMAGE_TEST_CONTAINER"], "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres"],
             input=sql, text=True, capture_output=True, check=False,
         )
-        if expected_error:
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(expected_error, result.stderr)
+        if expected_refusal:
+            from cre_transwestern_rollback_result import OUTCOME, PREFIX, SCHEMA
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = result.stdout.strip().splitlines()
+            self.assertEqual(len(lines), 1, result.stdout)
+            self.assertTrue(lines[0].startswith(PREFIX), result.stdout)
+            self.assertEqual(json.loads(lines[0][len(PREFIX):]), {
+                "schema": SCHEMA, "source_key": "transwestern",
+                "outcome": OUTCOME, "binding": binding(),
+            })
+            check = subprocess.run(
+                ["docker", "exec", "-i", os.environ["TW_IMAGE_TEST_CONTAINER"], "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres"],
+                input="SELECT to_regnamespace('credeals') IS NULL;", text=True,
+                capture_output=True, check=False,
+            )
+            self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual(check.stdout.strip(), "t")
             return None
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout.strip())
@@ -147,7 +162,7 @@ ROLLBACK;
         self.project(row(), """
  (1,1,'https://images.transwestern.com/property/old.jpg',false,4,'old')
 """, tamper="DELETE FROM credeals.cre_listing_images WHERE url LIKE '%old.jpg';",
-            expected_error="Transwestern protected image multiplicity lost")
+            expected_refusal=True)
 
 
 if __name__ == "__main__":
