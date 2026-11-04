@@ -986,8 +986,10 @@ test("strict JLL Investor collection preserves unresolved candidates and bypasse
       false
     );
     assert.equal(countryConflict.truncated, true);
+    assert.ok(countryConflict.listings.some((row) => row.id === "006P500000f2tXYIAY"));
+    assert.ok(countryConflict.listings.every((row) => !row.detailError));
     assert.match(
-      countryConflict.listings.find((row) => row.detailError)?.detailError ?? "",
+      (countryConflict.jllInvestorHeldObservations as any[]).find((row) => row.detailError)?.detailError ?? "",
       /search membership conflicts/i
     );
 

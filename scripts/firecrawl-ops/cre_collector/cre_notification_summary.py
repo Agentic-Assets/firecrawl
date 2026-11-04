@@ -115,7 +115,17 @@ def _pipeline_admissions(config, selected_sources):
 def _subset_summary_fields(child, source, count):
     """Partial accounting is source-scoped and never grants complete-source credit."""
     from cre_current_inventory_admission import is_verified_subset, admission_configuration
-    from cre_checkpoint_series import pyramid_partial_child
+    from cre_checkpoint_series import jll_partial_child, pyramid_partial_child
+    if source == "jll-investor" and jll_partial_child(child):
+        checkpoint = child["sources"][source]
+        binding = checkpoint["gate"]["current_inventory_proof"]
+        require(binding["emitted_count"] == count
+                and binding.get("excluded_source_identities") == "unknown")
+        return {"measurement": "generation_exact_verified_subset",
+                "qualification": "qualified_partial_subset", "partial": True,
+                "whole_source_coverage": False, "whole_lease_coverage": "unknown",
+                "emitted_count": count, "held_count": binding["held_count"],
+                "excluded_source_identities": "unknown"}
     pyramid = source == "pyramid-brokerage" and pyramid_partial_child(child)
     if not pyramid and not is_verified_subset(child["config"], source):
         return {}
@@ -201,7 +211,20 @@ def _daum_unknown_breakdown(child, source, count):
             "measurement": "current_staged_inventory_transaction_types"}
 
 
+def _jll_emitted_breakdown(child, source, count):
+    from cre_checkpoint_series import jll_partial_child
+    if source != "jll-investor" or not jll_partial_child(child):
+        return None
+    binding = child["sources"][source]["gate"]["current_inventory_proof"]
+    require(binding.get("emitted_count") == count)
+    return {"sale": count, "lease": 0, "both": 0,
+            "measurement": "current_staged_inventory_transaction_types"}
+
+
 def _artifact_expected_count(child, source, count):
+    from cre_checkpoint_series import jll_partial_child
+    if source == "jll-investor" and jll_partial_child(child):
+        return count + child["sources"][source]["gate"]["current_inventory_proof"]["held_count"]
     if _pyramid_emitted_breakdown(child, source, count) is not None:
         return count + child["sources"][source]["gate"]["current_inventory_proof"]["held_count"]
     return count
@@ -557,7 +580,9 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         require(type(count) is int and 0 < count <= 500000)
         require(
             readback.get("ok") is True
-            and readback.get("latest_inventory_batch_active") == count
+            and (readback.get("latest_inventory_batch_active") == count
+                 or (source == "jll-investor" and readback.get("kind") == "jll_investor_partial"
+                     and readback.get("observation", {}).get("expected") == count))
         )
         require(artifact.get("staged_unique") == _artifact_expected_count(child, source, count))
         require(artifact.get("rejected_by_ingest") == 0)
@@ -573,7 +598,11 @@ def verified_summary(series_directory, source, expected_sha, windows_admission_m
         breakdown_basis = "none"
         breakdown_reason = "staging_stats_absent"
         staged_stats = artifact.get("transaction_breakdown")
-        if _daum_unknown_breakdown(child, source, count) is not None:
+        if _jll_emitted_breakdown(child, source, count) is not None:
+            transaction_breakdown = _jll_emitted_breakdown(child, source, count)
+            breakdown_basis = "bound_emitted_partition"
+            breakdown_reason = None
+        elif _daum_unknown_breakdown(child, source, count) is not None:
             transaction_breakdown = _daum_unknown_breakdown(child, source, count)
             breakdown_basis = "bound_emitted_partition"
             breakdown_reason = None
@@ -1096,7 +1125,9 @@ def verified_pipeline_summary(
             )
             require(
                 readback.get("ok") is True
-                and readback.get("latest_inventory_batch_active") == count
+                and (readback.get("latest_inventory_batch_active") == count
+                 or (source == "jll-investor" and readback.get("kind") == "jll_investor_partial"
+                     and readback.get("observation", {}).get("expected") == count))
                 and readback.get("generation_id") == run_id
                 and artifact.get("path") == f"sources/{source}.json"
                 and artifact.get("staged_unique") == _artifact_expected_count(child, source, count)
@@ -1123,7 +1154,11 @@ def verified_pipeline_summary(
             breakdown_basis = "none"
             breakdown_reason = "staging_stats_absent"
             staged_stats = artifact.get("transaction_breakdown")
-            if _daum_unknown_breakdown(child, source, count) is not None:
+            if _jll_emitted_breakdown(child, source, count) is not None:
+                breakdown = _jll_emitted_breakdown(child, source, count)
+                breakdown_basis = "bound_emitted_partition"
+                breakdown_reason = None
+            elif _daum_unknown_breakdown(child, source, count) is not None:
                 breakdown = _daum_unknown_breakdown(child, source, count)
                 breakdown_basis = "bound_emitted_partition"
                 breakdown_reason = None

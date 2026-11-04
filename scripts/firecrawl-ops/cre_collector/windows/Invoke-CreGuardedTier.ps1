@@ -338,6 +338,23 @@ function Get-CreBrokerageName {
     return 'Commercial real estate'
 }
 
+function Test-CreJllSubsetSummary {
+    param($Summary)
+    try {
+        if ($Summary.measurement -cne 'generation_exact_verified_subset' -or
+            $Summary.qualification -cne 'qualified_partial_subset' -or
+            $Summary.partial -isnot [bool] -or -not $Summary.partial -or
+            $Summary.whole_source_coverage -isnot [bool] -or $Summary.whole_source_coverage -or
+            $Summary.whole_lease_coverage -cne 'unknown' -or
+            $Summary.excluded_source_identities -cne 'unknown') { return $false }
+        foreach ($field in @('emitted_count','held_count','verified_listings')) {
+            if (-not ($Summary.$field -is [int] -or $Summary.$field -is [long]) -or
+                $Summary.$field -lt 0 -or $Summary.$field -gt 500000) { return $false }
+        }
+        return $Summary.emitted_count -gt 0 -and $Summary.emitted_count -eq $Summary.verified_listings
+    } catch { return $false }
+}
+
 function Test-CreDaumSubsetSummary {
     param($Summary, [string]$SourceKey)
     try {
@@ -432,10 +449,13 @@ function Get-CreVerifiedSummary {
                     $null -ne $entry.PSObject.Properties['qualification'] -or
                     ($null -ne $entry.PSObject.Properties['measurement'] -and $entry.measurement -ceq 'generation_exact_verified_subset')
                 $expectsSubset = ($subsetRequested -and $entry.source_key -ceq 'daum-commercial') -or
-                    ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted)
+                    ($subsetMarked -and $entry.source_key -ceq 'pyramid-brokerage' -and $pyramidAdmitted) -or
+                    ($subsetMarked -and $entry.source_key -ceq 'jll-investor')
                 if ($subsetMarked -ne $expectsSubset) { return $null }
                 if ($expectsSubset) {
-                    if (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
+                    if ($entry.source_key -ceq 'jll-investor') {
+                        if (-not (Test-CreJllSubsetSummary $entry)) { return $null }
+                    } elseif (-not (Test-CreDaumSubsetSummary $entry $entry.source_key)) { return $null }
                     $subsetKeys += $entry.source_key
                 }
                 $inventoryProperty = $entry.PSObject.Properties['verified_inventory_only']
@@ -483,9 +503,11 @@ function Get-CreVerifiedSummary {
         $null -ne $summary.PSObject.Properties['held_count'] -or $null -ne $summary.PSObject.Properties['emitted_count'] -or
         $null -ne $summary.PSObject.Properties['qualification'] -or $summary.measurement -ceq 'generation_exact_verified_subset'
     $pyramidSubset = $subsetMarked -and $notificationSource -ceq 'pyramid-brokerage' -and $pyramidAdmitted
-    $expectsSubset = $subsetRequested -or $pyramidSubset
+    $jllSubset = $subsetMarked -and $notificationSource -ceq 'jll-investor'
+    $expectsSubset = $subsetRequested -or $pyramidSubset -or $jllSubset
     if ($subsetMarked -ne $expectsSubset) { return $null }
-    if ($expectsSubset -and (-not (Test-CreDaumSubsetSummary $summary $notificationSource) -or
+    if ($expectsSubset -and (($jllSubset -and -not (Test-CreJllSubsetSummary $summary)) -or
+        (-not $jllSubset -and -not (Test-CreDaumSubsetSummary $summary $notificationSource)) -or
         ($subsetRequested -and $notificationSource -cne 'daum-commercial'))) { return $null }
     $expectedMeasurement = if ($expectsSubset) { 'generation_exact_verified_subset' } else { 'generation_exact_current_inventory' }
     if (-not ($summary.schema_version -is [int] -or $summary.schema_version -is [long]) -or
@@ -566,6 +588,10 @@ function Get-CreNotificationText {
                 $lease = ([long]$entry.transaction_breakdown.lease).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $both = ([long]$entry.transaction_breakdown.both).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
                 $held = ([long]$entry.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+                if ($entry.source_key -ceq 'jll-investor') {
+                    $lines += "$bullet *${broker}:* Verified subset refreshed; $count emitted; $held database identity conflicts held; source exclusions unknown. Whole brokerage incomplete."
+                    continue
+                }
                 $leaseScope = "whole lease coverage $($entry.whole_lease_coverage)"
                 $unknownLine = if ($null -ne $entry.PSObject.Properties['retained_unknown_tenure_count']) { " | *Unknown tenure:* $($entry.retained_unknown_tenure_count)" } else { '' }
                 $hasTransactionFigures = $true
@@ -644,6 +670,10 @@ function Get-CreNotificationText {
         }
         if ($null -ne $Summary.PSObject.Properties['partial'] -and $Summary.partial -eq $true) {
             $held = ([long]$Summary.held_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
+            if ($Summary.source -ceq 'jll-investor') {
+                $success = [char]::ConvertFromUtf32(0x2705)
+                return "`n$success *$name | Verified subset refreshed*`n`n$bullet *Duration:* $duration`n$bullet $count emitted; $held database identity conflicts held; source exclusions unknown.`n$transactionLine`n$bullet *Database readback:* passed; no quality regression.`n$bullet *Coverage:* whole brokerage incomplete."
+            }
             $inventory = ([long]$Summary.inventory_count).ToString('N0', [Globalization.CultureInfo]::InvariantCulture)
             $leaseLine = "$lease verified subset leases; whole lease coverage $($Summary.whole_lease_coverage)"
             if ($null -ne $Summary.PSObject.Properties['retained_unknown_tenure_count']) {

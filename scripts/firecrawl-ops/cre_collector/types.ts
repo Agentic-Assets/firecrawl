@@ -419,6 +419,7 @@ export type SourceResult = {
   // Unqualified source observations, never canonical listing rows or coverage proof.
   retainedObservations?: readonly unknown[];
   // Embedded provider error observations, not HTTP status, listing rows, or lifecycle decisions.
+  jllInvestorHeldObservations?: readonly unknown[];
   jllInvestorNotFoundObservations?: readonly {
     searchId: string | null;
     searchAlias: string | null;

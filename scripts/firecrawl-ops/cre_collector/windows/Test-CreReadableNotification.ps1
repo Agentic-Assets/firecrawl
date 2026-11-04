@@ -13,7 +13,7 @@ $sourceText = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Invoke-CreGuarded
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseInput($sourceText,[ref]$tokens,[ref]$errors)
 Assert-Cre ($errors.Count -eq 0) 'Shipped launcher must parse.'
-foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText','Set-CreNotification')) {
+foreach ($name in @('Get-CreBrokerageName','Test-CreDaumSubsetSummary','Test-CreJllSubsetSummary','Get-CreVerifiedSummary','Get-CreNotificationText','Set-CreNotification')) {
     $definition=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true))
     Assert-Cre ($definition.Count -eq 1) "Exactly one shipped $name function is required."
     if ($name -eq 'Set-CreNotification') {
@@ -406,6 +406,29 @@ $mixedPyramidRead = Get-CreVerifiedSummary (New-Record) 'pyramid-mixed'
 Assert-Cre ($null -ne $mixedPyramidRead -and (Get-CreNotificationText (New-Record) 'Terminal' 0 $mixedPyramidRead).Contains('*Complete brokerages:* 1 | *Qualified subsets:* 1')) 'Mixed Pyramid partial keeps healthy sibling complete and reports partial separately.'
 $selectedAdmissionKeys = @()
 Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'pyramid-mixed-no-admission')) 'Mixed Pyramid partial requires existing admission.'
+$Source = 'jll-investor'; $selectedSourceArgument = $Source; $Pipeline = $false
+$AdmitDaumVerifiedSubset = $false; $selectedAdmissionKeys = @()
+$jll = New-DaumSubsetSummary
+$jll.Remove('inventory_count')
+$jll.source = 'jll-investor'; $jll.emitted_count = 3; $jll.verified_listings = 3; $jll.held_count = 1
+$jll.whole_lease_coverage = 'unknown'; $jll['excluded_source_identities'] = 'unknown'
+$jll.transaction_breakdown = [ordered]@{sale=3;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}
+Save-Summary $jll
+$jllRead = Get-CreVerifiedSummary (New-Record) 'jll-partial'
+$jllText = Get-CreNotificationText (New-Record) 'Terminal' 0 $jllRead
+Assert-Cre ($null -ne $jllRead -and $jllText.Contains('1 database identity conflicts held') -and $jllText.Contains('source exclusions unknown')) 'JLL partial distinguishes database holds and unknown source exclusions.'
+$jll.excluded_source_identities = 'none'; Save-Summary $jll
+Assert-Cre ($null -eq (Get-CreVerifiedSummary (New-Record) 'jll-invalid')) 'JLL source exclusion scope must stay unknown.'
+$Pipeline = $true; $selectedSourceKeys = @('jll-investor','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
+$jll.excluded_source_identities = 'unknown'; $jll['source_key'] = 'jll-investor'
+$mixedJll = New-Summary
+$mixedJll['selected_source_keys'] = $selectedSourceKeys
+$mixedJll['per_source_summaries'] = @($jll, [ordered]@{source_key='newmark';verified_listings=100;transaction_breakdown=[ordered]@{sale=100;lease=0;both=0;measurement='current_staged_inventory_transaction_types'}})
+$mixedJll['qualified_subset_source_keys'] = @('jll-investor')
+$mixedJll['failed_source_keys'] = @(); $mixedJll['pending_source_keys'] = @(); $mixedJll['complete'] = $false
+Save-Summary $mixedJll
+$jllMixedRead = Get-CreVerifiedSummary (New-Record) 'jll-mixed'
+Assert-Cre ($null -ne $jllMixedRead -and (Get-CreNotificationText (New-Record) 'Terminal' 0 $jllMixedRead).Contains('source exclusions unknown')) 'JLL partial and healthy sibling remain separately reported.'
 $Source = 'daum-commercial'; $AdmitDaumVerifiedSubset = $true
 $selectedSourceKeys = @('daum-commercial','newmark'); $selectedSourceArgument = $selectedSourceKeys -join ','
 
