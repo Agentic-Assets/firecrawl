@@ -71,7 +71,7 @@ def test_stale_nonmonotonic_observations_never_bridge_sustained_window(tmp_path,
 
 def test_short_delayed_normal_and_critical_observations(tmp_path, monkeypatch):
     readings = iter([1, 1, 4])
-    clocks = iter([10.0, 10.000708, 10.000708, 13.323624, 13.324332, 13.324332, 16.647248, 16.647956, 16.647956])
+    clocks = iter([10.0, 10.000708, 13.323624, 13.324332, 16.647248, 16.647956])
     monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
     instance, trips = guard(tmp_path, sampler=lambda: next(readings))
     instance.preflight()
@@ -86,12 +86,12 @@ def test_short_delayed_normal_and_critical_observations(tmp_path, monkeypatch):
 
 
 def test_warning_sustains_with_normal_read_and_logging_cost(tmp_path, monkeypatch):
-    # Each scheduled wait is .25s; .13s read and .13s journal work are
+    # Each scheduled wait is .25s; .13s read and .15s journal work are
     # valid, so completion-to-completion intervals exceed 1.5 * cadence.
     clocks = []
     for i in range(4):
-        start = i * .51
-        clocks.extend([start, start + .13, start + .26])
+        start = i * .53
+        clocks.extend([start, start + .13])
     readings = iter([1, 2, 2, 2])
     monkeypatch.setattr(memory.time, "monotonic", lambda: clocks.pop(0))
     instance, trips = guard(tmp_path, sampler=lambda: next(readings),
@@ -104,16 +104,37 @@ def test_warning_sustains_with_normal_read_and_logging_cost(tmp_path, monkeypatc
 
 def test_long_journal_delay_breaks_warning_continuity(tmp_path, monkeypatch):
     # The prior journal stalls longer than the continuity allowance.
-    clocks = iter([0.0, .01, .01, .26, .27, .70, .95, .96, .96])
+    clocks = iter([0.0, .01, .26, .27, 1.40, 1.41])
     readings = iter([1, 2, 2])
     monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
     instance, trips = guard(tmp_path, sampler=lambda: next(readings),
-                            sample_seconds=.25, sustain_seconds=1)
+                            sample_seconds=.25, sustain_seconds=3)
     instance.preflight()
     instance.sample_once()
     instance.sample_once()
     assert trips == []
-    assert instance.high_since == pytest.approx(.96)
+    assert instance.high_since == pytest.approx(1.41)
+
+
+def test_combined_journal_and_wait_break_warning_continuity(tmp_path, monkeypatch):
+    # 1s journal + 2.5s wait exceeds 1.5 intervals, though each is shorter.
+    clocks = iter([0.0, .01, 2.01, 2.02, 5.52, 5.53])
+    readings = iter([1, 2, 2])
+    monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
+    instance, trips = guard(tmp_path, sampler=lambda: next(readings))
+    instance.preflight()
+    instance.sample_once()
+    instance.sample_once()
+    assert trips == []
+    assert instance.high_since == pytest.approx(5.53)
+
+
+def test_backwards_clock_during_read_is_stale(tmp_path, monkeypatch):
+    clocks = iter([10.0, 9.9])
+    monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
+    instance, _ = guard(tmp_path, sampler=lambda: 1)
+    with pytest.raises(memory.MemoryTelemetryError, match="read stale"):
+        instance.preflight()
 
 
 def test_warning_does_not_bridge_observation_gap(tmp_path):
@@ -127,7 +148,7 @@ def test_warning_does_not_bridge_observation_gap(tmp_path):
 
 
 def test_slow_read_remains_stale_after_short_gap(tmp_path, monkeypatch):
-    clocks = iter([10.0, 10.1, 10.1, 12.1, 13.2])
+    clocks = iter([10.0, 10.1, 12.1, 13.2])
     monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
     instance, _ = guard(tmp_path, sampler=lambda: 1)
     instance.preflight()
@@ -136,7 +157,7 @@ def test_slow_read_remains_stale_after_short_gap(tmp_path, monkeypatch):
 
 
 def test_long_gap_fails_with_gap_diagnostic(tmp_path, monkeypatch):
-    clocks = iter([1.0, 1.01, 1.01, 25.0, 25.01])
+    clocks = iter([1.0, 1.01, 25.0, 25.01])
     monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
     instance, trips = guard(tmp_path, sampler=lambda: 1)
     instance.preflight()

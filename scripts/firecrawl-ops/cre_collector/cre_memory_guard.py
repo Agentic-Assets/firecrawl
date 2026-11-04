@@ -57,7 +57,7 @@ def memory_guard_config(
     config = {
         "warning_sustain_seconds": sustain_seconds,
         "sample_seconds": sample_seconds,
-        "continuity_gap_seconds": sample_seconds * 1.5,
+        "continuity_gap_seconds": max(1.0, sample_seconds * 1.5),
         "max_sample_gap_seconds": max(sustain_seconds, sample_seconds * 3),
         "critical_action": "interrupt_immediately",
         "preflight": "require_normal_pressure",
@@ -114,7 +114,6 @@ class HostMemoryGuard:
     context_provider: Callable[[], Mapping[str, Any]] | None = None
     high_since: float | None = field(default=None, init=False)
     previous_observed: float | None = field(default=None, init=False)
-    previous_tick_finished: float | None = field(default=None, init=False)
     tripped: bool = field(default=False, init=False)
     stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     thread: threading.Thread | None = field(default=None, init=False)
@@ -155,22 +154,15 @@ class HostMemoryGuard:
             return "host_memory_critical"
         if gap is not None and gap > max(self.sustain_seconds, self.sample_seconds * 3):
             raise MemoryTelemetryError("host memory pressure sample stale")
-        # Exclude time spent reading and recording valid samples from the
-        # scheduler delay; still bound the total observation gap above.
+        # Count the entire interval between the last observation and the
+        # next read start, including journal and scheduling time. The current
+        # read is bounded separately and is not a scheduling delay.
         continuity_gap = gap
-        if started_monotonic is not None and self.previous_tick_finished is not None:
-            continuity_gap = started_monotonic - self.previous_tick_finished
-            journal_duration = self.previous_tick_finished - previous_observed
-            if (
-                not math.isfinite(continuity_gap)
-                or continuity_gap < 0
-                or not math.isfinite(journal_duration)
-                or journal_duration < 0
-            ):
+        if started_monotonic is not None and previous_observed is not None:
+            continuity_gap = started_monotonic - previous_observed
+            if not math.isfinite(continuity_gap) or continuity_gap < 0:
                 raise MemoryTelemetryError("host memory pressure sample stale")
-            if journal_duration > self.sample_seconds * 1.5:
-                self.high_since = None
-        if continuity_gap is not None and continuity_gap > self.sample_seconds * 1.5:
+        if continuity_gap is not None and continuity_gap > max(1.0, self.sample_seconds * 1.5):
             # No evidence exists between observations; restart warning timing.
             self.high_since = None
         if pressure == PRESSURE_NORMAL:
@@ -218,7 +210,7 @@ class HostMemoryGuard:
                 **(
                     {"sample_gap_seconds": self.sample_gap_seconds}
                     if self.sample_gap_seconds is not None
-                    and self.sample_gap_seconds > self.sample_seconds * 1.5
+                    and self.sample_gap_seconds > max(1.0, self.sample_seconds * 1.5)
                     else {}
                 ),
                 **diagnostics,
@@ -284,7 +276,7 @@ class HostMemoryGuard:
             self.sample_gap_seconds = (
                 gap if gap is not None and math.isfinite(gap) else None
             )
-        if observed - started > min(1.0, self.sample_seconds):
+        if not math.isfinite(elapsed) or elapsed < 0 or elapsed > min(1.0, self.sample_seconds):
             raise MemoryTelemetryError("host memory pressure read stale")
         code = self.observe(
             pressure, observed_monotonic=observed, started_monotonic=started
@@ -302,7 +294,6 @@ class HostMemoryGuard:
                 raise MemoryEvidenceError(
                     "host memory guard evidence unavailable"
                 ) from exc
-        self.previous_tick_finished = time.monotonic()
         return pressure
 
     def _record_failure(self, error: Exception) -> None:
