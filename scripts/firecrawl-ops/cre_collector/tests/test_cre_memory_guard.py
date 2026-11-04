@@ -8,7 +8,7 @@ import signal
 import subprocess
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import cre_checkpoint_refresh as refresh
@@ -61,12 +61,68 @@ def test_unknown_or_internal_kernel_enum_is_not_valid_dispatch_level(
         instance.observe(pressure, observed_monotonic=1)
 
 
-@pytest.mark.parametrize("clock", [0, 1, 4.1, float("nan"), float("inf")])
+@pytest.mark.parametrize("clock", [0, 1, 22, float("nan"), float("inf")])
 def test_stale_nonmonotonic_observations_never_bridge_sustained_window(tmp_path, clock):
     instance, _ = guard(tmp_path)
     instance.observe(2, observed_monotonic=1)
     with pytest.raises(memory.MemoryTelemetryError):
         instance.observe(2, observed_monotonic=clock)
+
+
+def test_short_delayed_normal_and_critical_observations(tmp_path, monkeypatch):
+    readings = iter([1, 1, 4])
+    clocks = iter([10.0, 10.000708, 13.323624, 13.324332, 16.647248, 16.647956])
+    monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
+    instance, trips = guard(tmp_path, sampler=lambda: next(readings))
+    instance.preflight()
+    instance.sample_once()
+    assert not trips
+    instance.sample_once()
+    assert trips[0]["reason_code"] == "host_memory_critical"
+    records = [json.loads(line) for line in instance.log_path.read_text().splitlines()]
+    assert records[1]["state"] == "ok"
+    assert records[1]["sample_gap_seconds"] == pytest.approx(3.323624)
+    assert records[2]["state"] == "tripped"
+
+
+def test_warning_does_not_bridge_observation_gap(tmp_path):
+    instance, _ = guard(tmp_path)
+    for clock in range(0, 20, 2):
+        assert instance.observe(2, observed_monotonic=clock) is None
+    assert instance.observe(2, observed_monotonic=21.323624) is None
+    for clock in range(23, 41, 2):
+        assert instance.observe(2, observed_monotonic=clock + 0.323624) is None
+    assert instance.observe(2, observed_monotonic=41.323624) == "host_memory_warning_sustained"
+
+
+def test_slow_read_remains_stale_after_short_gap(tmp_path, monkeypatch):
+    clocks = iter([10.0, 10.1, 12.1, 13.2])
+    monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
+    instance, _ = guard(tmp_path, sampler=lambda: 1)
+    instance.preflight()
+    with pytest.raises(memory.MemoryTelemetryError, match="read stale"):
+        instance.sample_once()
+
+
+def test_long_gap_fails_with_gap_diagnostic(tmp_path, monkeypatch):
+    clocks = iter([1.0, 1.01, 25.0, 25.01])
+    monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
+    instance, trips = guard(tmp_path, sampler=lambda: 1)
+    instance.preflight()
+    with pytest.raises(memory.MemoryTelemetryError, match="sample stale") as error:
+        instance.sample_once()
+    instance._record_failure(error.value)
+    instance._trip("host_memory_telemetry_failed", pressure=None, telemetry_valid=False)
+    record = json.loads(instance.log_path.read_text().splitlines()[-1])
+    assert trips[0]["reason_code"] == "host_memory_telemetry_failed"
+    assert record["telemetry_failure"]["category"] == "sample_gap"
+    assert record["telemetry_failure"]["sample_gap_seconds"] == pytest.approx(24)
+
+
+def test_critical_after_long_gap_still_trips(tmp_path):
+    instance, _ = guard(tmp_path)
+    instance.observe(1, observed_monotonic=1)
+    assert instance.observe(4, observed_monotonic=100) == "host_memory_critical"
 
 
 @pytest.mark.parametrize("pressure", [2, 4])
@@ -319,7 +375,7 @@ def test_series_passes_memory_policy_and_cpu_recovery_does_not_admit_ram_stop(tm
             path,
             child,
             source="cbre",
-            now=datetime(2026, 10, 12, 1, 2, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 12, 1, 2, tzinfo=UTC),
         )
 
 

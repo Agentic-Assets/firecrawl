@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cre_performance import utc_now
 from cre_linux_telemetry import LinuxMemorySampler, LinuxTelemetryError, memory_policy
+from cre_performance import utc_now
 from cre_resource_usage import _append_record
 from cre_runtime_observability import sanitize_context
 
@@ -57,6 +57,8 @@ def memory_guard_config(
     config = {
         "warning_sustain_seconds": sustain_seconds,
         "sample_seconds": sample_seconds,
+        "continuity_gap_seconds": sample_seconds * 1.5,
+        "max_sample_gap_seconds": max(sustain_seconds, sample_seconds * 3),
         "critical_action": "interrupt_immediately",
         "preflight": "require_normal_pressure",
         "action": "interrupt_and_checkpoint",
@@ -134,16 +136,23 @@ class HostMemoryGuard:
             raise MemoryTelemetryError("host memory pressure invalid")
         if not math.isfinite(observed_monotonic) or (
             self.previous_observed is not None
-            and (
-                observed_monotonic <= self.previous_observed
-                or observed_monotonic - self.previous_observed
-                > self.sample_seconds * 1.5
-            )
+            and observed_monotonic <= self.previous_observed
         ):
             raise MemoryTelemetryError("host memory pressure sample stale")
+        gap = (
+            observed_monotonic - self.previous_observed
+            if self.previous_observed is not None
+            else None
+        )
         self.previous_observed = observed_monotonic
+        # A fresh critical observation must stop immediately, even after a gap.
         if pressure == PRESSURE_CRITICAL:
             return "host_memory_critical"
+        if gap is not None and gap > max(self.sustain_seconds, self.sample_seconds * 3):
+            raise MemoryTelemetryError("host memory pressure sample stale")
+        if gap is not None and gap > self.sample_seconds * 1.5:
+            # No evidence exists between observations; restart warning timing.
+            self.high_since = None
         if pressure == PRESSURE_NORMAL:
             self.high_since = None
             return None
@@ -186,6 +195,12 @@ class HostMemoryGuard:
                     for key, value in context.items()
                     if key in {"phase", "source"} and isinstance(value, str)
                 },
+                **(
+                    {"sample_gap_seconds": self.sample_gap_seconds}
+                    if self.sample_gap_seconds is not None
+                    and self.sample_gap_seconds > self.sample_seconds * 1.5
+                    else {}
+                ),
                 **diagnostics,
                 **(
                     {"telemetry_failure": self.telemetry_failure}
