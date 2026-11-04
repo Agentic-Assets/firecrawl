@@ -142,18 +142,24 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
       return srcCushman(tx, max, monitor);
     case "colliers":
       return srcColliers(tx, max, monitor, spools.colliers
-        ? (page, start, documents) => {
+        ? (page, start, documents, pageSize) => {
             try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
-              observedAt: observationNow(), documents }); }
+              pageSize, observedAt: observationNow(), documents }); }
             catch { spools.colliers!.markFailure(); }
           }
         : undefined, spools.colliers
-        ? (page, start, pairAttempt, responses) => {
+        ? (page, start, pairAttempt, responses, pageSize) => {
             try { spools.colliers!.record({ transaction: tx, page, pass: 1, start,
-              pairAttempt, kind: "unqualified_response_pair", observedAt: observationNow(), documents: [responses] }); }
+              pageSize, pairAttempt, kind: "unqualified_response_pair", observedAt: observationNow(), documents: [responses] }); }
             catch { spools.colliers!.markFailure(); }
           }
-        : undefined);
+        : undefined, spools.colliers
+        ? (page, start, pageSize, reason) => {
+            try { spools.colliers!.record({ transaction: tx, page, pass: 1, start, pageSize,
+              reason, kind: "recovery_hole", observedAt: observationNow(), documents: [] }); }
+            catch { spools.colliers!.markFailure(); }
+          }
+        : undefined, spools.colliers ? () => spools.colliers!.writable : undefined);
     case "colliers-main":
       return srcColliersMain(tx, max, monitor);
     case "newmark":

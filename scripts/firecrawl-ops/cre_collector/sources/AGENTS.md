@@ -1292,6 +1292,19 @@ python3 cre_ingest.py --in /tmp/probe.json --dry-run
 
 ## CBRE Deal Flow and Colliers source-reported detail facts
 
+Colliers SalesTracker can recover private parsed-card evidence from one failed
+list/map page when its successful HTTP response has the observed literal
+`Failure retrieving listing HTML.` or `Failure retrieving map.` error. With a
+writable attempt spool and a known prior total, it bisects that page only, waits
+one second between at most 20 recovery pairs with no internal pair retry, and
+records parsed subpages or explicit failed/unexamined ranges. A semantic page
+failure waits for its sibling so an observed denial or Retry-After cannot be
+hidden. Changed totals, page/count parity failures,
+duplicate map IDs, capture failure, denial, Retry-After and other errors stop
+recovery. The original source failure remains terminal; no detail calls, new
+listing admission or complete-inventory claim follow. Abrupt interruptions
+still leave the existing sidecar unverified; the spool syncs at finish.
+
 Public RCM contact details retain supplied fields independently of `Show*`
 display flags. The source flags are preserved as typed state records in the
 contact's `sourceDisplayControls`, and the containing detail retains its price

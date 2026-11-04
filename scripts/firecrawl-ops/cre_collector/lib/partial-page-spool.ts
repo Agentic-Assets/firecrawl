@@ -10,7 +10,9 @@ export type PartialPageObservation = {
   observedAt: string;
   documents: unknown[];
   start?: number;
-  kind?: "unqualified_response_pair";
+  pageSize?: number;
+  kind?: "unqualified_response_pair" | "recovery_hole";
+  reason?: "provider_failure" | "budget_exhausted" | "recovery_stopped";
   pairAttempt?: number;
 };
 
@@ -21,6 +23,8 @@ export class PartialPageSpool {
   // Counts JSONL observations, including retries and raw plus parsed records, not unique pages.
   private observationRecords = 0;
   private failed = false;
+
+  get writable(): boolean { return this.fd !== null && !this.failed; }
 
   constructor(
     readonly path: string,
