@@ -83,7 +83,7 @@ def expected_binding(run_dir, manifest, attempt_id):
     return binding
 
 
-def verified_rollback(run_dir, manifest):
+def verified_rollback(run_dir, manifest, source="pyramid-brokerage"):
     """Revalidate retained source, attempt, receipt, and zero-row evidence."""
     import hashlib
     import json
@@ -94,11 +94,19 @@ def verified_rollback(run_dir, manifest):
     from cre_validate import FULL_VALIDATION_PROFILE, VALIDATION_AUDIT_SCOPES
 
     try:
-        checkpoint = manifest["sources"]["pyramid-brokerage"]
+        if source == "pyramid-brokerage":
+            state, reason, result_key, outcome = ("pyramid_historical_guard_refused", "pyramid_historical_guard_refusal", "pyramid_guard_result", "historical_identity_refused")
+            result_reader, binding_reader = read_result, expected_binding
+        elif source == "transwestern":
+            from cre_transwestern_rollback_result import read_result as result_reader, expected_binding as binding_reader
+            state, reason, result_key, outcome = ("transwestern_image_guard_refused", "transwestern_image_guard_refusal", "transwestern_guard_result", "protected_image_multiplicity_refused")
+        else:
+            return False
+        checkpoint = manifest["sources"][source]
         root = Path(run_dir)
         if checkpoint["artifact"].get(
             "path"
-        ) != "sources/pyramid-brokerage.json" or any(
+        ) != f"sources/{source}.json" or any(
             path.is_symlink()
             for path in (root, root / "sources", root / "logs", root / "recovery")
         ):
@@ -106,14 +114,14 @@ def verified_rollback(run_dir, manifest):
         ingest = checkpoint["ingest"]
         recovery = checkpoint["ingest_recovery"]
         if (
-            checkpoint.get("state") != "pyramid_historical_guard_refused"
+            checkpoint.get("state") != state
             or type(ingest.get("rc")) is not int
             or ingest["rc"] != 0
-            or ingest.get("log") != "logs/pyramid-brokerage-ingest.log"
+            or ingest.get("log") != f"logs/{source}-ingest.log"
             or ingest.get("additive") is not True
             or ingest.get("mark_missing") is not False
             or ingest.get("status_activation") is not False
-            or recovery.get("reason") != "pyramid_historical_guard_refusal"
+            or recovery.get("reason") != reason
             or recovery.get("outcome") != "exact_rollback"
             or recovery.get("replay_safe") is not True
             or recovery.get("readback_ok") is not False
@@ -123,14 +131,14 @@ def verified_rollback(run_dir, manifest):
             or type(recovery.get("subprocess_rc")) is not int
             or recovery.get("subprocess_rc") != 0
             or recovery.get("validation_path")
-            != "recovery/pyramid-brokerage-validation.json"
+            != f"recovery/{source}-validation.json"
         ):
             return False
-        binding = expected_binding(run_dir, manifest, ingest["attempt_id"])
-        evidence = read_result(Path(run_dir) / ingest["log"], binding)
+        binding = binding_reader(run_dir, manifest, ingest["attempt_id"])
+        evidence = result_reader(Path(run_dir) / ingest["log"], binding)
         if (
-            evidence != ingest.get("pyramid_guard_result")
-            or evidence["outcome"]["outcome"] != "historical_identity_refused"
+            evidence != ingest.get(result_key)
+            or evidence["outcome"]["outcome"] != outcome
             or recovery.get("generation_id") != binding["generation_id"]
             or recovery.get("artifact_run_key_sha256")
             != hashlib.sha256(binding["artifact_run_key"].encode()).hexdigest()
@@ -197,7 +205,7 @@ def verified_rollback(run_dir, manifest):
             and isinstance(row.get("generation_id"), str)
             and row["generation_id"]
             and (row["source_key"], row["generation_id"])
-            != ("pyramid-brokerage", binding["generation_id"])
+            != (source, binding["generation_id"])
             for row in rows
         )
     except (

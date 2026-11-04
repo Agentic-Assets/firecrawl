@@ -729,9 +729,16 @@ def _expected_child_config(
             )
         except (KeyError, ValueError) as exc:
             raise TypeError("host memory guard policy is malformed") from exc
-        if not _exact_json_equal(dict(memory_policy), canonical):
+        historical = {
+            key: value for key, value in canonical.items()
+            if key not in {"continuity_gap_seconds", "max_sample_gap_seconds"}
+        }
+        if not (
+            _exact_json_equal(dict(memory_policy), canonical)
+            or _exact_json_equal(dict(memory_policy), historical)
+        ):
             raise TypeError("host memory guard policy is not canonical")
-        expected["host_memory_guard"] = canonical
+        expected["host_memory_guard"] = dict(memory_policy)
     return expected
 
 
@@ -2409,9 +2416,9 @@ def run_pipeline_series(
                 row["subset_counts"] = pyramid_subset_counts(child)
         else:
             state = child.get("sources", {}).get(key, {}).get("state")
-            if state == "pyramid_historical_guard_refused" and key == "pyramid-brokerage":
+            if (key, state) in {("pyramid-brokerage", "pyramid_historical_guard_refused"), ("transwestern", "transwestern_image_guard_refused")}:
                 from cre_pyramid_rollback_result import verified_rollback
-                outcome = "failed_source" if verified_rollback(child_run, child) else "failed_global"
+                outcome = "failed_source" if verified_rollback(child_run, child, key) else "failed_global"
             elif state in {
                 "collect_failed",
                 "artifact_rejected",
@@ -2823,11 +2830,11 @@ def run_series(
                     if control is None:
                         _require_completed_group_settlement(proc._cre_owned_group)
                     local_guard = (
-                        source == "pyramid-brokerage"
+                        source in {"pyramid-brokerage", "transwestern"}
                         and child_manifest.get("status") == "failed"
                         and child_manifest.get("serial_guard_holds") == [source]
                         and child_manifest.get("preflight", {}).get("database_target") == manifest.get("database_target")
-                        and verified_rollback(child_manifest_path.parent, child_manifest)
+                        and verified_rollback(child_manifest_path.parent, child_manifest, source)
                     )
                 except ProcessCleanupUnknown:
                     local_guard = False
@@ -2837,7 +2844,7 @@ def run_series(
                     break
                 checkpoint["state"] = "failed_global"
                 manifest.update(status="failed", finished_at=utc_now(),
-                                error="Pyramid guard rollback or settlement evidence invalid")
+                                error="source guard rollback or settlement evidence invalid")
                 save_manifest(series_dir, manifest)
                 return 1
             if source_local_failure(child_manifest):

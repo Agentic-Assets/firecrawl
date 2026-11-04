@@ -55,6 +55,14 @@ Linear owns Firecrawl issues, plans, decisions and follow-ups. Company rules:
 7. Durable follow-ups become deduplicated Backlog children labeled
    `Agent-Created`, the repo label and one Type. No local backlog or runner.
 
+## Integrate finished work
+
+Merge each coherent, valuable phase into `Agentic-Assets/firecrawl` main promptly
+once its applicable review, local proof, and merge gates pass. Do not merge
+unnecessary or incorrect changes merely to clear a branch. For obsolete or
+superseded work, check ownership and unique changes before closing its PR or
+cleaning its branch; preserve valuable unmerged work and respect its ownership. Merging the fork does not authorize an upstream merge or deployment.
+
 ## Shared CRE data ownership
 
 The governed version-5 contract tracked by

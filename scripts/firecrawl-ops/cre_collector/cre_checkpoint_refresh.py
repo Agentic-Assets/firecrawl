@@ -242,8 +242,16 @@ class GlobalStageError(RefreshError):
     """A shared infrastructure or live-write stage failed."""
 
 
-class PyramidHistoricalGuardRefusal(RefreshError):
+class SourceGuardRefusal(RefreshError):
+    """A typed source guard refusal with verified rollback."""
+
+
+class PyramidHistoricalGuardRefusal(SourceGuardRefusal):
     """Exact source-local guard refusal with a verified transaction rollback."""
+
+
+class TranswesternImageGuardRefusal(SourceGuardRefusal):
+    """The protected image multiplicity guard refused and rolled back."""
 
 
 class CpuTelemetryError(GlobalStageError):
@@ -5404,6 +5412,8 @@ def ingest_source(
     if source == "transwestern":
         argv.extend(["--checkpoint-ingest-attempt", attempt_id,
                      "--checkpoint-collector-git-sha", manifest["collector_git_sha"]])
+        from cre_transwestern_rollback_result import expected_binding
+        transwestern_binding = expected_binding(run_dir, manifest, attempt_id)
     checkpoint["ingest"] = {
         **({"attempt_id": attempt_id} if source in {"colliers-main", "transwestern", "pyramid-brokerage"} or subset else {}),
         "started_at": started,
@@ -5432,19 +5442,37 @@ def ingest_source(
             raise GlobalStageError("pipeline ingest requires manual exact-generation reconciliation")
         recover_interrupted_ingest(run_dir, manifest, source, env_file)
         return
-    if source == "pyramid-brokerage":
-        from cre_pyramid_rollback_result import read_result
+    if source == "transwestern":
+        # The existing after-commit image receipt already proves the ordinary
+        # success path. Only absence of that proof needs the rollback protocol.
+        from cre_transwestern_image_outcome import read_outcome, verified_checkpoint
         try:
-            evidence = read_result(log_path, pyramid_binding)
+            checkpoint["ingest"]["image_transition"] = read_outcome(log_path)
+        except (OSError, ValueError, TypeError):
+            checkpoint["ingest"]["image_transition"] = None
+        checkpoint["state"] = "ingested"
+        if verified_checkpoint(run_dir, manifest) is not None:
+            save_manifest(run_dir, manifest)
+            return
+        checkpoint["state"] = "ingest_recovery_required"
+    if source in {"pyramid-brokerage", "transwestern"}:
+        if source == "pyramid-brokerage":
+            from cre_pyramid_rollback_result import read_result
+            binding, result_key, reason, held_state, refused, refusal = pyramid_binding, "pyramid_guard_result", "pyramid_historical_guard_refusal", "pyramid_historical_guard_refused", "historical_identity_refused", PyramidHistoricalGuardRefusal
+        else:
+            from cre_transwestern_rollback_result import read_result
+            binding, result_key, reason, held_state, refused, refusal = transwestern_binding, "transwestern_guard_result", "transwestern_image_guard_refusal", "transwestern_image_guard_refused", "protected_image_multiplicity_refused", TranswesternImageGuardRefusal
+        try:
+            evidence = read_result(log_path, binding)
         except (OSError, ValueError, TypeError) as exc:
             checkpoint["state"] = "ingest_recovery_required"
-            checkpoint["ingest_recovery"] = {"reason": "invalid_pyramid_guard_result", "readback_ok": False}
+            checkpoint["ingest_recovery"] = {"reason": "invalid_source_guard_result", "readback_ok": False}
             save_manifest(run_dir, manifest)
-            raise GlobalStageError("Pyramid outcome requires exact reconciliation") from exc
-        checkpoint["ingest"]["pyramid_guard_result"] = evidence
-        if evidence["outcome"]["outcome"] == "historical_identity_refused":
+            raise GlobalStageError("source guard outcome requires exact reconciliation") from exc
+        checkpoint["ingest"][result_key] = evidence
+        if evidence["outcome"]["outcome"] == refused:
             checkpoint["state"] = "ingest_recovery_required"
-            checkpoint["ingest_recovery"] = {"reason": "pyramid_historical_guard_refusal", "subprocess_rc": rc, "readback_ok": False}
+            checkpoint["ingest_recovery"] = {"reason": reason, "subprocess_rc": rc, "readback_ok": False}
             save_manifest(run_dir, manifest)
             try:
                 recover_interrupted_ingest(run_dir, manifest, source, env_file)
@@ -5455,27 +5483,29 @@ def ingest_source(
                 if not (checkpoint.get("state") == "ingest_recovery_required"
                         and recovery.get("outcome") == "exact_rollback"
                         and recovery.get("replay_safe") is True
-                        and recovery.get("reason") == "pyramid_historical_guard_refusal"):
+                        and recovery.get("reason") == reason):
                     raise
             else:
-                raise GlobalStageError("Pyramid refusal unexpectedly read back as committed")
+                raise GlobalStageError("source refusal unexpectedly read back as committed")
             from cre_pyramid_rollback_result import verified_rollback
             try:
                 recovery["validation_sha256"] = sha256_file(run_dir / recovery["validation_path"])
             except (OSError, KeyError, TypeError) as exc:
                 checkpoint["state"] = "ingest_recovery_required"
                 save_manifest(run_dir, manifest)
-                raise GlobalStageError("Pyramid rollback report is unavailable") from exc
-            checkpoint["state"] = "pyramid_historical_guard_refused"
-            if not verified_rollback(run_dir, manifest):
+                raise GlobalStageError("source rollback report is unavailable") from exc
+            checkpoint["state"] = held_state
+            if not verified_rollback(run_dir, manifest, source):
                 checkpoint["state"] = "ingest_recovery_required"
                 save_manifest(run_dir, manifest)
-                raise GlobalStageError("Pyramid rollback evidence is not bound")
+                raise GlobalStageError("source rollback evidence is not bound")
             save_manifest(run_dir, manifest)
             trip = _peek_cpu_guard_trip()
             if trip is not None:
                 raise CpuGuardTrip(trip)
-            raise PyramidHistoricalGuardRefusal("Pyramid historical identity guard refused")
+            message = ("Transwestern protected image multiplicity lost" if source == "transwestern"
+                       else "Pyramid historical identity guard refused")
+            raise refusal(message)
     if source == "colliers-main":
         from cre_colliers_image_transition import read_outcome
         try:
@@ -5483,21 +5513,6 @@ def ingest_source(
         except (OSError, ValueError, TypeError):
             # Missing/invalid evidence never disables the raw final audit.
             checkpoint["ingest"]["image_transition"] = None
-    if source == "transwestern":
-        from cre_transwestern_image_outcome import read_outcome, verified_checkpoint
-        try:
-            checkpoint["ingest"]["image_transition"] = read_outcome(log_path)
-        except (OSError, ValueError, TypeError):
-            checkpoint["ingest"]["image_transition"] = None
-        checkpoint["state"] = "ingested"
-        if verified_checkpoint(run_dir, manifest) is None:
-            checkpoint["state"] = "ingest_recovery_required"
-            checkpoint["ingest_recovery"] = {
-                "reason": "missing_or_invalid_transwestern_image_outcome",
-                "subprocess_rc": rc, "readback_ok": False,
-            }
-            save_manifest(run_dir, manifest)
-            raise GlobalStageError("Transwestern committed image outcome requires reviewed reconciliation")
     checkpoint["state"] = "ingested"
     save_manifest(run_dir, manifest)
 
@@ -5515,8 +5530,8 @@ def advance_source(
     checkpoint = manifest["sources"][source]
     transactions = tuple(manifest["config"]["transactions"])
     existing = _manifest_checkpoint_artifact_valid(run_dir, manifest, source)
-    if checkpoint.get("state") == "pyramid_historical_guard_refused":
-        raise GlobalStageError("held Pyramid artifact cannot be replayed on resume")
+    if checkpoint.get("state") in {"pyramid_historical_guard_refused", "transwestern_image_guard_refused"}:
+        raise GlobalStageError("held source artifact cannot be replayed on resume")
     if checkpoint.get("state") == "ingest_recovery_required":
         raise GlobalStageError(
             f"source {source} requires reviewed ingest recovery before resume"
@@ -5956,13 +5971,13 @@ def ingest_admitted_sources(
             owner_check()
         try:
             ingest_source(run_dir, manifest, source, existing[0], env_file)
-        except PyramidHistoricalGuardRefusal as exc:
+        except SourceGuardRefusal as exc:
             from cre_pyramid_rollback_result import verified_rollback
-            if (manifest["config"]["sources"] != ["pyramid-brokerage"]
+            if (manifest["config"]["sources"] != [source]
                     or owner_check is None):
                 raise GlobalStageError("multi-source serial rollback requires reconciliation") from exc
             owner_check()
-            if not verified_rollback(run_dir, manifest):
+            if not verified_rollback(run_dir, manifest, source):
                 raise GlobalStageError("source-local rollback evidence changed") from exc
             manifest["serial_guard_holds"] = [source]
             raise
@@ -5997,7 +6012,8 @@ def recover_interrupted_ingest(
 ) -> None:
     """Resolve an interrupted live-ingest window without replaying writes."""
     checkpoint = manifest["sources"][source]
-    if source == "pyramid-brokerage" and (checkpoint.get("ingest_recovery") or {}).get("reason") != "pyramid_historical_guard_refusal":
+    guard_reasons = {"pyramid-brokerage": "pyramid_historical_guard_refusal", "transwestern": "transwestern_image_guard_refusal"}
+    if source in guard_reasons and (checkpoint.get("ingest_recovery") or {}).get("reason") != guard_reasons[source]:
         # After an interrupted parent, no persisted process-group identity proves
         # its child and descendants have settled. A receipt alone cannot do so.
         checkpoint["state"] = "ingest_recovery_required"
@@ -6014,7 +6030,7 @@ def recover_interrupted_ingest(
     prior_recovery = checkpoint.get("ingest_recovery") or {}
     guard_attempt = (
         (checkpoint.get("ingest") or {}).get("attempt_id")
-        if prior_recovery.get("reason") == "pyramid_historical_guard_refusal" else None
+        if prior_recovery.get("reason") in {"pyramid_historical_guard_refusal", "transwestern_image_guard_refusal"} else None
     )
     probe_started_at = utc_now()
     rc = run_command(
@@ -6119,12 +6135,12 @@ def recover_interrupted_ingest(
                     "generation_id": generation_id,
                 }
             )
-            is_pyramid_refusal = recovery["reason"] == "pyramid_historical_guard_refusal"
-            checkpoint["state"] = "ingest_recovery_required" if is_pyramid_refusal else "dry_run_passed"
+            is_guard_refusal = recovery["reason"] in {"pyramid_historical_guard_refusal", "transwestern_image_guard_refusal"}
+            checkpoint["state"] = "ingest_recovery_required" if is_guard_refusal else "dry_run_passed"
             save_manifest(run_dir, manifest)
             raise GlobalStageError(
                 f"interrupted ingest fully rolled back for {source}; "
-                + ("Pyramid refusal requires bound settlement" if is_pyramid_refusal
+                + ("source refusal requires bound settlement" if is_guard_refusal
                    else "the immutable artifact is safe to replay on reviewed resume")
             )
         checkpoint["state"] = "ingest_recovery_required"
@@ -8139,7 +8155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         manifest["finished_at"] = utc_now()
         persist_terminal()
         return 130
-    except PyramidHistoricalGuardRefusal as exc:
+    except SourceGuardRefusal as exc:
         if not lock.held:
             raise
         lock._require_authority()
@@ -8207,7 +8223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     and not terminal_publication_failed,
                 )
             if local_refusal and not local_refusal_settled and sys.exception() is None:
-                raise GlobalStageError("Pyramid refusal local settlement is unknown")
+                raise GlobalStageError("source refusal local settlement is unknown")
 
 
 if __name__ == "__main__":

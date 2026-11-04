@@ -278,6 +278,29 @@ def test_default_darwin_tick_is_unchanged_and_does_not_touch_linux(
     assert sampler.last_sample == original
 
 
+def test_linux_warning_gap_resets_window_and_keeps_current_diagnostics(
+    tmp_path, kernel, monkeypatch
+):
+    guard, trips = actual_linux_guard(tmp_path, kernel, monkeypatch)
+    sampler, _ = kernel
+    write(
+        sampler.proc / "meminfo",
+        "MemTotal: 1000000 kB\nMemAvailable: 100000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n",
+    )
+    clocks = iter([0.0, .1, 3.423624, 3.424332])
+    monkeypatch.setattr(memory.time, "monotonic", lambda: next(clocks))
+    assert guard.sample_once() == 2
+    assert guard.high_since == pytest.approx(.1)
+    assert guard.sample_once() == 2
+    assert guard.high_since == pytest.approx(3.424332)
+    assert trips == []
+    record = json.loads(guard.log_path.read_text().splitlines()[-1])
+    assert record["state"] == "warning"
+    assert record["sample_gap_seconds"] == pytest.approx(3.324332)
+    assert record["linux_memory_sample"] == sampler.last_sample
+    assert "host_available_warning" in record["linux_memory_sample"]["causes"]
+
+
 def test_guard_stale_read_and_stale_interval_do_not_publish_diagnostics(
     tmp_path, kernel, monkeypatch
 ):
@@ -287,7 +310,7 @@ def test_guard_stale_read_and_stale_interval_do_not_publish_diagnostics(
         sampler.proc / "meminfo",
         "MemTotal: 1000000 kB\nMemAvailable: 100000 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n",
     )
-    for previous, clocks in [(None, [0, 2]), (0, [10, 10.1])]:
+    for previous, clocks in [(None, [0, 2]), (0, [21, 21.1])]:
         guard.previous_observed = previous
         values = iter(clocks)
         monkeypatch.setattr(memory.time, "monotonic", lambda: next(values))
