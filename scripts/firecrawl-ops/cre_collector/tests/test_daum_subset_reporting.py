@@ -189,6 +189,17 @@ def test_mixed_pipeline_partitions_subset_without_full_complete_credit(evidence)
     assert rows[SOURCE]["partial"] is True and rows[SOURCE]["held_count"] == 2
     assert rows["cbre"]["verified_listings"] == 3 and "partial" not in rows["cbre"]
 
+    binding = child["sources"][SOURCE]["gate"]["current_inventory_proof"]
+    binding.update(inventory_count=100, held_count=0, whole_lease_coverage="unknown",
+                   sale_count=60, lease_count=50, retained_unknown_tenure_count=5)
+    evidence["save"]()
+    result = support.read_pipeline(evidence, [SOURCE, "cbre"])
+    rows = {row["source_key"]: row for row in result["per_source_summaries"]}
+    assert rows[SOURCE]["retained_unknown_tenure_count"] == 5
+    assert rows[SOURCE]["transaction_breakdown"]["sale"] == 60
+    assert rows[SOURCE]["whole_lease_coverage"] == "unknown"
+    assert rows["cbre"]["verified_listings"] == 3
+
 
 def test_handled_partial_serial_attempt_never_replays_on_resume(tmp_path, monkeypatch):
     config = series.series_config(
@@ -364,3 +375,33 @@ def test_handled_pipeline_partial_requalifies_saved_unit_without_dispatch(
     result["readback_ok"] = False
     with pytest.raises(series.SeriesError, match="no longer qualifies"):
         series.run_pipeline_series(tmp_path, manifest, env_file=None)
+
+
+def test_retained_unknown_uses_bound_partition_not_sale_carrier(evidence):
+    binding = evidence["values"]["child"]["sources"][SOURCE]["gate"]["current_inventory_proof"]
+    binding.update(inventory_count=100, held_count=0, whole_lease_coverage="unknown",
+                   sale_count=60, lease_count=50, retained_unknown_tenure_count=5)
+    evidence["save"]()
+    result = support.read(evidence)
+    assert result["held_count"] == 0
+    assert result["whole_lease_coverage"] == "unknown"
+    assert result["retained_unknown_tenure_count"] == 5
+    assert {k: result["transaction_breakdown"][k] for k in ("sale", "lease", "both")} == {
+        "sale": 60, "lease": 50, "both": 15
+    }
+
+
+@pytest.mark.parametrize("change", [
+    {"retained_unknown_tenure_count": True},
+    {"retained_unknown_tenure_count": 101},
+    {"sale_count": 1, "lease_count": 1},
+    {"whole_lease_coverage": "proved"},
+])
+def test_retained_unknown_invalid_partition_refused(evidence, change):
+    binding = evidence["values"]["child"]["sources"][SOURCE]["gate"]["current_inventory_proof"]
+    binding.update(inventory_count=100, held_count=0, whole_lease_coverage="unknown",
+                   sale_count=60, lease_count=50, retained_unknown_tenure_count=5)
+    binding.update(change)
+    evidence["save"]()
+    with pytest.raises(support.REFUSED):
+        support.read(evidence)

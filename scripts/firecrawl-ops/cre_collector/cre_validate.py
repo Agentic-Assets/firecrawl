@@ -313,7 +313,7 @@ def _nonempty_string(value):
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def persisted_freshness_provenance(raw_data):
+def persisted_freshness_provenance(raw_data, *, source_key=None):
     """Return only freshness values explicitly persisted in raw JSON data.
 
     ``cre_listings.scraped_at`` is deliberately absent from this interface:
@@ -324,7 +324,13 @@ def persisted_freshness_provenance(raw_data):
     empty = dict.fromkeys(FRESHNESS_PROVENANCE_FIELDS)
     if not isinstance(raw_data, dict):
         return empty
-    for path in FRESHNESS_PAYLOAD_PATHS:
+    paths = FRESHNESS_PAYLOAD_PATHS
+    daum = _raw_payload_at(raw_data, ("latestDaumUnknownTenureObservation",))
+    if (source_key == "daum-commercial" and daum is not None
+            and daum.get("sourceKey") == "daum-commercial"
+            and daum.get("daumUnknownTenure") is True):
+        paths = (("latestDaumUnknownTenureObservation",), *paths)
+    for path in paths:
         payload = _raw_payload_at(raw_data, path)
         if payload is None:
             continue
@@ -365,8 +371,27 @@ def _raw_json_object(alias, path):
     return f"{alias}.raw_data #> '{{{','.join(path)}}}'"
 
 
-def _freshness_payload_sql(alias):
+def _freshness_payload_sql(alias, *, source_key_expr=None):
     branches = []
+    if source_key_expr is not None:
+        payload = _raw_json_object(alias, ("latestDaumUnknownTenureObservation",))
+        values = [
+            f"{payload}->'inventoryObservedAt'",
+            f"{payload}->'detailObservedAt'",
+            *(f"{payload}->'freshnessProvenance'->'{field}'"
+              for field in ("generationId", "detailScope", "cacheDisposition")),
+        ]
+        has_freshness = " OR ".join(
+            f"(jsonb_typeof({value}) = 'string' AND NULLIF(btrim({value} #>> '{{}}'), '') IS NOT NULL)"
+            for value in values
+        )
+        branches.append(
+            f"WHEN {source_key_expr} = 'daum-commercial' "
+            f"AND jsonb_typeof({payload}) = 'object' "
+            f"AND {payload}->>'sourceKey' = 'daum-commercial' "
+            f"AND {payload}->'daumUnknownTenure' = 'true'::jsonb "
+            f"AND ({has_freshness}) THEN {payload}"
+        )
     for path in FRESHNESS_PAYLOAD_PATHS:
         payload = _raw_json_object(alias, path)
         branches.append(
@@ -379,7 +404,7 @@ def _freshness_payload_sql(alias):
     return "CASE\n      " + "\n      ".join(branches) + "\n      ELSE NULL::jsonb\n    END"
 
 
-FRESHNESS_PAYLOAD_SQL = _freshness_payload_sql("decoded")
+FRESHNESS_PAYLOAD_SQL = _freshness_payload_sql("decoded", source_key_expr="b.slug")
 
 
 SOURCE_POLICY = load_source_policy()

@@ -3,7 +3,6 @@
 import copy
 
 import pytest
-
 from cre_code_handoff_evidence import HandoffError
 
 
@@ -163,3 +162,33 @@ def test_only_reviewed_unoverridden_image_default_changes_are_admitted():
     with pytest.raises(HandoffError):
         qualify_environment_transition(["NODE_VERSION=custom", "MODEL=private-explicit"], new_live,
                                        old_image, new_image, {"MODEL"}, {"NODE_VERSION"})
+
+
+def test_current_transition_separates_true_noops_from_replacements(images):
+    from cre_runtime_maintenance_images import qualify_current_image_transition
+
+    before, after, expected = images
+    after[0] = copy.deepcopy(before[0])
+    expected["api"] = before[0]["image"]
+    result = qualify_current_image_transition(before, after, expected)
+    assert result == {"unchanged": ["api"], "replaced": ["playwright-service"]}
+    with pytest.raises(HandoffError):
+        qualify_current_image_transition(before, after, expected, expected_after_config={"api": "b" * 64})
+    recreated = copy.deepcopy(after)
+    recreated[0].update(id="recreated-api", started_at="new-epoch", config_sha256="b" * 64)
+    result = qualify_current_image_transition(before, recreated, expected, expected_after_config={"api": "b" * 64})
+    assert result == {"unchanged": [], "replaced": ["api", "playwright-service"]}
+    after[0]["started_at"] = "changed"
+    with pytest.raises(HandoffError, match="configuration drifted"):
+        qualify_current_image_transition(before, after, expected)
+
+
+def test_current_transition_reports_settled_unhealthy_service_without_changing_legacy(images):
+    from cre_runtime_maintenance_images import qualify_current_image_transition
+
+    before, after, expected = images
+    after[0]["status"] = "exited"
+    with pytest.raises(HandoffError, match="not running"):
+        validator()(before, after, expected)
+    result = qualify_current_image_transition(before, after, expected)
+    assert result == {"unchanged": [], "replaced": ["api", "playwright-service"]}
