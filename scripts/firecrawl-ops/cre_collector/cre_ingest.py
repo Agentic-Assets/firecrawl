@@ -4104,6 +4104,10 @@ WHERE p.image_id IS NULL;
         "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(svn_enrichment_ids)) + ")"
         if svn_enrichment_ids else "FALSE"
     )
+    svn_enrichment_source_sql = (
+        "s.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(svn_enrichment_ids)) + ")"
+        if svn_enrichment_ids else "FALSE"
+    )
     lines = []
     w = lines.append
     staged_source_key_sql = source_key_sql("s", "b")
@@ -5475,6 +5479,8 @@ SELECT s.brokerage_id, s.external_id, {staged_source_key_sql}, s.source_url, fal
        s.status, true, 0, s.scraped_at, s.scraped_at, s.scraped_at, s.scraped_at
 FROM _src s
 JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
+-- A detail-only SVN observation is not a fresh inventory enumeration.
+WHERE NOT (b.slug = 'svn' AND {svn_enrichment_source_sql})
 ON CONFLICT (brokerage_id, external_id) DO UPDATE SET
     source_key = COALESCE(EXCLUDED.source_key, si.source_key),
     url = EXCLUDED.url,
@@ -5508,7 +5514,8 @@ JOIN credeals.cre_source_index si
   ON si.brokerage_id = u.brokerage_id AND si.external_id = u.external_id
 JOIN credeals.cre_brokerages b ON b.id = u.brokerage_id
 JOIN _jobmeta jm ON jm.slug = b.slug
-WHERE p.observation_present = false OR pv.deleted_at IS NOT NULL
+WHERE (p.observation_present = false OR pv.deleted_at IS NOT NULL)
+  AND NOT (b.slug = 'svn' AND {svn_enrichment_source_sql})
 ON CONFLICT DO NOTHING;
 """)
     w(f"""-- Children: refresh wholesale only when the latest source row completed a

@@ -54,15 +54,43 @@ def main():
         sql(ingest.build_sql([row], job, "2026-11-04T00:00:00Z", set()))
         sql("""UPDATE credeals.cre_listings SET raw_data=
               '{"inventoryObservedAt":"old","latestInventoryObservation":{"latitude":1.0000000000000001}}'::jsonb;""")
+        row["scraped_at"] = "2026-11-04T00:01:00Z"
+        sql("UPDATE credeals.cre_source_index SET observation_present=false, soft_deleted=true "
+            "WHERE external_id='synthetic';")
+        prior_index = json.loads(sql("SELECT to_jsonb(si)::text FROM credeals.cre_source_index si "
+                                     "WHERE external_id='synthetic';"))
+        prior_events = int(sql("SELECT count(*) FROM credeals.cre_listing_events;"))
         sql(ingest.build_sql([row], job, "2026-11-04T00:01:00Z", set(),
                              svn_enrichment_ids=(row["external_id"],)))
+        after_index = json.loads(sql("SELECT to_jsonb(si)::text FROM credeals.cre_source_index si "
+                                     "WHERE external_id='synthetic';"))
+        assert after_index == prior_index, (prior_index, after_index)
+        assert int(sql("SELECT count(*) FROM credeals.cre_listing_events;")) == prior_events
         value = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings;"))
         assert value["inventoryObservedAt"] == "old"
         assert value["latestInventoryObservation"]["latitude"] == 1.0000000000000001
         assert value["markdown"] == "new detail"
         exact = sql("SELECT raw_data->'latestInventoryObservation'->>'latitude' FROM credeals.cre_listings;")
         assert exact == "1.0000000000000001"
-        print("PASS: complete generated SVN ingest transaction preserves exact prior inventory and new detail")
+        # Missing source-index evidence must not be fabricated by pure detail.
+        sql("DELETE FROM credeals.cre_source_index WHERE external_id='synthetic';")
+        sql(ingest.build_sql([row], job, "2026-11-04T00:02:00Z", set(),
+                             svn_enrichment_ids=(row["external_id"],)))
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='synthetic';") == "0"
+        # Full/mixed SVN identity still advances its source index.
+        sql(ingest.build_sql([row], job, "2026-11-04T00:03:00Z", set()))
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='synthetic';") == "1"
+        # A different brokerage sharing the same external ID keeps ordinary behavior.
+        other = ingest.to_row({"sourceKey":"newmark","id":"synthetic",
+                               "url":"https://example.test/other",
+                               "name":"Other","transactionType":"sale"}, {},
+                              "2026-11-04T00:04:00Z")
+        sql(ingest.build_sql([other], [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}],
+                             "2026-11-04T00:04:00Z", set(),
+                             svn_enrichment_ids=("synthetic",)))
+        assert sql("SELECT count(*) FROM credeals.cre_source_index si JOIN credeals.cre_brokerages b "
+                   "ON b.id=si.brokerage_id WHERE b.slug='newmark' AND si.external_id='synthetic';") == "1"
+        print("PASS: pure SVN detail preserves index/event, full and foreign controls, raw and new detail")
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
