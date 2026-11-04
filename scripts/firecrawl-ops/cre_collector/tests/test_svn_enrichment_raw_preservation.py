@@ -70,5 +70,6 @@ def test_multiple_inputs_bind_only_svn_enrichment_ids_and_merged_identity(tmp_pa
     assert result.returncode == 0, result.stderr
     sql = (out / "ingest.sql").read_text()
     branch = sql.split("raw_data          = ", 1)[1].split(",\n        source_lastmod", 1)[0]
-    assert "EXCLUDED.external_id IN ('other', 'same')" in branch
+    assert "EXCLUDED.external_id IN ('other')" in branch
+    assert "'same'" not in branch
     assert "'inventory'" not in branch

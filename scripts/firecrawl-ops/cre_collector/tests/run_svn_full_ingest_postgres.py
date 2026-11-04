@@ -27,9 +27,12 @@ def main():
     try:
         run("docker", "run", "-d", "--rm", "--name", name, "--network=none", "--cpus=0.5",
             "--memory=512m", "--pids-limit=128", "-e", "POSTGRES_PASSWORD=synthetic-only", "postgres:17")
-        for _ in range(50):
-            if subprocess.run(["docker", "exec", name, "pg_isready", "-U", "postgres"],
-                              capture_output=True).returncode == 0:
+        # initdb starts and stops a temporary server; wait for the final server.
+        for _ in range(100):
+            logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
+            ready = subprocess.run(["docker", "exec", name, "pg_isready", "-U", "postgres"],
+                                   capture_output=True).returncode == 0
+            if ready and (logs.stdout + logs.stderr).count("database system is ready to accept connections") >= 2:
                 break
             time.sleep(.2)
         else:

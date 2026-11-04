@@ -7110,6 +7110,7 @@ def main():
     finished_at_by_slug = {}
     colliers_transition_inputs = []
     svn_enrichment_ids = set()
+    svn_non_enrichment_ids = set()
 
     daum_subset_claims = None
     if args.daum_verified_subset_claims:
@@ -7360,8 +7361,11 @@ def main():
                 skipped_no_url += 1
                 continue
             key = (row["slug"], row["external_id"])
-            if mode == "enrich" and row["slug"] == "svn":
-                svn_enrichment_ids.add(row["external_id"])
+            if row["slug"] == "svn":
+                if mode == "enrich":
+                    svn_enrichment_ids.add(row["external_id"])
+                else:
+                    svn_non_enrichment_ids.add(row["external_id"])
             if key in merged:
                 try:
                     validate_duplicate_identity_before_merge(merged[key], row)
@@ -7564,7 +7568,7 @@ def main():
         pyramid_verified_subset_claims=pyramid_subset_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
         pyramid_guard_binding=pyramid_guard_binding,
-        svn_enrichment_ids=svn_enrichment_ids,
+        svn_enrichment_ids=svn_enrichment_ids - svn_non_enrichment_ids,
     )
 
     print(
