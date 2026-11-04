@@ -232,6 +232,21 @@ def updated_image_override(previous, tags):
     return (json.dumps({"services": services}, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
+def _rollback_configuration_sha(container, service, compose_files):
+    """Project the old image recreated by the same no-dependencies command."""
+    rollback = copy.deepcopy(container)
+    labels = rollback["Config"]["Labels"]
+    number = labels.get("com.docker.compose.container-number")
+    require(isinstance(number, str) and re.fullmatch(r"[1-9][0-9]*", number),
+            "previous Compose container number unavailable")
+    labels["com.docker.compose.replace"] = service + "-" + number
+    require(isinstance(labels.get("com.docker.compose.depends_on"), str),
+            "Compose dependency label missing")
+    labels["com.docker.compose.depends_on"] = ""
+    labels["com.docker.compose.project.config_files"] = ",".join(compose_files)
+    return snapshot_container(rollback)["config_sha256"]
+
+
 def prepare_image_plan(git, source, selected, services, docker, native_root, override_path, output):
     """Build and project selected images before any scheduled task is held."""
     override_path = windows_path(local_path(override_path))
@@ -270,14 +285,8 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
                 and resolved[0].get("Id") == current[service]["Image"],
                 "previous Compose image reference does not identify the running image")
         previous_images[service] = {"ref": previous_ref, "image": current[service]["Image"]}
-        rollback_container = copy.deepcopy(current[service])
-        labels = rollback_container["Config"]["Labels"]
-        number = labels.get("com.docker.compose.container-number")
-        require(isinstance(number, str) and re.fullmatch(r"[1-9][0-9]*", number),
-                "previous Compose container number unavailable")
-        labels["com.docker.compose.replace"] = service + "-" + number
-        labels["com.docker.compose.project.config_files"] = ",".join(before["stack"]["files"])
-        rollback_config[service] = snapshot_container(rollback_container)["config_sha256"]
+        rollback_config[service] = _rollback_configuration_sha(
+            current[service], service, before["stack"]["files"])
         explicit = set((before["compose"]["services"][service].get("environment") or {}).keys())
         old_env, new_env = _image_environment(old_images[service]), _image_environment(new_images[service])
         require(set(old_env) - explicit == set(new_env) - explicit, "image default keys changed")
@@ -309,7 +318,8 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
     packet = {"expected_images": {name: built[name]["image"] for name in changed},
               "allowed_image_default_changes": allowed, "new": selected,
               "compose_files": before["stack"]["files"], "compose_override_path": str(override_path)}
-    projected = qualify_fleet_projection(before["containers"], old_images, new_images, before["compose"], packet)
+    projected = qualify_fleet_projection(before["containers"], old_images, new_images, before["compose"], packet,
+                                         no_deps=True)
     plan = {"selected": selected, "services": sorted(services), "apply_services": sorted(changed), "images": built,
             "docker_sha256": binary_hash, "compose_stack": before["stack"],
             "nuq_data_sha256": before["nuq_data_sha256"], "compose_sha256": before["compose_sha256"],

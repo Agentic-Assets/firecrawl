@@ -119,7 +119,7 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
         return {"Id": service, "Image": "image-" + service, "State": {"Status": "running", "StartedAt": "time"},
                 "Config": {"Env": ["SECRET=private"], "Labels": {
                     "com.docker.compose.service": service, "com.docker.compose.project": "firecrawl",
-                    "com.docker.compose.container-number": "1",
+                    "com.docker.compose.container-number": "1", "com.docker.compose.depends_on": "redis:service_started:false",
                     "com.docker.compose.project.working_dir": "C:/firecrawl",
                     "com.docker.compose.project.config_files": ",".join(files)},
                     "User": "", "Entrypoint": None, "Cmd": None, "WorkingDir": ""},
@@ -153,7 +153,7 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
     # Exercise the real preparation-to-observation path with the Path object
     # supplied by the coordinator; only the image build is faked.
     selected = {"sha": "a" * 40, "tree": "b" * 40}
-    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+    monkeypatch.setattr(direct, "build_current_images", lambda *args, **kwargs: {
         "api": {"tag": "fixture", "image": "image-api",
                 "source_sha": selected["sha"], "source_tree": selected["tree"]}})
     plan, overlay = direct.prepare_image_plan(
@@ -163,13 +163,13 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
     assert plan["override_path"] == "C:/fixture-override.yaml"
 
     # A changed image must also plan a new overlay using the normalized path.
-    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+    monkeypatch.setattr(direct, "build_current_images", lambda *args, **kwargs: {
         "api": {"tag": "fixture-selected", "image": "image-new",
                 "source_sha": selected["sha"], "source_tree": selected["tree"]}})
     original_overlay = direct.updated_image_override
     monkeypatch.setattr(direct, "updated_image_override", lambda previous, tags: b"fixture-overlay")
     monkeypatch.setattr(direct, "compare_compose_overlay", lambda *args: None)
-    monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args: {
+    monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args, **kwargs: {
         "before": [], "expected_after_config": {"api": "1" * 64}})
     absent_path = Path("/mnt/c/Users/CSEAGRAVES2018/AppData/Local/Temp") / (tmp_path.name + "-override.json")
     output = tmp_path / "absent"
@@ -187,7 +187,7 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
 
     # The existing, updater-owned overlay is resolved and verified too.
     monkeypatch.setattr(direct, "updated_image_override", original_overlay)
-    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+    monkeypatch.setattr(direct, "build_current_images", lambda *args, **kwargs: {
         "api": {"tag": "fixture", "image": "image-api",
                 "source_sha": selected["sha"], "source_tree": selected["tree"]}})
     tag = "firecrawl-api:qa-synthetic-01"
@@ -204,7 +204,7 @@ def test_observe_current_project_retains_exact_file_stack_without_logging_secret
     monkeypatch.setattr(build, "read_file", lambda path:
                         previous if str(path).replace("\\", "/").endswith("/fixture-override.yaml")
                         else str(path).encode())
-    monkeypatch.setattr(direct, "build_current_images", lambda *args: {
+    monkeypatch.setattr(direct, "build_current_images", lambda *args, **kwargs: {
         "api": {"tag": "firecrawl-api:qa-synthetic-02", "image": "image-new",
                 "source_sha": selected["sha"], "source_tree": selected["tree"]}})
     output = tmp_path / "existing"
@@ -279,7 +279,7 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
     live = {"docker_sha256": "d" * 64, "nuq_data_sha256": "7" * 64,
             "stack": {"files": ["C:/base.yaml"], "sha256": ["e" * 64]},
             "snapshots": [{"service": service}], "compose_sha256": "f" * 64,
-            "containers": [{"Image": "old", "Config": {"Labels": {"com.docker.compose.service": service, "com.docker.compose.container-number": "1"}}}],
+            "containers": [{"Image": "old", "Config": {"Labels": {"com.docker.compose.service": service, "com.docker.compose.container-number": "1", "com.docker.compose.depends_on": "redis:service_started:false"}}}],
             "compose": {"name": "firecrawl", "services": {service: {"image": "old", "environment": {"SECRET": "private"}}}}}
     if build_only:
         live["compose"]["services"][service].pop("image")
@@ -289,7 +289,7 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
             "source_sha": selected["sha"], "source_tree": selected["tree"], "context_sha256": "c" * 64}
     current = [copy.deepcopy(live)]
     monkeypatch.setattr(direct, "observe_current_project", lambda *args: copy.deepcopy(current[0]))
-    monkeypatch.setattr(direct, "build_current_images", lambda *args: {service: dict(item)})
+    monkeypatch.setattr(direct, "build_current_images", lambda *args, **kwargs: {service: dict(item)})
     monkeypatch.setattr(direct, "windows_path", str)
     monkeypatch.setattr(direct, "local_path", Path)
     def docker_json(executable, native, binary_hash, *args):
@@ -297,10 +297,15 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
             return [old_image if args[-1] in {"old", previous_ref} else new_image]
         return {"name": "firecrawl", "services": {}}
     monkeypatch.setattr(direct, "_docker_json", docker_json)
-    monkeypatch.setattr(direct, "snapshot_container", lambda value: {"config_sha256": "2" * 64})
+    def snapshot(value):
+        assert value["Config"]["Labels"]["com.docker.compose.depends_on"] == ""
+        return {"config_sha256": "2" * 64}
+    def projection(*args, **kwargs):
+        assert kwargs == {"no_deps": True}
+        return {"before": [{"service": service}], "expected_after_config": {service: "1" * 64}}
+    monkeypatch.setattr(direct, "snapshot_container", snapshot)
     monkeypatch.setattr(direct, "compare_compose_overlay", lambda *args: None)
-    monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args: {
-        "before": [{"service": service}], "expected_after_config": {service: "1" * 64}})
+    monkeypatch.setattr(direct, "qualify_fleet_projection", projection)
     plan, overlay = direct.prepare_image_plan(None, tmp_path, selected, {service}, tmp_path / "docker",
                                               tmp_path, tmp_path / "stable.yaml", tmp_path)
     assert plan["selected"] == selected and plan["override_sha256"] == sha(overlay)
@@ -359,12 +364,12 @@ def test_prepared_plan_substitutes_stable_overlay_in_preview(monkeypatch, tmp_pa
             "stack": {"files": ["/tmp/base.yaml", str(stable)], "sha256": ["e" * 64, sha(previous)]},
             "snapshots": [{"service": "playwright-service"}], "compose_sha256": "f" * 64,
             "containers": [{"Image": "old", "Config": {"Labels": {
-                "com.docker.compose.service": "playwright-service", "com.docker.compose.container-number": "1"}}}],
+                "com.docker.compose.service": "playwright-service", "com.docker.compose.container-number": "1", "com.docker.compose.depends_on": "redis:service_started:false"}}}],
             "compose": {"name": "firecrawl", "services": {"playwright-service": {"image": "old", "environment": {}}}}}
     item = {"tag": "firecrawl-playwright-service:qa-selected-01", "image": "new",
             "source_sha": selected["sha"], "source_tree": selected["tree"], "context_sha256": "c" * 64}
     monkeypatch.setattr(direct, "observe_current_project", lambda *args: copy.deepcopy(live))
-    monkeypatch.setattr(direct, "build_current_images", lambda *args: {"playwright-service": dict(item)})
+    monkeypatch.setattr(direct, "build_current_images", lambda *args, **kwargs: {"playwright-service": dict(item)})
     monkeypatch.setattr(direct, "windows_path", str)
     monkeypatch.setattr(direct, "local_path", Path)
     calls = []
@@ -377,7 +382,7 @@ def test_prepared_plan_substitutes_stable_overlay_in_preview(monkeypatch, tmp_pa
     monkeypatch.setattr(direct, "_docker_json", docker_json)
     monkeypatch.setattr(direct, "snapshot_container", lambda value: {"config_sha256": "2" * 64})
     monkeypatch.setattr(direct, "compare_compose_overlay", lambda *args: None)
-    monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args: {
+    monkeypatch.setattr(direct, "qualify_fleet_projection", lambda *args, **kwargs: {
         "before": [{"service": "playwright-service"}], "expected_after_config": {"playwright-service": "1" * 64}})
     plan, overlay = direct.prepare_image_plan(None, tmp_path, selected, {"playwright-service"},
                                               tmp_path / "docker", tmp_path, stable, tmp_path)
@@ -465,9 +470,9 @@ def test_image_idle_uses_queue_and_browser_quiescence(monkeypatch, tmp_path):
     counts = dict.fromkeys(("jobs_in_queue", "active_jobs_in_queue", "waiting_jobs_in_queue", "active_crawl_count"), 0)
     client = lambda *args, **kwargs: object()
     monkeypatch.setattr(direct, "read_file", lambda path: b"docker")
-    monkeypatch.setattr(direct, "_docker_json", lambda *args: {"status": "healthy", "activePages": 0})
+    monkeypatch.setattr(direct, "_docker_json", lambda *args, **kwargs: {"status": "healthy", "activePages": 0})
     direct.assert_image_idle(tmp_path / "docker", tmp_path, {"api", "playwright-service"}, client, lambda _: counts)
-    monkeypatch.setattr(direct, "_docker_json", lambda *args: {"status": "healthy", "activePages": 1})
+    monkeypatch.setattr(direct, "_docker_json", lambda *args, **kwargs: {"status": "healthy", "activePages": 1})
     with pytest.raises(HandoffError, match="Playwright"):
         direct.assert_image_idle(tmp_path / "docker", tmp_path, {"playwright-service"}, client, lambda _: counts)
     counts["jobs_in_queue"] = 1
@@ -572,7 +577,7 @@ def test_selected_readiness_timeout_and_owner_loss_are_distinct(monkeypatch):
     import cre_reviewed_update_images as direct
 
     monkeypatch.setattr(direct, "verify_image_result",
-                        lambda *args: {"containers": {"api": "running"}})
+                        lambda *args, **kwargs: {"containers": {"api": "running"}})
     times = iter([0, 31])
     monkeypatch.setattr(direct.time, "monotonic", lambda: next(times))
     class Unavailable:
@@ -599,7 +604,7 @@ def test_selected_browser_readiness_uses_local_health(monkeypatch):
     import cre_reviewed_update_images as direct
 
     monkeypatch.setattr(direct, "verify_image_result",
-                        lambda *args: {"containers": {"playwright-service": "running"}})
+                        lambda *args, **kwargs: {"containers": {"playwright-service": "running"}})
     monkeypatch.setattr(direct, "local_path", Path)
     calls = []
     def docker_json(*args):
