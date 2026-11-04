@@ -128,8 +128,8 @@ def verify_exact_checkout(expected_sha):
         return result.stdout.splitlines()
     if (git("rev-parse", "HEAD") != [expected_sha] or
             git("status", "--porcelain", "--untracked-files=normal") or
-            expected_sha not in git("for-each-ref", "--format=%(objectname)", "refs/remotes/origin/")):
-        raise ValueError("checkout must be clean and match a local origin tracking tip")
+            git("rev-parse", "refs/remotes/origin/main") != [expected_sha]):
+        raise ValueError("checkout must be clean and match local origin/main")
 
 
 def query(db_url, statement):
@@ -146,7 +146,7 @@ def query(db_url, statement):
         raise RuntimeError("database result unavailable; check recovery receipt") from exc
 
 
-def run_redrive(row_ids, expected_sha, expected_target, env_file):
+def run_redrive(row_ids, expected_sha, expected_target, env_file, *, apply=False):
     ids = validate_selection("svn", row_ids)
     if not re.fullmatch(r"[0-9a-f]{64}", expected_target):
         raise ValueError("expected database target fingerprint required")
@@ -169,6 +169,9 @@ def run_redrive(row_ids, expected_sha, expected_target, env_file):
                         "requested_ids": ids, "rows": rows}
             digest = write_private_receipt(run_dir, "snapshot.json", snapshot)
             print(str(run_dir), flush=True)
+            if not apply:
+                settled = True
+                return run_dir
             if rows:
                 statement = build_apply_sql(rows, expected_target)
                 verify_exact_checkout(expected_sha)
@@ -199,11 +202,9 @@ def main():
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--expected-db-target-sha256", required=True)
     parser.add_argument("--env-file", required=True)
-    parser.add_argument("--apply", action="store_true", required=True)
+    parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
-    if not args.apply:
-        parser.error("--apply is required")
-    run_redrive(args.queue_id, args.expected_sha, args.expected_db_target_sha256, args.env_file)
+    run_redrive(args.queue_id, args.expected_sha, args.expected_db_target_sha256, args.env_file, apply=args.apply)
 
 
 if __name__ == "__main__":
