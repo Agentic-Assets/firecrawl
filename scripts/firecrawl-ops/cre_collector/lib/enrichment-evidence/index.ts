@@ -116,3 +116,28 @@ export function limitEnrichmentObservations(values: readonly unknown[]): {
     return { retainedObservations: error.retainedObservations, evidenceError: error.message };
   }
 }
+
+/** Incrementally retain only the bounded prefix while preserving overflow state. */
+export function createEnrichmentObservationAccumulator() {
+  const retainedObservations: unknown[] = [];
+  let bytes = 2;
+  let evidenceError: string | undefined;
+  return {
+    append(value: unknown): boolean {
+      if (evidenceError) return false;
+      if (retainedObservations.length >= MAX_OBSERVATIONS) {
+        evidenceError = "enrichment evidence count exceeds bound";
+        return false;
+      }
+      const length = jsonBytes(value) + 1;
+      if (bytes + length > GROUP_BYTES) {
+        evidenceError = "enrichment evidence bytes exceed bound";
+        return false;
+      }
+      bytes += length;
+      retainedObservations.push(value);
+      return true;
+    },
+    result() { return { retainedObservations, ...(evidenceError ? { evidenceError } : {}) }; },
+  };
+}

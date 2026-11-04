@@ -621,6 +621,12 @@ function Get-CreNotificationText {
             return "`n$warning *$name | Needs attention*`n`n$bullet *Duration:* $duration`n$bullet The run's audit could not be saved; completion is unverified. Check the local CRE audit."
         }
         $warning = [char]::ConvertFromUtf32(0x26A0) + [char]0xFE0F
+        if ($Tier -eq 'enrich' -and $Record.status -eq 'returned' -and $ExitCode -eq 20) {
+            return "`n$warning *$name | Partially completed*`n`n$bullet *Duration:* $duration`n$bullet Some enrichment completed; other items remain for retry or were deferred. Check the local CRE audit."
+        }
+        if ($Tier -eq 'enrich' -and $Record.status -eq 'returned' -and $ExitCode -eq 21) {
+            return "`n$warning *$name | No items completed*`n`n$bullet *Duration:* $duration`n$bullet Items remain for retry or were deferred. Check the local CRE audit."
+        }
         return "`n$warning *$name | Needs attention*`n`n$bullet *Duration:* $duration`n$bullet The Windows run did not finish successfully. Check the local CRE audit; verified listing counts are unavailable."
     }
     if ($null -ne $Summary) {
