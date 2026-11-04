@@ -3983,6 +3983,7 @@ def build_sql(
     pyramid_verified_subset_claims=None,
     transwestern_image_transition_binding=None,
     pyramid_guard_binding=None,
+    svn_enrichment=False,
 ):
     from cre_essex_identity import (
         historical_claims_sql,
@@ -5253,6 +5254,24 @@ WITH ins AS (
                                           to_jsonb(EXCLUDED.scraped_at)
                                         )
                                       )
+                              WHEN {svn_enrichment_sql}
+                                AND EXCLUDED.raw_data->>'sourceKey' = 'svn'
+                                AND jsonb_typeof(EXCLUDED.raw_data) = 'object'
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                THEN (
+                                  EXCLUDED.raw_data
+                                  || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    AND t.raw_data ? 'inventoryObservedAt'
+                                    AND COALESCE(EXCLUDED.raw_data->'inventoryObservedAt', 'null'::jsonb) = 'null'::jsonb
+                                    THEN jsonb_build_object('inventoryObservedAt', t.raw_data->'inventoryObservedAt')
+                                    ELSE '{}'::jsonb END
+                                  || CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                    AND t.raw_data ? 'latestInventoryObservation'
+                                    AND COALESCE(EXCLUDED.raw_data->'latestInventoryObservation', 'null'::jsonb) = 'null'::jsonb
+                                    THEN jsonb_build_object('latestInventoryObservation', t.raw_data->'latestInventoryObservation')
+                                    ELSE '{}'::jsonb END
+                                )
                               ELSE EXCLUDED.raw_data
                             END,
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
@@ -5425,7 +5444,8 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""".replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
+""".replace("{svn_enrichment_sql}", "TRUE" if svn_enrichment else "FALSE")
+        .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
@@ -7537,6 +7557,7 @@ def main():
         pyramid_verified_subset_claims=pyramid_subset_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
         pyramid_guard_binding=pyramid_guard_binding,
+        svn_enrichment=len(args.inputs) == 1 and mode == "enrich",
     )
 
     print(
