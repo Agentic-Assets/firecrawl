@@ -3987,6 +3987,8 @@ def build_sql(
     pyramid_guard_binding=None,
     svn_enrichment_ids=(),
     inventory_preserve_enrichment_ids=(),
+    jll_partial_ids=(),
+    jll_partial_claims=None,
     newmark_page_attempt=None,
     newmark_page_claim=None,
     newmark_page_requires_witness=True,
@@ -4110,10 +4112,72 @@ WHERE p.image_id IS NULL;
     # JLL visibility and Matthews targeted freshness have separate policies.
     inventory_preserve_enrichment_ids = set(inventory_preserve_enrichment_ids)
     inventory_preserve_enrichment_ids.update(("svn", value) for value in svn_enrichment_ids)
+    jll_partial_ids = set(jll_partial_ids)
+    jll_partial_guard = ""
+    jll_partial_held = []
+    if jll_partial_claims is not None:
+        if (targeted or daum_verified_subset_claims is not None or pyramid_verified_subset_claims is not None
+                or image_transition_binding is not None or transwestern_image_transition_binding is not None
+                or pyramid_guard_binding is not None or colliers_first_party_transition
+                or mark_missing_slugs or inventory_only_rows or inventory_only_scopes):
+            raise ValueError("JLL partial scope is not isolated")
+        from cre_jll_partial import transaction_guard_sql
+        staged, jll_partial_held = jll_partial_claims["staged"], jll_partial_claims["held"]
+        if jll_partial_ids != {row["external_id"] for row in staged}:
+            raise ValueError("JLL partial staged identities differ")
+        jll_partial_guard = transaction_guard_sql(staged, jll_partial_held)
+    if any(not isinstance(value, str) or not re.fullmatch(r"investor:006[A-Za-z0-9]{15}", value)
+           for value in jll_partial_ids):
+        raise ValueError("invalid JLL Investor partial identity")
+    jll_partial_held_sql = (
+        "s.external_id IN (" + ", ".join(sql_lit(value) for value in jll_partial_held) + ")"
+        if jll_partial_held else "FALSE"
+    )
     if any(not isinstance(pair, tuple) or len(pair) != 2
            or pair[0] not in {"svn", "newmark"} or not isinstance(pair[1], str) or not pair[1]
            for pair in inventory_preserve_enrichment_ids):
         raise ValueError("invalid inventory-preserving enrichment identity")
+    inventory_preserve_enrichment_ids.update(("jll", value) for value in jll_partial_ids)
+    jll_partial_target_sql = (
+        "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(jll_partial_ids)) + ")"
+        if jll_partial_ids else "FALSE"
+    )
+    jll_partial_source_sql = (
+        "s.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(jll_partial_ids)) + ")"
+        if jll_partial_ids else "FALSE"
+    )
+    # The source detail proof is exact and deliberately checks only a
+    # top-level failure marker. A provider's nested field named detailError
+    # is not evidence that the collector failed.
+    def jll_clean_detail_sql(raw, external, brokerage):
+        return f"""(
+          {raw}->>'sourceKey' = 'jll-investor'
+          AND NOT ({raw} ? 'detailError')
+          AND {raw}->'preserveChildCollections' = 'true'::jsonb
+          AND {raw}->'detailObservedWithChildPreservation' = 'true'::jsonb
+          AND {raw}#>>'{{freshnessProvenance,method}}' = 'jll_investor_next_data_detail'
+          AND {raw}#>>'{{freshnessProvenance,cacheDisposition}}' = 'live'
+          AND {raw}#>>'{{freshnessProvenance,identityMethod}}' = 'provider_listing_id'
+          AND {raw}#>>'{{freshnessProvenance,detailScope}}' = 'detail_page'
+          AND {raw}#>'{{jllInvestorDetail,scrape,rawHtmlLength}}' = '0'::jsonb
+          AND {raw}#>'{{jllInvestorDetail,scrape,markdownLength}}' = '0'::jsonb
+          AND {raw}#>'{{jllInvestorDetail,scrape,linkCount}}' = '0'::jsonb
+          AND {external} = 'investor:' || ({raw}#>>'{{jllInvestorDetail,id}}')
+          AND EXISTS (SELECT 1 FROM credeals.cre_brokerages jb WHERE jb.id={brokerage} AND jb.slug='jll')
+        )"""
+    jll_clean_source = jll_clean_detail_sql("s.raw_data", "s.external_id", "s.brokerage_id")
+    jll_clean_target = jll_clean_detail_sql("EXCLUDED.raw_data", "EXCLUDED.external_id", "EXCLUDED.brokerage_id")
+    jll_prior_partial_source_sql = f"""(
+      {jll_clean_source} AND EXISTS (
+        SELECT 1 FROM credeals.cre_listings jp
+        WHERE jp.brokerage_id=s.brokerage_id AND jp.external_id=s.external_id
+          AND jp.raw_data->'latestJllPartialObservation'->>'sourceKey'='jll-investor'
+      )
+    )"""
+    jll_prior_partial_target_sql = f"""(
+      {jll_clean_target}
+      AND t.raw_data->'latestJllPartialObservation'->>'sourceKey'='jll-investor'
+    )"""
     newmark_enrichment_ids = sorted(value for slug, value in inventory_preserve_enrichment_ids if slug == "newmark")
     newmark_enrichment_sql = (
         "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in newmark_enrichment_ids) + ")"
@@ -4737,6 +4801,10 @@ BEGIN
       JOIN investor_brokerages ib ON ib.brokerage_id = s.brokerage_id
       LEFT JOIN credeals.cre_listings t
         ON t.brokerage_id = s.brokerage_id AND t.external_id = s.external_id
+      WHERE NOT ({jll_partial_source_sql}
+                 AND {staged_source_key_sql} = 'jll-investor'
+                 AND t.id IS NOT NULL AND t.deleted_at IS NOT NULL)
+        AND NOT ({jll_partial_held_sql} AND {staged_source_key_sql} = 'jll-investor')
     )
     SELECT count(*) INTO conflicting_rows FROM (
       SELECT a.brokerage_id, a.source_url, a.row_key, b.row_key
@@ -4939,7 +5007,7 @@ CREATE TEMP TABLE _pyramid_native_transitions (
   brokerage_id uuid NOT NULL, external_id text NOT NULL,
   PRIMARY KEY (brokerage_id, external_id)
 ) ON COMMIT DROP;
-{daum_subset_guard}{pyramid_subset_guard}{pyramid_guard_sql}{newmark_page_guard_sql}
+{daum_subset_guard}{pyramid_subset_guard}{pyramid_guard_sql}{jll_partial_guard}{newmark_page_guard_sql}
 -- Pyramid preserves historical literal path identities. Inspect the actual
 -- staged cohort and every historical parent, including soft-deleted rows,
 -- before an upsert can overwrite a contradictory URL or create a duplicate.
@@ -5027,7 +5095,9 @@ WITH ins AS (
     SELECT brokerage_id, external_id, source_url,
            CASE WHEN {detail_source_insert_sql}
                 THEN NULL ELSE COALESCE(status, 'active') END,
-           CASE WHEN {detail_source_insert_sql}
+           CASE WHEN {detail_source_insert_sql} AND NOT (
+                  {jll_partial_source_sql} AND EXISTS
+                    (SELECT 1 FROM credeals.cre_brokerages jb WHERE jb.id=s.brokerage_id AND jb.slug='jll'))
                 THEN NULL ELSE transaction_type END,
            property_type, title, address, city, state, zip, lat, lng, market, submarket,
            size_sf, lot_size_sf, available_sf, min_divisible_sf, max_divisible_sf,
@@ -5042,6 +5112,9 @@ WITH ins AS (
            zoning, NULLIF(markdown, ''),
            updated_date,
            CASE
+             WHEN {jll_partial_source_sql} AND EXISTS
+                    (SELECT 1 FROM credeals.cre_brokerages jb WHERE jb.id=s.brokerage_id AND jb.slug='jll') THEN scraped_at
+             WHEN {jll_prior_partial_source_sql} THEN scraped_at
              WHEN jsonb_path_exists(raw_data, '$.**.detailError')
                OR (
                  jsonb_path_exists(
@@ -5057,6 +5130,10 @@ WITH ins AS (
              ELSE scraped_at
            END,
            CASE
+             WHEN {jll_partial_source_sql} AND EXISTS
+                    (SELECT 1 FROM credeals.cre_brokerages jb WHERE jb.id=s.brokerage_id AND jb.slug='jll')
+               THEN raw_data || jsonb_build_object('latestJllPartialObservation', raw_data)
+             WHEN {jll_prior_partial_source_sql} THEN raw_data
              -- A first-seen Newmark detail is not an inventory observation.
              -- Preserve its sparse source facts without manufacturing a feed
              -- clock or nesting them under latestInventoryObservation. Existing
@@ -5131,6 +5208,10 @@ WITH ins AS (
         --   existing/incoming differ (sale vs lease)  -> 'sale_or_lease' (serves both)
         --   same single mode, or incoming NULL        -> keep existing
         transaction_type  = CASE
+                              WHEN {jll_partial_target_sql} AND EXISTS
+                                   (SELECT 1 FROM credeals.cre_brokerages jb
+                                    WHERE jb.id=EXCLUDED.brokerage_id AND jb.slug='jll')
+                                THEN COALESCE(t.transaction_type, EXCLUDED.transaction_type)
                               WHEN {detail_target_sql}
                                 THEN t.transaction_type
                               WHEN t.transaction_type = 'sale_or_lease' THEN 'sale_or_lease'
@@ -5270,6 +5351,11 @@ WITH ins AS (
         -- while preserving children when its supplemental team feed is degraded;
         -- child refresh remains additive below.
         scraped_at        = CASE
+                              WHEN {jll_partial_target_sql} AND EXISTS
+                                   (SELECT 1 FROM credeals.cre_brokerages jb
+                                    WHERE jb.id=EXCLUDED.brokerage_id AND jb.slug='jll')
+                                THEN EXCLUDED.scraped_at
+                              WHEN {jll_prior_partial_target_sql} THEN EXCLUDED.scraped_at
                               WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
                                 THEN t.scraped_at
@@ -5331,6 +5417,15 @@ WITH ins AS (
                                   || {newmark_partial_context_sql}
                                   || jsonb_build_object('newmarkEnrichmentRetained', true)
                                 )
+                              WHEN {jll_partial_target_sql}
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages jb
+                                            WHERE jb.id=EXCLUDED.brokerage_id AND jb.slug='jll')
+                                THEN (CASE WHEN jsonb_typeof(t.raw_data) = 'object'
+                                           THEN t.raw_data ELSE '{}'::jsonb END)
+                                     || jsonb_build_object('latestJllPartialObservation', EXCLUDED.raw_data->'latestJllPartialObservation')
+                              WHEN {jll_prior_partial_target_sql}
+                                THEN EXCLUDED.raw_data || jsonb_build_object(
+                                  'latestJllPartialObservation', t.raw_data->'latestJllPartialObservation')
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -5367,6 +5462,12 @@ WITH ins AS (
                                        ELSE COALESCE(t.raw_data, '{}'::jsonb)
                                      END
                                    )
+                                   || CASE WHEN EXCLUDED.raw_data->>'sourceKey' = 'jll-investor'
+                                     AND t.raw_data->'latestJllPartialObservation'->>'sourceKey' = 'jll-investor'
+                                     AND EXISTS (SELECT 1 FROM credeals.cre_brokerages jb
+                                                 WHERE jb.id=EXCLUDED.brokerage_id AND jb.slug='jll')
+                                     THEN jsonb_build_object('latestJllPartialObservation', t.raw_data->'latestJllPartialObservation')
+                                     ELSE '{}'::jsonb END
                                    || jsonb_build_object(
                                         'sourceKey', COALESCE(
                                           EXCLUDED.raw_data->'sourceKey',
@@ -5602,12 +5703,17 @@ END $$;
         .replace("{svn_enrichment_source_sql}", svn_enrichment_source_sql)
         .replace("{detail_source_insert_sql}", detail_source_insert_sql)
         .replace("{detail_target_sql}", detail_target_sql)
+        .replace("{jll_partial_target_sql}", jll_partial_target_sql)
+        .replace("{jll_partial_source_sql}", jll_partial_source_sql)
+        .replace("{jll_prior_partial_source_sql}", jll_prior_partial_source_sql)
+        .replace("{jll_prior_partial_target_sql}", jll_prior_partial_target_sql)
         .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace("{pyramid_subset_guard}", pyramid_subset_guard)
         .replace("{pyramid_guard_sql}", pyramid_guard_sql)
+        .replace("{jll_partial_guard}", jll_partial_guard)
         .replace("{newmark_page_guard_sql}", __import__("cre_newmark_page_guard").guard_sql(newmark_page_attempt, newmark_page_claim, require_page=newmark_page_requires_witness) if newmark_page_attempt else "")
         .replace("{pyramid_historical_rows}", pyramid_historical_rows)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
@@ -5761,17 +5867,29 @@ JOIN _prior_vals p
 WHERE {staged_source_key_sql} IN ({buildout_source_keys_sql})
   AND s.contacts = '[]'::jsonb;
 
--- Unknown DAUM tenure is an explicitly admitted partial observation. Keep
--- existing contact facts when they conflict; the full new observation remains
--- in raw_data, and missing fields/new contacts can still be added.
-CREATE TEMP TABLE _daum_unknown_contacts ON COMMIT DROP AS
+-- Ordered JLL partial photos do not independently identify a primary.
+-- Keep existing primaries and retain the new image observations.
+UPDATE _src s
+SET images = (SELECT COALESCE(jsonb_agg(x - 'isPrimary' ORDER BY ord), '[]'::jsonb)
+              FROM jsonb_array_elements(s.images) WITH ORDINALITY AS image(x, ord))
+FROM _up u
+JOIN credeals.cre_brokerages b ON b.id=u.brokerage_id
+WHERE u.brokerage_id=s.brokerage_id AND u.external_id=s.external_id
+  AND b.slug='jll' AND {jll_partial_source_sql}
+  AND s.raw_data->>'sourceKey'='jll-investor' AND jsonb_typeof(s.images)='array';
+
+-- Partial observations retain prior contact facts when they conflict; the new
+-- observation remains in raw_data, and missing fields/new contacts are added.
+CREATE TEMP TABLE _partial_preserve_contacts ON COMMIT DROP AS
 SELECT DISTINCT u.id
 FROM _up u
 JOIN _src s USING (brokerage_id, external_id)
 JOIN credeals.cre_brokerages b ON b.id = s.brokerage_id
-WHERE b.slug = 'daum-commercial'
-  AND s.raw_data->>'sourceKey' = 'daum-commercial'
-  AND s.raw_data->'daumUnknownTenure' = 'true'::jsonb;
+WHERE (b.slug = 'daum-commercial'
+       AND s.raw_data->>'sourceKey' = 'daum-commercial'
+       AND s.raw_data->'daumUnknownTenure' = 'true'::jsonb)
+   OR (b.slug = 'jll' AND s.raw_data->>'sourceKey' = 'jll-investor'
+       AND {jll_partial_source_sql});
 
 -- Preserve every observed contact in raw_data; choose the first matching
 -- identity for canonical child writes so duplicates in one batch cannot race
@@ -5802,7 +5920,7 @@ SET contacts = (
 )
 FROM _up u
 WHERE u.brokerage_id = s.brokerage_id AND u.external_id = s.external_id
-  AND u.id IN (SELECT id FROM _daum_unknown_contacts)
+  AND u.id IN (SELECT id FROM _partial_preserve_contacts)
   AND jsonb_typeof(s.contacts) = 'array';
 
 CREATE TEMP TABLE _contact_refresh ON COMMIT DROP AS
@@ -5859,7 +5977,7 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone', x->>'company',
            x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+           CASE WHEN u.id IN (SELECT id FROM _partial_preserve_contacts)
                 THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
@@ -5873,7 +5991,7 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone', x->>'company',
            x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+           CASE WHEN u.id IN (SELECT id FROM _partial_preserve_contacts)
                 THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
@@ -5912,7 +6030,7 @@ JOIN _src s USING (brokerage_id, external_id)
 CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
 WHERE u.id IN (SELECT id FROM _contact_additive)
   AND c.listing_id = u.id
-  AND u.id NOT IN (SELECT id FROM _daum_unknown_contacts)
+  AND u.id NOT IN (SELECT id FROM _partial_preserve_contacts)
   AND jsonb_typeof(s.contacts) = 'array'
   AND COALESCE((x->>'isPrimary')::boolean, false);
 
@@ -5929,7 +6047,7 @@ DO $$ BEGIN
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
              ) AS preserve_contact,
              {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
-             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown,
+             u.id IN (SELECT id FROM _partial_preserve_contacts) AS preserve_partial_contact,
              (s.raw_data ? 'newmarkPageObservation'
               AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark')) AS newmark_page
       FROM _up u
@@ -5939,21 +6057,21 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
-      title = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.title, i.x->>'title')
+      name = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.title, i.x->>'title')
                    WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
                    THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
                              WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
                              ELSE c.title || E'\\n\\n' || (i.x->>'title') END
                    ELSE COALESCE(i.x->>'title', c.title) END,
-      license = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.license, i.x->>'license') ELSE COALESCE(i.x->>'license', c.license) END,
-      email = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
-      phone = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
-      brokerage_name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
-      profile_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
-      avatar_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
-      vcard_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
-      is_primary = CASE WHEN i.daum_unknown OR i.newmark_page THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
+      license = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.license, i.x->>'license') ELSE COALESCE(i.x->>'license', c.license) END,
+      email = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -5980,7 +6098,7 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone',
            x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+           CASE WHEN u.id IN (SELECT id FROM _partial_preserve_contacts)
                 THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
@@ -6020,7 +6138,7 @@ DO $$ BEGIN
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
              ) AS preserve_contact,
              {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
-             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown,
+             u.id IN (SELECT id FROM _partial_preserve_contacts) AS preserve_partial_contact,
              (s.raw_data ? 'newmarkPageObservation'
               AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark')) AS newmark_page
       FROM _up u
@@ -6030,20 +6148,20 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
-      title = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.title, i.x->>'title')
+      name = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.title, i.x->>'title')
                    WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
                    THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
                              WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
                              ELSE c.title || E'\\n\\n' || (i.x->>'title') END
                    ELSE COALESCE(i.x->>'title', c.title) END,
-      email = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
-      phone = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
-      brokerage_name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
-      profile_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
-      avatar_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
-      vcard_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
-      is_primary = CASE WHEN i.daum_unknown OR i.newmark_page THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
+      email = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.preserve_partial_contact OR i.newmark_page THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -6070,7 +6188,7 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone',
            x->>'company', x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+           CASE WHEN u.id IN (SELECT id FROM _partial_preserve_contacts)
                 THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
@@ -6115,7 +6233,7 @@ WITH ranked_primary_contacts AS (
   FROM credeals.cre_listing_contacts c
   JOIN _up u ON u.id = c.listing_id
   WHERE c.is_primary
-    AND c.listing_id NOT IN (SELECT id FROM _daum_unknown_contacts)
+    AND c.listing_id NOT IN (SELECT id FROM _partial_preserve_contacts)
 )
 UPDATE credeals.cre_listing_contacts c
 SET is_primary = false
@@ -7237,7 +7355,8 @@ def transwestern_checkpoint_binding(args, data, original_bytes, artifact_run_key
     if (len(args.inputs) != 1 or not args.checkpoint_ingest_attempt
             or not args.expected_db_target_sha256 or not args.require_strict_freshness
             or args.mark_missing or _status_activation_enabled(args.activate_status)
-            or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims or args.matthews_targeted_claims):
+            or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
+            or getattr(args, "jll_partial_claims", None) or args.matthews_targeted_claims):
         raise ValueError("unbound Transwestern image transition")
     validate_strict_artifact_freshness(data, require_strict_freshness=True)
     scope = strict_full_source_scope(data, "transwestern")
@@ -7280,6 +7399,7 @@ def main():
     ap.add_argument("--env-file", default=None, help="env file holding POSTGRES_URL*")
     ap.add_argument("--daum-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--jll-partial-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
@@ -7346,6 +7466,31 @@ def main():
     inventory_enrichment_ids = set()
     inventory_non_enrichment_ids = set()
 
+    jll_partial_claims = None
+    if args.jll_partial_claims:
+        if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims
+                or args.daum_verified_subset_claims or args.pyramid_verified_subset_claims
+                or args.checkpoint_collector_git_sha or args.checkpoint_pyramid_code_sha
+                or _status_activation_enabled(args.activate_status) or not args.require_strict_freshness
+                or not args.expected_db_target_sha256 or not args.checkpoint_ingest_attempt):
+            sys.exit("refusing unbound JLL partial ingest")
+        from pathlib import Path
+        from cre_stop_guarded_tier import _read_at, _safe_stat
+        from cre_jll_partial import ingest_subset_context
+        from cre_checkpoint_refresh import git_identity
+        claim_path = Path(args.jll_partial_claims)
+        directory = os.open(claim_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _safe_stat(directory, directory=True, private=True)
+            raw, _ = _read_at(directory, claim_path.name, limit=64 * 1024 * 1024)
+            envelope = json.loads(raw)
+        finally:
+            os.close(directory)
+        code_sha, dirty = git_identity()
+        jll_partial_claims = ingest_subset_context(
+            Path(args.inputs[0]), envelope, current_code_sha=code_sha, current_git_dirty=dirty,
+            expected_database_target_sha256=args.expected_db_target_sha256,
+            attempt_id=args.checkpoint_ingest_attempt)
     daum_subset_claims = None
     if args.daum_verified_subset_claims:
         if (len(args.inputs) != 1 or args.mark_missing or args.matthews_targeted_claims or args.pyramid_verified_subset_claims
@@ -7448,6 +7593,15 @@ def main():
                 "refusing retired om_parse dry-run artifact: GetCREdata is the "
                 "sole production OM extraction writer"
             )
+        is_jll_partial = any(
+            isinstance(entry, dict) and entry.get("sourceKey") == "jll-investor"
+            and entry.get("transaction") == "sale" and entry.get("truncated") is True
+            for entry in data.get("sources", []))
+        if is_jll_partial != (jll_partial_claims is not None):
+            sys.exit("refusing JLL partial artifact without its guarded claims")
+        if (jll_partial_claims is not None
+                and hashlib.sha256(image_transition_input).hexdigest() != jll_partial_claims["binding"]["artifact_sha256"]):
+            sys.exit("JLL partial artifact changed after gate revalidation")
         is_pyramid_subset = any(
             isinstance(entry, dict) and isinstance(entry.get("currentInventoryProof"), dict)
             and entry["currentInventoryProof"].get("schema") in ("pyramid-verified-subset-v1", "pyramid-incomplete-v2")
@@ -7834,6 +7988,8 @@ def main():
         image_transition_binding=image_transition_binding,
         daum_verified_subset_claims=daum_subset_claims,
         pyramid_verified_subset_claims=pyramid_subset_claims,
+        jll_partial_ids=tuple(row["external_id"] for row in jll_partial_claims["staged"]) if jll_partial_claims else (),
+        jll_partial_claims=jll_partial_claims,
         transwestern_image_transition_binding=transwestern_image_transition_binding,
         pyramid_guard_binding=pyramid_guard_binding,
         inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,

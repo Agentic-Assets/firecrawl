@@ -51,7 +51,7 @@ def test_canonical_binding_uses_actual_artifact_generation_and_clean_code(tmp_pa
 
 @pytest.mark.parametrize("mutation", [
     "dirty", "code", "changed_bytes", "run_key", "mixed", "truncated", "capped",
-    "missing_detail", "sale_only", "activate", "mark_missing", "wrong_attempt", "pyramid_claims",
+    "missing_detail", "sale_only", "activate", "mark_missing", "wrong_attempt", "pyramid_claims", "jll_claims",
 ])
 def test_canonical_binding_rejects_unqualified_input(tmp_path, monkeypatch, mutation):
     args, data, raw, key = binding_input(tmp_path, monkeypatch)
@@ -81,6 +81,8 @@ def test_canonical_binding_rejects_unqualified_input(tmp_path, monkeypatch, muta
         args.checkpoint_ingest_attempt = "wrong"
     elif mutation == "pyramid_claims":
         args.pyramid_verified_subset_claims = "/private/pyramid-claims.json"
+    elif mutation == "jll_claims":
+        args.jll_partial_claims = "/private/jll-claims.json"
     with pytest.raises(ValueError):
         ingest.transwestern_checkpoint_binding(args, data, raw, key)
 
