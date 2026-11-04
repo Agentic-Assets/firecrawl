@@ -1608,7 +1608,8 @@ def test_pyramid_singleton_hold_notifies_verified_peer_without_whole_watermark(e
     assert "verified_listings" not in result
 
 
-def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence):
+@pytest.mark.parametrize("tamper", ["staged", "artifact", "generation", "held", "invalid", "coverage", "missing"])
+def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence, tamper):
     setup = pipeline_evidence(evidence, primary_source="jll-investor")
     source = "jll-investor"
     parent, child = setup["parent"], setup["child"]
@@ -1630,7 +1631,21 @@ def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence):
                           "current_inventory_proof": binding}
     checkpoint["readback"].update(kind="jll_investor_partial", observation=observation,
                                   whole_source_coverage=False)
+    qualify_pipeline_second_source(evidence, setup)
+    peer = child["sources"][setup["source2"]]
+    peer["artifact"].pop("jll_partial", None)
+    peer["artifact"]["staged_unique"] = 3
     parent["sources"][source]["state"] = "qualified_partial_subset"
+    validation_path = evidence["series"] / "runs" / RUN / "pipeline/unit-0001/validation.json"
+    validation = json.loads(validation_path.read_text())
+    validation["jll_partial_readback"] = observation
+    raw = json.dumps(validation, separators=(",", ":")).encode()
+    validation_path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    child["pipeline"]["units"][0]["validation_sha256"] = digest
+    for key in (source, setup["source2"]):
+        child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+        parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
     evidence["save"]()
     result = read_pipeline(evidence, source_keys=[source, setup["source2"]])
     jll = next(row for row in result["per_source_summaries"] if row["source_key"] == source)
@@ -1641,7 +1656,25 @@ def test_pipeline_jll_partial_receipt_reports_only_qualified_peers(evidence):
     assert jll["excluded_source_identities"] == "unknown"
     assert result["complete"] is False
     assert result["qualified_subset_source_keys"] == [source]
-    binding["whole_source_coverage"] = True
+    assert any(row["source_key"] == setup["source2"] for row in result["per_source_summaries"])
+    if tamper == "coverage":
+        binding["whole_source_coverage"] = True
+    else:
+        if tamper == "missing":
+            del validation["jll_partial_readback"]
+        else:
+            field, value = {"staged": ("staged_sha256", "f" * 64),
+                            "artifact": ("artifact_sha256", "f" * 64),
+                            "generation": ("generation_id", "other"),
+                            "held": ("held", []), "invalid": ("invalid", ["bad"])}[tamper]
+            validation["jll_partial_readback"] = {**observation, field: value}
+        raw = json.dumps(validation, separators=(",", ":")).encode()
+        validation_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        child["pipeline"]["units"][0]["validation_sha256"] = digest
+        for key in (source, setup["source2"]):
+            child["pipeline"]["source_results"][key]["validation_sha256"] = digest
+            parent["sources"][key]["pipeline_result"]["validation_sha256"] = digest
     evidence["save"]()
     with pytest.raises(REFUSED):
         read_pipeline(evidence, source_keys=[source, setup["source2"]])

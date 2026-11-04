@@ -987,7 +987,7 @@ def verified_pipeline_summary(
         qualified = []
         failed = []
         pending = []
-        validated_units = set()
+        validated_units = {}
         total_validation_bytes = 0
         for source in selected_sources:
             result = source_results.get(source)
@@ -1108,11 +1108,17 @@ def verified_pipeline_summary(
                 )
                 require_full_validation_report(validation)
                 require(validation.get("ok") is True)
-                validated_units.add(unit_id)
+                validated_units[unit_id] = validation
             checkpoint = checkpoints[source]
             require(checkpoint.get("state") == "ingested")
             require(type(checkpoint.get("ingest", {}).get("rc")) is int and checkpoint["ingest"]["rc"] == 0)
             artifact, readback = checkpoint["artifact"], checkpoint["readback"]
+            if source == "jll-investor" and artifact.get("jll_partial") is True:
+                from cre_checkpoint_series import _pipeline_member_report_matches
+
+                require(_pipeline_member_report_matches(
+                    validated_units[unit_id], checkpoint, source, run_id
+                ))
             count = readback["expected_staged_unique"]
             artifact_sha = artifact.get("sha256")
             artifact_bytes = artifact.get("bytes")
