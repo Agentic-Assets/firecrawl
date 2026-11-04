@@ -332,9 +332,11 @@ $daumSnapshot=@(Get-CreReviewedCurrentTaskSnapshot $daumRelease $old $new)
 if($daumSnapshot.Count -ne 4 -or $daumSnapshot[3].key -cne 'daum-subset') {throw 'DAUM task discovery failed'}
 $fixture.tasks[$daum.key].xml=$daumXml.Replace('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2" "-AttemptsPerSource" "1"')
 Assert-CreReviewedAction $daumRelease $daum $fixture.tasks[$daum.key].xml $old
- $fixture.tasks[$daum.key].xml=$fixture.tasks[$daum.key].xml.Replace('"-AttemptsPerSource" "1"','"-AttemptsPerSource" "0"')
-try {Assert-CreReviewedAction $daumRelease $daum $fixture.tasks[$daum.key].xml $old;throw 'invalid DAUM attempt count accepted'} catch {if($_.Exception.Message -ceq 'invalid DAUM attempt count accepted'){throw}}
-foreach($invalidPolicy in @('unknown','tenure-and-empty-title-v2" "-DaumSubsetPolicy" "tenure-only-v1')) {
+foreach($invalidAttempts in @('0',' 1 ')) {
+ $fixture.tasks[$daum.key].xml=$daumXml.Replace('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "tenure-and-empty-title-v2" "-AttemptsPerSource" "'+$invalidAttempts+'"')
+ try {Assert-CreReviewedAction $daumRelease $daum $fixture.tasks[$daum.key].xml $old;throw 'invalid DAUM attempt count accepted'} catch {if($_.Exception.Message -ceq 'invalid DAUM attempt count accepted'){throw}}
+}
+foreach($invalidPolicy in @('unknown','TENURE-AND-EMPTY-TITLE-V2','tenure-and-empty-title-v2" "-DaumSubsetPolicy" "tenure-only-v1')) {
  $fixture.tasks[$daum.key].xml=$daumXml.Replace('"-AdmitDaumVerifiedSubset"','"-AdmitDaumVerifiedSubset" "-DaumSubsetPolicy" "'+$invalidPolicy+'"')
  try {$null=Get-CreReviewedTaskSnapshot $daumRelease $old $new;throw 'invalid DAUM policy accepted'} catch {if($_.Exception.Message -ceq 'invalid DAUM policy accepted'){throw}}
 }

@@ -86,7 +86,7 @@ function Assert-CreReviewedSeriesArguments($Release,[string[]]$Argv,[string]$Lau
     $deadline=0
     if($tier -ceq 'series' -and (-not [int]::TryParse($parameters['-WorkDeadlineSeconds'],[ref]$deadline) -or $deadline -le 0)) {throw 'Series task deadline invalid'}
     $attempts=0
-    if($parameters.ContainsKey('-AttemptsPerSource') -and (-not [int]::TryParse($parameters['-AttemptsPerSource'],[ref]$attempts) -or $attempts -le 0)) {throw 'Series task attempt count invalid'}
+    if($parameters.ContainsKey('-AttemptsPerSource') -and ($parameters['-AttemptsPerSource'] -notmatch '^\+?[0-9]+$' -or -not [int]::TryParse($parameters['-AttemptsPerSource'],[ref]$attempts) -or $attempts -le 0)) {throw 'Series task attempt count invalid'}
     $ranges=@($known['WorkDeadlineSeconds'].Attributes|Where-Object {$_ -is [Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ieq 'ValidateRange'})
     if($ranges.Count -gt 1) {throw 'Guarded launcher deadline metadata invalid'}
     if($ranges.Count -eq 1 -and $tier -ceq 'series') {
@@ -219,6 +219,7 @@ function Assert-CreReviewedAction($Release,$Row,[string]$Xml,[string]$OldSha) {
     elseif($Row.key -ceq 'daum-subset') {
         $allowedDaum=@('-Tier','-Source','-ExpectedSha','-WorkDeadlineSeconds','-AcknowledgeDatabaseWrites','-AdmitDaumVerifiedSubset','-DaumSubsetPolicy','-AttemptsPerSource','-Concurrency','-Distro','-LinuxUser','-LinuxRepo','-LinuxEnvFile','-AlertWebhookFile','-NotificationMode')
         foreach($key in $currentArguments.seen.Keys) {if($key -inotIn $allowedDaum) {throw 'Unsupported DAUM subset task argument'}}
+        if($currentArguments.parameters.ContainsKey('-DaumSubsetPolicy') -and $currentArguments.parameters['-DaumSubsetPolicy'] -cnotin @('tenure-only-v1','tenure-and-empty-title-v2')) {throw 'DAUM subset policy is not canonical'}
         if($single -ne 1 -or $many -ne 0 -or (Get-CreReviewedArgument $argv '-Source') -cne 'daum-commercial' -or
            $daumFlag -ne 1 -or @($argv|Where-Object {$_ -iin @('-Pipeline','-AdmitCurrentInventorySource','-AdmitCurrentInventorySources','-AdmitBaselineHoldAdditively')}).Count -ne 0) {throw 'DAUM subset task scope differs'}
     }
