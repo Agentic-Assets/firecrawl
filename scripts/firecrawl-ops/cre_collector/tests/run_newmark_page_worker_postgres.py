@@ -63,7 +63,7 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
-        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-stale"):
+        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-stale", "generic-url-changed", "generic-duplicate-after"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
@@ -134,9 +134,9 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                                 data["sources"][0]["error"]="synthetic failure"
                             Path(out_path).write_text(json.dumps(data))
                         sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE external_id="+ingest.sql_lit(external)+";")
-                    if kind in {"stale", "refusal-uncertain"}:
+                    if kind in {"stale", "refusal-uncertain", "generic-url-changed"}:
                         sql("UPDATE credeals.cre_listings SET source_url='https://example.test/changed' WHERE external_id="+ingest.sql_lit(external)+";")
-                    if kind=="duplicate-after":
+                    if kind in {"duplicate-after", "generic-duplicate-after"}:
                         duplicate=ingest.to_row({"sourceKey":"newmark","id":"duplicate-after-other","url":url}, {}, ts)
                         sql(ingest.build_sql([duplicate],job,ts,set()))
                     return subprocess.CompletedProcess(args,0)
@@ -188,9 +188,9 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 assert sql("SELECT raw_data->'newmarkPageObservation'->>'prose' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Property prose from source."
                 assert sql("SELECT count(*) FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id="+ingest.sql_lit(external)+";")=="2"
 
-            elif kind in {"stale", "duplicate-before", "duplicate-after"}:
+            elif kind in {"stale", "duplicate-before", "duplicate-after", "generic-url-changed", "generic-duplicate-after"}:
                 assert rc==21 and queue=="1|true", (kind,rc,queue)
-                assert sql("SELECT raw_data ? 'newmarkPageObservation' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
+                assert sql("SELECT raw_data ? 'newmarkPageObservation' OR raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
                 sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
             elif kind in {"claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale"}:
                 assert rc in (1,21) and queue==("1|false" if kind=="claim-attempt-stale" else "0|false"), (kind,rc,queue)
