@@ -63,7 +63,7 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
-        for kind in ("success", "success-no-license", "stale", "duplicate-before", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after"):
+        for kind in ("success", "success-no-license", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
@@ -89,9 +89,13 @@ def main():
                 sql("UPDATE credeals.cre_listings SET title='', description=NULL WHERE external_id="+ingest.sql_lit(external)+";")
             if kind == "generic-whitespace":
                 sql("UPDATE credeals.cre_listings SET title=E'\\t\\n', description=E' \\n\\t ' WHERE external_id="+ingest.sql_lit(external)+";")
-            if kind == "duplicate-before":
-                duplicate=ingest.to_row({"sourceKey":"newmark","id":"duplicate-before-other","url":url}, {}, ts)
+            if kind in {"duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale"}:
+                duplicate=ingest.to_row({"sourceKey":"newmark","id":"duplicate-before-other-"+kind,"url":url}, {}, ts)
                 sql(ingest.build_sql([duplicate],job,ts,set()))
+                if kind == "duplicate-before":
+                    sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) "
+                        "SELECT id,'newmark','peer-after-ambiguous','https://www.nmrk.com/properties/peer','new' "
+                        "FROM credeals.cre_brokerages WHERE slug='newmark';")
             prior_lifecycle=sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(deleted_at::text,'<null>') || '|' || coalesce(transaction_type,'<null>') FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")
             prior_index=sql("SELECT to_jsonb(si)::text FROM credeals.cre_source_index si WHERE external_id="+ingest.sql_lit(external)+";")
             prior_events=sql("SELECT count(*) FROM credeals.cre_listing_events e JOIN credeals.cre_listings l ON l.id=e.listing_id WHERE l.external_id="+ingest.sql_lit(external)+";")
@@ -105,11 +109,11 @@ const html=process.env.FIXTURE_MODE.startsWith("generic-")
  ? '<script type="application/ld+json">{"@type":"RealEstateListing","name":"Fixture listing","description":"Fixture description"}</script>'
  : fs.readFileSync("./tests/fixtures/newmark-property-detail-sanitized.html","utf8").replaceAll("{{URL}}",url);
 const e=createGenericEnricher(async()=>({rawHtml:html,markdown:"",links:[],metadata:{statusCode:200,url,sourceURL:url}}),()=> "2026-11-04T00:01:00Z");
-const result=await e.enrichWithEvidence([item]); if(result.listings.length!==1) throw Error("fixture not admitted");
+const result=await e.enrichWithEvidence([item]); if(result.listings.length!==1 && !["duplicate-before","duplicate-claim-stale"].includes(process.env.FIXTURE_MODE)) throw Error("fixture not admitted");
 const listings=result.listings.map(x=>({sourceKey:"newmark",...x}));
 const artifact={runMeta:{mode:"enrich",startedAt:"2026-11-04T00:00:00Z",finishedAt:"2026-11-04T00:01:00Z"},
- sources:[{sourceKey:"newmark",supported:true,requested:1,listingsCollected:1,retainedObservations:result.retainedObservations}],
- listings,totalListings:1,brokers:[]};
+ sources:[{sourceKey:"newmark",supported:true,requested:1,listingsCollected:listings.length,retainedObservations:result.retainedObservations}],
+ listings,totalListings:listings.length,brokers:[]};
 fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
 '''
             private = root / ("private-"+kind)
@@ -117,10 +121,10 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
             observed = {}
             def substitute(args, *a, kind=kind, js=js, external=external, url=url, observed=observed, **kw):
                 if isinstance(args,list) and "collect.ts" in args:
-                    if kind == "duplicate-before":
-                        raise AssertionError("prefilter must not call collector")
                     claim_path=args[args.index("--enrich-input")+1]
                     out_path=args[args.index("--out")+1]
+                    if kind == "duplicate-collect-fail":
+                        return subprocess.CompletedProcess(args,1)
                     if kind == "collect-fail-stale":
                         sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE external_id="+ingest.sql_lit(external)+";")
                         return subprocess.CompletedProcess(args,1)
@@ -129,6 +133,8 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                                capture_output=True,text=True)
                     if result.returncode:
                         raise RuntimeError("synthetic collector failed: " + result.stderr)
+                    if kind == "duplicate-claim-stale":
+                        sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=claimed_at+interval '1 second' WHERE external_id="+ingest.sql_lit(external)+";")
                     if kind == "claim-attempt-stale":
                         sql("UPDATE credeals.cre_enrichment_queue SET attempts=attempts+1 WHERE external_id="+ingest.sql_lit(external)+";")
                     if kind in {"claim-stale", "empty-stale", "deferred-stale", "generic-stale"}:
@@ -198,9 +204,21 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 assert sql("SELECT raw_data->'newmarkPageObservation'->>'prose' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Property prose from source."
                 assert sql("SELECT count(*) FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id="+ingest.sql_lit(external)+";")=="2"
 
-            elif kind in {"stale", "duplicate-before", "duplicate-after", "generic-url-changed", "generic-duplicate-after"}:
-                assert rc==21 and queue=="1|true", (kind,rc,queue)
+            elif kind in {"stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "generic-url-changed", "generic-duplicate-after"}:
+                assert rc==21 and queue=="0|false", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'newmarkPageObservation' OR raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
+                if kind in {"duplicate-before", "generic-duplicate-before", "duplicate-claim-stale"}:
+                    evidence = json.loads((private/"enriched.json").read_text())
+                    observation = evidence["sources"][0]["retainedObservations"][0]
+                    assert observation["claim"]["identity"] == "unverified" and observation["scrapedDoc"]["rawHtml"], observation
+                    if kind == "duplicate-claim-stale":
+                        assert sql("SELECT last_error IS NULL FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";") == "t"
+                    if kind == "duplicate-before":
+                        # Even once its cooldown expires, an unclaimed peer wins.
+                        sql("UPDATE credeals.cre_enrichment_queue SET claimed_at=now()-interval '2 hours' WHERE external_id="+ingest.sql_lit(external)+";")
+                        next_claim = sql(worker.build_claim_sql(1, source="newmark", source_page_witness=True))
+                        assert "peer-after-ambiguous" in next_claim, next_claim
+                        sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id='peer-after-ambiguous';")
                 sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
             elif kind in {"claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale"}:
                 assert rc in (1,21) and queue==("1|false" if kind=="claim-attempt-stale" else "0|false"), (kind,rc,queue)

@@ -196,7 +196,7 @@ def build_claim_sql(batch, *, source=None, reclaim_interval=RECLAIM_INTERVAL, ta
         "    AND (claimed_at IS NULL OR claimed_at < now() - interval "
         + sql_lit(reclaim_interval) + ")",
         *where_source,
-        "  ORDER BY priority, enqueued_at",
+        "  ORDER BY " + ("claimed_at NULLS FIRST, " if source_page_witness else "") + "priority, enqueued_at",
         "  LIMIT {}".format(batch),
         "  FOR UPDATE SKIP LOCKED",
         ")",
@@ -467,7 +467,8 @@ def claim_rows_to_items(claimed_rows, *, targeted=False):
             item.update(claimId=r["id"], claimedAt=r["claimed_at"])
         if r.get("source_key") == "newmark" and r.get("source_published_detail") is not None:
             item["sourcePublishedDetail"] = r["source_published_detail"]
-        if r.get("source_key") == "newmark" and r.get("source_page_witness") is not None:
+        if (r.get("source_key") == "newmark" and r.get("source_page_witness") is not None
+                and r["source_page_witness"] != {"refused": True}):
             item["sourcePageWitness"] = r["source_page_witness"]
         if "source_page_witness" in r:
             item["sourcePageClaim"] = {"id": r["id"], "claimedAt": r.get("claimed_at"),
@@ -864,12 +865,7 @@ def run(args):
         validate_matthews_targeted_claims(claims)
 
     claimed_ids = [r["id"] for r in claimed_rows]
-    if page_witness and claimed_rows[0].get("source_page_witness") == {"refused": True}:
-        require_owner()
-        changed = settle_newmark_page_claim(db_url, claimed_rows[0], "retry",
-                                           last_error="Newmark page identity changed or ambiguous")
-        print("Newmark URL association refused; " + ("retry recorded" if changed else "claim superseded; no queue change"), file=sys.stderr)
-        return 21
+    ambiguous_page = page_witness and claimed_rows[0].get("source_page_witness") == {"refused": True}
 
     # (3) Targeted-detail collect. No full/monitor flags.
     collect_env = dict(os.environ)
@@ -887,6 +883,17 @@ def run(args):
         cwd=HERE, stdout=sys.stderr, stderr=sys.stderr,
         **({"env": collect_env} if targeted else {}),
     )
+
+    if ambiguous_page:
+        # The retained private artifact is unverified source evidence only.
+        # Cooldown leaves attempts intact and lets other queue items progress.
+        require_owner()
+        changed = settle_newmark_page_claim(db_url, claimed_rows[0], "defer",
+                                           last_error="Newmark page identity changed or ambiguous")
+        print("Newmark URL association ambiguous; "
+              + ("claim deferred; collection evidence retained when available" if changed
+                 else "claim superseded; no queue change"), file=sys.stderr)
+        return 21
 
     # (4) GATE on collect success before ingesting. A whole-run failure releases
     # the claims (attempts untouched) so the batch retries free next run.
@@ -993,9 +1000,9 @@ def run(args):
                       "artifact", artifact_digest, "claim", claim_digest, "target", expected_target,
                       "code", code_sha, "zero_jobs", file=sys.stderr)
                 require_owner()
-                changed = settle_newmark_page_claim(db_url, claimed_rows[0], "retry",
+                changed = settle_newmark_page_claim(db_url, claimed_rows[0], "defer",
                     last_error="Newmark page identity changed or ambiguous")
-                print("Newmark identity refusal confirmed; " + ("retry recorded" if changed else "claim superseded; no queue change"), file=sys.stderr)
+                print("Newmark identity refusal confirmed; " + ("claim deferred" if changed else "claim superseded; no queue change"), file=sys.stderr)
                 return 21
     else:
         print(
