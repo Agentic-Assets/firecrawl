@@ -43,6 +43,16 @@ export function extractNewmarkPage(claim: { externalId: string; url: string }, w
   return {prose, contacts};
 }
 
+/** Compare only recognized Newmark property identities; unknown URLs stay distinct. */
+export function sameNewmarkPropertyUrl(left: string, right: string): boolean {
+  if (left === right) return true;
+  try {
+    const a = newmarkNimCanonicalIdentity({externalWebsiteUrl: left});
+    const b = newmarkNimCanonicalIdentity({externalWebsiteUrl: right});
+    return a.id !== null && b.id !== null && a.id === b.id;
+  } catch { return false; }
+}
+
 /** An explicit page URL assertion that conflicts with the claimed source URL. */
 export function contradictsNewmarkPageUrl(html: string, url: string): boolean {
   const $ = cheerio.load(html);
@@ -50,5 +60,5 @@ export function contradictsNewmarkPageUrl(html: string, url: string): boolean {
     ...$('link[rel="canonical"]').toArray().map(node => $(node).attr("href")),
     ...$('meta[property="og:url"]').toArray().map(node => $(node).attr("content")),
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-  return assertions.some(value => value !== url);
+  return assertions.some(value => !sameNewmarkPropertyUrl(value, url));
 }

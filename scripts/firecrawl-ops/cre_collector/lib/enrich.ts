@@ -49,7 +49,7 @@ import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidde
 import type { ScrapedDoc, SourceKey } from "../types.js";
 import type { NewmarkDetailWitness } from "../sources/pure/newmark-detail-link.js";
 import { createNewmarkPublishedDetailEnricher } from "../sources/newmark-published-enrich.js";
-import { extractNewmarkPage, contradictsNewmarkPageUrl, type NewmarkPageWitness } from "../sources/pure/newmark-page-detail.js";
+import { extractNewmarkPage, contradictsNewmarkPageUrl, sameNewmarkPropertyUrl, type NewmarkPageWitness } from "../sources/pure/newmark-page-detail.js";
 
 export type EnrichItem = {
   sourceKey: string;
@@ -307,14 +307,14 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
         const guardedNewmark = item.sourceKey === "newmark" && Object.hasOwn(item, "sourcePageClaim");
         if (guardedNewmark) {
           const metadata = doc.metadata;
-          const contradiction = (typeof metadata?.url === "string" && metadata.url !== item.url) ||
-            (typeof metadata?.sourceURL === "string" && metadata.sourceURL !== item.url) ||
+          if (typeof metadata?.statusCode === "number" && metadata.statusCode !== 200)
+            return { listing: null, observation };
+          const contradiction = (typeof metadata?.url === "string" && !sameNewmarkPropertyUrl(metadata.url, item.url)) ||
+            (typeof metadata?.sourceURL === "string" && !sameNewmarkPropertyUrl(metadata.sourceURL, item.url)) ||
             contradictsNewmarkPageUrl(doc.rawHtml ?? "", item.url);
           if (contradiction) return { listing: null, observation: {
             ...(observation as Record<string, unknown>), newmarkIdentityConflict: true,
           } };
-          if (typeof metadata?.statusCode === "number" && metadata.statusCode !== 200)
-            return { listing: null, observation };
         }
         const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
         if (genericHasSubstantiveFields(row)) return { listing: row, observation };

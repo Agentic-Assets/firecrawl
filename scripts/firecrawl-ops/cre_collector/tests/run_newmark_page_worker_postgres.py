@@ -63,7 +63,7 @@ def main():
         job = [{"slug":"newmark","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
         ts = "2026-11-04T00:00:00Z"
         sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT id,'svn','other-source','https://example.test/other','new' FROM credeals.cre_brokerages WHERE slug='svn';")
-        for kind in ("success", "success-no-license", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after", "generic-missing", "generic-malformed", "generic-multiple", "generic-conflict", "generic-redirect", "generic-status", "generic-canonical", "generic-address", "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-source-redirect", "generic-og-mismatch", "generic-empty-page"):
+        for kind in ("success", "success-no-license", "stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "unknown", "unknown-after", "bad-outcome", "refusal-uncertain", "claim-stale", "claim-attempt-stale", "collect-fail-stale", "empty-stale", "deferred-stale", "generic-success", "generic-empty", "generic-whitespace", "generic-stale", "generic-url-changed", "generic-duplicate-after", "generic-missing", "generic-malformed", "generic-multiple", "generic-conflict", "generic-redirect", "generic-status", "generic-canonical", "generic-address", "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-source-redirect", "generic-og-mismatch", "generic-equivalent", "generic-host-mismatch", "generic-404-mismatch", "generic-empty-page"):
             if kind == "success-no-license":
                 sql("ALTER TABLE credeals.cre_listing_contacts DROP COLUMN license;")
             external = "worker-" + kind
@@ -120,10 +120,15 @@ if (mode.startsWith("generic-") && mode!=="generic-empty-page") html += '<script
 if (mode==="generic-canonical") html=html.replace('rel="canonical" href="'+url+'"', 'rel="canonical" href="https://www.nmrk.com/properties/other"');
 if (mode==="generic-address") html=html.replace("10 Main Street", "20 Other Street");
 if (mode==="generic-og-mismatch") html=html.replace('property="og:url" content="'+url+'"', 'property="og:url" content="https://www.nmrk.com/properties/other"');
+if (mode==="generic-equivalent") html=html.replaceAll(url, url+"/?ref=example#details");
+if (mode==="generic-404-mismatch") html=html.replace('rel="canonical" href="'+url+'"', 'rel="canonical" href="https://www.nmrk.com/"');
 const e=createGenericEnricher(async()=>({rawHtml:html,markdown:"",links:[],metadata:{
- ...(mode==="generic-no-metadata" ? {} : {statusCode:mode==="generic-status" ? 404 : 200,
- url:mode==="generic-redirect" ? "https://www.nmrk.com/properties/other" : url,
- sourceURL:mode==="generic-source-redirect" ? "https://www.nmrk.com/properties/other" : url})}}),()=> "2026-11-04T00:01:00Z");
+ ...(mode==="generic-no-metadata" ? {} : {statusCode:["generic-status","generic-404-mismatch"].includes(mode) ? 404 : 200,
+ url:mode==="generic-redirect" ? "https://www.nmrk.com/properties/other"
+     : mode==="generic-host-mismatch" ? url.replace("https://www.nmrk.com", "https://other.example")
+     : mode==="generic-404-mismatch" ? "https://www.nmrk.com/" : mode==="generic-equivalent" ? url+"/?a=1#map" : url,
+ sourceURL:mode==="generic-source-redirect" ? "https://www.nmrk.com/properties/other"
+     : mode==="generic-equivalent" ? url+"?a=1#map" : url})}}),()=> "2026-11-04T00:01:00Z");
 const result=await e.enrichWithEvidence([item]);
 const listings=result.listings.map(x=>({sourceKey:"newmark",...x}));
 const artifact={runMeta:{mode:"enrich",startedAt:"2026-11-04T00:00:00Z",finishedAt:"2026-11-04T00:01:00Z"},
@@ -197,7 +202,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
             queue=sql("SELECT attempts || '|' || (claimed_at IS NULL)::text FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
             if kind in {"generic-success", "generic-empty", "generic-whitespace", "generic-missing",
                         "generic-malformed", "generic-multiple", "generic-conflict", "generic-address",
-                        "generic-native-change", "generic-no-canonical", "generic-no-metadata"}:
+                        "generic-native-change", "generic-no-canonical", "generic-no-metadata", "generic-equivalent"}:
                 assert rc==0 and queue=="", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="t"
                 values = json.loads(sql("SELECT json_build_object('title',title,'description',description,'evidence',raw_data->'newmarkGenericPageObservation')::text FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";"))
@@ -223,10 +228,10 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                 assert sql("SELECT raw_data->'newmarkPageObservation'->>'prose' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="Property prose from source."
                 assert sql("SELECT count(*) FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id="+ingest.sql_lit(external)+";")=="2"
 
-            elif kind in {"stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "generic-url-changed", "generic-duplicate-after", "generic-redirect", "generic-source-redirect", "generic-og-mismatch", "generic-canonical"}:
+            elif kind in {"stale", "duplicate-before", "generic-duplicate-before", "duplicate-collect-fail", "duplicate-claim-stale", "duplicate-after", "generic-url-changed", "generic-duplicate-after", "generic-redirect", "generic-source-redirect", "generic-og-mismatch", "generic-host-mismatch", "generic-canonical"}:
                 assert rc==21 and queue=="0|false", (kind,rc,queue)
                 assert sql("SELECT raw_data ? 'newmarkPageObservation' OR raw_data ? 'genericEnrich' FROM credeals.cre_listings WHERE external_id="+ingest.sql_lit(external)+";")=="f"
-                if kind in {"duplicate-before", "generic-duplicate-before", "duplicate-claim-stale", "generic-redirect", "generic-source-redirect", "generic-og-mismatch", "generic-canonical"}:
+                if kind in {"duplicate-before", "generic-duplicate-before", "duplicate-claim-stale", "generic-redirect", "generic-source-redirect", "generic-og-mismatch", "generic-host-mismatch", "generic-canonical"}:
                     evidence = json.loads((private/"enriched.json").read_text())
                     observation = evidence["sources"][0]["retainedObservations"][0]
                     assert observation["claim"]["identity"] == "unverified" and observation["scrapedDoc"]["rawHtml"], observation
@@ -239,7 +244,7 @@ fs.writeFileSync(outPath,JSON.stringify(artifact),{mode:0o600,flag:"wx"});
                         assert "peer-after-ambiguous" in next_claim, next_claim
                         sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id='peer-after-ambiguous';")
                 sql("DELETE FROM credeals.cre_enrichment_queue WHERE external_id="+ingest.sql_lit(external)+";")
-            elif kind in {"generic-status", "generic-empty-page"}:
+            elif kind in {"generic-status", "generic-404-mismatch", "generic-empty-page"}:
                 assert rc == 21 and queue == "1|true", (kind, rc, queue)
                 evidence = json.loads((private/"enriched.json").read_text())
                 assert evidence["sources"][0]["retainedObservations"][0]["scrapedDoc"]["rawHtml"]
