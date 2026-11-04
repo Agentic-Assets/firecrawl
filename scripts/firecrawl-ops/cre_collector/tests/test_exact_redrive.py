@@ -40,6 +40,11 @@ def test_redrive_publishes_snapshot_before_apply_and_records_independent_results
     row = {"id": row_id, "source_key": "svn", "brokerage_id": "b", "external_id": "e",
            "url": "https://x", "reason": "changed", "priority": 100, "enqueued_at": "old",
            "claimed_at": None, "done_at": None, "attempts": 5, "last_error": "failure"}
+    preview = tmp_path / "preview"
+    preview.mkdir(mode=0o700)
+    snapshot = {"schema": "cre-exact-redrive-snapshot/v1", "source": "svn", "expected_sha": "a" * 40,
+                "database_target_sha256": "b" * 64, "requested_ids": [row_id], "rows": [row]}
+    digest = mod.write_private_receipt(preview, "snapshot.json", snapshot)
     class Lock:
         path = tmp_path
         cleared = False
@@ -55,12 +60,12 @@ def test_redrive_publishes_snapshot_before_apply_and_records_independent_results
     monkeypatch.setattr(mod, "require_clear", lambda _: None)
     monkeypatch.setattr(mod, "allocate_directory", lambda _: tmp_path)
     def query(_, statement):
-        if "jsonb_agg(to_jsonb(q)" in statement:
-            return [row]
+        assert "jsonb_agg(to_jsonb(q)" not in statement
+        assert '"last_error":"failure"' in statement
         assert json.loads((tmp_path / "snapshot.json").read_text())["rows"] == [row]
         return {"applied": [row_id]}
     monkeypatch.setattr(mod, "query", query)
-    result = mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True)
+    result = mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True, preview_path=preview / "snapshot.json", preview_sha256=digest)
     assert result == tmp_path
     assert json.loads((tmp_path / "result.json").read_text())["applied"] == [row_id]
     assert lock.cleared
@@ -72,6 +77,11 @@ def test_unknown_write_leaves_recovery_fence_armed(monkeypatch, tmp_path):
     row = {"id": row_id, "source_key": "svn", "brokerage_id": "b", "external_id": "e",
            "url": "https://x", "reason": "changed", "priority": 100, "enqueued_at": "old",
            "claimed_at": None, "done_at": None, "attempts": 5, "last_error": "failure"}
+    preview = tmp_path / "preview"
+    preview.mkdir(mode=0o700)
+    snapshot = {"schema": "cre-exact-redrive-snapshot/v1", "source": "svn", "expected_sha": "a" * 40,
+                "database_target_sha256": "b" * 64, "requested_ids": [row_id], "rows": [row]}
+    digest = mod.write_private_receipt(preview, "snapshot.json", snapshot)
     class Lock:
         path = tmp_path
         cleared = False
@@ -91,7 +101,7 @@ def test_unknown_write_leaves_recovery_fence_armed(monkeypatch, tmp_path):
         raise RuntimeError("uncertain commit")
     monkeypatch.setattr(mod, "query", query)
     with pytest.raises(RuntimeError):
-        mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True)
+        mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True, preview_path=preview / "snapshot.json", preview_sha256=digest)
     assert (tmp_path / "snapshot.json").exists()
     assert not (tmp_path / "result.json").exists()
     assert not lock.cleared
@@ -109,7 +119,7 @@ def test_wrong_database_target_never_acquires_owner_or_mutates(monkeypatch):
         raise AssertionError("owner or mutation reached")
     monkeypatch.setattr(mod, "SharedLock", forbidden)
     with pytest.raises(SystemExit):
-        mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True)
+        mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True, preview_path="/unused/snapshot.json", preview_sha256="c" * 64)
 
 
 def test_checkout_requires_selected_main_not_another_origin_ref(monkeypatch):
@@ -157,3 +167,34 @@ def test_preview_saves_private_snapshot_without_mutation(monkeypatch, tmp_path):
     assert json.loads((tmp_path / "snapshot.json").read_text())["rows"] == [row]
     assert not (tmp_path / "result.json").exists()
     assert lock.cleared
+
+
+def test_apply_requires_a_bound_preview():
+    import cre_exact_redrive as mod
+    row_id = "11111111-1111-4111-8111-111111111111"
+    with pytest.raises(ValueError):
+        mod.run_redrive([row_id], "a" * 40, "b" * 64, "synthetic", apply=True)
+
+
+def test_preview_digest_rejects_modified_content(tmp_path):
+    import hashlib
+
+    import cre_exact_redrive as mod
+    content = b'{"source":"svn"}'
+    receipt = tmp_path / "snapshot.json"
+    receipt.write_bytes(content)
+    receipt.chmod(0o600)
+    digest = hashlib.sha256(content).hexdigest()
+    receipt.write_bytes(b'{"source":"newmark"}')
+    with pytest.raises(ValueError):
+        mod.read_preview(receipt, digest)
+
+
+def test_preview_rejects_rows_outside_selected_ids():
+    from cre_exact_redrive import validate_preview_binding
+    selected = "11111111-1111-4111-8111-111111111111"
+    foreign = "22222222-2222-4222-8222-222222222222"
+    snapshot = {"schema": "cre-exact-redrive-snapshot/v1", "source": "svn", "expected_sha": "a" * 40,
+                "database_target_sha256": "b" * 64, "requested_ids": [selected], "rows": [{"id": foreign}]}
+    with pytest.raises(ValueError):
+        validate_preview_binding(snapshot, [selected], "a" * 40, "b" * 64)

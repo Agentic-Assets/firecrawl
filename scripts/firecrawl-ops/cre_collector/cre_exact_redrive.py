@@ -146,10 +146,72 @@ def query(db_url, statement):
         raise RuntimeError("database result unavailable; check recovery receipt") from exc
 
 
-def run_redrive(row_ids, expected_sha, expected_target, env_file, *, apply=False):
+
+def read_preview(path, digest):
+    """Read the exact private preview, rejecting replacement or altered bytes."""
+    import hashlib
+    import os
+    import stat
+
+    path = Path(path)
+    if not path.is_absolute() or path.name != "snapshot.json" or not re.fullmatch(r"[0-9a-f]{64}", digest or ""):
+        raise ValueError("absolute preview snapshot and SHA-256 required")
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        owner = os.fstat(directory)
+        if owner.st_uid != os.getuid() or owner.st_mode & 0o077:
+            raise ValueError("preview directory must be private and owned")
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+                    stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1 or before.st_size > 16 * 1024 * 1024):
+                raise ValueError("preview file is unsafe")
+            chunks = []
+            size = 0
+            while True:
+                chunk = os.read(fd, min(65536, 16 * 1024 * 1024 + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > 16 * 1024 * 1024:
+                    break
+            raw = b"".join(chunks)
+            after = os.fstat(fd)
+            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or
+                    len(raw) > 16 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != digest):
+                raise ValueError("preview snapshot differs from digest")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
+    try:
+        return json.loads(raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("preview snapshot is invalid") from exc
+
+
+def validate_preview_binding(snapshot, ids, expected_sha, expected_target):
+    if (not isinstance(snapshot, dict) or snapshot.get("schema") != "cre-exact-redrive-snapshot/v1" or
+            snapshot.get("source") != "svn" or snapshot.get("expected_sha") != expected_sha or
+            snapshot.get("database_target_sha256") != expected_target or snapshot.get("requested_ids") != ids):
+        raise ValueError("preview binding differs from this run")
+    rows = snapshot.get("rows")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or row.get("id") not in ids for row in rows):
+        raise ValueError("preview includes an unselected row")
+    row_ids = [row["id"] for row in rows]
+    if len(row_ids) != len(set(row_ids)):
+        raise ValueError("preview includes duplicate rows")
+    return rows
+
+def run_redrive(row_ids, expected_sha, expected_target, env_file, *, apply=False, preview_path=None, preview_sha256=None):
     ids = validate_selection("svn", row_ids)
     if not re.fullmatch(r"[0-9a-f]{64}", expected_target):
         raise ValueError("expected database target fingerprint required")
+    if apply and (not preview_path or not preview_sha256):
+        raise ValueError("apply requires an exact preview path and digest")
     verify_exact_checkout(expected_sha)
     db_url, _ = load_db_url(env_file)
     assert_expected_database_target(db_url, expected_target)
@@ -161,14 +223,21 @@ def run_redrive(row_ids, expected_sha, expected_target, env_file, *, apply=False
             require_clear(lock.path)
             verify_exact_checkout(expected_sha)
             run_dir = allocate_directory(HERE / "out" / "exact-redrive")
-            rows = query(db_url, build_snapshot_sql("svn", ids))
+            if apply:
+                snapshot = read_preview(preview_path, preview_sha256)
+                rows = validate_preview_binding(snapshot, ids, expected_sha, expected_target)
+
+            else:
+                rows = query(db_url, build_snapshot_sql("svn", ids))
+                snapshot = {"schema": "cre-exact-redrive-snapshot/v1", "source": "svn",
+                            "expected_sha": expected_sha, "database_target_sha256": expected_target,
+                            "requested_ids": ids, "rows": rows}
             if not isinstance(rows, list):
                 raise TypeError("snapshot result invalid")
-            snapshot = {"schema": "cre-exact-redrive-snapshot/v1", "source": "svn",
-                        "expected_sha": expected_sha, "database_target_sha256": expected_target,
-                        "requested_ids": ids, "rows": rows}
             digest = write_private_receipt(run_dir, "snapshot.json", snapshot)
-            print(str(run_dir), flush=True)
+            if apply and digest != preview_sha256:
+                raise ValueError("preview copy differs from digest")
+            print(f"{run_dir} snapshot_sha256={digest}", flush=True)
             if not apply:
                 settled = True
                 return run_dir
@@ -203,8 +272,11 @@ def main():
     parser.add_argument("--expected-db-target-sha256", required=True)
     parser.add_argument("--env-file", required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--preview-path")
+    parser.add_argument("--preview-sha256")
     args = parser.parse_args()
-    run_redrive(args.queue_id, args.expected_sha, args.expected_db_target_sha256, args.env_file, apply=args.apply)
+    run_redrive(args.queue_id, args.expected_sha, args.expected_db_target_sha256, args.env_file,
+                apply=args.apply, preview_path=args.preview_path, preview_sha256=args.preview_sha256)
 
 
 if __name__ == "__main__":
