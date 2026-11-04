@@ -5592,6 +5592,32 @@ WHERE b.slug = 'daum-commercial'
   AND s.raw_data->>'sourceKey' = 'daum-commercial'
   AND s.raw_data->'daumUnknownTenure' = 'true'::jsonb;
 
+-- Preserve every observed contact in raw_data; choose the first matching
+-- identity for canonical child writes so duplicates in one batch cannot race
+-- the pre-existing-row check. Existing duplicate rows are never deleted.
+UPDATE _src s
+SET contacts = (
+  SELECT COALESCE(jsonb_agg(current_contact.x ORDER BY current_contact.ordinality), '[]'::jsonb)
+  FROM jsonb_array_elements(s.contacts) WITH ORDINALITY AS current_contact(x, ordinality)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(s.contacts) WITH ORDINALITY AS earlier(x, ordinality)
+    WHERE earlier.ordinality < current_contact.ordinality
+      AND (
+        (NULLIF(lower(current_contact.x->>'email'), '') IS NOT NULL
+         AND lower(earlier.x->>'email') = lower(current_contact.x->>'email'))
+        OR
+        (NULLIF(lower(current_contact.x->>'name'), '') IS NOT NULL
+         AND lower(earlier.x->>'name') = lower(current_contact.x->>'name')
+         AND COALESCE(earlier.x->>'phone', '') = COALESCE(current_contact.x->>'phone', ''))
+      )
+  )
+)
+FROM _up u
+WHERE u.brokerage_id = s.brokerage_id AND u.external_id = s.external_id
+  AND u.id IN (SELECT id FROM _daum_unknown_contacts)
+  AND jsonb_typeof(s.contacts) = 'array';
+
 CREATE TEMP TABLE _contact_refresh ON COMMIT DROP AS
 SELECT id FROM _child_refresh
 EXCEPT
@@ -5646,7 +5672,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'license', x->>'email', x->>'phone', x->>'company',
            x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5659,7 +5686,8 @@ DO $$ BEGIN
     )
     SELECT u.id, x->>'name', x->>'title', x->>'email', x->>'phone', x->>'company',
            x->>'profileUrl', x->>'avatarUrl', x->>'vcardUrl',
-           COALESCE((x->>'isPrimary')::boolean, false)
+           CASE WHEN u.id IN (SELECT id FROM _daum_unknown_contacts)
+                THEN false ELSE COALESCE((x->>'isPrimary')::boolean, false) END
     FROM _up u
     JOIN _src s USING (brokerage_id, external_id)
     CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
