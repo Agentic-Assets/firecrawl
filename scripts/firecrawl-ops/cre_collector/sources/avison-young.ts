@@ -2335,6 +2335,35 @@ export async function fetchAvisonYoungDirectDocWithRetry(
   );
 }
 
+// Only a previously identity-validated official page may supply this observation.
+// Keep its point independent of the feed: disagreement does not resolve precision.
+function avisonOfficialMapObservation(
+  docs: Array<{ doc: ScrapedDoc; url: string }>, officialUrl: string | null
+): { sourceUrl: string; latitude: number; longitude: number; method: string } | undefined {
+  if (!officialUrl) return undefined;
+  try {
+    const parsed = new URL(officialUrl);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "www.avisonyoung.us"
+        || parsed.username || parsed.password || parsed.port) return undefined;
+  } catch { return undefined; }
+  const official = docs.filter(({ url }) => url === officialUrl);
+  if (official.length !== 1) return undefined;
+  const { doc, url } = official[0]!;
+  const $ = cheerio.load(doc.rawHtml);
+  const maps = $("#map_canvas");
+  if (maps.length !== 1 || $("#map-container").length !== 1
+      || maps.closest("#map-container").length !== 1) return undefined;
+  const latText = maps.attr("data-latitude")?.trim();
+  const lngText = maps.attr("data-longitude")?.trim();
+  const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+  if (!latText || !lngText || !decimal.test(latText) || !decimal.test(lngText)) return undefined;
+  const latitude = Number(latText);
+  const longitude = Number(lngText);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)
+      || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return undefined;
+  return { sourceUrl: url, latitude, longitude, method: "official_property_map" };
+}
+
 export async function enrichAvisonYoungListing(
   base: any,
   strict = requireFreshDetails(),
@@ -2476,6 +2505,7 @@ export async function enrichAvisonYoungListing(
     documentCount: (harvested.documents.length || documents.length),
     photoCount: photos.length,
     detailJsonLd: listingLd,
+    avisonPageMapObservation: avisonOfficialMapObservation(docs, clean(base.externalUrl)),
     detailScrape: {
       urls: docs.map(({ url }) => url),
       markdownLength: docs.reduce((sum, item) => sum + item.doc.markdown.length, 0),
