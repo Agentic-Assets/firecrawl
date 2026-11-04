@@ -518,6 +518,7 @@ test("Colliers SalesTracker retries only the failed page pair after settling the
   const pageRequests: string[] = [];
   let laterListAttempts = 0;
   let siblingSettled = false;
+  const observations: any[] = [];
 
   installSalesTrackerFetch(t, async (url, init) => {
     if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
@@ -557,7 +558,10 @@ test("Colliers SalesTracker retries only the failed page pair after settling the
     return jsonResponse(pageTwo.map);
   });
 
-  const result = await srcColliers("sale", 4, false);
+  const result = await srcColliers("sale", 4, false, undefined, (page, start, attempt, responses) => {
+    observations.push({page, start, attempt, responses});
+  });
+  assert.deepEqual(observations.map(row => [row.page, row.attempt]), [[1, 1], [2, 2]]);
   assert.equal(result.listings.length, 4);
   assert.equal(laterListAttempts, 2);
   assert.deepEqual(
@@ -572,6 +576,74 @@ test("Colliers SalesTracker retries only the failed page pair after settling the
     ].sort(),
     "the earlier page is fetched once and only the identical later pair is repeated"
   );
+});
+
+test("Colliers keeps prior provisional cards when a later map page fails", async (t) => {
+  const first = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const captured: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? first.list : first.map);
+    return jsonResponse(isList ? first.list : { success: false });
+  });
+  await assert.rejects(srcColliers("sale", 4, false, (page, start, cards) => {
+    captured.push({ page, start, cards });
+  }), /success=false/);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].cards.length, 2);
+  assert.equal(captured[0].cards[0].inventoryOnly.reason, "detail_not_attempted");
+  assert.equal(captured[0].cards[0].provisionalIdentity.historyContinuity, "not_guaranteed");
+  assert.notEqual(captured[0].cards[0].detailUnavailable.publicPageObserved, true);
+});
+
+test("Colliers retains both parsed pages when the later page count mismatches", async (t) => {
+  const first = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const second = syntheticSalesTrackerPage(["P3", "P4"], 3);
+  second.list.numProjects = 1;
+  const captured: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const page = Number(url.searchParams.get("Start")) === 1 ? first : second;
+    return jsonResponse(url.pathname.endsWith("GetListingsHtml") ? page.list : page.map);
+  });
+  await assert.rejects(srcColliers("sale", 4, false, (page, start, cards) => {
+    captured.push({ page, start, cards });
+  }), /numProjects\/card parity failed at start 3: 1 != 2/);
+  assert.deepEqual(captured.map((entry) => [entry.page, entry.start, entry.cards.length]),
+    [[1, 1, 2], [2, 3, 2]]);
+  assert.deepEqual(captured[1].cards.map((card: any) => card.mapProjectId), ["P3", "P4"]);
+});
+
+
+for (const mode of ["parity", "malformed", "omission", "one-side"] as const) test(`Colliers retains received responses before ${mode} failure`, async (t) => {
+  const data = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  if (mode === "parity") data.map.projectLocations.pop();
+  if (mode === "omission") data.list.html = '<ul><li class="item"></li><li class="item">Property</li></ul>';
+  const observations: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (mode === "one-side" && !isList) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return new Response("denied", {status: 403});
+    }
+    if (mode === "malformed" && isList) return new Response("NOT_JSON_BODY");
+    return jsonResponse(isList ? data.list : data.map);
+  });
+  const expected = mode === "parity" ? /card\/map-group parity/ : mode === "malformed" ? /non-JSON/ :
+    mode === "omission" ? /parsed-card\/map-group parity/ : /HTTP 403/;
+  await assert.rejects(srcColliers("sale", 4, false, undefined, (page, start, attempt, responses) => {
+    observations.push({page, start, attempt, responses});
+  }), expected);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].page, 1);
+  assert.equal(observations[0].attempt, 1);
+  if (mode === "malformed") assert.equal(observations[0].responses.list, "NOT_JSON_BODY");
+  else assert.match(observations[0].responses.list, /Property|class=/);
+  if (mode === "one-side") assert.equal("map" in observations[0].responses, false);
+  else assert.ok(observations[0].responses.map);
 });
 
 test("Colliers SalesTracker does not retry a pair when an observed denial accompanies a transient status", async (t) => {
