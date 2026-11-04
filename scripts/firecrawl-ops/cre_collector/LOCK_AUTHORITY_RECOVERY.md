@@ -252,6 +252,8 @@ in an evidence JSON object with keys `known_outcome`, `remote_settlement` and
 freshness; the maintenance tool verifies those file bindings, not a
 source-specific success claim or a caller Boolean. This is maintenance evidence,
 not a new approval contract for already approved database work.
+The operator identifier records who performed the review: use `codex` for an
+authorized Codex agent, rather than attributing the action to a person.
 
 ```bash
 python3 cre_recover_settled_owner.py --execute \

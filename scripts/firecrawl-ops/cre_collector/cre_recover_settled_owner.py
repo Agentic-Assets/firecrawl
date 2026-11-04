@@ -19,6 +19,7 @@ from cre_posix import fcntl
 
 EVIDENCE_ROLES = {"known_outcome", "remote_settlement", "descendant_settlement"}
 ARCHIVE_ROOT = ".cre-owner-recovery-forensics"
+RECOVERY_OPERATORS = ("cayman", "stace", "codex")
 
 
 class RecoveryAmbiguous(RuntimeError):
@@ -185,7 +186,7 @@ def recover(expected, *, evidence, operator, reference, confirmation, execute=Fa
     The operator attests review of known DB/remote outcomes and fresh complete
     descendant settlement. File hashes bind that review; they do not infer it.
     """
-    if operator not in {"cayman", "stace"} or not isinstance(reference, str) or re.fullmatch(r"AGENTIC-[0-9]+", reference) is None:
+    if operator not in RECOVERY_OPERATORS or not isinstance(reference, str) or re.fullmatch(r"AGENTIC-[0-9]+", reference) is None:
         raise ValueError("explicit configured operator/reference required")
     observed = inspect_state()
     if expected != observed or confirmation != "RECOVER CRE OWNER " + observed["fingerprint"]:
@@ -262,7 +263,7 @@ def main(argv=None):
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--expected-state", type=Path)
     parser.add_argument("--evidence", type=Path)
-    parser.add_argument("--operator", choices=("cayman", "stace"))
+    parser.add_argument("--operator", choices=RECOVERY_OPERATORS)
     parser.add_argument("--reference")
     parser.add_argument("--confirm")
     args = parser.parse_args(argv)

@@ -55,11 +55,29 @@ def test_default_inspect_creates_no_sync_archive_or_namespace(setup):
     assert {str(p): (p.stat().st_ino, p.read_bytes()) for p in (authority, lock/'pid', lock/'lease')} == before
 
 
-def test_exact_recovery_preserves_inodes_forensics_and_allows_normal_owner(setup):
+def test_cli_records_codex_operator(setup, tmp_path, capsys):
+    subject, lock, _authority, expected, options = setup
+    state_path = tmp_path/'state.json'
+    evidence_path = tmp_path/'evidence.json'
+    state_path.write_text(json.dumps(expected))
+    evidence_path.write_text(json.dumps(options['evidence']))
+    state_path.chmod(0o600)
+    evidence_path.chmod(0o600)
+    subject.main(['--execute', '--expected-state', str(state_path), '--evidence', str(evidence_path),
+                  '--operator', 'codex', '--reference', options['reference'],
+                  '--confirm', options['confirmation']])
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'KNOWN_SETTLED_OWNER_RECOVERED'
+    assert result['operator'] == 'codex'
+    assert not lock.exists()
+
+
+@pytest.mark.parametrize('operator', ['cayman', 'stace', 'codex'])
+def test_exact_recovery_preserves_inodes_forensics_and_allows_normal_owner(setup, operator):
     subject, lock, authority, expected, _ = setup
     inode = authority.stat().st_ino
     originals = {n: (lock/n).read_bytes() for n in ('pid','lease')}
-    result = recover(setup, execute=True)
+    result = recover(setup, execute=True, operator=operator)
     assert result['executed'] is True
     assert result['status'] == 'KNOWN_SETTLED_OWNER_RECOVERED'
     assert not lock.exists()
@@ -72,6 +90,7 @@ def test_exact_recovery_preserves_inodes_forensics_and_allows_normal_owner(setup
         assert (archive/'lock'/name).read_bytes() == value
     assert hashlib.sha256((archive/'authority-before').read_bytes()).hexdigest() == expected['authority']['sha256']
     completed = json.loads((archive/'completed.json').read_text())
+    assert completed['operator'] == operator
     assert completed['evidence'] == result['evidence']
     assert completed['authority_identity'] == expected['authority']['identity']
     sync_inode = subject.cp.quarantine_recovery_sync_path(lock).stat().st_ino
@@ -132,9 +151,10 @@ def test_unsafe_or_live_state_refuses(setup, monkeypatch, kind):
 
 
 @pytest.mark.parametrize('change', ['operator','reference','confirmation','missing_evidence','changed_evidence'])
-def test_explicit_operator_and_immutable_evidence_required(setup, change):
+@pytest.mark.parametrize('operator', ['cayman', 'codex'])
+def test_explicit_operator_and_immutable_evidence_required(setup, change, operator):
     subject, lock, authority, _expected, options = setup
-    edits = {}
+    edits = {'operator': operator}
     if change in ('operator','reference','confirmation'):
         edits[change] = 'invalid'
     elif change == 'missing_evidence':
