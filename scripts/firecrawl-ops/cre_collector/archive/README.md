@@ -13,6 +13,8 @@ transcripts, completed goal records, and stale gap/QA snapshots were pruned
 `tasks/tmp/cre-archive-pruned-2026-06-13.tar.gz` (relative to the repo root).
 Index of the durable nuggets:
 
+- [June 15 column coverage report](CRE_LISTINGS_COLUMN_COVERAGE_2026-06-15.md) -- historical coverage snapshot; current coverage requires fresh readback.
+- [June 15 data-lift handoff](HANDOFF_DATA_LIFT_2026-06-15.md) -- historical delivery record; its retired OM-write instructions are superseded.
 - [2026-06-15 collector workstream ideas](2026-06-15-collector-workstream-ideas.md) -- historical ideas, not a current task list; Firecrawl work is tracked in [Linear](https://linear.app/agenticassets/project/firecrawl-ops-and-automation-f13a738a83bf).
 - `SECURITY_REVIEW_2026-06-14.md` -- point-in-time branch security review and findings.
 

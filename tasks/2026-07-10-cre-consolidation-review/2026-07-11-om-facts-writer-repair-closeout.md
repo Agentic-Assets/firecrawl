@@ -25,7 +25,7 @@ four-column conflict target and failed every OM-facts ingest.
   asserts the exact generated conflict target, rejects the former target, and
   checks that the source migration declares the same five-column identity.
 - `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md` and
-  `HANDOFF_DATA_LIFT_2026-06-15.md` now describe the canonical five-column key,
+  `scripts/firecrawl-ops/cre_collector/archive/HANDOFF_DATA_LIFT_2026-06-15.md` now describe the canonical five-column key,
   removing the stale four-column contract from collector documentation.
 - `cre_enrich.py` no longer exposes `--om-parse`, reads `CRE_OM_PARSE`, or
   invokes `om_parse.py`. A legacy launchd environment cannot reactivate a

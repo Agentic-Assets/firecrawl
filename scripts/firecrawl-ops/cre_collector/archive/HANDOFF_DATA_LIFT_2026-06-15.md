@@ -4,6 +4,8 @@
 > this document's `om_parse.py --apply` or enrich-wiring instructions. That
 > Firecrawl writer is retired and fails closed; GetCREdata is the sole production
 > OM extraction writer. This file remains a record of the 2026-06-15 work.
+> Historical code paths and commands below refer to the collector root; they
+> are not current operating instructions.
 
 Status: BUILT and verified in code on branch `feat/cre-brokerage-collectors-2026-06-12`.
 The data-lift DDL (`011`-`014`) + the crosswalk load + the three backfills
@@ -13,9 +15,9 @@ the applied set and real counts. The items in Section 8's still-gated trailer
 (OM-parse, media backfill, status activation, `--mark-missing`, consumer
 board-gate deploy, enrichment-cadence cutover) remain gated.
 
-Builds directly on the media-capture build (`HANDOFF_MEDIA_CAPTURE_2026-06-15.md`).
-Source-of-truth gap spec: `RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md`.
-Frozen implementation contract: `PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md`.
+Builds directly on the media-capture build (`../HANDOFF_MEDIA_CAPTURE_2026-06-15.md`).
+Source-of-truth gap spec: `../RAW_DATA_GAP_CLASSIFICATION_2026-06-15.md`.
+Frozen implementation contract: `../PHASE2_DATA_LIFT_CONTRACT_2026-06-15.md`.
 
 ## 0. Finishing pass (2026-06-15 cont.) — full crosswalk, two live-schema bug fixes, real counts
 
