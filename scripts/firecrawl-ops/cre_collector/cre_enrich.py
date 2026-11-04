@@ -39,7 +39,7 @@ Section 4 and out/enrich/IMPL_SPEC.md Section 4):
   - A whole-run failure (collect rc != 0, or enriched.json missing / invalid /
     empty) releases the claims (claimed_at = NULL, attempts untouched), sets
     last_error, and exits nonzero. It does NOT ingest a partial/empty artifact.
-  - Completion is matched by URL (verbatim in both the queue and the artifact),
+  - Completion is matched by source and URL (verbatim in queue and artifact),
     NOT by external_id (the queue stores the folded/prefixed id, the artifact
     carries the native source id).
   - The worker writes NO verdict marker; cre_run_tier.sh owns
@@ -231,37 +231,75 @@ def build_ingest_argv(enriched_path, *, targeted_claims=None):
 
 
 def select_done_and_retry(claimed_rows, enriched_listings):
-    """Partition the claimed rows by URL presence in the enriched artifact.
+    """Partition the claimed rows by source and URL presence in the enriched artifact.
 
-    Completion is URL-keyed, NOT external-id-keyed: the queue row carries the
+    Completion is source-and-URL-keyed, NOT external-id-keyed: the queue row carries the
     folded/prefixed external_id (e.g. ``main:usa1``) while the artifact carries the
     native id (``usa1``), but the url is verbatim in both, so the join is exact and
     needs no prefix logic.
 
     Returns (done_ids, retry_ids, dead_ids):
       - done_ids: claimed row ids whose urls are present in the artifact. The
-        URL match decides completion, but deletion is id-keyed so another queued
+        source-and-URL match decides completion, but deletion is id-keyed so another queued
         reason for the same listing URL is not removed accidentally.
       - retry_ids: claimed-but-absent rows that stay under MAX_ATTEMPTS after the
         +1 increment (re-claimed next run).
       - dead_ids:  claimed-but-absent rows that reach MAX_ATTEMPTS on the +1
         increment (they leave the `attempts < 5` drain set and surface in
         v_cre_enrichment_dead).
-    Both retry_ids and dead_ids receive attempts+1 (one increment SQL covers
-    both); they differ only in whether the increment crosses the dead threshold.
+    The caller defers explicit source failures and unattempted claims before
+    incrementing the remaining retry and dead-letter candidates.
     """
-    enriched_urls = {row.get("url") for row in enriched_listings if row.get("url")}
+    enriched_urls = {(row.get("sourceKey"), row.get("url")) for row in enriched_listings if row.get("url")}
     done_ids = []
     retry_ids = []
     dead_ids = []
     for r in claimed_rows:
-        if r.get("url") in enriched_urls:
+        if (r.get("source_key"), r.get("url")) in enriched_urls:
             done_ids.append(r["id"])
         elif int(r.get("attempts", 0)) + 1 >= MAX_ATTEMPTS:
             dead_ids.append(r["id"])
         else:
             retry_ids.append(r["id"])
     return done_ids, retry_ids, dead_ids
+
+
+def deferred_claim_ids(claimed_rows, artifact):
+    """Defer only source failures or claims explicitly marked unattempted/stopped."""
+    sources = artifact.get("sources")
+    if not isinstance(sources, list):
+        return set()
+    claimed = {}
+    for row in claimed_rows:
+        key = (row.get("source_key"), row.get("external_id"), row.get("url"))
+        claimed.setdefault(key, []).append(row["id"])
+    deferred = set()
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source_key = source.get("sourceKey")
+        evidence_error = source.get("evidenceError")
+        if source.get("error") or (isinstance(evidence_error, str) and
+                                    evidence_error.startswith("newmark_detail_")):
+            deferred.update(row["id"] for row in claimed_rows if row.get("source_key") == source_key)
+            continue
+        observations = source.get("retainedObservations")
+        if not isinstance(observations, list):
+            continue
+        for obs in observations:
+            if not isinstance(obs, dict):
+                continue
+            failure = obs.get("failure")
+            if not obs.get("stopReason") and not (
+                isinstance(failure, str) and failure.startswith("not_attempted_after_")
+            ):
+                continue
+            claim = obs.get("claim")
+            if not isinstance(claim, dict) or claim.get("sourceKey") != source_key:
+                continue
+            key = (source_key, claim.get("externalId"), claim.get("url"))
+            deferred.update(claimed.get(key, ()))
+    return deferred
 
 
 def build_complete_sql(done_ids):
@@ -271,7 +309,7 @@ def build_complete_sql(done_ids):
     audit). Deleting done rows is what lets a LATER change to the same listing
     re-enqueue: keeping them would let the monitor's
     `ON CONFLICT (brokerage_id, external_id, reason) DO NOTHING` suppress every
-    future change. Completion is still URL-matched in select_done_and_retry(),
+    future change. Completion is source-and-URL-matched in select_done_and_retry(),
     but this DELETE must be id-keyed because the queue can hold separate reasons
     for the same listing URL. Each id goes through sql_lit (quote-doubling) under
     the standard_conforming_strings pin; ids are never f-string'd.
@@ -294,13 +332,14 @@ def build_complete_sql(done_ids):
     ])
 
 
-def build_release_sql(claimed_ids, last_error=None):
-    """Whole-run-failure release: free the claims, attempts UNTOUCHED.
+def build_release_sql(claimed_ids, last_error=None, *, preserve_claim=False):
+    """Release claims without incrementing attempts, or keep their cooldown.
 
     Used when the collect subprocess fails or the artifact is missing / invalid /
     empty, so the batch retries free on the next run without burning an attempt
     (a systemic outage must not dead-letter healthy rows). last_error is optional;
-    ids are uuids emitted as sql_lit(id)::uuid. Empty input -> no-op transaction.
+    ids are uuids emitted as sql_lit(id)::uuid. With preserve_claim, keep
+    claimed_at for the existing one-hour reclaim window. Empty input is a no-op.
     """
     ids = list(claimed_ids)
     head = [
@@ -313,8 +352,8 @@ def build_release_sql(claimed_ids, last_error=None):
     in_list = "(" + ", ".join(sql_lit(i) + "::uuid" for i in ids) + ")"
     return "\n".join(head + [
         "UPDATE credeals.cre_enrichment_queue",
-        "   SET claimed_at = NULL,",
-        "       last_error = " + _lit_or_null(last_error),
+        "   SET " + ("" if preserve_claim else "claimed_at = NULL, ")
+        + "last_error = " + _lit_or_null(last_error),
         " WHERE id IN " + in_list + ";",
         "COMMIT;",
     ])
@@ -485,12 +524,18 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
     if listings or "terminalCaptureFailure" in artifact["runMeta"]:
         require_canonical_artifact(artifact)
     validate_hanley_enrichment_artifact(artifact)
-    claimed_by_url = {row.get("url"): row for row in claimed_rows if row.get("url")}
+    claimed_by_url = {}
+    for row in claimed_rows:
+        key = (row.get("source_key"), row.get("url"))
+        claimed_by_url.setdefault(key, []).append(row)
     safe = []
     seen_urls = set()
     for listing in listings:
         url = listing.get("url") if isinstance(listing, dict) else None
-        claimed = claimed_by_url.get(url)
+        matches = claimed_by_url.get((listing.get("sourceKey"), url), []) if isinstance(listing, dict) else []
+        if len({row.get("external_id") for row in matches}) > 1:
+            raise ValueError("ambiguous claimed source URL identity")
+        claimed = matches[0] if matches else None
         if claimed is None:
             raise ValueError(f"enriched artifact URL was not claimed: {url!r}")
         if listing.get("sourceKey") != claimed.get("source_key"):
@@ -499,9 +544,10 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
             "external_id"
         ):
             raise ValueError("Hanley enrichment native identity differs from its claim")
-        if url in seen_urls:
+        identity = (listing.get("sourceKey"), url)
+        if identity in seen_urls:
             raise ValueError(f"enriched artifact contains duplicate URL: {url!r}")
-        seen_urls.add(url)
+        seen_urls.add(identity)
         if "genericEnrich" in listing and not generic_enrichment_substantive(listing):
             continue
         safe.append(listing)
@@ -521,7 +567,7 @@ def build_targeted_queue_sql(
     items, operation, *, last_error=None, artifact=None, claims=None
 ):
     """Compare exact claim tenure before changing any Matthews claim."""
-    if operation not in {"complete", "release", "retry"}:
+    if operation not in {"complete", "release", "retry", "defer"}:
         raise ValueError("invalid targeted queue operation")
     if not items:
         return "BEGIN; COMMIT;"
@@ -536,6 +582,9 @@ def build_targeted_queue_sql(
     mutation = {
         "complete": "DELETE FROM credeals.cre_enrichment_queue q USING _targeted_claims e WHERE q.id=e.id;",
         "release": "UPDATE credeals.cre_enrichment_queue q SET claimed_at=NULL, last_error="
+        + _lit_or_null(last_error)
+        + " FROM _targeted_claims e WHERE q.id=e.id;",
+        "defer": "UPDATE credeals.cre_enrichment_queue q SET last_error="
         + _lit_or_null(last_error)
         + " FROM _targeted_claims e WHERE q.id=e.id;",
         "retry": "UPDATE credeals.cre_enrichment_queue q SET attempts=attempts+1, claimed_at=NULL, last_error="
@@ -814,7 +863,7 @@ def run(args):
             return 1
     else:
         print(
-            "0 admitted listings: skipping ingest and advancing retry accounting",
+            "0 admitted listings: skipping ingest and classifying queue outcomes",
             file=sys.stderr,
         )
 
@@ -833,7 +882,14 @@ def run(args):
         [i for i in claims["items"] if i["claimId"] in done_ids], "complete",
         artifact=artifact, claims=claims)
         if targeted else build_complete_sql(done_ids))
-    absent = retry_ids + dead_ids
+    deferred = deferred_claim_ids(claimed_rows, artifact)
+    absent = [claim_id for claim_id in retry_ids + dead_ids if claim_id not in deferred]
+    deferred_ids = [claim_id for claim_id in retry_ids + dead_ids if claim_id in deferred]
+    if deferred_ids:
+        _psql_exec(db_url, build_targeted_queue_sql(
+            [i for i in claims["items"] if i["claimId"] in deferred_ids], "defer",
+            last_error="enrichment attempt not established") if targeted else build_release_sql(
+            deferred_ids, last_error="enrichment attempt not established", preserve_claim=True))
     if absent:
         _psql_exec(db_url, build_targeted_queue_sql(
             [i for i in claims["items"] if i["claimId"] in absent], "retry",
@@ -841,7 +897,7 @@ def run(args):
             absent, last_error="claimed but absent from enriched artifact"))
     print(
         f"enrich complete: {len(done_ids)} done (deleted), "
-        f"{len(retry_ids)} retry, {len(dead_ids)} dead-lettered",
+        f"{len(absent)} absent after collection, {len(deferred_ids)} deferred without established attempt",
         file=sys.stderr,
     )
 
