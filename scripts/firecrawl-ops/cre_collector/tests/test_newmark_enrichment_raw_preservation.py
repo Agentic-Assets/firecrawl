@@ -39,3 +39,6 @@ def test_newmark_mixed_inputs_only_bind_enrichment_only_identity(tmp_path):
     assert "EXCLUDED.external_id IN ('other', 'other2')" in branch
     assert "('newmark', 'other')" in branch and "('newmark', 'other2')" in branch
     assert "'same'" not in branch and "'full'" not in branch
+    index = sql.split("-- Canonical full ingest synchronizes", 1)[1].split("-- Children:", 1)[0]
+    assert index.count("(b.slug, s.external_id) IN (('newmark', 'other'), ('newmark', 'other2'))") == 2
+    assert "('newmark', 'same')" not in index and "('newmark', 'full')" not in index

@@ -15,12 +15,8 @@ happens in both cases.
 
 Pure Python, no DB connection. Asserts against build_sql([], [], scraped_at, set()).
 
-NOTE: test_ingest_status_activation.py::test_update_keeps_status_sticky_resetting_only_resurrected
-asserts the OLD exact CASE string and will fail after this M5 change. That file
-is not owned by Owner A and must not be edited here. The integration owner must
-update that one assertion to the new CASE string after merge. This is the ONLY
-existing test that Owner A's changes break; it is flagged as a known stale
-assertion (spec section 4.3 / 9 cross-owner note).
+The disposable PostgreSQL transaction fixture also checks full-inventory revival
+and terminal status preservation alongside detail-only lifecycle preservation.
 """
 
 from datetime import datetime, timezone
@@ -41,7 +37,7 @@ def _sql():
 
 def test_revival_case_checks_inactive_status():
     sql = _sql()
-    assert "status            = CASE WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'" in sql, (
+    assert "WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'" in sql, (
         "Expected M5 tightened revival CASE "
         "(... AND t.status = 'inactive') not found in generated SQL.\n"
         "Old unconditional revival form may still be present."
@@ -77,7 +73,6 @@ def test_old_unconditional_revival_gone():
 
 def test_deleted_at_null_still_set():
     sql = _sql()
-    assert "deleted_at        = NULL," in sql, (
-        "deleted_at = NULL line missing from DO UPDATE SET. "
-        "Un-delete behavior was inadvertently removed."
+    assert "THEN t.deleted_at ELSE NULL END" in sql, (
+        "Full inventory must clear deleted_at while pure SVN detail preserves it."
     )
