@@ -29,8 +29,8 @@ def run(*args, **kwargs):
 
 def main():
     name = "jll-partial-proof-" + uuid.uuid4().hex[:12]
-    def sql(statement):
-        return run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-X", "-q", "-tA",
+    def sql(statement, database="postgres"):
+        return run("docker", "exec", "-i", name, "psql", "-U", "postgres", "-d", database, "-X", "-q", "-tA",
                    "-v", "ON_ERROR_STOP=1", input=statement)
     try:
         run("docker", "run", "-d", "--rm", "--name", name, "--network=none", "--cpus=0.5",
@@ -54,6 +54,31 @@ def main():
             "\\set CRE_LISTING_LIFECYCLE_CONFIRM 'APPLY 016_cre_listing_lifecycle'",
             (directory / "016_cre_listing_lifecycle.sql").read_text()])
         sql(schema)
+        # Synthetic producer -> artifact worker -> both real admission gates ->
+        # guarded CLI-generated SQL -> actual PostgreSQL transaction and
+        # exact source-payload readback, on an otherwise empty database.
+        import pytest
+        from tests.test_jll_partial_members import test_real_collector_to_artifact_worker_keeps_valid_peer_and_held_evidence
+        from cre_jll_partial import stage_members
+        sql("CREATE DATABASE jll_partial_e2e;")
+        sql(schema, "jll_partial_e2e")
+        with tempfile.TemporaryDirectory(prefix="jll-partial-e2e-") as e2e_directory:
+            root = Path(e2e_directory)
+            patch = pytest.MonkeyPatch()
+            try:
+                test_real_collector_to_artifact_worker_keeps_valid_peer_and_held_evidence(root, patch)
+            finally:
+                patch.undo()
+            source_path = root / "sources" / "jll-investor.json"
+            data = json.loads(source_path.read_text())
+            staged_e2e = stage_members(data, "jll-test")
+            assert sql(identity_probe_sql(staged_e2e), "jll_partial_e2e") == "1|1|[]"
+            sql((root / "dryrun" / "ingest.sql").read_text(), "jll_partial_e2e")
+            assert sql("SELECT count(*) FROM credeals.cre_listings WHERE status IS NULL AND transaction_type='sale';",
+                       "jll_partial_e2e") == "1"
+            assert sql("SELECT count(*) FROM credeals.cre_source_index;", "jll_partial_e2e") == "0"
+            raw_map = {staged_e2e[0]["external_id"]: data["listings"][0]}
+            assert sql(readback_sql(staged_e2e, [], "jll-test", raw_map), "jll_partial_e2e") == "1|[]"
         identity = "006" + "a" * 15
         source_url = "https://invest.jll.com/us/en/listings/office/fixture"
         item = {"sourceKey": "jll-investor", "transactionMode": "sale", "id": identity, "url": source_url,
@@ -75,7 +100,7 @@ def main():
                     jllInvestorDetail={"id": identity, "customAttributes":{"detailError":"source field, not a failed scrape"},
                                        "scrape": {"rawHtmlLength":0,"markdownLength":0,"linkCount":0}},
                     freshnessProvenance={"generationId":"new","detailScope":"detail_page",
-                                         "method":"jll_investor_next_data_detail","cacheDisposition":"live"})
+                                         "method":"jll_investor_next_data_detail","cacheDisposition":"live","identityMethod":"provider_listing_id"})
         row = ingest.to_row(item, {}, "2026-11-04T00:01:00Z")
         sql(ingest.build_sql([row], job, "2026-11-04T00:01:00Z", set(),
                              jll_partial_ids=(row["external_id"],)))
@@ -97,7 +122,7 @@ def main():
         # payload without inventing a longer history.
         full_item = dict(item, jllInvestorDetail={"id":identity, "scrape":{"rawHtmlLength":0,"markdownLength":0,"linkCount":0}},
                          freshnessProvenance={"generationId":"full","detailScope":"detail_page",
-                                              "method":"jll_investor_next_data_detail","cacheDisposition":"live"})
+                                              "method":"jll_investor_next_data_detail","cacheDisposition":"live","identityMethod":"provider_listing_id"})
         full = ingest.to_row(full_item, {}, "2026-11-04T00:01:10Z")
         sql(ingest.build_sql([full], job, "2026-11-04T00:01:10Z", set()))
         later_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings;"))
@@ -256,6 +281,45 @@ def main():
         sql(ingest.build_sql([next_full], job, "2026-11-04T00:03:00Z", set()))
         next_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='investor:" + new_id + "';"))
         assert next_raw["latestJllPartialObservation"] == new["raw_data"]
+
+        # A prior failed top-level observation plus a later provider field
+        # named detailError must not erase a valid partial observation.
+        error_id = "006" + "e" * 15
+        error_url = source_url + "-error-history"
+        safe_detail = {"id":error_id, "scrape":{"rawHtmlLength":0,"markdownLength":0,"linkCount":0}}
+        error_item = dict(item, id=error_id, url=error_url, canonicalUrl=error_url,
+                          jllInvestorDetail=safe_detail)
+        initial = ingest.to_row(error_item, {}, "2026-11-04T00:04:00Z")
+        sql(ingest.build_sql([initial], job, "2026-11-04T00:04:00Z", set()))
+        sql("UPDATE credeals.cre_listings SET raw_data="
+            "'{\"sourceKey\":\"jll-investor\",\"detailError\":\"prior failure\"}'::jsonb "
+            "WHERE external_id='investor:" + error_id + "';")
+        partial = ingest.to_row(error_item, {}, "2026-11-04T00:05:00Z")
+        sql(ingest.build_sql([partial], job, "2026-11-04T00:05:00Z", set(),
+                             jll_partial_ids=(partial["external_id"],)))
+        nested_detail = dict(safe_detail, customAttributes={"detailError":"provider field"})
+        full_nested = ingest.to_row(dict(error_item, jllInvestorDetail=nested_detail), {}, "2026-11-04T00:06:00Z")
+        sql(ingest.build_sql([full_nested], job, "2026-11-04T00:06:00Z", set()))
+        after_nested = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='investor:" + error_id + "';"))
+        assert after_nested.get("latestJllPartialObservation") == partial["raw_data"]
+        assert after_nested["jllInvestorDetail"]["customAttributes"]["detailError"] == "provider field"
+        before_clock = sql("SELECT scraped_at::text FROM credeals.cre_listings WHERE external_id='investor:" + error_id + "';")
+        actual_failure = ingest.to_row(dict(error_item, detailError="actual failed detail"), {}, "2026-11-04T00:07:00Z")
+        sql(ingest.build_sql([actual_failure], job, "2026-11-04T00:07:00Z", set()))
+        failed_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='investor:" + error_id + "';"))
+        assert failed_raw["latestJllPartialObservation"] == partial["raw_data"]
+        assert sql("SELECT scraped_at::text FROM credeals.cre_listings WHERE external_id='investor:" + error_id + "';") == before_clock
+        # Unrelated sources do not gain JLL partial retention semantics.
+        other = ingest.to_row({"sourceKey":"svn", "transactionMode":"sale", "id":"unrelated",
+                               "url":"https://example.test/unrelated",
+                               "latestJllPartialObservation":{"sourceKey":"jll-investor"}}, {}, "2026-11-04T00:08:00Z")
+        other_job = [{"slug":"svn","discovered":1,"saved":1,"errors":0,"notes":"synthetic"}]
+        sql(ingest.build_sql([other], other_job, "2026-11-04T00:08:00Z", set()))
+        ordinary = ingest.to_row({"sourceKey":"svn", "transactionMode":"sale", "id":"unrelated",
+                                  "url":"https://example.test/unrelated", "name":"ordinary"}, {}, "2026-11-04T00:09:00Z")
+        sql(ingest.build_sql([ordinary], other_job, "2026-11-04T00:09:00Z", set()))
+        unrelated_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='unrelated';"))
+        assert "latestJllPartialObservation" not in unrelated_raw
         print("JLL partial SQL building blocks passed")
     finally:
         subprocess.run(["docker", "stop", "--time", "2", name], capture_output=True, check=False)

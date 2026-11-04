@@ -4143,6 +4143,38 @@ WHERE p.image_id IS NULL;
         "s.external_id IN (" + ", ".join(sql_lit(value) for value in sorted(jll_partial_ids)) + ")"
         if jll_partial_ids else "FALSE"
     )
+    # The source detail proof is exact and deliberately checks only a
+    # top-level failure marker. A provider's nested field named detailError
+    # is not evidence that the collector failed.
+    def jll_clean_detail_sql(raw, external, brokerage):
+        return f"""(
+          {raw}->>'sourceKey' = 'jll-investor'
+          AND NOT ({raw} ? 'detailError')
+          AND {raw}->'preserveChildCollections' = 'true'::jsonb
+          AND {raw}->'detailObservedWithChildPreservation' = 'true'::jsonb
+          AND {raw}#>>'{{freshnessProvenance,method}}' = 'jll_investor_next_data_detail'
+          AND {raw}#>>'{{freshnessProvenance,cacheDisposition}}' = 'live'
+          AND {raw}#>>'{{freshnessProvenance,identityMethod}}' = 'provider_listing_id'
+          AND {raw}#>>'{{freshnessProvenance,detailScope}}' = 'detail_page'
+          AND {raw}#>'{{jllInvestorDetail,scrape,rawHtmlLength}}' = '0'::jsonb
+          AND {raw}#>'{{jllInvestorDetail,scrape,markdownLength}}' = '0'::jsonb
+          AND {raw}#>'{{jllInvestorDetail,scrape,linkCount}}' = '0'::jsonb
+          AND {external} = 'investor:' || ({raw}#>>'{{jllInvestorDetail,id}}')
+          AND EXISTS (SELECT 1 FROM credeals.cre_brokerages jb WHERE jb.id={brokerage} AND jb.slug='jll')
+        )"""
+    jll_clean_source = jll_clean_detail_sql("s.raw_data", "s.external_id", "s.brokerage_id")
+    jll_clean_target = jll_clean_detail_sql("EXCLUDED.raw_data", "EXCLUDED.external_id", "EXCLUDED.brokerage_id")
+    jll_prior_partial_source_sql = f"""(
+      {jll_clean_source} AND EXISTS (
+        SELECT 1 FROM credeals.cre_listings jp
+        WHERE jp.brokerage_id=s.brokerage_id AND jp.external_id=s.external_id
+          AND jp.raw_data->'latestJllPartialObservation'->>'sourceKey'='jll-investor'
+      )
+    )"""
+    jll_prior_partial_target_sql = f"""(
+      {jll_clean_target}
+      AND t.raw_data->'latestJllPartialObservation'->>'sourceKey'='jll-investor'
+    )"""
     newmark_enrichment_ids = sorted(value for slug, value in inventory_preserve_enrichment_ids if slug == "newmark")
     newmark_enrichment_sql = (
         "EXCLUDED.external_id IN (" + ", ".join(sql_lit(value) for value in newmark_enrichment_ids) + ")"
@@ -5079,6 +5111,7 @@ WITH ins AS (
            CASE
              WHEN {jll_partial_source_sql} AND EXISTS
                     (SELECT 1 FROM credeals.cre_brokerages jb WHERE jb.id=s.brokerage_id AND jb.slug='jll') THEN scraped_at
+             WHEN {jll_prior_partial_source_sql} THEN scraped_at
              WHEN jsonb_path_exists(raw_data, '$.**.detailError')
                OR (
                  jsonb_path_exists(
@@ -5097,6 +5130,7 @@ WITH ins AS (
              WHEN {jll_partial_source_sql} AND EXISTS
                     (SELECT 1 FROM credeals.cre_brokerages jb WHERE jb.id=s.brokerage_id AND jb.slug='jll')
                THEN raw_data || jsonb_build_object('latestJllPartialObservation', raw_data)
+             WHEN {jll_prior_partial_source_sql} THEN raw_data
              -- A first-seen Newmark detail is not an inventory observation.
              -- Preserve its sparse source facts without manufacturing a feed
              -- clock or nesting them under latestInventoryObservation. Existing
@@ -5318,6 +5352,7 @@ WITH ins AS (
                                    (SELECT 1 FROM credeals.cre_brokerages jb
                                     WHERE jb.id=EXCLUDED.brokerage_id AND jb.slug='jll')
                                 THEN EXCLUDED.scraped_at
+                              WHEN {jll_prior_partial_target_sql} THEN EXCLUDED.scraped_at
                               WHEN EXCLUDED.raw_data#>>'{avisonRetainedPrior,state}' = 'snapshot_limit'
                                 AND EXISTS (SELECT 1 FROM credeals.cre_brokerages avb WHERE avb.id=EXCLUDED.brokerage_id AND avb.slug='avison-young')
                                 THEN t.scraped_at
@@ -5385,6 +5420,9 @@ WITH ins AS (
                                 THEN (CASE WHEN jsonb_typeof(t.raw_data) = 'object'
                                            THEN t.raw_data ELSE '{}'::jsonb END)
                                      || jsonb_build_object('latestJllPartialObservation', EXCLUDED.raw_data->'latestJllPartialObservation')
+                              WHEN {jll_prior_partial_target_sql}
+                                THEN EXCLUDED.raw_data || jsonb_build_object(
+                                  'latestJllPartialObservation', t.raw_data->'latestJllPartialObservation')
                               WHEN jsonb_path_exists(EXCLUDED.raw_data, '$.**.detailError')
                                 OR (
                                   jsonb_path_exists(
@@ -5421,6 +5459,12 @@ WITH ins AS (
                                        ELSE COALESCE(t.raw_data, '{}'::jsonb)
                                      END
                                    )
+                                   || CASE WHEN EXCLUDED.raw_data->>'sourceKey' = 'jll-investor'
+                                     AND t.raw_data->'latestJllPartialObservation'->>'sourceKey' = 'jll-investor'
+                                     AND EXISTS (SELECT 1 FROM credeals.cre_brokerages jb
+                                                 WHERE jb.id=EXCLUDED.brokerage_id AND jb.slug='jll')
+                                     THEN jsonb_build_object('latestJllPartialObservation', t.raw_data->'latestJllPartialObservation')
+                                     ELSE '{}'::jsonb END
                                    || jsonb_build_object(
                                         'sourceKey', COALESCE(
                                           EXCLUDED.raw_data->'sourceKey',
@@ -5472,12 +5516,6 @@ WITH ins AS (
                                     THEN jsonb_build_object('newmarkEnrichmentRetained', true)
                                     ELSE '{}'::jsonb END
                                 )
-                              WHEN EXCLUDED.raw_data->>'sourceKey' = 'jll-investor'
-                                AND t.raw_data->'latestJllPartialObservation'->>'sourceKey' = 'jll-investor'
-                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages jb
-                                            WHERE jb.id=EXCLUDED.brokerage_id AND jb.slug='jll')
-                                THEN EXCLUDED.raw_data || jsonb_build_object(
-                                  'latestJllPartialObservation', t.raw_data->'latestJllPartialObservation')
                               ELSE EXCLUDED.raw_data
                             END,
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
@@ -5662,6 +5700,8 @@ END $$;
         .replace("{detail_target_sql}", detail_target_sql)
         .replace("{jll_partial_target_sql}", jll_partial_target_sql)
         .replace("{jll_partial_source_sql}", jll_partial_source_sql)
+        .replace("{jll_prior_partial_source_sql}", jll_prior_partial_source_sql)
+        .replace("{jll_prior_partial_target_sql}", jll_prior_partial_target_sql)
         .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)
