@@ -511,6 +511,57 @@ export async function generateCompletions({
   let modelId =
     typeof currentModel === "string" ? currentModel : currentModel.modelId;
 
+  // In bounded mode there is no internal repair. Record a failed output's
+  // complete usage only when its model has a known local price.
+  const recordFailedObjectUsage = (error: unknown, attemptModel: string) => {
+    if (!boundedStructuredOutput || !NoObjectGeneratedError.isInstance(error)) return;
+    const input = error.usage?.inputTokens;
+    const output = error.usage?.outputTokens;
+    if (
+      typeof input !== "number" ||
+      !Number.isFinite(input) ||
+      input < 0 ||
+      typeof output !== "number" ||
+      !Number.isFinite(output) ||
+      output < 0
+    ) {
+      logger.warn("Structured generation failed without complete token usage", {
+        model: attemptModel,
+        knownInputTokens:
+          typeof input === "number" && Number.isFinite(input) && input >= 0
+            ? input
+            : undefined,
+        knownOutputTokens:
+          typeof output === "number" && Number.isFinite(output) && output >= 0
+            ? output
+            : undefined,
+      });
+      return;
+    }
+    if (
+      lookupModelCost(attemptModel) === undefined &&
+      !attemptModel.includes("gemini-2.5-pro")
+    ) {
+      logger.warn("Structured generation failed with unknown model price", {
+        model: attemptModel,
+        knownInputTokens: input,
+        knownOutputTokens: output,
+      });
+      return;
+    }
+    costTrackingOptions.costTracking.addCall({
+      type: "other",
+      metadata: {
+        ...costTrackingOptions.metadata,
+        gcDetails: "generateObject failed",
+        gcCostBasis: "local_model_rate_estimate",
+      },
+      tokens: { input, output },
+      model: attemptModel,
+      cost: calculateCost(attemptModel, input, output),
+    });
+  };
+
   if (markdown === undefined) {
     throw new Error("document.markdown is undefined -- this is unexpected");
   }
@@ -885,6 +936,7 @@ export async function generateCompletions({
         ),
       });
     } catch (error) {
+      recordFailedObjectUsage(error, modelId);
       lastError = error as Error;
       if (
         error.message?.includes("Quota exceeded") ||
