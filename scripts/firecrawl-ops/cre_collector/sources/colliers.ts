@@ -543,7 +543,7 @@ export function colliersStrandedStructured(detail: any, details: any): Record<st
 
 export function colliersInventoryOnlyCard(
   card: ColliersCard,
-  reason: "card_not_linked" | "detail_request_failed"
+  reason: "card_not_linked" | "detail_request_failed" | "detail_not_attempted"
 ): any {
   return prune({
     ...card,
@@ -562,7 +562,7 @@ export function colliersInventoryOnlyCard(
     detailUnavailable: {
       reason,
       publicCardObserved: true,
-      publicPageObserved: Boolean(card.detailPv),
+      publicPageObserved: reason !== "detail_not_attempted" && Boolean(card.detailPv),
     },
     colliersSalesTrackerDetail: {
       skipped: reason,
@@ -695,7 +695,8 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
   }
 }
 
-export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+export async function srcColliers(tx: Tx, max: number, monitor: boolean,
+  onPage?: (page: number, start: number, cards: any[]) => void): Promise<SourceResult> {
   if (tx === "lease") {
     return {
       company: "Colliers",
@@ -782,6 +783,7 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean): Promis
     console.error(
       `  colliers/sale: page ${page} start ${start}, ${cards.length}/${providerCardCount} parsed cards (${selected.length}/${total ?? "?"})`
     );
+    onPage?.(page, start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")));
     const numProjects = colliersAssertPageCount(
       listData.numProjects,
       providerCardCount,

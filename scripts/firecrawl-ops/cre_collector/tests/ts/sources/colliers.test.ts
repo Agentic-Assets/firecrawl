@@ -574,6 +574,44 @@ test("Colliers SalesTracker retries only the failed page pair after settling the
   );
 });
 
+test("Colliers keeps prior provisional cards when a later map page fails", async (t) => {
+  const first = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const captured: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const start = Number(url.searchParams.get("Start"));
+    const isList = url.pathname.endsWith("GetListingsHtml");
+    if (start === 1) return jsonResponse(isList ? first.list : first.map);
+    return jsonResponse(isList ? first.list : { success: false });
+  });
+  await assert.rejects(srcColliers("sale", 4, false, (page, start, cards) => {
+    captured.push({ page, start, cards });
+  }), /success=false/);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].cards.length, 2);
+  assert.equal(captured[0].cards[0].inventoryOnly.reason, "detail_not_attempted");
+  assert.equal(captured[0].cards[0].provisionalIdentity.historyContinuity, "not_guaranteed");
+  assert.notEqual(captured[0].cards[0].detailUnavailable.publicPageObserved, true);
+});
+
+test("Colliers retains both parsed pages when the later page count mismatches", async (t) => {
+  const first = syntheticSalesTrackerPage(["P1", "P2"], 1);
+  const second = syntheticSalesTrackerPage(["P3", "P4"], 3);
+  second.list.numProjects = 1;
+  const captured: any[] = [];
+  installSalesTrackerFetch(t, async (url) => {
+    if (url.hostname === "sales.colliers.com") return new Response("<html></html>");
+    const page = Number(url.searchParams.get("Start")) === 1 ? first : second;
+    return jsonResponse(url.pathname.endsWith("GetListingsHtml") ? page.list : page.map);
+  });
+  await assert.rejects(srcColliers("sale", 4, false, (page, start, cards) => {
+    captured.push({ page, start, cards });
+  }), /numProjects\/card parity failed at start 3: 1 != 2/);
+  assert.deepEqual(captured.map((entry) => [entry.page, entry.start, entry.cards.length]),
+    [[1, 1, 2], [2, 3, 2]]);
+  assert.deepEqual(captured[1].cards.map((card: any) => card.mapProjectId), ["P3", "P4"]);
+});
+
 test("Colliers SalesTracker does not retry a pair when an observed denial accompanies a transient status", async (t) => {
   const pageOne = syntheticSalesTrackerPage(["P1", "P2"], 1);
   const pageStarts: number[] = [];

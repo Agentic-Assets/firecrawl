@@ -50,6 +50,12 @@ def compute(action: str, arguments: dict, response: Path) -> dict:
             **kwargs,
         )
         result = {**stats, "bytes": before[2]}
+    elif action == "cbre_partial":
+        from cre_cbre_partial_custody import settle
+        attempt = arguments["attempt"]
+        source = arguments.get("source", "cbre")
+        settle(Path(arguments["run_dir"]), attempt, path, source)
+        result = {f"{source}_partial": attempt[f"{source}_partial"]}
     elif action == "admit":
         report = arguments["report"]
         binding = refresh._admit_current_inventory(
