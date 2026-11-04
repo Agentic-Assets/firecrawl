@@ -162,7 +162,21 @@ def test_unknown_arrays_do_not_invent_primary_but_known_daum_behavior_is_unchang
 
 
 @pytest.mark.parametrize(
-    "fault", ["duplicate_pass", "missing_marker", "changed_evidence", "lease_carrier"]
+    "fault",
+    [
+        "duplicate_pass",
+        "missing_marker",
+        "changed_evidence",
+        "lease_carrier",
+        "sale_price",
+        "sale_price_text",
+        "lease_rate",
+        "title",
+        "photo",
+        "contact",
+        "broker_ids",
+        "unsupported_field",
+    ],
 )
 def test_unknown_admission_rejects_unbound_or_duplicate_rows(
     tmp_path, monkeypatch, fault
@@ -197,6 +211,22 @@ def test_unknown_admission_rejects_unbound_or_duplicate_rows(
         unknown["daumUnknownEvidence"] = "{}"
     elif fault == "lease_carrier":
         unknown["transactionMode"] = "lease"
+    elif fault == "sale_price":
+        unknown["salePriceUsd"] = 1234567
+    elif fault == "sale_price_text":
+        unknown["salePriceText"] = "$1234567"
+    elif fault == "lease_rate":
+        unknown["leaseRateText"] = "$99/SF"
+    elif fault == "unsupported_field":
+        unknown["availableSf"] = 99999
+    elif fault == "title":
+        unknown["name"] = "Unsupported changed title"
+    elif fault == "photo":
+        unknown["photos"] = ["https://example.test/unobserved.jpg"]
+    elif fault == "contact":
+        unknown["contactsDetailed"] = [{"name": "Unobserved contact"}]
+    elif fault == "broker_ids":
+        unknown["brokerIds"] = [0]
     else:
         duplicate = copy.deepcopy(unknown)
         duplicate["transactionMode"] = "lease"

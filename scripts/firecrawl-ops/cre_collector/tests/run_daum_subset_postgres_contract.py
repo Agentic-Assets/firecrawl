@@ -282,7 +282,8 @@ try:
             sql("CREATE DATABASE " + db + ";")
             sql(schema, db)
             sql(generated([row(index) for index in range(102)]), db)
-            sql("UPDATE credeals.cre_listings SET transaction_type='lease' "
+            sql("UPDATE credeals.cre_listings SET transaction_type='lease', "
+                "raw_data=raw_data || '{\"priorEvidence\":\"keep-me\"}'::jsonb "
                 "WHERE external_id='property/Synthetic-101';", db)
             if case == "unknown_new":
                 sql("DELETE FROM credeals.cre_source_index WHERE external_id='property/Synthetic-101'; "
@@ -293,7 +294,11 @@ try:
             if case == "unknown_conflict":
                 sql("UPDATE credeals.cre_listings SET raw_data=jsonb_set(raw_data,'{daumPostId}',"
                     "'\"50101\"') WHERE external_id='property/Synthetic-0';", db)
-            unknown = row(101, fresh=True)
+            prior_raw = None if case == "unknown_new" else json.loads(sql(
+                "SELECT raw_data::text FROM credeals.cre_listings "
+                "WHERE external_id='property/Synthetic-101';", db
+            ).stdout)
+            unknown = row(101, fresh=True, name="Observed current title")
             unknown["transaction_type"] = None
             for child in unknown["images"] + unknown["contacts"]:
                 child.pop("isPrimary", None)
@@ -323,6 +328,14 @@ try:
                             "FROM credeals.cre_listings WHERE external_id='property/Synthetic-101';", db).stdout.strip()
                 assert state == ("lease|true" if case == "unknown_existing" else "<null>|false"), state
                 if case == "unknown_existing":
+                    raw_after = json.loads(sql(
+                        "SELECT raw_data::text FROM credeals.cre_listings "
+                        "WHERE external_id='property/Synthetic-101';", db
+                    ).stdout)
+                    assert raw_after.pop("latestDaumUnknownTenureObservation") == unknown["raw_data"]
+                    assert raw_after == prior_raw
+                    assert sql("SELECT title FROM credeals.cre_listings "
+                               "WHERE external_id='property/Synthetic-101';", db).stdout.strip() == "Observed current title"
                     for table in child_tables:
                         assert all(item in children(table) for item in before_children[table]), table
             checks.append({"case": case, "passed": True})

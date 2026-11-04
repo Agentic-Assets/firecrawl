@@ -572,6 +572,40 @@ export function mapDaumListing(
     throw new Error(`DAUM ${inventory.url} does not belong to requested ${tx} inventory`);
   }
   const observed = detailObservation("daum_direct_detail_html", "live", detailObservedAt);
+  if (resolvedTenure === "unknown") {
+    // Use only direct fields from the bound observations. In particular, do
+    // not infer a sale/lease price, numeric size, or primary child by position.
+    const contacts = detail.contacts.length ? detail.contacts : inventory.brokerNames.map(name => ({
+      name, email: null, phone: null, office: null, profileUrl: null, avatarUrl: null, license: null,
+    }));
+    return prune({
+      id: daumListingId(inventory.url), daumPostId: String(detail.postId),
+      name: detail.title, street: detail.title,
+      assetType: detail.facts["Property Type"] ?? inventory.assetType,
+      propertySubtype: detail.facts["Primary Use"],
+      description: detail.description, highlights: detail.highlights,
+      city: detail.city ?? inventory.city, state: detail.state ?? inventory.state,
+      postalCode: detail.postalCode ?? inventory.postalCode,
+      latitude: inventory.latitude, longitude: inventory.longitude,
+      sizeText: detail.sizeText ?? inventory.sizeText, zoning: detail.facts.Zoning,
+      contactsDetailed: contacts, brochures: detail.brochures,
+      photos: [...new Set([...detail.photos, inventory.imageUrl].filter(Boolean))],
+      url: inventory.url, canonicalUrl: inventory.url,
+      inventoryObservedAt, detailObservedAt,
+      freshnessProvenance: {
+        detailScope: "detail_page", generationId: observed.generationId,
+        method: observed.method, cacheDisposition: observed.cacheDisposition,
+        identityMethod: "wordpress_shortlink_post_id",
+      },
+      daumTenureEvidence: {
+        inventory: inventory.tenure, inventoryText: inventory.tenureText,
+        detail: detail.tenure, detailText: detail.tenureText, resolved: resolvedTenure,
+      },
+      daumObservedCanonicalUrl: detail.observedCanonicalUrl,
+      daumUnknownTenure: true, daumUnknownEvidence: JSON.stringify({ inventory, detail }),
+      preserveChildCollections: true, detailObservedWithChildPreservation: true,
+    });
+  }
   const contacts = detail.contacts.length
     ? detail.contacts
     : inventory.brokerNames.map((name) => ({
@@ -596,7 +630,6 @@ export function mapDaumListing(
     )
     .filter((value): value is number => value !== null);
   const tenure =
-    resolvedTenure === "unknown" ? undefined :
     resolvedTenure === "sale_or_lease"
       ? "Sale/Lease"
       : resolvedTenure === "sale"
@@ -608,12 +641,6 @@ export function mapDaumListing(
     daumPostId: String(detail.postId),
     name: detail.title ?? inventory.title,
     transactionType: tenure,
-    ...(resolvedTenure === "unknown" ? {
-      daumUnknownTenure: true,
-      daumUnknownEvidence: JSON.stringify({ inventory, detail }),
-      preserveChildCollections: true,
-      detailObservedWithChildPreservation: true,
-    } : {}),
     assetType: detail.facts["Property Type"] ?? inventory.assetType,
     propertySubtype: detail.facts["Primary Use"],
     description: detail.description,
@@ -624,9 +651,9 @@ export function mapDaumListing(
     postalCode: detail.postalCode ?? inventory.postalCode,
     latitude: inventory.latitude,
     longitude: inventory.longitude,
-    salePriceUsd: resolvedTenure !== "unknown" && tx === "sale" ? parseMoney(salePriceText) : null,
-    salePriceText: resolvedTenure !== "unknown" && tx === "sale" ? salePriceText : null,
-    leaseRateText: resolvedTenure !== "unknown" && tx === "lease" ? detail.leaseRateText ?? inventory.leaseRateText : null,
+    salePriceUsd: tx === "sale" ? parseMoney(salePriceText) : null,
+    salePriceText: tx === "sale" ? salePriceText : null,
+    leaseRateText: tx === "lease" ? detail.leaseRateText ?? inventory.leaseRateText : null,
     sizeText: detail.sizeText ?? inventory.sizeText,
     availableSf: positiveNumber(
       detail.facts["Total Space Available"] ?? detail.sizeText ?? inventory.sizeText

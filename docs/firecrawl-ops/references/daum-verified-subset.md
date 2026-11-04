@@ -44,6 +44,10 @@ checks may the collector partition the inventory:
   sale pass is a transport carrier and does not establish a sale. Existing
   known transaction types and prior source evidence are preserved; observed
   children are added without removing prior children or inventing a primary.
+  The verifier reconstructs the fixed writable projection from the retained
+  inventory and detail observations and rejects unexpected or altered fields.
+  Ambiguous prices are not promoted. The existing ingestor may normalize the
+  bound source size text; the full parsed observations remain in the evidence.
 
 The proof retains the existing `held` classification and parsed observations
 for audit, and separately lists emitted unknown IDs in `retainedUnknownTenure`.
