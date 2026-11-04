@@ -244,3 +244,41 @@ def test_oversized_apply_preimage_never_dispatches_write(monkeypatch, tmp_path):
                         preview_path="/synthetic/snapshot.json", preview_sha256="c" * 64)
     assert not (tmp_path / "snapshot.json").exists()
     assert lock.cleared
+
+
+def test_large_selection_preserves_requested_and_result_order(monkeypatch, tmp_path):
+    import json
+    import uuid
+
+    import cre_exact_redrive as mod
+    ids = [str(uuid.UUID(int=value)) for value in range(1, 2001)]
+    rows = [{"id": item, "source_key": "svn", "brokerage_id": "b", "external_id": item,
+             "url": "https://x", "reason": "changed", "priority": 100, "enqueued_at": "old",
+             "claimed_at": None, "done_at": None, "attempts": 5, "last_error": "old"} for item in ids]
+    snapshot = {"schema": "cre-exact-redrive-snapshot/v1", "source": "svn", "expected_sha": "a" * 40,
+                "database_target_sha256": "b" * 64, "requested_ids": ids, "rows": rows}
+    assert mod.validate_preview_binding(snapshot, ids, "a" * 40, "b" * 64) == rows
+    with pytest.raises(ValueError):
+        mod.validate_preview_binding(snapshot, list(reversed(ids)), "a" * 40, "b" * 64)
+    preview = tmp_path / "preview"
+    preview.mkdir(mode=0o700)
+    digest = mod.write_private_receipt(preview, "snapshot.json", snapshot)
+    class Lock:
+        path = tmp_path
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def clear_recovery_requirement(self): pass
+    monkeypatch.setattr(mod, "canonical_shared_lock_dir", lambda: tmp_path / "lock")
+    monkeypatch.setattr(mod, "SharedLock", lambda *_, **__: Lock())
+    monkeypatch.setattr(mod, "verify_exact_checkout", lambda *_: None)
+    monkeypatch.setattr(mod, "load_db_url", lambda _: ("postgres://synthetic", "unused"))
+    monkeypatch.setattr(mod, "assert_expected_database_target", lambda *_: None)
+    monkeypatch.setattr(mod, "require_clear", lambda _: None)
+    monkeypatch.setattr(mod, "allocate_directory", lambda _: tmp_path)
+    applied = list(reversed(ids[::2]))
+    monkeypatch.setattr(mod, "query", lambda *_: {"applied": applied})
+    mod.run_redrive(ids, "a" * 40, "b" * 64, "synthetic", apply=True,
+                    preview_path=preview / "snapshot.json", preview_sha256=digest)
+    result = json.loads((tmp_path / "result.json").read_text())
+    assert result["applied"] == applied
+    assert result["held"] == ids[1::2]

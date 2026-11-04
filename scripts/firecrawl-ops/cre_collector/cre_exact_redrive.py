@@ -201,7 +201,8 @@ def validate_preview_binding(snapshot, ids, expected_sha, expected_target):
             snapshot.get("database_target_sha256") != expected_target or snapshot.get("requested_ids") != ids):
         raise ValueError("preview binding differs from this run")
     rows = snapshot.get("rows")
-    if not isinstance(rows, list) or any(not isinstance(row, dict) or row.get("id") not in ids for row in rows):
+    selected_ids = set(ids)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or row.get("id") not in selected_ids for row in rows):
         raise ValueError("preview includes an unselected row")
     row_ids = [row["id"] for row in rows]
     if len(row_ids) != len(set(row_ids)):
@@ -210,6 +211,7 @@ def validate_preview_binding(snapshot, ids, expected_sha, expected_target):
 
 def run_redrive(row_ids, expected_sha, expected_target, env_file, *, apply=False, preview_path=None, preview_sha256=None):
     ids = validate_selection("svn", row_ids)
+    selected_ids = set(ids)
     if not re.fullmatch(r"[0-9a-f]{64}", expected_target):
         raise ValueError("expected database target fingerprint required")
     if apply and (not preview_path or not preview_sha256):
@@ -251,13 +253,15 @@ def run_redrive(row_ids, expected_sha, expected_target, env_file, *, apply=False
                 if not isinstance(result, dict) or not isinstance(result.get("applied"), list):
                     raise RuntimeError("write result unavailable; check recovery receipt")
                 applied = result["applied"]
-                if len(set(applied)) != len(applied) or any(item not in ids for item in applied):
+                applied_ids = set(applied)
+                if len(applied_ids) != len(applied) or not applied_ids.issubset(selected_ids):
                     raise RuntimeError("write result invalid; check recovery receipt")
             else:
                 applied = []
+                applied_ids = set()
             write_private_receipt(run_dir, "result.json", {
                 "schema": "cre-exact-redrive-result/v1", "snapshot_sha256": digest,
-                "applied": applied, "held": [item for item in ids if item not in applied],
+                "applied": applied, "held": [item for item in ids if item not in applied_ids],
             })
             settled = True
             return run_dir
