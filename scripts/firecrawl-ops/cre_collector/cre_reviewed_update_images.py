@@ -259,7 +259,10 @@ def prepare_image_plan(git, source, selected, services, docker, native_root, ove
                 and old_values[0].get("Id") == current[service]["Image"]
                 and new_values[0].get("Id") == built[service]["image"], "image inspect identity changed")
         old_images[service], new_images[service] = old_values[0], new_values[0]
-        previous_ref = before["compose"]["services"][service].get("image")
+        service_config = before["compose"]["services"][service]
+        # Compose uses <project>-<service> for a build-only service.
+        # Rollback retains the original files and therefore selects this tag.
+        previous_ref = service_config.get("image") if "image" in service_config else "firecrawl-" + service
         require(isinstance(previous_ref, str) and previous_ref and not previous_ref.startswith("-"),
                 "previous Compose image reference unavailable")
         resolved = _docker_json(executable, native, binary_hash, "image", "inspect", previous_ref)

@@ -265,7 +265,8 @@ def test_native_compose_completion_requires_matching_receipt(monkeypatch, tmp_pa
     assert len(calls) >= 10
 
 
-def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch, tmp_path):
+@pytest.mark.parametrize("build_only", [False, True])
+def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch, tmp_path, build_only):
     import copy
 
     import cre_reviewed_update_images as direct
@@ -280,6 +281,10 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
             "snapshots": [{"service": service}], "compose_sha256": "f" * 64,
             "containers": [{"Image": "old", "Config": {"Labels": {"com.docker.compose.service": service, "com.docker.compose.container-number": "1"}}}],
             "compose": {"name": "firecrawl", "services": {service: {"image": "old", "environment": {"SECRET": "private"}}}}}
+    if build_only:
+        live["compose"]["services"][service].pop("image")
+        live["compose"]["services"][service]["build"] = {"context": "C:/firecrawl/apps/api", "dockerfile": "Dockerfile"}
+    previous_ref = "firecrawl-api" if build_only else "old"
     item = {"tag": "firecrawl-api:qa-synthetic-01", "image": "new",
             "source_sha": selected["sha"], "source_tree": selected["tree"], "context_sha256": "c" * 64}
     current = [copy.deepcopy(live)]
@@ -289,7 +294,7 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
     monkeypatch.setattr(direct, "local_path", Path)
     def docker_json(executable, native, binary_hash, *args):
         if args[0] == "image":
-            return [old_image if args[-1] == "old" else new_image]
+            return [old_image if args[-1] in {"old", previous_ref} else new_image]
         return {"name": "firecrawl", "services": {}}
     monkeypatch.setattr(direct, "_docker_json", docker_json)
     monkeypatch.setattr(direct, "snapshot_container", lambda value: {"config_sha256": "2" * 64})
@@ -299,16 +304,21 @@ def test_prepared_plan_binds_selected_source_and_rechecks_live_state(monkeypatch
     plan, overlay = direct.prepare_image_plan(None, tmp_path, selected, {service}, tmp_path / "docker",
                                               tmp_path, tmp_path / "stable.yaml", tmp_path)
     assert plan["selected"] == selected and plan["override_sha256"] == sha(overlay)
-    assert plan["previous_images"] == {"api": {"ref": "old", "image": "old"}}
+    assert plan["previous_images"] == {"api": {"ref": previous_ref, "image": "old"}}
     assert "private" not in repr(plan)
     direct.recheck_image_plan(plan, selected, tmp_path / "docker", tmp_path)
     def drifted(*args):
-        if args[-1] == "old":
+        if args[-1] == previous_ref:
             return [{"Id": "different"}]
         return docker_json(*args)
     monkeypatch.setattr(direct, "_docker_json", drifted)
     with pytest.raises(HandoffError, match="previous image reference changed"):
         direct.recheck_image_plan(plan, selected, tmp_path / "docker", tmp_path)
+    if build_only:
+        # Refuse a generated tag that no longer identifies the running image.
+        with pytest.raises(HandoffError, match="previous Compose image reference does not identify"):
+            direct.prepare_image_plan(None, tmp_path, selected, {service}, tmp_path / "docker",
+                                      tmp_path, tmp_path / "stable.yaml", tmp_path)
     monkeypatch.setattr(direct, "_docker_json", docker_json)
     wrong = {"sha": "9" * 40, "tree": selected["tree"]}
     with pytest.raises(HandoffError, match="selected source"):
