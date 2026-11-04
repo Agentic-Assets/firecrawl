@@ -115,6 +115,9 @@ if ($Tier -eq 'series') {
 } elseif ($PSBoundParameters.ContainsKey('WorkDeadlineSeconds') -or $AcknowledgeDatabaseWrites) {
     throw 'Series option supplied for incremental tier.'
 }
+if ($Tier -eq 'enrich' -and $TaskName -cne ('Enrichment - ' + $selectedSourceArgument)) {
+    throw 'Enrichment task name must bind its exact source.'
+}
 if ($Tier -eq 'enrich' -and $selectedSourceArgument -ceq 'matthews' -and $Apply -and $DeadlineSeconds -gt 600) {
     throw 'Applied Matthews enrichment requires a deadline of at most 600 seconds.'
 }
