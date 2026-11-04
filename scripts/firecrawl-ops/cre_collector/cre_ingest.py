@@ -7521,6 +7521,7 @@ def main():
                     or listings[0].get("sourceKey") != "newmark"
                     or listings[0].get("id") != newmark_page_claim.get("externalId")
                     or listings[0].get("url") != newmark_page_claim.get("url")
+                    or (not page_rows and listings[0].get("newmarkGuardedGenericWitness") != item.get("sourcePageWitness"))
                     or not args.expected_db_target_sha256 or args.mark_missing or _status_activation_enabled(args.activate_status)):
                 sys.exit("refusing unbound or mixed Newmark page ingest")
         if not args.dry_run and mode not in {"full", "enrich"}:

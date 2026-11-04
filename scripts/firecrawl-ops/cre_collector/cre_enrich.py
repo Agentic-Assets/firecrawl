@@ -613,6 +613,11 @@ def validate_enriched_artifact(claimed_rows, artifact, *, targeted_claims=None):
             raise ValueError("Hanley enrichment native identity differs from its claim")
         if "source_page_witness" in claimed and listing.get("id") != claimed.get("external_id"):
             raise ValueError("Newmark enrichment identity differs from its claim")
+        if "newmarkGuardedGenericWitness" in listing and (
+            listing.get("sourceKey") != "newmark" or listing.get("id") != claimed.get("external_id")
+            or listing["newmarkGuardedGenericWitness"] != claimed.get("source_page_witness")
+        ):
+            raise ValueError("Newmark generic observation does not match its claim witness")
         if "newmarkPageObservation" in listing and (
             listing.get("sourceKey") != "newmark" or listing.get("id") != claimed.get("external_id")
             or not isinstance(listing["newmarkPageObservation"], dict)
@@ -1044,7 +1049,7 @@ def run(args):
                 deferred_ids, last_error="enrichment attempt not established", preserve_claim=True))
     if absent:
         if page_witness:
-            if not settle_newmark_page_claim(db_url, claimed_rows[0], "retry", last_error="claimed but absent from enriched artifact"):
+            if not settle_newmark_page_claim(db_url, claimed_rows[0], "defer", last_error="Newmark detail identity or source facts not established"):
                 print("Newmark claim superseded; no queue change", file=sys.stderr)
                 return 21
         else:

@@ -49,7 +49,7 @@ import { kidderFetchAll, kidderTenure, mapKidderListing } from "../sources/kidde
 import type { ScrapedDoc, SourceKey } from "../types.js";
 import type { NewmarkDetailWitness } from "../sources/pure/newmark-detail-link.js";
 import { createNewmarkPublishedDetailEnricher } from "../sources/newmark-published-enrich.js";
-import { extractNewmarkPage, type NewmarkPageWitness } from "../sources/pure/newmark-page-detail.js";
+import { extractNewmarkPage, matchesNewmarkPageIdentity, type NewmarkPageWitness } from "../sources/pure/newmark-page-detail.js";
 
 export type EnrichItem = {
   sourceKey: string;
@@ -58,6 +58,7 @@ export type EnrichItem = {
   transaction?: "sale" | "lease";
   sourcePublishedDetail?: NewmarkDetailWitness | { status: "unresolved"; reason: string };
   sourcePageWitness?: NewmarkPageWitness;
+  sourcePageClaim?: unknown;
 };
 
 export interface SourceEnricher {
@@ -303,8 +304,14 @@ export function createGenericEnricher(fetchDoc: (url: string) => Promise<Scraped
       try { observation = captureEnrichmentEvidence(item, doc, capturedAt, { pageUrl }); evidenceCaptured = true; }
       catch { observation = failedEnrichmentEvidence(item, "evidence_capture_failed"); }
       try {
+        const guardedNewmark = item.sourceKey === "newmark" && Object.hasOwn(item, "sourcePageClaim");
+        if (guardedNewmark && (!item.sourcePageWitness || doc.metadata?.url !== item.url ||
+            doc.metadata?.sourceURL !== item.url ||
+            !matchesNewmarkPageIdentity(item, item.sourcePageWitness, doc.rawHtml ?? "", doc.metadata?.statusCode)))
+          return { listing: null, observation };
         const row = parseGenericJsonLd(item, doc.rawHtml ?? "");
-        if (genericHasSubstantiveFields(row)) return { listing: row, observation };
+        if (genericHasSubstantiveFields(row)) return { listing: guardedNewmark
+          ? { ...row, newmarkGuardedGenericWitness: item.sourcePageWitness } : row, observation };
         if (item.sourceKey === "newmark" && item.sourcePageWitness && evidenceCaptured &&
             doc.metadata?.url === item.url && doc.metadata?.sourceURL === item.url) {
           const page = extractNewmarkPage(item, item.sourcePageWitness, doc.rawHtml ?? "", doc.metadata?.statusCode);
