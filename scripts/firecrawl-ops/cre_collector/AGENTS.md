@@ -400,6 +400,8 @@ Key behavior:
   separately observed new child records remain eligible for additive insertion.
   Empty generic output remains unadmitted. This does not establish source or
   queue acceptance, inventory freshness, lifecycle authority, or a prior-history archive.
+  A new parent from generic Newmark detail stores its detail without inventing
+  an inventory observation or clock; a later admitted inventory may add both.
 - **Status activation is OPT-IN and default-OFF.** Source-derived statuses are
   suppressed unless `--activate-status` is passed on the CLI or
   `CRE_ACTIVATE_STATUS=1` is set in the environment. New helpers:

@@ -5054,6 +5054,19 @@ WITH ins AS (
              ELSE scraped_at
            END,
            CASE
+             -- A new generic Newmark detail is not an inventory observation.
+             -- Preserve its sparse source facts without manufacturing a feed
+             -- clock or nesting them under latestInventoryObservation. Existing
+             -- parents retain the established conflict/update reconciliation.
+             WHEN {detail_source_insert_sql}
+               AND raw_data ? 'genericEnrich'
+               AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb
+                           WHERE nb.id=s.brokerage_id AND nb.slug='newmark')
+               AND NOT EXISTS (SELECT 1 FROM _prior_vals prior
+                               WHERE prior.brokerage_id=s.brokerage_id
+                                 AND prior.external_id=s.external_id)
+               THEN (raw_data - 'inventoryObservedAt' - 'latestInventoryObservation')
+                    || jsonb_build_object('newmarkEnrichmentRetained', true)
              WHEN jsonb_path_exists(raw_data, '$.**.detailError')
                OR (
                  jsonb_path_exists(

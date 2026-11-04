@@ -370,10 +370,24 @@ console.log(JSON.stringify({sourceKey:'newmark',...parseGenericJsonLd(item,html)
         sql(ingest.build_sql([seed], nm_job, "2026-11-04T00:07:00Z", set()))
         before = child_ids("nm-child-existing")
         assert all(len(ids) == 1 for ids in before.values()), before
+        # Real generic producer + prior inventory-only NIM marker. Retain both
+        # source facts and the exact inventory observation/clock together.
+        prior_raw = {"sourceKey": "newmark", "preserveChildCollections": True,
+                     "inventoryObservedAt": "2026-11-03T01:02:03Z",
+                     "latestInventoryObservation": {"nativeId": "prior-native", "sentinel": "keep"},
+                     "priorTopLevel": {"value": "keep"}}
+        sql("UPDATE credeals.cre_listings SET raw_data=" + ingest.sql_lit(json.dumps(prior_raw)) +
+            "::jsonb WHERE external_id='nm-child-existing';")
         sparse = ingest.to_row(generic, {}, "2026-11-04T00:08:00Z")
         sql(ingest.build_sql([sparse], nm_job, "2026-11-04T00:08:00Z", set(),
             inventory_preserve_enrichment_ids={("newmark", "nm-child-existing")}))
         assert child_ids("nm-child-existing") == before, "sparse generic detail deleted prior children"
+        after_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                   "WHERE external_id='nm-child-existing';"))
+        assert after_raw.get("inventoryObservedAt") == prior_raw["inventoryObservedAt"], after_raw
+        assert after_raw.get("latestInventoryObservation") == prior_raw["latestInventoryObservation"], after_raw
+        assert after_raw.get("priorTopLevel") == prior_raw["priorTopLevel"], after_raw
+        assert after_raw.get("genericEnrich", {}).get("hadJsonLd") is True, after_raw
         enriched = ingest.to_row({**generic, **new_child_fields}, {}, "2026-11-04T00:09:00Z")
         sql(ingest.build_sql([enriched], nm_job, "2026-11-04T00:09:00Z", set(),
             inventory_preserve_enrichment_ids={("newmark", "nm-child-existing")}))
@@ -391,6 +405,38 @@ console.log(JSON.stringify({sourceKey:'newmark',...parseGenericJsonLd(item,html)
         sql(ingest.build_sql([empty_row], nm_job, "2026-11-04T00:11:00Z", set(),
             inventory_preserve_enrichment_ids={("newmark", empty_id)}))
         assert all(not ids for ids in child_ids(empty_id).values()), child_ids(empty_id)
+        empty_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                   "WHERE external_id='nm-child-new-empty';"))
+        assert "inventoryObservedAt" not in empty_raw, empty_raw
+        assert "latestInventoryObservation" not in empty_raw, empty_raw
+        assert empty_raw.get("genericEnrich", {}).get("hadJsonLd") is True, empty_raw
+        assert sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(transaction_type,'<null>') "
+                   "FROM credeals.cre_listings WHERE external_id='nm-child-new-empty';") == "<null>|<null>"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='nm-child-new-empty';") == "0"
+        later = ingest.to_row({"sourceKey": "newmark", "id": empty_id,
+            "url": "https://example.test/nm-child-new-empty", "name": "Inventory",
+            "transactionMode": "lease", "preserveChildCollections": True,
+            "inventoryObservedAt": "2026-11-04T00:12:00Z"}, {}, "2026-11-04T00:12:00Z")
+        sql(ingest.build_sql([later], nm_job, "2026-11-04T00:12:00Z", set()))
+        later_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                   "WHERE external_id='nm-child-new-empty';"))
+        assert later_raw.get("inventoryObservedAt", "").replace("+00:00", "Z") == "2026-11-04T00:12:00Z", later_raw
+        assert later_raw.get("latestInventoryObservation", {}).get("name") == "Inventory", later_raw
+        assert later_raw.get("genericEnrich", {}).get("hadJsonLd") is True, later_raw
+        assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings "
+                   "WHERE external_id='nm-child-new-empty';") == "active|lease"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='nm-child-new-empty';") == "1"
+        new_children_before_inventory = child_ids(new_id)
+        later_with_children = ingest.to_row({"sourceKey": "newmark", "id": new_id,
+            "url": "https://example.test/nm-child-new", "name": "Inventory with children",
+            "transactionMode": "sale", "preserveChildCollections": True,
+            "inventoryObservedAt": "2026-11-04T00:13:00Z"}, {}, "2026-11-04T00:13:00Z")
+        sql(ingest.build_sql([later_with_children], nm_job, "2026-11-04T00:13:00Z", set()))
+        assert child_ids(new_id) == new_children_before_inventory
+        new_later_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                       "WHERE external_id='nm-child-new';"))
+        assert new_later_raw.get("genericEnrich", {}).get("hadJsonLd") is True, new_later_raw
+        assert new_later_raw.get("latestInventoryObservation", {}).get("name") == "Inventory with children"
         print("PASS: real generic Newmark mapper and generated SQL preserve old children and add new children")
         print("PASS: Newmark generic/published detail preserves lifecycle, tenure, index and events; later NIM can reappear or qualify unknown parents")
 
