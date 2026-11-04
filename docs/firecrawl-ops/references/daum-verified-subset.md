@@ -3,8 +3,8 @@ Parent: [AGENTIC-1972](https://linear.app/agenticassets/issue/AGENTIC-1972); imp
 # DAUM verified-subset admission
 
 DAUM's ordinary complete-detail admission remains the default. Its separate
-verified-subset path permits additive refresh of proved records while leaving
-records with explicitly admitted incomplete detail evidence untouched. This is a DAUM-specific
+verified-subset path permits additive refresh of proved records and retains identity-proved
+records with unknown tenure. This is a DAUM-specific
 permission, not a general exception for incomplete sources.
 
 ## Selecting the scope
@@ -38,10 +38,20 @@ valid detail response, owned canonical URL, literal property-path identity,
 positive native post ID, response hash and observation time. Only after those
 checks may the collector partition the inventory:
 
-- **Emitted:** sale, lease or both are positively resolved. Only these records
-  enter ordinary staging.
-- **Held:** inventory and detail tenure are both unknown. The sole allowed
-  V1 reason is `unknown_inventory_and_detail_tenure`.
+- **Known tenure:** sale, lease or both are positively resolved.
+- **Unknown tenure:** when both inventory and detail tenure are unknown but
+  identity and title are proved, emit once with a null transaction type. The
+  sale pass is a transport carrier and does not establish a sale. Existing
+  known transaction types and prior source evidence are preserved; observed
+  children are added without removing prior children or inventing a primary.
+  The verifier reconstructs the fixed writable projection from the retained
+  inventory and detail observations and rejects unexpected or altered fields.
+  Ambiguous prices are not promoted. The existing ingestor may normalize the
+  bound source size text; the full parsed observations remain in the evidence.
+
+The proof retains the existing `held` classification and parsed observations
+for audit, and separately lists emitted unknown IDs in `retainedUnknownTenure`.
+Historical proofs without the list retain their original hold-only behavior.
 
 V2 additionally permits `empty_required_property_title` only when a successful
 detail has exactly one empty cleaned visible `.main-section .title-property`,
@@ -60,7 +70,7 @@ These are producer observations, not independent HTML authentication by the
 Python gates: a consistently false bound observation can conservatively
 withhold a member; it cannot authorize its writes or claim full coverage.
 
-The partition must be exhaustive and disjoint. Native IDs, paths and URL
+The proof membership and emitted staging must reconcile exactly. Native IDs, paths and URL
 associations must remain consistent across emitted and held records and all
 relevant historical records. Changed slugs do not authorize aliases or rekeys;
 missing historical native provenance remains unknown. At least 100 unique
@@ -102,9 +112,10 @@ to the existing cohort and detail receipts. A malformed present audit refuses;
 audit values cannot alter the partition or rescue a missing required fact.
 
 These are integrity-bound parsed observations, not authenticated raw HTML or
-all provider attributes. They are audit evidence only: they do not supply title, tenure,
-status, or other fallbacks; enter listings or SQL; change held reasons, counts,
-admission, or whole-source coverage; or unhold a record. The existing artifact
+all provider attributes. The retained audit observations do not independently
+supply fallback facts or whole-source coverage. A fresh producer may separately
+emit an identity-proved unknown-tenure row, bound by `retainedUnknownTenure`;
+old audit-only artifacts cannot be converted into new emitted rows. The existing artifact
 byte hash and paired-proof equality bind both fields; there is no separate
 retention digest or admission rule.
 
@@ -115,7 +126,7 @@ before removing a temporary clone. A hash or parsed observation cannot restore
 a discarded response, establish a fresh source fact or replace that evidence.
 
 As dated historical context, the retained October 19 qualification recorded
-557/560. The audit field alone does not newly qualify or unhold 29589, 52023,
+557/560. The historical audit field alone does not newly qualify 29589, 52023,
 or 52271, and does not authorize retrying the closed 403 route. These facts do
 not establish current status. Credentials, schedules, and Mac state are
 outside this contract and remain unchanged.
