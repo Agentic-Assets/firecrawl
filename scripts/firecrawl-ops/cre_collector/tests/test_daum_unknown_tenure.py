@@ -168,6 +168,69 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
         == count
     )
 
+    # Exercise the complete private-file summary reader using this actual
+    # worker binding and artifact, with synthetic settlement/readback receipts.
+    import test_daum_subset_reporting as reporting
+    import test_notification_summary as support
+
+    import cre_checkpoint_series as series
+
+    summary_evidence = reporting.evidence.__wrapped__(tmp_path / "summary", monkeypatch)
+    parent, child = (
+        summary_evidence["values"]["parent"],
+        summary_evidence["values"]["child"],
+    )
+    config = series.series_config(
+        sources=[daum.SOURCE],
+        page_cap=400,
+        concurrency=1,
+        attempts_per_source=3,
+        max_resume_age_hours=24,
+        max_host_cpu_percent=90,
+        cpu_sustain_seconds=5,
+        cpu_sample_seconds=1,
+        nice=10,
+        admit_daum_verified_subset=True,
+        daum_subset_policy=policy,
+    )
+    parent["config"] = config
+    child["config"] = series._expected_child_config(daum.SOURCE, config)
+    target = worker_manifest["preflight"]["database_target"]
+    parent["database_target"] = child["preflight"]["database_target"] = target
+    parent["collector_git_sha"] = child["collector_git_sha"] = worker_manifest[
+        "collector_git_sha"
+    ]
+    parent["latest_invocation_admission"]["expected_sha"] = worker_manifest[
+        "collector_git_sha"
+    ]
+    summary_evidence["values"]["settlement"]["collector_git_sha"] = worker_manifest[
+        "collector_git_sha"
+    ]
+    checkpoint = child["sources"][daum.SOURCE]
+    checkpoint["gate"] = copy.deepcopy(source_gate)
+    checkpoint["artifact"].update(
+        sha256=worker_binding["artifact_sha256"],
+        bytes=prepared[1].stat().st_size,
+        staged_unique=count,
+        transaction_breakdown=None,
+    )
+    checkpoint["readback"].update(
+        expected_staged_unique=count, latest_inventory_batch_active=count
+    )
+    summary_evidence["save"]()
+    summary_evidence["files"]["artifact"].write_bytes(prepared[1].read_bytes())
+    summary_evidence["files"]["artifact"].chmod(0o600)
+    actual_summary = support.read(
+        summary_evidence, expected_sha=worker_manifest["collector_git_sha"]
+    )
+    assert (
+        actual_summary["retained_unknown_tenure_count"]
+        == summary["retained_unknown_tenure_count"]
+    )
+    assert actual_summary["whole_source_coverage"] is False
+    assert actual_summary["whole_lease_coverage"] == "unknown"
+    assert actual_summary["transaction_breakdown"] == breakdown
+
     binding = admit(prepared)
     proof = prepared[2]["sources"][0]["currentInventoryProof"]
     unknown_ids = set(proof["retainedUnknownTenure"])
