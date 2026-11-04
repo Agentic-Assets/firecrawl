@@ -23,6 +23,7 @@ def build_parts(rows, binding):
     """Return before/project/verify fragments and an AFTER-COMMIT emit fragment."""
     from cre_ingest import sql_lit
     from cre_transwestern_image_outcome import valid_binding
+    from cre_transwestern_rollback_result import result_sql
 
     if not valid_binding(binding) or not rows:
         raise ValueError("unbound Transwestern image SQL")
@@ -147,12 +148,18 @@ WHERE s.slug='transwestern' AND s.external_id=input.external_id;
     SELECT p.listing_id FROM _tw_image_parents_before p
     EXCEPT SELECT listing_id FROM _retained_child_scope_after WHERE source_key='transwestern'
   ) THEN RAISE EXCEPTION 'Transwestern transition retired a prior parent'; END IF;
-  IF EXISTS (
+END $$;
+SELECT EXISTS (
     SELECT prior.listing_id,prior.url FROM _tw_images_before prior WHERE NOT removable
     EXCEPT ALL
     SELECT i.listing_id,i.url FROM credeals.cre_listing_images i
     JOIN _retained_child_scope_after a ON a.listing_id=i.listing_id WHERE a.source_key='transwestern'
-  ) THEN RAISE EXCEPTION 'Transwestern protected image multiplicity lost'; END IF;
+) AS transwestern_image_refused \gset
+\if :transwestern_image_refused
+ROLLBACK;
+""" + result_sql(binding) + r"""\quit
+\endif
+DO $$ BEGIN
   IF EXISTS (
     (SELECT listing_id,url,is_primary,display_order,alt_text FROM _tw_images_before WHERE NOT staged
      EXCEPT ALL

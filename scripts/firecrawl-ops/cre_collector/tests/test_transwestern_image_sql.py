@@ -50,6 +50,15 @@ def test_parts_have_explicit_transaction_boundaries_and_do_not_mutate_input():
     assert all("COMMIT;" not in value for value in parts.values())
 
 
+def test_multiplicity_refusal_rolls_back_before_bound_receipt_and_exit():
+    parts = build_parts([row()], binding())
+    sql = parts["verify"]
+    assert sql.index("Transwestern transition retired a prior parent") < sql.index("AS transwestern_image_refused")
+    assert sql.index("ROLLBACK;") < sql.index("CRE_TRANSWESTERN_GUARD_RESULT ") < sql.index("\\quit")
+    assert 'protected_image_multiplicity_refused' in sql
+    assert "CRE_TRANSWESTERN_GUARD_RESULT " not in parts["emit"]
+
+
 @pytest.mark.parametrize("mutate", [
     lambda rows, claim: rows.clear(),
     lambda rows, claim: rows[0].update(slug="savills"),

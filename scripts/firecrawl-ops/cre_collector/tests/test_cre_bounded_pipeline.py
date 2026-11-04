@@ -49,6 +49,7 @@ def run_schedule(
     pyramid_admitted=False,
     pyramid_guard_refusal=False,
     pyramid_guard_valid=True,
+    transwestern_guard_refusal=False,
 ):
     run_dir = tmp_path / "2026-10-15T120000Z"
     run_dir.mkdir()
@@ -165,6 +166,9 @@ def run_schedule(
         if pyramid_guard_refusal and "pyramid-brokerage" in unit["sources"]:
             owner["sources"]["pyramid-brokerage"]["state"] = "pyramid_historical_guard_refused"
             raise refresh.PyramidHistoricalGuardRefusal("typed")
+        if transwestern_guard_refusal and "transwestern" in unit["sources"]:
+            owner["sources"]["transwestern"]["state"] = "transwestern_image_guard_refused"
+            raise refresh.TranswesternImageGuardRefusal("Transwestern protected image multiplicity lost")
         if db_failure:
             raise refresh.GlobalStageError("synthetic DB fault")
         until = clock["now"] + 0.6
@@ -186,7 +190,7 @@ def run_schedule(
     monkeypatch.setattr(pipeline, "prepare_candidate", prepare)
     monkeypatch.setattr(pipeline, "preseal_source_gate", lambda *args: True)
     monkeypatch.setattr(pipeline, "run_database_unit", database)
-    if pyramid_guard_refusal:
+    if pyramid_guard_refusal or transwestern_guard_refusal:
         import cre_pyramid_rollback_result as outcome
         monkeypatch.setattr(outcome, "verified_rollback", lambda *a: pyramid_guard_valid)
 
@@ -721,3 +725,19 @@ def test_pyramid_only_typed_hold_is_partial_without_verified_members(tmp_path, m
     assert manifest["pipeline"]["counts"]["verified"] == 0
     assert manifest["pipeline"]["source_results"]["pyramid-brokerage"]["state"] == "failed"
     assert manifest["pipeline"]["units"][0]["state"] == "source_held"
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_transwestern_singleton_hold_continues_peers_only_when_bound(tmp_path, monkeypatch, valid):
+    kwargs = dict(sources=("savills", "transwestern", "hanley"),
+                  transwestern_guard_refusal=True, pyramid_guard_valid=valid)
+    if not valid:
+        with pytest.raises(refresh.GlobalStageError, match="rollback evidence changed"):
+            run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+        return
+    manifest, events, failures = run_schedule(tmp_path, monkeypatch, 2, **kwargs)
+    assert failures == ["transwestern"]
+    assert manifest["pipeline"]["status"] == "partial"
+    assert manifest["pipeline"]["source_results"]["savills"]["state"] == "verified"
+    assert manifest["pipeline"]["source_results"]["hanley"]["state"] == "verified"
+    assert [event[1] for event in events if event[0] == "db_start" and "transwestern" in event[1]] == [("transwestern",)]

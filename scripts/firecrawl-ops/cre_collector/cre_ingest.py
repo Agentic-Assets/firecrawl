@@ -7523,7 +7523,7 @@ def main():
         [
             psql,
             *psql_connection_args(db_url),
-            *(["-X"] if pyramid_guard_binding is not None else []),
+            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None else []),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -7535,7 +7535,7 @@ def main():
         stderr=sys.stderr,
     )
     if not args.keep_artifacts:
-        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None)
+        shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None and transwestern_image_transition_binding is None)
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")
     print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None else "ingest complete", file=sys.stderr)
