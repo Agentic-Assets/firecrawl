@@ -370,10 +370,24 @@ console.log(JSON.stringify({sourceKey:'newmark',...parseGenericJsonLd(item,html)
         sql(ingest.build_sql([seed], nm_job, "2026-11-04T00:07:00Z", set()))
         before = child_ids("nm-child-existing")
         assert all(len(ids) == 1 for ids in before.values()), before
+        # Real generic producer + prior inventory-only NIM marker. Retain both
+        # source facts and the exact inventory observation/clock together.
+        prior_raw = {"sourceKey": "newmark", "preserveChildCollections": True,
+                     "inventoryObservedAt": "2026-11-03T01:02:03Z",
+                     "latestInventoryObservation": {"nativeId": "prior-native", "sentinel": "keep"},
+                     "priorTopLevel": {"value": "keep"}}
+        sql("UPDATE credeals.cre_listings SET raw_data=" + ingest.sql_lit(json.dumps(prior_raw)) +
+            "::jsonb WHERE external_id='nm-child-existing';")
         sparse = ingest.to_row(generic, {}, "2026-11-04T00:08:00Z")
         sql(ingest.build_sql([sparse], nm_job, "2026-11-04T00:08:00Z", set(),
             inventory_preserve_enrichment_ids={("newmark", "nm-child-existing")}))
         assert child_ids("nm-child-existing") == before, "sparse generic detail deleted prior children"
+        after_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                   "WHERE external_id='nm-child-existing';"))
+        assert after_raw.get("inventoryObservedAt") == prior_raw["inventoryObservedAt"], after_raw
+        assert after_raw.get("latestInventoryObservation") == prior_raw["latestInventoryObservation"], after_raw
+        assert after_raw.get("priorTopLevel") == prior_raw["priorTopLevel"], after_raw
+        assert after_raw.get("genericEnrich", {}).get("hadJsonLd") is True, after_raw
         enriched = ingest.to_row({**generic, **new_child_fields}, {}, "2026-11-04T00:09:00Z")
         sql(ingest.build_sql([enriched], nm_job, "2026-11-04T00:09:00Z", set(),
             inventory_preserve_enrichment_ids={("newmark", "nm-child-existing")}))
@@ -391,6 +405,108 @@ console.log(JSON.stringify({sourceKey:'newmark',...parseGenericJsonLd(item,html)
         sql(ingest.build_sql([empty_row], nm_job, "2026-11-04T00:11:00Z", set(),
             inventory_preserve_enrichment_ids={("newmark", empty_id)}))
         assert all(not ids for ids in child_ids(empty_id).values()), child_ids(empty_id)
+        empty_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                   "WHERE external_id='nm-child-new-empty';"))
+        assert "inventoryObservedAt" not in empty_raw, empty_raw
+        assert "latestInventoryObservation" not in empty_raw, empty_raw
+        assert empty_raw.get("genericEnrich", {}).get("hadJsonLd") is True, empty_raw
+        assert sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(transaction_type,'<null>') "
+                   "FROM credeals.cre_listings WHERE external_id='nm-child-new-empty';") == "<null>|<null>"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='nm-child-new-empty';") == "0"
+        later = ingest.to_row({"sourceKey": "newmark", "id": empty_id,
+            "url": "https://example.test/nm-child-new-empty", "name": "Inventory",
+            "transactionMode": "lease", "preserveChildCollections": True,
+            "inventoryObservedAt": "2026-11-04T00:12:00Z"}, {}, "2026-11-04T00:12:00Z")
+        sql(ingest.build_sql([later], nm_job, "2026-11-04T00:12:00Z", set()))
+        later_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                   "WHERE external_id='nm-child-new-empty';"))
+        assert later_raw.get("inventoryObservedAt", "").replace("+00:00", "Z") == "2026-11-04T00:12:00Z", later_raw
+        assert later_raw.get("latestInventoryObservation", {}).get("name") == "Inventory", later_raw
+        assert later_raw.get("genericEnrich", {}).get("hadJsonLd") is True, later_raw
+        assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings "
+                   "WHERE external_id='nm-child-new-empty';") == "active|lease"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='nm-child-new-empty';") == "1"
+        new_children_before_inventory = child_ids(new_id)
+        later_with_children = ingest.to_row({"sourceKey": "newmark", "id": new_id,
+            "url": "https://example.test/nm-child-new", "name": "Inventory with children",
+            "transactionMode": "sale", "preserveChildCollections": True,
+            "inventoryObservedAt": "2026-11-04T00:13:00Z"}, {}, "2026-11-04T00:13:00Z")
+        sql(ingest.build_sql([later_with_children], nm_job, "2026-11-04T00:13:00Z", set()))
+        assert child_ids(new_id) == new_children_before_inventory
+        new_later_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings "
+                                       "WHERE external_id='nm-child-new';"))
+        assert new_later_raw.get("genericEnrich", {}).get("hadJsonLd") is True, new_later_raw
+        assert new_later_raw.get("latestInventoryObservation", {}).get("name") == "Inventory with children"
+        # First-seen detail fields are unqualified context, for both producers.
+        for kind in ("generic", "published"):
+            first_id = "nm-first-" + kind
+            reported = {"inventoryObservedAt": "2030-01-01T00:00:00Z",
+                        "latestInventoryObservation": {"claimed": "source"},
+                        "newmarkUnqualifiedInventoryContext": {"original": "context"}}
+            first = {"sourceKey": "newmark", "id": first_id,
+                     "url": "https://example.test/" + first_id, "name": "First detail",
+                     "preserveChildCollections": True, "markdown": "detail text", **reported,
+                     **new_child_fields}
+            if kind == "generic":
+                first["genericEnrich"] = {"hadJsonLd": True}
+            row = ingest.to_row(first, {}, "2026-11-04T00:14:00Z")
+            sql(ingest.build_sql([row], nm_job, "2026-11-04T00:14:00Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", first_id)}))
+            raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + first_id + "';"))
+            assert "inventoryObservedAt" not in raw and "latestInventoryObservation" not in raw, raw
+            assert raw["newmarkUnqualifiedInventoryContext"] == {"reported": reported}, raw
+            assert all(len(ids) == 1 for ids in child_ids(first_id).values())
+            assert sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(transaction_type,'<null>') FROM credeals.cre_listings WHERE external_id='" + first_id + "';") == "<null>|<null>"
+            assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='" + first_id + "';") == "0"
+            inventory = ingest.to_row({"sourceKey": "newmark", "id": first_id,
+                "url": first["url"], "name": "Later inventory", "transactionMode": "sale",
+                "preserveChildCollections": True}, {}, "2026-11-04T00:15:00Z")
+            old_children = child_ids(first_id)
+            sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:15:00Z", set()))
+            raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + first_id + "';"))
+            assert raw["newmarkUnqualifiedInventoryContext"] == {"reported": reported}, raw
+            assert raw["latestInventoryObservation"]["name"] == "Later inventory", raw
+            assert raw["markdown"] == "detail text", raw
+            assert child_ids(first_id) == old_children
+            assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings WHERE external_id='" + first_id + "';") == "active|sale"
+            assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='" + first_id + "';") == "1"
+        # Real published-detail producer, with injected sanitized page and no network.
+        published_mapper = """import {createNewmarkPublishedDetailEnricher} from './sources/newmark-published-enrich.ts';
+const f=value=>({state:'value',value}), missing={state:'missing'};
+const item={sourceKey:'newmark',externalId:'published-real',url:'https://www.nmrk.com/properties/published-real',
+ sourcePublishedDetail:{status:'observed',schema:'newmark-nim-link-witness/v1',sourceKey:'newmark',
+ sourcePath:'raw_data.rawNewmarkNimRecord',recordId:'native-id',slug:'published-real',
+ url:'https://my.rcm1.com/handler/modern.aspx?pv=opaque',inventoryObservedAt:null,
+ sourceName:f('Example Property'),sourceProperty:{selection:'single',fields:{address:f('10 Main Street'),
+ city:f('Example'),stateAbbreviation:f('FL'),stateDescription:missing,zip:f('12345'),countryCode:missing}}}};
+const data={name:'Example Property',addresses:{street:'10 Main Street',city:'Example',state:'FL',zip:'12345'},
+ photos:[{type:'image',imageUrl:'/image.jpg'}]};
+const e=createNewmarkPublishedDetailEnricher(async()=>({rawHtml:'<script>var data = '+JSON.stringify(data)+'</script>',
+ markdown:'',links:[],metadata:{statusCode:200}}),()=> '2026-11-04T00:16:00Z');
+const out=await e.enrichWithEvidence([item]);
+if(out.listings.length!==1) throw Error('published producer did not emit matched detail');
+console.log(JSON.stringify({sourceKey:'newmark',...out.listings[0]}));"""
+        published = json.loads(run("node", "--import", "tsx", "--input-type=module", "-e",
+                                   published_mapper, cwd=str(HERE.parent)))
+        assert published["preserveChildCollections"] is True and "genericEnrich" not in published
+        published_row = ingest.to_row(published, {}, "2026-11-04T00:16:00Z")
+        sql(ingest.build_sql([published_row], nm_job, "2026-11-04T00:16:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", "published-real")}))
+        published_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='published-real';"))
+        assert "inventoryObservedAt" not in published_raw and "latestInventoryObservation" not in published_raw
+        assert len(child_ids("published-real")["images"]) == 1
+        assert sql("SELECT coalesce(status::text,'<null>') || '|' || coalesce(transaction_type,'<null>') FROM credeals.cre_listings WHERE external_id='published-real';") == "<null>|<null>"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='published-real';") == "0"
+        published_children = child_ids("published-real")
+        inventory = ingest.to_row({"sourceKey": "newmark", "id": "published-real", "url": published["url"],
+            "name": "Published later inventory", "transactionMode": "sale",
+            "preserveChildCollections": True}, {}, "2026-11-04T00:17:00Z")
+        sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:17:00Z", set()))
+        published_raw = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='published-real';"))
+        assert published_raw["latestInventoryObservation"]["name"] == "Published later inventory"
+        assert child_ids("published-real") == published_children
+        assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings WHERE external_id='published-real';") == "active|sale"
+        assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='published-real';") == "1"
         print("PASS: real generic Newmark mapper and generated SQL preserve old children and add new children")
         print("PASS: Newmark generic/published detail preserves lifecycle, tenure, index and events; later NIM can reappear or qualify unknown parents")
 
