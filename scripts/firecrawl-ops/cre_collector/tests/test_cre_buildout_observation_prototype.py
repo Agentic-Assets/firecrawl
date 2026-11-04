@@ -125,3 +125,20 @@ def test_input_read_is_bounded_before_parsing(tmp_path, monkeypatch):
 def test_duplicate_object_key_rejected():
     with pytest.raises(ValueError, match="duplicate JSON object key"):
         prototype.build_plan(b'{"syntheticFixture":true,"syntheticFixture":false}')
+
+
+def test_moved_planner_cli_from_another_directory(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    artifact = tmp_path / "fixture.json"
+    output = tmp_path / "plan.sql"
+    artifact.write_bytes(raw(fixture(1)))
+    planner = Path(__file__).with_name("cre_buildout_observation_prototype.py")
+    result = subprocess.run(
+        [sys.executable, str(planner), "--fixture-artifact", str(artifact), "--out-sql", str(output)],
+        cwd=tmp_path, capture_output=True, text=True, check=True,
+    )
+    assert json.loads(result.stdout)["observations"] == 1
+    assert "cre_observation_fixture.buildout_observations" in output.read_text()
