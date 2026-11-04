@@ -22,7 +22,8 @@ def test_build_current_images_binds_selected_context_and_refuses_unknown(monkeyp
             assert identity == selected and tracking == selected["sha"]
             self.checks += 1
         def command(self, root, *args):
-            assert args[:3] == ("archive", "--format=tar", selected["sha"])
+            assert args[:7] == ("-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                                "archive", "--format=tar", selected["sha"])
             return b"reviewed archive"
     git = FakeGit()
     monkeypatch.setattr(build, "read_file", lambda path: b"docker binary")
@@ -56,6 +57,33 @@ def test_build_current_images_binds_selected_context_and_refuses_unknown(monkeyp
     with pytest.raises(HandoffError, match="build configuration"):
         build.build_current_images(git, tmp_path, selected, {"api"}, "C:/docker.exe",
                                    "C:/firecrawl", compose, tmp_path)
+
+
+def test_archive_overrides_crlf_conversion_and_verifies_real_git_blobs(tmp_path):
+    from cre_code_handoff_git import Git
+    from cre_runtime_maintenance_build import _verify_archive_tree
+
+    def command(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    command("init", "--initial-branch=main")
+    command("config", "user.name", "Fixture")
+    command("config", "user.email", "fixture@example.invalid")
+    (tmp_path / "apps/api").mkdir(parents=True)
+    (tmp_path / ".gitattributes").write_text("* text=auto\n")
+    (tmp_path / "apps/api/input.txt").write_bytes(b"first\nsecond\n")
+    command("add", ".")
+    command("commit", "-m", "fixture")
+    commit = command("rev-parse", "HEAD")
+    tree = command("rev-parse", "HEAD^{tree}")
+    command("config", "core.autocrlf", "true")
+    git = Git("/unused/native-git")
+    default = git.command(tmp_path, "archive", "--format=tar", commit, "apps/api")
+    with pytest.raises(HandoffError, match="archive differs"):
+        _verify_archive_tree(git, tmp_path, {"sha": commit, "tree": tree}, "api", default)
+    exact = git.command(tmp_path, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                        "archive", "--format=tar", commit, "apps/api")
+    _verify_archive_tree(git, tmp_path, {"sha": commit, "tree": tree}, "api", exact)
 
 
 def test_build_current_images_failure_stops_before_inspection(monkeypatch, tmp_path):

@@ -130,7 +130,8 @@ def build_current_images(git, source, selected, services, docker, native_root, c
         require(isinstance(build, dict) and set(build) == {"context", "dockerfile"}
                 and canonical_path(build["context"]).casefold() == expected_context
                 and build["dockerfile"] == "Dockerfile", "unsupported Compose build configuration")
-        archive = git.command(repo, "archive", "--format=tar", selected["sha"], SERVICES[service])
+        archive = git.command(repo, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                              "archive", "--format=tar", selected["sha"], SERVICES[service])
         _verify_archive_tree(git, repo, selected, service, archive)
         context = _context_tar(archive, service)
         tag = "firecrawl-" + service + ":qa-reviewed-" + secrets.token_hex(12)
