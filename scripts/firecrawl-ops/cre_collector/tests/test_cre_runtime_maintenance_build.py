@@ -360,6 +360,3 @@ def test_current_compose_argv_rejects_invalid_project():
     with pytest.raises(HandoffError):
         current_compose_argv("C:/docker.exe", "C:/firecrawl", ["C:/base.yaml"], "C:/next.yaml",
                              {"api"}, project="../other")
-
-
-
