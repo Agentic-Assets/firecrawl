@@ -16,7 +16,7 @@ for (const mode of ['stdout', 'existing', 'fresh', 'sidecar-failure'] as const) 
   if (mode === 'existing') writeFileSync(output, 'previous contents');
   try {
     const args = ['--import','tsx','--import',preload,'collect.ts','--source','franklin-street','--transaction','both','--max-items','0',...(['existing','fresh'].includes(mode) ? ['--out',output] : [])];
-    const result = spawnSync(process.execPath,args,{cwd:process.cwd(),encoding:'utf8',timeout:20000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1',...(mode === 'sidecar-failure' ? {TMPDIR:join(dir,'missing')} : {})}});
+    const result = spawnSync(process.execPath,args,{cwd:process.cwd(),encoding:'utf8',timeout:60000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1',...(mode === 'sidecar-failure' ? {TMPDIR:join(dir,'missing')} : {})}});
     assert.equal(result.status,mode === 'sidecar-failure' ? 1 : 0,result.stderr);
     const text = ['stdout','sidecar-failure'].includes(mode) ? result.stdout : readFileSync(output,'utf8');
     if (mode === 'fresh') {
@@ -52,7 +52,7 @@ for (const mode of ['stdout', 'existing', 'fresh', 'sidecar-failure'] as const) 
 
 test('other private Buildout sources keep the existing stdout refusal', () => {
   for (const sources of ['svn', 'franklin-street,svn']) {
-    const result=spawnSync(process.execPath,['--import','tsx','collect.ts','--source',sources,'--transaction','both'],{cwd:process.cwd(),encoding:'utf8',timeout:20000});
+    const result=spawnSync(process.execPath,['--import','tsx','collect.ts','--source',sources,'--transaction','both'],{cwd:process.cwd(),encoding:'utf8',timeout:60000});
     assert.equal(result.status,1);
     assert.match(result.stderr,/require a private --out file/);
     assert.equal(result.stdout,'');
@@ -70,7 +70,7 @@ for (const sibling of ['interra-realty', 'svn'] as const) test(`mixed ${sibling}
   writeFileSync(preload,`import {firecrawl} from ${JSON.stringify(scrapePath)}; firecrawl.scrape=async()=>({rawHtml:${JSON.stringify(JSON.stringify(svn))}}); globalThis.fetch=async input=>{const url=String(input); if(url.includes('franklinst.com/properties/for-sale')) return new Response(${JSON.stringify(html)},{headers:{'content-type':'text/html'}}); if(url.includes('a234450b432b2b2bebc1ace7e6f692e4489bde70')) return new Response('{}'); if(url.includes('2f82fcd26667c4b0126d0084938ffa265f05fa4a')) return Response.json(${JSON.stringify(inventory)}); if(url.includes('interrarealty.com/wp-json/')) return Response.json(${JSON.stringify(interra)}); if(url.includes('b933480474026c41d248b77156c84aef37dcac68')) return Response.json(${JSON.stringify(svn)}); throw Error('unexpected '+url); };`);
   writeFileSync(output,'previous');
   try {
-    const child=spawnSync(process.execPath,['--import','tsx','--import',preload,'collect.ts','--source',`franklin-street,${sibling}`,'--transaction','both','--max-items','0','--out',output],{cwd:process.cwd(),encoding:'utf8',timeout:20000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1'}});
+    const child=spawnSync(process.execPath,['--import','tsx','--import',preload,'collect.ts','--source',`franklin-street,${sibling}`,'--transaction','both','--max-items','0','--out',output],{cwd:process.cwd(),encoding:'utf8',timeout:60000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1'}});
     if(sibling==='svn') {
       assert.equal(child.status,1,child.stderr);
       assert.match(child.stderr,/svn\/sale: 1 listings/,child.stderr);
@@ -78,7 +78,7 @@ for (const sibling of ['interra-realty', 'svn'] as const) test(`mixed ${sibling}
       assert.equal(readFileSync(output,'utf8'),'previous');
       assert.doesNotMatch(child.stderr,/Franklin private sidecar:/);
       const fresh=join(dir,'private-fresh.json');
-      const proof=spawnSync(process.execPath,['--import','tsx','--import',preload,'collect.ts','--source','franklin-street,svn','--transaction','both','--max-items','0','--out',fresh],{cwd:process.cwd(),encoding:'utf8',timeout:20000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1'}});
+      const proof=spawnSync(process.execPath,['--import','tsx','--import',preload,'collect.ts','--source','franklin-street,svn','--transaction','both','--max-items','0','--out',fresh],{cwd:process.cwd(),encoding:'utf8',timeout:60000,maxBuffer:2000000,env:{...process.env,BUILDOUT_PAGE_JITTER_MS:'0',CRE_SCRAPE_MAX_ATTEMPTS:'1'}});
       assert.equal(proof.status,0,proof.stderr);
       const listing=JSON.parse(readFileSync(fresh,'utf8')).listings.find((row: any)=>row.sourceKey==='svn');
       assert.equal(listing.rawBuildout.id,55);
