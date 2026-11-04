@@ -94,12 +94,13 @@ class ColliersHttpError extends Error {
   }
 }
 
-export async function colliersGetText(url: string, signal?: AbortSignal): Promise<string> {
+export async function colliersGetText(url: string, signal?: AbortSignal, onRetryAfter?: (value: string | null) => void): Promise<string> {
   const timeoutSignal = AbortSignal.timeout(30000);
   const res = await fetch(url, {
     headers: colliersHeaders("text/html,application/json,*/*"),
     signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   });
+  onRetryAfter?.(res.headers.get("retry-after"));
   if (!res.ok) {
     await res.body?.cancel().catch(() => undefined);
     throw new ColliersHttpError(res.status, res.headers.get("retry-after"), url);
@@ -107,12 +108,18 @@ export async function colliersGetText(url: string, signal?: AbortSignal): Promis
   return res.text();
 }
 
-export async function colliersGetJson(url: string, signal?: AbortSignal, onText?: (text: string) => void): Promise<any> {
-  const text = await colliersGetText(url, signal);
+class ColliersPageFailure extends Error {}
+
+export async function colliersGetJson(url: string, signal?: AbortSignal, onText?: (text: string) => void, onRetryAfter?: (value: string | null) => void): Promise<any> {
+  const text = await colliersGetText(url, signal, onRetryAfter);
   onText?.(text);
   const parsed = parseJsonBody(text);
   if (parsed === null) throw new Error(`Colliers GET ${url} returned non-JSON`);
-  if (parsed?.success === false) throw new Error(`Colliers GET ${url} returned success=false`);
+  if (parsed?.success === false) {
+    const error = `Colliers GET ${url} returned success=false`;
+    if (["Failure retrieving listing HTML.", "Failure retrieving map."].includes(parsed?.error)) throw new ColliersPageFailure(error);
+    throw new Error(error);
+  }
   return parsed;
 }
 
@@ -153,9 +160,10 @@ async function colliersFetchPagePair(
     const controller = new AbortController();
     let firstFailure: unknown;
     const responses: { list?: string; map?: string } = {};
+    let retryAfter = false;
     const request = async (url: string, kind: "list" | "map"): Promise<any> => {
       try {
-        return await colliersGetJson(url, controller.signal, text => { responses[kind] = text; });
+        return await colliersGetJson(url, controller.signal, text => { responses[kind] = text; }, value => { if (value !== null) retryAfter = true; });
       } catch (error) {
         if (!controller.signal.aborted) {
           firstFailure = error;
@@ -170,6 +178,11 @@ async function colliersFetchPagePair(
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map((result) => result.reason)
       .filter((error) => !colliersSiblingAbort(error, firstFailure));
+    if (retryAfter) {
+      const failure = failures.find(error => error instanceof ColliersHttpError);
+      if (failure) throw failure;
+      throw new Error("Colliers page response requested Retry-After");
+    }
     if (!failures.length) {
       return [
         (settled[0] as PromiseFulfilledResult<any>).value,
@@ -179,7 +192,9 @@ async function colliersFetchPagePair(
 
     const nonRetryableIndex = failures.findIndex((error) => !colliersPairRetryable(error));
     if (nonRetryableIndex >= 0) {
-      const nonRetryable = failures[nonRetryableIndex];
+      // Any observed denial or other failure wins over a source-reported page failure.
+      const nonRetryable = failures.find(error => !(error instanceof ColliersPageFailure) && !colliersPairRetryable(error)) ??
+        failures.find(error => !(error instanceof ColliersPageFailure)) ?? failures[nonRetryableIndex];
       if (nonRetryable === undefined) {
         throw new Error("Colliers paired page request failed without an error value");
       }
@@ -699,9 +714,13 @@ export async function enrichColliersCard(card: ColliersCard): Promise<any> {
   }
 }
 
+const COLLIERS_RECOVERY_MAX_PAIRS = 20;
+
 export async function srcColliers(tx: Tx, max: number, monitor: boolean,
-  onPage?: (page: number, start: number, cards: any[]) => void,
-  onResponses?: (page: number, start: number, attempt: number, responses: { list?: string; map?: string }) => void): Promise<SourceResult> {
+  onPage?: (page: number, start: number, cards: any[], pageSize?: number) => void,
+  onResponses?: (page: number, start: number, attempt: number, responses: { list?: string; map?: string }, pageSize?: number) => void,
+  onHole?: (page: number, start: number, pageSize: number, reason: "provider_failure" | "budget_exhausted") => void,
+  captureWritable?: () => boolean): Promise<SourceResult> {
   if (tx === "lease") {
     return {
       company: "Colliers",
@@ -746,11 +765,57 @@ export async function srcColliers(tx: Tx, max: number, monitor: boolean,
   let start = 1;
   for (let page = 1; page <= PAGE_CAP && selected.length < want; page++) {
     const pageSize = Math.min(COLLIERS_PAGE_SIZE, want - selected.length);
-    const [listData, mapData] = await colliersFetchPagePair(
-      colliersListUrl(engineKey, start, pageSize),
-      colliersMapUrl(engineKey, start, pageSize),
-      (attempt, responses) => onResponses?.(page, start, attempt, responses),
-    );
+    let listData: any, mapData: any;
+    try {
+      [listData, mapData] = await colliersFetchPagePair(
+        colliersListUrl(engineKey, start, pageSize),
+        colliersMapUrl(engineKey, start, pageSize),
+        (attempt, responses) => onResponses?.(page, start, attempt, responses, pageSize),
+      );
+    } catch (original) {
+      if (!(original instanceof ColliersPageFailure) || !onPage || !onResponses || !onHole || !captureWritable?.() ||
+          !Number.isSafeInteger(total) || total === null || total < start) throw original;
+      const rangeSize = Math.min(pageSize, total - start + 1);
+      const pending: Array<{ start: number; size: number }> = [{ start, size: rangeSize }];
+      let requests = 0;
+      // Evidence only: this attempt remains failed and never enters detail or ingest.
+      try {
+        while (pending.length) {
+          const range = pending.shift()!;
+          if (range.size === 1) { onHole(page, range.start, range.size, "provider_failure"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); continue; }
+          const left = Math.floor(range.size / 2);
+          for (const part of [{ start: range.start, size: left }, { start: range.start + left, size: range.size - left }]) {
+            if (requests >= COLLIERS_RECOVERY_MAX_PAIRS) { onHole(page, part.start, part.size, "budget_exhausted"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); continue; }
+            requests++;
+            await new Promise<void>(resolve => setTimeout(resolve, COLLIERS_PAGE_PAIR_RETRY_DELAY_MS));
+            try {
+              const [list, map] = await colliersFetchPagePair(
+                colliersListUrl(engineKey, part.start, part.size), colliersMapUrl(engineKey, part.start, part.size),
+                (attempt, responses) => { onResponses(page, part.start, attempt, responses, part.size); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); });
+              if (Number(list.total) !== total) throw new Error("Colliers recovery total changed");
+              if (totalAvail !== null && Number(list.totalAvail) !== totalAvail) throw new Error("Colliers recovery totalAvail changed");
+              const html = String(list.html ?? "");
+              const count = cheerio.load(html)("li.item").length;
+              const groups = groupColliersMapLocations(Array.isArray(map?.projectLocations) ? map.projectLocations : []);
+              if (groups.length !== count || colliersAssertPageCount(list.numProjects, count, part.start) !== part.size) throw new Error("Colliers recovery page parity failed");
+              if (groups.some(group => providerProjectIds.has(group.projectId))) throw new Error("Colliers recovery repeated map ProjectId");
+              const cards = parseColliersCards(html, groups, part.start);
+              if (cards.length !== count) throw new Error("Colliers recovery parsed-card parity failed");
+              for (const group of groups) providerProjectIds.add(group.projectId);
+              onPage(page, part.start, cards.map(card => colliersInventoryOnlyCard(card, "detail_not_attempted")), part.size);
+              if (!captureWritable()) throw new Error("Colliers recovery capture failed");
+            } catch (error) {
+              if (!(error instanceof ColliersPageFailure)) throw error;
+              if (part.size === 1) { onHole(page, part.start, part.size, "provider_failure"); if (!captureWritable()) throw new Error("Colliers recovery capture failed"); }
+              else pending.push(part);
+            }
+          }
+        }
+      } catch (error) {
+        throw new Error(`${original.message}; recovery stopped: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+      throw original;
+    }
     const reportedTotal = Number.isFinite(Number(listData.total))
       ? Number(listData.total)
       : null;

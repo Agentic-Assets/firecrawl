@@ -69,3 +69,34 @@ test("failed Colliers keeps its source error and healthy sibling", () => {
     assert.equal(JSON.parse(verify.stdout).colliers_partial.state, "sealed_local");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("real Colliers adapter seals recovered page evidence while remaining failed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "colliers-real-recovery-"));
+  try {
+    const captureDir = join(dir, "colliers-partial"); mkdirSync(captureDir, { mode: 0o700 });
+    const capture = join(captureDir, "attempt-1.jsonl"), out = join(dir, "main.json"), preload = join(dir, "fetch.mjs");
+    writeFileSync(preload, `globalThis.fetch=async (input)=>{
+      const u=new URL(String(input)); if(u.hostname==='sales.colliers.com')return new Response('<html></html>');
+      const start=Number(u.searchParams.get('Start')), requested=Number(u.searchParams.get('PageSize'));
+      const list=u.pathname.endsWith('GetListingsHtml'); const size=start===1?2:requested;
+      if(start!==1 && start<=4 && start+size>4)return Response.json({success:false,error:list?'Failure retrieving listing HTML.':'Failure retrieving map.'});
+      const ids=Array.from({length:size},(_,i)=>'P'+(start+i));
+      return Response.json(list?{success:true,total:6,totalAvail:6,numProjects:size,html:'<ul>'+ids.map(id=>'<li class="item"><a class="headline">Property '+id+'</a></li>').join('')+'</ul>'}:{success:true,projectLocations:ids.map(ProjectId=>({ProjectId,Latitude:30,Longitude:-90}))});
+    };`);
+    const run = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "collect.ts",
+      "--source=colliers", "--transaction=both", "--max-items=6", `--out=${out}`], {
+      cwd: process.cwd(), encoding: "utf8", timeout: 20000,
+      env: { ...process.env, CRE_COLLIERS_PARTIAL_PATH: capture, CRE_COLLIERS_PARTIAL_ATTEMPT: "1",
+        CRE_REFRESH_GENERATION: dir.split("/").at(-1)! },
+    });
+    assert.equal(run.status, 1, run.stderr);
+    const artifact = JSON.parse(readFileSync(out, "utf8"));
+    const failed = artifact.sources.find((source: any) => source.sourceKey === "colliers" && source.error);
+    assert.match(failed.error, /success=false/);
+    assert.equal(failed.partialCapture.outcome, "source_error");
+    const rows = readFileSync(capture, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(rows.filter(row => row.kind === "parsed_page").length, 3);
+    assert.deepEqual(rows.filter(row => row.kind === "recovery_hole").map(row => [row.start, row.pageSize, row.reason]), [[4, 1, "provider_failure"]]);
+    assert.ok(rows.some(row => row.kind === "unqualified_response_pair" && row.start === 4 && row.pageSize === 1));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
