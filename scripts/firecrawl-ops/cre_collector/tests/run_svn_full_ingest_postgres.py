@@ -62,7 +62,115 @@ def main():
         assert value["markdown"] == "new detail"
         exact = sql("SELECT raw_data->'latestInventoryObservation'->>'latitude' FROM credeals.cre_listings;")
         assert exact == "1.0000000000000001"
-        print("PASS: complete generated SVN ingest transaction preserves exact prior inventory and new detail")
+        for preserve_children in (False, True):
+            listing = {"sourceKey": "newmark", "id": "nm-synthetic",
+                       "url": "https://example.test/newmark", "name": "Synthetic",
+                       "transactionType": "sale", "markdown": "newmark detail",
+                       "description": "retained prior detail",
+                       "inventoryObservedAt": "2030-01-01T00:00:00Z",
+                       "latestInventoryObservation": {"reported": "unqualified"},
+                       "newmarkUnqualifiedInventoryContext": {"source": "original"}}
+            if preserve_children:
+                listing["preserveChildCollections"] = True
+            newmark = ingest.to_row(listing, {}, "2026-11-04T00:00:00Z")
+            nm_job = [{"slug": "newmark", "discovered": 1, "saved": 1, "errors": 0, "notes": "synthetic"}]
+            sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:02:00Z", set()))
+            sql("""UPDATE credeals.cre_listings SET raw_data=
+                  '{"inventoryObservedAt":"old","latestInventoryObservation":{"latitude":1.0000000000000001}}'::jsonb
+                  WHERE external_id='nm-synthetic';""")
+            sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:03:00Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", newmark["external_id"])}))
+            current = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert current["inventoryObservedAt"] == "old"
+            assert current["latestInventoryObservation"] == {"latitude": 1.0000000000000001}
+            assert current["markdown"] == "newmark detail"
+            assert current["newmarkUnqualifiedInventoryContext"] == {"reported": {
+                "inventoryObservedAt": "2030-01-01T00:00:00Z",
+                "latestInventoryObservation": {"reported": "unqualified"},
+                "newmarkUnqualifiedInventoryContext": {"source": "original"}}}
+            assert current.get("detailObservedWithChildPreservation") is not True
+            second_item = {k: v for k, v in listing.items() if k not in {
+                "inventoryObservedAt", "latestInventoryObservation", "newmarkUnqualifiedInventoryContext", "description"}}
+            second_item["markdown"] = "second detail"
+            second = ingest.to_row(second_item, {}, "2026-11-04T00:03:30Z")
+            sql(ingest.build_sql([second], nm_job, "2026-11-04T00:03:30Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", second["external_id"])}))
+            repeated = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert repeated["description"] == "retained prior detail"
+            assert repeated["markdown"] == "second detail"
+            assert repeated["newmarkUnqualifiedInventoryContext"] == current["newmarkUnqualifiedInventoryContext"]
+            third_item = {**second_item, "inventoryObservedAt": "2031-01-01T00:00:00Z"}
+            third = ingest.to_row(third_item, {}, "2026-11-04T00:03:40Z")
+            sql(ingest.build_sql([third], nm_job, "2026-11-04T00:03:40Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", third["external_id"])}))
+            current = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert current["newmarkUnqualifiedInventoryContext"]["olderContextNotRetained"] is True
+            assert "previous" not in current["newmarkUnqualifiedInventoryContext"]
+            assert current["newmarkUnqualifiedInventoryContext"]["reported"] == {"inventoryObservedAt": "2031-01-01T00:00:00Z"}
+            sql(ingest.build_sql([third], nm_job, "2026-11-04T00:03:50Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", third["external_id"])}))
+            replay = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert replay["newmarkUnqualifiedInventoryContext"] == current["newmarkUnqualifiedInventoryContext"]
+            fourth_item = {**second_item, "inventoryObservedAt": "2032-01-01T00:00:00Z"}
+            fourth = ingest.to_row(fourth_item, {}, "2026-11-04T00:03:55Z")
+            sql(ingest.build_sql([fourth], nm_job, "2026-11-04T00:03:55Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", fourth["external_id"])}))
+            latest = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert latest["newmarkUnqualifiedInventoryContext"]["olderContextNotRetained"] is True
+            assert "previous" not in latest["newmarkUnqualifiedInventoryContext"]
+            assert latest["newmarkUnqualifiedInventoryContext"]["reported"] == {"inventoryObservedAt": "2032-01-01T00:00:00Z"}
+            current = latest
+            assert sql("SELECT raw_data->'latestInventoryObservation'->>'latitude' FROM credeals.cre_listings WHERE external_id='nm-synthetic';") == "1.0000000000000001"
+            if preserve_children:
+                inventory = ingest.to_row({"sourceKey": "newmark", "id": "nm-synthetic",
+                    "url": "https://example.test/newmark", "name": "Inventory card",
+                    "transactionType": "sale", "preserveChildCollections": True},
+                    {}, "2026-11-04T00:05:00Z")
+                sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:05:00Z", set()))
+                after_inventory = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+                assert after_inventory["markdown"] == "second detail"
+                assert after_inventory["newmarkUnqualifiedInventoryContext"] == current["newmarkUnqualifiedInventoryContext"]
+                assert after_inventory["inventoryObservedAt"] != "old"
+                sql("""UPDATE credeals.cre_listings SET raw_data=
+                      '{"preserveChildCollections":true,"markdown":"stale partial"}'::jsonb
+                      WHERE external_id='nm-synthetic';""")
+                sql(ingest.build_sql([inventory], nm_job, "2026-11-04T00:05:30Z", set()))
+                unmarked = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+                assert "markdown" not in unmarked
+            sql("UPDATE credeals.cre_listings SET raw_data='{}'::jsonb WHERE external_id='nm-synthetic';")
+            sql(ingest.build_sql([newmark], nm_job, "2026-11-04T00:04:00Z", set(),
+                inventory_preserve_enrichment_ids={("newmark", newmark["external_id"])}))
+            without_prior = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-synthetic';"))
+            assert "inventoryObservedAt" not in without_prior
+            assert "latestInventoryObservation" not in without_prior
+            assert without_prior["markdown"] == "newmark detail"
+        # Realistic NIM wrapper -> generic detail -> NIM inventory, with no
+        # manually manufactured prior wrapper or freshness marker.
+        base = {"sourceKey": "newmark", "id": "nm-sequence",
+                "url": "https://example.test/nm-sequence", "name": "NIM card",
+                "transactionType": "sale", "preserveChildCollections": True}
+        inventory1 = ingest.to_row(base, {}, "2026-11-04T00:10:00Z")
+        sql(ingest.build_sql([inventory1], nm_job, "2026-11-04T00:10:00Z", set()))
+        original = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-sequence';"))
+        assert original["latestInventoryObservation"]["preserveChildCollections"] is True
+        detail = ingest.to_row({"sourceKey": "newmark", "id": "nm-sequence",
+            "url": "https://example.test/nm-sequence", "name": "Detail",
+            "transactionType": "sale", "markdown": "generic detail",
+            "inventoryObservedAt": "2035-01-01T00:00:00Z"}, {}, "2026-11-04T00:11:00Z")
+        sql(ingest.build_sql([detail], nm_job, "2026-11-04T00:11:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", detail["external_id"])}))
+        enriched = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-sequence';"))
+        assert enriched["markdown"] == "generic detail"
+        assert enriched["inventoryObservedAt"] == original["inventoryObservedAt"]
+        assert enriched.get("detailObservedWithChildPreservation") is not True
+        inventory2 = ingest.to_row({**base, "name": "new NIM card"}, {}, "2026-11-04T00:12:00Z")
+        sql(ingest.build_sql([inventory2], nm_job, "2026-11-04T00:12:00Z", set()))
+        final = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='nm-sequence';"))
+        assert final["markdown"] == "generic detail"
+        assert final["newmarkUnqualifiedInventoryContext"] == enriched["newmarkUnqualifiedInventoryContext"]
+        assert final["inventoryObservedAt"] != original["inventoryObservedAt"]
+        assert final.get("detailObservedWithChildPreservation") is not True
+        print("PASS: full generated SVN and Newmark generic/partial transactions preserve prior inventory and new detail")
     finally:
         subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
