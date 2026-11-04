@@ -354,14 +354,19 @@ def test_manifest_validation_avoids_coordinator_decode_stale_guard_path(
 
     def decode(target):
         if target == path:
-            # Deterministically model the observed >3s coordinator samplinggap.
-            with patch.object(memory.time, "monotonic", side_effect=[13.28, 13.29]):
+            # Model an outage beyond the current 20s guard limit.
+            with patch.object(memory.time, "monotonic", side_effect=[31.28, 31.29]):
                 guard.sample_once()
         return actual(target)
 
     monkeypatch.setattr(refresh, "_load_json", decode)
     with pytest.raises(memory.MemoryTelemetryError, match="sample stale"):
         refresh._manifest_checkpoint_artifact_valid(tmp_path, manifest, "svn")
+    # Model the isolated path with a fresh guard and its own prior observation.
+    guard = memory.HostMemoryGuard(
+        tmp_path / "isolated-guard.jsonl", lambda **kw: None, sampler=lambda: 1
+    )
+    guard.previous_observed = 10.0
     with pipeline.artifact_compute_scope(tmp_path):
         verified = refresh._manifest_checkpoint_artifact_valid(
             tmp_path, manifest, "svn"
