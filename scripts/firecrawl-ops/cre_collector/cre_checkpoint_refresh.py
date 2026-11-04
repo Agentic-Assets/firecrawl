@@ -2628,6 +2628,22 @@ def fresh_source_env(
                 return
             overrides[name] = str(max(minimum, min(maximum, int(normalized))))
 
+    for name in ("CRE_CBRE_PARTIAL_PATH", "CRE_CBRE_PARTIAL_ATTEMPT"):
+        if name in env:
+            clear(name)
+    if source == "cbre":
+        from cre_cbre_partial_custody import expected_path
+        partial = expected_path(run_dir, attempt_number)
+        try:
+            directory = partial.parent.lstat()
+            if (stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid()
+                    and stat.S_IMODE(directory.st_mode) == 0o700
+                    and not os.path.lexists(partial)):
+                set_value("CRE_CBRE_PARTIAL_PATH", str(partial))
+                set_value("CRE_CBRE_PARTIAL_ATTEMPT", str(attempt_number))
+        except OSError:
+            pass
+
     current_inventory.require(daum_subset_policy in current_inventory.DAUM_SUBSET_POLICIES)
     current_inventory.require(daum_subset_policy == "tenure-only-v1" or daum_verified_subset)
     if "DAUM_SUBSET_POLICY" in env:
@@ -3792,6 +3808,10 @@ def _cohort_attempt(
             raise RefreshError("automatic evidence attempt path already exists")
     else:
         tmp_artifact.unlink(missing_ok=True)
+    partial_state = None
+    if source == "cbre":
+        from cre_cbre_partial_custody import prepare
+        partial_state = prepare(run_dir, attempt_number)
     attempt = {
         "number": attempt_number,
         "started_at": attempt_started,
@@ -3799,6 +3819,7 @@ def _cohort_attempt(
         "rc": None,
         "log": _relative_to_run(attempt_log, run_dir),
         "temporary_artifact": _relative_to_run(tmp_artifact, run_dir),
+        **({"cbre_partial": partial_state} if partial_state is not None else {}),
         "freshness_overrides": {
             key: ("<run-local-path>" if str(run_dir) in value else value)
             for key, value in fresh_source_env(
@@ -4028,6 +4049,8 @@ def _finalize_cohort_collection(
         canonical = run_dir / "sources" / f"{item.source}.json"
         os.replace(item.tmp_artifact, canonical)
         make_private_artifact(canonical)
+        if item.source == "cbre":
+            settle_cbre_partial(run_dir, item.attempt, canonical)
         identity = canonical.stat()
         checkpoint["candidate"] = {
             "path": _relative_to_run(canonical, run_dir),
@@ -4074,6 +4097,8 @@ def _finalize_cohort_collection(
     canonical = run_dir / "sources" / f"{item.source}.json"
     os.replace(item.tmp_artifact, canonical)
     make_private_artifact(canonical)
+    if item.source == "cbre":
+        settle_cbre_partial(run_dir, item.attempt, canonical)
     stats["sha256"] = sha256_file(canonical)
     stats["bytes"] = canonical.stat().st_size
     checkpoint["artifact"] = {
@@ -4553,10 +4578,35 @@ def refuse_unsafe_source_evidence(run_dir: Path, manifest: dict, source: str, at
     save_manifest(run_dir, manifest)
 
 
+def settle_cbre_partial(run_dir: Path, attempt: dict, main: Path | None) -> None:
+    """Keep large collector JSON parsing outside a pipeline coordinator."""
+    if not isinstance(attempt.get("cbre_partial"), dict):
+        return
+    from cre_cbre_partial_custody import settle
+    if main is not None and main.is_file() and artifact_compute_enabled():
+        try:
+            result = run_artifact_compute(run_dir, "cbre_partial", {
+                "path": str(main), "run_dir": str(run_dir), "attempt": attempt,
+            })
+            state = result.get("cbre_partial")
+            if not isinstance(state, dict) or state.get("path") != attempt["cbre_partial"].get("path"):
+                raise ValueError("partial sidecar identity changed")
+            attempt["cbre_partial"] = state
+        except CpuTelemetryError:
+            raise
+        except (OSError, GlobalStageError, ArtifactValidationError, ValueError, TypeError, KeyError):
+            attempt["cbre_partial"]["state"] = "unverified"
+        return
+    settle(run_dir, attempt, main)
+
+
 def archive_rejected_with_evidence(tmp_artifact: Path, run_dir: Path, manifest: dict,
                                    source: str, attempt: dict) -> tuple[str | None, str | None]:
     try:
-        return _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
+        result = _archive_rejected(tmp_artifact, run_dir, source, attempt["number"])
+        if source == "cbre":
+            settle_cbre_partial(run_dir, attempt, run_dir / result[0] if result[0] else None)
+        return result
     except ArtifactValidationError:
         refuse_unsafe_source_evidence(run_dir, manifest, source, attempt)
         raise
@@ -4901,6 +4951,10 @@ def collect_source(
                 raise RefreshError("automatic evidence attempt path already exists")
         else:
             tmp_artifact.unlink(missing_ok=True)
+        partial_state = None
+        if source == "cbre":
+            from cre_cbre_partial_custody import prepare
+            partial_state = prepare(run_dir, attempt_number)
         env, overrides = fresh_source_env(
             source,
             run_dir,
@@ -4918,6 +4972,7 @@ def collect_source(
             "finished_at": None,
             "rc": None,
             "log": _relative_to_run(attempt_log, run_dir),
+            "temporary_artifact": _relative_to_run(tmp_artifact, run_dir),
             "freshness_overrides": {
                 key: ("<run-local-path>" if str(run_dir) in value else value)
                 for key, value in overrides.items()
@@ -4925,6 +4980,7 @@ def collect_source(
             "rejected_artifact": None,
             "rejected_artifact_sha256": None,
             "error": None,
+            **({"cbre_partial": partial_state} if partial_state is not None else {}),
         }
         if source == "colliers-main":
             # Preserve the durable progression of each short-lived Node
@@ -5062,6 +5118,8 @@ def collect_source(
             return None
         os.replace(tmp_artifact, canonical)
         make_private_artifact(canonical)
+        if source == "cbre":
+            settle_cbre_partial(run_dir, attempt, canonical)
         stats["sha256"] = sha256_file(canonical)
         stats["bytes"] = canonical.stat().st_size
         checkpoint["artifact"] = {
@@ -7981,6 +8039,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source=sources[0] if len(sources) == 1 else None,
                 active_operation="source_collection_preflight",
             )
+            if args.resume:
+                from cre_cbre_partial_custody import reconcile
+                lock._require_authority()
+                reconcile(run_dir, manifest)
+                save_manifest(run_dir, manifest)
+                lock._require_authority()
             if args.resume and automatic_source_evidence is not None and not args.pipeline:
                 from source_evidence import automatic
                 lock._require_authority()

@@ -180,6 +180,7 @@ export type CbreSnapshotOptions = {
   maxPasses?: number;
   maxPages?: number;
   concurrency?: number;
+  onPage?: (page: number, pass: number, documents: any[]) => void;
 };
 
 type CbrePageFetcher = (
@@ -506,6 +507,7 @@ async function fetchCbreSnapshotPass(
   pageSize: number,
   maxPages: number,
   concurrency: number,
+  onPage?: CbreSnapshotOptions["onPage"],
 ): Promise<
   CbreSnapshot & { fingerprint: string; identityFingerprint: string }
 > {
@@ -514,6 +516,7 @@ async function fetchCbreSnapshotPass(
     fetchPage, 1, pass, pageSize, null, true,
   );
   pages.set(1, first);
+  onPage?.(1, pass, first.documents);
   console.error(
     `  cbre: convergence pass ${pass} page 1 ` +
       `(${first.documents.length} docs, reported total ${first.total})`,
@@ -536,6 +539,7 @@ async function fetchCbreSnapshotPass(
       const value = await fetchValidatedCbrePage(
         fetchPage, page, pass, pageSize, null, true,
       );
+      onPage?.(page, pass, value.documents);
       console.error(
         `  cbre: convergence pass ${pass} page ${page} ` +
           `(${value.documents.length} docs, reported total ${value.total})`,
@@ -670,6 +674,7 @@ export async function fetchCbreSnapshot(
         pageSize,
         maxPages,
         concurrency,
+        options.onPage,
       );
     } catch (error) {
       if (!(error instanceof CbreSnapshotChurnError)) throw error;
@@ -727,6 +732,7 @@ export async function srcCbre(
   tx: Tx,
   max: number,
   _monitor: boolean,
+  onPage?: CbreSnapshotOptions["onPage"],
 ): Promise<SourceResult> {
   // Enumeration-only source: the listings-api JSON already returns fully mapped
   // rows with no per-listing detail render, so monitor output == full output.
@@ -756,7 +762,7 @@ export async function srcCbre(
         observe?.(result.response);
         return result.data;
       },
-      { concurrency: CBRE_SNAPSHOT_CONCURRENCY, maxPasses: 4 },
+      { concurrency: CBRE_SNAPSHOT_CONCURRENCY, maxPasses: 4, onPage },
     );
     total = snapshot.total;
     collectedDocs = snapshot.documents;

@@ -1,3 +1,4 @@
+import { CbrePartialSpool } from "./lib/cbre-partial-spool.js";
 import { NativeEvidenceTerminalError } from "./lib/source-evidence/terminal-error.js";
 import { observationNow } from "./lib/observation-clock.js";
 import { reservePrivateCollectorDirectory, writeCollectorArtifact, writeTerminalCollectorArtifact } from "./lib/source-evidence/artifact-output.js";
@@ -107,7 +108,8 @@ const UNSUPPORTED: Record<string, string> = {};
 
 // ---------- main ----------
 
-async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean): Promise<SourceResult> {
+async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean,
+  cbreSpool: CbrePartialSpool | null): Promise<SourceResult> {
   const registeredBuildoutFirm = registeredBuildoutFirmFor(key);
   if (registeredBuildoutFirm) {
     return srcBuildout(
@@ -122,7 +124,13 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
   }
   switch (key) {
     case "cbre":
-      return srcCbre(tx, max, monitor);
+      return srcCbre(tx, max, monitor, cbreSpool
+        ? (page, pass, documents) => {
+            try { cbreSpool.record({ transaction: tx, page, pass,
+              observedAt: observationNow(), documents }); }
+            catch { cbreSpool.markFailure(); }
+          }
+        : undefined);
     case "cbre-dealflow":
       return srcCbreDealflow(tx, max, monitor);
     case "jll":
@@ -190,6 +198,11 @@ async function runSource(key: SourceKey, tx: Tx, max: number, monitor: boolean):
 
 async function main() {
   const startedAt = observationNow();
+  const cbrePath = process.env.CRE_CBRE_PARTIAL_PATH;
+  const cbreAttempt = Number(process.env.CRE_CBRE_PARTIAL_ATTEMPT);
+  const cbreSpool = !MONITOR && OUT_PATH && requestedSources.includes("cbre") && cbrePath
+    ? new CbrePartialSpool(cbrePath, refreshGenerationId() ?? "", cbreAttempt)
+    : null;
   const sources: any[] = [];
   const listings: any[] = [];
   const avisonTerminalFailures: Array<{
@@ -218,7 +231,7 @@ async function main() {
       recordSourceStarted(key, tx);
       try {
         const res = await withPerformanceSource(key, tx, () =>
-          runSource(key, tx, MAX_ITEMS, MONITOR)
+          runSource(key, tx, MAX_ITEMS, MONITOR, cbreSpool)
         );
         const freshness = summarizeListingFreshness(res.listings);
         sources.push({
@@ -307,11 +320,26 @@ async function main() {
     }
   }
 
+  let cbreCaptureAttached = false;
+  let cbrePartialFailed = false;
+  if (cbreSpool) {
+    const receipt = cbreSpool.finish();
+    const failed = sources.find((source) => source.sourceKey === "cbre" && source.error);
+    const source = failed ?? sources.find((entry) => entry.sourceKey === "cbre");
+    if (source) {
+      cbreCaptureAttached = true;
+      cbrePartialFailed = Boolean(failed);
+      source.partialCapture = { ...receipt, sourceKey: "cbre",
+        generationId: refreshGenerationId(), attempt: cbreAttempt,
+        path: `cbre-partial/attempt-${cbreAttempt}.jsonl`,
+        coverage: "unverified", outcome: failed ? "source_error" : "source_returned" };
+    }
+  }
   const succeeded = new Set(
     sources.filter((s) => s.listingsCollected > 0).map((s) => s.sourceKey)
   ).size;
   const evidenceOnly = !MONITOR && listings.length === 0 &&
-    sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0);
+    (cbrePartialFailed || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0));
   if (listings.length === 0) {
     if (
       !MONITOR
@@ -390,7 +418,7 @@ async function main() {
     totalListings: listings.length,
   };
   const json = JSON.stringify(out);
-  const privateEvidence = sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
+  const privateEvidence = cbreCaptureAttached || sources.some((source) => Array.isArray(source.retainedObservations) && source.retainedObservations.length > 0) ||
     listings.some((listing) => listing.srsRawRetention || listing.buildoutRawRetention || listing.kidderRawRetention || listing.newmarkNimRawRetention);
   if (terminalCaptureFailure) {
     const path = writeTerminalCollectorArtifact(OUT_PATH, json);
