@@ -661,7 +661,7 @@ globalThis.fetch = async input => {
         work_seconds=600,
         guarded_run_id=run_id,
     )
-    assert worker.run(args) == 0
+    assert worker.run(args) == {0: 21, 1: 20, 2: 0}[expected]
     assert len(ingest_calls) == bool(expected)
     assert all(
         "DATABASE_URL" not in env and "PGPASSWORD" not in env for env in child_envs
