@@ -88,6 +88,7 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
     )
     monkeypatch.setattr(helpers, "SOURCE", daum.SOURCE)
     prepared = helpers.setup(tmp_path, generated)
+    prepared[0].chmod(0o700)
     prepared[3]["config"]["current_inventory_admission"] = (
         admission.subset_configuration(policy)
     )
@@ -147,6 +148,26 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
     assert aggregate_result["subset_claims"]["attempt_id"] == "e" * 32
     assert Path(aggregate_result["subset_claims"]["path"]).is_file()
 
+    # Feed the exact worker-produced binding into the real summary projection.
+    from cre_notification_summary import _daum_unknown_breakdown, _subset_summary_fields
+
+    worker_binding = source_gate["current_inventory_proof"]
+    count = worker_binding["staged_count"]
+    summary = _subset_summary_fields(worker_manifest, daum.SOURCE, count)
+    breakdown = _daum_unknown_breakdown(worker_manifest, daum.SOURCE, count)
+    assert summary["whole_source_coverage"] is False
+    assert summary["whole_lease_coverage"] == "unknown"
+    assert summary["retained_unknown_tenure_count"] == len(
+        prepared[2]["sources"][0]["currentInventoryProof"]["retainedUnknownTenure"]
+    )
+    assert (
+        breakdown["sale"]
+        + breakdown["lease"]
+        - breakdown["both"]
+        + summary["retained_unknown_tenure_count"]
+        == count
+    )
+
     binding = admit(prepared)
     proof = prepared[2]["sources"][0]["currentInventoryProof"]
     unknown_ids = set(proof["retainedUnknownTenure"])
@@ -202,9 +223,7 @@ def test_actual_producer_admits_unknown_once_without_complete_coverage(
     import cre_checkpoint_refresh as cp
     import cre_ingest as ingest
 
-    claim_file = tmp_path / "claims.json"
-    claim_file.write_text(json.dumps(envelope(prepared)))
-    claim_file.chmod(0o600)
+    claim_file = Path(aggregate_result["subset_claims"]["path"])
     monkeypatch.setattr(
         cp, "git_identity", lambda: (prepared[3]["collector_git_sha"], False)
     )
