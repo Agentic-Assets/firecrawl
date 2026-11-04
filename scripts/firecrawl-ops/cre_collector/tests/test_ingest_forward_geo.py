@@ -289,8 +289,28 @@ def test_coordinate_bounds_are_inclusive(latitude, longitude):
     assert row["raw_data"]["longitude"] == longitude
 
 
+@pytest.mark.parametrize("latitude,longitude,expected", [
+    ("  +40.25  ", "-80.5", (40.25, -80.5)),
+    ("-90", "-180", (-90, -180)),
+    (".5", "+180.", (0.5, 180)),
+    (" +4.025e1 ", "-8E+1", (40.25, -80)),
+])
+def test_plain_decimal_coordinate_strings_are_parsed_and_preserved(latitude, longitude, expected):
+    row = _row(latitude=latitude, longitude=longitude)
+    assert (row["lat"], row["lng"]) == expected
+    assert row["raw_data"]["latitude"] == latitude
+    assert row["raw_data"]["longitude"] == longitude
+
+
+@pytest.mark.parametrize("field,value", [("latitude", "90.01"), ("longitude", "-180.01")])
+def test_out_of_range_coordinate_string_is_preserved_without_staging(field, value):
+    row = _row(**{field: value})
+    assert row["lat" if field == "latitude" else "lng"] is None
+    assert row["raw_data"][field] == value
+
+
 @pytest.mark.parametrize("invalid", [True, False, float("nan"), float("inf"),
-                                     -float("inf"), 10**400, "32.7"])
+                                     -float("inf"), 10**400, "", "1e", "1e9999", "NaN", "1,2", "40 N", "０", "0x10"])
 @pytest.mark.parametrize("field,other,staged", [
     ("latitude", "longitude", "lat"), ("longitude", "latitude", "lng"),
 ])
@@ -302,7 +322,7 @@ def test_invalid_coordinate_is_not_staged_but_record_and_raw_value_remain(field,
     assert row["external_id"] == "geo-1"
 
 
-@pytest.mark.parametrize("latitude,longitude", [(True, -80), ("32.7", -80), (-91, -80)])
+@pytest.mark.parametrize("latitude,longitude", [(True, -80), ("40 N", -80), (-91, -80)])
 def test_invalid_coordinate_preserves_valid_json_in_generated_copy(latitude, longitude):
     row = _row(latitude=latitude, longitude=longitude)
     sql = ci.build_sql([row], [], _SCRAPED_AT, set())

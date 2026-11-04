@@ -712,6 +712,11 @@ def num_or_none(v, lo=0, hi=None):
 
 def coordinate_or_none(v, limit):
     """Accept only finite numeric coordinates within inclusive geographic bounds."""
+    if isinstance(v, str):
+        value = v.strip()
+        if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value):
+            return None
+        v = float(value)
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
     return float(v) if -limit <= v <= limit else None
