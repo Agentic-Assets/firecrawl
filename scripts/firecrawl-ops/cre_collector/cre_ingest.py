@@ -4962,7 +4962,11 @@ WITH ins AS (
         description, highlights, amenities, zoning, markdown,
         updated_date, scraped_at, raw_data, source_lastmod, canonical_key
     )
-    SELECT brokerage_id, external_id, source_url, COALESCE(status, 'active'), transaction_type,
+    SELECT brokerage_id, external_id, source_url,
+           CASE WHEN {svn_enrichment_source_sql}
+                  AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                              WHERE sb.id=s.brokerage_id AND sb.slug='svn')
+                THEN NULL ELSE COALESCE(status, 'active') END, transaction_type,
            property_type, title, address, city, state, zip, lat, lng, market, submarket,
            size_sf, lot_size_sf, available_sf, min_divisible_sf, max_divisible_sf,
            floors, year_built, units, parking_spaces, parking_ratio,
@@ -5014,7 +5018,7 @@ WITH ins AS (
              ELSE raw_data
            END,
            source_lastmod, canonical_key
-    FROM _src
+    FROM _src s
     ON CONFLICT (brokerage_id, external_id) WHERE external_id IS NOT NULL
     DO UPDATE SET
         source_url        = EXCLUDED.source_url,
@@ -5022,8 +5026,13 @@ WITH ins AS (
         -- (a mark-missing soft-delete marker), not a real terminal (sold/leased/
         -- off_market) that flickered back into the feed. A terminal-bearing row that
         -- reappears stays with its terminal label; the board gate excludes it.
-        status            = CASE WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
-                                 THEN 'active' ELSE t.status END,
+        status            = CASE
+                              WHEN {svn_enrichment_sql}
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                THEN t.status
+                              WHEN t.deleted_at IS NOT NULL AND t.status = 'inactive'
+                                THEN 'active' ELSE t.status END,
         -- transaction_type NEVER narrows a known type. A partial/generic re-ingest
         -- (the generic enricher emits no transactionType, and the enrichment queue
         -- has no transaction column so cre_enrich tags every claimed row "sale")
@@ -5284,7 +5293,11 @@ WITH ins AS (
                             END,
         source_lastmod    = COALESCE(EXCLUDED.source_lastmod, t.source_lastmod),
         canonical_key     = COALESCE(EXCLUDED.canonical_key, t.canonical_key),
-        deleted_at        = NULL,
+        deleted_at        = CASE
+                              WHEN {svn_enrichment_sql}
+                                AND EXISTS (SELECT 1 FROM credeals.cre_brokerages sb
+                                            WHERE sb.id=EXCLUDED.brokerage_id AND sb.slug='svn')
+                                THEN t.deleted_at ELSE NULL END,
         updated_at        = now()
     RETURNING t.id, t.brokerage_id, t.external_id
 )
@@ -5453,6 +5466,7 @@ DO $$ BEGIN
 END $$;
 
 """.replace("{svn_enrichment_sql}", svn_enrichment_sql)
+        .replace("{svn_enrichment_source_sql}", svn_enrichment_source_sql)
         .replace("{colliers_transition_row_sql}", colliers_transition_row_sql)
         .replace("{jll_price_withheld_row_sql}", jll_price_withheld_row_sql)
         .replace("{jll_price_withheld_stage_sql}", jll_price_withheld_stage_sql)

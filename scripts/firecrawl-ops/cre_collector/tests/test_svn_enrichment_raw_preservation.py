@@ -73,3 +73,7 @@ def test_multiple_inputs_bind_only_svn_enrichment_ids_and_merged_identity(tmp_pa
     assert "EXCLUDED.external_id IN ('other')" in branch
     assert "'same'" not in branch
     assert "'inventory'" not in branch
+    index = sql.split("-- Canonical full ingest synchronizes", 1)[1].split("-- Children:", 1)[0]
+    assert index.count("s.external_id IN ('other')") == 2
+    assert "s.external_id IN ('same')" not in index
+    assert "s.external_id IN ('inventory')" not in index
