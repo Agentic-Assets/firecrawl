@@ -2,6 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as matched from "../../../sources/matched-capacity.js";
+import { observationNow } from "../../../lib/observation-clock.js";
 import { renderedPairListingSha256 } from "../../../sources/jll-direct-pair-worker.js";
 import type { CapturedDetail, MatchedCohort, MatchedMember } from "../../../sources/matched-capacity.js";
 
@@ -15,7 +16,7 @@ const context = { runtimeSnapshot: { project: "synthetic-owned" }, resourceJourn
 function detail(member: MatchedMember, generation: string, rawLength = 517306): CapturedDetail & { brokers: unknown[] } {
   return { listing: { ...member.baseRow, name: "Synthetic property", salePriceUsd: 1250000,
     transactionType: "Sale", description: "Complete synthetic property narrative", markdown: "Complete property markdown",
-    detailObservedAt: new Date().toISOString(), freshnessProvenance: { generationId: generation, cacheDisposition: "live", detailScope: "detail_page" },
+    detailObservedAt: observationNow(), freshnessProvenance: { generationId: generation, cacheDisposition: "live", detailScope: "detail_page" },
     jllDetail: { propertyId: member.providerId, hidePrice: false, scrape: { rawHtmlLength: rawLength, markdownLength: 2214, linkCount: 17 } },
     photos: ["https://images.example/first.jpg", "https://images.example/second.jpg"],
     documents: [{ url: "https://docs.example/a.pdf" }, { url: "https://docs.example/b.pdf" }],
