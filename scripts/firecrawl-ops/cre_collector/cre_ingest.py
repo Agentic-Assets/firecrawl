@@ -3987,6 +3987,9 @@ def build_sql(
     pyramid_guard_binding=None,
     svn_enrichment_ids=(),
     inventory_preserve_enrichment_ids=(),
+    newmark_page_attempt=None,
+    newmark_page_claim=None,
+    newmark_page_requires_witness=True,
 ):
     from cre_essex_identity import (
         historical_claims_sql,
@@ -4936,7 +4939,7 @@ CREATE TEMP TABLE _pyramid_native_transitions (
   brokerage_id uuid NOT NULL, external_id text NOT NULL,
   PRIMARY KEY (brokerage_id, external_id)
 ) ON COMMIT DROP;
-{daum_subset_guard}{pyramid_subset_guard}{pyramid_guard_sql}
+{daum_subset_guard}{pyramid_subset_guard}{pyramid_guard_sql}{newmark_page_guard_sql}
 -- Pyramid preserves historical literal path identities. Inspect the actual
 -- staged cohort and every historical parent, including soft-deleted rows,
 -- before an upsert can overwrite a contradictory URL or create a duplicate.
@@ -5146,7 +5149,7 @@ WITH ins AS (
         -- the narrow title redaction and omitted all highlights.
         title             = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN EXCLUDED.title
-                                 ELSE COALESCE(EXCLUDED.title, t.title) END,
+                                 {newmark_generic_title_case}ELSE COALESCE(EXCLUDED.title, t.title) END,
         address           = COALESCE(EXCLUDED.address, t.address),
         city              = COALESCE(EXCLUDED.city, t.city),
         state             = COALESCE(EXCLUDED.state, t.state),
@@ -5244,7 +5247,7 @@ WITH ins AS (
         amenities         = COALESCE(EXCLUDED.amenities, t.amenities),
         description       = CASE WHEN {jll_price_withheld_row_sql}
                                  THEN NULL
-                                 ELSE COALESCE(EXCLUDED.description, t.description) END,
+                                 {newmark_generic_description_case}ELSE COALESCE(EXCLUDED.description, t.description) END,
         -- markdown reuses the existing (currently-empty) column; NULLIF guards a
         -- sparse/empty pass from clobbering a fuller prior capture (COALESCE-keep).
         markdown          = CASE
@@ -5589,7 +5592,9 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-""".replace("{newmark_enrichment_sql}", newmark_enrichment_sql)
+""".replace("{newmark_generic_title_case}", "WHEN t.title ~ '[^[:space:]]' THEN t.title " if newmark_page_attempt and not newmark_page_requires_witness else "")
+        .replace("{newmark_generic_description_case}", "WHEN t.description ~ '[^[:space:]]' THEN t.description " if newmark_page_attempt and not newmark_page_requires_witness else "")
+        .replace("{newmark_enrichment_sql}", newmark_enrichment_sql)
         .replace("{newmark_partial_context_sql}", newmark_context_sql("(EXCLUDED.raw_data->'latestInventoryObservation')"))
         .replace("{newmark_generic_context_sql}", newmark_context_sql("EXCLUDED.raw_data"))
         .replace("{inventory_preserve_sql}", inventory_preserve_sql)
@@ -5603,6 +5608,7 @@ END $$;
         .replace("{daum_subset_guard}", daum_subset_guard)
         .replace("{pyramid_subset_guard}", pyramid_subset_guard)
         .replace("{pyramid_guard_sql}", pyramid_guard_sql)
+        .replace("{newmark_page_guard_sql}", __import__("cre_newmark_page_guard").guard_sql(newmark_page_attempt, newmark_page_claim, require_page=newmark_page_requires_witness) if newmark_page_attempt else "")
         .replace("{pyramid_historical_rows}", pyramid_historical_rows)
         .replace('{avison_price_sql["prior_select"]}', avison_price_sql["prior_select"])
         .replace('{avison_price_sql.get("transition_sql", "")}', avison_price_sql.get("transition_sql", ""))
@@ -5923,7 +5929,9 @@ DO $$ BEGIN
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
              ) AS preserve_contact,
              {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
-             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown
+             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown,
+             (s.raw_data ? 'newmarkPageObservation'
+              AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark')) AS newmark_page
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -5931,21 +5939,21 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = CASE WHEN i.daum_unknown THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
-      title = CASE WHEN i.daum_unknown THEN COALESCE(c.title, i.x->>'title')
+      name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.title, i.x->>'title')
                    WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
                    THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
                              WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
                              ELSE c.title || E'\\n\\n' || (i.x->>'title') END
                    ELSE COALESCE(i.x->>'title', c.title) END,
-      license = CASE WHEN i.daum_unknown THEN COALESCE(c.license, i.x->>'license') ELSE COALESCE(i.x->>'license', c.license) END,
-      email = CASE WHEN i.daum_unknown THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
-      phone = CASE WHEN i.daum_unknown THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
-      brokerage_name = CASE WHEN i.daum_unknown THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
-      profile_url = CASE WHEN i.daum_unknown THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
-      avatar_url = CASE WHEN i.daum_unknown THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
-      vcard_url = CASE WHEN i.daum_unknown THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
-      is_primary = CASE WHEN i.daum_unknown THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
+      license = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.license, i.x->>'license') ELSE COALESCE(i.x->>'license', c.license) END,
+      email = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.daum_unknown OR i.newmark_page THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -5954,7 +5962,10 @@ DO $$ BEGIN
         OR
         (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
          AND lower(c.name) = lower(i.x->>'name')
-         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', '')
+         AND (NOT i.newmark_page OR NULLIF(lower(c.email), '') IS NULL
+              OR NULLIF(lower(i.x->>'email'), '') IS NULL
+              OR lower(c.email) = lower(i.x->>'email')))
         OR
         (i.preserve_contact
          AND NULLIF(lower(i.x->>'email'), '') IS NULL
@@ -5985,7 +5996,11 @@ DO $$ BEGIN
             OR
             (NULLIF(lower(x->>'name'), '') IS NOT NULL
              AND lower(c.name) = lower(x->>'name')
-             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', '')
+             AND (NOT (s.raw_data ? 'newmarkPageObservation'
+                       AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark'))
+                  OR NULLIF(lower(c.email), '') IS NULL OR NULLIF(lower(x->>'email'), '') IS NULL
+                  OR lower(c.email) = lower(x->>'email')))
             OR
             (jsonb_path_exists(
                s.raw_data,
@@ -6005,7 +6020,9 @@ DO $$ BEGIN
                '$.**.preserveContactCollections ? (@ == true || @ == "true")'
              ) AS preserve_contact,
              {avison_price_sql.get('transition_predicate', 'false')} AS avison_transition,
-             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown
+             u.id IN (SELECT id FROM _daum_unknown_contacts) AS daum_unknown,
+             (s.raw_data ? 'newmarkPageObservation'
+              AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark')) AS newmark_page
       FROM _up u
       JOIN _src s USING (brokerage_id, external_id)
       CROSS JOIN LATERAL jsonb_array_elements(s.contacts) x
@@ -6013,20 +6030,20 @@ DO $$ BEGIN
         AND jsonb_typeof(s.contacts) = 'array'
     )
     UPDATE credeals.cre_listing_contacts c SET
-      name = CASE WHEN i.daum_unknown THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
-      title = CASE WHEN i.daum_unknown THEN COALESCE(c.title, i.x->>'title')
+      name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.name, i.x->>'name') ELSE COALESCE(i.x->>'name', c.name) END,
+      title = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.title, i.x->>'title')
                    WHEN i.avison_transition AND c.title IS NOT NULL AND i.x->>'title' IS NOT NULL
                    THEN CASE WHEN position(i.x->>'title' in c.title)>0 THEN c.title
                              WHEN position(c.title in i.x->>'title')>0 THEN i.x->>'title'
                              ELSE c.title || E'\\n\\n' || (i.x->>'title') END
                    ELSE COALESCE(i.x->>'title', c.title) END,
-      email = CASE WHEN i.daum_unknown THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
-      phone = CASE WHEN i.daum_unknown THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
-      brokerage_name = CASE WHEN i.daum_unknown THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
-      profile_url = CASE WHEN i.daum_unknown THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
-      avatar_url = CASE WHEN i.daum_unknown THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
-      vcard_url = CASE WHEN i.daum_unknown THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
-      is_primary = CASE WHEN i.daum_unknown THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
+      email = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.email, i.x->>'email') ELSE COALESCE(i.x->>'email', c.email) END,
+      phone = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.phone, i.x->>'phone') ELSE COALESCE(i.x->>'phone', c.phone) END,
+      brokerage_name = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.brokerage_name, i.x->>'company') ELSE COALESCE(i.x->>'company', c.brokerage_name) END,
+      profile_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.profile_url, i.x->>'profileUrl') ELSE COALESCE(i.x->>'profileUrl', c.profile_url) END,
+      avatar_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.avatar_url, i.x->>'avatarUrl') ELSE COALESCE(i.x->>'avatarUrl', c.avatar_url) END,
+      vcard_url = CASE WHEN i.daum_unknown OR i.newmark_page THEN COALESCE(c.vcard_url, i.x->>'vcardUrl') ELSE COALESCE(i.x->>'vcardUrl', c.vcard_url) END,
+      is_primary = CASE WHEN i.daum_unknown OR i.newmark_page THEN c.is_primary ELSE COALESCE((i.x->>'isPrimary')::boolean, c.is_primary) END
     FROM incoming i
     WHERE c.listing_id = i.listing_id
       AND (
@@ -6035,7 +6052,10 @@ DO $$ BEGIN
         OR
         (NULLIF(lower(i.x->>'name'), '') IS NOT NULL
          AND lower(c.name) = lower(i.x->>'name')
-         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', ''))
+         AND COALESCE(c.phone, '') = COALESCE(i.x->>'phone', '')
+         AND (NOT i.newmark_page OR NULLIF(lower(c.email), '') IS NULL
+              OR NULLIF(lower(i.x->>'email'), '') IS NULL
+              OR lower(c.email) = lower(i.x->>'email')))
         OR
         (i.preserve_contact
          AND NULLIF(lower(i.x->>'email'), '') IS NULL
@@ -6066,7 +6086,11 @@ DO $$ BEGIN
             OR
             (NULLIF(lower(x->>'name'), '') IS NOT NULL
              AND lower(c.name) = lower(x->>'name')
-             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', ''))
+             AND COALESCE(c.phone, '') = COALESCE(x->>'phone', '')
+             AND (NOT (s.raw_data ? 'newmarkPageObservation'
+                       AND EXISTS (SELECT 1 FROM credeals.cre_brokerages nb WHERE nb.id=s.brokerage_id AND nb.slug='newmark'))
+                  OR NULLIF(lower(c.email), '') IS NULL OR NULLIF(lower(x->>'email'), '') IS NULL
+                  OR lower(c.email) = lower(x->>'email')))
             OR
             (jsonb_path_exists(
                s.raw_data,
@@ -6685,6 +6709,9 @@ END $$;
 
 COMMIT;
 """)
+    if newmark_page_attempt:
+        from cre_newmark_page_guard import commit_sql
+        w(commit_sql(newmark_page_attempt))
     if pyramid_guard_binding is not None:
         from cre_pyramid_rollback_result import build_commit_sql
         w(build_commit_sql(pyramid_guard_binding))
@@ -7255,6 +7282,8 @@ def main():
     ap.add_argument("--pyramid-verified-subset-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--matthews-targeted-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-ingest-attempt", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--newmark-page-attempt", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--newmark-page-claims", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-collector-git-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--checkpoint-pyramid-code-sha", default=None, help=argparse.SUPPRESS)
     ap.add_argument(
@@ -7391,6 +7420,21 @@ def main():
                 len(targeted_claims["items"]), worker_identity=guarded["workerIdentity"])
         finally:
             os.close(directory)
+    newmark_page_claim = None
+    if bool(args.newmark_page_attempt) != bool(args.newmark_page_claims):
+        sys.exit("refusing unbound Newmark page claim")
+    if args.newmark_page_claims:
+        with open(args.newmark_page_claims, "rb") as f:
+            claim_data = json.load(f)
+        items = claim_data.get("items") if isinstance(claim_data, dict) else None
+        if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+            sys.exit("refusing invalid Newmark page claim")
+        item = items[0]
+        page_claim = item.get("sourcePageClaim")
+        if (item.get("sourceKey") != "newmark" or not isinstance(page_claim, dict)
+                or set(page_claim) != {"id", "claimedAt", "attempts", "brokerageId"}):
+            sys.exit("refusing invalid Newmark page claim")
+        newmark_page_claim = {**page_claim, "externalId": item.get("externalId"), "url": item.get("url")}
     for path in args.inputs:
         with open(path, "rb") as f:
             image_transition_input = f.read()
@@ -7464,6 +7508,16 @@ def main():
                 )
             )
         mode = run_meta.get("mode")
+        page_rows = [x for x in data.get("listings", []) if isinstance(x, dict) and "newmarkPageObservation" in x]
+        if page_rows or args.newmark_page_attempt:
+            listings = data.get("listings", [])
+            if (not args.newmark_page_attempt or len(args.inputs) != 1 or mode != "enrich"
+                    or len(listings) != 1 or not isinstance(listings[0], dict)
+                    or listings[0].get("sourceKey") != "newmark"
+                    or listings[0].get("id") != newmark_page_claim.get("externalId")
+                    or listings[0].get("url") != newmark_page_claim.get("url")
+                    or not args.expected_db_target_sha256 or args.mark_missing or _status_activation_enabled(args.activate_status)):
+                sys.exit("refusing unbound or mixed Newmark page ingest")
         if not args.dry_run and mode not in {"full", "enrich"}:
             sys.exit(
                 f"refusing live ingest for artifact mode {mode!r}: "
@@ -7538,6 +7592,11 @@ def main():
             except (ValueError, TypeError, KeyError) as exc:
                 sys.exit(f"refusing Newmark public facts projection: {exc}")
         for listing in data.get("listings") or []:
+            if args.newmark_page_attempt and not page_rows and isinstance(listing, dict):
+                listing = {**listing, "newmarkGenericPageObservation": {
+                    key: listing[key] for key in ("url", "name", "description", "genericEnrich")
+                    if key in listing
+                }}
             if newmark_public_facts:
                 from source_fields.newmark_public_facts import attach
                 listing = attach(listing, newmark_public_facts)
@@ -7778,6 +7837,9 @@ def main():
         transwestern_image_transition_binding=transwestern_image_transition_binding,
         pyramid_guard_binding=pyramid_guard_binding,
         inventory_preserve_enrichment_ids=inventory_enrichment_ids - inventory_non_enrichment_ids,
+        newmark_page_attempt=args.newmark_page_attempt,
+        newmark_page_claim=newmark_page_claim,
+        newmark_page_requires_witness=bool(page_rows),
     )
 
     print(
@@ -7811,7 +7873,7 @@ def main():
         [
             psql,
             *psql_connection_args(db_url),
-            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None else []),
+            *(["-X"] if pyramid_guard_binding is not None or transwestern_image_transition_binding is not None or args.newmark_page_attempt else []),
             "-q",
             "-v",
             "ON_ERROR_STOP=1",
@@ -7826,7 +7888,9 @@ def main():
         shutil.rmtree(out_dir, ignore_errors=pyramid_guard_binding is None and transwestern_image_transition_binding is None)
     if proc.returncode != 0:
         sys.exit(f"psql exited {proc.returncode}")
-    print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None else "ingest complete", file=sys.stderr)
+    print("psql finished; checkpoint outcome receipt required" if pyramid_guard_binding is not None
+          else "psql finished; bound Newmark page outcome required" if args.newmark_page_attempt
+          else "ingest complete", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -507,6 +507,69 @@ console.log(JSON.stringify({sourceKey:'newmark',...out.listings[0]}));"""
         assert child_ids("published-real") == published_children
         assert sql("SELECT status || '|' || transaction_type FROM credeals.cre_listings WHERE external_id='published-real';") == "active|sale"
         assert sql("SELECT count(*) FROM credeals.cre_source_index WHERE external_id='published-real';") == "1"
+        # Newmark page attempt: mutation only under a current unique source association.
+        page_id = "page-guard-example"
+        page_url = "https://www.nmrk.com/properties/page-guard-example"
+        witness = {"recordId": "native-1", "slug": page_id, "sourceUrl": page_url,
+                   "address": "10 Main Street", "city": "Example", "state": "Florida", "zip": "12345"}
+        native = {"id": "native-1", "slug": page_id, "externalWebsiteUrl": page_url,
+                  "properties": [{"address": "10 Main Street", "city": "Example",
+                                  "stateDescription": "Florida", "zip": "12345"}]}
+        seed_page = ingest.to_row({"sourceKey": "newmark", "id": page_id, "url": page_url,
+                                   "description": "long prior description", **child_fields},
+                                  {}, "2026-11-04T00:18:00Z")
+        sql(ingest.build_sql([seed_page], nm_job, "2026-11-04T00:18:00Z", set()))
+        raw = {"sourceKey": "newmark", "inventoryObservedAt": "old-clock",
+               "latestInventoryObservation": {"rawNewmarkNimRecord": native}}
+        sql("UPDATE credeals.cre_listings SET raw_data=" + ingest.sql_lit(json.dumps(raw)) +
+            "::jsonb WHERE external_id='" + page_id + "';")
+        initial_children = child_ids(page_id)
+        page = ingest.to_row({"sourceKey": "newmark", "id": page_id, "url": page_url,
+            "preserveChildCollections": True,
+            "newmarkPageObservation": {"witness": witness, "prose": "source prose"},
+            **new_child_fields,
+            "contactsDetailed": [{"name": "Changed name", "email": "prior@example.test"},
+                                 {"name": "New Broker", "email": "new@example.test"}]},
+            {}, "2026-11-04T00:19:00Z")
+        import cre_enrich
+        import newmark_claim_witness
+        sql("INSERT INTO credeals.cre_enrichment_queue (brokerage_id,source_key,external_id,url,reason) SELECT b.id,'newmark','" +
+            page_id + "','" + page_url + "','new' FROM credeals.cre_brokerages b WHERE b.slug='newmark';")
+        claim_result = sql(cre_enrich.build_claim_sql(1, source="newmark", source_page_witness=True))
+        witness_value = claim_result.split("|")[-2]
+        actual_witness = newmark_claim_witness.parse_page(witness_value)
+        assert actual_witness == witness, actual_witness
+        claimed = cre_enrich._parse_claimed([tuple(claim_result.split("|"))], source_page_witness=True)[0]
+        page_claim = {"id": claimed["id"], "claimedAt": claimed["claimed_at"],
+            "attempts": claimed["attempts"], "brokerageId": claimed["brokerage_id"],
+            "externalId": page_id, "url": page_url}
+        attempt = "a" * 64
+        result = sql(ingest.build_sql([page], nm_job, "2026-11-04T00:19:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt=attempt, newmark_page_claim=page_claim))
+        assert "CRE_NEWMARK_PAGE_V1 " + attempt + " committed" in result
+        raw_after = json.loads(sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';"))
+        assert raw_after["inventoryObservedAt"] == "old-clock"
+        assert raw_after["latestInventoryObservation"] == raw["latestInventoryObservation"]
+        assert raw_after["newmarkPageObservation"]["prose"] == "source prose"
+        assert sql("SELECT description FROM credeals.cre_listings WHERE external_id='" + page_id + "';") == "long prior description"
+        assert all(initial_children[t] < child_ids(page_id)[t] for t in child_tables)
+        assert sql("SELECT c.name FROM credeals.cre_listing_contacts c JOIN credeals.cre_listings l ON l.id=c.listing_id WHERE l.external_id='" + page_id + "' AND c.email='prior@example.test';") == "Prior Broker"
+        sql("UPDATE credeals.cre_listings SET source_url='https://example.test/changed' WHERE external_id='" + page_id + "';")
+        before_refusal = sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';")
+        result = sql(ingest.build_sql([page], nm_job, "2026-11-04T00:20:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt="b" * 64, newmark_page_claim=page_claim))
+        assert "CRE_NEWMARK_PAGE_V1 " + "b" * 64 + " refused" in result
+        assert sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';") == before_refusal
+        sql("UPDATE credeals.cre_listings SET source_url=" + ingest.sql_lit(page_url) +
+            " WHERE external_id='" + page_id + "';")
+        duplicate = ingest.to_row({"sourceKey": "newmark", "id": "page-duplicate", "url": page_url},
+                                  {}, "2026-11-04T00:21:00Z")
+        sql(ingest.build_sql([duplicate], nm_job, "2026-11-04T00:21:00Z", set()))
+        before_refusal = sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';")
+        result = sql(ingest.build_sql([page], nm_job, "2026-11-04T00:22:00Z", set(),
+            inventory_preserve_enrichment_ids={("newmark", page_id)}, newmark_page_attempt="c" * 64, newmark_page_claim=page_claim))
+        assert "CRE_NEWMARK_PAGE_V1 " + "c" * 64 + " refused" in result
+        assert sql("SELECT raw_data::text FROM credeals.cre_listings WHERE external_id='" + page_id + "';") == before_refusal
         print("PASS: real generic Newmark mapper and generated SQL preserve old children and add new children")
         print("PASS: Newmark generic/published detail preserves lifecycle, tenure, index and events; later NIM can reappear or qualify unknown parents")
 
